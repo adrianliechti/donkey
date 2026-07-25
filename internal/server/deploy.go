@@ -5,13 +5,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log"
 	"net/http"
 	"os"
+	"path"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/aymanbagabas/go-udiff"
 	"k8s.io/apimachinery/pkg/runtime"
 
 	"github.com/adrianliechti/donkey/internal/addons"
@@ -243,7 +247,7 @@ func (s *Server) deploy(ctx context.Context, out *lineStreamer, dir string, app 
 		if opts.DryRun {
 			return s.renderDryRun(app, opts.Tag)
 		}
-		return s.applyAndWait(ctx, out, app, ns, opts.Tag, opts.NoWait)
+		return s.applyAndWait(ctx, out, app, dir, ns, opts.Tag, opts.NoWait)
 	}
 
 	out.Line("Looking at your app…")
@@ -351,7 +355,7 @@ func (s *Server) deploy(ctx context.Context, out *lineStreamer, dir string, app 
 	if err != nil {
 		res := DeployResult{App: app.Name, Space: space, Error: err.Error()}
 		if logs, rerr := os.ReadFile(logFile.Name()); rerr == nil {
-			s.diagnoseWith(ctx, &res, ns, app.Name, "build", tailBytes(logs, 15*1024), nil)
+			s.diagnoseWith(ctx, &res, dir, ns, app.Name, "build", tailBytes(logs, 15*1024), nil)
 		}
 		return res
 	}
@@ -368,7 +372,7 @@ func (s *Server) deploy(ctx context.Context, out *lineStreamer, dir string, app 
 		res.ImageRef = result.ImageRef
 		return res
 	}
-	return s.applyAndWait(ctx, out, app, ns, result.ImageRef, opts.NoWait)
+	return s.applyAndWait(ctx, out, app, dir, ns, result.ImageRef, opts.NoWait)
 }
 
 // renderDryRun renders the app's objects without touching the cluster.
@@ -446,7 +450,7 @@ func (s *Server) adoptStoredDecisions(ctx context.Context, ns string, app *confi
 // applyAndWait applies the app's manifests with the given image and waits
 // for the rollout (unless noWait). The space is settled and validated by the
 // caller; ns is its namespace.
-func (s *Server) applyAndWait(ctx context.Context, out *lineStreamer, app *config.AppConfig, ns, imageRef string, noWait bool) DeployResult {
+func (s *Server) applyAndWait(ctx context.Context, out *lineStreamer, app *config.AppConfig, root, ns, imageRef string, noWait bool) DeployResult {
 	space := app.Space
 	failed := func(err error) DeployResult {
 		return DeployResult{App: app.Name, Space: space, ImageRef: imageRef, Error: err.Error()}
@@ -503,7 +507,7 @@ func (s *Server) applyAndWait(ctx context.Context, out *lineStreamer, app *confi
 			var je *k8s.JobError
 			if errors.As(err, &je) && je.Logs != "" {
 				out.Line("Output of the pre-deploy step:\n%s", je.Logs)
-				s.diagnoseWith(ctx, &r, ns, app.Name, "predeploy", je.Logs, nil)
+				s.diagnoseWith(ctx, &r, root, ns, app.Name, "predeploy", je.Logs, nil)
 			}
 			return r
 		}
@@ -585,7 +589,7 @@ func (s *Server) applyAndWait(ctx context.Context, out *lineStreamer, app *confi
 			if re.Evidence.PodLogs != "" {
 				out.Line("Last lines from the app:\n%s", re.Evidence.PodLogs)
 			}
-			s.diagnoseWith(ctx, &res, ns, app.Name, "rollout", re.Evidence.PodLogs, re.Evidence.Events)
+			s.diagnoseWith(ctx, &res, root, ns, app.Name, "rollout", re.Evidence.PodLogs, re.Evidence.Events)
 		}
 		return res
 	}
@@ -683,21 +687,76 @@ func decisionsJSON(app *config.AppConfig) string {
 
 // diagnoseWith runs the AI failure analysis server-side (for build and
 // rollout failures — the stages with real evidence) and attaches it to the
-// result. Proposals are never applied — the CLI shows them.
-func (s *Server) diagnoseWith(ctx context.Context, res *DeployResult, ns, app, stage, logs string, events []string) {
-	dctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+// result. Proposals are never applied here: the server computes the diff, and
+// the user decides.
+//
+// root is the uploaded copy of the app, which the assistant reads to ground
+// its answer in the actual code. It is a temp dir the server owns, never the
+// user's working tree.
+func (s *Server) diagnoseWith(ctx context.Context, res *DeployResult, root, ns, app, stage, logs string, events []string) {
+	dctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 	proposal, aerr := s.assistant.DiagnoseFailure(dctx, &ai.FailureContext{
 		Stage:        stage,
 		Logs:         logs,
 		Events:       events,
+		Root:         root,
 		KnownSecrets: s.knownSecrets(ctx, ns, app),
 	})
 	if aerr != nil || proposal == nil {
 		return
 	}
 	res.Diagnosis = proposal.Diagnosis
-	res.Proposals = proposal.Actions
+	res.Proposals = withDiffs(root, proposal.Actions)
+}
+
+// withDiffs turns each proposed file rewrite into a diff against what is
+// actually on disk, and drops the ones that turn out to change nothing. The
+// diff is computed here rather than asked for, because a model-written patch
+// cannot be trusted to apply and would have to be parsed back anyway.
+func withDiffs(dir string, actions []ai.FixAction) []ai.FixAction {
+	// The upload is read through a root, so a proposal naming a path that
+	// leaves it cannot be diffed against something outside the app — the read
+	// simply fails and the old side stays empty.
+	root, rerr := os.OpenRoot(dir)
+	if rerr == nil {
+		defer root.Close()
+	}
+
+	out := actions[:0]
+	for _, a := range actions {
+		if a.Type != "edit_file" {
+			out = append(out, a)
+			continue
+		}
+		// os.Root already makes an escaping path unreadable and unwritable,
+		// so this is not the safety check — it is the honesty one. Without
+		// it a path like "a/../../x" fails the read with "not found" (it
+		// stops at the missing "a/" before it ever escapes), and would then
+		// be shown as a tidy new-file diff for a change that can never be
+		// applied. fs.ValidPath is the standard library's own definition of
+		// a legal path inside a tree, so there is no bespoke rule here.
+		rel := path.Clean(filepath.ToSlash(strings.TrimSpace(a.Path)))
+		if !fs.ValidPath(rel) || rel == "." {
+			continue
+		}
+		a.Path = rel
+		old := ""
+		if root != nil {
+			if b, err := root.ReadFile(rel); err == nil {
+				old = string(b)
+			}
+		}
+		if old == a.NewContent {
+			continue
+		}
+		a.Diff = udiff.Unified("a/"+rel, "b/"+rel, old, a.NewContent)
+		if strings.TrimSpace(a.Diff) == "" {
+			continue
+		}
+		out = append(out, a)
+	}
+	return out
 }
 
 // knownSecrets collects the values donkey itself handed to an app: env vars,

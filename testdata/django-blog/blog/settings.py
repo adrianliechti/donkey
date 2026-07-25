@@ -1,24 +1,39 @@
-"""Django settings, as the generator writes them.
+"""Django settings — the generator's output with the three deploy-critical
+lines taken off their defaults.
 
-Every line below is Django's own default. Three of them decide whether this
-app works once it is deployed, and none of them look like a setting anybody
-needs to think about:
+Each of these is a setting nobody thinks about until it breaks something, and
+each breaks silently:
 
-  DEBUG = True          ships the debug page, which prints settings on error
-  ALLOWED_HOSTS = []    Django then answers *400 Bad Request* to every request
-                        carrying a Host header it doesn't know — which is
-                        every request through a gateway
-  db.sqlite3            lives in the project folder, so it is wiped on every
-                        restart and every redeploy unless it is on a disk
+  ALLOWED_HOSTS  Django answers *400 Bad Request* to every request carrying a
+                 Host header it doesn't know — which is every request through
+                 a gateway. Empty is the default, and the app looks perfectly
+                 healthy while refusing everyone.
+  DEBUG          the debug page prints settings, including secrets, to anyone
+                 who triggers an error.
+  SECRET_KEY     a key committed to the repository is not a secret.
+
+The sqlite file below is deliberately left where the generator puts it, in
+the project folder: it is real data in a place that does not survive a
+restart, which is for donkey to notice and put on a disk.
 """
 
+import os
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-SECRET_KEY = "django-insecure-8f3k2j4h5g6f7d8s9a0p1o2i3u4y5t6r7e8w9q"
-DEBUG = True
-ALLOWED_HOSTS = []
+SECRET_KEY = os.environ.get("SECRET_KEY", "django-insecure-local-development-only")
+DEBUG = os.environ.get("DEBUG") == "1"
+
+# A comma-separated list, or "*" to accept whatever address the platform gives
+# this app. "*" is safe here because nothing routes to it except the gateway.
+ALLOWED_HOSTS = os.environ.get("ALLOWED_HOSTS", "*").split(",")
+
+# Django checks the Origin header on unsafe requests, and behind TLS it must
+# be told which origins are its own.
+CSRF_TRUSTED_ORIGINS = [
+    o for o in os.environ.get("CSRF_TRUSTED_ORIGINS", "").split(",") if o
+]
 
 INSTALLED_APPS = [
     "django.contrib.admin",

@@ -148,6 +148,11 @@ tasks:
     cmds:
       - hack/demo-samples.sh
 
+  demo:broken:
+    desc: "Deploy the apps that are MEANT to fail, and check donkey explained each one and proposed a patch"
+    cmds:
+      - hack/demo-broken.sh
+
   e2e:
     desc: "End-to-end smoke test on devkube: install → login → deploy → certificate → gateway login → addon → env → spaces → storage → destroy"
     cmds:

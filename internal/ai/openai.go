@@ -10,6 +10,7 @@ import (
 
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
+	"github.com/openai/openai-go/v3/responses"
 	"github.com/openai/openai-go/v3/shared"
 )
 
@@ -39,10 +40,10 @@ func newOpenAI(key, model string) *openAI {
 func (o *openAI) Check(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	_, err := o.client.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
-		Model:     shared.ChatModel(o.model),
-		Messages:  []openai.ChatCompletionMessageParamUnion{openai.UserMessage("ping")},
-		MaxTokens: openai.Int(16),
+	_, err := o.client.Responses.New(ctx, responses.ResponseNewParams{
+		Model:           shared.ResponsesModel(o.model),
+		Input:           responses.ResponseNewParamsInputUnion{OfString: openai.String("ping")},
+		MaxOutputTokens: openai.Int(16),
 	})
 	if err != nil {
 		return fmt.Errorf("%s did not answer: %w", o.model, err)
@@ -67,7 +68,7 @@ func (o *openAI) Analyze(ctx context.Context, in *AnalyzeInput) (*Analysis, erro
 	}
 
 	var out Analysis
-	if err := o.structured(ctx, analyzeSystemPrompt, b.String(), "app_analysis", analysisSchema, &out); err != nil {
+	if err := o.structured(ctx, analyzeInstructions, b.String(), "app_analysis", analysisSchema, &out); err != nil {
 		return nil, err
 	}
 	out.sanitize()
@@ -207,26 +208,48 @@ func (o *openAI) DiagnoseFailure(ctx context.Context, fc *FailureContext) (*FixP
 		}
 		fmt.Fprintf(&b, "\nLogs (tail):\n%s\n", logs)
 	}
+	// With the app's folder to hand, the model reads the code before it
+	// answers instead of proposing a fix for source it has never seen.
 	var out FixProposal
-	if err := o.structured(ctx, diagnoseSystemPrompt, b.String(), "fix_proposal", proposalSchema, &out); err != nil {
+	if fc.Root != "" {
+		history := o.investigate(ctx, fc.Root, diagnoseInstructions, b.String()+"\n"+exploreInstruction)
+		history = append(history, responses.ResponseInputItemParamOfMessage(concludeInstruction, responses.EasyInputMessageRoleUser))
+		if err := o.structuredWith(ctx, diagnoseInstructions, history, "fix_proposal", proposalSchema, &out); err == nil {
+			return &out, nil
+		}
+		// Exploration or the answer call failed — fall through to the plain
+		// one-shot diagnosis rather than leaving the user with nothing.
+		out = FixProposal{}
+	}
+	if err := o.structured(ctx, diagnoseInstructions, b.String(), "fix_proposal", proposalSchema, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
 }
 
-func (o *openAI) structured(ctx context.Context, system, user, name string, schema map[string]any, out any) error {
-	resp, err := o.client.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
-		Model: shared.ChatModel(o.model),
-		Messages: []openai.ChatCompletionMessageParamUnion{
-			openai.SystemMessage(system),
-			openai.UserMessage(user),
-		},
-		ResponseFormat: openai.ChatCompletionNewParamsResponseFormatUnion{
-			OfJSONSchema: &shared.ResponseFormatJSONSchemaParam{
-				JSONSchema: shared.ResponseFormatJSONSchemaJSONSchemaParam{
+func (o *openAI) structured(ctx context.Context, instructions, user, name string, schema map[string]any, out any) error {
+	return o.structuredWith(ctx, instructions, []responses.ResponseInputItemUnionParam{
+		responses.ResponseInputItemParamOfMessage(user, responses.EasyInputMessageRoleUser),
+	}, name, schema, out)
+}
+
+// structuredWith is the same, over an exchange that already happened — the
+// tool-using investigation, whose findings the answer is drawn from.
+//
+// The schema is enforced by the provider (strict), so what comes back is
+// either valid against it or an error; donkey never parses prose into a
+// struct and hopes.
+func (o *openAI) structuredWith(ctx context.Context, instructions string, input []responses.ResponseInputItemUnionParam, name string, schema map[string]any, out any) error {
+	resp, err := o.client.Responses.New(ctx, responses.ResponseNewParams{
+		Model:        shared.ResponsesModel(o.model),
+		Instructions: openai.String(instructions),
+		Input:        responses.ResponseNewParamsInputUnion{OfInputItemList: input},
+		Text: responses.ResponseTextConfigParam{
+			Format: responses.ResponseFormatTextConfigUnionParam{
+				OfJSONSchema: &responses.ResponseFormatTextJSONSchemaConfigParam{
 					Name:   name,
-					Strict: openai.Bool(true),
 					Schema: schema,
+					Strict: openai.Bool(true),
 				},
 			},
 		},
@@ -234,10 +257,11 @@ func (o *openAI) structured(ctx context.Context, system, user, name string, sche
 	if err != nil {
 		return fmt.Errorf("asking OpenAI didn't work: %w", err)
 	}
-	if len(resp.Choices) == 0 {
+	text := resp.OutputText()
+	if text == "" {
 		return fmt.Errorf("OpenAI sent an empty answer")
 	}
-	if err := json.Unmarshal([]byte(resp.Choices[0].Message.Content), out); err != nil {
+	if err := json.Unmarshal([]byte(text), out); err != nil {
 		return fmt.Errorf("the AI answer wasn't usable: %w", err)
 	}
 	return nil

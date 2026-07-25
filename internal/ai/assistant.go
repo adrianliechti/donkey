@@ -148,6 +148,12 @@ type FailureContext struct {
 	// simply looks like a word, printed by a library in a shape nobody
 	// anticipated. Leaving this empty is safe but weaker.
 	KnownSecrets []string
+	// Root is the folder holding the app that failed — the uploaded copy, not
+	// the user's working tree. Given one, the assistant reads the code for
+	// itself (read-only, confined to this folder) before proposing anything,
+	// which is the difference between a fix and a guess. Empty disables that
+	// and falls back to reasoning from the logs alone.
+	Root string
 }
 
 type FixAction struct {
@@ -158,6 +164,11 @@ type FixAction struct {
 	Key         string `json:"key"`
 	Value       string `json:"value"`
 	Explanation string `json:"explanation"`
+	// Diff is the unified diff from the file's current content to
+	// NewContent. donkey computes it from the two texts — the model is never
+	// asked for a diff, because a hand-written one cannot be trusted to apply
+	// and would have to be parsed back anyway.
+	Diff string `json:"diff,omitempty"`
 }
 
 type FixProposal struct {

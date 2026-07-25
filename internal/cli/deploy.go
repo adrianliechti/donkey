@@ -10,7 +10,6 @@ import (
 
 	"github.com/urfave/cli/v3"
 
-	"github.com/adrianliechti/donkey/internal/ai"
 	"github.com/adrianliechti/donkey/internal/apiclient"
 	"github.com/adrianliechti/donkey/internal/gitutil"
 	"github.com/adrianliechti/donkey/internal/server"
@@ -145,7 +144,7 @@ func deployAction(ctx context.Context, cmd *cli.Command) error {
 		return nil
 	}
 	if !result.OK {
-		showServerDiagnosis(u, result.Diagnosis, result.Proposals)
+		showServerDiagnosis(u, s.Resolved.Flags.AppDir, result.Diagnosis, result.Proposals)
 		return fmt.Errorf("%s", result.Error)
 	}
 	if cmd.Bool("build-only") {
@@ -238,28 +237,9 @@ func deployWithTag(ctx context.Context, s *session, cmd *cli.Command, imageRef s
 		return err
 	}
 	if !result.OK {
-		showServerDiagnosis(u, result.Diagnosis, result.Proposals)
+		showServerDiagnosis(u, s.Resolved.Flags.AppDir, result.Diagnosis, result.Proposals)
 		return fmt.Errorf("%s", result.Error)
 	}
 	u.Success("%s is running with the updated services.", u.Bold(result.App))
 	return nil
-}
-
-func showServerDiagnosis(u *ui.UI, diagnosis string, proposals []ai.FixAction) {
-	if diagnosis == "" {
-		return
-	}
-	u.Printf("")
-	u.Printf("%s %s", u.Bold("What happened:"), diagnosis)
-	for _, p := range proposals {
-		switch p.Type {
-		case "set_env":
-			u.Printf("  · Suggested: donkey env set %s=%s — %s", p.Key, p.Value, p.Explanation)
-		case "edit_file":
-			u.Printf("  · Suggested change to %s — %s", p.Path, p.Explanation)
-			u.Printf("    %s", u.Faint("(review and apply it in your editor, then deploy again)"))
-		default:
-			u.Printf("  · %s", p.Explanation)
-		}
-	}
 }

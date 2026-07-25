@@ -1,15 +1,18 @@
-# A first Flask app, written the way every tutorial writes one.
+# A first Flask app — the tutorial shape, with the three lines changed that
+# every tutorial leaves out and every deploy needs:
 #
-# Three things here are perfectly normal on a laptop and wrong in a container,
-# and none of them look like a mistake:
-#   1. app.run() binds 127.0.0.1 — inside a container that means "nobody but
-#      me", so the app starts, says "Running on http://127.0.0.1:5000", and
-#      every health check still fails.
-#   2. the port is hardcoded to 5000 and $PORT is ignored.
-#   3. debug=True ships the interactive debugger, which is a remote shell.
+#   1. host="0.0.0.0". app.run() binds 127.0.0.1 by default, which inside a
+#      container means "nobody but me": the app starts, says "Running on
+#      http://127.0.0.1:5000", and every health check still fails.
+#   2. the port comes from $PORT, which is how the platform tells the app
+#      where to listen. The 5000 stays as the local default.
+#   3. debug is off unless asked for. The debugger is an interactive shell on
+#      a public address.
 #
-# There is no Procfile and no health route either. This is the shape most
-# non-developer apps arrive in.
+# What is still missing is deliberate: no Procfile, no health route, no
+# donkey.yaml. Those are the things donkey works out on its own.
+
+import os
 
 from flask import Flask
 
@@ -24,8 +27,8 @@ PAGE = """<!doctype html>
 <h1>It works 🎉</h1>
 <p>A single-file Flask app with no configuration of any kind.</p>
 <p>If you can read this through donkey, the deploy understood an app that
-never told it anything: no <code>Procfile</code>, no health route, a
-hardcoded port, and a server that only wanted to talk to localhost.</p>
+never told it anything: no <code>Procfile</code>, no health route and no
+config file — just a single Python file.</p>
 """
 
 
@@ -35,4 +38,8 @@ def home():
 
 
 if __name__ == "__main__":
-    app.run(debug=True, port=5000)
+    app.run(
+        host="0.0.0.0",
+        port=int(os.environ.get("PORT", 5000)),
+        debug=os.environ.get("FLASK_DEBUG") == "1",
+    )

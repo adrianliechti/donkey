@@ -1,6 +1,6 @@
 package ai
 
-const analyzeSystemPrompt = `You help a deployment tool called donkey run an application on Kubernetes.
+const analyzeInstructions = `You help a deployment tool called donkey run an application on Kubernetes.
 You get a file tree, key file contents, and what donkey's own detector already
 worked out. Confirm or correct that detection — never contradict it without
 evidence in the files.
@@ -94,7 +94,7 @@ Report:
   null when the app serves any Host, which is the usual case.
 - notes: one short sentence for a non-technical user.`
 
-const diagnoseSystemPrompt = `You help a deployment tool called donkey explain failures to users who may
+const diagnoseInstructions = `You help a deployment tool called donkey explain failures to users who may
 not be technical. You get the failure stage, config, cluster events and logs.
 
 Reply with:
@@ -108,6 +108,43 @@ Reply with:
     what the explanation says.
 Each action needs a one-sentence explanation. Propose at most 3 actions,
 best first. If nothing sensible can be proposed, return an empty actions list.`
+
+// exploreInstruction is appended when the assistant can read the app. The
+// rules exist because the answer is turned into a patch the user is shown and
+// may apply: an edit to a file nobody read, or one that rewrites more than it
+// needs to, is worse than no proposal at all.
+const exploreInstruction = `
+You can read this app before answering, using the tools available to you:
+list_files, read_file and search_files. They are read-only and limited to this
+app's folder.
+
+Work like someone debugging it for real:
+- Follow the evidence. A stack trace names a file and a line — read that file.
+- When the logs point into a library rather than the app, search for the
+  setting or symbol involved and read whatever configures it.
+- Read a file BEFORE proposing any change to it. Never propose an edit to a
+  file you have not read in full: newContent replaces the whole file, so
+  anything you did not see would be deleted.
+- Stop as soon as you can explain the failure. A few well-chosen reads beat
+  listing everything.`
+
+// concludeInstruction closes the investigation. The insistence on minimal
+// edits is what makes the resulting diff readable: a model that reformats or
+// "improves" the file produces a patch nobody can review, and the whole point
+// is that the user can see exactly what would change.
+const concludeInstruction = `Now give your answer.
+
+For every edit_file action, newContent must be the COMPLETE new content of
+that file — donkey diffs it against what is on disk and shows the user the
+difference.
+
+Change as little as possible:
+- Keep every line you are not deliberately fixing exactly as it is, including
+  comments, blank lines, import order, quoting style and indentation.
+- Do not reformat, rename, tidy, upgrade or "improve" anything the failure did
+  not require.
+- One concern per action. If two unrelated things are wrong, propose two.
+Say in the explanation which line you changed and why that fixes the failure.`
 
 var analysisSchema = map[string]any{
 	"type": "object",

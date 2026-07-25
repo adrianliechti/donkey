@@ -490,6 +490,7 @@ task demo            # cluster + control plane + the demo app (dashboard + MCP b
 task test            # unit tests (no cluster needed)
 task e2e             # full smoke test, isolated from your real config
 task demo:samples    # deploy every testdata sample and report what donkey got right alone
+task demo:broken     # deploy apps that MUST fail, and check each was explained and patched
 ```
 
 `task demo` is three phases, each runnable on its own when you only want to

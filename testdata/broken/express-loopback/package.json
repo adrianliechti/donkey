@@ -1,0 +1,7 @@
+{
+  "name": "express-loopback",
+  "private": true,
+  "main": "index.js",
+  "scripts": { "start": "node index.js" },
+  "dependencies": { "express": "^5.1.0" }
+}

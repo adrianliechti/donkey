@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Stethoscope } from 'lucide-react'
 import { api, type Diagnosis } from './api'
 import { Button, Card, ErrorNote, errText } from './ui'
+import { DiffView } from './DiffView'
 
 // DiagnoseCard is the "explain what's wrong" moment: the same evidence a
 // failed rollout collects, read by the assistant on demand.
@@ -50,9 +51,10 @@ export function DiagnoseCard({ space, app }: { space: string; app: string }) {
                 </code>
               )}
               {p.type === 'edit_file' && (
-                <span className="font-mono text-xs">Change {p.path} (review in your editor)</span>
+                <span className="font-mono text-xs">{p.path}</span>
               )}
               <p className="mt-0.5 text-xs text-ink-soft">{p.explanation}</p>
+              {p.diff && <DiffView diff={p.diff} />}
             </div>
           ))}
           {(result.events ?? []).length > 0 && (

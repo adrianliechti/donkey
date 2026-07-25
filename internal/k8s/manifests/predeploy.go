@@ -1,6 +1,8 @@
 package manifests
 
 import (
+	"strings"
+
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -26,9 +28,20 @@ func PreDeployJob(in Input) *batchv1.Job {
 	env, envFrom := appEnvironment(in)
 
 	container := corev1.Container{
-		Name:    "predeploy",
-		Image:   in.ImageRef,
-		Command: app.PreDeploy,
+		Name:  "predeploy",
+		Image: in.ImageRef,
+		// Each preDeploy entry is a command *line*, not an argv vector, so it
+		// has to reach a shell: handed to Command directly, Kubernetes treats
+		// the whole string as the name of an executable and the container dies
+		// in exec() with "executable file not found in $PATH" — before it can
+		// write a single line of output to explain itself.
+		//
+		// The steps are joined with && so a failure stops the ones after it.
+		// donkey does the joining; the steps themselves are checked for shell
+		// operators when they come from the assistant (see unsafePreDeploy),
+		// so chaining is a decision made here rather than one a proposal can
+		// smuggle in.
+		Command: []string{"sh", "-c", strings.Join(app.PreDeploy, " && ")},
 		Env:     env,
 		EnvFrom: envFrom,
 		SecurityContext: &corev1.SecurityContext{

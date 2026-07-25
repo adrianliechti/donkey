@@ -49,20 +49,28 @@ SHOULD_WORK=(
   "sqlite-notes"
   "local-habits"
   "monorepo-root"
+  # These three say how they start (a Procfile, or a host and port read from
+  # the environment) but still declare no port, health route or donkey.yaml.
+  "flask-beginner"
+  "streamlit-report"
+  "django-blog"
+  # Three of kitchen-sink's five apps are ordinary apps that happen to share a
+  # repository: railpack recognizes each one and produces a start command. It
+  # is finding them separately that is the test, not building them.
+  "kitchen-sink-sample/api"
+  "kitchen-sink-sample/web"
+  "kitchen-sink-sample/worker"
 )
 
 # Folders that exist because they are hard. Failing is an acceptable outcome;
 # failing *silently* is not.
 CHALLENGES=(
-  "django-blog"
-  "flask-beginner"
-  "streamlit-report"
   "no-manifest"
-  # No donkey.yaml anywhere in this one, so each app is deployed on its own.
-  "kitchen-sink-sample/api"
-  "kitchen-sink-sample/web"
-  "kitchen-sink-sample/worker"
+  # Its Dockerfile hardcodes `httpd -p 8080` and cannot read $PORT, so this one
+  # only works if the port is taken from EXPOSE rather than assumed.
   "kitchen-sink-sample/gateway"
+  # Tcl. No provider recognizes it, so detection fails by design and the
+  # assistant has to write the build itself.
   "kitchen-sink-sample/legacy"
 )
 

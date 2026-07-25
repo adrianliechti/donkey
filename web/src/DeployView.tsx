@@ -3,6 +3,7 @@ import { CheckCircle2, ExternalLink, FileArchive, FolderUp, UploadCloud } from '
 import { zipSync } from 'fflate'
 import { api, type DeployResult } from './api'
 import { Button, Card, ErrorNote, errText, SectionTitle } from './ui'
+import { DiffView } from './DiffView'
 
 // The same exclusions the CLI applies while packing — a browser upload
 // should not ship what `donkey deploy` would leave behind.
@@ -461,6 +462,21 @@ export function DeployView({
                   {phase.result.diagnosis}
                 </p>
               )}
+              {/* The change itself, not a description of it. A browser deploy
+                  has no folder to write back to, so this is something to copy
+                  into the project — which only works if it is all here. */}
+              {(phase.result.proposals ?? []).map((p, i) => (
+                <div key={i} className="rounded-md border border-line bg-card px-3 py-2 text-sm">
+                  {p.type === 'set_env' && (
+                    <code className="font-mono text-xs">
+                      donkey env set {p.key}={p.value}
+                    </code>
+                  )}
+                  {p.type === 'edit_file' && <span className="font-mono text-xs">{p.path}</span>}
+                  <p className="mt-0.5 text-xs text-ink-soft">{p.explanation}</p>
+                  {p.diff && <DiffView diff={p.diff} />}
+                </div>
+              ))}
               <Button kind="quiet" onClick={() => setPhase({ step: 'pick' })}>
                 Try again
               </Button>

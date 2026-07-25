@@ -47,7 +47,7 @@ survive a deploy.
 | Sample | Stack | The challenge |
 |---|---|---|
 | `nextjs-app/` | Next.js 15, App Router, TypeScript | Two-phase by nature: `next build`, then `next start` — not `node index.js`, and the build output alone is not runnable because `output: 'standalone'` is left commented out. Port 3000 by default but `$PORT` is honoured, so nothing needs rewriting if donkey passes it. |
-| `django-blog/` | Django 5 + gunicorn | The richest one. `manage.py runserver` is dev-only, so the start command has to become `gunicorn blog.wsgi`. `ALLOWED_HOSTS = []` makes Django answer **400 to every request through a gateway** — the app is up, healthy-looking, and refuses everyone. `DEBUG = True` ships the settings-printing error page. The sqlite file sits in the project folder, so it needs a disk. And it needs `migrate` before it serves, which is what `preDeploy` is for. Four separate ways to be broken, none visible from the outside. |
+| `django-blog/` | Django 5 + gunicorn | A Django project set up the way a deployable one is: gunicorn instead of `runserver`, `ALLOWED_HOSTS`/`DEBUG`/`SECRET_KEY` from the environment, and `migrate` in front of the server. What it still doesn't say is its port, its health route or that `db.sqlite3` sits in the project folder — that last one is real data in a place no restart survives, and finding it is donkey's job. |
 | `express-api/` | Express 5 | `const port = 3000`, `app.listen(port)` — `$PORT` never consulted, so the port has to be read out of the source. No health route, which is the norm, not an oversight. |
 | `fastapi-sample/` | Python | The well-behaved case, for contrast: a `Procfile`, `$PORT`, and a real `/healthz`. Should deploy without a single question. |
 
@@ -61,14 +61,14 @@ survive a deploy.
 ## Not written by developers
 
 The apps most likely to arrive at a PaaS were not written by someone thinking
-about containers. They run on a laptop, and every one of these breaks in a way
-that is invisible from the outside: the container starts, the log says
-"Running on…", and nothing answers.
+about containers. They are small, they have no configuration to speak of, and
+what they leave unsaid is everything a deploy needs to know: the port, the
+health route, which folder holds data, and sometimes what to install.
 
 | Sample | Stack | The challenge |
 |---|---|---|
-| `flask-beginner/` | Python, one file | `app.run(debug=True, port=5000)` — binds **127.0.0.1**, hardcodes the port, ships the debugger, and declares no start command or health route. The single most common shape a first app arrives in. |
-| `streamlit-report/` | Streamlit | An analyst's script that grew a UI. Not run by `python app.py` but by the `streamlit` binary, defaults to 8501, binds loopback unless told otherwise, needs websockets, and has a health route nobody knows about (`/_stcore/health`). The hardest detection case here. |
+| `flask-beginner/` | Python, one file | One file, one route, `requirements.txt`, nothing else: no Procfile, no health route, no config. It binds `0.0.0.0` and reads `$PORT`, so it is deployable — everything else about it has to be worked out. |
+| `streamlit-report/` | Streamlit | An analyst's script that grew a UI. It is run by the `streamlit` binary rather than by python, which its Procfile says — and that line is also where the address and port are settled, because Streamlit takes them as flags. Nothing declares the port, the health route (`/_stcore/health`) or the websocket the page needs. |
 | `no-manifest/` | Python | Imports `flask` and lists it **nowhere** — no requirements.txt, no lockfile. Saved out of a chat window and it ran, because that laptop happened to have flask. |
 | `My Cool App/` | Static files | A folder named the way people name folders: spaces, capitals, `main style.css`, `IMG_2024 (1).svg`. The name has to become `my-cool-app` and every file has to survive the round trip unmangled. |
 
@@ -80,21 +80,18 @@ that is invisible from the outside: the container starts, the log says
 | `sqlite-notes/` | Python + SQLite | Writes to `./data` and never says so. Without a disk the notes vanish on the next restart, and nothing about the app looks wrong until they do. |
 | `monorepo-root/` | Repository root | The app is not at the top: it lives in `services/api/`. Uploading the root must find it, say which folder it picked, and refuse to guess when several are candidates. |
 | `odd-port-sample/` | Node | Ignores `$PORT` and pins an unusual one. Provider defaults would guess wrong; only reading the source gets it right. |
-| `kitchen-sink-sample/` | Python, React, Go, Dockerfile, **Tcl** | Five folders, no `donkey.yaml` anywhere. The Tcl one is recognized by nothing, so the assistant has to write the build itself. |
+| `kitchen-sink-sample/` | Python, React, Go, Dockerfile, **Tcl** | Five apps in one repository, no `donkey.yaml` anywhere — so an upload of the root has to refuse to guess, and each app is deployed from its own folder. Three of the five (`api`, `web`, `worker`) are ordinary apps railpack recognizes; `gateway` only works if its port is read from `EXPOSE`, because its `httpd` cannot see `$PORT`; `legacy` is Tcl, which nothing recognizes, so the assistant has to write the build itself. |
 
 ## What a good run looks like
 
 - `static-site/` and `fastapi-sample/` deploy without a single question.
 - `nextjs-app/` builds and starts on `$PORT` — one app, two commands, no help.
-- `django-blog/` is the benchmark: gunicorn instead of `runserver`, a disk for
-  the sqlite file, `migrate` as a `preDeploy` step, and — the one that decides
-  whether the deploy is usable at all — `ALLOWED_HOSTS` handled or called out
-  before the first request returns 400.
+- `django-blog/` deploys, runs its migrations, and gets a disk proposed for
+  `db.sqlite3` — the one thing about it that is still silently wrong.
 - `express-api/` gets port 3000 from `app.listen`, not from a guess.
-- `flask-beginner/` and `streamlit-report/` are warned about **before** they
-  fail: "this app listens on 127.0.0.1, which in a container means itself and
-  nobody else". A rollout timeout with no explanation is a failure of donkey,
-  not of the sample.
+- `flask-beginner/` and `streamlit-report/` deploy with no questions asked.
+  Both say how they start and nothing else; a rollout timeout with no
+  explanation is a failure of donkey, not of the sample.
 - `no-manifest/` either gets its dependency worked out, or is told which one
   is missing — never a `ModuleNotFoundError` from inside a build.
 - `My Cool App/` lands at `my-cool-app.<space>.…` with the stylesheet and the
@@ -103,8 +100,24 @@ that is invisible from the outside: the container starts, the log says
   about `vite.config.js`.
 - `sqlite-notes/` proposes a disk for `./data` before the first deploy.
 - `monorepo-root/` builds `services/api` and says that it did.
+- `kitchen-sink-sample/{api,web,worker}` each deploy on their own — railpack
+  recognizes all three, and finding them separately is the actual test.
 - `kitchen-sink-sample/legacy` needs the assistant; without one configured,
   it should fail with a clear reason rather than a stack trace.
+
+## The ones that are supposed to fail
+
+`broken/` is the other half, and it is a separate suite with inverted
+assertions — see [broken/README.md](broken/README.md). Those four apps exist
+to exercise what only runs when a deploy goes wrong: donkey reading the code,
+explaining the cause, and proposing a patch. `task demo:broken` fails if one
+of them *deploys*, or fails without an explanation and a diff.
+
+That folder is also where the awkward cases go now. When a sample here is
+fixed so it deploys, the broken version usually still earns its place over
+there: `flask-loopback/` is the `app.run(debug=True, port=5000)` that
+`flask-beginner/` used to be, and `streamlit-bare/` is `streamlit-report/`
+without its Procfile.
 
 ## Using them as a suite
 
@@ -138,9 +151,8 @@ questions:
 
 - **should work** — donkey is expected to get these right unaided, so one of
   them failing fails the run.
-- **challenges** — `django-blog`, `flask-beginner`, `streamlit-report`,
-  `no-manifest` and the five `kitchen-sink-sample/` apps. These are reported
-  but never fatal. A failure here is only a real failure if donkey said
-  *nothing useful* before it happened.
+- **challenges** — `no-manifest` and the five `kitchen-sink-sample/` apps.
+  These are reported but never fatal. A failure here is only a real failure if
+  donkey said *nothing useful* before it happened.
 
 Clean up with `kubectl delete namespace donkey-samples donkey-kitchen-sink`.

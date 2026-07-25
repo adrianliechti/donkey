@@ -1,11 +1,13 @@
 # A Streamlit report — the shape a lot of non-developer apps take: an
 # analyst's script that grew a UI.
 #
-# Streamlit is its own server with its own habits. Left alone it picks port
-# 8501, binds all interfaces only if told, and serves a websocket the page
-# needs. Nothing here declares a port, a start command or a health route, and
-# the code has no `if __name__ == "__main__"` at all — it is run *by* the
-# streamlit binary, not by python.
+# Streamlit is its own server with its own habits: left alone it picks port
+# 8501, binds loopback, and serves a websocket the page needs. The Procfile
+# next to this file is what settles all three — note that the code has no
+# `if __name__ == "__main__"` at all, because it is run *by* the streamlit
+# binary, not by python.
+#
+# Still nothing here declares a port, a health route or a donkey.yaml.
 
 import pandas as pd
 import streamlit as st
@@ -15,7 +17,7 @@ st.set_page_config(page_title="Quarterly report", page_icon="📈", layout="cent
 st.title("Quarterly report")
 st.write(
     "An app written by someone who would not call themselves a developer: "
-    "no port, no start command, no health route, no Dockerfile."
+    "one Procfile line, and no health route, port or Dockerfile."
 )
 
 data = pd.DataFrame(

@@ -3,6 +3,7 @@ module github.com/adrianliechti/donkey
 go 1.26.5
 
 require (
+	github.com/aymanbagabas/go-udiff v0.3.1
 	github.com/charmbracelet/huh v1.0.0
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/docker/cli v29.6.2+incompatible

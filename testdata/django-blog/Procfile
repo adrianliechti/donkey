@@ -1,0 +1,8 @@
+# `manage.py runserver` is a development server: single-threaded, and it
+# refuses to serve anything but localhost without being told. gunicorn is what
+# actually runs Django in production.
+#
+# The migrate in front matters as much as the server behind it — without it
+# the app starts against a database with no tables and fails on the first
+# request that touches one.
+web: python manage.py migrate --noinput && gunicorn blog.wsgi --bind 0.0.0.0:${PORT:-8000}

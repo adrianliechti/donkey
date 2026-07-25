@@ -36,6 +36,8 @@ export interface FixAction {
   key?: string
   value?: string
   explanation: string
+  /** Unified diff from the file's current content to newContent, computed by the server. */
+  diff?: string
 }
 
 export interface Diagnosis {

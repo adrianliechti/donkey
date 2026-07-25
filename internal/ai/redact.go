@@ -116,5 +116,13 @@ func (fc *FailureContext) redact() *FailureContext {
 	for _, e := range fc.Events {
 		out.Events = append(out.Events, scrub(e))
 	}
+	// What the assistant reads through its own tools is deliberately NOT
+	// scrubbed, and that is a correctness decision rather than a trust one.
+	// It answers with the complete new content of a file, which donkey diffs
+	// and may write back — so a file read as `SECRET_KEY = ***` comes back as
+	// `SECRET_KEY = ***`, and applying that fix would destroy the real value
+	// while looking like a clean edit. Source is protected by not being
+	// readable at all: deniedFile keeps .env files, keys and anything named
+	// for a credential out of every tool result.
 	return &out
 }

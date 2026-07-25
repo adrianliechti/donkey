@@ -1,15 +1,28 @@
 # flask-beginner
 
 The single most common shape a first app arrives in: one file, copied from a
-tutorial, that runs fine with `python app.py`.
+tutorial, that runs with `python app.py`.
 
-| In the code | Why it breaks in a container | What donkey should do |
-|---|---|---|
-| `app.run(debug=True, port=5000)` | Flask's default host is `127.0.0.1`. Inside a container that means the app answers *itself* and nothing else — it starts, logs "Running on…", and every probe still fails. | Notice the loopback bind and say so before the deploy fails. |
-| Port `5000`, `$PORT` ignored | donkey hands the app a port; this app doesn't look. | Read 5000 out of the source and use it. |
-| No `Procfile`, no start command | Nothing declares how to run it. | Work it out (the provider's default). |
-| No health route | There is no `/healthz` to probe. | Fall back to checking the port answers, not a guessed path. |
-| `debug=True` | The Werkzeug debugger is a remote code execution console. | Worth a warning; never a silent "fix". |
+The three lines that decide whether it survives a deploy are already right —
+they are the ones a tutorial leaves out, and no platform can fix them from the
+outside:
+
+```python
+app.run(
+    host="0.0.0.0",                          # not 127.0.0.1
+    port=int(os.environ.get("PORT", 5000)),  # the platform chooses
+    debug=os.environ.get("FLASK_DEBUG") == "1",
+)
+```
+
+Everything else is still unsaid, and that is what the sample tests:
+
+| What is missing | What donkey should do |
+|---|---|
+| No `Procfile`, no start command | Work it out from the provider's default. |
+| No declared port | The app follows `$PORT`, so any port works — donkey should notice that and not pin 5000. |
+| No health route | Fall back to checking that the port answers, not a guessed path. |
+| No `donkey.yaml` | Name it from the folder, and ask nothing. |
 
 ## The test
 
