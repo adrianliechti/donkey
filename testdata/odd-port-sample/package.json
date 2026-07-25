@@ -1,0 +1,7 @@
+{
+  "name": "odd-port-sample",
+  "private": true,
+  "scripts": {
+    "start": "node server.js"
+  }
+}

@@ -1,0 +1,171 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  annotations:
+    donkey.dev/managed: "true"
+  labels:
+    app.kubernetes.io/managed-by: donkey
+    app.kubernetes.io/name: shop
+    donkey.dev/app: shop
+    donkey.dev/component: web
+  name: donkey-shop
+---
+apiVersion: v1
+data:
+  .dockerconfigjson: eyJhdXRocyI6eyJyZWcuZXhhbXBsZS5jb20iOnsiYXV0aCI6IlltOWlPbWgxYm5SbGNqST0iLCJwYXNzd29yZCI6Imh1bnRlcjIiLCJ1c2VybmFtZSI6ImJvYiJ9fX0=
+kind: Secret
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: donkey
+    app.kubernetes.io/name: shop
+    donkey.dev/app: shop
+    donkey.dev/component: registry-auth
+  name: shop-registry
+  namespace: donkey-shop
+type: kubernetes.io/dockerconfigjson
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  annotations:
+    donkey.dev/image: reg.example.com/donkey/shop:abc123-20260101000000
+  labels:
+    app.kubernetes.io/managed-by: donkey
+    app.kubernetes.io/name: shop
+    donkey.dev/app: shop
+    donkey.dev/component: web
+  name: shop
+  namespace: donkey-shop
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      donkey.dev/app: shop
+      donkey.dev/component: web
+  strategy: {}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/managed-by: donkey
+        app.kubernetes.io/name: shop
+        donkey.dev/app: shop
+        donkey.dev/component: web
+    spec:
+      containers:
+      - env:
+        - name: PORT
+          value: "8000"
+        - name: APP_MODE
+          value: prod
+        - name: LOG_LEVEL
+          value: info
+        envFrom:
+        - secretRef:
+            name: shop-env
+            optional: true
+        - secretRef:
+            name: shop-addon-db
+        image: reg.example.com/donkey/shop:abc123-20260101000000
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8000
+          initialDelaySeconds: 10
+          periodSeconds: 15
+        name: web
+        ports:
+        - containerPort: 8000
+          name: http
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 8000
+        resources:
+          limits:
+            memory: 512Mi
+          requests:
+            cpu: 100m
+            memory: 128Mi
+      imagePullSecrets:
+      - name: shop-registry
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: donkey
+    app.kubernetes.io/name: shop
+    donkey.dev/app: shop
+    donkey.dev/component: web
+  name: shop
+  namespace: donkey-shop
+spec:
+  ports:
+  - name: http
+    port: 80
+    targetPort: 8000
+  selector:
+    donkey.dev/app: shop
+    donkey.dev/component: web
+  type: ClusterIP
+status:
+  loadBalancer: {}
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: donkey
+    app.kubernetes.io/name: shop
+    donkey.dev/app: shop
+    donkey.dev/component: web
+  name: shop
+  namespace: donkey-shop
+spec:
+  hostnames:
+  - shop.apps.example.com
+  parentRefs:
+  - name: donkey
+    namespace: donkey-system
+  rules:
+  - backendRefs:
+    - name: shop
+      port: 80
+status:
+  parents: null
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: donkey
+    app.kubernetes.io/name: shop
+    donkey.dev/app: shop
+    donkey.dev/component: oidc
+  name: shop-oidc
+  namespace: donkey-shop
+stringData:
+  client-secret: oidc-secret
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: donkey
+    app.kubernetes.io/name: shop
+    donkey.dev/app: shop
+    donkey.dev/component: web
+  name: shop
+  namespace: donkey-shop
+spec:
+  oidc:
+    clientID: donkey-apps
+    clientSecret:
+      name: shop-oidc
+    provider:
+      issuer: https://id.example.com
+    redirectURL: https://shop.apps.example.com/oauth2/callback
+  targetRefs:
+  - group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: shop

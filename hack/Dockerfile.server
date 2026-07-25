@@ -1,0 +1,8 @@
+# Packaging for donkey-server. The Go binary is cross-compiled by
+# `task server-image`; this image wraps it.
+# Not distroless: railpack's version resolver (mise) execs git and
+# bash-based build scripts at plan time.
+FROM alpine:3.20
+RUN apk add --no-cache git bash curl ca-certificates
+COPY donkey-server /donkey-server
+ENTRYPOINT ["/donkey-server"]

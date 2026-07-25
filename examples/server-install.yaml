@@ -1,0 +1,28 @@
+# Example settings for `donkey server install -f server-install.yaml`.
+# The cluster (with an ingress controller) must already exist.
+# Secrets can come from env instead: DONKEY_REGISTRY_PASSWORD,
+# DONKEY_OIDC_CLIENT_SECRET, OPENAI_API_KEY.
+
+image: ghcr.io/example/donkey-server:latest
+
+registry:
+  url: registry.example.com/donkey
+  username: ci
+  # insecure: true            # plain-HTTP registries (testing only)
+
+baseDomain: apps.example.com   # apps become <name>.apps.example.com
+https: true
+ingressClass: nginx
+
+auth:
+  # A real OIDC provider — e.g. Entra ID. Leave the whole block out to run
+  # without a login gateway (apps are then public).
+  issuer: https://login.microsoftonline.com/<tenant-id>/v2.0
+  clientId: <application-client-id>
+  # clientSecret: …           # better: DONKEY_OIDC_CLIENT_SECRET env
+
+ai:
+  # Any OpenAI-compatible endpoint, reachable FROM the cluster.
+  baseUrl: https://api.openai.com/v1
+  model: gpt-5.5
+  # apiKey: …                 # better: OPENAI_API_KEY env

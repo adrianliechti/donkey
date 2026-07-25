@@ -1,0 +1,31 @@
+@import "tailwindcss";
+
+@theme {
+  /* donkey palette: warm paper, brown-black ink, hay as the one accent.
+     Green/red appear only as health semantics. */
+  --color-ink: #2a2320;
+  --color-ink-soft: #57504a;
+  --color-stone: #8a8177;
+  --color-line: #e7e1d8;
+  --color-surface: #faf8f4;
+  --color-card: #ffffff;
+  --color-hay: #e8a33d;
+  --color-hay-deep: #c9821a;
+  --color-moss: #4c7a5a;
+  --color-brick: #b4543e;
+
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+html {
+  background: var(--color-surface);
+  color: var(--color-ink);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

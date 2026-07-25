@@ -1,0 +1,106 @@
+version: "3"
+
+# AI assistance goes to the local OpenAI-compatible server.
+env:
+  OPENAI_BASE_URL: http://localhost:8080/v1
+  OPENAI_API_KEY: none
+
+vars:
+  BINARY: donkey
+  VERSION: '{{.VERSION | default "dev"}}'
+  LDFLAGS: -X monobox.ch/donkey/internal/cli.version={{.VERSION}}
+
+tasks:
+  default:
+    desc: List available tasks
+    silent: true
+    cmds:
+      - task --list
+
+  build:
+    desc: Build bin/donkey
+    cmds:
+      - go build -ldflags "{{.LDFLAGS}}" -o bin/{{.BINARY}} ./cmd/donkey
+    sources:
+      - "**/*.go"
+      - go.mod
+      - go.sum
+    generates:
+      - bin/{{.BINARY}}
+
+  install:
+    desc: Install donkey into GOPATH/bin
+    cmds:
+      - go install -ldflags "{{.LDFLAGS}}" ./cmd/donkey
+
+  web-build:
+    desc: Build the admin console (embedded into donkey-server)
+    dir: web
+    cmds:
+      - npm install --no-audit --no-fund
+      - npm run build
+    sources:
+      - src/**/*
+      - index.html
+      - package.json
+      - vite.config.ts
+    generates:
+      - dist/index.html
+
+  server-image:
+    desc: Build and push the donkey-server image to the local dev registry
+    deps: [web-build]
+    vars:
+      ARCH:
+        sh: "case $(uname -m) in arm64|aarch64) echo arm64;; *) echo amd64;; esac"
+      IMAGE: '{{.IMAGE | default "127.0.0.1:5001/donkey/donkey-server:dev"}}'
+    cmds:
+      - mkdir -p .build
+      - CGO_ENABLED=0 GOOS=linux GOARCH={{.ARCH}} go build -ldflags "{{.LDFLAGS}}" -o .build/donkey-server ./cmd/donkey-server
+      - cp hack/Dockerfile.server .build/Dockerfile
+      - docker build -q -t {{.IMAGE}} .build
+      - docker push -q {{.IMAGE}}
+
+  test:
+    desc: Run unit tests (no cluster or docker needed)
+    cmds:
+      - go test ./...
+
+  vet:
+    desc: Run go vet
+    cmds:
+      - go vet ./...
+
+  demo:
+    desc: "DEMO: create a local kind cluster and install the full donkey stack (auto-login fake IdP, nip.io domains) + sample app"
+    cmds:
+      - hack/demo.sh
+
+  demo-apps:
+    desc: "DEMO: deploy the sophisticated sample (FastMCP backend + React frontend monorepo) to the running demo"
+    cmds:
+      - hack/demo-apps.sh
+
+  demo-idp-image:
+    desc: Build and push the DEMO fake identity provider image
+    vars:
+      ARCH:
+        sh: "case $(uname -m) in arm64|aarch64) echo arm64;; *) echo amd64;; esac"
+      IMAGE: '{{.IMAGE | default "127.0.0.1:5001/donkey/fake-idp:dev"}}'
+    cmds:
+      - mkdir -p .build/fake-idp
+      - CGO_ENABLED=0 GOOS=linux GOARCH={{.ARCH}} go build -o .build/fake-idp/fake-idp ./hack/demo/fake-idp
+      - cp hack/demo/fake-idp/Dockerfile .build/fake-idp/Dockerfile
+      - docker build -q -t {{.IMAGE}} .build/fake-idp
+      - docker push -q {{.IMAGE}}
+
+  kind-up:
+    desc: Create the local kind cluster + registry + ingress (used by demo/e2e)
+    cmds:
+      - hack/kind-up.sh
+
+  e2e:
+    desc: "End-to-end smoke test on kind: demo stack → install → login → deploy → gateway → addon → env → destroy"
+    cmds:
+      - hack/e2e.sh
+

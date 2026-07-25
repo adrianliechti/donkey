@@ -1,0 +1,64 @@
+# DEMO ONLY — a trivial auto-approving OIDC provider (see fake-idp/main.go).
+# Applied by hack/demo.sh / hack/e2e.sh, never by donkey itself.
+# Real installations point donkey at a real OIDC provider (e.g. Entra ID).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: donkey-demo
+  labels:
+    app.kubernetes.io/managed-by: donkey-demo
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fake-idp
+  namespace: donkey-demo
+  labels:
+    app: fake-idp
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: fake-idp
+  template:
+    metadata:
+      labels:
+        app: fake-idp
+    spec:
+      containers:
+        - name: fake-idp
+          image: host.docker.internal:5001/donkey/fake-idp:dev
+          imagePullPolicy: Always
+          env:
+            - name: ISSUER
+              value: http://id.127.0.0.1.nip.io
+          ports:
+            - containerPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fake-idp
+  namespace: donkey-demo
+spec:
+  selector:
+    app: fake-idp
+  ports:
+    - port: 80
+      targetPort: 8080
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: fake-idp
+  namespace: donkey-demo
+spec:
+  parentRefs:
+    - name: donkey
+      namespace: donkey-system
+  hostnames:
+    - id.127.0.0.1.nip.io
+  rules:
+    - backendRefs:
+        - name: fake-idp
+          port: 80

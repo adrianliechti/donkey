@@ -1,0 +1,5 @@
+{
+  "name": "decoy",
+  "private": true,
+  "description": "exists only to prove the Dockerfile takes precedence over railpack's node detection"
+}
