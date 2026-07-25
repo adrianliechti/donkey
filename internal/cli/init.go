@@ -114,6 +114,23 @@ func initFlow(ctx context.Context, s *session, cmd *cli.Command) (*config.AppCon
 			u.Warn("%s in %s: in the cluster, localhost is this app's own container.", u.Bold(url.URL), url.File)
 			u.Printf("  %s", u.Faint("Another app in the space answers on http://<its-name> instead."))
 		}
+		// Migrations go into the file, so the first deploy runs them instead
+		// of starting an app whose tables do not exist yet.
+		for _, step := range analysis.PreDeploy {
+			app.PreDeploy = append(app.PreDeploy, step.Command)
+			u.Info("Runs before each deploy: %s — %s", u.Bold(step.Command), step.Reason)
+		}
+		// The app is up, the probe is green, and every visitor gets a 400.
+		// Nothing about that failure points at the setting causing it.
+		if h := analysis.HostRestriction; h != nil {
+			u.Warn("%s in %s does not include this app's address — the app will answer every request with an error.",
+				u.Bold(h.Setting), h.File)
+			hint := "Add the deployed hostname there, or allow any host."
+			if h.EnvVar != "" {
+				hint = "Set " + h.EnvVar + " once deployed, or allow any host in " + h.File + "."
+			}
+			u.Printf("  %s", u.Faint(hint+" "+h.Reason))
+		}
 	}
 
 	if !u.AssumeYes && u.Interactive {

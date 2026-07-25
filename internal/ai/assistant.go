@@ -67,7 +67,35 @@ type Analysis struct {
 	// LocalURLs are addresses baked into the code that will not resolve to
 	// what the author meant once the app runs on a cluster.
 	LocalURLs []LocalURL `json:"localURLs"`
-	Notes     string     `json:"notes"`
+	// PreDeploy are commands that must finish before the new version starts
+	// serving — database migrations, almost always. Without them the app
+	// deploys green and fails on its first real request.
+	PreDeploy []PreDeployStep `json:"preDeploy"`
+	// HostRestriction is set when the app refuses requests whose Host header
+	// it does not recognize. Deployed behind a gateway, every request carries
+	// a hostname the author never listed, so the app rejects all of them
+	// while looking perfectly healthy from the outside.
+	HostRestriction *HostRestriction `json:"hostRestriction"`
+	Notes           string           `json:"notes"`
+}
+
+// PreDeployStep is one command to run before the new version serves.
+type PreDeployStep struct {
+	Command string `json:"command"`
+	Reason  string `json:"reason"`
+}
+
+// HostRestriction describes a host allowlist the app enforces itself, and how
+// to open it. Django's ALLOWED_HOSTS is the canonical case: left empty by the
+// generator, it turns every request through a gateway into a 400.
+type HostRestriction struct {
+	// Setting names it as the author would recognize it ("ALLOWED_HOSTS").
+	Setting string `json:"setting"`
+	File    string `json:"file"`
+	// EnvVar is the environment variable that overrides it without editing
+	// code, when the framework has one.
+	EnvVar string `json:"envVar"`
+	Reason string `json:"reason"`
 }
 
 // LocalURL is a hardcoded address (localhost, 127.0.0.1, a dev port) the code

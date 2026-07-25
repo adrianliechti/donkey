@@ -35,6 +35,31 @@ func TestSanitizeDropsUnusableVolumes(t *testing.T) {
 	}
 }
 
+// preDeploy commands run in the cluster on every deploy, so the ones that
+// would chain extra commands or never finish are dropped before a caller can
+// offer them.
+func TestSanitizeDropsUnusablePreDeploy(t *testing.T) {
+	a := &Analysis{
+		PreDeploy: []PreDeployStep{
+			{Command: " python manage.py migrate "},
+			{Command: "python manage.py migrate"}, // the same step twice
+			{Command: "alembic upgrade head && rm -rf /app"},
+			{Command: "python manage.py runserver"},
+			{Command: "migrate\nseed"},
+			{Command: ""},
+		},
+		HostRestriction: &HostRestriction{Setting: "  ", File: "settings.py"},
+	}
+	a.sanitize()
+
+	if len(a.PreDeploy) != 1 || a.PreDeploy[0].Command != "python manage.py migrate" {
+		t.Fatalf("only the plain migration should survive, got %+v", a.PreDeploy)
+	}
+	if a.HostRestriction != nil {
+		t.Errorf("a restriction that names no setting is unusable, got %+v", a.HostRestriction)
+	}
+}
+
 func TestVolumePaths(t *testing.T) {
 	a := &Analysis{Volumes: []VolumeSuggestion{{Path: "/a"}, {Path: "/b"}}}
 	got := a.VolumePaths()

@@ -122,6 +122,30 @@ func mergeAnalysis(app *config.AppConfig, analysis *ai.Analysis) []string {
 			analysis.BindReason))
 	}
 	lines = append(lines, localURLWarnings(analysis)...)
+
+	// The app already declares its own steps — repeating the suggestion would
+	// only be noise.
+	if len(app.PreDeploy) == 0 {
+		for _, step := range analysis.PreDeploy {
+			lines = append(lines, fmt.Sprintf(
+				"This app looks like it needs `%s` to run before each deploy (%s) — add it under `preDeploy:` in donkey.yaml, or the first request will fail on a database that was never migrated.",
+				step.Command, step.Reason))
+		}
+	}
+	// Green probe, working app, 400 for everyone. Worth saying plainly.
+	if h := analysis.HostRestriction; h != nil {
+		where := h.File
+		if where != "" {
+			where = " in " + where
+		}
+		fix := "Add the app's address there, or allow any host."
+		if h.EnvVar != "" {
+			fix = fmt.Sprintf("Set %s to the app's address (`donkey env set %s=…`), or allow any host%s.", h.EnvVar, h.EnvVar, where)
+		}
+		lines = append(lines, fmt.Sprintf(
+			"Careful: %s%s does not cover the address this app gets, so it will reject every request with an error while still looking healthy. %s %s",
+			h.Setting, where, fix, h.Reason))
+	}
 	return lines
 }
 

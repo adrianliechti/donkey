@@ -128,10 +128,25 @@ tasks:
     cmds:
       - hack/demo.sh
 
-  cluster:
-    desc: "Create the local devkube cluster with donkey's prerequisites (cert-manager, registry, Envoy Gateway)"
+  demo:cluster:
+    desc: "DEMO 1/3: create the local devkube cluster with donkey's prerequisites (cert-manager, registry, Envoy Gateway)"
     cmds:
       - hack/cluster.sh
+
+  demo:setup:
+    desc: "DEMO 2/3: install donkey into the cluster — fake identity provider, CA, control plane"
+    cmds:
+      - hack/demo-setup.sh
+
+  demo:app:
+    desc: "DEMO 3/3: log in and deploy the demo app (dashboard + MCP backend); needs `devkube connect` running"
+    cmds:
+      - hack/demo-app.sh
+
+  demo:samples:
+    desc: "Deploy every testdata sample into one space and report which ones donkey got right on its own"
+    cmds:
+      - hack/demo-samples.sh
 
   e2e:
     desc: "End-to-end smoke test on devkube: install → login → deploy → certificate → gateway login → addon → env → spaces → storage → destroy"

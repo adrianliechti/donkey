@@ -489,6 +489,16 @@ deliberately trivial auto-approving identity provider
 task demo            # cluster + control plane + the demo app (dashboard + MCP backend)
 task test            # unit tests (no cluster needed)
 task e2e             # full smoke test, isolated from your real config
+task demo:samples    # deploy every testdata sample and report what donkey got right alone
+```
+
+`task demo` is three phases, each runnable on its own when you only want to
+redo one of them:
+
+```sh
+task demo:cluster    # the local cluster and donkey's prerequisites
+task demo:setup      # the identity provider, the CA, and donkey itself
+task demo:app        # log in and deploy the demo app
 ```
 
 Hostnames resolve through `sudo devkube connect`, which watches donkey's own
