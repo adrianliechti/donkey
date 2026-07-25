@@ -4,11 +4,14 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"strconv"
 	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -32,6 +35,13 @@ type SystemInput struct {
 	TLSIssuerKind      string
 	TLSCertificateRefs []string
 
+	// GatewayServiceType is the type of the service traffic enters the
+	// cluster through: LoadBalancer (the default) or ClusterIP. Local
+	// clusters without a load-balancer controller (kind) need ClusterIP —
+	// a LoadBalancer service never gets an address there, which leaves the
+	// Gateway unprogrammed and every donkey hostname unroutable.
+	GatewayServiceType string
+
 	// RegistryCASecret names a secret in donkey-system holding ca.crt — the
 	// certificate authority the registry's own certificate comes from. Both
 	// the server and the build engine trust it.
@@ -41,6 +51,9 @@ type SystemInput struct {
 	RegistryUsername string
 	RegistryPassword string
 	RegistryInsecure bool
+	// RegistryImmutable marks a registry that refuses to overwrite a tag, so
+	// donkey makes every image tag unique.
+	RegistryImmutable bool
 
 	APIToken string
 
@@ -72,6 +85,13 @@ const (
 	GatewayName           = "donkey"
 	GatewayClassName      = "donkey"
 	gatewayControllerName = "gateway.envoyproxy.io/gatewayclass-controller"
+
+	// systemPriorityClass keeps the control plane ahead of the apps it runs:
+	// when a node runs short, the kubelet evicts the lowest priority first,
+	// and donkey-server going down takes every deploy and log stream with it.
+	// Kubernetes ships this class in every cluster (and allows it outside
+	// kube-system since 1.17), so donkey installs no PriorityClass of its own.
+	systemPriorityClass = "system-cluster-critical"
 )
 
 // Scheme is always https: apps sit behind an OIDC login whose cookies are
@@ -85,46 +105,57 @@ func (in SystemInput) ServerHost() string { return "donkey." + in.BaseDomain }
 func SystemObjects(in SystemInput) []runtime.Object {
 	objs := []runtime.Object{
 		systemNamespace(in),
+		envoyProxy(in),
 		gatewayClass(in),
 		sharedGateway(in),
 		serverServiceAccount(in),
 		serverClusterRoleBinding(in),
 		systemSecret(in),
-	}
-	// The build engine only needs its own config file when it has to trust a
-	// registry certificate that isn't publicly signed — and it has to exist
-	// before the deployment that mounts it.
-	if in.RegistryCASecret != "" {
-		objs = append(objs, buildkitConfig(in))
+		// The build engine's config file has to exist before the deployment
+		// that mounts it.
+		buildkitConfig(in),
 	}
 	return append(objs,
 		buildkitDeployment(in),
 		systemService(in, buildkitName, buildkitPort, buildkitPort),
+		buildkitNetworkPolicy(in),
 		serverDeployment(in),
 		systemService(in, serverName, 80, serverPort),
 		systemRoute(in, serverName, in.ServerHost(), 80),
+		redirectRoute(in),
 		systemCertificate(in),
 	)
 }
 
-// configHash changes whenever secret-backed configuration changes, so pods
-// whose env comes from the secret get rolled on re-install (secretKeyRef env
-// values are only read at pod creation).
-func (in SystemInput) configHash() string {
+// configHash changes whenever the given configuration values change, so pods
+// that read them only at startup get rolled on re-install. Each deployment
+// hashes just what it consumes: rotating the API token must not kill in-flight
+// builds, and a new registry host must roll buildkitd (which reads its config
+// file once, at startup).
+func configHash(values ...string) string {
 	h := sha256.New()
-	for _, v := range []string{
-		in.APIToken, in.OIDCClientID, in.OIDCClientSecret,
-		in.RegistryPassword, in.OpenAIAPIKey,
-	} {
+	for _, v := range values {
 		fmt.Fprintln(h, v)
 	}
 	return hex.EncodeToString(h.Sum(nil))[:16]
 }
 
-func (in SystemInput) hashedTemplateMeta(name string) metav1.ObjectMeta {
+// serverConfigHash covers the secret-backed env vars of donkey-server
+// (secretKeyRef values are only read at pod creation).
+func (in SystemInput) serverConfigHash() string {
+	return configHash(in.APIToken, in.OIDCClientID, in.OIDCClientSecret, in.RegistryPassword, in.OpenAIAPIKey)
+}
+
+// buildkitConfigHash covers what buildkitd reads at startup: the config file
+// itself, which it reads once and never again.
+func (in SystemInput) buildkitConfigHash() string {
+	return configHash(buildkitTOML(in))
+}
+
+func (in SystemInput) hashedTemplateMeta(name, hash string) metav1.ObjectMeta {
 	return metav1.ObjectMeta{
 		Labels:      systemLabels(name),
-		Annotations: map[string]string{"donkey.dev/config-hash": in.configHash()},
+		Annotations: map[string]string{"donkey.dev/config-hash": hash},
 	}
 }
 
@@ -185,15 +216,42 @@ func systemSecret(in SystemInput) *corev1.Secret {
 // certificate authority.
 const registryCAPath = "/etc/donkey/registry-ca"
 
-// buildkitConfig teaches buildkitd about a registry whose certificate is
-// signed by a private CA — otherwise every push would fail verification.
+const (
+	// buildkitConfigPath is where buildkitd finds its config file.
+	buildkitConfigPath = "/etc/buildkit"
+
+	// buildkitCachePath is buildkitd's state directory — the build cache. It
+	// gets a volume of its own, bounded by buildkitCacheSize.
+	buildkitCachePath = "/var/lib/buildkit"
+	buildkitCacheSize = "10Gi"
+	// buildkitCacheKeep is what the engine's collector never reclaims;
+	// above buildkitCacheMax it collects. Both stay below the volume's size:
+	// collection is asynchronous, so the cache must be able to overshoot its
+	// target without the kubelet evicting the pod that holds it.
+	buildkitCacheKeep = "5GB"
+	buildkitCacheMax  = "8GB"
+)
+
+// buildkitTOML is buildkitd's config file. Every installation gets one, for
+// the cache bound alone: with no garbage collection the build cache grows
+// until the node's disk is full. A registry whose certificate is signed by a
+// private CA is named here too — otherwise every push would fail verification.
+func buildkitTOML(in SystemInput) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "[worker.oci]\n  gc = true\n  reservedSpace = %q\n  maxUsedSpace = %q\n",
+		buildkitCacheKeep, buildkitCacheMax)
+	if in.RegistryCASecret != "" {
+		host, _, _ := strings.Cut(in.RegistryURL, "/")
+		fmt.Fprintf(&b, "\n[registry.%q]\n  ca = [%q]\n", host, registryCAPath+"/ca.crt")
+	}
+	return b.String()
+}
+
 func buildkitConfig(in SystemInput) *corev1.ConfigMap {
-	host, _, _ := strings.Cut(in.RegistryURL, "/")
-	toml := fmt.Sprintf("[registry.%q]\n  ca = [%q]\n", host, registryCAPath+"/ca.crt")
 	return &corev1.ConfigMap{
 		TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "ConfigMap"},
 		ObjectMeta: metav1.ObjectMeta{Name: buildkitName, Namespace: in.Namespace, Labels: systemLabels(buildkitName)},
-		Data:       map[string]string{"buildkitd.toml": toml},
+		Data:       map[string]string{"buildkitd.toml": buildkitTOML(in)},
 	}
 }
 
@@ -208,8 +266,8 @@ func buildkitDeployment(in SystemInput) *appsv1.Deployment {
 			Replicas: &replicas,
 			Selector: &metav1.LabelSelector{MatchLabels: labels},
 			Template: corev1.PodTemplateSpec{
-				// The config hash rolls buildkitd when the registry's CA changes.
-				ObjectMeta: in.hashedTemplateMeta(buildkitName),
+				// The config hash rolls buildkitd when the registry setup changes.
+				ObjectMeta: in.hashedTemplateMeta(buildkitName, in.buildkitConfigHash()),
 				Spec:       buildkitPodSpec(in, privileged),
 			},
 		},
@@ -231,7 +289,8 @@ func serverDeployment(in SystemInput) *appsv1.Deployment {
 		{Name: "DONKEY_LISTEN", Value: fmt.Sprintf(":%d", serverPort)},
 		{Name: "DONKEY_REGISTRY_URL", Value: in.RegistryURL},
 		{Name: "DONKEY_REGISTRY_USERNAME", Value: in.RegistryUsername},
-		{Name: "DONKEY_REGISTRY_INSECURE", Value: boolStr(in.RegistryInsecure)},
+		{Name: "DONKEY_REGISTRY_INSECURE", Value: strconv.FormatBool(in.RegistryInsecure)},
+		{Name: "DONKEY_REGISTRY_IMMUTABLE", Value: strconv.FormatBool(in.RegistryImmutable)},
 		{Name: "DONKEY_REGISTRY_CA_FILE", Value: registryCAFile(in)},
 		{Name: "DONKEY_BASE_DOMAIN", Value: in.BaseDomain},
 		{Name: "DONKEY_TLS_ISSUER", Value: in.TLSIssuer},
@@ -250,20 +309,39 @@ func serverDeployment(in SystemInput) *appsv1.Deployment {
 		secretEnv("DONKEY_REGISTRY_PASSWORD", "registry-password"),
 		secretEnv("OPENAI_API_KEY", "openai-api-key"),
 	}
+	health := corev1.ProbeHandler{
+		HTTPGet: &corev1.HTTPGetAction{Path: "/healthz", Port: intstr.FromInt32(serverPort)},
+	}
 	spec := corev1.PodSpec{
 		ServiceAccountName: serverName,
+		PriorityClassName:  systemPriorityClass,
 		Containers: []corev1.Container{{
-			Name: "server",
-			// Always pull: dev installs reuse mutable tags.
-			ImagePullPolicy: corev1.PullAlways,
+			Name:            "server",
+			ImagePullPolicy: imagePullPolicy(in.ServerImage),
 			Image:           in.ServerImage,
 			Env:             env,
 			Ports:           []corev1.ContainerPort{{ContainerPort: serverPort}},
-			ReadinessProbe: &corev1.Probe{
-				ProbeHandler: corev1.ProbeHandler{
-					HTTPGet: &corev1.HTTPGetAction{Path: "/healthz", Port: intstr.FromInt32(serverPort)},
-				},
+			Resources:       serverResources(),
+			// donkey-server holds cluster-admin, so a foothold inside it is
+			// the worst one donkey has to offer: it runs as an ordinary user
+			// and can gain nothing it wasn't started with.
+			SecurityContext: &corev1.SecurityContext{
+				RunAsNonRoot:             new(true),
+				AllowPrivilegeEscalation: new(false),
+				Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+				SeccompProfile:           &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
 			},
+			// Readiness asks /readyz, which starts failing the moment the pod
+			// begins draining — that is what takes it out of the Service while
+			// it finishes the deploys it already accepted.
+			ReadinessProbe: &corev1.Probe{ProbeHandler: corev1.ProbeHandler{
+				HTTPGet: &corev1.HTTPGetAction{Path: "/readyz", Port: intstr.FromInt32(serverPort)},
+			}},
+			// A wedged server takes every deploy and log stream with it, and
+			// nobody is watching it the way they watch their apps. /healthz
+			// keeps answering while the server drains, so this never cuts a
+			// shutdown short.
+			LivenessProbe: &corev1.Probe{ProbeHandler: health, PeriodSeconds: 15, FailureThreshold: 3},
 		}},
 	}
 	if in.RegistryCASecret != "" {
@@ -284,9 +362,72 @@ func serverDeployment(in SystemInput) *appsv1.Deployment {
 			Replicas: &replicas,
 			Selector: &metav1.LabelSelector{MatchLabels: labels},
 			Template: corev1.PodTemplateSpec{
-				ObjectMeta: in.hashedTemplateMeta(serverName),
+				ObjectMeta: in.hashedTemplateMeta(serverName, in.serverConfigHash()),
 				Spec:       spec,
 			},
+		},
+	}
+}
+
+// imagePullPolicy pulls again only when the reference can point somewhere
+// else tomorrow. A version tag or a digest is a promise; ":latest" and a bare
+// name are not, and a dev install that reuses one would otherwise keep running
+// the image the node happens to have cached.
+func imagePullPolicy(image string) corev1.PullPolicy {
+	if strings.Contains(image, "@") {
+		return corev1.PullIfNotPresent
+	}
+	// Only the last path element can carry the tag — a registry's port colon
+	// (reg.example.com:5000/donkey) is not one.
+	name := image
+	if i := strings.LastIndex(name, "/"); i >= 0 {
+		name = name[i+1:]
+	}
+	// "latest" and "dev" are the tags everybody moves; a pod that reused a
+	// cached layer for those would run code nobody pushed — and a dev loop
+	// (or an e2e run) would silently test a stale server.
+	_, tag, ok := strings.Cut(name, ":")
+	if !ok || tag == "" || tag == "latest" || tag == "dev" {
+		return corev1.PullAlways
+	}
+	return corev1.PullIfNotPresent
+}
+
+// serverResources sizes donkey-server. Ephemeral storage is the one nobody
+// expects: the server unpacks every build context on local disk (512 MB
+// uploaded, up to 2 GB unpacked), and a pod that requests none is the first
+// thing the kubelet evicts when a node runs short of it. CPU is requested but
+// not capped — throttling the API mid-deploy costs more than the noisy
+// neighbour it would prevent.
+func serverResources() corev1.ResourceRequirements {
+	return corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{
+			corev1.ResourceCPU:              resource.MustParse("100m"),
+			corev1.ResourceMemory:           resource.MustParse("256Mi"),
+			corev1.ResourceEphemeralStorage: resource.MustParse("3Gi"),
+		},
+		Limits: corev1.ResourceList{
+			corev1.ResourceMemory:           resource.MustParse("1Gi"),
+			corev1.ResourceEphemeralStorage: resource.MustParse("8Gi"),
+		},
+	}
+}
+
+// buildkitResources sizes the build engine, which needs more of everything: a
+// build is the heaviest thing the cluster does, and its cache volume counts
+// against the pod's ephemeral storage. The storage limit stays above what the
+// cache volume can hold, so the engine's own collector — not an eviction —
+// is what keeps the cache in check.
+func buildkitResources() corev1.ResourceRequirements {
+	return corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{
+			corev1.ResourceCPU:              resource.MustParse("500m"),
+			corev1.ResourceMemory:           resource.MustParse("1Gi"),
+			corev1.ResourceEphemeralStorage: resource.MustParse("4Gi"),
+		},
+		Limits: corev1.ResourceList{
+			corev1.ResourceMemory:           resource.MustParse("8Gi"),
+			corev1.ResourceEphemeralStorage: resource.MustParse("12Gi"),
 		},
 	}
 }
@@ -306,35 +447,76 @@ func buildkitPodSpec(in SystemInput, privileged bool) corev1.PodSpec {
 	container := corev1.Container{
 		Name:            "buildkitd",
 		Image:           in.BuildkitImage,
-		Args:            []string{"--addr", fmt.Sprintf("tcp://0.0.0.0:%d", buildkitPort)},
+		Args:            []string{"--addr", fmt.Sprintf("tcp://0.0.0.0:%d", buildkitPort), "--config", buildkitConfigPath + "/buildkitd.toml"},
 		Ports:           []corev1.ContainerPort{{ContainerPort: buildkitPort}},
 		SecurityContext: &corev1.SecurityContext{Privileged: &privileged},
+		Resources:       buildkitResources(),
 		ReadinessProbe: &corev1.Probe{
 			ProbeHandler: corev1.ProbeHandler{
 				TCPSocket: &corev1.TCPSocketAction{Port: intstr.FromInt32(buildkitPort)},
 			},
 		},
+		VolumeMounts: []corev1.VolumeMount{
+			{Name: "buildkit-config", MountPath: buildkitConfigPath, ReadOnly: true},
+			{Name: "buildkit-cache", MountPath: buildkitCachePath},
+		},
 	}
-	spec := corev1.PodSpec{Containers: []corev1.Container{container}}
+	spec := corev1.PodSpec{
+		Containers:        []corev1.Container{container},
+		PriorityClassName: systemPriorityClass,
+		Volumes: []corev1.Volume{
+			{Name: "buildkit-config", VolumeSource: corev1.VolumeSource{
+				ConfigMap: &corev1.ConfigMapVolumeSource{
+					LocalObjectReference: corev1.LocalObjectReference{Name: buildkitName},
+				},
+			}},
+			// The cache gets a volume of its own so its size is something the
+			// cluster enforces, not something a runaway build discovers. It
+			// also keeps the snapshotter off the container's own overlay
+			// filesystem, where it would fall back to its slow copy mode.
+			{Name: "buildkit-cache", VolumeSource: corev1.VolumeSource{
+				EmptyDir: &corev1.EmptyDirVolumeSource{SizeLimit: new(resource.MustParse(buildkitCacheSize))},
+			}},
+		},
+	}
 	if in.RegistryCASecret == "" {
 		return spec
 	}
-	spec.Containers[0].Args = append(spec.Containers[0].Args, "--config", "/etc/buildkit/buildkitd.toml")
-	spec.Containers[0].VolumeMounts = []corev1.VolumeMount{
-		{Name: "registry-ca", MountPath: registryCAPath, ReadOnly: true},
-		{Name: "buildkit-config", MountPath: "/etc/buildkit", ReadOnly: true},
-	}
-	spec.Volumes = []corev1.Volume{
-		{Name: "registry-ca", VolumeSource: corev1.VolumeSource{
+	spec.Containers[0].VolumeMounts = append(spec.Containers[0].VolumeMounts,
+		corev1.VolumeMount{Name: "registry-ca", MountPath: registryCAPath, ReadOnly: true})
+	spec.Volumes = append(spec.Volumes, corev1.Volume{
+		Name: "registry-ca", VolumeSource: corev1.VolumeSource{
 			Secret: &corev1.SecretVolumeSource{SecretName: in.RegistryCASecret},
-		}},
-		{Name: "buildkit-config", VolumeSource: corev1.VolumeSource{
-			ConfigMap: &corev1.ConfigMapVolumeSource{
-				LocalObjectReference: corev1.LocalObjectReference{Name: buildkitName},
-			},
-		}},
-	}
+		},
+	})
 	return spec
+}
+
+// buildkitNetworkPolicy is the one policy donkey cannot do without: the build
+// engine speaks unauthenticated gRPC and runs privileged, so anything that
+// can reach port 1234 can run code on a node. Only donkey-server may.
+func buildkitNetworkPolicy(in SystemInput) *networkingv1.NetworkPolicy {
+	port := intstr.FromInt32(buildkitPort)
+	tcp := corev1.ProtocolTCP
+	return &networkingv1.NetworkPolicy{
+		TypeMeta: metav1.TypeMeta{APIVersion: "networking.k8s.io/v1", Kind: "NetworkPolicy"},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      buildkitName,
+			Namespace: in.Namespace,
+			Labels:    systemLabels(buildkitName),
+		},
+		Spec: networkingv1.NetworkPolicySpec{
+			PodSelector: metav1.LabelSelector{MatchLabels: systemLabels(buildkitName)},
+			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
+			Ingress: []networkingv1.NetworkPolicyIngressRule{{
+				From: []networkingv1.NetworkPolicyPeer{{
+					PodSelector:       &metav1.LabelSelector{MatchLabels: systemLabels(serverName)},
+					NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": in.Namespace}},
+				}},
+				Ports: []networkingv1.NetworkPolicyPort{{Protocol: &tcp, Port: &port}},
+			}},
+		},
+	}
 }
 
 func systemService(in SystemInput, name string, port, targetPort int32) *corev1.Service {
@@ -351,6 +533,7 @@ func systemService(in SystemInput, name string, port, targetPort int32) *corev1.
 
 func systemRoute(in SystemInput, name, host string, port int32) *gatewayv1.HTTPRoute {
 	gwNamespace := gatewayv1.Namespace(in.Namespace)
+	section := gatewayv1.SectionName(HTTPSListenerName)
 	portNum := gatewayv1.PortNumber(port)
 	// Deploys stream build progress for minutes — Envoy's default request
 	// timeout would cut the connection.
@@ -365,8 +548,9 @@ func systemRoute(in SystemInput, name, host string, port int32) *gatewayv1.HTTPR
 		Spec: gatewayv1.HTTPRouteSpec{
 			CommonRouteSpec: gatewayv1.CommonRouteSpec{
 				ParentRefs: []gatewayv1.ParentReference{{
-					Name:      gatewayv1.ObjectName(GatewayName),
-					Namespace: &gwNamespace,
+					Name:        gatewayv1.ObjectName(GatewayName),
+					Namespace:   &gwNamespace,
+					SectionName: &section,
 				}},
 			},
 			Hostnames: []gatewayv1.Hostname{gatewayv1.Hostname(host)},
@@ -385,16 +569,88 @@ func systemRoute(in SystemInput, name, host string, port int32) *gatewayv1.HTTPR
 	}
 }
 
+// redirectRoute sends every plain-http visitor to https. One catch-all route
+// on the http listener covers all apps and the API; cert-manager's HTTP-01
+// solver routes carry specific hostnames and paths, which take precedence.
+func redirectRoute(in SystemInput) *gatewayv1.HTTPRoute {
+	gwNamespace := gatewayv1.Namespace(in.Namespace)
+	section := gatewayv1.SectionName("http")
+	scheme := "https"
+	return &gatewayv1.HTTPRoute{
+		TypeMeta: metav1.TypeMeta{APIVersion: "gateway.networking.k8s.io/v1", Kind: "HTTPRoute"},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "donkey-https-redirect",
+			Namespace: in.Namespace,
+			Labels:    systemLabels("donkey-https-redirect"),
+		},
+		Spec: gatewayv1.HTTPRouteSpec{
+			CommonRouteSpec: gatewayv1.CommonRouteSpec{
+				ParentRefs: []gatewayv1.ParentReference{{
+					Name:        gatewayv1.ObjectName(GatewayName),
+					Namespace:   &gwNamespace,
+					SectionName: &section,
+				}},
+			},
+			Rules: []gatewayv1.HTTPRouteRule{{
+				Filters: []gatewayv1.HTTPRouteFilter{{
+					Type: gatewayv1.HTTPRouteFilterRequestRedirect,
+					RequestRedirect: &gatewayv1.HTTPRequestRedirectFilter{
+						Scheme:     &scheme,
+						StatusCode: new(301),
+					},
+				}},
+			}},
+		},
+	}
+}
+
+// envoyProxy configures the data plane Envoy Gateway runs for donkey's
+// Gateway — above all the type of the service traffic enters through.
+func envoyProxy(in SystemInput) *unstructured.Unstructured {
+	serviceType := in.GatewayServiceType
+	if serviceType == "" {
+		serviceType = "LoadBalancer"
+	}
+	return &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "gateway.envoyproxy.io/v1alpha1",
+		"kind":       "EnvoyProxy",
+		"metadata": map[string]any{
+			"name":      GatewayClassName,
+			"namespace": in.Namespace,
+			"labels":    toAnyMap(systemLabels(GatewayClassName)),
+		},
+		"spec": map[string]any{
+			"provider": map[string]any{
+				"type": "Kubernetes",
+				"kubernetes": map[string]any{
+					"envoyService": map[string]any{
+						"type": serviceType,
+					},
+				},
+			},
+		},
+	}}
+}
+
 // gatewayClass binds donkey's Gateway to Envoy Gateway (which must already
 // be installed in the cluster).
 func gatewayClass(in SystemInput) *gatewayv1.GatewayClass {
+	ns := gatewayv1.Namespace(in.Namespace)
 	return &gatewayv1.GatewayClass{
 		TypeMeta: metav1.TypeMeta{APIVersion: "gateway.networking.k8s.io/v1", Kind: "GatewayClass"},
 		ObjectMeta: metav1.ObjectMeta{
 			Name:   GatewayClassName,
 			Labels: systemLabels(GatewayClassName),
 		},
-		Spec: gatewayv1.GatewayClassSpec{ControllerName: gatewayControllerName},
+		Spec: gatewayv1.GatewayClassSpec{
+			ControllerName: gatewayControllerName,
+			ParametersRef: &gatewayv1.ParametersReference{
+				Group:     "gateway.envoyproxy.io",
+				Kind:      "EnvoyProxy",
+				Name:      GatewayClassName,
+				Namespace: &ns,
+			},
+		},
 	}
 }
 
@@ -481,11 +737,4 @@ func sharedGateway(in SystemInput) *gatewayv1.Gateway {
 			Listeners:        listeners,
 		},
 	}
-}
-
-func boolStr(b bool) string {
-	if b {
-		return "true"
-	}
-	return "false"
 }

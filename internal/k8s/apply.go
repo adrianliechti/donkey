@@ -14,7 +14,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
 
-	"monobox.ch/donkey/internal/k8s/manifests"
+	"github.com/adrianliechti/donkey/internal/k8s/manifests"
 )
 
 const fieldManager = "donkey"
@@ -30,11 +30,13 @@ var gvrFor = map[string]schema.GroupVersionResource{
 	"ServiceAccount":        {Version: "v1", Resource: "serviceaccounts"},
 	"PersistentVolumeClaim": {Version: "v1", Resource: "persistentvolumeclaims"},
 	"Deployment":            {Group: "apps", Version: "v1", Resource: "deployments"},
+	"NetworkPolicy":         {Group: "networking.k8s.io", Version: "v1", Resource: "networkpolicies"},
 	"ClusterRoleBinding":    {Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "clusterrolebindings"},
 	"GatewayClass":          {Group: "gateway.networking.k8s.io", Version: "v1", Resource: "gatewayclasses"},
 	"Gateway":               {Group: "gateway.networking.k8s.io", Version: "v1", Resource: "gateways"},
 	"HTTPRoute":             {Group: "gateway.networking.k8s.io", Version: "v1", Resource: "httproutes"},
 	"SecurityPolicy":        {Group: "gateway.envoyproxy.io", Version: "v1alpha1", Resource: "securitypolicies"},
+	"EnvoyProxy":            {Group: "gateway.envoyproxy.io", Version: "v1alpha1", Resource: "envoyproxies"},
 	"Certificate":           {Group: "cert-manager.io", Version: "v1", Resource: "certificates"},
 }
 
@@ -111,15 +113,16 @@ func (c *Client) DeleteObject(ctx context.Context, kind, namespace, name string)
 	return nil
 }
 
-// DeleteComponent removes one component's objects (e.g. an addon), keeping
-// the PVC when keepData is set.
-func (c *Client) DeleteComponent(ctx context.Context, namespace, app, component string, keepData bool) error {
-	selector := fmt.Sprintf("donkey.dev/app=%s,donkey.dev/component=%s", app, component)
+// deleteBySelector removes every namespaced donkey kind matching the label
+// selector. keepData keeps the PVCs and the Secrets: a kept database is
+// worthless without the credentials that open it (the addon binding Secret
+// holds the password the initialized data was created with).
+func (c *Client) deleteBySelector(ctx context.Context, namespace, selector string, keepData bool) error {
 	for kind, gvr := range gvrFor {
 		if clusterScoped[kind] {
 			continue
 		}
-		if keepData && kind == "PersistentVolumeClaim" {
+		if keepData && (kind == "PersistentVolumeClaim" || kind == "Secret") {
 			continue
 		}
 		err := c.Dynamic.Resource(gvr).Namespace(namespace).DeleteCollection(ctx,
@@ -131,23 +134,20 @@ func (c *Client) DeleteComponent(ctx context.Context, namespace, app, component 
 	return nil
 }
 
+// DeleteComponent removes one component's objects (e.g. an addon), keeping
+// the PVC when keepData is set.
+func (c *Client) DeleteComponent(ctx context.Context, namespace, app, component string, keepData bool) error {
+	return c.deleteBySelector(ctx, namespace,
+		fmt.Sprintf("%s=%s,%s=%s", manifests.LabelApp, app, manifests.LabelComponent, component), keepData)
+}
+
 // DeleteAppResources deletes every donkey-owned object of the app across the
 // fixed kind list. The namespace belongs to the whole space, so it only goes
 // away with the space's last app.
 func (c *Client) DeleteAppResources(ctx context.Context, namespace, app string, keepData bool) error {
 	selector := fmt.Sprintf("%s=%s", manifests.LabelApp, app)
-	for kind, gvr := range gvrFor {
-		if clusterScoped[kind] {
-			continue
-		}
-		if keepData && kind == "PersistentVolumeClaim" {
-			continue
-		}
-		err := c.Dynamic.Resource(gvr).Namespace(namespace).DeleteCollection(ctx,
-			metav1.DeleteOptions{}, metav1.ListOptions{LabelSelector: selector})
-		if err != nil && !apierrors.IsNotFound(err) {
-			return fmt.Errorf("removing %s objects: %w", kind, err)
-		}
+	if err := c.deleteBySelector(ctx, namespace, selector, keepData); err != nil {
+		return err
 	}
 	if keepData {
 		return nil
@@ -174,11 +174,34 @@ func (c *Client) DeleteAppResources(ctx context.Context, namespace, app string, 
 			return nil
 		}
 	}
+	// Data someone chose to keep (an earlier `destroy --keep-data`, an addon
+	// removed with its disk kept) must survive the last app leaving too —
+	// deleting the namespace would take the PVCs with it. The app's own
+	// just-deleted claims still linger in Terminating (pvc-protection
+	// finalizer), so only claims that are not already on their way out count.
+	kept, err := c.Clientset.CoreV1().PersistentVolumeClaims(namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: "app.kubernetes.io/managed-by=" + manifests.ManagedByValue,
+	})
+	if err != nil {
+		return err
+	}
+	for _, pvc := range kept.Items {
+		if pvc.DeletionTimestamp == nil {
+			return nil
+		}
+	}
 	err = c.Clientset.CoreV1().Namespaces().Delete(ctx, namespace, metav1.DeleteOptions{})
 	if err != nil && !apierrors.IsNotFound(err) {
 		return err
 	}
 	return nil
+}
+
+// HasDataClaim reports whether the app's data volume exists — used to tell
+// the user about a disk left over from an earlier configuration.
+func (c *Client) HasDataClaim(ctx context.Context, namespace, app string) bool {
+	_, err := c.Clientset.CoreV1().PersistentVolumeClaims(namespace).Get(ctx, manifests.DataClaimName(app), metav1.GetOptions{})
+	return err == nil
 }
 
 // SwitchToRecreate clears a Deployment's rolling-update settings so its
@@ -233,8 +256,16 @@ func (c *Client) ListApps(ctx context.Context) ([]AppRef, error) {
 
 // CheckNamespaceFree refuses to move into a namespace that exists but isn't
 // donkey's — a space name must never let donkey take over (or later delete)
-// somebody else's namespace.
-func (c *Client) CheckNamespaceFree(ctx context.Context, namespace, space string) error {
+// somebody else's namespace. Only the managed annotation counts: a label
+// somebody put on their own namespace must not turn it into one donkey may
+// delete.
+func (c *Client) CheckNamespaceFree(ctx context.Context, namespace string) error {
+	// The control plane's namespace carries the managed annotation too — the
+	// space "system" must not adopt it (and must never be deletable as a
+	// space).
+	if namespace == manifests.SystemNamespace {
+		return fmt.Errorf("the space name maps to donkey's own namespace %s — pick a different space name (space: <name> in donkey.yaml)", namespace)
+	}
 	ns, err := c.Clientset.CoreV1().Namespaces().Get(ctx, namespace, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
 		return nil
@@ -242,7 +273,7 @@ func (c *Client) CheckNamespaceFree(ctx context.Context, namespace, space string
 	if err != nil {
 		return err
 	}
-	if ns.Annotations[manifests.AnnotationManaged] == "true" || ns.Labels[manifests.LabelSpace] == space {
+	if ns.Annotations[manifests.AnnotationManaged] == "true" {
 		return nil
 	}
 	return fmt.Errorf("the namespace %s already exists and wasn't created by donkey — pick a different space name (space: <name> in donkey.yaml)", namespace)

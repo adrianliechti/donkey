@@ -5,8 +5,7 @@ import (
 
 	"github.com/urfave/cli/v3"
 
-	"monobox.ch/donkey/internal/config"
-	"monobox.ch/donkey/internal/doctor"
+	"github.com/adrianliechti/donkey/internal/doctor"
 )
 
 func doctorCommand() *cli.Command {
@@ -19,7 +18,7 @@ func doctorCommand() *cli.Command {
 				return err
 			}
 			u := s.UI
-			env := doctor.NewEnv(s.Resolved.Global, s.GlobalPath, s.Resolved.Flags.AppDir, s.Resolved.App)
+			env := doctor.NewEnv(s.Resolved.Flags.AppDir)
 			u.Printf("%s", u.Bold("Checking your setup…"))
 			u.Printf("")
 
@@ -30,20 +29,25 @@ func doctorCommand() *cli.Command {
 						return err
 					}
 					return api.Ping(ctx)
-				}, serverURL(s.Resolved.Global)),
+				}, s.Resolved.ServerURL()),
 				doctor.AppConfigCheck(),
 			})
 
-			// The server contributes its own view (build engine, registry, assistant).
+			// The server contributes its own view (build engine, registry,
+			// assistant). Failing to fetch those checks is itself a finding —
+			// an all-clear without them would be a lie.
 			if api, err := s.api(); err == nil {
-				if checks, _, derr := api.Doctor(ctx); derr == nil {
-					for _, c := range checks {
-						if c.OK {
-							u.Success("%s%s", c.Name, suffixDetail(c.Detail))
-						} else {
-							ok = false
-							u.Fail("%s — %s", c.Name, c.Detail)
-						}
+				checks, _, derr := api.Doctor(ctx)
+				if derr != nil {
+					ok = false
+					u.Fail("Server-side checks — couldn't run them: %v", derr)
+				}
+				for _, c := range checks {
+					if c.OK {
+						u.Success("%s%s", c.Name, doctor.Suffix(c.Detail))
+					} else {
+						ok = false
+						u.Fail("%s — %s", c.Name, c.Detail)
 					}
 				}
 			}
@@ -56,18 +60,4 @@ func doctorCommand() *cli.Command {
 			return nil
 		},
 	}
-}
-
-func serverURL(g *config.GlobalConfig) string {
-	if g == nil {
-		return ""
-	}
-	return g.Server.URL
-}
-
-func suffixDetail(d string) string {
-	if d == "" {
-		return ""
-	}
-	return " — " + d
 }

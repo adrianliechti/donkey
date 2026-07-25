@@ -52,14 +52,31 @@ type Analysis struct {
 	// works".
 	Port            int    `json:"port"`
 	PortReason      string `json:"portReason"`
-	StartCommand    string `json:"startCommand"`
 	HealthcheckPath string `json:"healthcheckPath"`
 	// Volumes are folders inside the container whose contents must survive a
 	// restart (uploads, databases on disk, generated content).
 	Volumes []VolumeSuggestion `json:"volumes"`
 	// Services are backing services the app expects (postgres, …).
 	Services []ServiceSuggestion `json:"services"`
-	Notes    string              `json:"notes"`
+	// LocalURLs are addresses baked into the code that will not resolve to
+	// what the author meant once the app runs on a cluster.
+	LocalURLs []LocalURL `json:"localURLs"`
+	Notes     string     `json:"notes"`
+}
+
+// LocalURL is a hardcoded address (localhost, 127.0.0.1, a dev port) the code
+// tries to reach. Whether that is a mistake depends entirely on where the code
+// runs, which is why the assistant is asked to say.
+type LocalURL struct {
+	URL  string `json:"url"`
+	File string `json:"file"`
+	// RunsIn is "browser" when the code ships to a browser as part of a
+	// frontend bundle, "server" when it executes inside the container.
+	// Browser code's localhost is the visitor's own machine — always wrong.
+	// Server code's localhost is its own container — right only when the
+	// thing it calls runs in that same container.
+	RunsIn string `json:"runsIn"`
+	Reason string `json:"reason"`
 }
 
 // VolumeSuggestion is one folder that needs to keep its contents.
@@ -90,6 +107,13 @@ type FailureContext struct {
 	DonkeyYAML string
 	// Detection describes what donkey detected (providers, strategy).
 	Detection string
+	// KnownSecrets are values the caller knows are secret — the app's env
+	// values and its addon binding values. DiagnoseFailure blanks every
+	// occurrence of them (from 8 characters up) before anything is sent,
+	// which catches what the patterns in Redact cannot: a password that
+	// simply looks like a word, printed by a library in a shape nobody
+	// anticipated. Leaving this empty is safe but weaker.
+	KnownSecrets []string
 }
 
 type FixAction struct {

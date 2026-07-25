@@ -5,22 +5,48 @@
      Green/red appear only as health semantics. */
   --color-ink: #2a2320;
   --color-ink-soft: #57504a;
+  --color-ink-well: #211c18;
   --color-stone: #8a8177;
   --color-line: #e7e1d8;
   --color-surface: #faf8f4;
   --color-card: #ffffff;
   --color-hay: #e8a33d;
   --color-hay-deep: #c9821a;
+  --color-hay-wash: #f8efdd;
   --color-moss: #4c7a5a;
   --color-brick: #b4543e;
+  /* Constant in both schemes: dark lettering on hay, light lettering in the
+     log pane — those two surfaces keep their own contrast. */
+  --color-on-hay: #2a2320;
+  --color-parchment: #e7e1d8;
 
   --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
 }
 
+/* The same nine tokens carry the whole console, so dark mode is one
+   redefinition: lamplight in the stable — warm dark browns, hay unchanged. */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-ink: #ece5dc;
+    --color-ink-soft: #b8afa4;
+    --color-ink-well: #17120e;
+    --color-stone: #8a8177;
+    --color-line: #3b332c;
+    --color-surface: #211c18;
+    --color-card: #2a2420;
+    --color-hay: #e8a33d;
+    --color-hay-deep: #c9821a;
+    --color-hay-wash: #38301f;
+    --color-moss: #6fa37e;
+    --color-brick: #d0765f;
+  }
+}
+
 html {
   background: var(--color-surface);
   color: var(--color-ink);
+  color-scheme: light dark;
 }
 
 @media (prefers-reduced-motion: reduce) {

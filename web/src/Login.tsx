@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { KeyRound, Loader2 } from 'lucide-react'
-import { api, setToken } from './api'
-import { Button, ErrorNote } from './ui'
+import { api, clearToken, setToken } from './api'
+import { Button, ErrorNote, errText } from './ui'
 
 export function Login({ onConnected }: { onConnected: () => void }) {
   const [token, setTokenInput] = useState('')
@@ -12,12 +12,15 @@ export function Login({ onConnected }: { onConnected: () => void }) {
     e.preventDefault()
     setBusy(true)
     setError('')
+    // The token is only kept once the server accepted it — a failed attempt
+    // must not leave a broken session behind for the next page load.
     setToken(token.trim())
     try {
-      await api.doctor()
+      await api.ping()
       onConnected()
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'That did not work.')
+      clearToken()
+      setError(errText(err, 'That did not work.'))
     } finally {
       setBusy(false)
     }
@@ -47,7 +50,8 @@ export function Login({ onConnected }: { onConnected: () => void }) {
               onChange={(e) => setTokenInput(e.target.value)}
               placeholder="dk_…"
               autoFocus
-              className="w-full rounded-md border border-line bg-surface px-3 py-2 font-mono text-sm focus:outline-2 focus:outline-offset-1 focus:outline-hay-deep"
+              disabled={busy}
+              className="w-full rounded-md border border-line bg-surface px-3 py-2 font-mono text-sm focus:outline-2 focus:outline-offset-1 focus:outline-hay-deep disabled:opacity-60"
             />
             <span className="mt-1.5 block text-xs text-stone">
               Printed by <code className="font-mono">donkey server install</code> — ask whoever set

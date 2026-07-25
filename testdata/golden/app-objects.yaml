@@ -7,6 +7,8 @@ metadata:
     app.kubernetes.io/managed-by: donkey
     app.kubernetes.io/name: acme
     donkey.dev/space: acme
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/warn: restricted
   name: donkey-acme
 ---
 apiVersion: v1
@@ -53,6 +55,7 @@ spec:
         donkey.dev/component: web
         donkey.dev/space: acme
     spec:
+      automountServiceAccountToken: false
       containers:
       - env:
         - name: PORT
@@ -72,7 +75,6 @@ spec:
           httpGet:
             path: /healthz
             port: 8000
-          initialDelaySeconds: 10
           periodSeconds: 15
         name: web
         ports:
@@ -88,6 +90,19 @@ spec:
           requests:
             cpu: 100m
             memory: 128Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          seccompProfile:
+            type: RuntimeDefault
+        startupProbe:
+          failureThreshold: 48
+          httpGet:
+            path: /healthz
+            port: 8000
+          periodSeconds: 5
       imagePullSecrets:
       - name: shop-registry
 ---
@@ -123,7 +138,7 @@ metadata:
     donkey.dev/app: shop
     donkey.dev/component: web
     donkey.dev/space: acme
-  name: donkey-tls-acme-shop
+  name: donkey-tls-acme-shop-d21b2c
   namespace: donkey-system
 spec:
   dnsNames:
@@ -132,7 +147,7 @@ spec:
     group: cert-manager.io
     kind: ClusterIssuer
     name: letsencrypt
-  secretName: donkey-tls-acme-shop
+  secretName: donkey-tls-acme-shop-d21b2c
 ---
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
@@ -151,10 +166,13 @@ spec:
   parentRefs:
   - name: donkey
     namespace: donkey-system
+    sectionName: https
   rules:
   - backendRefs:
     - name: shop
       port: 80
+    timeouts:
+      request: 0s
 status:
   parents: null
 ---

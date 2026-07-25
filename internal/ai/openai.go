@@ -20,8 +20,8 @@ type openAI struct {
 
 // newOpenAI builds the client. The SDK honors OPENAI_BASE_URL from the
 // environment, so local OpenAI-compatible servers work out of the box. The
-// generous-but-finite timeout keeps a dead server from stalling a deploy —
-// AI failures always fall back to defaults.
+// generous-but-finite timeout keeps a dead endpoint from stalling a deploy
+// forever — the failure is then reported, never silently papered over.
 func newOpenAI(key, model string) *openAI {
 	return &openAI{
 		client: openai.NewClient(
@@ -108,6 +108,20 @@ func (a *Analysis) sanitize() {
 		}
 	}
 	a.Services = services
+
+	// A finding donkey can't attribute to a place in the code is noise, and
+	// only these two run-in answers carry a meaning donkey knows how to
+	// explain.
+	urls := a.LocalURLs[:0]
+	for _, u := range a.LocalURLs {
+		u.URL = strings.TrimSpace(u.URL)
+		u.RunsIn = strings.ToLower(strings.TrimSpace(u.RunsIn))
+		if u.URL == "" || (u.RunsIn != "browser" && u.RunsIn != "server") {
+			continue
+		}
+		urls = append(urls, u)
+	}
+	a.LocalURLs = urls
 }
 
 // excludedVolume rejects folders that must never become persistent storage:
@@ -128,6 +142,12 @@ func excludedVolume(p string) bool {
 }
 
 func (o *openAI) DiagnoseFailure(ctx context.Context, fc *FailureContext) (*FixProposal, error) {
+	// Logs and events are the one part of donkey's traffic to the model that
+	// can contain real credentials — an app that cannot reach its database
+	// prints the connection string it tried. They are scrubbed here, on the
+	// way out, so that no caller can forget to do it. See redact.go.
+	fc = fc.redact()
+
 	var b strings.Builder
 	fmt.Fprintf(&b, "Failure stage: %s\n", fc.Stage)
 	if fc.Detection != "" {

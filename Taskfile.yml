@@ -8,7 +8,15 @@ env:
 vars:
   BINARY: donkey
   VERSION: '{{.VERSION | default "dev"}}'
-  LDFLAGS: -X monobox.ch/donkey/internal/cli.version={{.VERSION}}
+  # Both binaries carry the version: the CLI prints it, and the server hands
+  # it back on /v1/ping so a CLI can tell it is talking to a different one.
+  LDFLAGS: >-
+    -X github.com/adrianliechti/donkey/internal/cli.version={{.VERSION}}
+    -X github.com/adrianliechti/donkey/internal/server.Version={{.VERSION}}
+  # Images must match the cluster's nodes, which are this machine's.
+  ARCH:
+    sh: "case $(uname -m) in arm64|aarch64) echo arm64;; *) echo amd64;; esac"
+  CLUSTER: donkey
 
 tasks:
   default:
@@ -19,17 +27,16 @@ tasks:
 
   build:
     desc: Build bin/donkey
+    deps: [web-build]
+    # No sources/generates fingerprint: it ignores VERSION, so a versioned
+    # build would silently keep an older binary. Go's own build cache already
+    # makes the repeat cost small.
     cmds:
       - go build -ldflags "{{.LDFLAGS}}" -o bin/{{.BINARY}} ./cmd/donkey
-    sources:
-      - "**/*.go"
-      - go.mod
-      - go.sum
-    generates:
-      - bin/{{.BINARY}}
 
   install:
     desc: Install donkey into GOPATH/bin
+    deps: [web-build]
     cmds:
       - go install -ldflags "{{.LDFLAGS}}" ./cmd/donkey
 
@@ -47,20 +54,49 @@ tasks:
     generates:
       - dist/index.html
 
+  web-dev:
+    desc: "Console with live reload on :5173 — needs the API: kubectl -n donkey-system port-forward svc/donkey-server 8088:80"
+    dir: web
+    cmds:
+      - npm install --no-audit --no-fund
+      - npm run dev
+
+  # image cross-compiles one command, wraps it in its Dockerfile and loads it
+  # into the cluster. Both images donkey builds go through here.
+  image:
+    internal: true
+    requires:
+      vars: [CMD, BIN, IMAGE, DOCKERFILE, CONTEXT]
+    cmds:
+      - mkdir -p {{.CONTEXT}}
+      - CGO_ENABLED=0 GOOS=linux GOARCH={{.ARCH}} go build -ldflags "{{.LDFLAGS}}" -o {{.CONTEXT}}/{{.BIN}} {{.CMD}}
+      - cp {{.DOCKERFILE}} {{.CONTEXT}}/Dockerfile
+      - docker build -q -t {{.IMAGE}} {{.CONTEXT}}
+      # devkube pushes it into the in-cluster registry (registry.platform).
+      - devkube --cluster {{.CLUSTER}} load {{.IMAGE}}
+
   server-image:
     desc: Build the donkey-server image and load it into the cluster registry
     deps: [web-build]
-    vars:
-      ARCH:
-        sh: "case $(uname -m) in arm64|aarch64) echo arm64;; *) echo amd64;; esac"
-      IMAGE: '{{.IMAGE | default "donkey/donkey-server:dev"}}'
     cmds:
-      - mkdir -p .build
-      - CGO_ENABLED=0 GOOS=linux GOARCH={{.ARCH}} go build -ldflags "{{.LDFLAGS}}" -o .build/donkey-server ./cmd/donkey-server
-      - cp hack/Dockerfile.server .build/Dockerfile
-      - docker build -q -t {{.IMAGE}} .build
-      # devkube pushes it into the in-cluster registry (registry.platform).
-      - devkube --cluster donkey load {{.IMAGE}}
+      - task: image
+        vars:
+          CMD: ./cmd/donkey-server
+          BIN: donkey-server
+          IMAGE: '{{.IMAGE | default "donkey/donkey-server:dev"}}'
+          DOCKERFILE: hack/Dockerfile.server
+          CONTEXT: .build
+
+  demo-idp-image:
+    desc: Build the DEMO fake identity provider image and load it into the cluster
+    cmds:
+      - task: image
+        vars:
+          CMD: ./hack/demo/fake-idp
+          BIN: fake-idp
+          IMAGE: '{{.IMAGE | default "donkey/fake-idp:dev"}}'
+          DOCKERFILE: hack/demo/fake-idp/Dockerfile
+          CONTEXT: .build/fake-idp
 
   test:
     desc: Run unit tests (no cluster or docker needed)
@@ -72,6 +108,26 @@ tasks:
     cmds:
       - go vet ./...
 
+  fmt:
+    desc: Format the Go sources
+    cmds:
+      - gofmt -w cmd internal
+
+  lint:
+    desc: Lint the admin console
+    dir: web
+    cmds:
+      - npm run lint
+
+  check:
+    desc: Everything CI would run — format check, vet, tests, console typecheck and lint
+    cmds:
+      - test -z "$(gofmt -l cmd internal)" || { echo "gofmt needed — run 'task fmt'"; gofmt -l cmd internal; exit 1; }
+      - task: vet
+      - task: test
+      - cd web && npx tsc -b
+      - task: lint
+
   demo:
     desc: "DEMO: create a local devkube cluster and install the full donkey stack (auto-login fake IdP) + sample app"
     cmds:
@@ -81,19 +137,6 @@ tasks:
     desc: "DEMO: deploy the sophisticated sample (FastMCP backend + React frontend monorepo) to the running demo"
     cmds:
       - hack/demo-apps.sh
-
-  demo-idp-image:
-    desc: Build the DEMO fake identity provider image and load it into the cluster
-    vars:
-      ARCH:
-        sh: "case $(uname -m) in arm64|aarch64) echo arm64;; *) echo amd64;; esac"
-      IMAGE: '{{.IMAGE | default "donkey/fake-idp:dev"}}'
-    cmds:
-      - mkdir -p .build/fake-idp
-      - CGO_ENABLED=0 GOOS=linux GOARCH={{.ARCH}} go build -o .build/fake-idp/fake-idp ./hack/demo/fake-idp
-      - cp hack/demo/fake-idp/Dockerfile .build/fake-idp/Dockerfile
-      - docker build -q -t {{.IMAGE}} .build/fake-idp
-      - devkube --cluster donkey load {{.IMAGE}}
 
   cluster:
     desc: "Create the local devkube cluster with donkey's prerequisites (cert-manager, registry, Envoy Gateway)"
@@ -105,3 +148,7 @@ tasks:
     cmds:
       - hack/e2e.sh
 
+  down:
+    desc: Delete the local demo/e2e cluster
+    cmds:
+      - devkube --cluster {{.CLUSTER}} delete

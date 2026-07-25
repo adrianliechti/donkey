@@ -11,35 +11,60 @@ import (
 	bkclient "github.com/moby/buildkit/client"
 	"k8s.io/apimachinery/pkg/runtime"
 
-	"monobox.ch/donkey/internal/addons"
-	"monobox.ch/donkey/internal/ai"
-	"monobox.ch/donkey/internal/build"
-	"monobox.ch/donkey/internal/k8s"
-	"monobox.ch/donkey/internal/k8s/manifests"
+	"github.com/adrianliechti/donkey/internal/addons"
+	"github.com/adrianliechti/donkey/internal/ai"
+	"github.com/adrianliechti/donkey/internal/build"
+	"github.com/adrianliechti/donkey/internal/config"
+	"github.com/adrianliechti/donkey/internal/k8s"
+	"github.com/adrianliechti/donkey/internal/k8s/manifests"
 )
 
+// spaceApp validates the space and app values of a request path and returns
+// the space's namespace. They come straight from the URL and feed namespace,
+// object and hostname names — so they follow donkey.yaml's naming rules, and
+// donkey's own namespace is out of bounds.
+func (s *Server) spaceApp(r *http.Request) (ns, app string, err error) {
+	app = r.PathValue("app")
+	if !config.ValidName(app) {
+		return "", "", fmt.Errorf("%q is not a valid app name", app)
+	}
+	ns, err = s.cfg.SpaceNamespace(r.PathValue("space"))
+	return ns, app, err
+}
+
 type StatusResponse struct {
-	Found   bool     `json:"found"`
-	Healthy bool     `json:"healthy"`
-	Ready   string   `json:"ready"`
-	Image   string   `json:"image"`
-	URL     string   `json:"url"`
-	Pods    []string `json:"pods"`
+	Found    bool     `json:"found"`
+	Healthy  bool     `json:"healthy"`
+	Ready    string   `json:"ready"`
+	Image    string   `json:"image"`
+	URL      string   `json:"url"`
+	Pods     []string `json:"pods"`
+	Restarts int32    `json:"restarts,omitempty"`
+	// StartedAt is when the newest pod came up (RFC 3339; empty when none).
+	StartedAt string `json:"startedAt,omitempty"`
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
-	app, space := r.PathValue("app"), r.PathValue("space")
-	st, err := s.k8s.AppStatus(r.Context(), s.cfg.Namespace(space), app)
+	ns, app, err := s.spaceApp(r)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	st, err := s.k8s.AppStatus(r.Context(), ns, app)
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err)
 		return
 	}
 	resp := StatusResponse{
-		Found:   st.Found,
-		Healthy: st.Healthy(),
-		Ready:   st.ReadyText(),
-		Image:   st.Image,
-		Pods:    st.Pods,
+		Found:    st.Found,
+		Healthy:  st.Healthy(),
+		Ready:    st.ReadyText(),
+		Image:    st.Image,
+		Pods:     st.Pods,
+		Restarts: st.Restarts,
+	}
+	if !st.StartedAt.IsZero() {
+		resp.StartedAt = st.StartedAt.UTC().Format(time.RFC3339)
 	}
 	if st.IngressHost != "" {
 		resp.URL = s.cfg.Scheme() + "://" + st.IngressHost
@@ -47,11 +72,100 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// handleRestart rolls the app's pods without changing anything else — the
+// safe restart the console offers next to env editing.
+func (s *Server) handleRestart(w http.ResponseWriter, r *http.Request) {
+	ns, app, err := s.spaceApp(r)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	restarted, err := s.k8s.RestartApp(r.Context(), ns, app)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	if !restarted {
+		writeErr(w, http.StatusNotFound, fmt.Errorf("nothing with this name is deployed — nothing to restart"))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// handleListAddons shows which services are bound to the app — names and
+// injected env var names only, never the values.
+func (s *Server) handleListAddons(w http.ResponseWriter, r *http.Request) {
+	ns, app, err := s.spaceApp(r)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	bindings, err := s.k8s.ListAddonBindings(r.Context(), ns, app)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	type entry struct {
+		Name string   `json:"name"`
+		Keys []string `json:"keys"`
+	}
+	out := []entry{}
+	for _, b := range bindings {
+		out = append(out, entry{Name: b.Name, Keys: b.Keys})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"addons": out})
+}
+
+// DiagnoseResponse is what the console's "explain what's wrong" shows: the
+// raw evidence always, the assistant's reading of it when it answers.
+type DiagnoseResponse struct {
+	Diagnosis      string         `json:"diagnosis,omitempty"`
+	Proposals      []ai.FixAction `json:"proposals,omitempty"`
+	Pods           []string       `json:"pods,omitempty"`
+	Events         []string       `json:"events,omitempty"`
+	Logs           string         `json:"logs,omitempty"`
+	AssistantError string         `json:"assistantError,omitempty"`
+}
+
+// handleDiagnose gathers the same evidence a failed rollout collects and
+// asks the assistant to explain it — on demand, for an app that is red now.
+func (s *Server) handleDiagnose(w http.ResponseWriter, r *http.Request) {
+	ns, app, err := s.spaceApp(r)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Minute)
+	defer cancel()
+	ev := s.k8s.RolloutEvidenceFor(ctx, ns, app)
+	resp := DiagnoseResponse{Pods: ev.PodSummaries, Events: ev.Events, Logs: ev.PodLogs}
+	proposal, aerr := s.assistant.DiagnoseFailure(ctx, &ai.FailureContext{
+		Stage:        "rollout",
+		Logs:         ev.PodLogs,
+		Events:       ev.Events,
+		KnownSecrets: s.knownSecrets(ctx, ns, app),
+	})
+	switch {
+	case aerr != nil:
+		resp.AssistantError = aerr.Error()
+	case proposal != nil:
+		resp.Diagnosis = proposal.Diagnosis
+		resp.Proposals = proposal.Actions
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
 func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
-	app, space := r.PathValue("app"), r.PathValue("space")
+	ns, app, err := s.spaceApp(r)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
 	q := r.URL.Query()
-	tail, _ := strconv.ParseInt(q.Get("tail"), 10, 64)
-	if tail <= 0 {
+	// An explicit 0 means "no history, just what comes next" (with follow);
+	// only a missing or unusable value falls back to the default.
+	tail, perr := strconv.ParseInt(q.Get("tail"), 10, 64)
+	if q.Get("tail") == "" || perr != nil || tail < 0 {
 		tail = 200
 	}
 	var since time.Duration
@@ -64,7 +178,7 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
-	err := s.k8s.StreamLogs(r.Context(), s.cfg.Namespace(space), app, k8s.LogOptions{
+	err = s.k8s.StreamLogs(r.Context(), ns, app, k8s.LogOptions{
 		Component: component,
 		Follow:    q.Get("follow") == "true",
 		TailLines: tail,
@@ -86,8 +200,12 @@ func (f flushWriter) Write(p []byte) (int, error) {
 }
 
 func (s *Server) handleGetEnv(w http.ResponseWriter, r *http.Request) {
-	app, space := r.PathValue("app"), r.PathValue("space")
-	env, err := s.k8s.GetEnv(r.Context(), s.cfg.Namespace(space), app)
+	ns, app, err := s.spaceApp(r)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	env, err := s.k8s.GetEnv(r.Context(), ns, app)
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err)
 		return
@@ -101,14 +219,29 @@ type PutEnvRequest struct {
 }
 
 func (s *Server) handlePutEnv(w http.ResponseWriter, r *http.Request) {
-	app, space := r.PathValue("app"), r.PathValue("space")
+	ns, app, err := s.spaceApp(r)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
 	var req PutEnvRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	ns := s.cfg.Namespace(space)
-	if err := s.k8s.SetEnv(r.Context(), ns, space, app, req.Env); err != nil {
+	// PORT is donkey's own: it is rendered from donkey.yaml's `port` directly
+	// on the container, where it always beats the env secret — accepting a
+	// new value here would store something that never reaches the app. An
+	// unchanged PORT is tolerated: clients read-modify-write the whole map,
+	// and a leftover from before this rule must not brick every other edit.
+	if v, ok := req.Env["PORT"]; ok {
+		stored, gerr := s.k8s.GetEnv(r.Context(), ns, app)
+		if gerr != nil || stored["PORT"] != v {
+			writeErr(w, http.StatusBadRequest, fmt.Errorf("PORT is set by donkey from the `port` in donkey.yaml — change it there and deploy again (a stale stored PORT disappears with `donkey env unset PORT`)"))
+			return
+		}
+	}
+	if err := s.k8s.SetEnv(r.Context(), ns, r.PathValue("space"), app, req.Env); err != nil {
 		writeErr(w, http.StatusBadGateway, err)
 		return
 	}
@@ -130,13 +263,15 @@ type AddonRequest struct {
 	Storage  string `json:"storage"`
 	External bool   `json:"external"`
 	URL      string `json:"url"`
-	// Image is the app's current image; when set, the server re-applies the
-	// app so envFrom picks up the binding.
-	Rewire bool `json:"rewire"`
 }
 
 func (s *Server) handleAddAddon(w http.ResponseWriter, r *http.Request) {
-	app, space := r.PathValue("app"), r.PathValue("space")
+	ns, app, err := s.spaceApp(r)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	space := r.PathValue("space")
 	var req AddonRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
@@ -145,8 +280,21 @@ func (s *Server) handleAddAddon(w http.ResponseWriter, r *http.Request) {
 	if req.Name == "" {
 		req.Name = req.Type
 	}
-	ns := s.cfg.Namespace(space)
+	if !config.ValidName(req.Name) {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("%q is not a valid addon name — lowercase letters, digits and dashes", req.Name))
+		return
+	}
+	if err := addons.ValidateNames(app, req.Name); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
 	ctx := r.Context()
+	// The addon may be the first thing in a fresh space — but never a reason
+	// to take over a namespace donkey didn't create.
+	if err := s.k8s.CheckNamespaceFree(ctx, ns); err != nil {
+		writeErr(w, http.StatusConflict, err)
+		return
+	}
 
 	var objs []runtime.Object
 	objs = append(objs, manifests.Namespace(space, ns))
@@ -187,7 +335,9 @@ func (s *Server) handleAddAddon(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadGateway, err)
 		return
 	}
-	if pw, ok := existing["PGPASSWORD"]; ok {
+	// Reuse the credential the instance was initialized with — rotating it
+	// here would lock the service out of its own kept data.
+	if pw, ok := existing[addon.CredentialKey()]; ok {
 		in.Password = pw
 	} else if in.Password, err = addons.NewPassword(); err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
@@ -212,10 +362,18 @@ func (s *Server) handleAddAddon(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleRemoveAddon(w http.ResponseWriter, r *http.Request) {
-	app, space := r.PathValue("app"), r.PathValue("space")
+	ns, app, err := s.spaceApp(r)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
 	name := r.PathValue("addon")
+	if !config.ValidName(name) {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("%q is not a valid addon name", name))
+		return
+	}
 	keepData := r.URL.Query().Get("keepData") == "true"
-	if err := s.k8s.DeleteComponent(r.Context(), s.cfg.Namespace(space), app, addons.Component(name), keepData); err != nil {
+	if err := s.k8s.DeleteComponent(r.Context(), ns, app, addons.Component(name), keepData); err != nil {
 		writeErr(w, http.StatusBadGateway, err)
 		return
 	}
@@ -223,14 +381,24 @@ func (s *Server) handleRemoveAddon(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDestroy(w http.ResponseWriter, r *http.Request) {
-	app, space := r.PathValue("app"), r.PathValue("space")
+	ns, app, err := s.spaceApp(r)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
 	keepData := r.URL.Query().Get("keepData") == "true"
-	if err := s.k8s.DeleteAppResources(r.Context(), s.cfg.Namespace(space), app, keepData); err != nil {
+	// A file-browser helper still holding the disk would keep the volume in
+	// Terminating — and it is a Pod, which the app's own delete never covers.
+	if err := s.k8s.RemoveFilesHelper(r.Context(), ns, app); err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	if err := s.k8s.DeleteAppResources(r.Context(), ns, app, keepData); err != nil {
 		writeErr(w, http.StatusBadGateway, err)
 		return
 	}
 	// The certificate lives next to the gateway, so it needs its own goodbye.
-	if err := s.detachCertificate(r.Context(), space, app); err != nil {
+	if err := s.detachCertificate(r.Context(), r.PathValue("space"), app); err != nil {
 		writeErr(w, http.StatusBadGateway, err)
 		return
 	}
@@ -270,6 +438,19 @@ func (s *Server) handleDoctor(w http.ResponseWriter, r *http.Request) {
 	}
 	checks = append(checks, reg)
 
+	// Everything donkey serves hangs on the shared Gateway — an unprogrammed
+	// one means Envoy Gateway is missing or unhappy, and nothing has a URL.
+	gw := DoctorCheck{Name: "Gateway (Envoy)"}
+	if ok, detail, err := s.k8s.GatewayProgrammed(ctx, s.cfg.GatewayNamespace, s.cfg.GatewayName); err != nil {
+		gw.Detail = err.Error()
+	} else if !ok {
+		gw.Detail = "not serving yet: " + detail
+	} else {
+		gw.OK = true
+		gw.Detail = "serving"
+	}
+	checks = append(checks, gw)
+
 	certs := DoctorCheck{Name: "Certificates (cert-manager)"}
 	if err := s.k8s.CertManagerInstalled(ctx); err != nil {
 		certs.Detail = err.Error()
@@ -297,9 +478,13 @@ func (s *Server) handleDoctor(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"checks": checks, "baseDomain": s.cfg.BaseDomain})
 }
 
+// maxAnalyzeBytes caps what one analyze request may send to the model —
+// without it the endpoint is an unbounded proxy onto somebody's AI budget.
+const maxAnalyzeBytes = 1 << 20
+
 func (s *Server) handleAIAnalyze(w http.ResponseWriter, r *http.Request) {
 	var in ai.AnalyzeInput
-	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxAnalyzeBytes)).Decode(&in); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}

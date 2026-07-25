@@ -37,11 +37,17 @@ func appsCommand() *cli.Command {
 					u.Printf("")
 					u.Printf("%s", u.Bold(space))
 				}
-				glyph := u.Faint("○")
-				if app.Healthy {
-					glyph = "●"
+				// Three states, three glyphs: healthy (green), unhealthy
+				// (red), and "the control plane couldn't check just now" —
+				// which must not look like an outage.
+				glyph, note := u.Green("●"), ""
+				switch {
+				case app.Ready == "status unavailable":
+					glyph, note = u.Faint("◌"), u.Faint(" (status unknown)")
+				case !app.Healthy:
+					glyph, note = u.Red("○"), u.Faint(" ("+app.Ready+")")
 				}
-				u.Printf("  %s %-24s %s", glyph, app.Name, u.Faint(app.URL))
+				u.Printf("  %s %-24s %s%s", glyph, app.Name, u.Faint(app.URL), note)
 			}
 			u.Printf("")
 			return nil

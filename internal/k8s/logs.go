@@ -41,11 +41,18 @@ func (c *Client) StreamLogs(ctx context.Context, namespace, app string, opts Log
 	prefix := len(pods.Items) > 1
 	var wg sync.WaitGroup
 	var mu sync.Mutex
+	started := 0
+	var streamErr error
 	for _, pod := range pods.Items {
 		rc, err := c.Clientset.CoreV1().Pods(namespace).GetLogs(pod.Name, plo).Stream(ctx)
 		if err != nil {
+			// A pod that is still starting has no logs yet — say so instead
+			// of silently printing nothing.
+			fmt.Fprintf(out, "[%s] no logs yet (%s)\n", pod.Name, podSummary(&pod))
+			streamErr = err
 			continue
 		}
+		started++
 		wg.Add(1)
 		go func(name string, rc io.ReadCloser) {
 			defer wg.Done()
@@ -64,5 +71,8 @@ func (c *Client) StreamLogs(ctx context.Context, namespace, app string, opts Log
 		}(pod.Name, rc)
 	}
 	wg.Wait()
+	if started == 0 && streamErr != nil {
+		return fmt.Errorf("couldn't read logs from any pod: %w", streamErr)
+	}
 	return nil
 }

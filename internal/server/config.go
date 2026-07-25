@@ -7,8 +7,14 @@ import (
 	"fmt"
 	"os"
 
-	"monobox.ch/donkey/internal/config"
+	"github.com/adrianliechti/donkey/internal/config"
+	"github.com/adrianliechti/donkey/internal/k8s/manifests"
 )
+
+// Version is stamped via -ldflags "-X github.com/adrianliechti/donkey/internal/server.Version=…".
+// It rides on /v1/ping so a CLI can tell when it is talking to an older or
+// newer control plane than itself.
+var Version = "dev"
 
 type Config struct {
 	Listen string
@@ -42,10 +48,11 @@ func FromEnv() (*Config, error) {
 	c := &Config{
 		Listen: envOr("DONKEY_LISTEN", ":8088"),
 		Registry: config.Registry{
-			URL:      os.Getenv("DONKEY_REGISTRY_URL"),
-			Username: os.Getenv("DONKEY_REGISTRY_USERNAME"),
-			Insecure: os.Getenv("DONKEY_REGISTRY_INSECURE") == "true",
-			CAFile:   os.Getenv("DONKEY_REGISTRY_CA_FILE"),
+			URL:       os.Getenv("DONKEY_REGISTRY_URL"),
+			Username:  os.Getenv("DONKEY_REGISTRY_USERNAME"),
+			Insecure:  os.Getenv("DONKEY_REGISTRY_INSECURE") == "true",
+			Immutable: os.Getenv("DONKEY_REGISTRY_IMMUTABLE") == "true",
+			CAFile:    os.Getenv("DONKEY_REGISTRY_CA_FILE"),
 		},
 		BaseDomain:       os.Getenv("DONKEY_BASE_DOMAIN"),
 		TLSIssuer:        os.Getenv("DONKEY_TLS_ISSUER"),
@@ -63,6 +70,9 @@ func FromEnv() (*Config, error) {
 	}
 	if c.Registry.URL == "" {
 		return nil, fmt.Errorf("DONKEY_REGISTRY_URL is required")
+	}
+	if err := c.Registry.Validate(); err != nil {
+		return nil, err
 	}
 	if c.BaseDomain == "" {
 		return nil, fmt.Errorf("DONKEY_BASE_DOMAIN is required")
@@ -97,6 +107,21 @@ func (c *Config) Scheme() string { return "https" }
 // Namespace is where a space lives: all its apps share it.
 func (c *Config) Namespace(space string) string { return c.NamespacePrefix + space }
 
+// SpaceNamespace maps a space onto its namespace, refusing names that are
+// invalid or that would land in donkey's own namespace — with the default
+// prefix, the space "system" resolves to donkey-system, and one crafted (or
+// innocently repo-named) space must never reach the control plane's objects.
+func (c *Config) SpaceNamespace(space string) (string, error) {
+	if !config.ValidName(space) {
+		return "", fmt.Errorf("%q is not a valid space name — lowercase letters, digits and dashes (max 40 chars)", space)
+	}
+	ns := c.Namespace(space)
+	if ns == manifests.SystemNamespace || ns == c.GatewayNamespace {
+		return "", fmt.Errorf("the space name %q is reserved for donkey itself — pick another (space: <name> in donkey.yaml)", space)
+	}
+	return ns, nil
+}
+
 // AppHost is the address of an app: <app>.<space>.<baseDomain>. The space in
 // the middle is what lets two teams both have a "web".
 func (c *Config) AppHost(space string, app *config.AppConfig) string {
@@ -105,9 +130,6 @@ func (c *Config) AppHost(space string, app *config.AppConfig) string {
 	}
 	return app.Name + "." + space + "." + c.BaseDomain
 }
-
-// SpaceWildcard is the certificate name that covers every app of a space.
-func (c *Config) SpaceWildcard(space string) string { return "*." + space + "." + c.BaseDomain }
 
 func (c *Config) AppURL(space string, app *config.AppConfig) string {
 	return c.Scheme() + "://" + c.AppHost(space, app)

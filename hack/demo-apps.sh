@@ -14,7 +14,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DONKEY="${ROOT}/bin/donkey"
-BASE="127.0.0.1.nip.io"
+BASE="apps.test"
 
 say() { printf '\n\033[1m== %s ==\033[0m\n' "$*"; }
 

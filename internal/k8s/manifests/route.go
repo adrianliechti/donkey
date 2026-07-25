@@ -8,11 +8,17 @@ import (
 )
 
 // httpRoute exposes the app on its hostname through the shared donkey
-// Gateway (Gateway API — no Ingress).
+// Gateway (Gateway API — no Ingress). It attaches to the https listener only:
+// the login gateway's cookies are Secure-only, so serving the app over plain
+// http was never right — the shared redirect route sends port-80 visitors to
+// https instead. Streaming responses (SSE, long downloads) must not be cut by
+// Envoy's default request timeout, so it is disabled like on the API's route.
 func httpRoute(in Input) *gatewayv1.HTTPRoute {
 	app := in.App
 	gwNamespace := gatewayv1.Namespace(in.GatewayNamespace)
+	section := gatewayv1.SectionName(HTTPSListenerName)
 	port := gatewayv1.PortNumber(80)
+	noTimeout := gatewayv1.Duration("0s")
 	return &gatewayv1.HTTPRoute{
 		TypeMeta: metav1.TypeMeta{APIVersion: "gateway.networking.k8s.io/v1", Kind: "HTTPRoute"},
 		ObjectMeta: metav1.ObjectMeta{
@@ -23,12 +29,14 @@ func httpRoute(in Input) *gatewayv1.HTTPRoute {
 		Spec: gatewayv1.HTTPRouteSpec{
 			CommonRouteSpec: gatewayv1.CommonRouteSpec{
 				ParentRefs: []gatewayv1.ParentReference{{
-					Name:      gatewayv1.ObjectName(in.GatewayName),
-					Namespace: &gwNamespace,
+					Name:        gatewayv1.ObjectName(in.GatewayName),
+					Namespace:   &gwNamespace,
+					SectionName: &section,
 				}},
 			},
 			Hostnames: []gatewayv1.Hostname{gatewayv1.Hostname(in.Domain)},
 			Rules: []gatewayv1.HTTPRouteRule{{
+				Timeouts: &gatewayv1.HTTPRouteTimeouts{Request: &noTimeout},
 				BackendRefs: []gatewayv1.HTTPBackendRef{{
 					BackendRef: gatewayv1.BackendRef{
 						BackendObjectReference: gatewayv1.BackendObjectReference{
@@ -47,6 +55,12 @@ func OIDCSecretName(app string) string { return app + "-oidc" }
 // oidcSecret carries the OIDC client secret into the app namespace — Envoy's
 // SecurityPolicy can only reference secrets next to it.
 func oidcSecret(in Input) *corev1.Secret {
+	// A dry run renders without credentials, so say so rather than showing an
+	// empty value somebody might copy into a real manifest.
+	secret := in.OIDC.ClientSecret
+	if secret == "" {
+		secret = "(withheld — a dry run never prints credentials)"
+	}
 	return &corev1.Secret{
 		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Secret"},
 		ObjectMeta: metav1.ObjectMeta{
@@ -54,7 +68,7 @@ func oidcSecret(in Input) *corev1.Secret {
 			Namespace: in.Namespace,
 			Labels:    Labels(in.Space, in.App.Name, "oidc"),
 		},
-		StringData: map[string]string{"client-secret": in.OIDC.ClientSecret},
+		StringData: map[string]string{"client-secret": secret},
 	}
 }
 

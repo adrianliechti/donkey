@@ -6,7 +6,7 @@ import (
 
 	"github.com/urfave/cli/v3"
 
-	"monobox.ch/donkey/internal/config"
+	"github.com/adrianliechti/donkey/internal/config"
 )
 
 func statusCommand() *cli.Command {
@@ -58,6 +58,9 @@ func statusCommand() *cli.Command {
 
 // requireApp returns the folder's app config or a friendly error.
 func requireApp(s *session) (*config.AppConfig, error) {
+	if s.AppErr != nil {
+		return nil, s.AppErr
+	}
 	if s.Resolved.App == nil {
 		return nil, fmt.Errorf("this folder has no donkey.yaml — move into your project folder, or run `donkey deploy` to set one up")
 	}

@@ -11,10 +11,10 @@ import (
 	"github.com/charmbracelet/huh"
 	"github.com/urfave/cli/v3"
 
-	"monobox.ch/donkey/internal/ai"
-	"monobox.ch/donkey/internal/config"
-	"monobox.ch/donkey/internal/detect"
-	"monobox.ch/donkey/internal/ui"
+	"github.com/adrianliechti/donkey/internal/ai"
+	"github.com/adrianliechti/donkey/internal/config"
+	"github.com/adrianliechti/donkey/internal/detect"
+	"github.com/adrianliechti/donkey/internal/ui"
 )
 
 func initCommand() *cli.Command {
@@ -28,6 +28,10 @@ func initCommand() *cli.Command {
 			s, err := newSession(cmd)
 			if err != nil {
 				return err
+			}
+			// Never quietly overwrite a donkey.yaml that merely has a typo.
+			if s.AppErr != nil {
+				return fmt.Errorf("%w\n\nFix the file (or delete it) and run `donkey init` again", s.AppErr)
 			}
 			if s.Resolved.App != nil {
 				s.UI.Success("This folder is already set up as %s in the space %s — run %s when you're ready.",
@@ -93,6 +97,18 @@ func initFlow(ctx context.Context, s *session, cmd *cli.Command) (*config.AppCon
 		for _, svc := range analysis.Services {
 			u.Info("Looks like it needs %s (%s) — add it later with %s",
 				svc.Type, svc.Reason, u.Bold("donkey addon add "+svc.Type))
+		}
+		// Better to hear this now than after the first deploy looks healthy
+		// and every call quietly goes nowhere.
+		for _, url := range analysis.LocalURLs {
+			if url.RunsIn == "browser" {
+				u.Warn("%s in %s runs in the visitor's browser — that address is their machine, not your backend.",
+					u.Bold(url.URL), url.File)
+				u.Printf("  %s", u.Faint("Call a relative path (/api) and proxy it to http://<other-app>, or set the real address in build.env."))
+				continue
+			}
+			u.Warn("%s in %s: in the cluster, localhost is this app's own container.", u.Bold(url.URL), url.File)
+			u.Printf("  %s", u.Faint("Another app in the space answers on http://<its-name> instead."))
 		}
 	}
 

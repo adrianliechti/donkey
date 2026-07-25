@@ -31,6 +31,9 @@ func envCommand() *cli.Command {
 							if !ok || k == "" {
 								return fmt.Errorf("%q doesn't look like KEY=VALUE", arg)
 							}
+							if k == "PORT" {
+								return fmt.Errorf("PORT is set by donkey from the `port` in donkey.yaml — change it there and deploy again")
+							}
 							env[k] = v
 						}
 						return nil

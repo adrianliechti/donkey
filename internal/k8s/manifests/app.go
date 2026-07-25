@@ -7,8 +7,9 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"path"
-	"sort"
+	"slices"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -17,7 +18,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
 
-	"monobox.ch/donkey/internal/config"
+	"github.com/adrianliechti/donkey/internal/config"
 )
 
 const (
@@ -27,6 +28,9 @@ const (
 	AnnotationManaged = "donkey.dev/managed"
 	// AnnotationImage records the deployed image on the Deployment.
 	AnnotationImage = "donkey.dev/image"
+	// AnnotationDecisions records deploy-time analysis decisions on the
+	// Deployment (JSON), so no-build deploys can keep them.
+	AnnotationDecisions = "donkey.dev/decisions"
 	// LabelApp / LabelComponent identify donkey-owned resources;
 	// LabelSpace groups the apps of one space (one namespace holds them all).
 	LabelApp       = "donkey.dev/app"
@@ -84,6 +88,10 @@ type Input struct {
 	// OIDC configures the login protection; an empty issuer (or a public
 	// app) means no SecurityPolicy is rendered.
 	OIDC OIDCConfig
+	// Decisions records what deploy-time analysis filled in (storage,
+	// healthcheck) as an annotation on the Deployment, so later no-build
+	// deploys can keep those decisions instead of silently dropping them.
+	Decisions string
 }
 
 type OIDCConfig struct {
@@ -138,16 +146,20 @@ func AppObjects(in Input) ([]runtime.Object, error) {
 }
 
 // Namespace is the home of one space: every app of the space lives in it and
-// they reach each other by plain service name.
+// they reach each other by plain service name. Pod Security Standards are
+// enforced at "baseline" — enough to keep app pods from going privileged,
+// while still running the many real-world images that want to be root.
 func Namespace(space, name string) *corev1.Namespace {
 	return &corev1.Namespace{
 		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Namespace"},
 		ObjectMeta: metav1.ObjectMeta{
 			Name: name,
 			Labels: map[string]string{
-				"app.kubernetes.io/name":       space,
-				"app.kubernetes.io/managed-by": ManagedByValue,
-				LabelSpace:                     space,
+				"app.kubernetes.io/name":             space,
+				"app.kubernetes.io/managed-by":       ManagedByValue,
+				LabelSpace:                           space,
+				"pod-security.kubernetes.io/enforce": "baseline",
+				"pod-security.kubernetes.io/warn":    "restricted",
 			},
 			Annotations: map[string]string{AnnotationManaged: "true"},
 		},
@@ -256,7 +268,7 @@ func deployment(in Input) (*appsv1.Deployment, error) {
 	if _, ok := app.Env["PORT"]; !ok {
 		env = append(env, corev1.EnvVar{Name: "PORT", Value: fmt.Sprintf("%d", app.Port)})
 	}
-	for _, k := range sortedKeys(app.Env) {
+	for _, k := range slices.Sorted(maps.Keys(app.Env)) {
 		env = append(env, corev1.EnvVar{Name: k, Value: app.Env[k]})
 	}
 
@@ -283,26 +295,49 @@ func deployment(in Input) (*appsv1.Deployment, error) {
 		Env:            env,
 		EnvFrom:        envFrom,
 		ReadinessProbe: probe,
+		// The startup probe gives slow starters (JVM warmup, migrations
+		// before listen) four minutes of grace; only then does the liveness
+		// probe take over — without this, liveness kills an app that needs
+		// more than ~55s and the deploy reads as "keeps crashing".
+		StartupProbe: &corev1.Probe{
+			ProbeHandler:     probe.ProbeHandler,
+			PeriodSeconds:    5,
+			FailureThreshold: 48,
+		},
 		LivenessProbe: &corev1.Probe{
-			ProbeHandler:        probe.ProbeHandler,
-			InitialDelaySeconds: 10,
-			PeriodSeconds:       15,
+			ProbeHandler:  probe.ProbeHandler,
+			PeriodSeconds: 15,
 		},
 		Resources: res,
 	}
 
-	spec := corev1.PodSpec{Containers: []corev1.Container{container}}
+	// App code is untrusted by definition: it gets no Kubernetes credential,
+	// cannot gain privileges, and keeps no capabilities it didn't need.
+	container.SecurityContext = &corev1.SecurityContext{
+		AllowPrivilegeEscalation: new(false),
+		Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+		SeccompProfile:           &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
+	}
+	automount := false
+	spec := corev1.PodSpec{
+		Containers:                   []corev1.Container{container},
+		AutomountServiceAccountToken: &automount,
+	}
 	if in.RegistryUsername != "" && in.RegistryPassword != "" {
 		spec.ImagePullSecrets = []corev1.LocalObjectReference{{Name: PullSecretName(app.Name)}}
 	}
 
+	annotations := map[string]string{AnnotationImage: in.ImageRef}
+	if in.Decisions != "" {
+		annotations[AnnotationDecisions] = in.Decisions
+	}
 	dep := &appsv1.Deployment{
 		TypeMeta: metav1.TypeMeta{APIVersion: "apps/v1", Kind: "Deployment"},
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        app.Name,
 			Namespace:   in.Namespace,
 			Labels:      Labels(in.Space, app.Name, ComponentWeb),
-			Annotations: map[string]string{AnnotationImage: in.ImageRef},
+			Annotations: annotations,
 		},
 		Spec: appsv1.DeploymentSpec{
 			Replicas: app.Replicas,
@@ -396,13 +431,4 @@ func quantities(m map[string]string) (corev1.ResourceList, error) {
 		out[corev1.ResourceName(k)] = q
 	}
 	return out, nil
-}
-
-func sortedKeys(m map[string]string) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
 }

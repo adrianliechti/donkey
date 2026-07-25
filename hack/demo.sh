@@ -48,7 +48,7 @@ say "building donkey + images"
 
 say "demo identity provider (fake, auto-login)"
 kubectl --context "${CTX}" apply -f "${ROOT}/hack/demo/fake-idp.yaml"
-kubectl --context "${CTX}" -n donkey-demo rollout restart deployment fake-idp >/dev/null 2>&1 || true
+kubectl --context "${CTX}" -n donkey-identity rollout restart deployment fake-idp >/dev/null 2>&1 || true
 
 say "the cluster's certificate authority (registry + app certificates)"
 "${ROOT}/hack/demo-ca.sh" "${CTX}" "${CA_FILE}"
@@ -59,9 +59,10 @@ say "installing the control plane (real install command, demo settings)"
   --registry-url "registry.platform/donkey" \
   --registry-ca-secret "donkey-registry-ca" \
   --base-domain "${BASE}" \
+  --gateway-service-type "ClusterIP" \
   --tls-issuer "platform" \
   --default-platform "${PLATFORM}" \
-  --oidc-issuer "http://fake-idp.donkey-demo" \
+  --oidc-issuer "http://auth.donkey-identity" \
   --oidc-client-id "donkey-demo" \
   --oidc-client-secret "donkey-demo-secret" \
   --openai-base-url "${AI_BASE}" \
@@ -85,22 +86,32 @@ say "connecting this machine"
 "${DONKEY}" login --server "https://donkey.${BASE}" --token "${TOKEN}" --ca-file "${CA_FILE}"
 
 # Apps live in a space: <app>.<space>.<domain>, one namespace per space.
-say "deploying the sample app (space: samples)"
-cd "${ROOT}/testdata/fastapi-sample"
+# The demo space holds two apps that talk to each other by plain service name.
+say "deploying the backend — FastAPI + MCP over DuckDB (space: demo)"
+cd "${ROOT}/testdata/demo/backend"
+"${DONKEY}" --yes deploy
+
+say "deploying the dashboard — React + Tailwind (space: demo)"
+cd "${ROOT}/testdata/demo/dashboard"
 "${DONKEY}" --yes deploy
 
 say "demo ready"
 cat <<EOF
 
-  Sample app:   https://fastapi-sample.samples.${BASE}
-                Sign in on the demo identity page — you are in as
-                demo@example.com. Certificates come from the cluster's own CA
-                (${CA_FILE}), so your browser asks you to accept it once.
-  Donkey API:   https://donkey.${BASE}
-  Identity:     http://fake-idp.donkey-demo   (fake, approves everyone)
+  Dashboard:    https://dashboard.demo.${BASE}
+                Sales figures read live from DuckDB. Sign in on the demo
+                identity page — you are in as demo@example.com. Certificates
+                come from the cluster's own CA (${CA_FILE}), so your browser
+                asks you to accept it once.
+  MCP endpoint: https://backend.demo.${BASE}/mcp
+                The same data as tools an assistant can call (sales_summary,
+                revenue_by_region, top_products, run_sql). No login: MCP
+                clients are machines, so the backend is `public: true`.
+  Admin console: https://donkey.${BASE}   (sign in with the API token)
+  Identity:     http://auth.donkey-identity   (fake, approves everyone)
 
-  Try next:     cd testdata/fastapi-sample && donkey addon add postgres
-                donkey env set GREETING=hello · donkey logs -f · donkey status
+  Try next:     cd testdata/demo/backend && donkey files ls   (the DuckDB file)
+                donkey logs -f · donkey status · donkey env set GREETING=hello
                 donkey apps  (everything deployed, grouped by space)
 
   Tear down everything:  devkube --cluster donkey delete

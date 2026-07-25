@@ -1,0 +1,12 @@
+name: backend
+space: demo
+port: 8000
+# MCP clients are machines: they carry their own credentials and cannot do an
+# interactive OIDC login, so this app opts out of the gateway's.
+public: true
+healthcheck:
+  path: /healthz
+storage:
+  size: 1Gi
+  paths:
+    - /app/data

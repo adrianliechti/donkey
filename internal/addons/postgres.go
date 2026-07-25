@@ -12,7 +12,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
 
-	"monobox.ch/donkey/internal/k8s/manifests"
+	"github.com/adrianliechti/donkey/internal/k8s/manifests"
 )
 
 const (
@@ -24,6 +24,7 @@ const (
 type postgres struct{}
 
 func (postgres) Type() string           { return "postgres" }
+func (postgres) CredentialKey() string  { return "PGPASSWORD" }
 func (postgres) DefaultVersion() string { return "16" }
 func (postgres) DefaultStorage() string { return "1Gi" }
 
@@ -84,8 +85,15 @@ func (p postgres) Objects(in Input) ([]runtime.Object, error) {
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: labels},
 				Spec: corev1.PodSpec{
+					// A database needs no Kubernetes credential.
+					AutomountServiceAccountToken: new(false),
 					Containers: []corev1.Container{{
-						Name:  "postgres",
+						Name: "postgres",
+						SecurityContext: &corev1.SecurityContext{
+							AllowPrivilegeEscalation: new(false),
+							Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+							SeccompProfile:           &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
+						},
 						Image: "postgres:" + in.Version,
 						Ports: []corev1.ContainerPort{{ContainerPort: pgPort, Name: "postgres"}},
 						Env: []corev1.EnvVar{
@@ -148,6 +156,12 @@ func ExternalPostgresBinding(raw string) (map[string]string, error) {
 	u, err := url.Parse(raw)
 	if err != nil || (u.Scheme != "postgres" && u.Scheme != "postgresql") {
 		return nil, fmt.Errorf("that doesn't look like a postgres URL — expected postgres://user:password@host:5432/dbname")
+	}
+	if u.Hostname() == "" {
+		return nil, fmt.Errorf("the postgres URL names no host — expected postgres://user:password@host:5432/dbname")
+	}
+	if strings.TrimPrefix(u.Path, "/") == "" {
+		return nil, fmt.Errorf("the postgres URL names no database — expected postgres://user:password@host:5432/dbname")
 	}
 	password, _ := u.User.Password()
 	port := u.Port()

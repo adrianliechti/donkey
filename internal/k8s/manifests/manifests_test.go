@@ -10,7 +10,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 
-	"monobox.ch/donkey/internal/config"
+	"github.com/adrianliechti/donkey/internal/config"
 )
 
 var update = flag.Bool("update", false, "rewrite golden files")

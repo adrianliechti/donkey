@@ -4,9 +4,10 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"time"
 
 	"github.com/urfave/cli/v3"
+
+	"github.com/adrianliechti/donkey/internal/config"
 )
 
 func logsCommand() *cli.Command {
@@ -34,19 +35,22 @@ func logsCommand() *cli.Command {
 			}
 			component := "web"
 			if name := cmd.Args().First(); name != "" {
-				found := false
-				for _, a := range app.Addons {
+				var entry *config.AddonConfig
+				for i, a := range app.Addons {
 					if a.Name == name {
-						found = true
+						entry = &app.Addons[i]
 						break
 					}
 				}
-				if !found {
+				if entry == nil {
 					return fmt.Errorf("%s isn't an addon of %s — `donkey addon list` shows what's attached", name, app.Name)
+				}
+				if entry.External {
+					return fmt.Errorf("%s runs elsewhere (attached, not managed by donkey) — its logs live wherever it is hosted", name)
 				}
 				component = "addon-" + name
 			}
-			return api.Logs(ctx, s.Space, app.Name, component, cmd.Bool("follow"), int(cmd.Int("tail")), time.Duration(cmd.Duration("since")), os.Stdout)
+			return api.Logs(ctx, s.Space, app.Name, component, cmd.Bool("follow"), int(cmd.Int("tail")), cmd.Duration("since"), os.Stdout)
 		},
 	}
 }

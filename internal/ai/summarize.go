@@ -40,6 +40,8 @@ var manifestFiles = map[string]bool{
 	"Procfile": true, "Makefile": true, "README.md": true, "readme.md": true,
 	"Dockerfile": true, "docker-compose.yml": true, "docker-compose.yaml": true,
 	"compose.yml": true, "compose.yaml": true, "donkey.yaml": true,
+	// Spring's port and health setup live here, not in the build manifests.
+	"application.properties": true, "application.yml": true, "application.yaml": true,
 }
 
 // entrypointStems/sourceExts include likely server entry points — that's
@@ -89,11 +91,23 @@ func deniedFile(name string) bool {
 	return false
 }
 
-// Summarize walks dir and produces the capped summary.
+// Summarize walks dir and produces the capped summary. The walk always
+// finishes: the tree listing is capped, but manifest and entry-point files
+// are collected regardless of where the walk finds them — a repo whose
+// alphabetically-early folders hold hundreds of assets must not push its
+// package.json out of the summary. Contents are then included by rank
+// (manifests first, shallow before deep) until the byte budget is spent.
 func Summarize(dir string) (*RepoSummary, error) {
+	type candidate struct {
+		rel   string
+		path  string
+		depth int
+		// rank orders candidates: 0 = manifest, 1 = entry point / config.
+		rank int
+	}
 	var tree []string
-	files := map[string]string{}
-	total := 0
+	var candidates []candidate
+	skipped := 0
 
 	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
@@ -112,23 +126,23 @@ func Summarize(dir string) (*RepoSummary, error) {
 			}
 			return nil
 		}
-		if len(tree) >= maxTreeEntries {
-			return filepath.SkipAll
+		if len(tree) < maxTreeEntries {
+			tree = append(tree, filepath.ToSlash(rel))
+		} else {
+			skipped++
 		}
-		tree = append(tree, filepath.ToSlash(rel))
-
 		base := d.Name()
-		if interestingFile(base) && !deniedFile(base) && total < maxTotalBytes {
-			if b, err := os.ReadFile(path); err == nil {
-				content := string(b)
-				if len(content) > maxFileBytes {
-					content = content[:maxFileBytes] + "\n…(truncated)"
-				}
-				if total+len(content) <= maxTotalBytes {
-					files[filepath.ToSlash(rel)] = content
-					total += len(content)
-				}
+		if interestingFile(base) && !deniedFile(base) {
+			rank := 1
+			if manifestFiles[base] {
+				rank = 0
 			}
+			candidates = append(candidates, candidate{
+				rel:   filepath.ToSlash(rel),
+				path:  path,
+				depth: strings.Count(rel, string(filepath.Separator)),
+				rank:  rank,
+			})
 		}
 		return nil
 	})
@@ -136,6 +150,39 @@ func Summarize(dir string) (*RepoSummary, error) {
 		return nil, err
 	}
 	sort.Strings(tree)
+	if skipped > 0 {
+		tree = append(tree, fmt.Sprintf("… and %d more files", skipped))
+	}
+
+	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].rank != candidates[j].rank {
+			return candidates[i].rank < candidates[j].rank
+		}
+		if candidates[i].depth != candidates[j].depth {
+			return candidates[i].depth < candidates[j].depth
+		}
+		return candidates[i].rel < candidates[j].rel
+	})
+
+	files := map[string]string{}
+	total := 0
+	for _, c := range candidates {
+		if total >= maxTotalBytes {
+			break
+		}
+		b, err := os.ReadFile(c.path)
+		if err != nil {
+			continue
+		}
+		content := string(b)
+		if len(content) > maxFileBytes {
+			content = content[:maxFileBytes] + "\n…(truncated)"
+		}
+		if total+len(content) <= maxTotalBytes {
+			files[c.rel] = content
+			total += len(content)
+		}
+	}
 	return &RepoSummary{Tree: strings.Join(tree, "\n"), Files: files}, nil
 }
 

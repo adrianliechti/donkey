@@ -9,12 +9,14 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"sort"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 
-	"monobox.ch/donkey/internal/k8s/manifests"
+	"github.com/adrianliechti/donkey/internal/k8s/manifests"
 )
 
 // Addon provisions an in-cluster instance of a service type.
@@ -25,6 +27,10 @@ type Addon interface {
 	// Objects returns the Kubernetes objects for a provisioned instance
 	// (excluding the binding secret, which donkey manages).
 	Objects(in Input) ([]runtime.Object, error)
+	// CredentialKey names the binding entry that holds the credential the
+	// provisioned instance was initialized with — re-adds reuse it, because
+	// rotating it would lock the service out of its own kept data.
+	CredentialKey() string
 	// DefaultVersion and DefaultStorage document the defaults per type.
 	DefaultVersion() string
 	DefaultStorage() string
@@ -49,14 +55,12 @@ var Registry = map[string]Addon{
 func Get(typ string) (Addon, error) {
 	a, ok := Registry[typ]
 	if !ok {
-		known := ""
+		known := make([]string, 0, len(Registry))
 		for t := range Registry {
-			if known != "" {
-				known += ", "
-			}
-			known += t
+			known = append(known, t)
 		}
-		return nil, fmt.Errorf("donkey doesn't know the addon type %q (available: %s)", typ, known)
+		sort.Strings(known)
+		return nil, fmt.Errorf("donkey doesn't know the addon type %q (available: %s)", typ, strings.Join(known, ", "))
 	}
 	return a, nil
 }
@@ -66,6 +70,17 @@ func Component(addon string) string       { return "addon-" + addon }
 
 // InstanceName is the object name for a provisioned addon's workload.
 func InstanceName(app, addon string) string { return app + "-" + addon }
+
+// ValidateNames refuses app/addon combinations whose derived object names
+// would exceed Kubernetes limits — the Service name (DNS-1035, 63 chars)
+// with the "-data" suffix of the PVC is the tightest one. Without this, an
+// addon add fails halfway through with a raw apiserver error.
+func ValidateNames(app, addon string) error {
+	if n := len(InstanceName(app, addon)) + len("-data"); n > 63 {
+		return fmt.Errorf("the app and addon names together are too long (%d chars) — their combination must stay under 59", n)
+	}
+	return nil
+}
 
 // BindingSecret wraps the env contract in the Secret the app's envFrom picks
 // up. Identical shape for provisioned and external addons.

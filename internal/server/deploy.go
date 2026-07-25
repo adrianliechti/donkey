@@ -5,17 +5,20 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
-	"monobox.ch/donkey/internal/ai"
-	"monobox.ch/donkey/internal/build"
-	"monobox.ch/donkey/internal/config"
-	"monobox.ch/donkey/internal/detect"
-	"monobox.ch/donkey/internal/k8s"
-	"monobox.ch/donkey/internal/k8s/manifests"
+	"github.com/adrianliechti/donkey/internal/addons"
+	"github.com/adrianliechti/donkey/internal/ai"
+	"github.com/adrianliechti/donkey/internal/build"
+	"github.com/adrianliechti/donkey/internal/config"
+	"github.com/adrianliechti/donkey/internal/detect"
+	"github.com/adrianliechti/donkey/internal/k8s"
+	"github.com/adrianliechti/donkey/internal/k8s/manifests"
 )
 
 // DeployResult is the final JSON line of a deploy stream.
@@ -45,42 +48,55 @@ func newLineStreamer(w http.ResponseWriter) *lineStreamer {
 	return &lineStreamer{w: w, f: f}
 }
 
-func (l *lineStreamer) Line(format string, a ...any) {
-	b, _ := json.Marshal(map[string]string{"line": fmt.Sprintf(format, a...)})
+func (l *lineStreamer) send(v map[string]any) {
+	b, _ := json.Marshal(v)
 	l.w.Write(append(b, '\n'))
 	if l.f != nil {
 		l.f.Flush()
 	}
+}
+
+func (l *lineStreamer) Line(format string, a ...any) {
+	l.send(map[string]any{"line": fmt.Sprintf(format, a...)})
 }
 
 // Write lets the streamer act as the build progress sink.
 func (l *lineStreamer) Write(p []byte) (int, error) {
-	b, _ := json.Marshal(map[string]string{"progress": string(p)})
-	l.w.Write(append(b, '\n'))
-	if l.f != nil {
-		l.f.Flush()
-	}
+	l.send(map[string]any{"progress": string(p)})
 	return len(p), nil
 }
 
 func (l *lineStreamer) Result(res DeployResult) {
-	b, _ := json.Marshal(map[string]any{"result": res})
-	l.w.Write(append(b, '\n'))
-	if l.f != nil {
-		l.f.Flush()
-	}
+	l.send(map[string]any{"result": res})
 }
 
 // handleDeploy: POST /v1/deploys?platform=&dryRun=&noWait=&buildOnly=&tag=
 // Body: tar.gz of the app folder (donkey.yaml included).
 func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
+	// A draining pod is on its way out: taking on a new build it cannot
+	// finish would strand the caller for the whole drain window.
+	if s.draining.Load() {
+		writeErr(w, http.StatusServiceUnavailable,
+			fmt.Errorf("the donkey server is restarting — try again in a moment"))
+		return
+	}
+	s.deploying.Add(1)
+	defer s.deploying.Done()
+
 	dir, err := os.MkdirTemp("", "donkey-ctx-*")
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
 	defer os.RemoveAll(dir)
-	if err := untarContext(r.Body, dir); err != nil {
+	if err := extractContext(r.Body, dir); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	// The app is not always at the top of the upload (a monorepo, a folder
+	// dragged from one level up) — find the folder that holds it.
+	dir, took, err := contextRoot(dir, r.URL.Query().Get("path"))
+	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
@@ -90,14 +106,24 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if app == nil {
-		writeErr(w, http.StatusBadRequest, fmt.Errorf("the uploaded folder has no donkey.yaml — run `donkey init` first"))
-		return
+		// Browser uploads have no `donkey init` to lean on — name and port
+		// from the deploy form stand in for a donkey.yaml. One in the upload
+		// always wins (it is the app's own config, not the form's).
+		app, err = appFromParams(r.URL.Query().Get("name"), r.URL.Query().Get("port"))
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
 	}
 
 	out := newLineStreamer(w)
+	if took != "" {
+		out.Line("· Building %s — that's the folder with the donkey.yaml.", took)
+	}
 	// The deploy itself must survive a dropped client connection: applying a
 	// SecurityPolicy updates Envoy's listener, which may drain the very
 	// stream this response rides on. The CLI reconnects via status polling.
+	started := time.Now()
 	res := s.deploy(context.WithoutCancel(r.Context()), out, dir, app, deployOpts{
 		Space:     r.URL.Query().Get("space"),
 		Platform:  r.URL.Query().Get("platform"),
@@ -108,12 +134,41 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 		NoBuild:   r.URL.Query().Get("noBuild") == "true",
 		SHA:       r.URL.Query().Get("sha"),
 	})
+	// The stream is the caller's record; this line is the server's. Without
+	// it nothing on the cluster remembers that a deploy ever happened.
+	outcome := "ok"
+	if !res.OK {
+		outcome = "failed: " + res.Error
+	}
+	log.Printf("deploy app=%s space=%s image=%s sha=%s duration=%s %s",
+		res.App, res.Space, res.ImageRef, r.URL.Query().Get("sha"),
+		time.Since(started).Round(time.Second), outcome)
 	out.Result(res)
 }
 
+// appFromParams synthesizes the minimal app config a web deploy needs when
+// the upload carries no donkey.yaml.
+func appFromParams(name, portStr string) (*config.AppConfig, error) {
+	if name == "" || portStr == "" {
+		return nil, fmt.Errorf("the upload has no donkey.yaml — run `donkey init` in the project (CLI), or give the deploy a name and port (console)")
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		return nil, fmt.Errorf("%q is not a port number", portStr)
+	}
+	app := &config.AppConfig{Name: name, Port: port}
+	app.ApplyDefaults()
+	if err := app.Validate(); err != nil {
+		return nil, err
+	}
+	return app, nil
+}
+
 // analysisDeadline bounds how long a deploy waits for the assistant after the
-// build has finished.
-const analysisDeadline = 90 * time.Second
+// build has finished. It must outlast the assistant's own budget (a 2-minute
+// request timeout with one retry) — a shorter deadline would fail deploys
+// whose model call is still legitimately in flight.
+const analysisDeadline = 5 * time.Minute
 
 type deployOpts struct {
 	Space     string
@@ -128,7 +183,9 @@ type deployOpts struct {
 
 func (s *Server) deploy(ctx context.Context, out *lineStreamer, dir string, app *config.AppConfig, opts deployOpts) DeployResult {
 	// The space decides the namespace and the address, so it is settled
-	// before anything else happens.
+	// before anything else happens. Validation failures return plainly —
+	// running the AI diagnosis over a self-explanatory message would only
+	// delay the answer.
 	space := opts.Space
 	if space == "" {
 		space = app.Space
@@ -139,25 +196,47 @@ func (s *Server) deploy(ctx context.Context, out *lineStreamer, dir string, app 
 	app.Space = space
 
 	fail := func(err error) DeployResult {
-		res := DeployResult{App: app.Name, Space: space, Error: err.Error()}
-		s.diagnose(ctx, &res, err)
-		return res
+		return DeployResult{App: app.Name, Space: space, Error: err.Error()}
 	}
 
-	if err := s.k8s.CheckNamespaceFree(ctx, s.cfg.Namespace(space), space); err != nil {
+	ns, err := s.cfg.SpaceNamespace(space)
+	if err != nil {
+		return fail(err)
+	}
+	if err := s.k8s.CheckNamespaceFree(ctx, ns); err != nil {
 		return fail(err)
 	}
 
+	// One deploy per app at a time: concurrent deploys would interleave their
+	// applies and race their rollout waits, leaving the live image undefined.
+	unlock := s.lockApp(ns, app.Name)
+	defer unlock()
+
 	imageRef := opts.Tag
 	if imageRef == "" {
-		imageRef = build.ImageTag(s.cfg.Registry.URL, app.Name, opts.SHA, time.Now())
+		imageRef = build.ImageTag(s.cfg.Registry.URL, app.Name, opts.SHA, time.Now(), s.cfg.Registry.Immutable)
+	}
+	// A caller-supplied image bypasses the build pipeline entirely, so it has
+	// to come from the registry donkey builds into — otherwise any image on
+	// the internet could be deployed under an app's name (and would inherit
+	// that app's env and addon secrets).
+	if opts.Tag != "" && !build.SameRegistry(s.cfg.Registry.URL, opts.Tag) {
+		return fail(fmt.Errorf("--tag must point at %s (donkey only deploys images it built)", s.cfg.Registry.Host()))
 	}
 
 	if opts.NoBuild {
 		if opts.Tag == "" {
 			return fail(fmt.Errorf("a no-build deploy needs the image tag to deploy"))
 		}
-		return s.applyAndWait(ctx, out, app, opts.Tag, opts.NoWait)
+		// No build means no analysis — keep what the last deploy decided
+		// (storage, health route) instead of silently rendering without it.
+		for _, line := range s.adoptStoredDecisions(ctx, ns, app) {
+			out.Line("· %s", line)
+		}
+		if opts.DryRun {
+			return s.renderDryRun(app, opts.Tag)
+		}
+		return s.applyAndWait(ctx, out, app, ns, opts.Tag, opts.NoWait)
 	}
 
 	out.Line("Looking at your app…")
@@ -216,6 +295,12 @@ func (s *Server) deploy(ctx context.Context, out *lineStreamer, dir string, app 
 		for _, line := range mergeAnalysis(app, res.analysis) {
 			out.Line("· %s", line)
 		}
+		// The merge changed the config after its load-time validation — a
+		// proposal that produces an invalid combination must not reach the
+		// cluster.
+		if err := app.Validate(); err != nil {
+			return fmt.Errorf("the assistant's findings don't fit this app's donkey.yaml: %w", err)
+		}
 		return nil
 	}
 
@@ -223,19 +308,7 @@ func (s *Server) deploy(ctx context.Context, out *lineStreamer, dir string, app 
 		if err := merge(); err != nil {
 			return fail(err)
 		}
-		in, err := s.manifestInput(app, imageRef, false)
-		if err != nil {
-			return fail(err)
-		}
-		objs, err := manifests.AppObjects(in)
-		if err != nil {
-			return fail(err)
-		}
-		rendered, err := manifests.Render(objs)
-		if err != nil {
-			return fail(err)
-		}
-		return DeployResult{OK: true, App: app.Name, Space: space, ImageRef: imageRef, Manifests: rendered}
+		return s.renderDryRun(app, imageRef)
 	}
 
 	// Platform precedence: --platform flag > donkey.yaml > the server's
@@ -271,7 +344,7 @@ func (s *Server) deploy(ctx context.Context, out *lineStreamer, dir string, app 
 	if err != nil {
 		res := DeployResult{App: app.Name, Space: space, Error: err.Error()}
 		if logs, rerr := os.ReadFile(logFile.Name()); rerr == nil {
-			s.diagnoseWith(ctx, &res, "build", tailBytes(logs, 15*1024), nil)
+			s.diagnoseWith(ctx, &res, ns, app.Name, "build", tailBytes(logs, 15*1024), nil)
 		}
 		return res
 	}
@@ -282,24 +355,108 @@ func (s *Server) deploy(ctx context.Context, out *lineStreamer, dir string, app 
 	}
 
 	if err := merge(); err != nil {
-		return fail(err)
+		// The image is already pushed — hand its reference back so a
+		// `--no-build --tag` retry doesn't have to rebuild.
+		res := fail(err)
+		res.ImageRef = result.ImageRef
+		return res
 	}
-	return s.applyAndWait(ctx, out, app, result.ImageRef, opts.NoWait)
+	return s.applyAndWait(ctx, out, app, ns, result.ImageRef, opts.NoWait)
+}
+
+// renderDryRun renders the app's objects without touching the cluster.
+func (s *Server) renderDryRun(app *config.AppConfig, imageRef string) DeployResult {
+	res := DeployResult{App: app.Name, Space: app.Space, ImageRef: imageRef}
+	in, err := s.manifestInput(app, imageRef, false)
+	if err != nil {
+		res.Error = err.Error()
+		return res
+	}
+	objs, err := manifests.AppObjects(in)
+	if err != nil {
+		res.Error = err.Error()
+		return res
+	}
+	rendered, err := manifests.Render(objs)
+	if err != nil {
+		res.Error = err.Error()
+		return res
+	}
+	res.OK = true
+	res.Manifests = rendered
+	return res
+}
+
+// deployDecisions is what deploy-time analysis (or donkey.yaml) settled for
+// an app — persisted as a Deployment annotation so a no-build deploy keeps
+// the same shape instead of quietly unmounting the disk the last real deploy
+// set up.
+type deployDecisions struct {
+	Storage         *config.StorageConfig `json:"storage,omitempty"`
+	HealthcheckPath string                `json:"healthcheckPath,omitempty"`
+}
+
+// adoptStoredDecisions fills what this donkey.yaml leaves open from the
+// decisions recorded on the running Deployment, and says what it kept.
+// Adoption never makes the config invalid — an adopted value that no longer
+// fits (say, replicas went up since the disk was found) is dropped again,
+// and only the adopted values, never the user's own.
+func (s *Server) adoptStoredDecisions(ctx context.Context, ns string, app *config.AppConfig) []string {
+	raw, err := s.k8s.DeploymentAnnotation(ctx, ns, app.Name, manifests.AnnotationDecisions)
+	if err != nil || raw == "" {
+		return nil
+	}
+	var dec deployDecisions
+	if json.Unmarshal([]byte(raw), &dec) != nil {
+		return nil
+	}
+	var lines []string
+	adoptedStorage, adoptedHealth := false, false
+	if app.Storage == nil && dec.Storage != nil && len(dec.Storage.Paths) > 0 {
+		app.Storage = dec.Storage
+		adoptedStorage = true
+		lines = append(lines, fmt.Sprintf("Keeping the disk from the last deploy (%s)", strings.Join(dec.Storage.Paths, ", ")))
+	}
+	if app.Healthcheck.Path == "" && dec.HealthcheckPath != "" {
+		app.Healthcheck.Path = dec.HealthcheckPath
+		adoptedHealth = true
+		lines = append(lines, fmt.Sprintf("Keeping the health check from the last deploy (%s)", dec.HealthcheckPath))
+	}
+	if app.Validate() != nil {
+		// Reverting the adopted fields restores exactly the load-time
+		// config, which was already validated.
+		if adoptedStorage {
+			app.Storage = nil
+		}
+		if adoptedHealth {
+			app.Healthcheck.Path = ""
+		}
+		return nil
+	}
+	return lines
 }
 
 // applyAndWait applies the app's manifests with the given image and waits
-// for the rollout (unless noWait).
-func (s *Server) applyAndWait(ctx context.Context, out *lineStreamer, app *config.AppConfig, imageRef string, noWait bool) DeployResult {
+// for the rollout (unless noWait). The space is settled and validated by the
+// caller; ns is its namespace.
+func (s *Server) applyAndWait(ctx context.Context, out *lineStreamer, app *config.AppConfig, ns, imageRef string, noWait bool) DeployResult {
 	space := app.Space
-	if space == "" {
-		space = config.DefaultSpace
-	}
-	ns := s.cfg.Namespace(space)
 	failed := func(err error) DeployResult {
-		return DeployResult{App: app.Name, Space: space, Error: err.Error()}
+		return DeployResult{App: app.Name, Space: space, ImageRef: imageRef, Error: err.Error()}
 	}
 
 	out.Line("Setting up on the cluster…")
+	// A file-browser helper holds the app's disk, and an RWO volume attaches
+	// to one node at a time — leaving it running would strand the new pod on
+	// another node with a multi-attach error until the rollout times out.
+	if app.HasStorage() {
+		if err := s.k8s.RemoveFilesHelper(ctx, ns, app.Name); err != nil {
+			return failed(err)
+		}
+	}
+	if !app.HasStorage() && s.k8s.HasDataClaim(ctx, ns, app.Name) {
+		out.Line("· A disk from an earlier setup still exists (with its data). This deploy doesn't mount it — add its paths back under `storage:` in donkey.yaml to use it, or `donkey destroy` removes it.")
+	}
 	if app.HasStorage() {
 		out.Line("· One disk (%s) for %s", app.Storage.Size, strings.Join(app.Storage.Paths, ", "))
 		// An app that just gained a disk has to leave rolling updates behind.
@@ -335,6 +492,13 @@ func (s *Server) applyAndWait(ctx context.Context, out *lineStreamer, app *confi
 		if err := s.k8s.DeleteObject(ctx, "Secret", ns, manifests.OIDCSecretName(app.Name)); err != nil {
 			return failed(err)
 		}
+	} else if in.Domain != "" {
+		// Applying the policy only records intent — donkey promised this app
+		// would be private, so it verifies the promise holds.
+		if err := s.waitForLoginPolicy(ctx, ns, app.Name); err != nil {
+			return failed(err)
+		}
+		out.Line("· Login protection is in force.")
 	}
 	if noWait {
 		return DeployResult{OK: true, App: app.Name, Space: space, ImageRef: imageRef, URL: s.cfg.AppURL(space, app)}
@@ -351,7 +515,7 @@ func (s *Server) applyAndWait(ctx context.Context, out *lineStreamer, app *confi
 			if re.Evidence.PodLogs != "" {
 				out.Line("Last lines from the app:\n%s", re.Evidence.PodLogs)
 			}
-			s.diagnoseWith(ctx, &res, "rollout", re.Evidence.PodLogs, re.Evidence.Events)
+			s.diagnoseWith(ctx, &res, ns, app.Name, "rollout", re.Evidence.PodLogs, re.Evidence.Events)
 		}
 		return res
 	}
@@ -360,14 +524,12 @@ func (s *Server) applyAndWait(ctx context.Context, out *lineStreamer, app *confi
 
 func (s *Server) manifestInput(app *config.AppConfig, imageRef string, includeCreds bool) (manifests.Input, error) {
 	space := app.Space
-	if space == "" {
-		space = config.DefaultSpace
-	}
 	in := manifests.Input{
 		App:          app,
 		Space:        space,
 		Namespace:    s.cfg.Namespace(space),
 		ImageRef:     imageRef,
+		Decisions:    decisionsJSON(app),
 		RegistryHost: s.cfg.Registry.Host(),
 		Domain:       s.cfg.AppHost(space, app),
 		TLS: manifests.TLSConfig{
@@ -377,12 +539,15 @@ func (s *Server) manifestInput(app *config.AppConfig, imageRef string, includeCr
 		GatewayName:      s.cfg.GatewayName,
 		GatewayNamespace: s.cfg.GatewayNamespace,
 		OIDC: manifests.OIDCConfig{
-			Issuer:       s.cfg.OIDCIssuer,
-			ClientID:     s.cfg.OIDCClientID,
-			ClientSecret: s.cfg.OIDCClientSecret,
+			Issuer:   s.cfg.OIDCIssuer,
+			ClientID: s.cfg.OIDCClientID,
 		},
 	}
+	// Credentials only when the objects are going to the cluster. A dry run
+	// prints its YAML to the user's terminal (and into CI logs), so the OIDC
+	// client secret and the registry password must not be in it.
 	if includeCreds {
+		in.OIDC.ClientSecret = s.cfg.OIDCClientSecret
 		password, err := s.cfg.Registry.Password()
 		if err != nil {
 			return in, err
@@ -391,26 +556,72 @@ func (s *Server) manifestInput(app *config.AppConfig, imageRef string, includeCr
 		in.RegistryPassword = password
 	}
 	for _, a := range app.Addons {
-		in.AddonSecretNames = append(in.AddonSecretNames, app.Name+"-addon-"+a.Name)
+		in.AddonSecretNames = append(in.AddonSecretNames, addons.SecretName(app.Name, a.Name))
 	}
 	return in, nil
 }
 
-// diagnose / diagnoseWith run the AI failure analysis server-side and attach
-// it to the result. Proposals are never applied — the CLI shows them.
-func (s *Server) diagnose(ctx context.Context, res *DeployResult, err error) {
-	s.diagnoseWith(ctx, res, "deploy", err.Error(), nil)
+// decisionsJSON records what this deploy settled on (storage, health route)
+// for the Deployment annotation no-build deploys read.
+func decisionsJSON(app *config.AppConfig) string {
+	dec := deployDecisions{Storage: app.Storage, HealthcheckPath: app.Healthcheck.Path}
+	if dec.Storage == nil && dec.HealthcheckPath == "" {
+		return ""
+	}
+	b, err := json.Marshal(dec)
+	if err != nil {
+		return ""
+	}
+	return string(b)
 }
 
-func (s *Server) diagnoseWith(ctx context.Context, res *DeployResult, stage, logs string, events []string) {
+// diagnoseWith runs the AI failure analysis server-side (for build and
+// rollout failures — the stages with real evidence) and attaches it to the
+// result. Proposals are never applied — the CLI shows them.
+func (s *Server) diagnoseWith(ctx context.Context, res *DeployResult, ns, app, stage, logs string, events []string) {
 	dctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
 	defer cancel()
-	proposal, aerr := s.assistant.DiagnoseFailure(dctx, &ai.FailureContext{Stage: stage, Logs: logs, Events: events})
+	proposal, aerr := s.assistant.DiagnoseFailure(dctx, &ai.FailureContext{
+		Stage:        stage,
+		Logs:         logs,
+		Events:       events,
+		KnownSecrets: s.knownSecrets(ctx, ns, app),
+	})
 	if aerr != nil || proposal == nil {
 		return
 	}
 	res.Diagnosis = proposal.Diagnosis
 	res.Proposals = proposal.Actions
+}
+
+// knownSecrets collects the values donkey itself handed to an app: env vars,
+// addon bindings, and the control plane's own credentials. Failure evidence
+// is full of them — an app that cannot reach its database prints the
+// connection string it tried — so the assistant gets them scrubbed out.
+// Best effort: a secret donkey cannot read is one it cannot redact, but that
+// must never cost the user their diagnosis.
+func (s *Server) knownSecrets(ctx context.Context, ns, app string) []string {
+	var out []string
+	add := func(m map[string]string) {
+		for _, v := range m {
+			out = append(out, v)
+		}
+	}
+	if env, err := s.k8s.GetEnv(ctx, ns, app); err == nil {
+		add(env)
+	}
+	if bindings, err := s.k8s.ListAddonBindings(ctx, ns, app); err == nil {
+		for _, b := range bindings {
+			if data, err := s.k8s.GetSecretData(ctx, ns, addons.SecretName(app, b.Name)); err == nil {
+				add(data)
+			}
+		}
+	}
+	// Registry and OIDC credentials surface in build and startup logs.
+	if pw, err := s.cfg.Registry.Password(); err == nil {
+		out = append(out, pw)
+	}
+	return append(out, s.cfg.OIDCClientSecret, s.cfg.APIToken)
 }
 
 func tailBytes(b []byte, n int) string {

@@ -40,7 +40,7 @@ cleanup() {
   if [ -n "${FORWARD_PID}" ]; then
     kill "${FORWARD_PID}" 2>/dev/null || true
   fi
-  kubectl --context "${CTX}" -n donkey-demo delete pod e2e-client --ignore-not-found --wait=false >/dev/null 2>&1 || true
+  kubectl --context "${CTX}" -n donkey-identity delete pod e2e-client --ignore-not-found --wait=false >/dev/null 2>&1 || true
   chmod -R u+w "${WORK}" 2>/dev/null || true
   rm -rf "${WORK}"
 }
@@ -50,7 +50,7 @@ trap cleanup EXIT
 # so no DNS (and no /etc/hosts) is involved — while the certificate is still
 # verified against the cluster's CA.
 curl_app() {
-  kubectl --context "${CTX}" -n donkey-demo exec e2e-client -- \
+  kubectl --context "${CTX}" -n donkey-identity exec e2e-client -- \
     curl --cacert /ca/ca.crt --resolve "*:443:${GATEWAY_IP}" "$@"
 }
 
@@ -86,7 +86,7 @@ esac
 
 say "demo identity provider (fake, auto-login; issuer = its service name)"
 kubectl --context "${CTX}" apply -f "${ROOT}/hack/demo/fake-idp.yaml"
-kubectl --context "${CTX}" -n donkey-demo rollout restart deployment fake-idp >/dev/null 2>&1 || true
+kubectl --context "${CTX}" -n donkey-identity rollout restart deployment fake-idp >/dev/null 2>&1 || true
 
 say "the cluster's certificate authority"
 "${ROOT}/hack/demo-ca.sh" "${CTX}" "${CA_FILE}"
@@ -97,9 +97,10 @@ say "server install (real command, gateway → demo IdP)"
   --registry-url "registry.platform/donkey" \
   --registry-ca-secret "donkey-registry-ca" \
   --base-domain "${BASE}" \
+  --gateway-service-type "ClusterIP" \
   --tls-issuer "platform" \
   --default-platform "${PLATFORM}" \
-  --oidc-issuer "http://fake-idp.donkey-demo" \
+  --oidc-issuer "http://auth.donkey-identity" \
   --oidc-client-id "donkey-demo" \
   --oidc-client-secret "donkey-demo-secret" \
   --openai-base-url "${AI_BASE}" \
@@ -115,13 +116,13 @@ say "in-cluster test client"
 GATEWAY_IP="$(kubectl --context "${CTX}" -n platform get svc \
   -l gateway.envoyproxy.io/owning-gateway-name=donkey -o jsonpath='{.items[0].spec.clusterIP}')"
 [ -n "${GATEWAY_IP}" ] || { echo "FAIL: the donkey gateway has no service yet" >&2; exit 1; }
-kubectl --context "${CTX}" -n donkey-demo create configmap e2e-ca \
+kubectl --context "${CTX}" -n donkey-identity create configmap e2e-ca \
   --from-file=ca.crt="${CA_FILE}" --dry-run=client -o yaml | \
   kubectl --context "${CTX}" apply -f - >/dev/null
-kubectl --context "${CTX}" -n donkey-demo delete pod e2e-client --ignore-not-found >/dev/null
-kubectl --context "${CTX}" -n donkey-demo run e2e-client --image=curlimages/curl:latest --restart=Never \
+kubectl --context "${CTX}" -n donkey-identity delete pod e2e-client --ignore-not-found >/dev/null
+kubectl --context "${CTX}" -n donkey-identity run e2e-client --image=curlimages/curl:latest --restart=Never \
   --overrides='{"spec":{"volumes":[{"name":"ca","configMap":{"name":"e2e-ca"}}],"containers":[{"name":"e2e-client","image":"curlimages/curl:latest","command":["sleep","infinity"],"volumeMounts":[{"name":"ca","mountPath":"/ca"}]}]}}' >/dev/null
-kubectl --context "${CTX}" -n donkey-demo wait --for=condition=Ready pod/e2e-client --timeout=120s
+kubectl --context "${CTX}" -n donkey-identity wait --for=condition=Ready pod/e2e-client --timeout=120s
 echo "test client ready (gateway ${GATEWAY_IP})"
 
 say "login (through a port-forward — no DNS, no sudo)"
@@ -137,7 +138,7 @@ say "doctor"
 "${DONKEY}" --yes doctor
 
 say "identity provider is up"
-wait_http "http://fake-idp.donkey-demo/.well-known/openid-configuration" 'authorization_endpoint'
+wait_http "http://auth.donkey-identity/.well-known/openid-configuration" 'authorization_endpoint'
 echo "fake-idp answers"
 
 say "deploy fastapi sample (space e2e, protected by default)"
@@ -163,11 +164,11 @@ say "login protection: unauthenticated requests are sent to the IdP"
 LOCATION=""
 for _ in $(seq 1 45); do
   LOCATION="$(curl_app -s -o /dev/null -w '%{redirect_url}' "https://e2e-fastapi.e2e.${BASE}/healthz")"
-  echo "${LOCATION}" | grep -q "fake-idp.donkey-demo" && break
+  echo "${LOCATION}" | grep -q "auth.donkey-identity" && break
   sleep 2
 done
 echo "redirects to: ${LOCATION}"
-echo "${LOCATION}" | grep -q "fake-idp.donkey-demo" || {
+echo "${LOCATION}" | grep -q "auth.donkey-identity" || {
   echo "FAIL: expected a redirect to the identity provider" >&2; exit 1;
 }
 echo "protected app redirects to the IdP login"
@@ -178,7 +179,7 @@ for _ in $(seq 1 20); do
   # The whole round-trip happens in the client pod: fetch the redirect, "click"
   # the sign-in button (/authorize renders it, /approve is its link), and land
   # back on the app with the session cookie.
-  if kubectl --context "${CTX}" -n donkey-demo exec e2e-client -- sh -c "
+  if kubectl --context "${CTX}" -n donkey-identity exec e2e-client -- sh -c "
       set -e
       rm -f /tmp/jar
       AUTH=\$(curl --cacert /ca/ca.crt --resolve '*:443:${GATEWAY_IP}' -s -c /tmp/jar -o /dev/null \
@@ -257,7 +258,7 @@ kubectl --context "${CTX}" -n donkey-e2e exec "${POD}" -- cat /app/uploads/marke
 echo "both folders keep their data across a restart"
 
 say "destroy"
-"${DONKEY}" --yes destroy
+"${DONKEY}" destroy --force
 for _ in $(seq 1 60); do
   kubectl --context "${CTX}" get namespace donkey-e2e >/dev/null 2>&1 || break
   sleep 2

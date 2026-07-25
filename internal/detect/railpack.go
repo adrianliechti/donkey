@@ -5,8 +5,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"monobox.ch/donkey/internal/build"
-	"monobox.ch/donkey/internal/config"
+	"github.com/adrianliechti/donkey/internal/build"
+	"github.com/adrianliechti/donkey/internal/config"
 )
 
 // detectRailpack runs railpack's in-process detection and planning, honoring
@@ -23,7 +23,7 @@ func detectRailpack(dir string, app *config.AppConfig) (*Detection, error) {
 	plan, err := build.GeneratePlan(dir, buildEnv, configPath)
 	if err != nil {
 		return nil, fmt.Errorf(
-			"%w\n\nDonkey looked for a Dockerfile and for a known app type (Python, Node, Go, …). You can add a Dockerfile, or set OPENAI_API_KEY so donkey can figure it out with AI help", err)
+			"%w\n\nDonkey looked for a Dockerfile and for a known app type (Python, Node, Go, …). You can add a Dockerfile, or let donkey's assistant propose one", err)
 	}
 	return &Detection{
 		Strategy: config.BuildRailpack,

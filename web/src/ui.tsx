@@ -1,14 +1,35 @@
 // Small shared pieces so every view speaks the same visual language.
-import type { ReactNode } from 'react'
+import { Component, type ReactNode } from 'react'
 import { CircleAlert, CircleCheck, Loader2 } from 'lucide-react'
 
-export function StatusDot({ healthy }: { healthy: boolean }) {
-  return (
-    <span
-      className={`inline-block size-2.5 rounded-full ${healthy ? 'bg-moss' : 'bg-brick'}`}
-      aria-hidden
-    />
-  )
+// errText gives every catch block the same voice: the server's own message
+// when there is one, the caller's plain-language fallback otherwise.
+export function errText(err: unknown, fallback: string): string {
+  return err instanceof Error ? err.message : fallback
+}
+
+export type Health = 'ok' | 'bad' | 'unknown'
+
+export function healthOf(healthy: boolean, ready: string): Health {
+  if (ready === 'status unavailable') return 'unknown'
+  return healthy ? 'ok' : 'bad'
+}
+
+// One wording for an app's state, wherever it is shown.
+export const healthLine: Record<Health, (ready: string) => string> = {
+  ok: (ready) => `running (${ready})`,
+  bad: (ready) => `not fully up (${ready})`,
+  unknown: () => 'status unknown — checking again',
+}
+
+const dotColor: Record<Health, string> = {
+  ok: 'bg-moss',
+  bad: 'bg-brick',
+  unknown: 'bg-stone',
+}
+
+export function StatusDot({ health }: { health: Health }) {
+  return <span className={`inline-block size-2.5 rounded-full ${dotColor[health]}`} aria-hidden />
 }
 
 export function CheckIcon({ ok }: { ok: boolean }) {
@@ -28,14 +49,14 @@ export function Spinner({ label }: { label: string }) {
 }
 
 export function Card({ children, className = '' }: { children: ReactNode; className?: string }) {
-  return (
-    <div className={`rounded-lg border border-line bg-card ${className}`}>{children}</div>
-  )
+  return <div className={`rounded-lg border border-line bg-card ${className}`}>{children}</div>
 }
 
 export function SectionTitle({ children }: { children: ReactNode }) {
   return (
-    <h2 className="text-xs font-semibold uppercase tracking-wider text-stone">{children}</h2>
+    <h2 className="font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-stone">
+      {children}
+    </h2>
   )
 }
 
@@ -54,7 +75,7 @@ export function Button({
 }) {
   const styles = {
     primary:
-      'bg-hay text-ink hover:bg-hay-deep hover:text-white border border-transparent font-semibold',
+      'bg-hay text-on-hay hover:bg-hay-deep hover:text-white border border-transparent font-semibold',
     quiet: 'bg-transparent text-ink-soft hover:bg-line/50 border border-line',
     danger: 'bg-transparent text-brick hover:bg-brick hover:text-white border border-brick/40',
   }[kind]
@@ -70,11 +91,75 @@ export function Button({
   )
 }
 
+// ErrorNote announces itself: async failures (polls, saves) must reach
+// screen readers, not only eyes.
 export function ErrorNote({ message }: { message: string }) {
   if (!message) return null
   return (
-    <p className="rounded-md border border-brick/30 bg-brick/5 px-3 py-2 text-sm text-brick">
+    <p role="alert" className="rounded-md border border-brick/30 bg-brick/5 px-3 py-2 text-sm text-brick">
       {message}
     </p>
   )
+}
+
+// StateChip renders a pod/container state at a glance: loud when it's the
+// kind of word (CrashLoopBackOff) an admin came here to find.
+export function StateChip({ state }: { state: string }) {
+  const bad = /crashloop|error|backoff|failed|pending|terminat/i.test(state)
+  const good = /running|ready/i.test(state)
+  const tone = bad
+    ? 'bg-brick/10 text-brick border-brick/30'
+    : good
+      ? 'bg-moss/10 text-moss border-moss/30'
+      : 'bg-line/50 text-ink-soft border-line'
+  return (
+    <span className={`inline-block rounded border px-1.5 py-0.5 font-mono text-[11px] leading-4 ${tone}`}>
+      {state}
+    </span>
+  )
+}
+
+// Skeleton keeps the layout stable while first data is on its way.
+export function Skeleton({ className = '' }: { className?: string }) {
+  return <div className={`animate-pulse rounded-md bg-line/60 ${className}`} aria-hidden />
+}
+
+// ago turns an RFC 3339 timestamp into "3m", "2h", "5d" — fleet-triage units.
+export function ago(iso: string): string {
+  const secs = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 1000))
+  if (secs < 90) return `${secs}s`
+  if (secs < 5400) return `${Math.round(secs / 60)}m`
+  if (secs < 129600) return `${Math.round(secs / 3600)}h`
+  return `${Math.round(secs / 86400)}d`
+}
+
+export function UpdatedAgo({ at }: { at: number | null }) {
+  if (at === null) return null
+  const secs = Math.max(0, Math.round((Date.now() - at) / 1000))
+  const text = secs < 5 ? 'just now' : secs < 90 ? `${secs}s ago` : `${Math.round(secs / 60)}m ago`
+  return <span className="text-xs text-stone">updated {text}</span>
+}
+
+// ErrorBoundary keeps one broken view from blanking the whole console.
+export class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
+  state = { error: null as Error | null }
+  static getDerivedStateFromError(error: Error) {
+    return { error }
+  }
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="mx-auto max-w-lg p-8">
+          <ErrorNote message={`Something in this view broke: ${this.state.error.message}`} />
+          <button
+            onClick={() => location.reload()}
+            className="mt-3 rounded-md border border-line px-3 py-1.5 text-sm hover:bg-line/50"
+          >
+            Reload the console
+          </button>
+        </div>
+      )
+    }
+    return this.props.children
+  }
 }

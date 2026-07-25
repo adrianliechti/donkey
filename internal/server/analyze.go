@@ -7,9 +7,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"monobox.ch/donkey/internal/ai"
-	"monobox.ch/donkey/internal/config"
-	"monobox.ch/donkey/internal/detect"
+	"github.com/adrianliechti/donkey/internal/ai"
+	"github.com/adrianliechti/donkey/internal/config"
+	"github.com/adrianliechti/donkey/internal/detect"
 )
 
 // analyzeApp reads the uploaded folder with the assistant — donkey's own
@@ -76,8 +76,15 @@ func mergeAnalysis(app *config.AppConfig, analysis *ai.Analysis) []string {
 	var lines []string
 
 	// Storage: nil means nobody decided yet. An empty list means the user
-	// decided "no disk" — that decision stands.
-	if app.Storage == nil && len(analysis.Volumes) > 0 {
+	// decided "no disk" — that decision stands. An app running several copies
+	// can't gain a disk (it attaches to one machine at a time), so the finding
+	// is reported instead of applied.
+	switch {
+	case app.Storage == nil && len(analysis.Volumes) > 0 && app.Replicas != nil && *app.Replicas > 1:
+		lines = append(lines, fmt.Sprintf(
+			"This app writes data (%s) but runs %d copies — a disk needs replicas: 1 plus a `storage:` block in donkey.yaml.",
+			strings.Join(analysis.VolumePaths(), ", "), *app.Replicas))
+	case app.Storage == nil && len(analysis.Volumes) > 0:
 		app.Storage = &config.StorageConfig{Size: config.DefaultStorage}
 		for _, v := range analysis.Volumes {
 			app.Storage.Paths = append(app.Storage.Paths, v.Path)
@@ -106,6 +113,32 @@ func mergeAnalysis(app *config.AppConfig, analysis *ai.Analysis) []string {
 		}
 		lines = append(lines, fmt.Sprintf("This app looks like it needs %s (%s) — add it with `donkey addon add %s`",
 			svc.Type, svc.Reason, svc.Type))
+	}
+	lines = append(lines, localURLWarnings(analysis)...)
+	return lines
+}
+
+// localURLWarnings explains hardcoded addresses that stop meaning what their
+// author intended on a cluster. This is the most common way an app that works
+// on a laptop fails its first deploy, and the failure is silent: the app
+// starts, looks healthy, and only the calls go nowhere.
+func localURLWarnings(analysis *ai.Analysis) []string {
+	var lines []string
+	for _, u := range analysis.LocalURLs {
+		where := u.File
+		if where != "" {
+			where = " (" + where + ")"
+		}
+		if u.RunsIn == "browser" {
+			lines = append(lines, fmt.Sprintf(
+				"Careful: %s%s runs in the visitor's browser, where that address is *their* machine, not your backend. Call a relative path like /api and let this app proxy it to `http://<other-app>`, or point it at the other app's public address at build time (`build.env`).",
+				u.URL, where))
+			continue
+		}
+		// Server-side localhost is only wrong when it means another app.
+		lines = append(lines, fmt.Sprintf(
+			"Check %s%s: inside the cluster localhost is this app's own container. Another app in the space is reached by its name instead (http://<other-app>). %s",
+			u.URL, where, u.Reason))
 	}
 	return lines
 }

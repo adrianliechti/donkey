@@ -13,7 +13,7 @@ import (
 // containing dir, or "" when dir is not inside a git repository or HEAD
 // cannot be resolved. It never fails: image tags fall back to timestamps.
 func HeadSHA(dir string) string {
-	gitDir := findGitDir(dir)
+	_, gitDir := findRepo(dir)
 	if gitDir == "" {
 		return ""
 	}
@@ -26,11 +26,15 @@ func HeadSHA(dir string) string {
 		return short(h) // detached HEAD: the file holds the sha itself
 	}
 	ref := strings.TrimPrefix(h, "ref: ")
-	if b, err := os.ReadFile(filepath.Join(gitDir, filepath.FromSlash(ref))); err == nil {
+	// Refs live in the common dir: for a linked worktree that is the main
+	// repository's .git (named by the "commondir" file), not the worktree's
+	// own gitdir.
+	refDir := commonDir(gitDir)
+	if b, err := os.ReadFile(filepath.Join(refDir, filepath.FromSlash(ref))); err == nil {
 		return short(strings.TrimSpace(string(b)))
 	}
 	// Ref not loose — look it up in packed-refs.
-	f, err := os.Open(filepath.Join(gitDir, "packed-refs"))
+	f, err := os.Open(filepath.Join(refDir, "packed-refs"))
 	if err != nil {
 		return ""
 	}
@@ -53,52 +57,55 @@ func HeadSHA(dir string) string {
 // when dir is not inside one. donkey uses it to name spaces: every app in a
 // repository belongs together.
 func RepoRoot(dir string) string {
-	abs, err := filepath.Abs(dir)
-	if err != nil {
-		return ""
-	}
-	for {
-		if _, err := os.Stat(filepath.Join(abs, ".git")); err == nil {
-			return abs
-		}
-		parent := filepath.Dir(abs)
-		if parent == abs {
-			return ""
-		}
-		abs = parent
-	}
+	root, _ := findRepo(dir)
+	return root
 }
 
-// findGitDir walks up from dir looking for .git; handles .git files
-// (worktrees/submodules) pointing elsewhere via "gitdir: <path>".
-func findGitDir(dir string) string {
+// findRepo walks up from dir looking for .git and returns the repository root
+// and its resolved git directory. A .git file (linked worktrees, submodules)
+// points elsewhere via "gitdir: <path>".
+func findRepo(dir string) (root, gitDir string) {
 	dir, err := filepath.Abs(dir)
 	if err != nil {
-		return ""
+		return "", ""
 	}
 	for {
 		g := filepath.Join(dir, ".git")
 		fi, err := os.Stat(g)
 		if err == nil {
 			if fi.IsDir() {
-				return g
+				return dir, g
 			}
 			b, err := os.ReadFile(g)
 			if err != nil {
-				return ""
+				return dir, ""
 			}
 			target := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(string(b)), "gitdir:"))
 			if !filepath.IsAbs(target) {
 				target = filepath.Join(dir, target)
 			}
-			return target
+			return dir, target
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			return ""
+			return "", ""
 		}
 		dir = parent
 	}
+}
+
+// commonDir resolves where refs live: gitDir itself, unless a "commondir"
+// file (present in linked worktrees) points at the main repository's .git.
+func commonDir(gitDir string) string {
+	b, err := os.ReadFile(filepath.Join(gitDir, "commondir"))
+	if err != nil {
+		return gitDir
+	}
+	target := strings.TrimSpace(string(b))
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(gitDir, target)
+	}
+	return target
 }
 
 func short(sha string) string {

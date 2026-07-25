@@ -1,0 +1,44 @@
+@import "tailwindcss";
+
+@theme {
+  /* A sales dashboard reading DuckDB: near-black ink on paper, one amber
+     data hue (validated ≥3:1 against both surfaces), status colors reserved. */
+  --color-ink: #1c1917;
+  --color-ink-soft: #44403c;
+  --color-muted: #78716c;
+  --color-line: #e7e5e4;
+  --color-surface: #fafaf9;
+  --color-card: #ffffff;
+  --color-data: #b45309;
+  --color-data-soft: #fef3c7;
+  --color-good: #0d9488;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-ink: #f5f5f4;
+    --color-ink-soft: #d6d3d1;
+    --color-muted: #a8a29e;
+    --color-line: #292524;
+    --color-surface: #0c0a09;
+    --color-card: #1c1917;
+    /* Amber-500 carries the same weight on a dark surface that amber-700
+       does on paper. */
+    --color-data: #f59e0b;
+    --color-data-soft: #422006;
+    --color-good: #2dd4bf;
+  }
+}
+
+html {
+  background: var(--color-surface);
+  color: var(--color-ink);
+  color-scheme: light dark;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

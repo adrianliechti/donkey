@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 )
 
@@ -36,6 +37,20 @@ func TestSystemObjectsGatewayAPI(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("system objects should contain %s", want)
 		}
+	}
+	// The GatewayClass must carry donkey's own EnvoyProxy parameters: without
+	// them Envoy Gateway defaults the entry service to LoadBalancer, which
+	// never gets an address on clusters without a load-balancer controller —
+	// leaving the Gateway unprogrammed and every hostname unroutable.
+	for _, want := range []string{"kind: EnvoyProxy", "parametersRef", "type: LoadBalancer"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("system objects should contain %s", want)
+		}
+	}
+	local := systemInput()
+	local.GatewayServiceType = "ClusterIP"
+	if out := componentNames(local); !strings.Contains(out, "type: ClusterIP") {
+		t.Error("gateway.serviceType must reach the EnvoyProxy manifest")
 	}
 	for _, forbidden := range []string{"kind: Ingress", "oauth2-proxy", "pocket-id", "nginx"} {
 		if strings.Contains(out, forbidden) {
@@ -127,6 +142,26 @@ func TestInstallTouchesOnlyItsOwnObjects(t *testing.T) {
 	} {
 		if strings.Contains(rendered, forbidden) {
 			t.Errorf("the installation must not contain %q — that is cluster-wide or node-level state donkey doesn't own", forbidden)
+		}
+	}
+}
+
+// The pull policy decides whether a pod may reuse a cached layer. Getting it
+// wrong is silent in both directions: a stale binary under a moved tag, or a
+// registry outage that blocks every restart.
+func TestImagePullPolicy(t *testing.T) {
+	for image, want := range map[string]corev1.PullPolicy{
+		"registry.example.com/donkey/server:v1.2.3":     corev1.PullIfNotPresent,
+		"registry.example.com/donkey/server@sha256:abc": corev1.PullIfNotPresent,
+		"reg.example.com:5000/donkey/server:v1":         corev1.PullIfNotPresent,
+		// Moving tags must always be re-pulled.
+		"registry.example.com/donkey/server:latest":  corev1.PullAlways,
+		"registry.platform/donkey/donkey-server:dev": corev1.PullAlways,
+		"registry.example.com/donkey/server":         corev1.PullAlways,
+		"reg.example.com:5000/donkey/server":         corev1.PullAlways,
+	} {
+		if got := imagePullPolicy(image); got != want {
+			t.Errorf("imagePullPolicy(%q) = %v, want %v", image, got, want)
 		}
 	}
 }

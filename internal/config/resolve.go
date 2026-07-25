@@ -5,8 +5,7 @@ type Flags struct {
 	KubeContext string
 	AppDir      string
 	// Space overrides which space the app belongs to (--space).
-	Space   string
-	Verbose bool
+	Space string
 }
 
 // Resolved is the single fully-resolved view of client configuration.

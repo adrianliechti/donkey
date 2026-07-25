@@ -104,6 +104,18 @@ func TestAppValidate(t *testing.T) {
 		{"dup addon names", func(c *AppConfig) {
 			c.Addons = []AddonConfig{{Name: "db", Type: "postgres"}, {Name: "db", Type: "redis"}}
 		}, true},
+		// The domain becomes a route hostname, a certificate name and part of
+		// the login callback URL — anything but a plain hostname breaks one of
+		// them, and a wildcard would hand the app everything under it.
+		{"plain domain", func(c *AppConfig) { c.Domain = "shop.example.com" }, false},
+		{"wildcard domain", func(c *AppConfig) { c.Domain = "*.example.com" }, true},
+		{"domain with scheme", func(c *AppConfig) { c.Domain = "https://shop.example.com" }, true},
+		{"domain with path", func(c *AppConfig) { c.Domain = "shop.example.com/app" }, true},
+		{"domain with port", func(c *AppConfig) { c.Domain = "shop.example.com:8443" }, true},
+		{"uppercase domain", func(c *AppConfig) { c.Domain = "Shop.example.com" }, true},
+		{"single label", func(c *AppConfig) { c.Domain = "shop" }, true},
+		{"trailing dot", func(c *AppConfig) { c.Domain = "shop.example.com." }, true},
+		{"leading dash", func(c *AppConfig) { c.Domain = "-shop.example.com" }, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

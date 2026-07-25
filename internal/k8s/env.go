@@ -11,7 +11,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 
-	"monobox.ch/donkey/internal/k8s/manifests"
+	"github.com/adrianliechti/donkey/internal/k8s/manifests"
 )
 
 // GetSecretData returns a secret's data as strings; a missing secret is an
@@ -33,18 +33,7 @@ func (c *Client) GetSecretData(ctx context.Context, namespace, name string) (map
 
 // GetEnv returns the app's current env vars from its env secret.
 func (c *Client) GetEnv(ctx context.Context, namespace, app string) (map[string]string, error) {
-	sec, err := c.Clientset.CoreV1().Secrets(namespace).Get(ctx, manifests.EnvSecretName(app), metav1.GetOptions{})
-	if apierrors.IsNotFound(err) {
-		return map[string]string{}, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	out := map[string]string{}
-	for k, v := range sec.Data {
-		out[k] = string(v)
-	}
-	return out, nil
+	return c.GetSecretData(ctx, namespace, manifests.EnvSecretName(app))
 }
 
 // SetEnv replaces the app's env secret with the given variables.

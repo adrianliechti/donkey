@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"monobox.ch/donkey/internal/ai"
-	"monobox.ch/donkey/internal/config"
+	"github.com/adrianliechti/donkey/internal/ai"
+	"github.com/adrianliechti/donkey/internal/config"
 )
 
 func analysis() *ai.Analysis {

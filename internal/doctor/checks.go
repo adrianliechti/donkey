@@ -3,19 +3,12 @@ package doctor
 import (
 	"context"
 
-	"monobox.ch/donkey/internal/config"
-)
-
-// Check IDs used by commands to declare preflight requirements.
-const (
-	CheckConnection = "connection"
-	CheckAppConfig  = "app-config"
+	"github.com/adrianliechti/donkey/internal/config"
 )
 
 // ConnectionCheck verifies the donkey server answers and accepts the token.
 func ConnectionCheck(ping func(ctx context.Context) error, serverURL string) *Check {
 	return &Check{
-		ID:      CheckConnection,
 		Name:    "Connected to the donkey server",
 		Explain: "All builds and deployments run on the donkey server.",
 		Fix:     "Run `donkey login` with the server address and token you were given.",
@@ -34,7 +27,6 @@ func ConnectionCheck(ping func(ctx context.Context) error, serverURL string) *Ch
 // AppConfigCheck validates donkey.yaml when present in the app directory.
 func AppConfigCheck() *Check {
 	return &Check{
-		ID:      CheckAppConfig,
 		Name:    "App settings (donkey.yaml)",
 		Explain: "donkey.yaml describes the app in this folder.",
 		Fix:     "Fix the reported problem in donkey.yaml, or delete the file and run `donkey init` again.",
@@ -46,7 +38,6 @@ func AppConfigCheck() *Check {
 			if app == nil {
 				return Result{Status: Info, Detail: "no app in this folder yet (run `donkey init` inside a project)."}
 			}
-			env.App = app
 			return Result{Status: OK, Detail: app.Name}
 		},
 	}

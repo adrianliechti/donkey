@@ -5,12 +5,30 @@
 
 image: ghcr.io/example/donkey-server:latest
 
+# The build engine. Defaults to a digest-pinned moby/buildkit; set it to your
+# own mirror when the cluster can't reach Docker Hub.
+# buildkitImage: registry.example.com/mirror/buildkit:v0.31.2
+
 registry:
   url: registry.example.com/donkey
   username: ci
   # insecure: true            # plain-HTTP registries (testing only)
+  # immutable: true           # the registry refuses to overwrite a tag (ECR
+                              # tag immutability, GHCR immutable tags, a Harbor
+                              # rule). Donkey then gives every image tag a
+                              # random suffix, so two deploys of one commit in
+                              # the same second can't collide on a push.
 
 baseDomain: apps.example.com   # apps become <app>.<space>.apps.example.com
+
+# gateway:
+#   serviceType: ClusterIP     # how traffic enters the cluster. The default,
+                               # LoadBalancer, is right wherever something
+                               # assigns those an address (cloud, MetalLB).
+                               # Clusters without that (kind, local demos)
+                               # need ClusterIP — an address-less LoadBalancer
+                               # leaves the gateway unprogrammed and every
+                               # donkey hostname unroutable.
 
 tls:
   # Required. Apps are always served over https (the login gateway's cookies

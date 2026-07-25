@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 
-	"monobox.ch/donkey/internal/cli"
+	"github.com/adrianliechti/donkey/internal/cli"
 )
 
 func main() {

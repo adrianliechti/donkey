@@ -7,7 +7,7 @@ import (
 	"net/url"
 	"strings"
 
-	"monobox.ch/donkey/internal/config"
+	"github.com/adrianliechti/donkey/internal/config"
 )
 
 // CheckRegistryAuth probes the registry's /v2/ endpoint and verifies the
@@ -51,7 +51,7 @@ func CheckRegistryAuth(ctx context.Context, reg config.Registry) error {
 		return checkBasic(ctx, client, base, reg.Username, password)
 	}
 	if strings.HasPrefix(strings.ToLower(challenge), "bearer") {
-		return checkBearer(ctx, client, challenge, reg.Username, password)
+		return checkBearer(ctx, client, reg, challenge, password)
 	}
 	return fmt.Errorf("the registry %s uses an authentication scheme donkey doesn't recognize (%q)", reg.Host(), challenge)
 }
@@ -88,11 +88,27 @@ func checkBasic(ctx context.Context, client *http.Client, endpoint, user, passwo
 
 // checkBearer fetches a token from the realm in the Bearer challenge; a 401
 // from the realm means the credentials are wrong.
-func checkBearer(ctx context.Context, client *http.Client, challenge, user, password string) error {
+//
+// The realm is an address the registry picks, and donkey answers it with the
+// registry's password — so it is only followed when the answer cannot be
+// read on the way: https, and never from a registry donkey talks to in plain
+// HTTP (where anyone on the path could have written the challenge).
+func checkBearer(ctx context.Context, client *http.Client, reg config.Registry, challenge, password string) error {
 	params := parseChallenge(challenge)
 	realm := params["realm"]
 	if realm == "" {
 		return fmt.Errorf("the registry sent an incomplete authentication challenge")
+	}
+	credentials := reg.Username != "" || password != ""
+	realmURL, err := url.Parse(realm)
+	if err != nil || realmURL.Host == "" {
+		return fmt.Errorf("the registry %s pointed donkey at %q for its login, which is not a usable address", reg.Host(), realm)
+	}
+	if realmURL.Scheme != "https" {
+		return fmt.Errorf("the registry %s wants donkey to log in at %s — donkey only sends registry credentials over https", reg.Host(), realm)
+	}
+	if reg.Insecure && credentials {
+		return fmt.Errorf("the registry %s is configured as insecure (plain HTTP) but asks for a login at %s — donkey won't send the password, because the request that asked for it wasn't protected", reg.Host(), realm)
 	}
 	q := url.Values{}
 	if s := params["service"]; s != "" {
@@ -102,8 +118,8 @@ func checkBearer(ctx context.Context, client *http.Client, challenge, user, pass
 	if err != nil {
 		return err
 	}
-	if user != "" || password != "" {
-		req.SetBasicAuth(user, password)
+	if credentials {
+		req.SetBasicAuth(reg.Username, password)
 	}
 	resp, err := client.Do(req)
 	if err != nil {

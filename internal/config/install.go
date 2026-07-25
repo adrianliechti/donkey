@@ -13,11 +13,15 @@ import (
 // (DONKEY_REGISTRY_PASSWORD, DONKEY_OIDC_CLIENT_SECRET, OPENAI_API_KEY).
 type InstallFile struct {
 	// Image is the donkey-server image, pullable by the cluster.
-	Image    string          `json:"image,omitempty"`
-	Registry InstallRegistry `json:"registry,omitempty"`
+	Image string `json:"image,omitempty"`
+	// BuildkitImage is the build engine's image (default
+	// DefaultBuildkitImage) — an air-gapped installation mirrors it.
+	BuildkitImage string          `json:"buildkitImage,omitempty"`
+	Registry      InstallRegistry `json:"registry,omitempty"`
 	// BaseDomain: apps become <app>.<space>.<baseDomain>.
-	BaseDomain string     `json:"baseDomain,omitempty"`
-	TLS        InstallTLS `json:"tls,omitempty"`
+	BaseDomain string         `json:"baseDomain,omitempty"`
+	Gateway    InstallGateway `json:"gateway,omitempty"`
+	TLS        InstallTLS     `json:"tls,omitempty"`
 	// DefaultPlatform is the build platform of the cluster's nodes
 	// (default linux/amd64).
 	DefaultPlatform string `json:"defaultPlatform,omitempty"`
@@ -43,6 +47,16 @@ type InstallAuth struct {
 	ClientSecret string `json:"clientSecret,omitempty"`
 }
 
+// InstallGateway tunes the traffic entry point.
+type InstallGateway struct {
+	// ServiceType is the type of the service traffic enters the cluster
+	// through: LoadBalancer (the default) or ClusterIP. Clusters without a
+	// load-balancer controller (kind, local demos) need ClusterIP — a
+	// LoadBalancer service never gets an address there, which leaves the
+	// gateway unprogrammed and every donkey hostname unroutable.
+	ServiceType string `json:"serviceType,omitempty"`
+}
+
 // InstallTLS names the cert-manager issuer that signs app certificates.
 // donkey always serves apps over https — the login gateway's cookies require
 // it — and always asks cert-manager for one certificate per app hostname, so
@@ -53,6 +67,12 @@ type InstallTLS struct {
 	// Kind is ClusterIssuer (default) or Issuer.
 	Kind string `json:"kind,omitempty"`
 }
+
+// DefaultBuildkitImage is the build engine donkey installs. It is pinned to a
+// digest as well as a tag: a tag can be re-pushed, and the build engine runs
+// privileged — the one place where "whatever the registry serves today" is
+// not good enough. The digest is the multi-platform index of v0.31.2.
+const DefaultBuildkitImage = "moby/buildkit:v0.31.2@sha256:2f5adac4ecd194d9f8c10b7b5d7bceb5186853db1b26e5abd3a657af0b7e26ec"
 
 type InstallAI struct {
 	BaseURL string `json:"baseUrl,omitempty"`

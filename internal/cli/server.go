@@ -6,12 +6,13 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/urfave/cli/v3"
 
-	"monobox.ch/donkey/internal/config"
-	"monobox.ch/donkey/internal/k8s"
-	"monobox.ch/donkey/internal/k8s/manifests"
+	"github.com/adrianliechti/donkey/internal/config"
+	"github.com/adrianliechti/donkey/internal/k8s"
+	"github.com/adrianliechti/donkey/internal/k8s/manifests"
 )
 
 func serverCommand() *cli.Command {
@@ -35,11 +36,14 @@ func serverInstallCommand() *cli.Command {
 		Flags: []cli.Flag{
 			&cli.StringFlag{Name: "file", Aliases: []string{"f"}, Usage: "settings file (see docs); flags override individual values"},
 			&cli.StringFlag{Name: "image", Usage: "donkey-server image reference (pullable by the cluster)"},
+			&cli.StringFlag{Name: "buildkit-image", Usage: "build engine image (default: a digest-pinned moby/buildkit)"},
 			&cli.StringFlag{Name: "registry-url", Usage: "registry prefix for app images, as reachable FROM the cluster"},
 			&cli.StringFlag{Name: "registry-username", Usage: "registry login"},
 			&cli.BoolFlag{Name: "registry-insecure", Usage: "registry is plain HTTP (local/testing)"},
+			&cli.BoolFlag{Name: "registry-immutable", Usage: "registry refuses to overwrite tags (ECR/GHCR/Harbor immutability) — donkey then makes every tag unique"},
 			&cli.StringFlag{Name: "registry-ca-secret", Usage: "secret in donkey-system holding ca.crt of the registry's certificate authority"},
 			&cli.StringFlag{Name: "base-domain", Usage: "apps become <name>.<base-domain>"},
+			&cli.StringFlag{Name: "gateway-service-type", Usage: "service type traffic enters through: LoadBalancer (default) or ClusterIP (clusters without a load-balancer controller, e.g. kind)"},
 			&cli.StringFlag{Name: "default-platform", Usage: "build platform of the cluster nodes (default linux/amd64)"},
 			&cli.StringFlag{Name: "tls-issuer", Usage: "cert-manager issuer that signs app certificates (required)"},
 			&cli.StringFlag{Name: "tls-issuer-kind", Usage: "ClusterIssuer (default) or Issuer"},
@@ -71,10 +75,12 @@ func installSettings(cmd *cli.Command) (*config.InstallFile, error) {
 		}
 	}
 	strOver(&settings.Image, "image")
+	strOver(&settings.BuildkitImage, "buildkit-image")
 	strOver(&settings.Registry.URL, "registry-url")
 	strOver(&settings.Registry.Username, "registry-username")
 	strOver(&settings.Registry.CASecret, "registry-ca-secret")
 	strOver(&settings.BaseDomain, "base-domain")
+	strOver(&settings.Gateway.ServiceType, "gateway-service-type")
 	strOver(&settings.DefaultPlatform, "default-platform")
 	strOver(&settings.Auth.Issuer, "oidc-issuer")
 	strOver(&settings.Auth.ClientID, "oidc-client-id")
@@ -86,6 +92,9 @@ func installSettings(cmd *cli.Command) (*config.InstallFile, error) {
 	strOver(&settings.TLS.Kind, "tls-issuer-kind")
 	if cmd.Bool("registry-insecure") {
 		settings.Registry.Insecure = true
+	}
+	if cmd.Bool("registry-immutable") {
+		settings.Registry.Immutable = true
 	}
 	// Secrets may come from env instead of file/flags.
 	if settings.Auth.ClientSecret == "" {
@@ -108,28 +117,18 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	var missing []string
-	if settings.Image == "" {
-		missing = append(missing, "image")
-	}
-	if settings.Registry.URL == "" {
-		missing = append(missing, "registry.url")
-	}
-	if settings.BaseDomain == "" {
-		missing = append(missing, "baseDomain")
-	}
-	// donkey reads every app with its assistant — an installation without one
-	// could not deploy anything, so this is a required setting.
-	if settings.AI.APIKey == "" {
-		missing = append(missing, "ai.apiKey (or the OPENAI_API_KEY environment variable)")
-	}
-	// Apps are always served over https, and cert-manager issues the
-	// certificates — donkey never mints its own.
-	if settings.TLS.Issuer == "" {
-		missing = append(missing, "tls.issuer (a cert-manager ClusterIssuer or Issuer)")
-	}
-	if len(missing) > 0 {
+	// Everything checkable without the cluster is checked first — a missing
+	// kubeconfig must not hide the list of missing settings.
+	if missing := missingSettings(settings, false); len(missing) > 0 {
 		return fmt.Errorf("these settings are required (via -f file or flags): %v", missing)
+	}
+	if err := settings.Registry.Validate(); err != nil {
+		return err
+	}
+	switch settings.Gateway.ServiceType {
+	case "", "LoadBalancer", "ClusterIP", "NodePort":
+	default:
+		return fmt.Errorf("gateway.serviceType must be LoadBalancer, ClusterIP or NodePort, not %q", settings.Gateway.ServiceType)
 	}
 
 	kubeContext := s.Resolved.KubeContext
@@ -141,10 +140,43 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 		return fmt.Errorf("the cluster (context %q) didn't answer — donkey installs into an existing cluster: %w", kubeContext, err)
 	}
 
-	// Keep existing secrets on re-installs so logins and data stay valid.
-	existing, _ := client.GetSecretData(ctx, manifests.SystemNamespace, "donkey-system-config")
+	// Keep existing secrets on re-installs so logins and data stay valid — a
+	// re-run without $DONKEY_REGISTRY_PASSWORD (or the other secret env vars)
+	// set must never blank what the running installation depends on. A read
+	// error is fatal for the same reason: treating it as "no secrets yet"
+	// would silently rotate the API token.
+	existing, err := client.GetSecretData(ctx, manifests.SystemNamespace, "donkey-system-config")
+	if err != nil {
+		return fmt.Errorf("couldn't read the existing installation's secrets: %w", err)
+	}
+	registryPassword, err := settings.Registry.Password() // env, then registry.passwordFile
+	if err != nil {
+		return err
+	}
+	if registryPassword == "" {
+		registryPassword = existing["registry-password"]
+	}
+	if settings.AI.APIKey == "" {
+		settings.AI.APIKey = existing["openai-api-key"]
+	}
+	// The "pending-setup" sentinel marks credentials that were never real —
+	// it must not survive into a configuration that now has a real client id.
+	if v := existing["oidc-client-secret"]; settings.Auth.ClientSecret == "" && v != pendingOIDC {
+		settings.Auth.ClientSecret = v
+	}
+	if v := existing["oidc-client-id"]; settings.Auth.ClientID == "" && v != pendingOIDC {
+		settings.Auth.ClientID = v
+	}
+
+	// The AI key may live only in the existing installation — checked here,
+	// after the fallback, so a plain re-run doesn't demand env vars the
+	// cluster already has.
+	if missing := missingSettings(settings, true); len(missing) > 0 {
+		return fmt.Errorf("these settings are required (via -f file or flags): %v", missing)
+	}
 
 	apiToken := cmd.String("api-token")
+	tokenFromFlag := apiToken != ""
 	newToken := false
 	if apiToken == "" {
 		if apiToken = existing["api-token"]; apiToken == "" {
@@ -155,34 +187,54 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 		}
 	}
 	in := manifests.SystemInput{
-		Namespace:        manifests.SystemNamespace,
-		ServerImage:      settings.Image,
-		BaseDomain:       settings.BaseDomain,
-		TLSIssuer:        settings.TLS.Issuer,
-		TLSIssuerKind:    settings.TLS.Kind,
-		RegistryURL:      settings.Registry.URL,
-		RegistryUsername: settings.Registry.Username,
-		RegistryCASecret: settings.Registry.CASecret,
-		RegistryPassword: os.Getenv("DONKEY_REGISTRY_PASSWORD"),
-		RegistryInsecure: settings.Registry.Insecure,
-		APIToken:         apiToken,
-		OIDCIssuer:       settings.Auth.Issuer,
-		OIDCClientID:     settings.Auth.ClientID,
-		OIDCClientSecret: settings.Auth.ClientSecret,
-		DefaultPlatform:  settings.DefaultPlatform,
-		OpenAIBaseURL:    settings.AI.BaseURL,
-		OpenAIAPIKey:     settings.AI.APIKey,
-		AIModel:          settings.AI.Model,
-		BuildkitImage:    "moby/buildkit:v0.31.2",
-		NamespacePrefix:  "donkey-",
+		Namespace:          manifests.SystemNamespace,
+		ServerImage:        settings.Image,
+		BaseDomain:         settings.BaseDomain,
+		GatewayServiceType: settings.Gateway.ServiceType,
+		TLSIssuer:          settings.TLS.Issuer,
+		TLSIssuerKind:      settings.TLS.Kind,
+		RegistryURL:        settings.Registry.URL,
+		RegistryUsername:   settings.Registry.Username,
+		RegistryCASecret:   settings.Registry.CASecret,
+		RegistryPassword:   registryPassword,
+		RegistryInsecure:   settings.Registry.Insecure,
+		RegistryImmutable:  settings.Registry.Immutable,
+		APIToken:           apiToken,
+		OIDCIssuer:         settings.Auth.Issuer,
+		OIDCClientID:       settings.Auth.ClientID,
+		OIDCClientSecret:   settings.Auth.ClientSecret,
+		DefaultPlatform:    settings.DefaultPlatform,
+		OpenAIBaseURL:      settings.AI.BaseURL,
+		OpenAIAPIKey:       settings.AI.APIKey,
+		AIModel:            settings.AI.Model,
+		BuildkitImage:      settings.BuildkitImage,
+		NamespacePrefix:    "donkey-",
+	}
+	if in.BuildkitImage == "" {
+		in.BuildkitImage = config.DefaultBuildkitImage
 	}
 	if in.OIDCClientID == "" {
-		in.OIDCClientID = "pending-setup"
-		in.OIDCClientSecret = "pending-setup"
+		in.OIDCClientID = pendingOIDC
+		in.OIDCClientSecret = pendingOIDC
 	}
 
 	if in.TLSIssuerKind == "" {
 		in.TLSIssuerKind = "ClusterIssuer"
+	}
+
+	// The prerequisites, checked before anything is applied: Envoy Gateway
+	// (everything donkey serves attaches to it), cert-manager (below), and —
+	// as a warning — a default StorageClass for apps and addons with disks.
+	if err := client.GatewayAPIAvailable(ctx); err != nil {
+		return fmt.Errorf("%w\n\nInstall it first: https://gateway.envoyproxy.io/docs/tasks/quickstart/", err)
+	}
+	if in.OIDCIssuer != "" {
+		if err := client.SecurityPolicyAvailable(ctx); err != nil {
+			return fmt.Errorf("%w\n\nInstall Envoy Gateway (not just the Gateway API CRDs): https://gateway.envoyproxy.io/docs/tasks/quickstart/", err)
+		}
+	}
+	if hasDefault, err := client.HasDefaultStorageClass(ctx); err == nil && !hasDefault {
+		u.Warn("The cluster has no default StorageClass — apps with storage and provisioned addons won't get disks until one exists (or storage.class is set).")
 	}
 	// Every deployed app has its certificate on the gateway's https listener.
 	// Re-installing renders that listener again, so carry the existing
@@ -203,7 +255,11 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 		u.Warn("The %s %q isn't ready yet (%s) — apps will deploy, but https starts working once it is.", in.TLSIssuerKind, in.TLSIssuer, detail)
 	}
 
-	u.Printf("Installing the donkey control plane into %s…", u.Bold(kubeContext))
+	contextName := kubeContext
+	if contextName == "" {
+		contextName = "the current kubeconfig context"
+	}
+	u.Printf("Installing the donkey control plane into %s…", u.Bold(contextName))
 	if err := client.Apply(ctx, manifests.SystemObjects(in)); err != nil {
 		return fmt.Errorf("the cluster refused the installation: %w", err)
 	}
@@ -213,17 +269,27 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 	}
 	u.Success("Control plane is running.")
 
+	// The Gateway only serves once Envoy Gateway programs it — say so when
+	// that hasn't happened, instead of printing an API URL that won't answer.
+	if reason := waitForGateway(ctx, client); reason != "" {
+		u.Warn("Envoy Gateway hasn't picked up the donkey gateway yet (%s) — the URLs below start working once it does.", reason)
+	}
+
 	serverURL := in.Scheme() + "://" + in.ServerHost()
 	u.Printf("")
 	u.Printf("  API:        %s", u.Bold(serverURL))
-	if newToken {
+	switch {
+	case newToken:
 		u.Printf("  API token:  %s", u.Bold(apiToken))
 		u.Printf("  %s", u.Faint("Store this token safely — it is shown only once."))
-	} else {
+	case tokenFromFlag:
+		u.Printf("  API token:  %s", u.Faint("(as provided — replaces the previous one)"))
+	default:
 		u.Printf("  API token:  %s", u.Faint("(unchanged)"))
 	}
 	u.Printf("")
 	u.Printf("Connect this machine:  %s", u.Bold(fmt.Sprintf("donkey login --server %s --token <token>", serverURL)))
+	u.Printf("Then check the whole setup end to end:  %s", u.Bold("donkey doctor"))
 
 	u.Printf("")
 	u.Info("Apps are served at https://<app>.<space>.%s.", in.BaseDomain)
@@ -246,6 +312,62 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 		u.Printf("  %s", u.Faint("Set auth.issuer (e.g. Entra ID, or any OIDC provider) to protect them."))
 	}
 	return nil
+}
+
+// pendingOIDC marks an OIDC client that isn't registered yet — logins can't
+// complete until the admin re-runs the install with real client credentials.
+const pendingOIDC = "pending-setup"
+
+// missingSettings lists required settings that are absent. The AI key is
+// only checked once the existing installation's secrets were merged in
+// (withSecrets) — everything else is checkable before touching the cluster.
+func missingSettings(settings *config.InstallFile, withSecrets bool) []string {
+	var missing []string
+	if settings.Image == "" {
+		missing = append(missing, "image")
+	}
+	if settings.Registry.URL == "" {
+		missing = append(missing, "registry.url")
+	}
+	if settings.BaseDomain == "" {
+		missing = append(missing, "baseDomain")
+	}
+	// Apps are always served over https, and cert-manager issues the
+	// certificates — donkey never mints its own.
+	if settings.TLS.Issuer == "" {
+		missing = append(missing, "tls.issuer (a cert-manager ClusterIssuer or Issuer)")
+	}
+	// donkey reads every app with its assistant — an installation without one
+	// could not deploy anything, so this is a required setting.
+	if withSecrets && settings.AI.APIKey == "" {
+		missing = append(missing, "ai.apiKey (or the OPENAI_API_KEY environment variable)")
+	}
+	return missing
+}
+
+// waitForGateway gives the controller a moment to program the shared Gateway
+// and returns why it hasn't ("" once it has). Non-fatal: DNS or the
+// controller may simply still be on their way.
+func waitForGateway(ctx context.Context, client *k8s.Client) string {
+	deadline := time.Now().Add(30 * time.Second)
+	reason := "no status yet"
+	for time.Now().Before(deadline) {
+		ok, detail, err := client.GatewayProgrammed(ctx, manifests.SystemNamespace, manifests.GatewayName)
+		if err == nil && ok {
+			return ""
+		}
+		if err != nil {
+			reason = err.Error()
+		} else if detail != "" {
+			reason = detail
+		}
+		select {
+		case <-ctx.Done():
+			return reason
+		case <-time.After(2 * time.Second):
+		}
+	}
+	return reason
 }
 
 func randomToken() (string, error) {

@@ -6,20 +6,17 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
+
+	"github.com/adrianliechti/donkey/internal/config"
 )
 
-// skipDirs are never uploaded: build inputs come from sources, not local
-// artifacts or VCS internals.
-var skipDirs = map[string]bool{
-	".git": true, "node_modules": true, ".venv": true, "venv": true,
-	"__pycache__": true, ".idea": true, ".vscode": true,
-}
-
-// TarContext streams dir as tar.gz into w.
-func TarContext(dir string, w io.Writer) error {
+// TarContext streams dir as tar.gz into w. It returns the paths it left out
+// (secret-shaped files, symlinks) so the caller can say so — a file the build
+// needed but never received is a debugging mystery otherwise.
+func TarContext(dir string, w io.Writer) ([]string, error) {
 	gz := gzip.NewWriter(w)
 	tw := tar.NewWriter(gz)
+	var skipped []string
 	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -30,15 +27,17 @@ func TarContext(dir string, w io.Writer) error {
 		}
 		rel = filepath.ToSlash(rel)
 		if d.IsDir() {
-			if skipDirs[d.Name()] {
+			if config.SkippedUploadDir(d.Name()) {
 				return filepath.SkipDir
 			}
 			return tw.WriteHeader(&tar.Header{Name: rel + "/", Typeflag: tar.TypeDir, Mode: 0o755})
 		}
 		if !d.Type().IsRegular() {
+			skipped = append(skipped, rel)
 			return nil // symlinks etc. are not uploaded
 		}
-		if sensitiveFile(d.Name()) {
+		if config.SensitiveUploadFile(d.Name()) {
+			skipped = append(skipped, rel)
 			return nil // never ship key material to the build
 		}
 		info, err := d.Info()
@@ -59,37 +58,32 @@ func TarContext(dir string, w io.Writer) error {
 		return err
 	})
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if err := tw.Close(); err != nil {
-		return err
+		return nil, err
 	}
-	return gz.Close()
+	return skipped, gz.Close()
 }
 
 // TarContextToTemp writes the context to a temp file and returns it opened
-// for reading (so the HTTP request has a known length and is retryable).
-func TarContextToTemp(dir string) (*os.File, error) {
+// for reading (so the HTTP request has a known length and is retryable),
+// along with the paths that were left out.
+func TarContextToTemp(dir string) (*os.File, []string, error) {
 	f, err := os.CreateTemp("", "donkey-context-*.tar.gz")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	if err := TarContext(dir, f); err != nil {
+	skipped, err := TarContext(dir, f)
+	if err != nil {
 		f.Close()
 		os.Remove(f.Name())
-		return nil, err
+		return nil, nil, err
 	}
 	if _, err := f.Seek(0, io.SeekStart); err != nil {
 		f.Close()
 		os.Remove(f.Name())
-		return nil, err
+		return nil, nil, err
 	}
-	return f, nil
-}
-
-// Basename-based guard against uploading obvious secret files even when the
-// user has them lying around; mirrors the AI summarizer denylist spirit.
-func sensitiveFile(name string) bool {
-	lower := strings.ToLower(name)
-	return strings.HasPrefix(lower, ".env") || strings.HasSuffix(lower, ".pem") || strings.HasPrefix(lower, "id_")
+	return f, skipped, nil
 }

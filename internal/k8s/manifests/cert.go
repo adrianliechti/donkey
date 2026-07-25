@@ -1,6 +1,10 @@
 package manifests
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
@@ -17,8 +21,14 @@ type TLSConfig struct {
 
 // AppCertName is the Certificate (and Secret) for one app's hostname. It
 // lives next to the Gateway, because a listener may only reference secrets in
-// its own namespace.
-func AppCertName(space, app string) string { return "donkey-tls-" + space + "-" + app }
+// its own namespace. The short hash keeps names unambiguous: dashes are legal
+// inside space and app names, so (space "team-a", app "web") and (space
+// "team", app "a-web") would otherwise share a certificate name — and
+// destroying one app would take the other's certificate with it.
+func AppCertName(space, app string) string {
+	sum := sha256.Sum256([]byte(space + "/" + app))
+	return fmt.Sprintf("donkey-tls-%s-%s-%s", space, app, hex.EncodeToString(sum[:3]))
+}
 
 // appCertificate asks cert-manager for the app's certificate. One certificate
 // per hostname keeps donkey compatible with every solver — HTTP-01 included,

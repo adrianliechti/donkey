@@ -6,12 +6,15 @@ package build
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 	"time"
 
-	"monobox.ch/donkey/internal/config"
+	"github.com/adrianliechti/donkey/internal/config"
 )
 
 type Builder interface {
@@ -50,16 +53,44 @@ type Result struct {
 	LogPath  string
 }
 
-// ImageTag composes the unique tag for a deploy:
+// SameRegistry reports whether an image reference lives under the registry
+// prefix donkey builds into. A deploy that skips the build (`--no-build
+// --tag`) must not be able to run an arbitrary image under an app's name:
+// the app's env and addon secrets are handed to whatever starts.
+func SameRegistry(registryURL, imageRef string) bool {
+	prefix := strings.TrimSuffix(registryURL, "/") + "/"
+	return strings.HasPrefix(imageRef, prefix)
+}
+
+// ImageTag composes the tag for a deploy:
 // <registry>/<app>:<gitsha12>-<timestamp>, or timestamp-only when no sha is
 // known (the CLI reads it from the local .git and sends it along — uploaded
-// build contexts deliberately exclude .git). Uniqueness per deploy
-// guarantees a redeploy of identical code still rolls the Deployment.
-func ImageTag(registryURL, appName, sha string, now time.Time) string {
-	ts := now.UTC().Format("20060102150405")
-	tag := ts
+// build contexts deliberately exclude .git). The timestamp gives every deploy
+// its own image, so redeploying identical code still rolls the Deployment.
+//
+// Two deploys of one commit inside the same second land on the same tag and
+// overwrite it, which costs nothing on an ordinary registry. Registries that
+// refuse to overwrite a tag (ECR tag immutability, GHCR immutable tags, a
+// Harbor rule) reject that push instead — `immutable` adds a short random
+// suffix so no tag is ever written twice.
+func ImageTag(registryURL, appName, sha string, now time.Time, immutable bool) string {
+	parts := []string{now.UTC().Format("20060102150405")}
 	if sha != "" {
-		tag = fmt.Sprintf("%s-%s", sha, ts)
+		parts = append([]string{sha}, parts...)
 	}
-	return fmt.Sprintf("%s/%s:%s", strings.TrimSuffix(registryURL, "/"), appName, tag)
+	if immutable {
+		parts = append(parts, uniqueSuffix())
+	}
+	return fmt.Sprintf("%s/%s:%s", strings.TrimSuffix(registryURL, "/"), appName, strings.Join(parts, "-"))
+}
+
+// uniqueSuffix is deliberately short: four hex characters make a same-second
+// collision vanishingly unlikely without making the tag unreadable.
+func uniqueSuffix() string {
+	b := make([]byte, 2)
+	if _, err := rand.Read(b); err != nil {
+		// Still distinguishes two deploys that share a second.
+		return strconv.FormatInt(int64(time.Now().Nanosecond()), 36)
+	}
+	return hex.EncodeToString(b)
 }

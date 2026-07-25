@@ -1,10 +1,13 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
 
-	"monobox.ch/donkey/internal/server"
+	"github.com/adrianliechti/donkey/internal/server"
 )
 
 func main() {
@@ -18,7 +21,11 @@ func main() {
 		fmt.Fprintln(os.Stderr, "startup error:", err)
 		os.Exit(1)
 	}
-	if err := srv.Run(); err != nil {
+	// SIGTERM starts a drain rather than killing in-flight deploys: a
+	// control-plane upgrade must not abandon somebody's half-finished build.
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer stop()
+	if err := srv.Run(ctx); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}

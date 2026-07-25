@@ -6,8 +6,8 @@ import (
 
 	"github.com/urfave/cli/v3"
 
-	"monobox.ch/donkey/internal/config"
-	"monobox.ch/donkey/internal/server"
+	"github.com/adrianliechti/donkey/internal/config"
+	"github.com/adrianliechti/donkey/internal/server"
 )
 
 func addonCommand() *cli.Command {
@@ -56,6 +56,7 @@ func addonAddCommand() *cli.Command {
 			}
 			u := s.UI
 			u.Printf("Setting up %s for %s…", u.Bold(typ), u.Bold(app.Name))
+			u.Info("The first time can take a minute while the cluster downloads the %s image.", typ)
 			if err := api.AddAddon(ctx, s.Space, app.Name, server.AddonRequest{
 				Type: typ, Name: name, Version: cmd.String("version"), Storage: cmd.String("storage"),
 			}); err != nil {
@@ -119,6 +120,7 @@ func addonRemoveCommand() *cli.Command {
 		ArgsUsage: "NAME",
 		Flags: []cli.Flag{
 			&cli.BoolFlag{Name: "keep-data", Usage: "keep the stored data (only the running service goes away)"},
+			&cli.BoolFlag{Name: "force", Usage: "don't ask for confirmation (for scripts)"},
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 			s, err := newSession(cmd)
@@ -145,7 +147,12 @@ func addonRemoveCommand() *cli.Command {
 			entry := app.Addons[idx]
 			u := s.UI
 			if !entry.External && !cmd.Bool("keep-data") {
-				if !u.AssumeYes && !u.Confirm(fmt.Sprintf("Remove %s AND permanently delete its data?", name), false) {
+				// Data deletion needs an explicit yes (or --force); --yes
+				// answers prompts with their default, which here is "no".
+				if !cmd.Bool("force") && !u.Confirm(fmt.Sprintf("Remove %s AND permanently delete its data?", name), false) {
+					if !u.Interactive || u.AssumeYes {
+						return fmt.Errorf("removing %s needs confirmation — pass --force to skip the prompt, or --keep-data to spare its data", name)
+					}
 					u.Info("Nothing changed. Use --keep-data to remove only the running service.")
 					return nil
 				}

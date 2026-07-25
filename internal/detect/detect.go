@@ -12,8 +12,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"monobox.ch/donkey/internal/build"
-	"monobox.ch/donkey/internal/config"
+	"github.com/adrianliechti/donkey/internal/build"
+	"github.com/adrianliechti/donkey/internal/config"
 )
 
 type Detection struct {
@@ -23,9 +23,6 @@ type Detection struct {
 	Railpack *build.PlanResult
 	// Summary is a one-line plain-language description of what was found.
 	Summary string
-	// SuggestedPort/SuggestedHealth carry AI hints for the init wizard.
-	SuggestedPort   int
-	SuggestedHealth string
 }
 
 func Detect(dir string, app *config.AppConfig) (*Detection, error) {
@@ -60,7 +57,6 @@ func Detect(dir string, app *config.AppConfig) (*Detection, error) {
 
 // Paths where AI-proposed build files live — donkey never clobbers user files.
 const (
-	AIDir              = ".donkey"
 	AIDockerfilePath   = ".donkey/Dockerfile"
 	AIRailpackConfPath = ".donkey/railpack.json"
 )

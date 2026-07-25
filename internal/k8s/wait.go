@@ -7,8 +7,12 @@ import (
 	"strings"
 	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
+
+	"github.com/adrianliechti/donkey/internal/k8s/manifests"
 )
 
 const rolloutTimeout = 5 * time.Minute
@@ -60,22 +64,62 @@ func (c *Client) WaitForRollout(ctx context.Context, namespace, name string) err
 			st.Replicas == want {
 			return nil
 		}
-		// Fast-fail on clearly stuck pods (crash loops, bad images).
-		if reason := c.stuckReason(ctx, namespace, name); reason != "" {
+		// Fast-fail on clearly stuck pods (crash loops, bad images) — but only
+		// pods of the generation being rolled out: an old copy still crashing
+		// must not condemn the fix that is replacing it.
+		if reason := stuckReason(c.rolloutPods(ctx, dep)); reason != "" {
 			return c.rolloutError(ctx, namespace, name, reason)
 		}
 		time.Sleep(2 * time.Second)
 	}
 }
 
-// stuckReason returns a plain-language reason when a pod of the app is in an
-// unrecoverable-looking state.
-func (c *Client) stuckReason(ctx context.Context, namespace, app string) string {
-	pods, err := c.appPods(ctx, namespace, app)
+// rolloutPods returns the live pods of the deployment's current generation,
+// found via the deployment's own selector (correct for apps and addons alike)
+// and narrowed to the newest template hash when it can be determined.
+func (c *Client) rolloutPods(ctx context.Context, dep *appsv1.Deployment) []corev1.Pod {
+	sel := labels.Set(dep.Spec.Selector.MatchLabels).String()
+	if hash := c.currentTemplateHash(ctx, dep, sel); hash != "" {
+		sel += ",pod-template-hash=" + hash
+	}
+	pods, err := c.Clientset.CoreV1().Pods(dep.Namespace).List(ctx, metav1.ListOptions{LabelSelector: sel})
+	if err != nil {
+		return nil
+	}
+	var out []corev1.Pod
+	for _, p := range pods.Items {
+		if p.DeletionTimestamp == nil {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// currentTemplateHash finds the pod-template-hash of the ReplicaSet that
+// belongs to the deployment's latest revision. "" when it can't be determined
+// (e.g. the first ReplicaSet hasn't been created yet) — all live pods count
+// then.
+func (c *Client) currentTemplateHash(ctx context.Context, dep *appsv1.Deployment, sel string) string {
+	const revisionAnn = "deployment.kubernetes.io/revision"
+	if dep.Annotations[revisionAnn] == "" {
+		return ""
+	}
+	rss, err := c.Clientset.AppsV1().ReplicaSets(dep.Namespace).List(ctx, metav1.ListOptions{LabelSelector: sel})
 	if err != nil {
 		return ""
 	}
-	for _, p := range pods.Items {
+	for _, rs := range rss.Items {
+		if rs.Annotations[revisionAnn] == dep.Annotations[revisionAnn] {
+			return rs.Labels["pod-template-hash"]
+		}
+	}
+	return ""
+}
+
+// stuckReason returns a plain-language reason when a pod is in an
+// unrecoverable-looking state.
+func stuckReason(pods []corev1.Pod) string {
+	for _, p := range pods {
 		for _, cs := range p.Status.ContainerStatuses {
 			if w := cs.State.Waiting; w != nil {
 				switch w.Reason {
@@ -94,27 +138,37 @@ func (c *Client) stuckReason(ctx context.Context, namespace, app string) string 
 
 func (c *Client) rolloutError(ctx context.Context, namespace, app, reason string) *RolloutError {
 	ev := RolloutEvidence{}
-	if pods, err := c.appPods(ctx, namespace, app); err == nil {
-		for _, p := range pods.Items {
-			ev.PodSummaries = append(ev.PodSummaries, podSummary(&p))
-		}
-		if target := newestProblemPod(pods.Items); target != "" {
-			ev.PodLogs = c.podLogs(ctx, namespace, target, 100)
-		}
+	var pods []corev1.Pod
+	if dep, err := c.Clientset.AppsV1().Deployments(namespace).Get(ctx, app, metav1.GetOptions{}); err == nil {
+		pods = c.rolloutPods(ctx, dep)
+	}
+	for _, p := range pods {
+		ev.PodSummaries = append(ev.PodSummaries, podSummary(&p))
+	}
+	if target := newestProblemPod(pods); target != "" {
+		ev.PodLogs = c.podLogs(ctx, namespace, target, 100)
 	}
 	if evs, err := c.Clientset.CoreV1().Events(namespace).List(ctx, metav1.ListOptions{
 		FieldSelector: "type=Warning",
 	}); err == nil {
 		for _, e := range evs.Items {
+			// Only this app's objects: other apps share the namespace, and
+			// their noise would mislead both the user and the AI diagnosis.
+			if e.InvolvedObject.Name != app && !strings.HasPrefix(e.InvolvedObject.Name, app+"-") {
+				continue
+			}
 			ev.Events = append(ev.Events, fmt.Sprintf("%s %s: %s", e.InvolvedObject.Kind, e.InvolvedObject.Name, e.Message))
 		}
 	}
 	return &RolloutError{App: app, Evidence: ev, Reason: reason}
 }
 
+// appPods lists the pods of the app itself — not its addons, and not the
+// short-lived file-browser helper, which would otherwise show up in `donkey
+// status` and count towards the app's restarts.
 func (c *Client) appPods(ctx context.Context, namespace, app string) (*corev1.PodList, error) {
 	return c.Clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
-		LabelSelector: "donkey.dev/app=" + app,
+		LabelSelector: manifests.LabelApp + "=" + app + "," + manifests.LabelComponent + "=" + manifests.ComponentWeb,
 	})
 }
 

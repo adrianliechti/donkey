@@ -22,7 +22,6 @@ Report:
   os.environ, os.Getenv, ENV["PORT"], …) and would use it, answer 0 — any port
   works then. Only answer a number when the code pins one.
 - portReason: one short sentence naming the file you based the port on.
-- startCommand: how the app is started, when the files make it explicit.
 - healthcheckPath: a GET path that answers successfully without authentication
   (e.g. a /health, /healthz, /ping or /status route defined in the code).
   Answer "" when you don't see one — guessing breaks deployments.
@@ -44,6 +43,23 @@ Report:
 - services: backing services the app clearly expects (currently only
   "postgres" is available); empty when the app needs none. Say in the reason
   which file shows it (a DATABASE_URL default, a psycopg import, …).
+- localURLs: absolute addresses written into the code that point at localhost,
+  127.0.0.1, 0.0.0.0, host.docker.internal or a development port — the ones
+  that quietly stop meaning what the author intended once the app runs on a
+  cluster. For each, give the url, the file, a one-sentence reason, and
+  runsIn:
+  · "browser" — the code is delivered to a browser (a React/Vue/Svelte
+    component, anything under src/ that a bundler like vite or webpack builds
+    into the page). There, localhost is the *visitor's own machine*, so such
+    an address is always wrong.
+  · "server" — the code executes inside the container (an API server, a
+    worker, a build script). There, localhost is that container itself: right
+    when it calls a process running beside it, wrong when it means another
+    app, which is reached by its name instead (http://backend).
+  Report only addresses the running app actually calls. Ignore dev-only
+  config a build never ships: a vite/webpack devServer proxy, test fixtures,
+  docker-compose files, comments, README examples, and any default that an
+  environment variable overrides at runtime.
 - notes: one short sentence for a non-technical user.`
 
 const diagnoseSystemPrompt = `You help a deployment tool called donkey explain failures to users who may
@@ -70,7 +86,6 @@ var analysisSchema = map[string]any{
 		"railpackConfig":  map[string]any{"type": "string"},
 		"port":            map[string]any{"type": "integer"},
 		"portReason":      map[string]any{"type": "string"},
-		"startCommand":    map[string]any{"type": "string"},
 		"healthcheckPath": map[string]any{"type": "string"},
 		"volumes": map[string]any{
 			"type": "array",
@@ -96,10 +111,24 @@ var analysisSchema = map[string]any{
 				"additionalProperties": false,
 			},
 		},
+		"localURLs": map[string]any{
+			"type": "array",
+			"items": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"url":    map[string]any{"type": "string"},
+					"file":   map[string]any{"type": "string"},
+					"runsIn": map[string]any{"type": "string", "enum": []string{"browser", "server"}},
+					"reason": map[string]any{"type": "string"},
+				},
+				"required":             []string{"url", "file", "runsIn", "reason"},
+				"additionalProperties": false,
+			},
+		},
 		"notes": map[string]any{"type": "string"},
 	},
 	"required": []string{"appType", "strategy", "dockerfile", "railpackConfig", "port", "portReason",
-		"startCommand", "healthcheckPath", "volumes", "services", "notes"},
+		"healthcheckPath", "volumes", "services", "localURLs", "notes"},
 	"additionalProperties": false,
 }
 

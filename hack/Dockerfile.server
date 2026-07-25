@@ -4,5 +4,15 @@
 # bash-based build scripts at plan time.
 FROM alpine:3.20
 RUN apk add --no-cache git bash curl ca-certificates
-COPY donkey-server /donkey-server
+# donkey-server holds cluster-admin, so it runs as an ordinary user. The USER
+# is numeric because the kubelet enforces runAsNonRoot by reading it, and a
+# name it cannot resolve makes the pod fail to start instead.
+RUN adduser -D -u 10001 donkey
+# Everything the server writes goes to /tmp (world-writable): the build
+# contexts it unpacks, and the mise binary railpack downloads to
+# /tmp/railpack at plan time. HOME is set explicitly — the container runtime
+# would otherwise hand a numeric user /root, which this user cannot write.
+ENV HOME=/home/donkey
+COPY --chmod=0755 donkey-server /donkey-server
+USER 10001:10001
 ENTRYPOINT ["/donkey-server"]

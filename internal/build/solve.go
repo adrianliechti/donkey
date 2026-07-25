@@ -7,10 +7,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strconv"
+	"strings"
 
 	bkclient "github.com/moby/buildkit/client"
 	"github.com/moby/buildkit/client/llb"
@@ -21,7 +23,7 @@ import (
 	"github.com/tonistiigi/fsutil"
 	"golang.org/x/sync/errgroup"
 
-	"monobox.ch/donkey/internal/config"
+	"github.com/adrianliechti/donkey/internal/config"
 )
 
 // BuildKitBuilder drives any BuildKit daemon over gRPC — for donkey-server
@@ -108,9 +110,14 @@ func (b *BuildKitBuilder) solveOpt(ctx context.Context, req Request) (*llb.Defin
 
 	switch req.Strategy {
 	case config.BuildDockerfile:
-		dockerfilePath := req.DockerfilePath
-		if !filepath.IsAbs(dockerfilePath) {
-			dockerfilePath = filepath.Join(req.ContextDir, dockerfilePath)
+		// The Dockerfile path comes from the uploaded donkey.yaml and must
+		// stay inside the uploaded context: its parent directory is exposed
+		// to the frontend, and a "../…" path would expose (and read as the
+		// Dockerfile) files of the server itself.
+		dockerfilePath := filepath.Join(req.ContextDir, req.DockerfilePath)
+		if rel, err := filepath.Rel(req.ContextDir, dockerfilePath); err != nil ||
+			rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return nil, nil, fmt.Errorf("build.dockerfile %q points outside the app folder", req.DockerfilePath)
 		}
 		dockerfileFS, err := fsutil.NewFS(filepath.Dir(dockerfilePath))
 		if err != nil {
@@ -173,17 +180,8 @@ func secretsHash(env map[string]string) string {
 		return ""
 	}
 	h := sha256.New()
-	for _, k := range sortedKeys(env) {
+	for _, k := range slices.Sorted(maps.Keys(env)) {
 		fmt.Fprintf(h, "%s=%s\n", k, env[k])
 	}
 	return hex.EncodeToString(h.Sum(nil))
-}
-
-func sortedKeys(m map[string]string) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
 }

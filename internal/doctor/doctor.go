@@ -6,8 +6,7 @@ import (
 	"context"
 	"time"
 
-	"monobox.ch/donkey/internal/config"
-	"monobox.ch/donkey/internal/ui"
+	"github.com/adrianliechti/donkey/internal/ui"
 )
 
 type Status int
@@ -28,7 +27,6 @@ type Result struct {
 }
 
 type Check struct {
-	ID   string
 	Name string // friendly, e.g. "Connected to the donkey server"
 	// Explain says why donkey needs this, in ordinary words.
 	Explain string
@@ -37,17 +35,13 @@ type Check struct {
 	Run func(ctx context.Context, env *Env) Result
 }
 
-// Env is everything checks may inspect. Fields are optional; checks must
-// degrade gracefully when something is nil.
+// Env is everything checks may inspect.
 type Env struct {
-	Global     *config.GlobalConfig
-	GlobalPath string
-	AppDir     string
-	App        *config.AppConfig
+	AppDir string
 }
 
-func NewEnv(global *config.GlobalConfig, globalPath, appDir string, app *config.AppConfig) *Env {
-	return &Env{Global: global, GlobalPath: globalPath, AppDir: appDir, App: app}
+func NewEnv(appDir string) *Env {
+	return &Env{AppDir: appDir}
 }
 
 const checkTimeout = 30 * time.Second
@@ -62,11 +56,11 @@ func Report(ctx context.Context, u *ui.UI, env *Env, checks []*Check) bool {
 		cancel()
 		switch r.Status {
 		case OK:
-			u.Success("%s%s", c.Name, suffix(r.Detail))
+			u.Success("%s%s", c.Name, Suffix(r.Detail))
 		case Info:
-			u.Info("%s%s", c.Name, suffix(r.Detail))
+			u.Info("%s%s", c.Name, Suffix(r.Detail))
 		case Warn:
-			u.Warn("%s%s", c.Name, suffix(r.Detail))
+			u.Warn("%s%s", c.Name, Suffix(r.Detail))
 		case Fail:
 			ok = false
 			u.Fail("%s — %s", c.Name, r.Detail)
@@ -84,7 +78,9 @@ func Report(ctx context.Context, u *ui.UI, env *Env, checks []*Check) bool {
 	return ok
 }
 
-func suffix(detail string) string {
+// Suffix formats a check detail for display (shared with the CLI's rendering
+// of server-side checks).
+func Suffix(detail string) string {
 	if detail == "" {
 		return ""
 	}

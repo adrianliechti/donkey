@@ -104,6 +104,17 @@ const (
 // namespace, hostnames and object names.
 var nameRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$`)
 
+// ValidName reports whether s is a name donkey accepts for apps, spaces and
+// addons. The server checks URL path values against it — they feed namespace,
+// hostname and object names, so they follow donkey.yaml's rules.
+func ValidName(s string) bool { return nameRE.MatchString(s) }
+
+// domainRE is a plain DNS hostname of at least two labels. The value becomes
+// a route hostname, a name on a certificate and part of the login callback
+// URL — none of which accept a wildcard, a scheme, a port or a path, and all
+// of which are lowercase.
+var domainRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$`)
+
 // sizeRE accepts the Kubernetes quantity spellings people actually use for
 // disks; the cluster does the real parsing.
 var sizeRE = regexp.MustCompile(`^[0-9]+(\.[0-9]+)?(Ki|Mi|Gi|Ti|Pi|K|M|G|T|P)?$`)
@@ -183,10 +194,18 @@ func (c *AppConfig) Validate() error {
 	if p := c.Healthcheck.Path; p != "" && !strings.HasPrefix(p, "/") {
 		return fmt.Errorf("healthcheck.path must start with a slash, e.g. /healthz")
 	}
+	// A wildcard would ask cert-manager for a certificate no HTTP-01 solver
+	// can issue, and would hand the app every hostname under it.
+	if d := c.Domain; d != "" && (!domainRE.MatchString(d) || len(d) > 253) {
+		return fmt.Errorf("domain %q must be a plain hostname like %q — lowercase, no wildcard, no https:// and no path", d, "app.example.com")
+	}
 	seen := map[string]bool{}
 	for _, a := range c.Addons {
 		if a.Type == "" {
 			return fmt.Errorf("addon %q needs a type (e.g. postgres)", a.Name)
+		}
+		if !nameRE.MatchString(a.Name) {
+			return fmt.Errorf("addon name %q must be lowercase letters, digits and dashes (max 40 chars)", a.Name)
 		}
 		if seen[a.Name] {
 			return fmt.Errorf("two addons share the name %q — give them distinct names", a.Name)

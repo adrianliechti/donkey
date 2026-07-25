@@ -49,12 +49,17 @@ func isTerminal(f *os.File) bool {
 }
 
 func (u *UI) Printf(format string, a ...any)  { fmt.Fprintf(u.Out, format+"\n", a...) }
-func (u *UI) Success(format string, a ...any) { u.glyph(styleOK, "✓", format, a...) }
-func (u *UI) Warn(format string, a ...any)    { u.glyph(styleWarn, "!", format, a...) }
-func (u *UI) Fail(format string, a ...any)    { u.glyph(styleFail, "✗", format, a...) }
-func (u *UI) Info(format string, a ...any)    { u.glyph(styleFaint, "·", format, a...) }
+func (u *UI) Success(format string, a ...any) { u.glyph(u.Out, styleOK, "✓", format, a...) }
+func (u *UI) Info(format string, a ...any)    { u.glyph(u.Out, styleFaint, "·", format, a...) }
 func (u *UI) Bold(s string) string            { return styleBold.Render(s) }
 func (u *UI) Faint(s string) string           { return styleFaint.Render(s) }
+func (u *UI) Green(s string) string           { return styleOK.Render(s) }
+func (u *UI) Red(s string) string             { return styleFail.Render(s) }
+
+// Warn and Fail go to stderr: `donkey apps | grep` must not swallow the very
+// lines that say something is wrong.
+func (u *UI) Warn(format string, a ...any) { u.glyph(u.Err, styleWarn, "!", format, a...) }
+func (u *UI) Fail(format string, a ...any) { u.glyph(u.Err, styleFail, "✗", format, a...) }
 
 // Detail prints technical detail only in verbose mode.
 func (u *UI) Detail(format string, a ...any) {
@@ -63,8 +68,8 @@ func (u *UI) Detail(format string, a ...any) {
 	}
 }
 
-func (u *UI) glyph(style lipgloss.Style, g, format string, a ...any) {
-	fmt.Fprintf(u.Out, "%s %s\n", style.Render(g), fmt.Sprintf(format, a...))
+func (u *UI) glyph(w io.Writer, style lipgloss.Style, g, format string, a ...any) {
+	fmt.Fprintf(w, "%s %s\n", style.Render(g), fmt.Sprintf(format, a...))
 }
 
 // Confirm asks a yes/no question. --yes and non-interactive sessions return def.
@@ -74,9 +79,10 @@ func (u *UI) Confirm(question string, def bool) bool {
 	}
 	v := def
 	if err := huh.NewConfirm().Title(question).Value(&v).Run(); err != nil {
-		// The prompt couldn't be shown (e.g. stdin closed mid-run): fall back
-		// to the default rather than silently refusing.
-		return def
+		// The prompt was interrupted (ctrl-c, stdin closed mid-run): treat it
+		// as "no". Falling back to the default would let an abort proceed
+		// with whatever the question suggested.
+		return false
 	}
 	return v
 }

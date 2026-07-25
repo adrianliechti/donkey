@@ -8,8 +8,9 @@ import (
 	"github.com/charmbracelet/huh"
 	"github.com/urfave/cli/v3"
 
-	"monobox.ch/donkey/internal/apiclient"
-	"monobox.ch/donkey/internal/config"
+	"github.com/adrianliechti/donkey/internal/apiclient"
+	"github.com/adrianliechti/donkey/internal/config"
+	"github.com/adrianliechti/donkey/internal/ui"
 )
 
 func loginCommand() *cli.Command {
@@ -28,12 +29,18 @@ func loginCommand() *cli.Command {
 }
 
 func runLogin(ctx context.Context, cmd *cli.Command) error {
+	u := ui.New(cmd.Bool("verbose"), cmd.Bool("yes"))
 	globalPath, err := config.DefaultGlobalPath()
 	if err != nil {
 		return err
 	}
 	cfg, err := config.LoadGlobal(globalPath)
-	if err != nil || cfg == nil {
+	if err != nil {
+		// Overwriting a broken file would silently lose whatever else it
+		// held (kubeContext, CA path) — make the user look at it first.
+		return fmt.Errorf("%w\n\nFix or delete that file, then log in again", err)
+	}
+	if cfg == nil {
 		cfg = &config.GlobalConfig{}
 	}
 
@@ -47,7 +54,7 @@ func runLogin(ctx context.Context, cmd *cli.Command) error {
 		caFile = cfg.Server.CAFile
 	}
 
-	if (url == "" || token == "") && interactive() {
+	if (url == "" || token == "") && u.Interactive {
 		form := huh.NewForm(huh.NewGroup(
 			huh.NewInput().
 				Title("Address of your donkey server").
@@ -73,7 +80,7 @@ func runLogin(ctx context.Context, cmd *cli.Command) error {
 		return fmt.Errorf("donkey needs both --server and --token to connect")
 	}
 
-	fmt.Println("Checking the connection…")
+	u.Info("Checking the connection…")
 	client, err := apiclient.New(url, token, caFile)
 	if err != nil {
 		return err
@@ -85,6 +92,6 @@ func runLogin(ctx context.Context, cmd *cli.Command) error {
 	if err := cfg.Save(globalPath); err != nil {
 		return err
 	}
-	fmt.Printf("✓ Connected to %s — you're ready to `donkey deploy`.\n", cfg.Server.URL)
+	u.Success("Connected to %s — you're ready to %s.", u.Bold(cfg.Server.URL), u.Bold("donkey deploy"))
 	return nil
 }

@@ -7,16 +7,18 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"strings"
 	"time"
 
-	"monobox.ch/donkey/internal/ai"
-	"monobox.ch/donkey/internal/server"
+	"github.com/adrianliechti/donkey/internal/ai"
+	"github.com/adrianliechti/donkey/internal/server"
 )
 
 type Client struct {
@@ -36,7 +38,12 @@ func New(baseURL, token, caFile string) (*Client, error) {
 		if err != nil {
 			return nil, err
 		}
-		httpClient.Transport = &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool}}
+		// Clone the default transport: it carries proxy support (corporate
+		// networks — exactly where private CAs live), sane dial timeouts and
+		// HTTP/2; a bare &http.Transport{} would silently lose all of that.
+		tr := http.DefaultTransport.(*http.Transport).Clone()
+		tr.TLSClientConfig = &tls.Config{RootCAs: pool}
+		httpClient.Transport = tr
 	}
 	return &Client{
 		BaseURL: strings.TrimSuffix(baseURL, "/"),
@@ -98,7 +105,9 @@ func (c *Client) doJSON(ctx context.Context, method, path string, query url.Valu
 		return apiError(resp)
 	}
 	if out != nil {
-		return json.NewDecoder(resp.Body).Decode(out)
+		if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+			return fmt.Errorf("the server at %s didn't answer like a donkey server — is the address right (and the server up to date)?", c.BaseURL)
+		}
 	}
 	return nil
 }
@@ -115,7 +124,9 @@ func apiError(resp *http.Response) error {
 }
 
 // Ping verifies connectivity and the token, riding out brief hiccups
-// (a control plane that just restarted answers 502 for a few seconds).
+// (a control plane that just restarted answers 502 for a few seconds). It
+// hits the cheap ping endpoint — the expensive dependency probes belong to
+// `donkey doctor` alone.
 func (c *Client) Ping(ctx context.Context) error {
 	var lastErr error
 	for attempt := 0; attempt < 6; attempt++ {
@@ -126,12 +137,19 @@ func (c *Client) Ping(ctx context.Context) error {
 			case <-time.After(2 * time.Second):
 			}
 		}
-		pctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		// The response body is checked, not just the status: an older server
+		// (or any web server) answers unknown GET paths with 200 + HTML via
+		// the SPA fallback, which must not count as "token accepted".
 		var out struct {
-			Checks []server.DoctorCheck `json:"checks"`
+			OK bool `json:"ok"`
 		}
-		lastErr = c.doJSON(pctx, http.MethodGet, "/v1/doctor", nil, nil, &out)
+		pctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		lastErr = c.doJSON(pctx, http.MethodGet, "/v1/ping", nil, nil, &out)
 		cancel()
+		if lastErr == nil && !out.OK {
+			lastErr = fmt.Errorf("the server at %s didn't answer like a donkey server — is the address right (and the server up to date)?", c.BaseURL)
+			return lastErr
+		}
 		if lastErr == nil {
 			return nil
 		}
@@ -143,6 +161,12 @@ func (c *Client) Ping(ctx context.Context) error {
 }
 
 func transientPingError(err error) bool {
+	// A name that doesn't resolve is a typo, not a hiccup — retrying it six
+	// times only delays the obvious answer.
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return false
+	}
 	msg := err.Error()
 	for _, s := range []string{"HTTP 502", "HTTP 503", "HTTP 504", "connection refused", "couldn't reach"} {
 		if strings.Contains(msg, s) {

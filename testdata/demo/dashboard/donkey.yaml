@@ -1,0 +1,6 @@
+name: dashboard
+space: demo
+port: 3000
+env:
+  # Apps in one space share a namespace, so the backend is reachable by name.
+  BACKEND_URL: http://backend

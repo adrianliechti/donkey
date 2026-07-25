@@ -47,6 +47,11 @@ type Registry struct {
 	PasswordFile string `json:"passwordFile,omitempty"`
 	// Insecure marks a plain-HTTP registry (local/testing setups only).
 	Insecure bool `json:"insecure,omitempty"`
+	// Immutable marks a registry that refuses to overwrite an existing tag
+	// (ECR tag immutability, GHCR immutable tags, a Harbor rule). Donkey then
+	// makes every image tag unique instead of letting two deploys of one
+	// commit in the same second collide — such a push would be rejected.
+	Immutable bool `json:"immutable,omitempty"`
 	// CAFile is a PEM bundle to trust for this registry — the usual case for
 	// an in-cluster or corporate registry whose certificate comes from a
 	// private CA. Server-side; the file is mounted into donkey-server and the
@@ -77,6 +82,22 @@ func (r Registry) TLSConfig() (*tls.Config, error) {
 func (r Registry) Host() string {
 	host, _, _ := strings.Cut(r.URL, "/")
 	return host
+}
+
+// Validate rejects registry URLs that cannot work as image prefixes: an OCI
+// reference carries no scheme and allows no uppercase — with one, every
+// build would fail with a cryptic push error long after install.
+func (r Registry) Validate() error {
+	if r.URL == "" {
+		return nil
+	}
+	if strings.Contains(r.URL, "://") {
+		return fmt.Errorf("registry.url %q must not have a scheme — write it like registry.example.com/donkey (https is implied unless registry.insecure is set)", r.URL)
+	}
+	if r.URL != strings.ToLower(r.URL) {
+		return fmt.Errorf("registry.url %q must be lowercase — image references don't allow uppercase letters", r.URL)
+	}
+	return nil
 }
 
 // Password resolves the registry credential: $DONKEY_REGISTRY_PASSWORD wins,

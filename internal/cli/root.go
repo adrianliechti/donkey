@@ -4,18 +4,17 @@ package cli
 import (
 	"context"
 	"fmt"
-	"os"
 	"path/filepath"
 
 	"github.com/urfave/cli/v3"
 
-	"monobox.ch/donkey/internal/apiclient"
-	"monobox.ch/donkey/internal/config"
-	"monobox.ch/donkey/internal/gitutil"
-	"monobox.ch/donkey/internal/ui"
+	"github.com/adrianliechti/donkey/internal/apiclient"
+	"github.com/adrianliechti/donkey/internal/config"
+	"github.com/adrianliechti/donkey/internal/gitutil"
+	"github.com/adrianliechti/donkey/internal/ui"
 )
 
-// version is stamped via -ldflags "-X monobox.ch/donkey/internal/cli.version=…".
+// version is stamped via -ldflags "-X github.com/adrianliechti/donkey/internal/cli.version=…".
 var version = "dev"
 
 func Run(ctx context.Context, args []string) error {
@@ -37,6 +36,7 @@ func Run(ctx context.Context, args []string) error {
 			statusCommand(),
 			logsCommand(),
 			envCommand(),
+			filesCommand(),
 			addonCommand(),
 			destroyCommand(),
 			openCommand(),
@@ -58,6 +58,10 @@ type session struct {
 	// Space is the app folder's space, already resolved (flag > donkey.yaml >
 	// repository name > folder name). Every server call is scoped by it.
 	Space string
+	// AppErr is a broken donkey.yaml. It must not lock the user out of every
+	// command (`donkey doctor` exists to explain exactly this) — commands
+	// that need the app surface it via requireApp.
+	AppErr error
 }
 
 func newSession(cmd *cli.Command) (*session, error) {
@@ -71,21 +75,18 @@ func newSession(cmd *cli.Command) (*session, error) {
 		return nil, err
 	}
 	appDir := cmd.String("app-dir")
-	app, err := config.LoadApp(appDir)
-	if err != nil {
-		return nil, err
-	}
+	app, appErr := config.LoadApp(appDir)
 	flags := config.Flags{
 		KubeContext: cmd.String("context"),
 		AppDir:      appDir,
 		Space:       cmd.String("space"),
-		Verbose:     cmd.Bool("verbose"),
 	}
 	return &session{
 		UI:         u,
 		Resolved:   config.Resolve(flags, global, app),
 		GlobalPath: globalPath,
 		Space:      config.ResolveSpace(flags.Space, app, appDir, gitutil.RepoRoot(appDir)),
+		AppErr:     appErr,
 	}, nil
 }
 
@@ -115,6 +116,11 @@ func overviewAction(ctx context.Context, cmd *cli.Command) error {
 		return nil
 	}
 	u.Success("Connected to %s", s.Resolved.Global.Server.URL)
+	if s.AppErr != nil {
+		u.Printf("")
+		u.Warn("This folder's donkey.yaml has a problem — %s explains it.", u.Bold("donkey doctor"))
+		return nil
+	}
 	if s.Resolved.App != nil {
 		u.Printf("")
 		u.Printf("This folder contains the app %s, in the space %s.", u.Bold(s.Resolved.App.Name), u.Bold(s.Space))
@@ -126,13 +132,4 @@ func overviewAction(ctx context.Context, cmd *cli.Command) error {
 		u.Printf("No app in %s yet — run %s inside a project folder to get started.", abs, u.Bold("donkey deploy"))
 	}
 	return nil
-}
-
-// interactive reports whether we can prompt the user.
-func interactive() bool {
-	fi, err := os.Stdin.Stat()
-	if err != nil {
-		return false
-	}
-	return fi.Mode()&os.ModeCharDevice != 0
 }
