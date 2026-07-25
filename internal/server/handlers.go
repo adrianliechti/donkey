@@ -42,6 +42,10 @@ type StatusResponse struct {
 	Restarts int32    `json:"restarts,omitempty"`
 	// StartedAt is when the newest pod came up (RFC 3339; empty when none).
 	StartedAt string `json:"startedAt,omitempty"`
+	// HasStorage is true when the app owns a disk. The file browser is only
+	// meaningful then — an app with no volume has nothing donkey can show
+	// that a redeploy would not rebuild.
+	HasStorage bool `json:"hasStorage"`
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
@@ -62,6 +66,10 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		Image:    st.Image,
 		Pods:     st.Pods,
 		Restarts: st.Restarts,
+		// The claim is the disk: it outlives the pods, so this is true even
+		// while the app is stopped or crash-looping — which is exactly when
+		// someone needs to look at what is on it.
+		HasStorage: s.k8s.HasDataClaim(r.Context(), ns, app),
 	}
 	if !st.StartedAt.IsZero() {
 		resp.StartedAt = st.StartedAt.UTC().Format(time.RFC3339)

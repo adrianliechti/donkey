@@ -385,3 +385,65 @@ func mustObjects(t *testing.T, in Input) []runtime.Object {
 	}
 	return objs
 }
+
+// The app.kubernetes.io/* labels exist so donkey's grouping is readable by
+// tools that never heard of donkey. `part-of` is the one that matters: it is
+// the standard spelling of the thing a space is.
+func TestStandardLabels(t *testing.T) {
+	l := Labels("demo", "backend", ComponentWeb)
+	for k, want := range map[string]string{
+		"app.kubernetes.io/name":       "backend",
+		"app.kubernetes.io/part-of":    "demo",
+		"app.kubernetes.io/component":  ComponentWeb,
+		"app.kubernetes.io/managed-by": ManagedByValue,
+		LabelApp:                       "backend",
+		LabelSpace:                     "demo",
+	} {
+		if l[k] != want {
+			t.Errorf("%s = %q, want %q", k, l[k], want)
+		}
+	}
+	// A caller with no space must not claim the app is part of one.
+	if _, ok := Labels("", "backend", ComponentWeb)["app.kubernetes.io/part-of"]; ok {
+		t.Error("part-of must be absent when the space is unknown")
+	}
+}
+
+// A selector cannot be changed after the Deployment exists, so the labels the
+// pods are selected by must stay exactly what they always were — adding
+// metadata labels must never reach them.
+func TestDeploymentSelectorIsUnaffectedByLabels(t *testing.T) {
+	in := testInput(t)
+	dep, err := deployment(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sel := dep.Spec.Selector.MatchLabels
+	if len(sel) != 2 || sel[LabelApp] != in.App.Name || sel[LabelComponent] != ComponentWeb {
+		t.Fatalf("the selector must stay donkey.dev/app + donkey.dev/component only, got %v", sel)
+	}
+	// The pod template still has to satisfy it.
+	for k, v := range sel {
+		if dep.Spec.Template.Labels[k] != v {
+			t.Errorf("pod template is missing selector label %s=%s", k, v)
+		}
+	}
+}
+
+func TestVersionLabelFromImageTag(t *testing.T) {
+	for image, want := range map[string]string{
+		"registry.example.com/donkey/shop:4f2a9c-20260724143022": "4f2a9c-20260724143022",
+		"registry.example.com:5000/shop:v1.2.3":                  "v1.2.3",
+		// No tag, and a digest: neither is a version to publish.
+		"registry.example.com/donkey/shop":        "",
+		"registry.example.com/shop@sha256:abc123": "",
+		// Rejected rather than risked: an invalid value would fail the apply.
+		"registry.example.com/shop:-nope":                      "",
+		"registry.example.com/shop:" + strings.Repeat("x", 64): "",
+	} {
+		got := withVersion(map[string]string{}, image)["app.kubernetes.io/version"]
+		if got != want {
+			t.Errorf("withVersion(%q) = %q, want %q", image, got, want)
+		}
+	}
+}

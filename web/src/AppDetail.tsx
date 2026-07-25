@@ -59,6 +59,10 @@ export function AppDetail({
 }) {
   const fetcher = useCallback(() => api.status(space, app), [space, app])
   const { data: status, error, updatedAt, reload } = usePoll(fetcher, 10_000)
+  // The tab also comes from the URL, so it can name one that is not offered:
+  // .../files for an app with no disk. Fall back rather than leave the panel
+  // blank with nothing selected.
+  const shown: AppTab = tab === 'files' && !status?.hasStorage ? 'overview' : tab
 
   return (
     <div className="space-y-5">
@@ -138,12 +142,18 @@ export function AppDetail({
               explain it belongs above the tabs, on every one of them. */}
           {!status.healthy && <DiagnoseCard space={space} app={app} />}
 
+          {/* Files is only offered when there is a disk to browse. An app
+              without one has nothing on it a redeploy would not rebuild, so
+              the tab could only ever open onto an empty container.
+              `shown` matters because the tab also comes from the URL: a link
+              to .../files for an app with no disk would otherwise select a tab
+              that is not in the list and render nothing at all. */}
           <nav className="flex gap-1 border-b border-line" role="tablist">
-            {TABS.map((t) => (
+            {TABS.filter((t) => t.id !== 'files' || status.hasStorage).map((t) => (
               <button
                 key={t.id}
                 role="tab"
-                aria-selected={tab === t.id}
+                aria-selected={shown === t.id}
                 onClick={() => onTab(t.id)}
                 className={`-mb-px flex items-center gap-1.5 border-b-2 px-3 py-2 text-sm transition-colors focus-visible:outline-2 focus-visible:outline-hay-deep ${
                   tab === t.id
@@ -157,15 +167,15 @@ export function AppDetail({
             ))}
           </nav>
 
-          {tab === 'overview' && (
+          {shown === 'overview' && (
             <>
               <InstancesCard pods={status.pods} />
               <AddonsCard space={space} app={app} />
             </>
           )}
-          {tab === 'logs' && <LogsPanel space={space} app={app} />}
-          {tab === 'files' && <FilesPanel space={space} app={app} />}
-          {tab === 'settings' && (
+          {shown === 'logs' && <LogsPanel space={space} app={app} />}
+          {shown === 'files' && <FilesPanel space={space} app={app} />}
+          {shown === 'settings' && (
             <>
               <EnvEditor space={space} app={app} onSaved={reload} />
               <DangerZone space={space} app={app} onDestroyed={onBack} />

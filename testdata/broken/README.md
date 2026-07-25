@@ -17,10 +17,20 @@ builds, starts, logs something reassuring, and never answers.
 | `flask-loopback/` | `app.run(debug=True, port=5000)` binds 127.0.0.1 | rollout — the probe can't connect, and the log says "Running on…" | one argument: `host="0.0.0.0"` |
 | `express-loopback/` | `app.listen(3000, '127.0.0.1')` | rollout — same failure, other language | drop the host argument |
 | `streamlit-bare/` | no Procfile, so it is started with `python app.py` | rollout — Streamlit runs in bare mode, every `st.*` a no-op, no server ever created | a start command that uses the `streamlit` binary |
-| `missing-dependency/` | imports flask, declares it nowhere | runtime — `ModuleNotFoundError` on the first line | a `requirements.txt` that does not exist yet |
+| `no-manifest/` | imports flask, declares it nowhere | runtime — `ModuleNotFoundError` on the first line, then a crash loop | a `requirements.txt` that does not exist yet |
 
-The last one is the interesting case for the patch itself: the fix has to
-**create** a file rather than change one, so the diff is a pure addition.
+The last one is the interesting case twice over. The fix has to **create** a
+file rather than change one, so the diff is a pure addition — and it is the
+only one of the four that fails *fast*: a crash loop is recognizable, so
+donkey stops instead of waiting out the rollout. The other three run happily
+and answer nobody, which is exactly why they take the full timeout.
+
+It is also the one donkey comes closest to fixing on its own already. The
+assistant names the problem while *reading* the app — "this app needs Flask,
+but the repository has no dependency file" — but nothing acts on that, because
+a proposed build is only used when detection fails, and here railpack
+succeeds. Until that changes, the fix arrives after the failure rather than
+before it.
 
 ## Running them
 

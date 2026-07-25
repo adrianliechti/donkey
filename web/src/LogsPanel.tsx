@@ -91,7 +91,7 @@ export function LogsPanel({ space, app }: { space: string; app: string }) {
             onClick={load}
             className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-stone hover:bg-line/50 focus-visible:outline-2 focus-visible:outline-hay-deep"
           >
-            <RefreshCw className={`size-3.5 ${busy && !follow ? 'animate-spin' : ''}`} aria-hidden /> Refresh
+            <RefreshCw className={`size-3.5 ${busy && !follow ? 'animate-spin' : ''}`} aria-hidden />
           </button>
         </div>
       </div>

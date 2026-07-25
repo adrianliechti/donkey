@@ -22,6 +22,8 @@ export interface AppStatus {
   pods: string[]
   restarts?: number
   startedAt?: string
+  /** True when the app owns a disk — the only case where files exist to browse. */
+  hasStorage?: boolean
 }
 
 export interface AddonEntry {

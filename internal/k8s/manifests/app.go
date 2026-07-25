@@ -9,7 +9,9 @@ import (
 	"fmt"
 	"maps"
 	"path"
+	"regexp"
 	"slices"
+	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -51,6 +53,18 @@ const (
 
 // Labels marks one object as donkey's. Callers that don't know the space
 // (older objects, cluster-wide lookups) pass "" and simply get no space label.
+//
+// Two sets are written, saying the same things. donkey.dev/* is what donkey
+// selects on, so its meaning is fixed by this code and nothing else. The
+// app.kubernetes.io/* set is the Kubernetes-recommended vocabulary, and it is
+// there so donkey's grouping is legible to tools that never heard of donkey:
+// `part-of` is the standard spelling of "these belong to one application",
+// which is exactly what a space is, and it is what k9s, Lens, Backstage and
+// OpenShift's topology view group their displays by.
+//
+// These are metadata labels only. The Deployment's own selector is written
+// separately from donkey.dev/* alone (see appDeployment) — a selector is
+// immutable once created, so adding a label here must never change one.
 func Labels(space, app, component string) map[string]string {
 	l := map[string]string{
 		"app.kubernetes.io/name":       app,
@@ -58,9 +72,40 @@ func Labels(space, app, component string) map[string]string {
 		LabelApp:                       app,
 		LabelComponent:                 component,
 	}
+	if component != "" {
+		l["app.kubernetes.io/component"] = component
+	}
 	if space != "" {
 		l[LabelSpace] = space
+		l["app.kubernetes.io/part-of"] = space
 	}
+	return l
+}
+
+// labelValue matches what Kubernetes accepts as a label value.
+var labelValue = regexp.MustCompile(`^[A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?$`)
+
+// withVersion adds the standard version label, taken from the image's tag.
+//
+// The tag is not donkey's to choose — `--tag` accepts whatever the user
+// passes — and a label value the API server rejects would fail the whole
+// apply. So a tag that cannot be a label is simply not published as one: a
+// missing label costs a line in `k9s`, a rejected one costs the deploy.
+func withVersion(l map[string]string, imageRef string) map[string]string {
+	tag := imageRef
+	if i := strings.LastIndex(tag, "@"); i >= 0 {
+		tag = tag[:i] // a digest is not a version
+	}
+	slash := strings.LastIndex(tag, "/")
+	if i := strings.LastIndex(tag, ":"); i > slash {
+		tag = tag[i+1:]
+	} else {
+		return l
+	}
+	if len(tag) > 63 || !labelValue.MatchString(tag) {
+		return l
+	}
+	l["app.kubernetes.io/version"] = tag
 	return l
 }
 
@@ -370,7 +415,7 @@ func deployment(in Input) (*appsv1.Deployment, error) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        app.Name,
 			Namespace:   in.Namespace,
-			Labels:      Labels(in.Space, app.Name, ComponentWeb),
+			Labels:      withVersion(Labels(in.Space, app.Name, ComponentWeb), in.ImageRef),
 			Annotations: annotations,
 		},
 		Spec: appsv1.DeploymentSpec{
@@ -379,7 +424,7 @@ func deployment(in Input) (*appsv1.Deployment, error) {
 				MatchLabels: map[string]string{LabelApp: app.Name, LabelComponent: ComponentWeb},
 			},
 			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{Labels: Labels(in.Space, app.Name, ComponentWeb)},
+				ObjectMeta: metav1.ObjectMeta{Labels: withVersion(Labels(in.Space, app.Name, ComponentWeb), in.ImageRef)},
 			},
 		},
 	}

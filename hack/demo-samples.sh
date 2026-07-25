@@ -65,7 +65,6 @@ SHOULD_WORK=(
 # Folders that exist because they are hard. Failing is an acceptable outcome;
 # failing *silently* is not.
 CHALLENGES=(
-  "no-manifest"
   # Its Dockerfile hardcodes `httpd -p 8080` and cannot read $PORT, so this one
   # only works if the port is taken from EXPOSE rather than assumed.
   "kitchen-sink-sample/gateway"
@@ -126,9 +125,9 @@ printf '\n'
 for r in "${results[@]}"; do
   IFS='|' read -r status group dir elapsed <<< "${r}"
   if [ "${status}" = "ok" ]; then
-    printf '  \033[32m✓\033[0m  %-28s %-12s %s\n' "${dir}" "${group}" "${elapsed}"
+    printf '  %s✓%s  %-28s %-12s %s\n' "${C_OK}" "${C_OFF}" "${dir}" "${group}" "${elapsed}"
   else
-    printf '  \033[31m✗\033[0m  %-28s %-12s %s\n' "${dir}" "${group}" "${elapsed}"
+    printf '  %s✗%s  %-28s %-12s %s\n' "${C_BAD}" "${C_OFF}" "${dir}" "${group}" "${elapsed}"
   fi
 done
 
@@ -140,7 +139,7 @@ cat <<EOF
 EOF
 
 if [ "${failed_strict}" -ne 0 ]; then
-  printf '\n\033[31mA sample donkey should handle on its own did not deploy.\033[0m\n' >&2
+  printf '\n%sA sample donkey should handle on its own did not deploy.%s\n' "${C_BAD}" "${C_OFF}" >&2
   exit 1
 fi
 

@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react'
-import { Boxes, LogOut, Server, UploadCloud } from 'lucide-react'
+import { Boxes, Server, UploadCloud } from 'lucide-react'
 import { clearToken, getToken, setUnauthorizedHandler } from './api'
 import { AppDetail, type AppTab } from './AppDetail'
 import { AppsList } from './AppsList'
 import { DeployView } from './DeployView'
 import { Login } from './Login'
 import { SystemView } from './SystemView'
+import { UserMenu } from './UserMenu'
 
 type View =
   | { page: 'apps' }
@@ -124,15 +125,12 @@ export default function App() {
             >
               <UploadCloud className="size-4" aria-hidden /> Deploy
             </button>
-            <button
-              onClick={() => {
+            <UserMenu
+              onSignOut={() => {
                 clearToken()
                 setConnected(false)
               }}
-              className="flex items-center gap-1.5 rounded-md px-2 py-1.5 text-sm text-stone hover:bg-line/60 hover:text-ink focus-visible:outline-2 focus-visible:outline-hay-deep"
-            >
-              <LogOut className="size-4" aria-hidden /> Sign out
-            </button>
+            />
           </div>
         </div>
       </header>

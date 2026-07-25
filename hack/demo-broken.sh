@@ -74,16 +74,16 @@ check() {
 check "flask-loopback"     "binds 127.0.0.1, so nothing reaches it"
 check "express-loopback"   "binds 127.0.0.1, so nothing reaches it"
 check "streamlit-bare"     "started with python, so no server is ever created"
-check "missing-dependency" "imports flask and declares it nowhere"
+check "no-manifest"        "imports flask and declares it nowhere"
 
 say "results (space: ${SPACE})"
 printf '\n'
 for r in "${results[@]}"; do
   IFS='|' read -r status dir note <<< "${r}"
   if [ "${status}" = "ok" ]; then
-    printf '  \033[32m✓\033[0m  %-22s %s\n' "${dir}" "${note}"
+    printf '  %s✓%s  %-22s %s\n' "${C_OK}" "${C_OFF}" "${dir}" "${note}"
   else
-    printf '  \033[31m✗\033[0m  %-22s %s (%s)\n' "${dir}" "${note}" "${status}"
+    printf '  %s✗%s  %-22s %s (%s)\n' "${C_BAD}" "${C_OFF}" "${dir}" "${note}" "${status}"
   fi
 done
 
@@ -96,7 +96,7 @@ cat <<EOF
 EOF
 
 if [ "${failures}" -ne 0 ]; then
-  printf '\n\033[31m%d broken app(s) were not explained and patched.\033[0m\n' "${failures}" >&2
+  printf '\n%s%d broken app(s) were not explained and patched.%s\n' "${C_BAD}" "${failures}" "${C_OFF}" >&2
   exit 1
 fi
 

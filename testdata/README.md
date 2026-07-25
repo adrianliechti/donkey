@@ -69,7 +69,6 @@ health route, which folder holds data, and sometimes what to install.
 |---|---|---|
 | `flask-beginner/` | Python, one file | One file, one route, `requirements.txt`, nothing else: no Procfile, no health route, no config. It binds `0.0.0.0` and reads `$PORT`, so it is deployable — everything else about it has to be worked out. |
 | `streamlit-report/` | Streamlit | An analyst's script that grew a UI. It is run by the `streamlit` binary rather than by python, which its Procfile says — and that line is also where the address and port are settled, because Streamlit takes them as flags. Nothing declares the port, the health route (`/_stcore/health`) or the websocket the page needs. |
-| `no-manifest/` | Python | Imports `flask` and lists it **nowhere** — no requirements.txt, no lockfile. Saved out of a chat window and it ran, because that laptop happened to have flask. |
 | `My Cool App/` | Static files | A folder named the way people name folders: spaces, capitals, `main style.css`, `IMG_2024 (1).svg`. The name has to become `my-cool-app` and every file has to survive the round trip unmangled. |
 
 ## Awkward on purpose
@@ -92,8 +91,6 @@ health route, which folder holds data, and sometimes what to install.
 - `flask-beginner/` and `streamlit-report/` deploy with no questions asked.
   Both say how they start and nothing else; a rollout timeout with no
   explanation is a failure of donkey, not of the sample.
-- `no-manifest/` either gets its dependency worked out, or is told which one
-  is missing — never a `ModuleNotFoundError` from inside a build.
 - `My Cool App/` lands at `my-cool-app.<space>.…` with the stylesheet and the
   image both loading.
 - `local-habits/` deploys **and warns** about `App.jsx`, while staying silent
@@ -108,7 +105,7 @@ health route, which folder holds data, and sometimes what to install.
 ## The ones that are supposed to fail
 
 `broken/` is the other half, and it is a separate suite with inverted
-assertions — see [broken/README.md](broken/README.md). Those four apps exist
+assertions — see [broken/README.md](broken/README.md). Those apps exist
 to exercise what only runs when a deploy goes wrong: donkey reading the code,
 explaining the cause, and proposing a patch. `task demo:broken` fails if one
 of them *deploys*, or fails without an explanation and a diff.
@@ -151,7 +148,8 @@ questions:
 
 - **should work** — donkey is expected to get these right unaided, so one of
   them failing fails the run.
-- **challenges** — `no-manifest` and the five `kitchen-sink-sample/` apps.
+- **challenges** — `kitchen-sink-sample/gateway`, whose Dockerfile cannot read
+  `$PORT`, and `kitchen-sink-sample/legacy`, which no provider recognizes.
   These are reported but never fatal. A failure here is only a real failure if
   donkey said *nothing useful* before it happened.
 

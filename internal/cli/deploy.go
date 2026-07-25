@@ -64,6 +64,15 @@ func deployAction(ctx context.Context, cmd *cli.Command) error {
 	}
 
 	if s.Resolved.App == nil {
+		// A folder with no donkey.yaml is not necessarily a new app: it is
+		// just as likely to be the root of a repository whose apps live one or
+		// two levels down. Treating that as "a new app called <repo>" is how a
+		// monorepo ends up deployed as a single mystery app — so the apps are
+		// looked for first, and only a folder that really holds none falls
+		// through to setting one up.
+		if subs := findAppDirs(s.Resolved.Flags.AppDir); len(subs) > 0 {
+			return deployEach(ctx, cmd, u, subs)
+		}
 		// First deploy in this folder: run the init flow, then continue.
 		if _, err := initFlow(ctx, s, cmd); err != nil {
 			return err

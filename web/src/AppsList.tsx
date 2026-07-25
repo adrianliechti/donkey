@@ -1,16 +1,20 @@
-import { useCallback } from 'react'
-import { ExternalLink, RefreshCw } from 'lucide-react'
+import { useCallback, useState } from 'react'
+import { RefreshCw } from 'lucide-react'
 import { api, type AppSummary } from './api'
 import { usePoll } from './hooks'
-import { Card, ErrorNote, Skeleton, StatusDot, UpdatedAgo, ago, healthLine, healthOf, type Health } from './ui'
+import { RemoveApps } from './RemoveApps'
+import { SpaceCard } from './SpaceCard'
+import { Card, ErrorNote, Skeleton, healthLine, healthOf, type Health } from './ui'
 
 const healthRank: Record<Health, number> = { bad: 0, unknown: 1, ok: 2 }
 
 
 export function AppsList({ onOpen }: { onOpen: (space: string, app: string) => void }) {
   const fetcher = useCallback(() => api.apps(), [])
-  const { data, error, updatedAt, reload } = usePoll(fetcher, 10_000)
+  const { data, error, reload } = usePoll(fetcher, 10_000)
   const apps = data?.apps ?? null
+  // What the remove dialog is asking about: one app, or a whole space.
+  const [removing, setRemoving] = useState<{ space: string; apps: string[]; siblings: string[] } | null>(null)
 
   // Apps belong to a space; the list mirrors that hierarchy instead of
   // flattening everything into one wall of cards. Within a space, the apps
@@ -21,6 +25,7 @@ export function AppsList({ onOpen }: { onOpen: (space: string, app: string) => v
     grouped.set(space, [...(grouped.get(space) ?? []), app])
   }
   const spaces = [...grouped.entries()].sort(([a], [b]) => a.localeCompare(b))
+
   for (const [, list] of spaces) {
     list.sort((a, b) => {
       const ra = healthRank[healthOf(a.healthy, a.ready)]
@@ -43,12 +48,17 @@ export function AppsList({ onOpen }: { onOpen: (space: string, app: string) => v
       <div className="flex items-center justify-between">
         <h1 className="text-lg font-semibold">Apps</h1>
         <div className="flex items-center gap-3">
-          <UpdatedAgo at={updatedAt} />
+          {/* Icon only, and no "updated 3s ago" beside it: the list polls
+              itself, so the timestamp was reporting on donkey's own behaviour
+              rather than on anything about the apps. */}
           <button
+            type="button"
             onClick={reload}
-            className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-stone hover:bg-line/50 focus-visible:outline-2 focus-visible:outline-hay-deep"
+            title="Refresh"
+            aria-label="Refresh"
+            className="rounded-md p-1.5 text-stone hover:bg-line/50 focus-visible:outline-2 focus-visible:outline-hay-deep"
           >
-            <RefreshCw className="size-3.5" aria-hidden /> Refresh
+            <RefreshCw className="size-4" aria-hidden />
           </button>
         </div>
       </div>
@@ -102,68 +112,21 @@ export function AppsList({ onOpen }: { onOpen: (space: string, app: string) => v
       )}
 
       {spaces.map(([space, spaceApps]) => (
-        <section key={space} className="space-y-3">
-          <h2 className="flex items-baseline gap-2 border-b border-line pb-1">
-            <span className="font-mono text-sm font-bold tracking-tight">{space}</span>
-            <span className="text-xs text-stone">
-              {spaceApps.length} {spaceApps.length === 1 ? 'app' : 'apps'}
-            </span>
-          </h2>
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {spaceApps.map((app) => {
-              const h = healthOf(app.healthy, app.ready)
-              const notch = h === 'ok' ? 'border-l-moss' : h === 'bad' ? 'border-l-brick' : 'border-l-stone/50'
-              return (
-                <div
-                  key={`${app.space}/${app.name}`}
-                  className={`group relative rounded-lg border border-line bg-card p-4 transition-colors hover:bg-hay-wash focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-hay-deep border-l-4 ${notch}`}
-                >
-                  {/* A real link, so the app opens in a new tab on middle-click
-                      — stretched to keep the whole card clickable. */}
-                  <a
-                    href={`#/app/${encodeURIComponent(app.space)}/${encodeURIComponent(app.name)}`}
-                    onClick={(e) => {
-                      if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return
-                      e.preventDefault()
-                      onOpen(app.space, app.name)
-                    }}
-                    className="font-mono text-lg font-bold tracking-tight after:absolute after:inset-0 group-hover:underline focus:outline-none"
-                  >
-                    {app.name}
-                  </a>
-                  <div className="mt-1.5 flex items-center gap-2 text-sm text-ink-soft">
-                    <StatusDot health={h} />
-                    {healthLine[h](app.ready)}
-                    {app.startedAt && <span className="text-xs text-stone">up {ago(app.startedAt)}</span>}
-                    {(app.restarts ?? 0) > 0 && (
-                      <span className="text-xs text-brick" title={`${app.restarts} restarts`}>
-                        {app.restarts}↻
-                      </span>
-                    )}
-                  </div>
-                  {app.url && (
-                    <a
-                      href={app.url}
-                      target="_blank"
-                      rel="noreferrer"
-                      // Above the stretched link, so this opens the app itself.
-                      className="relative z-10 mt-2 flex w-fit items-center gap-1 truncate font-mono text-xs text-stone hover:text-hay-deep hover:underline"
-                    >
-                      <ExternalLink className="size-3 shrink-0" aria-hidden />
-                      {app.url.replace(/^https?:\/\//, '')}
-                    </a>
-                  )}
-                  {app.image && (
-                    <div className="mt-1 truncate font-mono text-xs text-stone/70">
-                      {app.image.split('/').pop()}
-                    </div>
-                  )}
-                </div>
-              )
-            })}
-          </div>
-        </section>
+        <SpaceCard key={space} space={space} apps={spaceApps} onOpen={onOpen} onRemove={setRemoving} />
       ))}
+
+      {removing && (
+        <RemoveApps
+          space={removing.space}
+          apps={removing.apps}
+          siblings={removing.siblings}
+          onDone={() => {
+            setRemoving(null)
+            reload()
+          }}
+          onCancel={() => setRemoving(null)}
+        />
+      )}
     </div>
   )
 }
