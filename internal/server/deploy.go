@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"k8s.io/apimachinery/pkg/runtime"
+
 	"github.com/adrianliechti/donkey/internal/addons"
 	"github.com/adrianliechti/donkey/internal/ai"
 	"github.com/adrianliechti/donkey/internal/build"
@@ -163,6 +165,11 @@ func appFromParams(name, portStr string) (*config.AppConfig, error) {
 	}
 	return app, nil
 }
+
+// preDeployTimeout bounds a pre-deploy step. Migrations on a large table are
+// slow but not endless, and a step that hangs would otherwise hold the deploy
+// open indefinitely.
+const preDeployTimeout = 15 * time.Minute
 
 // analysisDeadline bounds how long a deploy waits for the assistant after the
 // build has finished. It must outlast the assistant's own budget (a 2-minute
@@ -472,27 +479,90 @@ func (s *Server) applyAndWait(ctx context.Context, out *lineStreamer, app *confi
 	if err != nil {
 		return failed(err)
 	}
-	if err := s.k8s.Apply(ctx, objs); err != nil {
+	// The Deployment is applied last. Everything it needs — secrets, the
+	// disk, addon bindings — goes first, so a pre-deploy step runs with the
+	// new configuration while the old version is still the one serving.
+	var deployment []runtime.Object
+	rest := objs[:0]
+	for _, o := range objs {
+		if o.GetObjectKind().GroupVersionKind().Kind == "Deployment" {
+			deployment = append(deployment, o)
+			continue
+		}
+		rest = append(rest, o)
+	}
+	if err := s.k8s.Apply(ctx, rest); err != nil {
 		return failed(fmt.Errorf("the cluster refused the changes: %v", err))
 	}
-	// The app's certificate joins the gateway's https listener; Envoy serves
-	// the right one per hostname.
-	if err := s.attachCertificate(ctx, space, app.Name); err != nil {
+	if len(app.PreDeploy) > 0 {
+		out.Line("Running the pre-deploy step…")
+		if err := s.k8s.RunJob(ctx, manifests.PreDeployJob(in), preDeployTimeout); err != nil {
+			// The Deployment was deliberately not touched, so whatever is
+			// live stays live — that is the point of running this first.
+			r := failed(fmt.Errorf("the pre-deploy step failed, so nothing was changed and the running version keeps serving: %w", err))
+			var je *k8s.JobError
+			if errors.As(err, &je) && je.Logs != "" {
+				out.Line("Output of the pre-deploy step:\n%s", je.Logs)
+				s.diagnoseWith(ctx, &r, ns, app.Name, "predeploy", je.Logs, nil)
+			}
+			return r
+		}
+		out.Line("✓ Pre-deploy step finished.")
+	}
+	if err := s.k8s.Apply(ctx, deployment); err != nil {
+		return failed(fmt.Errorf("the cluster refused the changes: %v", err))
+	}
+	// A `routes:` entry that was dropped from donkey.yaml has to stop
+	// serving; server-side apply only ever adds.
+	if err := s.retractRemovedRoutes(ctx, ns, in); err != nil {
 		return failed(err)
 	}
-	if note := s.waitForCertificate(ctx, space, app.Name, in.Domain); note != "" {
-		out.Line("· %s", note)
+	for _, r := range in.RouteTargets {
+		out.Line("· Also answering https://%s%s", r.Host, r.Path)
 	}
-	// Server-side apply doesn't delete what the new set omits: when the app
-	// is (now) public, retract any login protection from earlier deploys.
-	if app.Public || s.cfg.OIDCIssuer == "" {
+	// Server-side apply never deletes what the new set leaves out, so every
+	// way an app can stop being exposed has to retract the objects itself.
+	switch {
+	case in.Domain == "":
+		// Internal: no hostname, so the route, its certificate and its login
+		// policy all go — including when the app used to have them.
+		for _, kind := range []string{"HTTPRoute", "SecurityPolicy"} {
+			if err := s.k8s.DeleteObject(ctx, kind, ns, app.Name); err != nil {
+				return failed(err)
+			}
+		}
+		if err := s.k8s.DeleteObject(ctx, "Secret", ns, manifests.OIDCSecretName(app.Name)); err != nil {
+			return failed(err)
+		}
+		if err := s.detachCertificate(ctx, space, app.Name); err != nil {
+			return failed(err)
+		}
+		out.Line("· Internal only — the apps of this space reach it at http://%s", app.Name)
+
+	case app.Public || s.cfg.OIDCIssuer == "":
+		// The app's certificate joins the gateway's https listener; Envoy
+		// serves the right one per hostname.
+		if err := s.attachCertificate(ctx, space, app.Name); err != nil {
+			return failed(err)
+		}
+		if note := s.waitForCertificate(ctx, space, app.Name, in.Domain); note != "" {
+			out.Line("· %s", note)
+		}
+		// Now public: retract any login protection from earlier deploys.
 		if err := s.k8s.DeleteObject(ctx, "SecurityPolicy", ns, app.Name); err != nil {
 			return failed(err)
 		}
 		if err := s.k8s.DeleteObject(ctx, "Secret", ns, manifests.OIDCSecretName(app.Name)); err != nil {
 			return failed(err)
 		}
-	} else if in.Domain != "" {
+
+	default:
+		if err := s.attachCertificate(ctx, space, app.Name); err != nil {
+			return failed(err)
+		}
+		if note := s.waitForCertificate(ctx, space, app.Name, in.Domain); note != "" {
+			out.Line("· %s", note)
+		}
 		// Applying the policy only records intent — donkey promised this app
 		// would be private, so it verifies the promise holds.
 		if err := s.waitForLoginPolicy(ctx, ns, app.Name); err != nil {
@@ -558,7 +628,43 @@ func (s *Server) manifestInput(app *config.AppConfig, imageRef string, includeCr
 	for _, a := range app.Addons {
 		in.AddonSecretNames = append(in.AddonSecretNames, addons.SecretName(app.Name, a.Name))
 	}
+	// Each route joins another app's address, so its hostname is that app's.
+	// Only the default hostname is resolvable from here — a target with its
+	// own `domain:` would need looking up, which the validation below says.
+	for _, r := range app.Routes {
+		in.RouteTargets = append(in.RouteTargets, manifests.RouteTarget{
+			App:  r.App,
+			Host: r.App + "." + space + "." + s.cfg.BaseDomain,
+			Path: r.Path,
+		})
+	}
 	return in, nil
+}
+
+// retractRemovedRoutes deletes the shared-address routes (and their login
+// policies) an app used to claim and no longer does. Server-side apply never
+// removes what a new set leaves out, so dropping a `routes:` entry would
+// otherwise keep serving it forever.
+func (s *Server) retractRemovedRoutes(ctx context.Context, ns string, in manifests.Input) error {
+	keep := map[string]bool{}
+	for _, r := range in.RouteTargets {
+		keep[manifests.PathRouteName(in.App.Name, r.App, r.Path)] = true
+	}
+	names, err := s.k8s.ListRouteNames(ctx, ns, in.App.Name)
+	if err != nil {
+		return err
+	}
+	for _, name := range names {
+		if keep[name] {
+			continue
+		}
+		for _, kind := range []string{"SecurityPolicy", "HTTPRoute"} {
+			if err := s.k8s.DeleteObject(ctx, kind, ns, name); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // decisionsJSON records what this deploy settled on (storage, health route)

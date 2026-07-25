@@ -179,6 +179,78 @@ Setting up on the cluster…
   → https://wiki.acme.apps.example.com
 ```
 
+## donkey.yaml
+
+The whole file is optional — `donkey init` writes one, and everything in it
+has a working default. It holds no secrets and belongs in the repository.
+
+```yaml
+name: shop                    # the app; becomes <name>.<space>.<domain>
+space: acme                   # default: the repository's folder name
+port: 8000                    # the port your code listens on
+
+public: true                  # skip the login gateway (machine clients)
+internal: true                # no address at all; siblings reach it by name
+routes:                       # …or answer on another app's address
+  - app: dashboard
+    path: /api
+
+command: ["node", "server.js"]        # override the image's start command
+preDeploy: ["python", "manage.py", "migrate"]
+
+healthcheck:
+  path: /healthz              # empty = check that the port answers
+
+env:                          # non-secret values; `donkey env set` for the rest
+  GREETING: hello
+
+storage:                      # one disk, each path its own folder on it
+  size: 5Gi
+  class: fast-ssd             # default: the cluster's default StorageClass
+  paths:
+    - /app/data
+
+addons:
+  - type: postgres
+    name: db
+
+build:
+  type: auto                  # auto | railpack | dockerfile
+  dockerfile: Dockerfile
+  platform: linux/arm64
+  env:                        # build-time values (VITE_*, build args)
+    VITE_API_URL: https://api.example.com
+
+replicas: 2
+domain: shop.example.com      # a hostname of your own instead of the default
+resources:
+  requests: { cpu: 100m, memory: 128Mi }
+  limits:   { memory: 512Mi }
+```
+
+**How an app is reached.** By default it gets `<app>.<space>.<domain>` behind
+the login gateway. `public: true` drops the login. `internal: true` drops the
+address — the app has no hostname, no certificate and nothing on the internet,
+and its siblings call it as `http://<name>`. `routes:` puts it on *another*
+app's address under a path prefix.
+
+Those combine, and the demo uses the combination: its backend is `internal`
+(no address of its own), claims `/api` and `/mcp` on the dashboard's address,
+and is `public` so those two paths stay open for machine clients while the
+dashboard around them still asks for a login. Protection attaches per route,
+not per hostname, which is what makes that possible. The gateway does the
+forwarding, so there is no proxy to write.
+
+**`preDeploy`** runs once against the new image before the new version starts
+serving, with the app's env, addon bindings and disk. Migrations are the
+reason it exists. If it fails, the deploy stops and the version already
+running keeps serving — nothing is swapped for something that cannot start.
+
+**`env` vs `build.env`.** `env` reaches the running container. `build.env`
+reaches the build, which is where a bundler inlines values — a browser bundle
+cannot read a runtime variable, because it was built long before the container
+started.
+
 ## Requirements for a real deployment
 
 donkey installs into a cluster you already run, and stays inside its own
@@ -414,7 +486,7 @@ deliberately trivial auto-approving identity provider
 (`hack/demo/fake-idp/` — everyone is instantly demo@example.com).
 
 ```sh
-task demo            # cluster + control plane + sample app
+task demo            # cluster + control plane + the demo app (dashboard + MCP backend)
 task test            # unit tests (no cluster needed)
 task e2e             # full smoke test, isolated from your real config
 ```

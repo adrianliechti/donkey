@@ -50,8 +50,14 @@ type Analysis struct {
 	RailpackConfig string `json:"railpackConfig"`
 	// Port the app listens on; 0 means "it honors the PORT env var, any port
 	// works".
-	Port            int    `json:"port"`
-	PortReason      string `json:"portReason"`
+	Port       int    `json:"port"`
+	PortReason string `json:"portReason"`
+	// BindsLoopback is true when the code listens on 127.0.0.1/localhost
+	// instead of every interface. In a container that means the app answers
+	// only itself: it starts, logs a URL, and no probe or visitor ever
+	// reaches it. Flask's app.run() and Streamlit's default both do this.
+	BindsLoopback   bool   `json:"bindsLoopback"`
+	BindReason      string `json:"bindReason"`
 	HealthcheckPath string `json:"healthcheckPath"`
 	// Volumes are folders inside the container whose contents must survive a
 	// restart (uploads, databases on disk, generated content).

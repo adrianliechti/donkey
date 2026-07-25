@@ -98,6 +98,10 @@ func initFlow(ctx context.Context, s *session, cmd *cli.Command) (*config.AppCon
 			u.Info("Looks like it needs %s (%s) — add it later with %s",
 				svc.Type, svc.Reason, u.Bold("donkey addon add "+svc.Type))
 		}
+		if analysis.BindsLoopback {
+			u.Warn("This app listens on 127.0.0.1 — in a container that means itself and nobody else.")
+			u.Printf("  %s", u.Faint("Bind 0.0.0.0 instead, or it will start and never answer. "+analysis.BindReason))
+		}
 		// Better to hear this now than after the first deploy looks healthy
 		// and every call quietly goes nowhere.
 		for _, url := range analysis.LocalURLs {

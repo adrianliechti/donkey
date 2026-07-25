@@ -1,6 +1,0 @@
-name: backend
-space: mcp-react
-port: 8000
-public: true
-healthcheck:
-  path: /healthz

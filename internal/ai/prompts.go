@@ -22,6 +22,15 @@ Report:
   os.environ, os.Getenv, ENV["PORT"], …) and would use it, answer 0 — any port
   works then. Only answer a number when the code pins one.
 - portReason: one short sentence naming the file you based the port on.
+- bindsLoopback: true when the code listens on 127.0.0.1 or localhost rather
+  than 0.0.0.0 / every interface. In a container that is fatal but silent —
+  the app starts, prints a URL, and nothing outside can reach it. Flask's
+  bare app.run(), Streamlit without --server.address, and any
+  listen(port, "127.0.0.1") are the usual cases. false when the app binds all
+  interfaces, when a Procfile or start command already passes a host, or when
+  you cannot tell.
+- bindReason: one short sentence naming the file and the call, when
+  bindsLoopback is true; otherwise "".
 - healthcheckPath: a GET path that answers successfully without authentication
   (e.g. a /health, /healthz, /ping or /status route defined in the code).
   Answer "" when you don't see one — guessing breaks deployments.
@@ -86,6 +95,8 @@ var analysisSchema = map[string]any{
 		"railpackConfig":  map[string]any{"type": "string"},
 		"port":            map[string]any{"type": "integer"},
 		"portReason":      map[string]any{"type": "string"},
+		"bindsLoopback":   map[string]any{"type": "boolean"},
+		"bindReason":      map[string]any{"type": "string"},
 		"healthcheckPath": map[string]any{"type": "string"},
 		"volumes": map[string]any{
 			"type": "array",
@@ -128,6 +139,7 @@ var analysisSchema = map[string]any{
 		"notes": map[string]any{"type": "string"},
 	},
 	"required": []string{"appType", "strategy", "dockerfile", "railpackConfig", "port", "portReason",
+		"bindsLoopback", "bindReason",
 		"healthcheckPath", "volumes", "services", "localURLs", "notes"},
 	"additionalProperties": false,
 }

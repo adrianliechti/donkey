@@ -136,3 +136,19 @@ func (c *Client) ListAddonBindings(ctx context.Context, namespace, app string) (
 func (c *Client) RolloutEvidenceFor(ctx context.Context, namespace, app string) RolloutEvidence {
 	return c.rolloutError(ctx, namespace, app, "").Evidence
 }
+
+// ListRouteNames returns the shared-address routes an app currently owns —
+// the ones donkey renders from `routes:` in donkey.yaml.
+func (c *Client) ListRouteNames(ctx context.Context, namespace, app string) ([]string, error) {
+	routes, err := c.Dynamic.Resource(gvrFor["HTTPRoute"]).Namespace(namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: manifests.LabelApp + "=" + app + "," + manifests.LabelComponent + "=" + manifests.ComponentRoute,
+	})
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, r := range routes.Items {
+		out = append(out, r.GetName())
+	}
+	return out, nil
+}

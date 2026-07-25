@@ -23,10 +23,23 @@ type AppConfig struct {
 	Space string `json:"space,omitempty"`
 	Port  int    `json:"port"`
 	// Public opts the app out of the login gateway: anyone can reach it.
-	Public      bool              `json:"public,omitempty"`
-	Replicas    *int32            `json:"replicas,omitempty"`
-	Build       BuildConfig       `json:"build,omitempty"`
-	Command     []string          `json:"command,omitempty"`
+	Public bool `json:"public,omitempty"`
+	// Internal keeps the app off the gateway altogether: no hostname, no
+	// certificate, no login — only the apps of its own space reach it, by
+	// name. This is what a backend behind a frontend wants: one address for
+	// the whole thing, and nothing else on the internet.
+	Internal bool        `json:"internal,omitempty"`
+	Replicas *int32      `json:"replicas,omitempty"`
+	Build    BuildConfig `json:"build,omitempty"`
+	Command  []string    `json:"command,omitempty"`
+	// PreDeploy runs once against the new image before the new version starts
+	// serving — database migrations, above all. It has the app's env, its
+	// addon bindings and its disk. If it fails, the deploy stops and the
+	// version already running keeps serving.
+	PreDeploy []string `json:"preDeploy,omitempty"`
+	// Routes put this app on another app's hostname under a path prefix, so
+	// a frontend and its API can share one address.
+	Routes      []RouteConfig     `json:"routes,omitempty"`
 	Healthcheck Healthcheck       `json:"healthcheck,omitempty"`
 	Env         map[string]string `json:"env,omitempty"`
 	Addons      []AddonConfig     `json:"addons,omitempty"`
@@ -74,6 +87,17 @@ type BuildConfig struct {
 // (e.g. MCP servers, APIs) have no route on "/".
 type Healthcheck struct {
 	Path string `json:"path,omitempty"`
+}
+
+// RouteConfig sends one path prefix of another app's address to this app.
+// Both apps keep their own login setting, so a public API can sit under a
+// path of a private frontend — one address, two rules.
+type RouteConfig struct {
+	// App is the app whose hostname this route joins; it must live in the
+	// same space.
+	App string `json:"app"`
+	// Path is the prefix that reaches this app, e.g. "/api".
+	Path string `json:"path"`
 }
 
 type AddonConfig struct {
@@ -176,6 +200,32 @@ func (c *AppConfig) Validate() error {
 	}
 	if c.Port < 1 || c.Port > 65535 {
 		return fmt.Errorf("port must be between 1 and 65535 (the port your app listens on)")
+	}
+	// `internal` says "no address of my own"; `public` says "no login on the
+	// addresses I do have". Together they are only contradictory when the app
+	// has no routes either — then there is nothing for `public` to open up.
+	if c.Internal && c.Public && len(c.Routes) == 0 {
+		return fmt.Errorf("an internal app has no address, so `public: true` has nothing to open — drop it, or give the app a `routes:` entry on another app's address")
+	}
+	if c.Internal && c.Domain != "" {
+		return fmt.Errorf("an internal app has no address, so `domain` has no effect — drop one of the two")
+	}
+	seenRoutes := map[string]bool{}
+	for _, r := range c.Routes {
+		if !nameRE.MatchString(r.App) {
+			return fmt.Errorf("routes: %q is not an app name — name an app in this space whose address this one should join", r.App)
+		}
+		if r.App == c.Name {
+			return fmt.Errorf("routes: an app cannot join its own address (%q)", r.App)
+		}
+		if !strings.HasPrefix(r.Path, "/") || r.Path == "/" {
+			return fmt.Errorf("routes: path %q must be a prefix below the root, e.g. /api", r.Path)
+		}
+		key := r.App + r.Path
+		if seenRoutes[key] {
+			return fmt.Errorf("routes: %s%s is listed twice", r.App, r.Path)
+		}
+		seenRoutes[key] = true
 	}
 	if err := c.Storage.validate(); err != nil {
 		return err

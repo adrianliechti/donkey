@@ -1,8 +1,18 @@
 name: backend
 space: demo
 port: 8000
-# MCP clients are machines: they carry their own credentials and cannot do an
-# interactive OIDC login, so this app opts out of the gateway's.
+# No address of its own — but two paths of the dashboard's address reach it,
+# so the whole demo lives at one hostname. The gateway does the forwarding;
+# there is no proxy code anywhere.
+internal: true
+routes:
+  - app: dashboard
+    path: /api
+  - app: dashboard
+    path: /mcp
+# MCP clients are machines and cannot complete a browser login, so this app
+# opts out — which is why /mcp is reachable while the dashboard around it
+# still asks for one. Login attaches per route, not per hostname.
 public: true
 healthcheck:
   path: /healthz

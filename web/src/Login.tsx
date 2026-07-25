@@ -33,7 +33,7 @@ export function Login({ onConnected }: { onConnected: () => void }) {
           <div className="text-5xl" aria-hidden>
             🫏
           </div>
-          <h1 className="mt-3 font-mono text-2xl font-bold tracking-tight">donkey</h1>
+          <h1 className="mt-3 font-mono text-2xl font-bold tracking-tight">Donkey</h1>
           <p className="mt-1 text-sm text-stone">admin console</p>
         </div>
         <form
@@ -55,7 +55,7 @@ export function Login({ onConnected }: { onConnected: () => void }) {
             />
             <span className="mt-1.5 block text-xs text-stone">
               Printed by <code className="font-mono">donkey server install</code> — ask whoever set
-              up your donkey.
+              up your Donkey.
             </span>
           </label>
           <ErrorNote message={error} />

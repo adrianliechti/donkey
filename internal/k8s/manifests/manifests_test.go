@@ -4,11 +4,13 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 
 	"github.com/adrianliechti/donkey/internal/config"
 )
@@ -269,4 +271,109 @@ func TestBadResourceQuantity(t *testing.T) {
 	if _, err := AppObjects(in); err == nil {
 		t.Fatal("invalid quantity should error")
 	}
+}
+
+// An internal app is reachable only by its siblings: it gets a Deployment and
+// a Service and nothing that puts it on the internet.
+func TestInternalAppIsNotExposed(t *testing.T) {
+	in := testInput(t)
+	in.App.Internal = true
+	in.Domain = "" // the server settles this for an internal app
+	objs, err := AppObjects(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rendered, err := Render(objs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"kind: HTTPRoute", "kind: Certificate", "kind: SecurityPolicy", "client-secret"} {
+		if strings.Contains(rendered, forbidden) {
+			t.Errorf("an internal app must not render %q", forbidden)
+		}
+	}
+	// …but it is still a running app its siblings can call by name.
+	for _, want := range []string{"kind: Deployment", "kind: Service"} {
+		if !strings.Contains(rendered, want) {
+			t.Errorf("an internal app still needs %q", want)
+		}
+	}
+}
+
+// A pre-deploy step must see exactly what the app sees — its env, its addon
+// bindings and its disk — or a migration cannot reach the database.
+func TestPreDeployJobMatchesTheApp(t *testing.T) {
+	in := testInput(t)
+	in.App.PreDeploy = []string{"python", "manage.py", "migrate"}
+	in.App.Storage = &config.StorageConfig{Size: "1Gi", Paths: []string{"/app/data"}}
+	in.AddonSecretNames = []string{"shop-addon-db"}
+
+	job := PreDeployJob(in)
+	spec := job.Spec.Template.Spec
+	c := spec.Containers[0]
+
+	if c.Image != in.ImageRef {
+		t.Errorf("job image %q, want the app's %q", c.Image, in.ImageRef)
+	}
+	if got := strings.Join(c.Command, " "); got != "python manage.py migrate" {
+		t.Errorf("command = %q", got)
+	}
+	if spec.RestartPolicy != corev1.RestartPolicyNever {
+		t.Error("a half-applied migration must not be retried automatically")
+	}
+	var envFrom []string
+	for _, f := range c.EnvFrom {
+		envFrom = append(envFrom, f.SecretRef.Name)
+	}
+	for _, want := range []string{EnvSecretName(in.App.Name), "shop-addon-db"} {
+		if !slices.Contains(envFrom, want) {
+			t.Errorf("the job must receive %s", want)
+		}
+	}
+	if len(c.VolumeMounts) == 0 {
+		t.Error("the job must mount the app's disk — a migration often creates the database file")
+	}
+}
+
+// Sharing an address is what lets a frontend and its API live at one
+// hostname, and login attaches per route so the two can differ.
+func TestPathRoutesShareAnAddress(t *testing.T) {
+	in := testInput(t)
+	in.RouteTargets = []RouteTarget{{App: "dashboard", Host: "dashboard.acme.apps.example.com", Path: "/api"}}
+	objs, err := AppObjects(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rendered, err := Render(objs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"dashboard.acme.apps.example.com", // the other app's hostname
+		"value: /api",                     // …under this prefix
+		"name: shop",                      // …reaching this app's service
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Errorf("a shared-address route should contain %q", want)
+		}
+	}
+	// A public app's shared route carries no login policy, so a machine
+	// client can use it even when the app it shares with is private.
+	in.App.Public = true
+	open, err := Render(mustObjects(t, in))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(open, "kind: SecurityPolicy") {
+		t.Error("a public app must not get login protection on its shared route")
+	}
+}
+
+func mustObjects(t *testing.T, in Input) []runtime.Object {
+	t.Helper()
+	objs, err := AppObjects(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return objs
 }

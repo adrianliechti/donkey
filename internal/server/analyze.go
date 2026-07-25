@@ -114,6 +114,13 @@ func mergeAnalysis(app *config.AppConfig, analysis *ai.Analysis) []string {
 		lines = append(lines, fmt.Sprintf("This app looks like it needs %s (%s) — add it with `donkey addon add %s`",
 			svc.Type, svc.Reason, svc.Type))
 	}
+	// An app that binds loopback starts, logs a URL and passes nothing: the
+	// probe fails and the reason is invisible. Say it before that happens.
+	if analysis.BindsLoopback {
+		lines = append(lines, fmt.Sprintf(
+			"Careful: this app listens on 127.0.0.1, which inside a container means itself and nobody else — it will start and still never answer. Bind 0.0.0.0 instead (Flask: `app.run(host=\"0.0.0.0\")`, Streamlit: `--server.address 0.0.0.0`). %s",
+			analysis.BindReason))
+	}
 	lines = append(lines, localURLWarnings(analysis)...)
 	return lines
 }

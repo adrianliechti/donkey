@@ -123,8 +123,12 @@ func (c *Config) SpaceNamespace(space string) (string, error) {
 }
 
 // AppHost is the address of an app: <app>.<space>.<baseDomain>. The space in
-// the middle is what lets two teams both have a "web".
+// the middle is what lets two teams both have a "web". An internal app has no
+// address at all — its siblings reach it by service name.
 func (c *Config) AppHost(space string, app *config.AppConfig) string {
+	if app.Internal {
+		return ""
+	}
 	if app.Domain != "" {
 		return app.Domain
 	}
@@ -132,5 +136,9 @@ func (c *Config) AppHost(space string, app *config.AppConfig) string {
 }
 
 func (c *Config) AppURL(space string, app *config.AppConfig) string {
-	return c.Scheme() + "://" + c.AppHost(space, app)
+	host := c.AppHost(space, app)
+	if host == "" {
+		return ""
+	}
+	return c.Scheme() + "://" + host
 }

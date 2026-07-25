@@ -30,6 +30,7 @@ var gvrFor = map[string]schema.GroupVersionResource{
 	"ServiceAccount":        {Version: "v1", Resource: "serviceaccounts"},
 	"PersistentVolumeClaim": {Version: "v1", Resource: "persistentvolumeclaims"},
 	"Deployment":            {Group: "apps", Version: "v1", Resource: "deployments"},
+	"Job":                   {Group: "batch", Version: "v1", Resource: "jobs"},
 	"NetworkPolicy":         {Group: "networking.k8s.io", Version: "v1", Resource: "networkpolicies"},
 	"ClusterRoleBinding":    {Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "clusterrolebindings"},
 	"GatewayClass":          {Group: "gateway.networking.k8s.io", Version: "v1", Resource: "gatewayclasses"},

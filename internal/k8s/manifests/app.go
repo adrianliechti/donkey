@@ -92,6 +92,17 @@ type Input struct {
 	// healthcheck) as an annotation on the Deployment, so later no-build
 	// deploys can keep those decisions instead of silently dropping them.
 	Decisions string
+	// RouteTargets are the paths of other apps' addresses this app answers
+	// on. The server resolves the hostnames, so this package stays pure.
+	RouteTargets []RouteTarget
+}
+
+// RouteTarget is one resolved entry of donkey.yaml's `routes`.
+type RouteTarget struct {
+	// App is the app whose address is shared, Host its resolved hostname.
+	App  string
+	Host string
+	Path string
 }
 
 type OIDCConfig struct {
@@ -140,6 +151,19 @@ func AppObjects(in Input) ([]runtime.Object, error) {
 		// unless it opted out with `public: true`.
 		if !app.Public && in.OIDC.Issuer != "" {
 			objs = append(objs, oidcSecret(in), securityPolicy(in))
+		}
+	}
+	// Paths this app answers on somebody else's address. They need no
+	// certificate — the hostname belongs to the app that owns it — but they
+	// carry their own login setting, so a public API can live under a path
+	// of a private frontend.
+	if len(in.RouteTargets) > 0 && !app.Public && in.OIDC.Issuer != "" {
+		objs = append(objs, oidcSecret(in))
+	}
+	for _, r := range in.RouteTargets {
+		objs = append(objs, PathRoute(in, r))
+		if !app.Public && in.OIDC.Issuer != "" {
+			objs = append(objs, pathRouteSecurityPolicy(in, r))
 		}
 	}
 	return objs, nil
@@ -240,13 +264,12 @@ func pullSecret(in Input) (*corev1.Secret, error) {
 	}, nil
 }
 
-func deployment(in Input) (*appsv1.Deployment, error) {
+// appEnvironment is everything the app is handed at runtime: its own env
+// secret, its addon bindings, and the env block from donkey.yaml. The
+// pre-deploy job uses the identical set, because a migration that cannot see
+// DATABASE_URL is worse than no migration at all.
+func appEnvironment(in Input) ([]corev1.EnvVar, []corev1.EnvFromSource) {
 	app := in.App
-	res, err := resources(app.Resources)
-	if err != nil {
-		return nil, err
-	}
-
 	optional := true
 	envFrom := []corev1.EnvFromSource{{
 		SecretRef: &corev1.SecretEnvSource{
@@ -271,6 +294,17 @@ func deployment(in Input) (*appsv1.Deployment, error) {
 	for _, k := range slices.Sorted(maps.Keys(app.Env)) {
 		env = append(env, corev1.EnvVar{Name: k, Value: app.Env[k]})
 	}
+	return env, envFrom
+}
+
+func deployment(in Input) (*appsv1.Deployment, error) {
+	app := in.App
+	res, err := resources(app.Resources)
+	if err != nil {
+		return nil, err
+	}
+
+	env, envFrom := appEnvironment(in)
 
 	// With a configured path we probe over HTTP; otherwise the zero-config
 	// default is "does the port answer" — safe for apps with no route on /.

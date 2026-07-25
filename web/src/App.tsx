@@ -73,12 +73,12 @@ export default function App() {
   useEffect(() => {
     document.title =
       view.page === 'app'
-        ? `${view.name} · donkey`
+        ? `${view.name} · Donkey`
         : view.page === 'system'
-          ? 'System · donkey'
+          ? 'System · Donkey'
           : view.page === 'deploy'
-            ? 'Deploy · donkey'
-            : 'donkey — admin'
+            ? 'Deploy · Donkey'
+            : 'Donkey — admin'
   }, [view])
 
   if (!connected) {
@@ -110,7 +110,7 @@ export default function App() {
               onClick={() => navigate({ page: 'apps' })}
               className="flex items-center gap-2 font-mono text-lg font-bold tracking-tight focus-visible:outline-2 focus-visible:outline-hay-deep"
             >
-              <span aria-hidden>🫏</span> donkey
+              <span aria-hidden>🫏</span> Donkey
             </button>
             <nav className="flex items-center gap-1">
               {tab('apps', 'Apps', <Boxes className="size-4" aria-hidden />)}

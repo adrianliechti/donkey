@@ -1,14 +1,14 @@
-// A tiny BFF (backend-for-frontend): serves the built dashboard and proxies
-// /api/* to the backend inside the cluster. The browser only ever talks to
-// this app's origin — no CORS, no cross-host login, no mixed content. (The
-// backend does enable CORS, but for MCP clients, not for this page.)
+// Serves the built dashboard. Nothing else: /api and /mcp reach the backend
+// through the gateway, because the backend claims those two paths of this
+// app's address in its own donkey.yaml. One hostname, no proxy, no extra hop
+// — and /mcp stays open for machine clients while this page keeps its login,
+// because protection attaches per route.
 import { createServer } from 'node:http'
 import { readFile } from 'node:fs/promises'
 import { extname, join, normalize } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const port = Number(process.env.PORT || 3000)
-const backend = process.env.BACKEND_URL || 'http://localhost:8000'
 const dist = join(fileURLToPath(new URL('.', import.meta.url)), 'dist')
 
 const types = {
@@ -23,23 +23,6 @@ const types = {
 createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost')
 
-  if (url.pathname.startsWith('/api/')) {
-    try {
-      const upstream = await fetch(`${backend}${url.pathname}${url.search}`, {
-        method: req.method,
-        signal: AbortSignal.timeout(10_000),
-      })
-      res.writeHead(upstream.status, {
-        'content-type': upstream.headers.get('content-type') ?? 'application/json',
-      })
-      res.end(Buffer.from(await upstream.arrayBuffer()))
-    } catch {
-      res.writeHead(502, { 'content-type': 'application/json' })
-      res.end(JSON.stringify({ error: 'the backend is not answering' }))
-    }
-    return
-  }
-
   // Static files, with the SPA's index.html as the fallback.
   const safePath = normalize(url.pathname).replace(/^(\.\.[/\\])+/, '')
   try {
@@ -50,4 +33,4 @@ createServer(async (req, res) => {
     res.writeHead(200, { 'content-type': types['.html'] })
     res.end(await readFile(join(dist, 'index.html')))
   }
-}).listen(port, () => console.log(`dashboard on :${port}, backend at ${backend}`))
+}).listen(port, () => console.log(`dashboard on :${port}`))

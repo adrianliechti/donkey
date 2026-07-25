@@ -1,5 +1,0 @@
-name: fastapi-sample
-space: samples
-port: 8000
-healthcheck:
-  path: /healthz

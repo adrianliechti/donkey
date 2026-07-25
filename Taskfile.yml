@@ -1,10 +1,5 @@
 version: "3"
 
-# AI assistance goes to the local OpenAI-compatible server.
-env:
-  OPENAI_BASE_URL: http://localhost:8080/v1
-  OPENAI_API_KEY: none
-
 vars:
   BINARY: donkey
   VERSION: '{{.VERSION | default "dev"}}'
@@ -129,14 +124,9 @@ tasks:
       - task: lint
 
   demo:
-    desc: "DEMO: create a local devkube cluster and install the full donkey stack (auto-login fake IdP) + sample app"
+    desc: "DEMO: create a local devkube cluster, install the full donkey stack (auto-login fake IdP) and deploy the demo app (dashboard + MCP backend)"
     cmds:
       - hack/demo.sh
-
-  demo-apps:
-    desc: "DEMO: deploy the sophisticated sample (FastMCP backend + React frontend monorepo) to the running demo"
-    cmds:
-      - hack/demo-apps.sh
 
   cluster:
     desc: "Create the local devkube cluster with donkey's prerequisites (cert-manager, registry, Envoy Gateway)"

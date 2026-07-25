@@ -1,6 +1,5 @@
 name: dashboard
 space: demo
 port: 3000
-env:
-  # Apps in one space share a namespace, so the backend is reachable by name.
-  BACKEND_URL: http://backend
+# The only address of the demo. The backend claims /api and /mcp on it (see
+# ../backend/donkey.yaml), so this app only ever serves the page itself.

@@ -1,0 +1,5 @@
+name: monorepo-api
+space: samples
+port: 8000
+healthcheck:
+  path: /healthz

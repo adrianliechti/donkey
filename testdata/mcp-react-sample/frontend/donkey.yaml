@@ -1,5 +1,0 @@
-name: frontend
-space: mcp-react
-port: 3000
-env:
-  BACKEND_URL: http://backend

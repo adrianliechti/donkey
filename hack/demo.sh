@@ -98,15 +98,18 @@ cd "${ROOT}/testdata/demo/dashboard"
 say "demo ready"
 cat <<EOF
 
-  Dashboard:    https://dashboard.demo.${BASE}
-                Sales figures read live from DuckDB. Sign in on the demo
-                identity page — you are in as demo@example.com. Certificates
-                come from the cluster's own CA (${CA_FILE}), so your browser
-                asks you to accept it once.
-  MCP endpoint: https://backend.demo.${BASE}/mcp
-                The same data as tools an assistant can call (sales_summary,
-                revenue_by_region, top_products, run_sql). No login: MCP
-                clients are machines, so the backend is `public: true`.
+  The demo app: https://dashboard.demo.${BASE}
+                One address for the whole thing. Sales figures read live from
+                DuckDB; sign in on the demo identity page — you are in as
+                demo@example.com. Certificates come from the cluster's own CA
+                (${CA_FILE}), so your browser asks you to accept it once.
+                  /api   the dashboard's own calls
+                  /mcp   the same data as tools an assistant can call
+                         (sales_summary, revenue_by_region, top_products,
+                         run_sql)
+                The backend behind it is internal: no hostname, no certificate,
+                nothing on the internet — only the dashboard reaches it, as
+                http://backend.
   Admin console: https://donkey.${BASE}   (sign in with the API token)
   Identity:     http://auth.donkey-identity   (fake, approves everyone)
 

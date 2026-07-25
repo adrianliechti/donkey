@@ -76,20 +76,27 @@ func oidcSecret(in Input) *corev1.Secret {
 // route. Built as unstructured to avoid importing the whole Envoy Gateway
 // module for one CRD.
 func securityPolicy(in Input) *unstructured.Unstructured {
-	app := in.App
+	return securityPolicyFor(in, in.App.Name, in.Domain, ComponentWeb)
+}
+
+// securityPolicyFor protects one named HTTPRoute. Policies attach per route,
+// which is what lets an app's own address be private while a path it shares
+// with another app stays open (or the other way round). The callback URL has
+// to be on the host the browser is actually visiting.
+func securityPolicyFor(in Input, routeName, host, component string) *unstructured.Unstructured {
 	return &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "gateway.envoyproxy.io/v1alpha1",
 		"kind":       "SecurityPolicy",
 		"metadata": map[string]any{
-			"name":      app.Name,
+			"name":      routeName,
 			"namespace": in.Namespace,
-			"labels":    toAnyMap(Labels(in.Space, app.Name, ComponentWeb)),
+			"labels":    toAnyMap(Labels(in.Space, in.App.Name, component)),
 		},
 		"spec": map[string]any{
 			"targetRefs": []any{map[string]any{
 				"group": "gateway.networking.k8s.io",
 				"kind":  "HTTPRoute",
-				"name":  app.Name,
+				"name":  routeName,
 			}},
 			"oidc": map[string]any{
 				"provider": map[string]any{
@@ -97,9 +104,9 @@ func securityPolicy(in Input) *unstructured.Unstructured {
 				},
 				"clientID": in.OIDC.ClientID,
 				"clientSecret": map[string]any{
-					"name": OIDCSecretName(app.Name),
+					"name": OIDCSecretName(in.App.Name),
 				},
-				"redirectURL": "https://" + in.Domain + "/oauth2/callback",
+				"redirectURL": "https://" + host + "/oauth2/callback",
 			},
 		},
 	}}
