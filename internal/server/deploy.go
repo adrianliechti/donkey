@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"monobox.ch/donkey/internal/ai"
@@ -21,13 +22,14 @@ import (
 type DeployResult struct {
 	OK       bool   `json:"ok"`
 	App      string `json:"app"`
+	Space    string `json:"space,omitempty"`
 	ImageRef string `json:"imageRef,omitempty"`
 	URL      string `json:"url,omitempty"`
 	Error    string `json:"error,omitempty"`
 	// Diagnosis carries the AI failure analysis when a deploy failed.
-	Diagnosis string           `json:"diagnosis,omitempty"`
-	Proposals []ai.FixAction   `json:"proposals,omitempty"`
-	Manifests string           `json:"manifests,omitempty"` // dry-run only
+	Diagnosis string         `json:"diagnosis,omitempty"`
+	Proposals []ai.FixAction `json:"proposals,omitempty"`
+	Manifests string         `json:"manifests,omitempty"` // dry-run only
 }
 
 // lineStreamer writes progress lines to the client as they happen.
@@ -97,6 +99,7 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 	// SecurityPolicy updates Envoy's listener, which may drain the very
 	// stream this response rides on. The CLI reconnects via status polling.
 	res := s.deploy(context.WithoutCancel(r.Context()), out, dir, app, deployOpts{
+		Space:     r.URL.Query().Get("space"),
 		Platform:  r.URL.Query().Get("platform"),
 		Tag:       r.URL.Query().Get("tag"),
 		DryRun:    r.URL.Query().Get("dryRun") == "true",
@@ -108,7 +111,12 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 	out.Result(res)
 }
 
+// analysisDeadline bounds how long a deploy waits for the assistant after the
+// build has finished.
+const analysisDeadline = 90 * time.Second
+
 type deployOpts struct {
+	Space     string
 	Platform  string
 	Tag       string
 	DryRun    bool
@@ -119,10 +127,25 @@ type deployOpts struct {
 }
 
 func (s *Server) deploy(ctx context.Context, out *lineStreamer, dir string, app *config.AppConfig, opts deployOpts) DeployResult {
+	// The space decides the namespace and the address, so it is settled
+	// before anything else happens.
+	space := opts.Space
+	if space == "" {
+		space = app.Space
+	}
+	if space == "" {
+		space = config.DefaultSpace
+	}
+	app.Space = space
+
 	fail := func(err error) DeployResult {
-		res := DeployResult{App: app.Name, Error: err.Error()}
+		res := DeployResult{App: app.Name, Space: space, Error: err.Error()}
 		s.diagnose(ctx, &res, err)
 		return res
+	}
+
+	if err := s.k8s.CheckNamespaceFree(ctx, s.cfg.Namespace(space), space); err != nil {
+		return fail(err)
 	}
 
 	imageRef := opts.Tag
@@ -130,7 +153,76 @@ func (s *Server) deploy(ctx context.Context, out *lineStreamer, dir string, app 
 		imageRef = build.ImageTag(s.cfg.Registry.URL, app.Name, opts.SHA, time.Now())
 	}
 
+	if opts.NoBuild {
+		if opts.Tag == "" {
+			return fail(fmt.Errorf("a no-build deploy needs the image tag to deploy"))
+		}
+		return s.applyAndWait(ctx, out, app, opts.Tag, opts.NoWait)
+	}
+
+	out.Line("Looking at your app…")
+	det, detErr := detect.Detect(dir, app)
+
+	// The assistant reads every deploy: it confirms the detection and, more
+	// usefully, finds the folders whose contents have to survive a restart.
+	// When detection worked it runs alongside the build — a model call should
+	// not sit between the user and their deploy.
+	type analysisResult struct {
+		analysis *ai.Analysis
+		err      error
+	}
+	analysisReady := make(chan analysisResult, 1)
+	run := func() {
+		analysis, err := s.analyzeApp(ctx, dir, det, detErr)
+		analysisReady <- analysisResult{analysis, err}
+	}
+	if detErr != nil {
+		run() // nothing to build yet — the proposal has to come first
+	} else {
+		go run()
+	}
+
+	if detErr != nil {
+		res := <-analysisReady
+		analysisReady <- res // the merge step still wants it
+		if res.err != nil {
+			return fail(fmt.Errorf("%w\n\n%s", detErr, res.err))
+		}
+		out.Line("Donkey couldn't recognize this app by itself — the assistant thinks it is %s.", res.analysis.AppType)
+		if err := rescueDetection(dir, res.analysis); err != nil {
+			return fail(fmt.Errorf("%w\n\nthe assistant couldn't propose a way to build it either", detErr))
+		}
+		var err error
+		if det, err = detect.Detect(dir, app); err != nil {
+			return fail(err)
+		}
+	}
+	out.Line("✓ %s will be built with %s", app.Name, det.Summary)
+
+	// merge fills in what donkey.yaml left open, right before the app's
+	// objects are rendered. Exactly one of the paths below runs it, and it
+	// reports every decision. A model that never answers stops the deploy
+	// instead of quietly deploying a half-read app.
+	merge := func() error {
+		var res analysisResult
+		select {
+		case res = <-analysisReady:
+		case <-time.After(analysisDeadline):
+			return fmt.Errorf("the assistant didn't answer within %s — check the AI endpoint in the install settings, or deploy again", analysisDeadline)
+		}
+		if res.err != nil {
+			return res.err
+		}
+		for _, line := range mergeAnalysis(app, res.analysis) {
+			out.Line("· %s", line)
+		}
+		return nil
+	}
+
 	if opts.DryRun {
+		if err := merge(); err != nil {
+			return fail(err)
+		}
 		in, err := s.manifestInput(app, imageRef, false)
 		if err != nil {
 			return fail(err)
@@ -143,22 +235,8 @@ func (s *Server) deploy(ctx context.Context, out *lineStreamer, dir string, app 
 		if err != nil {
 			return fail(err)
 		}
-		return DeployResult{OK: true, App: app.Name, ImageRef: imageRef, Manifests: rendered}
+		return DeployResult{OK: true, App: app.Name, Space: space, ImageRef: imageRef, Manifests: rendered}
 	}
-
-	if opts.NoBuild {
-		if opts.Tag == "" {
-			return fail(fmt.Errorf("a no-build deploy needs the image tag to deploy"))
-		}
-		return s.applyAndWait(ctx, out, app, opts.Tag, opts.NoWait)
-	}
-
-	out.Line("Looking at your app…")
-	det, err := detect.Detect(dir, app)
-	if err != nil {
-		return fail(err)
-	}
-	out.Line("✓ %s will be built with %s", app.Name, det.Summary)
 
 	// Platform precedence: --platform flag > donkey.yaml > the server's
 	// default (it knows what its nodes run).
@@ -191,7 +269,7 @@ func (s *Server) deploy(ctx context.Context, out *lineStreamer, dir string, app 
 		Progress:       build.ProgressSink{LogPath: logFile.Name(), Writer: out},
 	})
 	if err != nil {
-		res := DeployResult{App: app.Name, Error: err.Error()}
+		res := DeployResult{App: app.Name, Space: space, Error: err.Error()}
 		if logs, rerr := os.ReadFile(logFile.Name()); rerr == nil {
 			s.diagnoseWith(ctx, &res, "build", tailBytes(logs, 15*1024), nil)
 		}
@@ -200,45 +278,71 @@ func (s *Server) deploy(ctx context.Context, out *lineStreamer, dir string, app 
 	out.Line("✓ Image ready: %s", result.ImageRef)
 
 	if opts.BuildOnly {
-		return DeployResult{OK: true, App: app.Name, ImageRef: result.ImageRef}
+		return DeployResult{OK: true, App: app.Name, Space: space, ImageRef: result.ImageRef}
 	}
 
+	if err := merge(); err != nil {
+		return fail(err)
+	}
 	return s.applyAndWait(ctx, out, app, result.ImageRef, opts.NoWait)
 }
 
 // applyAndWait applies the app's manifests with the given image and waits
 // for the rollout (unless noWait).
 func (s *Server) applyAndWait(ctx context.Context, out *lineStreamer, app *config.AppConfig, imageRef string, noWait bool) DeployResult {
+	space := app.Space
+	if space == "" {
+		space = config.DefaultSpace
+	}
+	ns := s.cfg.Namespace(space)
+	failed := func(err error) DeployResult {
+		return DeployResult{App: app.Name, Space: space, Error: err.Error()}
+	}
+
 	out.Line("Setting up on the cluster…")
+	if app.HasStorage() {
+		out.Line("· One disk (%s) for %s", app.Storage.Size, strings.Join(app.Storage.Paths, ", "))
+		// An app that just gained a disk has to leave rolling updates behind.
+		if err := s.k8s.SwitchToRecreate(ctx, ns, app.Name); err != nil {
+			return failed(fmt.Errorf("couldn't switch %s to single-copy rollouts: %w", app.Name, err))
+		}
+	}
 	in, err := s.manifestInput(app, imageRef, true)
 	if err != nil {
-		return DeployResult{App: app.Name, Error: err.Error()}
+		return failed(err)
 	}
 	objs, err := manifests.AppObjects(in)
 	if err != nil {
-		return DeployResult{App: app.Name, Error: err.Error()}
+		return failed(err)
 	}
 	if err := s.k8s.Apply(ctx, objs); err != nil {
-		return DeployResult{App: app.Name, Error: fmt.Sprintf("the cluster refused the changes: %v", err)}
+		return failed(fmt.Errorf("the cluster refused the changes: %v", err))
+	}
+	// The app's certificate joins the gateway's https listener; Envoy serves
+	// the right one per hostname.
+	if err := s.attachCertificate(ctx, space, app.Name); err != nil {
+		return failed(err)
+	}
+	if note := s.waitForCertificate(ctx, space, app.Name, in.Domain); note != "" {
+		out.Line("· %s", note)
 	}
 	// Server-side apply doesn't delete what the new set omits: when the app
 	// is (now) public, retract any login protection from earlier deploys.
 	if app.Public || s.cfg.OIDCIssuer == "" {
-		ns := s.cfg.Namespace(app.Name)
 		if err := s.k8s.DeleteObject(ctx, "SecurityPolicy", ns, app.Name); err != nil {
-			return DeployResult{App: app.Name, Error: err.Error()}
+			return failed(err)
 		}
 		if err := s.k8s.DeleteObject(ctx, "Secret", ns, manifests.OIDCSecretName(app.Name)); err != nil {
-			return DeployResult{App: app.Name, Error: err.Error()}
+			return failed(err)
 		}
 	}
 	if noWait {
-		return DeployResult{OK: true, App: app.Name, ImageRef: imageRef, URL: s.cfg.AppURL(app)}
+		return DeployResult{OK: true, App: app.Name, Space: space, ImageRef: imageRef, URL: s.cfg.AppURL(space, app)}
 	}
 
 	out.Line("Waiting for the app to become healthy…")
-	if err := s.k8s.WaitForRollout(ctx, s.cfg.Namespace(app.Name), app.Name); err != nil {
-		res := DeployResult{App: app.Name, ImageRef: imageRef, Error: err.Error()}
+	if err := s.k8s.WaitForRollout(ctx, ns, app.Name); err != nil {
+		res := DeployResult{App: app.Name, Space: space, ImageRef: imageRef, Error: err.Error()}
 		var re *k8s.RolloutError
 		if errors.As(err, &re) {
 			for _, p := range re.Evidence.PodSummaries {
@@ -251,17 +355,25 @@ func (s *Server) applyAndWait(ctx context.Context, out *lineStreamer, app *confi
 		}
 		return res
 	}
-	return DeployResult{OK: true, App: app.Name, ImageRef: imageRef, URL: s.cfg.AppURL(app)}
+	return DeployResult{OK: true, App: app.Name, Space: space, ImageRef: imageRef, URL: s.cfg.AppURL(space, app)}
 }
 
 func (s *Server) manifestInput(app *config.AppConfig, imageRef string, includeCreds bool) (manifests.Input, error) {
+	space := app.Space
+	if space == "" {
+		space = config.DefaultSpace
+	}
 	in := manifests.Input{
-		App:              app,
-		Namespace:        s.cfg.Namespace(app.Name),
-		ImageRef:         imageRef,
-		RegistryHost:     s.cfg.Registry.Host(),
-		Domain:           app.Name + "." + s.cfg.BaseDomain,
-		Scheme:           s.cfg.Scheme(),
+		App:          app,
+		Space:        space,
+		Namespace:    s.cfg.Namespace(space),
+		ImageRef:     imageRef,
+		RegistryHost: s.cfg.Registry.Host(),
+		Domain:       s.cfg.AppHost(space, app),
+		TLS: manifests.TLSConfig{
+			Issuer: s.cfg.TLSIssuer,
+			Kind:   s.cfg.TLSIssuerKind,
+		},
 		GatewayName:      s.cfg.GatewayName,
 		GatewayNamespace: s.cfg.GatewayNamespace,
 		OIDC: manifests.OIDCConfig{
@@ -269,9 +381,6 @@ func (s *Server) manifestInput(app *config.AppConfig, imageRef string, includeCr
 			ClientID:     s.cfg.OIDCClientID,
 			ClientSecret: s.cfg.OIDCClientSecret,
 		},
-	}
-	if app.Domain != "" {
-		in.Domain = app.Domain
 	}
 	if includeCreds {
 		password, err := s.cfg.Registry.Password()
@@ -294,9 +403,6 @@ func (s *Server) diagnose(ctx context.Context, res *DeployResult, err error) {
 }
 
 func (s *Server) diagnoseWith(ctx context.Context, res *DeployResult, stage, logs string, events []string) {
-	if !s.assistant.Enabled() {
-		return
-	}
 	dctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
 	defer cancel()
 	proposal, aerr := s.assistant.DiagnoseFailure(dctx, &ai.FailureContext{Stage: stage, Logs: logs, Events: events})

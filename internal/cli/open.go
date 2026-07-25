@@ -26,7 +26,7 @@ func openCommand() *cli.Command {
 			if err != nil {
 				return err
 			}
-			st, err := api.Status(ctx, app.Name)
+			st, err := api.Status(ctx, s.Space, app.Name)
 			if err != nil {
 				return err
 			}

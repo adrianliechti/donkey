@@ -1,44 +1,85 @@
-// Package ai is donkey's optional OpenAI-backed assistant. Everything works
-// without it; when active it helps in exactly two places: recognizing apps
-// detection couldn't, and explaining/fixing failures. It never applies
-// changes on its own — proposals go through diff + confirmation in the CLI.
+// Package ai is donkey's assistant, and donkey requires it. It runs on every
+// look at an app: it reads the repository alongside donkey's own detector and
+// reports what the app is, how it should be built, which port it listens on,
+// which folders hold data that must survive a restart, and which services it
+// expects. Without a reachable model there is no half-service and no silent
+// fallback — donkey says what is missing and stops.
+//
+// It never applies changes on its own: the CLI confirms, and deploys only
+// fill in what donkey.yaml left open.
 package ai
 
 import (
 	"context"
+	"fmt"
 	"os"
 )
 
 type Assistant interface {
-	Enabled() bool
-	// SuggestBuildConfig proposes how to build an unrecognized app.
-	SuggestBuildConfig(ctx context.Context, sum *RepoSummary) (*BuildSuggestion, error)
-	// SuggestAppSettings reads the source to determine runtime facts (the
-	// port the app really listens on, a usable health path) for apps the
-	// detector already recognized.
-	SuggestAppSettings(ctx context.Context, sum *RepoSummary) (*AppSettings, error)
+	// Check verifies the model answers at all — donkey requires it, so
+	// `donkey doctor` reports it like any other dependency.
+	Check(ctx context.Context) error
+	// Analyze reads a repository (with donkey's own detection as evidence)
+	// and describes how to run it.
+	Analyze(ctx context.Context, in *AnalyzeInput) (*Analysis, error)
 	// DiagnoseFailure explains a build/deploy failure and proposes fixes.
 	DiagnoseFailure(ctx context.Context, fc *FailureContext) (*FixProposal, error)
 }
 
-type AppSettings struct {
-	// Port the app listens on; 0 means "the app honors the PORT env var, any
-	// port works".
-	Port            int    `json:"port"`
-	HealthcheckPath string `json:"healthcheckPath"`
-	Reason          string `json:"reason"`
+// AnalyzeInput is what the assistant gets to look at.
+type AnalyzeInput struct {
+	Summary *RepoSummary `json:"summary"`
+	// Detected is what donkey's own detector already worked out ("railpack:
+	// node, python"), or a description of why it failed. The assistant is
+	// asked to confirm or correct it rather than start from nothing.
+	Detected string `json:"detected"`
+	// DetectionFailed tells the assistant that donkey cannot build this app
+	// on its own, so it must propose a Dockerfile or a railpack config.
+	DetectionFailed bool `json:"detectionFailed"`
+	// CurrentConfig is the existing donkey.yaml, if any.
+	CurrentConfig string `json:"currentConfig"`
 }
 
-type BuildSuggestion struct {
+// Analysis is the assistant's full picture of an app.
+type Analysis struct {
 	AppType string `json:"appType"`
-	// Strategy is "railpack" (with RailpackConfig) or "dockerfile" (with Dockerfile).
-	Strategy        string `json:"strategy"`
-	Dockerfile      string `json:"dockerfile"`
-	RailpackConfig  string `json:"railpackConfig"`
+	// Strategy is "railpack", "dockerfile" or "" (keep what donkey detected);
+	// the matching file content is only filled in when donkey needs it.
+	Strategy       string `json:"strategy"`
+	Dockerfile     string `json:"dockerfile"`
+	RailpackConfig string `json:"railpackConfig"`
+	// Port the app listens on; 0 means "it honors the PORT env var, any port
+	// works".
 	Port            int    `json:"port"`
+	PortReason      string `json:"portReason"`
 	StartCommand    string `json:"startCommand"`
 	HealthcheckPath string `json:"healthcheckPath"`
-	Notes           string `json:"notes"`
+	// Volumes are folders inside the container whose contents must survive a
+	// restart (uploads, databases on disk, generated content).
+	Volumes []VolumeSuggestion `json:"volumes"`
+	// Services are backing services the app expects (postgres, …).
+	Services []ServiceSuggestion `json:"services"`
+	Notes    string              `json:"notes"`
+}
+
+// VolumeSuggestion is one folder that needs to keep its contents.
+type VolumeSuggestion struct {
+	Path   string `json:"path"`
+	Reason string `json:"reason"`
+}
+
+type ServiceSuggestion struct {
+	Type   string `json:"type"`
+	Reason string `json:"reason"`
+}
+
+// VolumePaths returns just the paths, for writing into donkey.yaml.
+func (a *Analysis) VolumePaths() []string {
+	var out []string
+	for _, v := range a.Volumes {
+		out = append(out, v.Path)
+	}
+	return out
 }
 
 type FailureContext struct {
@@ -66,35 +107,16 @@ type FixProposal struct {
 	Actions   []FixAction `json:"actions"`
 }
 
-// New returns the OpenAI assistant when allowed and configured, otherwise a
-// disabled one. Call sites only ever check Enabled().
-func New(allowed bool, model string) Assistant {
+// New builds the assistant from the environment. It fails loudly: a donkey
+// without an assistant cannot read apps, so this is a setup error to fix, not
+// a mode to run in.
+func New(model string) (Assistant, error) {
 	key := os.Getenv("OPENAI_API_KEY")
-	if !allowed || key == "" {
-		return disabled{}
+	if key == "" {
+		return nil, fmt.Errorf("donkey's assistant needs an API key — set ai.apiKey (or the OPENAI_API_KEY environment variable) in the install settings and run `donkey server install` again")
 	}
-	return newOpenAI(key, model)
+	if model == "" {
+		return nil, fmt.Errorf("donkey's assistant needs a model — set ai.model in the install settings")
+	}
+	return newOpenAI(key, model), nil
 }
-
-// NewDisabled returns the inert assistant (used when AI is off or no server
-// is reachable).
-func NewDisabled() Assistant { return disabled{} }
-
-type disabled struct{}
-
-func (disabled) Enabled() bool { return false }
-func (disabled) SuggestBuildConfig(context.Context, *RepoSummary) (*BuildSuggestion, error) {
-	return nil, errDisabled
-}
-func (disabled) SuggestAppSettings(context.Context, *RepoSummary) (*AppSettings, error) {
-	return nil, errDisabled
-}
-func (disabled) DiagnoseFailure(context.Context, *FailureContext) (*FixProposal, error) {
-	return nil, errDisabled
-}
-
-type disabledError struct{}
-
-func (disabledError) Error() string { return "AI assistance is not active" }
-
-var errDisabled = disabledError{}

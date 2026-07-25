@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -15,17 +16,40 @@ const AppFileName = "donkey.yaml"
 
 type AppConfig struct {
 	Name string `json:"name"`
-	Port int    `json:"port"`
+	// Space groups apps that belong together — typically everything in one
+	// repository. A space is one Kubernetes namespace (apps inside reach each
+	// other by plain name) and one level of the address: <app>.<space>.<domain>.
+	// Empty means "work it out from the folder" (see ResolveSpace).
+	Space string `json:"space,omitempty"`
+	Port  int    `json:"port"`
 	// Public opts the app out of the login gateway: anyone can reach it.
-	Public   bool   `json:"public,omitempty"`
-	Replicas *int32 `json:"replicas,omitempty"`
+	Public      bool              `json:"public,omitempty"`
+	Replicas    *int32            `json:"replicas,omitempty"`
 	Build       BuildConfig       `json:"build,omitempty"`
 	Command     []string          `json:"command,omitempty"`
 	Healthcheck Healthcheck       `json:"healthcheck,omitempty"`
 	Env         map[string]string `json:"env,omitempty"`
 	Addons      []AddonConfig     `json:"addons,omitempty"`
+	Storage     *StorageConfig    `json:"storage,omitempty"`
 	Domain      string            `json:"domain,omitempty"`
 	Resources   *Resources        `json:"resources,omitempty"`
+}
+
+// StorageConfig asks for disk that survives restarts and redeploys. donkey
+// creates exactly ONE volume per app and gives every path its own folder on
+// it (a subPath mount), so an app can keep several data directories without
+// anyone having to think about several disks.
+//
+// A nil Storage means "nobody decided yet" — the assistant may then propose
+// paths. An empty (but present) paths list means "this app needs no disk"
+// and is left alone.
+type StorageConfig struct {
+	// Size of the single volume, e.g. "5Gi" (default 1Gi).
+	Size string `json:"size,omitempty"`
+	// Class is the StorageClass; empty uses the cluster's default.
+	Class string `json:"class,omitempty"`
+	// Paths are absolute paths inside the container.
+	Paths []string `json:"paths"`
 }
 
 type BuildStrategy string
@@ -68,14 +92,21 @@ type Resources struct {
 const (
 	DefaultReplicas   = int32(1)
 	DefaultDockerfile = "Dockerfile"
+	DefaultStorage    = "1Gi"
+	// DefaultSpace is used when neither the folder nor the user names one.
+	DefaultSpace      = "default"
 	defaultCPURequest = "100m"
 	defaultMemRequest = "128Mi"
 	defaultMemLimit   = "512Mi"
 )
 
-// nameRE follows RFC 1123 DNS labels: the app name becomes part of namespace,
-// hostnames and object names.
+// nameRE follows RFC 1123 DNS labels: app and space names become part of
+// namespace, hostnames and object names.
 var nameRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$`)
+
+// sizeRE accepts the Kubernetes quantity spellings people actually use for
+// disks; the cluster does the real parsing.
+var sizeRE = regexp.MustCompile(`^[0-9]+(\.[0-9]+)?(Ki|Mi|Gi|Ti|Pi|K|M|G|T|P)?$`)
 
 // LoadApp reads donkey.yaml from dir. A missing file returns (nil, nil).
 func LoadApp(dir string) (*AppConfig, error) {
@@ -102,6 +133,9 @@ func (c *AppConfig) ApplyDefaults() {
 	if c.Build.Type == "" {
 		c.Build.Type = BuildAuto
 	}
+	if c.Storage != nil && c.Storage.Size == "" {
+		c.Storage.Size = DefaultStorage
+	}
 	if c.Replicas == nil {
 		r := DefaultReplicas
 		c.Replicas = &r
@@ -126,8 +160,17 @@ func (c *AppConfig) Validate() error {
 	if !nameRE.MatchString(c.Name) {
 		return fmt.Errorf("name %q must be lowercase letters, digits and dashes (max 40 chars), e.g. %q", c.Name, "my-app")
 	}
+	if c.Space != "" && !nameRE.MatchString(c.Space) {
+		return fmt.Errorf("space %q must be lowercase letters, digits and dashes (max 40 chars), e.g. %q", c.Space, "acme")
+	}
 	if c.Port < 1 || c.Port > 65535 {
 		return fmt.Errorf("port must be between 1 and 65535 (the port your app listens on)")
+	}
+	if err := c.Storage.validate(); err != nil {
+		return err
+	}
+	if c.HasStorage() && c.Replicas != nil && *c.Replicas > 1 {
+		return fmt.Errorf("an app with storage runs as a single copy — its disk can only be attached to one machine at a time (set replicas: 1, or drop storage.paths)")
 	}
 	switch c.Build.Type {
 	case BuildAuto, BuildRailpack, BuildDockerfile:
@@ -153,12 +196,63 @@ func (c *AppConfig) Validate() error {
 	return nil
 }
 
+// HasStorage reports whether the app asked for persistent disk.
+func (c *AppConfig) HasStorage() bool {
+	return c.Storage != nil && len(c.Storage.Paths) > 0
+}
+
+func (s *StorageConfig) validate() error {
+	if s == nil {
+		return nil
+	}
+	if s.Size != "" && !sizeRE.MatchString(s.Size) {
+		return fmt.Errorf("storage.size %q is not a size — write it like 5Gi or 500Mi", s.Size)
+	}
+	seen := map[string]string{}
+	for _, p := range s.Paths {
+		clean := path.Clean(p)
+		if !path.IsAbs(clean) || clean == "/" {
+			return fmt.Errorf("storage path %q must be an absolute folder inside the container, e.g. /app/data", p)
+		}
+		sub := StorageSubPath(clean)
+		if other, dup := seen[sub]; dup {
+			return fmt.Errorf("storage paths %q and %q would share the same folder on the disk — rename one", other, p)
+		}
+		seen[sub] = p
+	}
+	return nil
+}
+
+// StorageSubPath is the folder a mounted path gets on the app's single
+// volume. It must stay stable across deploys — data lives there — so it is a
+// pure function of the path: /app/data → app-data.
+func StorageSubPath(p string) string {
+	slug := subPathCleanRE.ReplaceAllString(strings.ToLower(strings.Trim(path.Clean(p), "/")), "-")
+	slug = strings.Trim(dashRunRE.ReplaceAllString(slug, "-"), "-")
+	if slug == "" {
+		return "data"
+	}
+	return slug
+}
+
+var (
+	subPathCleanRE = regexp.MustCompile(`[^a-z0-9]+`)
+	dashRunRE      = regexp.MustCompile(`-{2,}`)
+)
+
 // Save writes donkey.yaml into dir, stripping values that equal the defaults
 // so the file stays as small as the user wrote it.
 func (c *AppConfig) Save(dir string) error {
 	out := *c
 	if out.Build.Type == BuildAuto {
 		out.Build.Type = ""
+	}
+	if out.Storage != nil {
+		storage := *out.Storage
+		if storage.Size == DefaultStorage {
+			storage.Size = ""
+		}
+		out.Storage = &storage
 	}
 	if out.Replicas != nil && *out.Replicas == DefaultReplicas {
 		out.Replicas = nil

@@ -1,6 +1,8 @@
 package config
 
 import (
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -23,6 +25,9 @@ type ServerConfig struct {
 	URL string `json:"url,omitempty"`
 	// Token authenticates the CLI. $DONKEY_TOKEN overrides.
 	Token string `json:"token,omitempty"`
+	// CAFile is a PEM file to trust on top of the system roots — the usual
+	// case for an installation whose certificates come from a private CA.
+	CAFile string `json:"caFile,omitempty"`
 }
 
 // ResolveToken returns the API token: $DONKEY_TOKEN wins over the config file.
@@ -42,6 +47,30 @@ type Registry struct {
 	PasswordFile string `json:"passwordFile,omitempty"`
 	// Insecure marks a plain-HTTP registry (local/testing setups only).
 	Insecure bool `json:"insecure,omitempty"`
+	// CAFile is a PEM bundle to trust for this registry — the usual case for
+	// an in-cluster or corporate registry whose certificate comes from a
+	// private CA. Server-side; the file is mounted into donkey-server and the
+	// build engine.
+	CAFile string `json:"caFile,omitempty"`
+}
+
+// TLSConfig returns the transport settings for talking to this registry.
+func (r Registry) TLSConfig() (*tls.Config, error) {
+	if r.CAFile == "" {
+		return nil, nil
+	}
+	pem, err := os.ReadFile(r.CAFile)
+	if err != nil {
+		return nil, fmt.Errorf("reading the registry's certificate authority: %w", err)
+	}
+	pool, err := x509.SystemCertPool()
+	if err != nil {
+		pool = x509.NewCertPool()
+	}
+	if !pool.AppendCertsFromPEM(pem) {
+		return nil, fmt.Errorf("%s doesn't contain a usable certificate (expected PEM)", r.CAFile)
+	}
+	return &tls.Config{RootCAs: pool}, nil
 }
 
 // Host returns the registry host part of URL (everything before the first slash).

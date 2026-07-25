@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
-	"os"
 	"strings"
 
 	"monobox.ch/donkey/internal/ai"
@@ -23,11 +22,13 @@ func New(cfg *Config) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Server{
-		cfg:       cfg,
-		k8s:       client,
-		assistant: ai.New(os.Getenv("OPENAI_API_KEY") != "", cfg.AIModel),
-	}, nil
+	// donkey reads every app with its assistant, so a control plane without
+	// one is misconfigured — better to say so at startup than to half-work.
+	assistant, err := ai.New(cfg.AIModel)
+	if err != nil {
+		return nil, err
+	}
+	return &Server{cfg: cfg, k8s: client, assistant: assistant}, nil
 }
 
 func (s *Server) Run() error {
@@ -36,17 +37,17 @@ func (s *Server) Run() error {
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 	})
 	mux.Handle("POST /v1/deploys", s.auth(s.handleDeploy))
+	// Apps live in a space, so their address does too.
 	mux.Handle("GET /v1/apps", s.auth(s.handleListApps))
-	mux.Handle("GET /v1/apps/{app}/status", s.auth(s.handleStatus))
-	mux.Handle("GET /v1/apps/{app}/logs", s.auth(s.handleLogs))
-	mux.Handle("GET /v1/apps/{app}/env", s.auth(s.handleGetEnv))
-	mux.Handle("PUT /v1/apps/{app}/env", s.auth(s.handlePutEnv))
-	mux.Handle("POST /v1/apps/{app}/addons", s.auth(s.handleAddAddon))
-	mux.Handle("DELETE /v1/apps/{app}/addons/{addon}", s.auth(s.handleRemoveAddon))
-	mux.Handle("DELETE /v1/apps/{app}", s.auth(s.handleDestroy))
+	mux.Handle("GET /v1/spaces/{space}/apps/{app}/status", s.auth(s.handleStatus))
+	mux.Handle("GET /v1/spaces/{space}/apps/{app}/logs", s.auth(s.handleLogs))
+	mux.Handle("GET /v1/spaces/{space}/apps/{app}/env", s.auth(s.handleGetEnv))
+	mux.Handle("PUT /v1/spaces/{space}/apps/{app}/env", s.auth(s.handlePutEnv))
+	mux.Handle("POST /v1/spaces/{space}/apps/{app}/addons", s.auth(s.handleAddAddon))
+	mux.Handle("DELETE /v1/spaces/{space}/apps/{app}/addons/{addon}", s.auth(s.handleRemoveAddon))
+	mux.Handle("DELETE /v1/spaces/{space}/apps/{app}", s.auth(s.handleDestroy))
 	mux.Handle("GET /v1/doctor", s.auth(s.handleDoctor))
-	mux.Handle("POST /v1/ai/settings", s.auth(s.handleAISettings))
-	mux.Handle("POST /v1/ai/build", s.auth(s.handleAIBuild))
+	mux.Handle("POST /v1/ai/analyze", s.auth(s.handleAIAnalyze))
 	// Everything else is the admin console.
 	mux.Handle("/", uiHandler())
 

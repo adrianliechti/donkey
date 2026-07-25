@@ -12,18 +12,18 @@ import {
 import { api, type AppStatus } from './api'
 import { Button, Card, ErrorNote, SectionTitle, Spinner, StatusDot } from './ui'
 
-export function AppDetail({ app, onBack }: { app: string; onBack: () => void }) {
+export function AppDetail({ space, app, onBack }: { space: string; app: string; onBack: () => void }) {
   const [status, setStatus] = useState<AppStatus | null>(null)
   const [error, setError] = useState('')
 
   const load = useCallback(async () => {
     try {
-      setStatus(await api.status(app))
+      setStatus(await api.status(space, app))
       setError('')
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Loading the app did not work.')
     }
-  }, [app])
+  }, [space, app])
 
   useEffect(() => {
     load()
@@ -48,6 +48,7 @@ export function AppDetail({ app, onBack }: { app: string; onBack: () => void }) 
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
               <h1 className="font-mono text-2xl font-bold tracking-tight">{app}</h1>
+              <div className="mt-0.5 font-mono text-xs text-stone">space {space}</div>
               <div className="mt-1 flex items-center gap-2 text-sm text-ink-soft">
                 <StatusDot healthy={status.healthy} />
                 {!status.found
@@ -85,16 +86,16 @@ export function AppDetail({ app, onBack }: { app: string; onBack: () => void }) 
             </Card>
           )}
 
-          <EnvEditor app={app} />
-          <LogsPanel app={app} />
-          <DangerZone app={app} onDestroyed={onBack} />
+          <EnvEditor space={space} app={app} />
+          <LogsPanel space={space} app={app} />
+          <DangerZone space={space} app={app} onDestroyed={onBack} />
         </>
       )}
     </div>
   )
 }
 
-function EnvEditor({ app }: { app: string }) {
+function EnvEditor({ space, app }: { space: string; app: string }) {
   const [env, setEnv] = useState<Record<string, string> | null>(null)
   const [dirty, setDirty] = useState(false)
   const [reveal, setReveal] = useState(false)
@@ -106,10 +107,10 @@ function EnvEditor({ app }: { app: string }) {
 
   useEffect(() => {
     api
-      .env(app)
+      .env(space, app)
       .then((res) => setEnv(res.env ?? {}))
       .catch((err) => setError(err instanceof Error ? err.message : 'Loading failed.'))
-  }, [app])
+  }, [space, app])
 
   function addVar() {
     const key = newKey.trim()
@@ -135,7 +136,7 @@ function EnvEditor({ app }: { app: string }) {
     setBusy(true)
     setError('')
     try {
-      const res = await api.setEnv(app, env, true)
+      const res = await api.setEnv(space, app, env, true)
       setDirty(false)
       setNote(res.restarted ? 'Saved — the app is restarting with the new values.' : 'Saved.')
     } catch (err) {
@@ -221,7 +222,7 @@ function EnvEditor({ app }: { app: string }) {
   )
 }
 
-function LogsPanel({ app }: { app: string }) {
+function LogsPanel({ space, app }: { space: string; app: string }) {
   const [logs, setLogs] = useState('')
   const [tail, setTail] = useState(200)
   const [busy, setBusy] = useState(false)
@@ -230,14 +231,14 @@ function LogsPanel({ app }: { app: string }) {
   const load = useCallback(async () => {
     setBusy(true)
     try {
-      setLogs(await api.logs(app, tail))
+      setLogs(await api.logs(space, app, tail))
       setError('')
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Loading the logs did not work.')
     } finally {
       setBusy(false)
     }
-  }, [app, tail])
+  }, [space, app, tail])
 
   useEffect(() => {
     load()
@@ -274,7 +275,7 @@ function LogsPanel({ app }: { app: string }) {
   )
 }
 
-function DangerZone({ app, onDestroyed }: { app: string; onDestroyed: () => void }) {
+function DangerZone({ space, app, onDestroyed }: { space: string; app: string; onDestroyed: () => void }) {
   const [confirming, setConfirming] = useState(false)
   const [keepData, setKeepData] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -284,7 +285,7 @@ function DangerZone({ app, onDestroyed }: { app: string; onDestroyed: () => void
     setBusy(true)
     setError('')
     try {
-      await api.destroy(app, keepData)
+      await api.destroy(space, app, keepData)
       onDestroyed()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Removing did not work.')

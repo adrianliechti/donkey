@@ -5,10 +5,9 @@ metadata:
     donkey.dev/managed: "true"
   labels:
     app.kubernetes.io/managed-by: donkey
-    app.kubernetes.io/name: shop
-    donkey.dev/app: shop
-    donkey.dev/component: web
-  name: donkey-shop
+    app.kubernetes.io/name: acme
+    donkey.dev/space: acme
+  name: donkey-acme
 ---
 apiVersion: v1
 data:
@@ -20,8 +19,9 @@ metadata:
     app.kubernetes.io/name: shop
     donkey.dev/app: shop
     donkey.dev/component: registry-auth
+    donkey.dev/space: acme
   name: shop-registry
-  namespace: donkey-shop
+  namespace: donkey-acme
 type: kubernetes.io/dockerconfigjson
 ---
 apiVersion: apps/v1
@@ -34,8 +34,9 @@ metadata:
     app.kubernetes.io/name: shop
     donkey.dev/app: shop
     donkey.dev/component: web
+    donkey.dev/space: acme
   name: shop
-  namespace: donkey-shop
+  namespace: donkey-acme
 spec:
   replicas: 2
   selector:
@@ -50,6 +51,7 @@ spec:
         app.kubernetes.io/name: shop
         donkey.dev/app: shop
         donkey.dev/component: web
+        donkey.dev/space: acme
     spec:
       containers:
       - env:
@@ -97,8 +99,9 @@ metadata:
     app.kubernetes.io/name: shop
     donkey.dev/app: shop
     donkey.dev/component: web
+    donkey.dev/space: acme
   name: shop
-  namespace: donkey-shop
+  namespace: donkey-acme
 spec:
   ports:
   - name: http
@@ -111,6 +114,26 @@ spec:
 status:
   loadBalancer: {}
 ---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: donkey
+    app.kubernetes.io/name: shop
+    donkey.dev/app: shop
+    donkey.dev/component: web
+    donkey.dev/space: acme
+  name: donkey-tls-acme-shop
+  namespace: donkey-system
+spec:
+  dnsNames:
+  - shop.acme.apps.example.com
+  issuerRef:
+    group: cert-manager.io
+    kind: ClusterIssuer
+    name: letsencrypt
+  secretName: donkey-tls-acme-shop
+---
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
@@ -119,11 +142,12 @@ metadata:
     app.kubernetes.io/name: shop
     donkey.dev/app: shop
     donkey.dev/component: web
+    donkey.dev/space: acme
   name: shop
-  namespace: donkey-shop
+  namespace: donkey-acme
 spec:
   hostnames:
-  - shop.apps.example.com
+  - shop.acme.apps.example.com
   parentRefs:
   - name: donkey
     namespace: donkey-system
@@ -142,8 +166,9 @@ metadata:
     app.kubernetes.io/name: shop
     donkey.dev/app: shop
     donkey.dev/component: oidc
+    donkey.dev/space: acme
   name: shop-oidc
-  namespace: donkey-shop
+  namespace: donkey-acme
 stringData:
   client-secret: oidc-secret
 ---
@@ -155,8 +180,9 @@ metadata:
     app.kubernetes.io/name: shop
     donkey.dev/app: shop
     donkey.dev/component: web
+    donkey.dev/space: acme
   name: shop
-  namespace: donkey-shop
+  namespace: donkey-acme
 spec:
   oidc:
     clientID: donkey-apps
@@ -164,7 +190,7 @@ spec:
       name: shop-oidc
     provider:
       issuer: https://id.example.com
-    redirectURL: https://shop.apps.example.com/oauth2/callback
+    redirectURL: https://shop.acme.apps.example.com/oauth2/callback
   targetRefs:
   - group: gateway.networking.k8s.io
     kind: HTTPRoute

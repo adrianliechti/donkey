@@ -28,8 +28,8 @@ type StatusResponse struct {
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
-	app := r.PathValue("app")
-	st, err := s.k8s.AppStatus(r.Context(), s.cfg.Namespace(app), app)
+	app, space := r.PathValue("app"), r.PathValue("space")
+	st, err := s.k8s.AppStatus(r.Context(), s.cfg.Namespace(space), app)
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err)
 		return
@@ -48,7 +48,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
-	app := r.PathValue("app")
+	app, space := r.PathValue("app"), r.PathValue("space")
 	q := r.URL.Query()
 	tail, _ := strconv.ParseInt(q.Get("tail"), 10, 64)
 	if tail <= 0 {
@@ -64,7 +64,7 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
-	err := s.k8s.StreamLogs(r.Context(), s.cfg.Namespace(app), app, k8s.LogOptions{
+	err := s.k8s.StreamLogs(r.Context(), s.cfg.Namespace(space), app, k8s.LogOptions{
 		Component: component,
 		Follow:    q.Get("follow") == "true",
 		TailLines: tail,
@@ -86,8 +86,8 @@ func (f flushWriter) Write(p []byte) (int, error) {
 }
 
 func (s *Server) handleGetEnv(w http.ResponseWriter, r *http.Request) {
-	app := r.PathValue("app")
-	env, err := s.k8s.GetEnv(r.Context(), s.cfg.Namespace(app), app)
+	app, space := r.PathValue("app"), r.PathValue("space")
+	env, err := s.k8s.GetEnv(r.Context(), s.cfg.Namespace(space), app)
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err)
 		return
@@ -101,14 +101,14 @@ type PutEnvRequest struct {
 }
 
 func (s *Server) handlePutEnv(w http.ResponseWriter, r *http.Request) {
-	app := r.PathValue("app")
+	app, space := r.PathValue("app"), r.PathValue("space")
 	var req PutEnvRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	ns := s.cfg.Namespace(app)
-	if err := s.k8s.SetEnv(r.Context(), ns, app, req.Env); err != nil {
+	ns := s.cfg.Namespace(space)
+	if err := s.k8s.SetEnv(r.Context(), ns, space, app, req.Env); err != nil {
 		writeErr(w, http.StatusBadGateway, err)
 		return
 	}
@@ -136,7 +136,7 @@ type AddonRequest struct {
 }
 
 func (s *Server) handleAddAddon(w http.ResponseWriter, r *http.Request) {
-	appName := r.PathValue("app")
+	app, space := r.PathValue("app"), r.PathValue("space")
 	var req AddonRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
@@ -145,11 +145,11 @@ func (s *Server) handleAddAddon(w http.ResponseWriter, r *http.Request) {
 	if req.Name == "" {
 		req.Name = req.Type
 	}
-	ns := s.cfg.Namespace(appName)
+	ns := s.cfg.Namespace(space)
 	ctx := r.Context()
 
 	var objs []runtime.Object
-	objs = append(objs, manifests.Namespace(appName, ns))
+	objs = append(objs, manifests.Namespace(space, ns))
 
 	if req.External {
 		if req.Type != "postgres" {
@@ -161,7 +161,7 @@ func (s *Server) handleAddAddon(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadRequest, err)
 			return
 		}
-		objs = append(objs, addons.BindingSecret(appName, ns, req.Name, binding))
+		objs = append(objs, addons.BindingSecret(space, app, ns, req.Name, binding))
 		if err := s.k8s.Apply(ctx, objs); err != nil {
 			writeErr(w, http.StatusBadGateway, err)
 			return
@@ -175,14 +175,14 @@ func (s *Server) handleAddAddon(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	in := addons.Input{AppName: appName, Namespace: ns, Name: req.Name, Version: req.Version, Storage: req.Storage}
+	in := addons.Input{App: app, Space: space, Namespace: ns, Name: req.Name, Version: req.Version, Storage: req.Storage}
 	if in.Version == "" {
 		in.Version = addon.DefaultVersion()
 	}
 	if in.Storage == "" {
 		in.Storage = addon.DefaultStorage()
 	}
-	existing, err := s.k8s.GetSecretData(ctx, ns, addons.SecretName(appName, req.Name))
+	existing, err := s.k8s.GetSecretData(ctx, ns, addons.SecretName(app, req.Name))
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err)
 		return
@@ -193,7 +193,7 @@ func (s *Server) handleAddAddon(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
-	objs = append(objs, addons.BindingSecret(appName, ns, req.Name, addon.Binding(in)))
+	objs = append(objs, addons.BindingSecret(space, app, ns, req.Name, addon.Binding(in)))
 	addonObjs, err := addon.Objects(in)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
@@ -204,7 +204,7 @@ func (s *Server) handleAddAddon(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadGateway, err)
 		return
 	}
-	if err := s.k8s.WaitForRollout(ctx, ns, addons.InstanceName(appName, req.Name)); err != nil {
+	if err := s.k8s.WaitForRollout(ctx, ns, addons.InstanceName(app, req.Name)); err != nil {
 		writeErr(w, http.StatusBadGateway, err)
 		return
 	}
@@ -212,10 +212,10 @@ func (s *Server) handleAddAddon(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleRemoveAddon(w http.ResponseWriter, r *http.Request) {
-	appName := r.PathValue("app")
+	app, space := r.PathValue("app"), r.PathValue("space")
 	name := r.PathValue("addon")
 	keepData := r.URL.Query().Get("keepData") == "true"
-	if err := s.k8s.DeleteComponent(r.Context(), s.cfg.Namespace(appName), appName, addons.Component(name), keepData); err != nil {
+	if err := s.k8s.DeleteComponent(r.Context(), s.cfg.Namespace(space), app, addons.Component(name), keepData); err != nil {
 		writeErr(w, http.StatusBadGateway, err)
 		return
 	}
@@ -223,9 +223,14 @@ func (s *Server) handleRemoveAddon(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDestroy(w http.ResponseWriter, r *http.Request) {
-	appName := r.PathValue("app")
+	app, space := r.PathValue("app"), r.PathValue("space")
 	keepData := r.URL.Query().Get("keepData") == "true"
-	if err := s.k8s.DeleteAppResources(r.Context(), s.cfg.Namespace(appName), appName, keepData); err != nil {
+	if err := s.k8s.DeleteAppResources(r.Context(), s.cfg.Namespace(space), app, keepData); err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	// The certificate lives next to the gateway, so it needs its own goodbye.
+	if err := s.detachCertificate(r.Context(), space, app); err != nil {
 		writeErr(w, http.StatusBadGateway, err)
 		return
 	}
@@ -265,46 +270,40 @@ func (s *Server) handleDoctor(w http.ResponseWriter, r *http.Request) {
 	}
 	checks = append(checks, reg)
 
-	aiCheck := DoctorCheck{Name: "AI assistance", OK: true}
-	if s.assistant.Enabled() {
-		aiCheck.Detail = "active (" + s.cfg.AIModel + ")"
+	certs := DoctorCheck{Name: "Certificates (cert-manager)"}
+	if err := s.k8s.CertManagerInstalled(ctx); err != nil {
+		certs.Detail = err.Error()
+	} else if ready, detail, err := s.k8s.IssuerReady(ctx, s.cfg.TLSIssuerKind, s.cfg.TLSIssuer, s.cfg.GatewayNamespace); err != nil {
+		certs.Detail = fmt.Sprintf("%s %q: %v", s.cfg.TLSIssuerKind, s.cfg.TLSIssuer, err)
+	} else if !ready {
+		certs.Detail = fmt.Sprintf("%s %q is not ready: %s", s.cfg.TLSIssuerKind, s.cfg.TLSIssuer, detail)
 	} else {
-		aiCheck.Detail = "not configured"
+		certs.OK = true
+		certs.Detail = fmt.Sprintf("%s %s", s.cfg.TLSIssuerKind, s.cfg.TLSIssuer)
 	}
-	checks = append(checks, aiCheck)
+	checks = append(checks, certs)
+
+	// donkey needs the assistant to read apps, so doctor checks it like any
+	// other dependency: does the configured model actually answer?
+	assistant := DoctorCheck{Name: "Assistant (" + s.cfg.AIModel + ")"}
+	if err := s.assistant.Check(ctx); err == nil {
+		assistant.OK = true
+		assistant.Detail = "answering"
+	} else {
+		assistant.Detail = err.Error()
+	}
+	checks = append(checks, assistant)
 
 	writeJSON(w, http.StatusOK, map[string]any{"checks": checks, "baseDomain": s.cfg.BaseDomain})
 }
 
-func (s *Server) handleAISettings(w http.ResponseWriter, r *http.Request) {
-	if !s.assistant.Enabled() {
-		writeErr(w, http.StatusServiceUnavailable, fmt.Errorf("AI assistance is not configured on the server"))
-		return
-	}
-	var sum ai.RepoSummary
-	if err := json.NewDecoder(r.Body).Decode(&sum); err != nil {
+func (s *Server) handleAIAnalyze(w http.ResponseWriter, r *http.Request) {
+	var in ai.AnalyzeInput
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	out, err := s.assistant.SuggestAppSettings(r.Context(), &sum)
-	if err != nil {
-		writeErr(w, http.StatusBadGateway, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, out)
-}
-
-func (s *Server) handleAIBuild(w http.ResponseWriter, r *http.Request) {
-	if !s.assistant.Enabled() {
-		writeErr(w, http.StatusServiceUnavailable, fmt.Errorf("AI assistance is not configured on the server"))
-		return
-	}
-	var sum ai.RepoSummary
-	if err := json.NewDecoder(r.Body).Decode(&sum); err != nil {
-		writeErr(w, http.StatusBadRequest, err)
-		return
-	}
-	out, err := s.assistant.SuggestBuildConfig(r.Context(), &sum)
+	out, err := s.assistant.Analyze(r.Context(), &in)
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err)
 		return

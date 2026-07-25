@@ -3,6 +3,7 @@
 
 export interface AppSummary {
   name: string
+  space: string
   healthy: boolean
   ready: string
   image: string
@@ -77,20 +78,25 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>
 }
 
+// Apps live in a space, so every app path carries it.
+const appPath = (space: string, app: string, suffix = '') =>
+  `/v1/spaces/${encodeURIComponent(space)}/apps/${encodeURIComponent(app)}${suffix}`
+
 export const api = {
   doctor: () => request<DoctorReport>('/v1/doctor'),
   apps: () => request<{ apps: AppSummary[] }>('/v1/apps'),
-  status: (app: string) => request<AppStatus>(`/v1/apps/${app}/status`),
-  env: (app: string) => request<{ env: Record<string, string> }>(`/v1/apps/${app}/env`),
-  setEnv: (app: string, env: Record<string, string>, restart: boolean) =>
-    request<{ restarted: boolean }>(`/v1/apps/${app}/env`, {
+  status: (space: string, app: string) => request<AppStatus>(appPath(space, app, '/status')),
+  env: (space: string, app: string) =>
+    request<{ env: Record<string, string> }>(appPath(space, app, '/env')),
+  setEnv: (space: string, app: string, env: Record<string, string>, restart: boolean) =>
+    request<{ restarted: boolean }>(appPath(space, app, '/env'), {
       method: 'PUT',
       body: JSON.stringify({ env, restart }),
     }),
-  destroy: (app: string, keepData: boolean) =>
-    request<{ ok: boolean }>(`/v1/apps/${app}?keepData=${keepData}`, { method: 'DELETE' }),
-  logs: async (app: string, tail: number): Promise<string> => {
-    const res = await fetch(`/v1/apps/${app}/logs?tail=${tail}`, {
+  destroy: (space: string, app: string, keepData: boolean) =>
+    request<{ ok: boolean }>(`${appPath(space, app)}?keepData=${keepData}`, { method: 'DELETE' }),
+  logs: async (space: string, app: string, tail: number): Promise<string> => {
+    const res = await fetch(appPath(space, app, `/logs?tail=${tail}`), {
       headers: { Authorization: `Bearer ${getToken()}` },
     })
     if (res.status === 401) {

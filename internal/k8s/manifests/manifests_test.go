@@ -7,6 +7,9 @@ import (
 	"strings"
 	"testing"
 
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+
 	"monobox.ch/donkey/internal/config"
 )
 
@@ -17,6 +20,7 @@ func testInput(t *testing.T) Input {
 	replicas := int32(2)
 	app := &config.AppConfig{
 		Name:     "shop",
+		Space:    "acme",
 		Port:     8000,
 		Replicas: &replicas,
 		Env:      map[string]string{"LOG_LEVEL": "info", "APP_MODE": "prod"},
@@ -29,14 +33,15 @@ func testInput(t *testing.T) Input {
 	// ApplyDefaults keeps the explicit replicas/healthcheck values.
 	return Input{
 		App:              app,
-		Namespace:        "donkey-shop",
+		Space:            "acme",
+		Namespace:        "donkey-acme",
 		ImageRef:         "reg.example.com/donkey/shop:abc123-20260101000000",
 		RegistryHost:     "reg.example.com",
 		RegistryUsername: "bob",
 		RegistryPassword: "hunter2",
 		AddonSecretNames: []string{"shop-addon-db"},
-		Domain:           "shop.apps.example.com",
-		Scheme:           "https",
+		Domain:           "shop.acme.apps.example.com",
+		TLS:              TLSConfig{Issuer: "letsencrypt", Kind: "ClusterIssuer"},
 		GatewayName:      "donkey",
 		GatewayNamespace: "donkey-system",
 		OIDC: OIDCConfig{
@@ -145,6 +150,116 @@ func TestPullSecretSkippedWithoutCreds(t *testing.T) {
 	}
 	if strings.Contains(out, "imagePullSecrets") {
 		t.Error("anonymous registry should not reference a pull secret")
+	}
+}
+
+// Storage is one claim with a folder per path — and an app that has one can
+// only run as a single copy.
+func TestStorageRendering(t *testing.T) {
+	in := testInput(t)
+	in.App.Replicas = nil
+	in.App.Storage = &config.StorageConfig{Size: "5Gi", Paths: []string{"/app/data", "/app/uploads"}}
+	in.App.ApplyDefaults()
+	objs, err := AppObjects(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := Render(objs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"kind: PersistentVolumeClaim",
+		"name: shop-data",
+		"storage: 5Gi",
+		"mountPath: /app/data",
+		"subPath: app-data",
+		"mountPath: /app/uploads",
+		"subPath: app-uploads",
+		"claimName: shop-data",
+		"type: Recreate",
+		"fsGroup: 2000",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("an app with storage should render %s", want)
+		}
+	}
+	if strings.Count(out, "claimName: shop-data") != 1 {
+		t.Error("both paths must share the single claim")
+	}
+	var dep *appsv1.Deployment
+	for _, o := range objs {
+		if d, ok := o.(*appsv1.Deployment); ok {
+			dep = d
+		}
+	}
+	if dep == nil || *dep.Spec.Replicas != 1 {
+		t.Error("storage pins the app to one copy")
+	}
+}
+
+// Without storage nothing changes: no claim, no volume, normal rollout.
+func TestNoStorageNoClaim(t *testing.T) {
+	objs, err := AppObjects(testInput(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := Render(objs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"PersistentVolumeClaim", "volumeMounts", "type: Recreate"} {
+		if strings.Contains(out, forbidden) {
+			t.Errorf("an app without storage must not render %s", forbidden)
+		}
+	}
+}
+
+// Every app object says which space it belongs to, and the namespace is the
+// space's — not the app's.
+func TestSpaceLabels(t *testing.T) {
+	objs, err := AppObjects(testInput(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := Render(objs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "donkey.dev/space: acme") {
+		t.Error("objects should carry the space label")
+	}
+	if !strings.Contains(out, "namespace: donkey-acme") {
+		t.Error("objects belong to the space's namespace")
+	}
+	ns := objs[0].(*corev1.Namespace)
+	if ns.Labels[LabelApp] != "" {
+		t.Error("the namespace belongs to the space, so it must not be labelled with one app")
+	}
+}
+
+// Each app hostname gets its own certificate, next to the gateway — that is
+// what keeps donkey compatible with every cert-manager solver.
+func TestAppCertificate(t *testing.T) {
+	objs, err := AppObjects(testInput(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := Render(objs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"kind: Certificate",
+		"name: donkey-tls-acme-shop",
+		"secretName: donkey-tls-acme-shop",
+		"- shop.acme.apps.example.com",
+		"name: letsencrypt",
+		"namespace: donkey-system",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the app's certificate should render %s", want)
+		}
 	}
 }
 

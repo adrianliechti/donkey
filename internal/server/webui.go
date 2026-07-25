@@ -6,8 +6,6 @@ import (
 	"sort"
 	"strings"
 
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-
 	"monobox.ch/donkey/web"
 )
 
@@ -39,33 +37,34 @@ func uiHandler() http.Handler {
 // AppListEntry is one row of the admin console's overview.
 type AppListEntry struct {
 	Name    string `json:"name"`
+	Space   string `json:"space"`
 	Healthy bool   `json:"healthy"`
 	Ready   string `json:"ready"`
 	Image   string `json:"image"`
 	URL     string `json:"url"`
 }
 
-// handleListApps finds every donkey-managed app by its namespace labels.
+// handleListApps finds every deployed app, with the space it belongs to. The
+// console groups by space; the CLI prints the same grouping.
 func (s *Server) handleListApps(w http.ResponseWriter, r *http.Request) {
-	nsList, err := s.k8s.Clientset.CoreV1().Namespaces().List(r.Context(), metav1.ListOptions{
-		LabelSelector: "app.kubernetes.io/managed-by=donkey,donkey.dev/app",
-	})
+	refs, err := s.k8s.ListApps(r.Context())
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err)
 		return
 	}
 	apps := []AppListEntry{}
-	for _, ns := range nsList.Items {
-		name := ns.Labels["donkey.dev/app"]
-		if name == "" || name == "donkey-system" {
-			continue
-		}
-		st, err := s.k8s.AppStatus(r.Context(), ns.Name, name)
+	for _, ref := range refs {
+		st, err := s.k8s.AppStatus(r.Context(), ref.Namespace, ref.App)
 		if err != nil || !st.Found {
 			continue
 		}
+		space := ref.Space
+		if space == "" {
+			space = strings.TrimPrefix(ref.Namespace, s.cfg.NamespacePrefix)
+		}
 		entry := AppListEntry{
-			Name:    name,
+			Name:    ref.App,
+			Space:   space,
 			Healthy: st.Healthy(),
 			Ready:   st.ReadyText(),
 			Image:   st.Image,
@@ -75,6 +74,11 @@ func (s *Server) handleListApps(w http.ResponseWriter, r *http.Request) {
 		}
 		apps = append(apps, entry)
 	}
-	sort.Slice(apps, func(i, j int) bool { return apps[i].Name < apps[j].Name })
+	sort.Slice(apps, func(i, j int) bool {
+		if apps[i].Space != apps[j].Space {
+			return apps[i].Space < apps[j].Space
+		}
+		return apps[i].Name < apps[j].Name
+	})
 	writeJSON(w, http.StatusOK, map[string]any{"apps": apps})
 }

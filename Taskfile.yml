@@ -48,18 +48,19 @@ tasks:
       - dist/index.html
 
   server-image:
-    desc: Build and push the donkey-server image to the local dev registry
+    desc: Build the donkey-server image and load it into the cluster registry
     deps: [web-build]
     vars:
       ARCH:
         sh: "case $(uname -m) in arm64|aarch64) echo arm64;; *) echo amd64;; esac"
-      IMAGE: '{{.IMAGE | default "127.0.0.1:5001/donkey/donkey-server:dev"}}'
+      IMAGE: '{{.IMAGE | default "donkey/donkey-server:dev"}}'
     cmds:
       - mkdir -p .build
       - CGO_ENABLED=0 GOOS=linux GOARCH={{.ARCH}} go build -ldflags "{{.LDFLAGS}}" -o .build/donkey-server ./cmd/donkey-server
       - cp hack/Dockerfile.server .build/Dockerfile
       - docker build -q -t {{.IMAGE}} .build
-      - docker push -q {{.IMAGE}}
+      # devkube pushes it into the in-cluster registry (registry.platform).
+      - devkube --cluster donkey load {{.IMAGE}}
 
   test:
     desc: Run unit tests (no cluster or docker needed)
@@ -72,7 +73,7 @@ tasks:
       - go vet ./...
 
   demo:
-    desc: "DEMO: create a local kind cluster and install the full donkey stack (auto-login fake IdP, nip.io domains) + sample app"
+    desc: "DEMO: create a local devkube cluster and install the full donkey stack (auto-login fake IdP) + sample app"
     cmds:
       - hack/demo.sh
 
@@ -82,25 +83,25 @@ tasks:
       - hack/demo-apps.sh
 
   demo-idp-image:
-    desc: Build and push the DEMO fake identity provider image
+    desc: Build the DEMO fake identity provider image and load it into the cluster
     vars:
       ARCH:
         sh: "case $(uname -m) in arm64|aarch64) echo arm64;; *) echo amd64;; esac"
-      IMAGE: '{{.IMAGE | default "127.0.0.1:5001/donkey/fake-idp:dev"}}'
+      IMAGE: '{{.IMAGE | default "donkey/fake-idp:dev"}}'
     cmds:
       - mkdir -p .build/fake-idp
       - CGO_ENABLED=0 GOOS=linux GOARCH={{.ARCH}} go build -o .build/fake-idp/fake-idp ./hack/demo/fake-idp
       - cp hack/demo/fake-idp/Dockerfile .build/fake-idp/Dockerfile
       - docker build -q -t {{.IMAGE}} .build/fake-idp
-      - docker push -q {{.IMAGE}}
+      - devkube --cluster donkey load {{.IMAGE}}
 
-  kind-up:
-    desc: Create the local kind cluster + registry + ingress (used by demo/e2e)
+  cluster:
+    desc: "Create the local devkube cluster with donkey's prerequisites (cert-manager, registry, Envoy Gateway)"
     cmds:
-      - hack/kind-up.sh
+      - hack/cluster.sh
 
   e2e:
-    desc: "End-to-end smoke test on kind: demo stack → install → login → deploy → gateway → addon → env → destroy"
+    desc: "End-to-end smoke test on devkube: install → login → deploy → certificate → gateway login → addon → env → spaces → storage → destroy"
     cmds:
       - hack/e2e.sh
 

@@ -34,7 +34,7 @@ func doctorCommand() *cli.Command {
 				doctor.AppConfigCheck(),
 			})
 
-			// The server contributes its own view (build engine, registry, AI).
+			// The server contributes its own view (build engine, registry, assistant).
 			if api, err := s.api(); err == nil {
 				if checks, _, derr := api.Doctor(ctx); derr == nil {
 					for _, c := range checks {

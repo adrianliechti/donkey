@@ -18,7 +18,7 @@ func httpRoute(in Input) *gatewayv1.HTTPRoute {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      app.Name,
 			Namespace: in.Namespace,
-			Labels:    Labels(app.Name, ComponentWeb),
+			Labels:    Labels(in.Space, app.Name, ComponentWeb),
 		},
 		Spec: gatewayv1.HTTPRouteSpec{
 			CommonRouteSpec: gatewayv1.CommonRouteSpec{
@@ -52,7 +52,7 @@ func oidcSecret(in Input) *corev1.Secret {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      OIDCSecretName(in.App.Name),
 			Namespace: in.Namespace,
-			Labels:    Labels(in.App.Name, "oidc"),
+			Labels:    Labels(in.Space, in.App.Name, "oidc"),
 		},
 		StringData: map[string]string{"client-secret": in.OIDC.ClientSecret},
 	}
@@ -69,7 +69,7 @@ func securityPolicy(in Input) *unstructured.Unstructured {
 		"metadata": map[string]any{
 			"name":      app.Name,
 			"namespace": in.Namespace,
-			"labels":    toAnyMap(Labels(app.Name, ComponentWeb)),
+			"labels":    toAnyMap(Labels(in.Space, app.Name, ComponentWeb)),
 		},
 		"spec": map[string]any{
 			"targetRefs": []any{map[string]any{
@@ -85,7 +85,7 @@ func securityPolicy(in Input) *unstructured.Unstructured {
 				"clientSecret": map[string]any{
 					"name": OIDCSecretName(app.Name),
 				},
-				"redirectURL": in.Scheme + "://" + in.Domain + "/oauth2/callback",
+				"redirectURL": "https://" + in.Domain + "/oauth2/callback",
 			},
 		},
 	}}

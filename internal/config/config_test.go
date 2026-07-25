@@ -147,3 +147,117 @@ func TestResolve(t *testing.T) {
 		t.Fatalf("flag context should win, got %q", r.KubeContext)
 	}
 }
+
+func TestStorageValidate(t *testing.T) {
+	withStorage := func(s *StorageConfig) AppConfig {
+		c := AppConfig{Name: "my-app", Port: 8000, Storage: s}
+		c.ApplyDefaults()
+		return c
+	}
+	cases := []struct {
+		name    string
+		storage *StorageConfig
+		wantErr bool
+	}{
+		{"no storage", nil, false},
+		{"empty list is a decision", &StorageConfig{Paths: []string{}}, false},
+		{"absolute paths", &StorageConfig{Paths: []string{"/app/data", "/var/lib/app"}}, false},
+		{"relative path", &StorageConfig{Paths: []string{"data"}}, true},
+		{"root", &StorageConfig{Paths: []string{"/"}}, true},
+		{"colliding folders", &StorageConfig{Paths: []string{"/app/data", "/app-data"}}, true},
+		{"bad size", &StorageConfig{Size: "big", Paths: []string{"/app/data"}}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := withStorage(tc.storage)
+			if err := c.Validate(); (err != nil) != tc.wantErr {
+				t.Fatalf("Validate() err=%v, wantErr=%v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestStorageDefaultsAndReplicas(t *testing.T) {
+	c := AppConfig{Name: "x", Port: 80, Storage: &StorageConfig{Paths: []string{"/app/data"}}}
+	c.ApplyDefaults()
+	if c.Storage.Size != DefaultStorage {
+		t.Fatalf("storage size default not applied, got %q", c.Storage.Size)
+	}
+	if !c.HasStorage() {
+		t.Fatal("an app with paths has storage")
+	}
+	// A disk attaches to one machine at a time — say so instead of failing later.
+	two := int32(2)
+	c.Replicas = &two
+	if err := c.Validate(); err == nil {
+		t.Fatal("storage with several copies should be refused")
+	}
+}
+
+func TestStorageSubPathIsStable(t *testing.T) {
+	cases := map[string]string{
+		"/app/data":        "app-data",
+		"/app/data/":       "app-data",
+		"/var/lib/uploads": "var-lib-uploads",
+		"/data":            "data",
+		"/App/Data":        "app-data",
+	}
+	for in, want := range cases {
+		if got := StorageSubPath(in); got != want {
+			t.Errorf("StorageSubPath(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestResolveSpace(t *testing.T) {
+	cases := []struct {
+		name     string
+		flag     string
+		app      *AppConfig
+		appDir   string
+		repoRoot string
+		want     string
+	}{
+		{"flag wins", "Prod Team", &AppConfig{Space: "from-file"}, "/x/web", "/x", "prod-team"},
+		{"donkey.yaml next", "", &AppConfig{Space: "from-file"}, "/x/web", "/x", "from-file"},
+		{"repository name groups a monorepo", "", nil, "/home/me/acme/web", "/home/me/acme", "acme"},
+		{"single-app repo", "", nil, "/home/me/blog", "/home/me/blog", "blog"},
+		{"no repository: the folder itself", "", nil, "/home/me/scratch", "", "scratch"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ResolveSpace(tc.flag, tc.app, tc.appDir, tc.repoRoot); got != tc.want {
+				t.Fatalf("ResolveSpace() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestAppSaveKeepsSpaceAndStorage(t *testing.T) {
+	dir := t.TempDir()
+	c := AppConfig{Name: "web", Space: "acme", Port: 3000,
+		Storage: &StorageConfig{Paths: []string{"/app/uploads"}}}
+	c.ApplyDefaults()
+	if err := c.Save(dir); err != nil {
+		t.Fatal(err)
+	}
+	out, err := LoadApp(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Space != "acme" || len(out.Storage.Paths) != 1 || out.Storage.Paths[0] != "/app/uploads" {
+		t.Fatalf("roundtrip lost space or storage: %+v", out)
+	}
+}
+
+// The shipped example must actually load — it is the documentation for the
+// install file's shape.
+func TestExampleInstallFileParses(t *testing.T) {
+	f, err := LoadInstallFile(filepath.Join("..", "..", "examples", "server-install.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.BaseDomain == "" || f.Registry.URL == "" {
+		t.Fatalf("example lost its key settings: %+v", f)
+	}
+}

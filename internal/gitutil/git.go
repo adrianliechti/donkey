@@ -49,6 +49,26 @@ func HeadSHA(dir string) string {
 	return ""
 }
 
+// RepoRoot returns the folder containing the repository dir belongs to, or ""
+// when dir is not inside one. donkey uses it to name spaces: every app in a
+// repository belongs together.
+func RepoRoot(dir string) string {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return ""
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(abs, ".git")); err == nil {
+			return abs
+		}
+		parent := filepath.Dir(abs)
+		if parent == abs {
+			return ""
+		}
+		abs = parent
+	}
+}
+
 // findGitDir walks up from dir looking for .git; handles .git files
 // (worktrees/submodules) pointing elsewhere via "gitdir: <path>".
 func findGitDir(dir string) string {

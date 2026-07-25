@@ -75,7 +75,7 @@ func envCommand() *cli.Command {
 					if err != nil {
 						return err
 					}
-					env, err := api.GetEnv(ctx, app.Name)
+					env, err := api.GetEnv(ctx, s.Space, app.Name)
 					if err != nil {
 						return err
 					}
@@ -116,7 +116,7 @@ func envMutate(ctx context.Context, cmd *cli.Command, mutate func(map[string]str
 	if err != nil {
 		return err
 	}
-	env, err := api.GetEnv(ctx, app.Name)
+	env, err := api.GetEnv(ctx, s.Space, app.Name)
 	if err != nil {
 		return err
 	}
@@ -126,7 +126,7 @@ func envMutate(ctx context.Context, cmd *cli.Command, mutate func(map[string]str
 	if err := mutate(env); err != nil {
 		return err
 	}
-	restarted, err := api.PutEnv(ctx, app.Name, env, !cmd.Bool("no-restart"))
+	restarted, err := api.PutEnv(ctx, s.Space, app.Name, env, !cmd.Bool("no-restart"))
 	if err != nil {
 		return fmt.Errorf("couldn't save the variables: %w", err)
 	}

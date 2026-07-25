@@ -4,8 +4,9 @@ package config
 type Flags struct {
 	KubeContext string
 	AppDir      string
-	NoAI        bool
-	Verbose     bool
+	// Space overrides which space the app belongs to (--space).
+	Space   string
+	Verbose bool
 }
 
 // Resolved is the single fully-resolved view of client configuration.

@@ -28,7 +28,7 @@ func (postgres) DefaultVersion() string { return "16" }
 func (postgres) DefaultStorage() string { return "1Gi" }
 
 func (postgres) Binding(in Input) map[string]string {
-	host := fmt.Sprintf("%s.%s.svc", InstanceName(in.AppName, in.Name), in.Namespace)
+	host := fmt.Sprintf("%s.%s.svc", InstanceName(in.App, in.Name), in.Namespace)
 	return map[string]string{
 		"DATABASE_URL": fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=disable",
 			pgUser, in.Password, host, pgPort, pgDB),
@@ -41,10 +41,10 @@ func (postgres) Binding(in Input) map[string]string {
 }
 
 func (p postgres) Objects(in Input) ([]runtime.Object, error) {
-	name := InstanceName(in.AppName, in.Name)
-	labels := manifests.Labels(in.AppName, Component(in.Name))
+	name := InstanceName(in.App, in.Name)
+	labels := manifests.Labels(in.Space, in.App, Component(in.Name))
 	selector := map[string]string{
-		manifests.LabelApp:       in.AppName,
+		manifests.LabelApp:       in.App,
 		manifests.LabelComponent: Component(in.Name),
 	}
 
@@ -94,7 +94,7 @@ func (p postgres) Objects(in Input) ([]runtime.Object, error) {
 							{Name: "PGDATA", Value: "/var/lib/postgresql/data/pgdata"},
 							{Name: "POSTGRES_PASSWORD", ValueFrom: &corev1.EnvVarSource{
 								SecretKeyRef: &corev1.SecretKeySelector{
-									LocalObjectReference: corev1.LocalObjectReference{Name: SecretName(in.AppName, in.Name)},
+									LocalObjectReference: corev1.LocalObjectReference{Name: SecretName(in.App, in.Name)},
 									Key:                  "PGPASSWORD",
 								},
 							}},

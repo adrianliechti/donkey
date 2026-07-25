@@ -37,7 +37,7 @@ func destroyCommand() *cli.Command {
 			if err != nil {
 				return err
 			}
-			if err := api.Destroy(ctx, app.Name, keepData); err != nil {
+			if err := api.Destroy(ctx, s.Space, app.Name, keepData); err != nil {
 				return fmt.Errorf("removing %s didn't fully work: %w", app.Name, err)
 			}
 			u.Success("%s has been removed from the cluster.", app.Name)

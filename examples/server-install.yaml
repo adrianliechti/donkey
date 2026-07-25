@@ -1,5 +1,5 @@
 # Example settings for `donkey server install -f server-install.yaml`.
-# The cluster (with an ingress controller) must already exist.
+# The cluster (with Envoy Gateway installed) must already exist.
 # Secrets can come from env instead: DONKEY_REGISTRY_PASSWORD,
 # DONKEY_OIDC_CLIENT_SECRET, OPENAI_API_KEY.
 
@@ -10,9 +10,14 @@ registry:
   username: ci
   # insecure: true            # plain-HTTP registries (testing only)
 
-baseDomain: apps.example.com   # apps become <name>.apps.example.com
-https: true
-ingressClass: nginx
+baseDomain: apps.example.com   # apps become <app>.<space>.apps.example.com
+
+tls:
+  # Required. Apps are always served over https (the login gateway's cookies
+  # are Secure-only) and cert-manager issues one certificate per app
+  # hostname — so any solver works, HTTP-01 included.
+  issuer: letsencrypt-prod
+  # kind: ClusterIssuer       # or Issuer (in donkey-system)
 
 auth:
   # A real OIDC provider — e.g. Entra ID. Leave the whole block out to run
@@ -22,7 +27,9 @@ auth:
   # clientSecret: …           # better: DONKEY_OIDC_CLIENT_SECRET env
 
 ai:
-  # Any OpenAI-compatible endpoint, reachable FROM the cluster.
+  # Required: donkey reads every app with its assistant. Any
+  # OpenAI-compatible endpoint, reachable FROM the cluster. Source summaries
+  # of your apps go here, so point it at a model you trust.
   baseUrl: https://api.openai.com/v1
   model: gpt-5.5
   # apiKey: …                 # better: OPENAI_API_KEY env

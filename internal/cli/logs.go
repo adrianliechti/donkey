@@ -46,7 +46,7 @@ func logsCommand() *cli.Command {
 				}
 				component = "addon-" + name
 			}
-			return api.Logs(ctx, app.Name, component, cmd.Bool("follow"), int(cmd.Int("tail")), time.Duration(cmd.Duration("since")), os.Stdout)
+			return api.Logs(ctx, s.Space, app.Name, component, cmd.Bool("follow"), int(cmd.Int("tail")), time.Duration(cmd.Duration("since")), os.Stdout)
 		},
 	}
 }

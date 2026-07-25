@@ -30,11 +30,16 @@ var skipDirs = map[string]bool{
 }
 
 // manifestFiles get their content included (first maxFileBytes each).
+// Dockerfiles and compose files earn their place twice over: they name the
+// working directory paths resolve against, and their volumes are the app
+// author's own statement about which folders hold data worth keeping.
 var manifestFiles = map[string]bool{
 	"package.json": true, "requirements.txt": true, "pyproject.toml": true,
 	"Pipfile": true, "go.mod": true, "Gemfile": true, "composer.json": true,
 	"pom.xml": true, "build.gradle": true, "Cargo.toml": true, "mix.exs": true,
 	"Procfile": true, "Makefile": true, "README.md": true, "readme.md": true,
+	"Dockerfile": true, "docker-compose.yml": true, "docker-compose.yaml": true,
+	"compose.yml": true, "compose.yaml": true, "donkey.yaml": true,
 }
 
 // entrypointStems/sourceExts include likely server entry points — that's

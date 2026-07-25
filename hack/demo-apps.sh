@@ -5,8 +5,9 @@
 #
 # The constellation demonstrates both access modes:
 #   frontend  — protected by the login gateway; its own little server (a
-#               BFF, server.js) proxies /api/* to the backend in-cluster,
-#               so the browser never needs to reach the backend host.
+#               BFF, server.js) proxies /api/* to the backend in-cluster.
+#               Both apps share the space "mcp-react", which is one
+#               namespace — so that proxy target is simply http://backend.
 #   backend   — public: it exposes an MCP endpoint, and MCP clients are
 #               machines that can't do a browser login.
 set -euo pipefail
@@ -26,10 +27,10 @@ say "React frontend (Vite)"
 say "sample monorepo ready"
 cat <<INFO
 
-  Frontend:     https://frontend.${BASE}
+  Frontend:     https://frontend.mcp-react.${BASE}
                 Behind the login gateway (sign in as demo@example.com).
                 Shows backend connectivity fetched through its BFF.
-  MCP server:   http://backend.${BASE}/mcp/
+  MCP server:   http://backend.mcp-react.${BASE}/mcp/
                 Public — a real Model Context Protocol endpoint for MCP
-                clients; health at http://backend.${BASE}/healthz
+                clients; health at http://backend.mcp-react.${BASE}/healthz
 INFO

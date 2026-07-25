@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"path"
 	"sort"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -26,28 +27,44 @@ const (
 	AnnotationManaged = "donkey.dev/managed"
 	// AnnotationImage records the deployed image on the Deployment.
 	AnnotationImage = "donkey.dev/image"
-	// LabelApp / LabelComponent identify donkey-owned resources.
+	// LabelApp / LabelComponent identify donkey-owned resources;
+	// LabelSpace groups the apps of one space (one namespace holds them all).
 	LabelApp       = "donkey.dev/app"
 	LabelComponent = "donkey.dev/component"
+	LabelSpace     = "donkey.dev/space"
 
 	ComponentWeb          = "web"
 	ComponentRegistryAuth = "registry-auth"
 
 	webContainerName = "web"
+
+	// storageVolumeName is the app's single volume; every configured path
+	// becomes a folder on it.
+	storageVolumeName = "data"
+	// storageFSGroup owns that volume so any container user can write to it.
+	storageFSGroup = int64(2000)
 )
 
-func Labels(app, component string) map[string]string {
-	return map[string]string{
+// Labels marks one object as donkey's. Callers that don't know the space
+// (older objects, cluster-wide lookups) pass "" and simply get no space label.
+func Labels(space, app, component string) map[string]string {
+	l := map[string]string{
 		"app.kubernetes.io/name":       app,
 		"app.kubernetes.io/managed-by": ManagedByValue,
 		LabelApp:                       app,
 		LabelComponent:                 component,
 	}
+	if space != "" {
+		l[LabelSpace] = space
+	}
+	return l
 }
 
 // Input is everything needed to render an app's core objects.
 type Input struct {
-	App       *config.AppConfig
+	App *config.AppConfig
+	// Space is the app's space; Namespace is the namespace that space maps to.
+	Space     string
 	Namespace string
 	ImageRef  string
 	// RegistryHost/Username/Password feed the image pull secret; empty
@@ -59,8 +76,8 @@ type Input struct {
 	AddonSecretNames []string
 	// Domain is the hostname the app is served on; empty skips the route.
 	Domain string
-	// Scheme is http or https — used for the OIDC redirect URL.
-	Scheme string
+	// TLS names the cert-manager issuer for this app's certificate.
+	TLS TLSConfig
 	// GatewayName/Namespace identify the shared Gateway routes attach to.
 	GatewayName      string
 	GatewayNamespace string
@@ -77,12 +94,13 @@ type OIDCConfig struct {
 
 func PullSecretName(app string) string { return app + "-registry" }
 func EnvSecretName(app string) string  { return app + "-env" }
+func DataClaimName(app string) string  { return app + "-data" }
 
-// AppObjects renders the namespace, optional pull secret, deployment and
-// service for an app, in apply order.
+// AppObjects renders the namespace, optional pull secret, data volume,
+// deployment and service for an app, in apply order.
 func AppObjects(in Input) ([]runtime.Object, error) {
 	app := in.App
-	objs := []runtime.Object{Namespace(app.Name, in.Namespace)}
+	objs := []runtime.Object{Namespace(in.Space, in.Namespace)}
 
 	if in.RegistryUsername != "" && in.RegistryPassword != "" {
 		sec, err := pullSecret(in)
@@ -91,12 +109,24 @@ func AppObjects(in Input) ([]runtime.Object, error) {
 		}
 		objs = append(objs, sec)
 	}
+	if app.HasStorage() {
+		pvc, err := dataClaim(in)
+		if err != nil {
+			return nil, err
+		}
+		objs = append(objs, pvc)
+	}
 	dep, err := deployment(in)
 	if err != nil {
 		return nil, err
 	}
 	objs = append(objs, dep, service(in))
 	if in.Domain != "" {
+		// The certificate is the app's own, next to the Gateway: one hostname,
+		// one certificate, so any cert-manager solver can issue it.
+		if in.TLS.Issuer != "" {
+			objs = append(objs, appCertificate(in))
+		}
 		objs = append(objs, httpRoute(in))
 		// Login protection: every app gets it when OIDC is configured,
 		// unless it opted out with `public: true`.
@@ -107,15 +137,68 @@ func AppObjects(in Input) ([]runtime.Object, error) {
 	return objs, nil
 }
 
-func Namespace(app, name string) *corev1.Namespace {
+// Namespace is the home of one space: every app of the space lives in it and
+// they reach each other by plain service name.
+func Namespace(space, name string) *corev1.Namespace {
 	return &corev1.Namespace{
 		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Namespace"},
 		ObjectMeta: metav1.ObjectMeta{
-			Name:        name,
-			Labels:      Labels(app, ComponentWeb),
+			Name: name,
+			Labels: map[string]string{
+				"app.kubernetes.io/name":       space,
+				"app.kubernetes.io/managed-by": ManagedByValue,
+				LabelSpace:                     space,
+			},
 			Annotations: map[string]string{AnnotationManaged: "true"},
 		},
 	}
+}
+
+// dataClaim is the app's one and only volume. Every path in storage.paths
+// becomes a folder on it (see storageMounts), which keeps a multi-directory
+// app on a single disk — one thing to size, back up and reason about.
+func dataClaim(in Input) (*corev1.PersistentVolumeClaim, error) {
+	size := in.App.Storage.Size
+	if size == "" {
+		size = config.DefaultStorage
+	}
+	q, err := resource.ParseQuantity(size)
+	if err != nil {
+		return nil, fmt.Errorf("storage.size %q is not a valid size (try 5Gi)", size)
+	}
+	pvc := &corev1.PersistentVolumeClaim{
+		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "PersistentVolumeClaim"},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      DataClaimName(in.App.Name),
+			Namespace: in.Namespace,
+			Labels:    Labels(in.Space, in.App.Name, ComponentWeb),
+		},
+		Spec: corev1.PersistentVolumeClaimSpec{
+			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+			Resources: corev1.VolumeResourceRequirements{
+				Requests: corev1.ResourceList{corev1.ResourceStorage: q},
+			},
+		},
+	}
+	if class := in.App.Storage.Class; class != "" {
+		pvc.Spec.StorageClassName = &class
+	}
+	return pvc, nil
+}
+
+// storageMounts maps each configured path onto its own folder of the single
+// volume. The folder name is derived from the path and never changes, so the
+// data stays where it was written.
+func storageMounts(app *config.AppConfig) []corev1.VolumeMount {
+	var mounts []corev1.VolumeMount
+	for _, p := range app.Storage.Paths {
+		mounts = append(mounts, corev1.VolumeMount{
+			Name:      storageVolumeName,
+			MountPath: path.Clean(p),
+			SubPath:   config.StorageSubPath(p),
+		})
+	}
+	return mounts
 }
 
 func pullSecret(in Input) (*corev1.Secret, error) {
@@ -138,7 +221,7 @@ func pullSecret(in Input) (*corev1.Secret, error) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      PullSecretName(in.App.Name),
 			Namespace: in.Namespace,
-			Labels:    Labels(in.App.Name, ComponentRegistryAuth),
+			Labels:    Labels(in.Space, in.App.Name, ComponentRegistryAuth),
 		},
 		Type: corev1.SecretTypeDockerConfigJson,
 		Data: map[string][]byte{corev1.DockerConfigJsonKey: b},
@@ -213,24 +296,55 @@ func deployment(in Input) (*appsv1.Deployment, error) {
 		spec.ImagePullSecrets = []corev1.LocalObjectReference{{Name: PullSecretName(app.Name)}}
 	}
 
-	selector := map[string]string{LabelApp: app.Name, LabelComponent: ComponentWeb}
-	return &appsv1.Deployment{
+	dep := &appsv1.Deployment{
 		TypeMeta: metav1.TypeMeta{APIVersion: "apps/v1", Kind: "Deployment"},
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        app.Name,
 			Namespace:   in.Namespace,
-			Labels:      Labels(app.Name, ComponentWeb),
+			Labels:      Labels(in.Space, app.Name, ComponentWeb),
 			Annotations: map[string]string{AnnotationImage: in.ImageRef},
 		},
 		Spec: appsv1.DeploymentSpec{
 			Replicas: app.Replicas,
-			Selector: &metav1.LabelSelector{MatchLabels: selector},
+			Selector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{LabelApp: app.Name, LabelComponent: ComponentWeb},
+			},
 			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{Labels: Labels(app.Name, ComponentWeb)},
-				Spec:       spec,
+				ObjectMeta: metav1.ObjectMeta{Labels: Labels(in.Space, app.Name, ComponentWeb)},
 			},
 		},
-	}, nil
+	}
+
+	if app.HasStorage() {
+		spec.Containers[0].VolumeMounts = storageMounts(app)
+		spec.Volumes = []corev1.Volume{{
+			Name: storageVolumeName,
+			VolumeSource: corev1.VolumeSource{
+				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+					ClaimName: DataClaimName(app.Name),
+				},
+			},
+		}}
+		// A fresh volume belongs to root, while images commonly run as
+		// somebody else — the app would find its own data folder read-only.
+		// Kubernetes adds fsGroup as a supplementary group of every container
+		// process and gives the volume to that group, so the app can write
+		// whichever user it runs as. OnRootMismatch keeps restarts quick by
+		// not walking a large volume every time.
+		fsGroup := storageFSGroup
+		onMismatch := corev1.FSGroupChangeOnRootMismatch
+		spec.SecurityContext = &corev1.PodSecurityContext{
+			FSGroup:             &fsGroup,
+			FSGroupChangePolicy: &onMismatch,
+		}
+		// The disk attaches to one machine at a time: the old copy has to let
+		// go before the new one starts.
+		one := int32(1)
+		dep.Spec.Replicas = &one
+		dep.Spec.Strategy = appsv1.DeploymentStrategy{Type: appsv1.RecreateDeploymentStrategyType}
+	}
+	dep.Spec.Template.Spec = spec
+	return dep, nil
 }
 
 func service(in Input) *corev1.Service {
@@ -240,7 +354,7 @@ func service(in Input) *corev1.Service {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      app.Name,
 			Namespace: in.Namespace,
-			Labels:    Labels(app.Name, ComponentWeb),
+			Labels:    Labels(in.Space, app.Name, ComponentWeb),
 		},
 		Spec: corev1.ServiceSpec{
 			Type:     corev1.ServiceTypeClusterIP,

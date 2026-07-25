@@ -11,7 +11,10 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
+
+	"monobox.ch/donkey/internal/k8s/manifests"
 )
 
 const fieldManager = "donkey"
@@ -22,6 +25,7 @@ const fieldManager = "donkey"
 var gvrFor = map[string]schema.GroupVersionResource{
 	"Namespace":             {Version: "v1", Resource: "namespaces"},
 	"Secret":                {Version: "v1", Resource: "secrets"},
+	"ConfigMap":             {Version: "v1", Resource: "configmaps"},
 	"Service":               {Version: "v1", Resource: "services"},
 	"ServiceAccount":        {Version: "v1", Resource: "serviceaccounts"},
 	"PersistentVolumeClaim": {Version: "v1", Resource: "persistentvolumeclaims"},
@@ -31,6 +35,7 @@ var gvrFor = map[string]schema.GroupVersionResource{
 	"Gateway":               {Group: "gateway.networking.k8s.io", Version: "v1", Resource: "gateways"},
 	"HTTPRoute":             {Group: "gateway.networking.k8s.io", Version: "v1", Resource: "httproutes"},
 	"SecurityPolicy":        {Group: "gateway.envoyproxy.io", Version: "v1alpha1", Resource: "securitypolicies"},
+	"Certificate":           {Group: "cert-manager.io", Version: "v1", Resource: "certificates"},
 }
 
 var clusterScoped = map[string]bool{"Namespace": true, "ClusterRoleBinding": true, "GatewayClass": true}
@@ -127,9 +132,10 @@ func (c *Client) DeleteComponent(ctx context.Context, namespace, app, component 
 }
 
 // DeleteAppResources deletes every donkey-owned object of the app across the
-// fixed kind list, then the namespace itself when donkey created it.
+// fixed kind list. The namespace belongs to the whole space, so it only goes
+// away with the space's last app.
 func (c *Client) DeleteAppResources(ctx context.Context, namespace, app string, keepData bool) error {
-	selector := fmt.Sprintf("%s=%s", "donkey.dev/app", app)
+	selector := fmt.Sprintf("%s=%s", manifests.LabelApp, app)
 	for kind, gvr := range gvrFor {
 		if clusterScoped[kind] {
 			continue
@@ -153,12 +159,91 @@ func (c *Client) DeleteAppResources(ctx context.Context, namespace, app string, 
 	if err != nil {
 		return err
 	}
-	if ns.Annotations["donkey.dev/managed"] != "true" {
+	if ns.Annotations[manifests.AnnotationManaged] != "true" {
 		return nil // not ours to delete
+	}
+	// Other apps of the space still live here — leave their home standing.
+	remaining, err := c.Clientset.AppsV1().Deployments(namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: fmt.Sprintf("%s=%s", manifests.LabelComponent, manifests.ComponentWeb),
+	})
+	if err != nil {
+		return err
+	}
+	for _, d := range remaining.Items {
+		if d.Name != app {
+			return nil
+		}
 	}
 	err = c.Clientset.CoreV1().Namespaces().Delete(ctx, namespace, metav1.DeleteOptions{})
 	if err != nil && !apierrors.IsNotFound(err) {
 		return err
 	}
 	return nil
+}
+
+// SwitchToRecreate clears a Deployment's rolling-update settings so its
+// strategy can become Recreate. Kubernetes defaults spec.strategy.rollingUpdate
+// for rolling deployments and then refuses that field together with
+// type: Recreate — so an app that gains storage (and must stop before its
+// replacement starts, since a disk attaches to one machine at a time) would
+// otherwise be stuck on its old strategy. A missing Deployment is fine: the
+// first deploy renders Recreate directly.
+func (c *Client) SwitchToRecreate(ctx context.Context, namespace, name string) error {
+	patch := []byte(`{"spec":{"strategy":{"type":"Recreate","rollingUpdate":null}}}`)
+	_, err := c.Clientset.AppsV1().Deployments(namespace).Patch(ctx, name,
+		types.StrategicMergePatchType, patch, metav1.PatchOptions{})
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	return err
+}
+
+// AppRef identifies one deployed app.
+type AppRef struct {
+	Space     string
+	App       string
+	Namespace string
+}
+
+// ListApps finds every deployed donkey app in the cluster, grouped later by
+// space. Apps are their Deployments — a namespace alone says nothing now that
+// a space holds many apps.
+func (c *Client) ListApps(ctx context.Context) ([]AppRef, error) {
+	deps, err := c.Clientset.AppsV1().Deployments("").List(ctx, metav1.ListOptions{
+		LabelSelector: fmt.Sprintf("app.kubernetes.io/managed-by=%s,%s=%s,%s",
+			manifests.ManagedByValue, manifests.LabelComponent, manifests.ComponentWeb, manifests.LabelApp),
+	})
+	if err != nil {
+		return nil, err
+	}
+	var out []AppRef
+	for _, d := range deps.Items {
+		name := d.Labels[manifests.LabelApp]
+		if name == "" {
+			continue
+		}
+		out = append(out, AppRef{
+			Space:     d.Labels[manifests.LabelSpace],
+			App:       name,
+			Namespace: d.Namespace,
+		})
+	}
+	return out, nil
+}
+
+// CheckNamespaceFree refuses to move into a namespace that exists but isn't
+// donkey's — a space name must never let donkey take over (or later delete)
+// somebody else's namespace.
+func (c *Client) CheckNamespaceFree(ctx context.Context, namespace, space string) error {
+	ns, err := c.Clientset.CoreV1().Namespaces().Get(ctx, namespace, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if ns.Annotations[manifests.AnnotationManaged] == "true" || ns.Labels[manifests.LabelSpace] == space {
+		return nil
+	}
+	return fmt.Errorf("the namespace %s already exists and wasn't created by donkey — pick a different space name (space: <name> in donkey.yaml)", namespace)
 }

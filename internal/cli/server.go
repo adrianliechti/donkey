@@ -38,9 +38,11 @@ func serverInstallCommand() *cli.Command {
 			&cli.StringFlag{Name: "registry-url", Usage: "registry prefix for app images, as reachable FROM the cluster"},
 			&cli.StringFlag{Name: "registry-username", Usage: "registry login"},
 			&cli.BoolFlag{Name: "registry-insecure", Usage: "registry is plain HTTP (local/testing)"},
+			&cli.StringFlag{Name: "registry-ca-secret", Usage: "secret in donkey-system holding ca.crt of the registry's certificate authority"},
 			&cli.StringFlag{Name: "base-domain", Usage: "apps become <name>.<base-domain>"},
 			&cli.StringFlag{Name: "default-platform", Usage: "build platform of the cluster nodes (default linux/amd64)"},
-			&cli.BoolFlag{Name: "https", Usage: "the domains are served over HTTPS"},
+			&cli.StringFlag{Name: "tls-issuer", Usage: "cert-manager issuer that signs app certificates (required)"},
+			&cli.StringFlag{Name: "tls-issuer-kind", Usage: "ClusterIssuer (default) or Issuer"},
 			&cli.StringFlag{Name: "oidc-issuer", Usage: "OIDC issuer for the login gateway (e.g. Entra ID); empty = no gateway"},
 			&cli.StringFlag{Name: "oidc-client-id", Usage: "OIDC client id for the gateway"},
 			&cli.StringFlag{Name: "oidc-client-secret", Usage: "OIDC client secret (or $DONKEY_OIDC_CLIENT_SECRET)"},
@@ -71,6 +73,7 @@ func installSettings(cmd *cli.Command) (*config.InstallFile, error) {
 	strOver(&settings.Image, "image")
 	strOver(&settings.Registry.URL, "registry-url")
 	strOver(&settings.Registry.Username, "registry-username")
+	strOver(&settings.Registry.CASecret, "registry-ca-secret")
 	strOver(&settings.BaseDomain, "base-domain")
 	strOver(&settings.DefaultPlatform, "default-platform")
 	strOver(&settings.Auth.Issuer, "oidc-issuer")
@@ -79,11 +82,10 @@ func installSettings(cmd *cli.Command) (*config.InstallFile, error) {
 	strOver(&settings.AI.BaseURL, "openai-base-url")
 	strOver(&settings.AI.APIKey, "openai-api-key")
 	strOver(&settings.AI.Model, "ai-model")
+	strOver(&settings.TLS.Issuer, "tls-issuer")
+	strOver(&settings.TLS.Kind, "tls-issuer-kind")
 	if cmd.Bool("registry-insecure") {
 		settings.Registry.Insecure = true
-	}
-	if cmd.Bool("https") {
-		settings.HTTPS = true
 	}
 	// Secrets may come from env instead of file/flags.
 	if settings.Auth.ClientSecret == "" {
@@ -116,6 +118,16 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 	if settings.BaseDomain == "" {
 		missing = append(missing, "baseDomain")
 	}
+	// donkey reads every app with its assistant — an installation without one
+	// could not deploy anything, so this is a required setting.
+	if settings.AI.APIKey == "" {
+		missing = append(missing, "ai.apiKey (or the OPENAI_API_KEY environment variable)")
+	}
+	// Apps are always served over https, and cert-manager issues the
+	// certificates — donkey never mints its own.
+	if settings.TLS.Issuer == "" {
+		missing = append(missing, "tls.issuer (a cert-manager ClusterIssuer or Issuer)")
+	}
 	if len(missing) > 0 {
 		return fmt.Errorf("these settings are required (via -f file or flags): %v", missing)
 	}
@@ -146,9 +158,11 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 		Namespace:        manifests.SystemNamespace,
 		ServerImage:      settings.Image,
 		BaseDomain:       settings.BaseDomain,
-		HTTPS:            settings.HTTPS,
+		TLSIssuer:        settings.TLS.Issuer,
+		TLSIssuerKind:    settings.TLS.Kind,
 		RegistryURL:      settings.Registry.URL,
 		RegistryUsername: settings.Registry.Username,
+		RegistryCASecret: settings.Registry.CASecret,
 		RegistryPassword: os.Getenv("DONKEY_REGISTRY_PASSWORD"),
 		RegistryInsecure: settings.Registry.Insecure,
 		APIToken:         apiToken,
@@ -159,12 +173,34 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 		OpenAIBaseURL:    settings.AI.BaseURL,
 		OpenAIAPIKey:     settings.AI.APIKey,
 		AIModel:          settings.AI.Model,
-		BuildkitImage:   "moby/buildkit:v0.31.2",
-		NamespacePrefix: "donkey-",
+		BuildkitImage:    "moby/buildkit:v0.31.2",
+		NamespacePrefix:  "donkey-",
 	}
 	if in.OIDCClientID == "" {
 		in.OIDCClientID = "pending-setup"
 		in.OIDCClientSecret = "pending-setup"
+	}
+
+	if in.TLSIssuerKind == "" {
+		in.TLSIssuerKind = "ClusterIssuer"
+	}
+	// Every deployed app has its certificate on the gateway's https listener.
+	// Re-installing renders that listener again, so carry the existing
+	// certificates over — otherwise a re-install would take https away from
+	// every running app until each one redeploys.
+	refs, err := client.GatewayCertificateRefs(ctx, manifests.SystemNamespace, manifests.GatewayName)
+	if err != nil {
+		return fmt.Errorf("couldn't read the existing gateway: %w", err)
+	}
+	in.TLSCertificateRefs = refs
+
+	if err := client.CertManagerInstalled(ctx); err != nil {
+		return fmt.Errorf("%w\n\nInstall it first: kubectl apply -f https://github.com/cert-manager/cert-manager/releases/latest/download/cert-manager.yaml", err)
+	}
+	if ready, detail, err := client.IssuerReady(ctx, in.TLSIssuerKind, in.TLSIssuer, manifests.SystemNamespace); err != nil {
+		return fmt.Errorf("couldn't find the %s %q that should sign app certificates: %w", in.TLSIssuerKind, in.TLSIssuer, err)
+	} else if !ready {
+		u.Warn("The %s %q isn't ready yet (%s) — apps will deploy, but https starts working once it is.", in.TLSIssuerKind, in.TLSIssuer, detail)
 	}
 
 	u.Printf("Installing the donkey control plane into %s…", u.Bold(kubeContext))
@@ -189,16 +225,22 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 	u.Printf("")
 	u.Printf("Connect this machine:  %s", u.Bold(fmt.Sprintf("donkey login --server %s --token <token>", serverURL)))
 
+	u.Printf("")
+	u.Info("Apps are served at https://<app>.<space>.%s.", in.BaseDomain)
+	u.Printf("  %s", u.Faint(fmt.Sprintf(
+		"%s %s signs one certificate per app; point *.<space>.%s at the gateway's address.",
+		in.TLSIssuerKind, in.TLSIssuer, in.BaseDomain)))
+
 	switch {
 	case in.OIDCIssuer != "" && settings.Auth.ClientID == "":
 		u.Printf("")
 		u.Printf("Login protection: OIDC via %s", in.OIDCIssuer)
 		u.Warn("No OIDC client configured yet — logins can't complete until you register one at the issuer and re-run this install with the client id and secret.")
-		u.Printf("  %s", u.Faint(fmt.Sprintf("Callback URLs are per app: %s://<app>.%s/oauth2/callback (register each, or a wildcard if your IdP allows it).", in.Scheme(), in.BaseDomain)))
+		u.Printf("  %s", u.Faint(fmt.Sprintf("Callback URLs are per app: %s://<app>.<space>.%s/oauth2/callback (register each, or a wildcard if your IdP allows it).", in.Scheme(), in.BaseDomain)))
 	case in.OIDCIssuer != "":
 		u.Printf("")
 		u.Printf("Login protection: OIDC via %s", in.OIDCIssuer)
-		u.Printf("  %s", u.Faint(fmt.Sprintf("Callback URLs are per app: %s://<app>.%s/oauth2/callback.", in.Scheme(), in.BaseDomain)))
+		u.Printf("  %s", u.Faint(fmt.Sprintf("Callback URLs are per app: %s://<app>.<space>.%s/oauth2/callback.", in.Scheme(), in.BaseDomain)))
 	default:
 		u.Warn("No login protection configured — deployed apps are reachable without login.")
 		u.Printf("  %s", u.Faint("Set auth.issuer (e.g. Entra ID, or any OIDC provider) to protect them."))
@@ -213,4 +255,3 @@ func randomToken() (string, error) {
 	}
 	return "dk_" + hex.EncodeToString(b), nil
 }
-

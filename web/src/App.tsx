@@ -6,7 +6,7 @@ import { AppsList } from './AppsList'
 import { Login } from './Login'
 import { SystemView } from './SystemView'
 
-type View = { page: 'apps' } | { page: 'system' } | { page: 'app'; name: string }
+type View = { page: 'apps' } | { page: 'system' } | { page: 'app'; space: string; name: string }
 
 export default function App() {
   const [connected, setConnected] = useState(() => getToken() !== '')
@@ -59,11 +59,11 @@ export default function App() {
       </header>
       <main className="mx-auto max-w-5xl px-4 py-8">
         {view.page === 'apps' && (
-          <AppsList onOpen={(name) => setView({ page: 'app', name })} />
+          <AppsList onOpen={(space, name) => setView({ page: 'app', space, name })} />
         )}
         {view.page === 'system' && <SystemView />}
         {view.page === 'app' && (
-          <AppDetail app={view.name} onBack={() => setView({ page: 'apps' })} />
+          <AppDetail space={view.space} app={view.name} onBack={() => setView({ page: 'apps' })} />
         )}
       </main>
     </div>

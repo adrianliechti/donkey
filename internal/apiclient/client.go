@@ -4,11 +4,14 @@ package apiclient
 import (
 	"bufio"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -22,13 +25,39 @@ type Client struct {
 	http    *http.Client
 }
 
-func New(baseURL, token string) *Client {
+// New builds the transport. caFile is a PEM bundle to trust on top of the
+// system roots — installations whose certificates come from a private CA need
+// it, and a wrong path is an error worth hearing immediately.
+func New(baseURL, token, caFile string) (*Client, error) {
+	// No overall timeout: deploys and log follows are long-lived streams.
+	httpClient := &http.Client{}
+	if caFile != "" {
+		pool, err := caPool(caFile)
+		if err != nil {
+			return nil, err
+		}
+		httpClient.Transport = &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool}}
+	}
 	return &Client{
 		BaseURL: strings.TrimSuffix(baseURL, "/"),
 		Token:   token,
-		// No overall timeout: deploys and log follows are long-lived streams.
-		http: &http.Client{},
+		http:    httpClient,
+	}, nil
+}
+
+func caPool(caFile string) (*x509.CertPool, error) {
+	pem, err := os.ReadFile(caFile)
+	if err != nil {
+		return nil, fmt.Errorf("couldn't read the certificate authority file: %w", err)
 	}
+	pool, err := x509.SystemCertPool()
+	if err != nil {
+		pool = x509.NewCertPool()
+	}
+	if !pool.AppendCertsFromPEM(pem) {
+		return nil, fmt.Errorf("%s doesn't contain a certificate donkey can use (expected PEM)", caFile)
+	}
+	return pool, nil
 }
 
 func (c *Client) req(ctx context.Context, method, path string, query url.Values, body io.Reader) (*http.Request, error) {
@@ -124,6 +153,9 @@ func transientPingError(err error) bool {
 }
 
 type DeployOpts struct {
+	// Space the app belongs to; empty lets the server fall back to
+	// donkey.yaml.
+	Space     string
 	Platform  string
 	Tag       string
 	DryRun    bool
@@ -134,11 +166,19 @@ type DeployOpts struct {
 	SHA string
 }
 
+// appPath builds the space-scoped API path of one app.
+func appPath(space, app, suffix string) string {
+	return "/v1/spaces/" + space + "/apps/" + app + suffix
+}
+
 // Deploy uploads the tar.gz build context and follows the progress stream.
 // onLine receives step messages (always user-visible), onProgress the raw
 // build output (verbose). Returns the final result.
 func (c *Client) Deploy(ctx context.Context, contextTar io.Reader, opts DeployOpts, onLine, onProgress func(string)) (*server.DeployResult, error) {
 	q := url.Values{}
+	if opts.Space != "" {
+		q.Set("space", opts.Space)
+	}
 	if opts.Platform != "" {
 		q.Set("platform", opts.Platform)
 	}
@@ -202,13 +242,13 @@ func (c *Client) Deploy(ctx context.Context, contextTar io.Reader, opts DeployOp
 	return result, nil
 }
 
-func (c *Client) Status(ctx context.Context, app string) (*server.StatusResponse, error) {
+func (c *Client) Status(ctx context.Context, space, app string) (*server.StatusResponse, error) {
 	var out server.StatusResponse
-	err := c.doJSON(ctx, http.MethodGet, "/v1/apps/"+app+"/status", nil, nil, &out)
+	err := c.doJSON(ctx, http.MethodGet, appPath(space, app, "/status"), nil, nil, &out)
 	return &out, err
 }
 
-func (c *Client) Logs(ctx context.Context, app, component string, follow bool, tail int, since time.Duration, out io.Writer) error {
+func (c *Client) Logs(ctx context.Context, space, app, component string, follow bool, tail int, since time.Duration, out io.Writer) error {
 	q := url.Values{}
 	q.Set("component", component)
 	q.Set("tail", fmt.Sprint(tail))
@@ -218,7 +258,7 @@ func (c *Client) Logs(ctx context.Context, app, component string, follow bool, t
 	if since > 0 {
 		q.Set("since", since.String())
 	}
-	req, err := c.req(ctx, http.MethodGet, "/v1/apps/"+app+"/logs", q, nil)
+	req, err := c.req(ctx, http.MethodGet, appPath(space, app, "/logs"), q, nil)
 	if err != nil {
 		return err
 	}
@@ -234,40 +274,49 @@ func (c *Client) Logs(ctx context.Context, app, component string, follow bool, t
 	return err
 }
 
-func (c *Client) GetEnv(ctx context.Context, app string) (map[string]string, error) {
+func (c *Client) GetEnv(ctx context.Context, space, app string) (map[string]string, error) {
 	var out struct {
 		Env map[string]string `json:"env"`
 	}
-	err := c.doJSON(ctx, http.MethodGet, "/v1/apps/"+app+"/env", nil, nil, &out)
+	err := c.doJSON(ctx, http.MethodGet, appPath(space, app, "/env"), nil, nil, &out)
 	return out.Env, err
 }
 
-func (c *Client) PutEnv(ctx context.Context, app string, env map[string]string, restart bool) (bool, error) {
+func (c *Client) PutEnv(ctx context.Context, space, app string, env map[string]string, restart bool) (bool, error) {
 	var out struct {
 		Restarted bool `json:"restarted"`
 	}
-	err := c.doJSON(ctx, http.MethodPut, "/v1/apps/"+app+"/env", nil, server.PutEnvRequest{Env: env, Restart: restart}, &out)
+	err := c.doJSON(ctx, http.MethodPut, appPath(space, app, "/env"), nil, server.PutEnvRequest{Env: env, Restart: restart}, &out)
 	return out.Restarted, err
 }
 
-func (c *Client) AddAddon(ctx context.Context, app string, req server.AddonRequest) error {
-	return c.doJSON(ctx, http.MethodPost, "/v1/apps/"+app+"/addons", nil, req, nil)
+func (c *Client) AddAddon(ctx context.Context, space, app string, req server.AddonRequest) error {
+	return c.doJSON(ctx, http.MethodPost, appPath(space, app, "/addons"), nil, req, nil)
 }
 
-func (c *Client) RemoveAddon(ctx context.Context, app, addon string, keepData bool) error {
+func (c *Client) RemoveAddon(ctx context.Context, space, app, addon string, keepData bool) error {
 	q := url.Values{}
 	if keepData {
 		q.Set("keepData", "true")
 	}
-	return c.doJSON(ctx, http.MethodDelete, "/v1/apps/"+app+"/addons/"+addon, q, nil, nil)
+	return c.doJSON(ctx, http.MethodDelete, appPath(space, app, "/addons/"+addon), q, nil, nil)
 }
 
-func (c *Client) Destroy(ctx context.Context, app string, keepData bool) error {
+func (c *Client) Destroy(ctx context.Context, space, app string, keepData bool) error {
 	q := url.Values{}
 	if keepData {
 		q.Set("keepData", "true")
 	}
-	return c.doJSON(ctx, http.MethodDelete, "/v1/apps/"+app, q, nil, nil)
+	return c.doJSON(ctx, http.MethodDelete, appPath(space, app, ""), q, nil, nil)
+}
+
+// Apps lists everything deployed, across all spaces.
+func (c *Client) Apps(ctx context.Context) ([]server.AppListEntry, error) {
+	var out struct {
+		Apps []server.AppListEntry `json:"apps"`
+	}
+	err := c.doJSON(ctx, http.MethodGet, "/v1/apps", nil, nil, &out)
+	return out.Apps, err
 }
 
 func (c *Client) Doctor(ctx context.Context) ([]server.DoctorCheck, string, error) {
@@ -279,14 +328,10 @@ func (c *Client) Doctor(ctx context.Context) ([]server.DoctorCheck, string, erro
 	return out.Checks, out.BaseDomain, err
 }
 
-func (c *Client) SuggestAppSettings(ctx context.Context, sum *ai.RepoSummary) (*ai.AppSettings, error) {
-	var out ai.AppSettings
-	err := c.doJSON(ctx, http.MethodPost, "/v1/ai/settings", nil, sum, &out)
-	return &out, err
-}
-
-func (c *Client) SuggestBuildConfig(ctx context.Context, sum *ai.RepoSummary) (*ai.BuildSuggestion, error) {
-	var out ai.BuildSuggestion
-	err := c.doJSON(ctx, http.MethodPost, "/v1/ai/build", nil, sum, &out)
+// Analyze asks the server's assistant to read a repository summary. The CLI
+// never talks to OpenAI itself — only the server holds the key.
+func (c *Client) Analyze(ctx context.Context, in *ai.AnalyzeInput) (*ai.Analysis, error) {
+	var out ai.Analysis
+	err := c.doJSON(ctx, http.MethodPost, "/v1/ai/analyze", nil, in, &out)
 	return &out, err
 }

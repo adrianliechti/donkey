@@ -23,12 +23,16 @@ func CheckRegistryAuth(ctx context.Context, reg config.Registry) error {
 	if reg.Insecure {
 		scheme = "http"
 	}
+	client, err := registryClient(reg)
+	if err != nil {
+		return err
+	}
 	base := scheme + "://" + reg.Host() + "/v2/"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base, nil)
 	if err != nil {
 		return err
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("the registry %s didn't answer: %w", reg.Host(), err)
 	}
@@ -44,18 +48,31 @@ func CheckRegistryAuth(ctx context.Context, reg config.Registry) error {
 
 	challenge := resp.Header.Get("WWW-Authenticate")
 	if strings.HasPrefix(strings.ToLower(challenge), "basic") {
-		return checkBasic(ctx, base, reg.Username, password)
+		return checkBasic(ctx, client, base, reg.Username, password)
 	}
 	if strings.HasPrefix(strings.ToLower(challenge), "bearer") {
-		return checkBearer(ctx, challenge, reg.Username, password)
+		return checkBearer(ctx, client, challenge, reg.Username, password)
 	}
 	return fmt.Errorf("the registry %s uses an authentication scheme donkey doesn't recognize (%q)", reg.Host(), challenge)
 }
 
-func checkBasic(ctx context.Context, endpoint, user, password string) error {
+// registryClient trusts the registry's own certificate authority when the
+// installation named one.
+func registryClient(reg config.Registry) (*http.Client, error) {
+	tlsConfig, err := reg.TLSConfig()
+	if err != nil {
+		return nil, err
+	}
+	if tlsConfig == nil {
+		return http.DefaultClient, nil
+	}
+	return &http.Client{Transport: &http.Transport{TLSClientConfig: tlsConfig}}, nil
+}
+
+func checkBasic(ctx context.Context, client *http.Client, endpoint, user, password string) error {
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	req.SetBasicAuth(user, password)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}
@@ -71,7 +88,7 @@ func checkBasic(ctx context.Context, endpoint, user, password string) error {
 
 // checkBearer fetches a token from the realm in the Bearer challenge; a 401
 // from the realm means the credentials are wrong.
-func checkBearer(ctx context.Context, challenge, user, password string) error {
+func checkBearer(ctx context.Context, client *http.Client, challenge, user, password string) error {
 	params := parseChallenge(challenge)
 	realm := params["realm"]
 	if realm == "" {
@@ -88,7 +105,7 @@ func checkBearer(ctx context.Context, challenge, user, password string) error {
 	if user != "" || password != "" {
 		req.SetBasicAuth(user, password)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}

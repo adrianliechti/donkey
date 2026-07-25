@@ -15,9 +15,13 @@ type Config struct {
 
 	Registry        config.Registry
 	BaseDomain      string
-	HTTPS           bool
 	BuildkitAddr    string
 	NamespacePrefix string
+
+	// TLSIssuer/TLSIssuerKind name the cert-manager issuer that signs one
+	// certificate per app hostname.
+	TLSIssuer     string
+	TLSIssuerKind string
 
 	GatewayName      string
 	GatewayNamespace string
@@ -41,19 +45,21 @@ func FromEnv() (*Config, error) {
 			URL:      os.Getenv("DONKEY_REGISTRY_URL"),
 			Username: os.Getenv("DONKEY_REGISTRY_USERNAME"),
 			Insecure: os.Getenv("DONKEY_REGISTRY_INSECURE") == "true",
+			CAFile:   os.Getenv("DONKEY_REGISTRY_CA_FILE"),
 		},
-		BaseDomain:      os.Getenv("DONKEY_BASE_DOMAIN"),
-		HTTPS:           os.Getenv("DONKEY_HTTPS") == "true",
-		BuildkitAddr:    os.Getenv("DONKEY_BUILDKIT_ADDR"),
-		NamespacePrefix: envOr("DONKEY_NAMESPACE_PREFIX", config.DefaultNamespacePrefix),
+		BaseDomain:       os.Getenv("DONKEY_BASE_DOMAIN"),
+		TLSIssuer:        os.Getenv("DONKEY_TLS_ISSUER"),
+		TLSIssuerKind:    envOr("DONKEY_TLS_ISSUER_KIND", "ClusterIssuer"),
+		BuildkitAddr:     os.Getenv("DONKEY_BUILDKIT_ADDR"),
+		NamespacePrefix:  envOr("DONKEY_NAMESPACE_PREFIX", config.DefaultNamespacePrefix),
 		GatewayName:      envOr("DONKEY_GATEWAY_NAME", "donkey"),
 		GatewayNamespace: envOr("DONKEY_GATEWAY_NAMESPACE", "donkey-system"),
 		OIDCIssuer:       os.Getenv("DONKEY_OIDC_ISSUER"),
 		OIDCClientID:     os.Getenv("DONKEY_OIDC_CLIENT_ID"),
 		OIDCClientSecret: os.Getenv("DONKEY_OIDC_CLIENT_SECRET"),
 		DefaultPlatform:  envOr("DONKEY_DEFAULT_PLATFORM", "linux/amd64"),
-		APIToken:        os.Getenv("DONKEY_API_TOKEN"),
-		AIModel:         envOr("DONKEY_AI_MODEL", config.DefaultAIModel),
+		APIToken:         os.Getenv("DONKEY_API_TOKEN"),
+		AIModel:          envOr("DONKEY_AI_MODEL", config.DefaultAIModel),
 	}
 	if c.Registry.URL == "" {
 		return nil, fmt.Errorf("DONKEY_REGISTRY_URL is required")
@@ -63,6 +69,11 @@ func FromEnv() (*Config, error) {
 	}
 	if c.BuildkitAddr == "" {
 		return nil, fmt.Errorf("DONKEY_BUILDKIT_ADDR is required")
+	}
+	// Apps are always served over https (the login gateway's cookies are
+	// Secure-only), and their certificates come from cert-manager.
+	if c.TLSIssuer == "" {
+		return nil, fmt.Errorf("DONKEY_TLS_ISSUER is required — donkey needs a cert-manager issuer to give apps their certificates")
 	}
 	if c.APIToken == "" {
 		return nil, fmt.Errorf("DONKEY_API_TOKEN is required")
@@ -80,19 +91,24 @@ func envOr(key, def string) string {
 	return def
 }
 
-func (c *Config) Scheme() string {
-	if c.HTTPS {
-		return "https"
+// Scheme is always https for apps: the login gateway's cookies require it.
+func (c *Config) Scheme() string { return "https" }
+
+// Namespace is where a space lives: all its apps share it.
+func (c *Config) Namespace(space string) string { return c.NamespacePrefix + space }
+
+// AppHost is the address of an app: <app>.<space>.<baseDomain>. The space in
+// the middle is what lets two teams both have a "web".
+func (c *Config) AppHost(space string, app *config.AppConfig) string {
+	if app.Domain != "" {
+		return app.Domain
 	}
-	return "http"
+	return app.Name + "." + space + "." + c.BaseDomain
 }
 
-func (c *Config) Namespace(app string) string { return c.NamespacePrefix + app }
+// SpaceWildcard is the certificate name that covers every app of a space.
+func (c *Config) SpaceWildcard(space string) string { return "*." + space + "." + c.BaseDomain }
 
-func (c *Config) AppURL(app *config.AppConfig) string {
-	domain := app.Domain
-	if domain == "" {
-		domain = app.Name + "." + c.BaseDomain
-	}
-	return c.Scheme() + "://" + domain
+func (c *Config) AppURL(space string, app *config.AppConfig) string {
+	return c.Scheme() + "://" + c.AppHost(space, app)
 }

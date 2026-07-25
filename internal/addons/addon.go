@@ -31,7 +31,8 @@ type Addon interface {
 }
 
 type Input struct {
-	AppName   string
+	App       string
+	Space     string
 	Namespace string
 	// Name distinguishes multiple addons of one type (defaults to the type).
 	Name     string
@@ -68,7 +69,7 @@ func InstanceName(app, addon string) string { return app + "-" + addon }
 
 // BindingSecret wraps the env contract in the Secret the app's envFrom picks
 // up. Identical shape for provisioned and external addons.
-func BindingSecret(app, namespace, name string, data map[string]string) *corev1.Secret {
+func BindingSecret(space, app, namespace, name string, data map[string]string) *corev1.Secret {
 	bytes := map[string][]byte{}
 	for k, v := range data {
 		bytes[k] = []byte(v)
@@ -78,7 +79,7 @@ func BindingSecret(app, namespace, name string, data map[string]string) *corev1.
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      SecretName(app, name),
 			Namespace: namespace,
-			Labels:    manifests.Labels(app, Component(name)),
+			Labels:    manifests.Labels(space, app, Component(name)),
 		},
 		Data: bytes,
 	}

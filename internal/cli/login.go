@@ -19,6 +19,7 @@ func loginCommand() *cli.Command {
 		Flags: []cli.Flag{
 			&cli.StringFlag{Name: "server", Usage: "server address, e.g. https://donkey.apps.example.com"},
 			&cli.StringFlag{Name: "token", Usage: "API token (from `donkey server install`)"},
+			&cli.StringFlag{Name: "ca-file", Usage: "PEM file of the certificate authority to trust (private-CA installations)"},
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 			return runLogin(ctx, cmd)
@@ -38,8 +39,12 @@ func runLogin(ctx context.Context, cmd *cli.Command) error {
 
 	url := cmd.String("server")
 	token := cmd.String("token")
+	caFile := cmd.String("ca-file")
 	if url == "" {
 		url = cfg.Server.URL
+	}
+	if caFile == "" {
+		caFile = cfg.Server.CAFile
 	}
 
 	if (url == "" || token == "") && interactive() {
@@ -69,10 +74,14 @@ func runLogin(ctx context.Context, cmd *cli.Command) error {
 	}
 
 	fmt.Println("Checking the connection…")
-	if err := apiclient.New(url, token).Ping(ctx); err != nil {
+	client, err := apiclient.New(url, token, caFile)
+	if err != nil {
+		return err
+	}
+	if err := client.Ping(ctx); err != nil {
 		return fmt.Errorf("that didn't work: %w", err)
 	}
-	cfg.Server = config.ServerConfig{URL: strings.TrimSuffix(url, "/"), Token: token}
+	cfg.Server = config.ServerConfig{URL: strings.TrimSuffix(url, "/"), Token: token, CAFile: caFile}
 	if err := cfg.Save(globalPath); err != nil {
 		return err
 	}

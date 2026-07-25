@@ -56,7 +56,7 @@ func addonAddCommand() *cli.Command {
 			}
 			u := s.UI
 			u.Printf("Setting up %s for %s…", u.Bold(typ), u.Bold(app.Name))
-			if err := api.AddAddon(ctx, app.Name, server.AddonRequest{
+			if err := api.AddAddon(ctx, s.Space, app.Name, server.AddonRequest{
 				Type: typ, Name: name, Version: cmd.String("version"), Storage: cmd.String("storage"),
 			}); err != nil {
 				return err
@@ -99,7 +99,7 @@ func addonAttachCommand() *cli.Command {
 			if err != nil {
 				return err
 			}
-			if err := api.AddAddon(ctx, app.Name, server.AddonRequest{
+			if err := api.AddAddon(ctx, s.Space, app.Name, server.AddonRequest{
 				Type: typ, Name: name, External: true, URL: cmd.String("url"),
 			}); err != nil {
 				return err
@@ -154,7 +154,7 @@ func addonRemoveCommand() *cli.Command {
 			if err != nil {
 				return err
 			}
-			if err := api.RemoveAddon(ctx, app.Name, name, cmd.Bool("keep-data")); err != nil {
+			if err := api.RemoveAddon(ctx, s.Space, app.Name, name, cmd.Bool("keep-data")); err != nil {
 				return err
 			}
 			app.Addons = append(app.Addons[:idx], app.Addons[idx+1:]...)
@@ -227,7 +227,7 @@ func redeployForAddons(ctx context.Context, s *session, cmd *cli.Command, app *c
 	if err != nil {
 		return err
 	}
-	st, err := api.Status(ctx, app.Name)
+	st, err := api.Status(ctx, s.Space, app.Name)
 	if err != nil {
 		return err
 	}

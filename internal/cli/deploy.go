@@ -71,7 +71,7 @@ func deployAction(ctx context.Context, cmd *cli.Command) error {
 	}
 	app := s.Resolved.App
 
-	u.Info("Packing up %s and sending it to the server…", u.Bold(app.Name))
+	u.Info("Packing up %s (space %s) and sending it to the server…", u.Bold(app.Name), u.Bold(s.Space))
 	tarFile, err := apiclient.TarContextToTemp(s.Resolved.Flags.AppDir)
 	if err != nil {
 		return fmt.Errorf("couldn't pack the app folder: %w", err)
@@ -85,6 +85,7 @@ func deployAction(ctx context.Context, cmd *cli.Command) error {
 		return fmt.Errorf("--no-build needs --tag: tell donkey which already-pushed image to deploy")
 	}
 	result, err := api.Deploy(ctx, tarFile, apiclient.DeployOpts{
+		Space:     s.Space,
 		Platform:  cmd.String("platform"),
 		Tag:       cmd.String("tag"),
 		DryRun:    cmd.Bool("dry-run"),
@@ -103,7 +104,7 @@ func deployAction(ctx context.Context, cmd *cli.Command) error {
 		deadline := time.Now().Add(5 * time.Minute)
 		for time.Now().Before(deadline) {
 			time.Sleep(5 * time.Second)
-			st, serr := api.Status(ctx, app.Name)
+			st, serr := api.Status(ctx, s.Space, app.Name)
 			if serr != nil {
 				continue
 			}
@@ -156,7 +157,7 @@ func deployWithTag(ctx context.Context, s *session, cmd *cli.Command, imageRef s
 		os.Remove(tarFile.Name())
 	}()
 	u := s.UI
-	result, err := api.Deploy(ctx, tarFile, apiclient.DeployOpts{Tag: imageRef, NoBuild: true},
+	result, err := api.Deploy(ctx, tarFile, apiclient.DeployOpts{Space: s.Space, Tag: imageRef, NoBuild: true},
 		func(line string) { u.Detail("%s", line) },
 		func(progress string) { u.Detail("%s", progress) },
 	)

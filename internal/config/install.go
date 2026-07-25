@@ -13,11 +13,11 @@ import (
 // (DONKEY_REGISTRY_PASSWORD, DONKEY_OIDC_CLIENT_SECRET, OPENAI_API_KEY).
 type InstallFile struct {
 	// Image is the donkey-server image, pullable by the cluster.
-	Image    string   `json:"image,omitempty"`
-	Registry Registry `json:"registry,omitempty"`
-	// BaseDomain: apps become <name>.<baseDomain>.
-	BaseDomain   string `json:"baseDomain,omitempty"`
-	HTTPS bool `json:"https,omitempty"`
+	Image    string          `json:"image,omitempty"`
+	Registry InstallRegistry `json:"registry,omitempty"`
+	// BaseDomain: apps become <app>.<space>.<baseDomain>.
+	BaseDomain string     `json:"baseDomain,omitempty"`
+	TLS        InstallTLS `json:"tls,omitempty"`
 	// DefaultPlatform is the build platform of the cluster's nodes
 	// (default linux/amd64).
 	DefaultPlatform string `json:"defaultPlatform,omitempty"`
@@ -26,12 +26,32 @@ type InstallFile struct {
 	AI   InstallAI   `json:"ai,omitempty"`
 }
 
+// InstallRegistry describes the registry app images are pushed to. CASecret
+// covers the common in-house case: a registry whose certificate comes from
+// the cluster's own CA, which the server and the build engine must trust.
+type InstallRegistry struct {
+	Registry
+	// CASecret is a secret in donkey-system holding ca.crt.
+	CASecret string `json:"caSecret,omitempty"`
+}
+
 // InstallAuth configures the login gateway. With an empty issuer (and no
 // --demo), no gateway is installed and apps are reachable without login.
 type InstallAuth struct {
 	Issuer       string `json:"issuer,omitempty"`
 	ClientID     string `json:"clientId,omitempty"`
 	ClientSecret string `json:"clientSecret,omitempty"`
+}
+
+// InstallTLS names the cert-manager issuer that signs app certificates.
+// donkey always serves apps over https — the login gateway's cookies require
+// it — and always asks cert-manager for one certificate per app hostname, so
+// any solver works (HTTP-01 included, which no wildcard could use).
+type InstallTLS struct {
+	// Issuer is the cert-manager issuer's name.
+	Issuer string `json:"issuer,omitempty"`
+	// Kind is ClusterIssuer (default) or Issuer.
+	Kind string `json:"kind,omitempty"`
 }
 
 type InstallAI struct {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path"
 	"strings"
 	"time"
 
@@ -32,32 +33,98 @@ func newOpenAI(key, model string) *openAI {
 	}
 }
 
-func (o *openAI) Enabled() bool { return true }
+// Check sends a minimal request: enough to prove the endpoint, the key and
+// the model name all work together. The token cap stays at 16 because
+// providers reject smaller budgets.
+func (o *openAI) Check(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	_, err := o.client.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
+		Model:     shared.ChatModel(o.model),
+		Messages:  []openai.ChatCompletionMessageParamUnion{openai.UserMessage("ping")},
+		MaxTokens: openai.Int(16),
+	})
+	if err != nil {
+		return fmt.Errorf("%s did not answer: %w", o.model, err)
+	}
+	return nil
+}
 
-func (o *openAI) SuggestBuildConfig(ctx context.Context, sum *RepoSummary) (*BuildSuggestion, error) {
-	var out BuildSuggestion
-	if err := o.structured(ctx, suggestSystemPrompt, sum.Render(), "build_suggestion", suggestionSchema, &out); err != nil {
+func (o *openAI) Analyze(ctx context.Context, in *AnalyzeInput) (*Analysis, error) {
+	var b strings.Builder
+	if in.Detected != "" {
+		if in.DetectionFailed {
+			fmt.Fprintf(&b, "donkey could NOT build this app on its own: %s\nPropose a Dockerfile or a railpack config.\n\n", in.Detected)
+		} else {
+			fmt.Fprintf(&b, "donkey's detector says: %s\n\n", in.Detected)
+		}
+	}
+	if in.CurrentConfig != "" {
+		fmt.Fprintf(&b, "Existing donkey.yaml:\n%s\n\n", in.CurrentConfig)
+	}
+	if in.Summary != nil {
+		b.WriteString(in.Summary.Render())
+	}
+
+	var out Analysis
+	if err := o.structured(ctx, analyzeSystemPrompt, b.String(), "app_analysis", analysisSchema, &out); err != nil {
 		return nil, err
 	}
-	out.Strategy = strings.ToLower(out.Strategy)
-	if out.Strategy != "railpack" && out.Strategy != "dockerfile" {
-		return nil, fmt.Errorf("the AI answer wasn't usable (unknown strategy %q)", out.Strategy)
+	out.sanitize()
+	if in.DetectionFailed && out.Strategy != "railpack" && out.Strategy != "dockerfile" {
+		return nil, fmt.Errorf("the AI assistant couldn't propose a way to build this app")
 	}
 	return &out, nil
 }
 
-func (o *openAI) SuggestAppSettings(ctx context.Context, sum *RepoSummary) (*AppSettings, error) {
-	var out AppSettings
-	if err := o.structured(ctx, settingsSystemPrompt, sum.Render(), "app_settings", settingsSchema, &out); err != nil {
-		return nil, err
+// sanitize drops answers donkey would refuse anyway, so callers can trust
+// what they get: a model that invents /tmp volumes or a bare health path
+// shouldn't be able to break a deploy.
+func (a *Analysis) sanitize() {
+	a.Strategy = strings.ToLower(strings.TrimSpace(a.Strategy))
+	if a.Port < 0 || a.Port > 65535 {
+		a.Port = 0
 	}
-	if out.Port < 0 || out.Port > 65535 {
-		out.Port = 0
+	if a.HealthcheckPath != "" && !strings.HasPrefix(a.HealthcheckPath, "/") {
+		a.HealthcheckPath = ""
 	}
-	if out.HealthcheckPath != "" && !strings.HasPrefix(out.HealthcheckPath, "/") {
-		out.HealthcheckPath = ""
+	volumes := a.Volumes[:0]
+	seen := map[string]bool{}
+	for _, v := range a.Volumes {
+		p := path.Clean(strings.TrimSpace(v.Path))
+		if !path.IsAbs(p) || p == "/" || seen[p] || excludedVolume(p) {
+			continue
+		}
+		seen[p] = true
+		v.Path = p
+		volumes = append(volumes, v)
 	}
-	return &out, nil
+	a.Volumes = volumes
+	services := a.Services[:0]
+	for _, s := range a.Services {
+		s.Type = strings.ToLower(strings.TrimSpace(s.Type))
+		if s.Type != "" {
+			services = append(services, s)
+		}
+	}
+	a.Services = services
+}
+
+// excludedVolume rejects folders that must never become persistent storage:
+// scratch space, caches and build output would only grow, and system paths
+// would break the container.
+func excludedVolume(p string) bool {
+	for _, bad := range []string{"/tmp", "/var/tmp", "/dev", "/proc", "/sys", "/etc", "/usr", "/bin", "/sbin", "/lib", "/root", "/var/log"} {
+		if p == bad || strings.HasPrefix(p, bad+"/") {
+			return true
+		}
+	}
+	base := path.Base(p)
+	switch base {
+	case "node_modules", "dist", "build", ".next", "__pycache__", ".venv", "venv", "target", "vendor", "cache", ".cache", "logs":
+		return true
+	}
+	return false
 }
 
 func (o *openAI) DiagnoseFailure(ctx context.Context, fc *FailureContext) (*FixProposal, error) {

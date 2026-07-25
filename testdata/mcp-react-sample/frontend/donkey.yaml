@@ -1,4 +1,5 @@
 name: frontend
+space: mcp-react
 port: 3000
 env:
-  BACKEND_URL: http://backend.donkey-backend.svc.cluster.local
+  BACKEND_URL: http://backend
