@@ -1,11 +1,89 @@
 package manifests
 
 import (
-	corev1 "k8s.io/api/core/v1"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
+	gatewayv1beta1 "sigs.k8s.io/gateway-api/apis/v1beta1"
 )
+
+const (
+	// AnnotationBackend on an HTTPRoute names the app Service the donkey
+	// gateway forwards to. Every app route carries it — the gateway is the
+	// app edge, and this is where the traffic really goes.
+	AnnotationBackend = "donkey.dev/backend"
+	// AnnotationLogin marks a route whose visitors must sign in first. Its
+	// absence is what "public" means at the edge.
+	AnnotationLogin = "donkey.dev/login"
+	// AnnotationAccess on an HTTPRoute carries the app's access rules
+	// (AccessConfig as JSON) for the gateway to enforce. No secrets —
+	// emails and group names only.
+	AnnotationAccess = "donkey.dev/access"
+
+	// LoginRequired is AnnotationLogin's one meaningful value.
+	LoginRequired = "required"
+)
+
+// GatewayRef points at donkey's own edge proxy — every app route's real
+// backend. Auth says whether an IdP is configured; without one nothing can
+// be protected, but traffic still routes.
+type GatewayRef struct {
+	Service   string
+	Namespace string
+	Auth      bool
+}
+
+// protected says visitors of this app's routes must sign in.
+func protected(in Input) bool {
+	return !in.App.Public && in.Gateway != nil && in.Gateway.Auth
+}
+
+// backendURL is where the gateway forwards this app's traffic: the app's
+// Service, on the stable in-cluster port.
+func backendURL(in Input) string {
+	return fmt.Sprintf("http://%s.%s.svc.cluster.local:80", in.App.Name, in.Namespace)
+}
+
+// routeAnnotations tells the gateway what to do with a route: where the app
+// really is, whether to demand a login, and who may pass.
+func routeAnnotations(in Input) map[string]string {
+	if in.Gateway == nil {
+		return nil
+	}
+	ann := map[string]string{AnnotationBackend: backendURL(in)}
+	if protected(in) {
+		ann[AnnotationLogin] = LoginRequired
+		if !in.App.Access.Empty() {
+			if b, err := json.Marshal(in.App.Access); err == nil {
+				ann[AnnotationAccess] = string(b)
+			}
+		}
+	}
+	return ann
+}
+
+// routeBackend is the one backendRef of an app route: the donkey gateway,
+// across namespaces (the matching ReferenceGrant is rendered alongside).
+// Without a gateway (tests, odd installs) the route falls back to the app's
+// own Service.
+func routeBackend(in Input) gatewayv1.HTTPBackendRef {
+	port := gatewayv1.PortNumber(80)
+	ref := gatewayv1.BackendObjectReference{
+		Name: gatewayv1.ObjectName(in.App.Name),
+		Port: &port,
+	}
+	if in.Gateway != nil {
+		ns := gatewayv1.Namespace(in.Gateway.Namespace)
+		ref.Name = gatewayv1.ObjectName(in.Gateway.Service)
+		ref.Namespace = &ns
+	}
+	return gatewayv1.HTTPBackendRef{BackendRef: gatewayv1.BackendRef{BackendObjectReference: ref}}
+}
 
 // httpRoute exposes the app on its hostname through the shared donkey
 // Gateway (Gateway API — no Ingress). It attaches to the https listener only:
@@ -17,9 +95,8 @@ func httpRoute(in Input) *gatewayv1.HTTPRoute {
 	app := in.App
 	gwNamespace := gatewayv1.Namespace(in.GatewayNamespace)
 	section := gatewayv1.SectionName(HTTPSListenerName)
-	port := gatewayv1.PortNumber(80)
 	noTimeout := gatewayv1.Duration("0s")
-	return &gatewayv1.HTTPRoute{
+	route := &gatewayv1.HTTPRoute{
 		TypeMeta: metav1.TypeMeta{APIVersion: "gateway.networking.k8s.io/v1", Kind: "HTTPRoute"},
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      app.Name,
@@ -36,86 +113,64 @@ func httpRoute(in Input) *gatewayv1.HTTPRoute {
 			},
 			Hostnames: []gatewayv1.Hostname{gatewayv1.Hostname(in.Domain)},
 			Rules: []gatewayv1.HTTPRouteRule{{
-				Timeouts: &gatewayv1.HTTPRouteTimeouts{Request: &noTimeout},
-				BackendRefs: []gatewayv1.HTTPBackendRef{{
-					BackendRef: gatewayv1.BackendRef{
-						BackendObjectReference: gatewayv1.BackendObjectReference{
-							Name: gatewayv1.ObjectName(app.Name),
-							Port: &port,
-						},
-					},
-				}},
+				Timeouts:    &gatewayv1.HTTPRouteTimeouts{Request: &noTimeout},
+				BackendRefs: []gatewayv1.HTTPBackendRef{routeBackend(in)},
 			}},
 		},
 	}
+	route.Annotations = routeAnnotations(in)
+	return route
 }
 
+// OIDCSecretName is the per-app client-secret Secret earlier donkey versions
+// rendered for Envoy's SecurityPolicy. Login now lives in donkey-gateway;
+// the name remains so deploys can retract the leftovers.
 func OIDCSecretName(app string) string { return app + "-oidc" }
 
-// oidcSecret carries the OIDC client secret into the app namespace — Envoy's
-// SecurityPolicy can only reference secrets next to it.
-func oidcSecret(in Input) *corev1.Secret {
-	// A dry run renders without credentials, so say so rather than showing an
-	// empty value somebody might copy into a real manifest.
-	secret := in.OIDC.ClientSecret
-	if secret == "" {
-		secret = "(withheld — a dry run never prints credentials)"
-	}
-	return &corev1.Secret{
-		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Secret"},
+// GatewayGrantName is the ReferenceGrant that lets one app's routes point at
+// the login gateway's Service across namespaces. Per app (grants are
+// additive), next to the gateway, hashed for the same reason as AppCertName:
+// dashes are legal inside space and app names.
+func GatewayGrantName(space, app string) string {
+	sum := sha256.Sum256([]byte(space + "/" + app))
+	return fmt.Sprintf("donkey-gateway-%s-%s-%s", space, app, hex.EncodeToString(sum[:3]))
+}
+
+// gatewayGrant allows this app's HTTPRoutes to reference the login gateway's
+// Service. It lives in the gateway's namespace — ReferenceGrants belong to
+// the namespace being referenced, which is the point of them.
+func gatewayGrant(in Input) *gatewayv1beta1.ReferenceGrant {
+	return &gatewayv1beta1.ReferenceGrant{
+		TypeMeta: metav1.TypeMeta{APIVersion: "gateway.networking.k8s.io/v1beta1", Kind: "ReferenceGrant"},
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      OIDCSecretName(in.App.Name),
-			Namespace: in.Namespace,
-			Labels:    Labels(in.Space, in.App.Name, "oidc"),
+			Name:      GatewayGrantName(in.Space, in.App.Name),
+			Namespace: in.Gateway.Namespace,
+			Labels:    Labels(in.Space, in.App.Name, ComponentWeb),
 		},
-		StringData: map[string]string{"client-secret": secret},
-	}
-}
-
-// securityPolicy makes Envoy itself run the OIDC login flow for the app's
-// route. Built as unstructured to avoid importing the whole Envoy Gateway
-// module for one CRD.
-func securityPolicy(in Input) *unstructured.Unstructured {
-	return securityPolicyFor(in, in.App.Name, in.Domain, ComponentWeb)
-}
-
-// securityPolicyFor protects one named HTTPRoute. Policies attach per route,
-// which is what lets an app's own address be private while a path it shares
-// with another app stays open (or the other way round). The callback URL has
-// to be on the host the browser is actually visiting.
-func securityPolicyFor(in Input, routeName, host, component string) *unstructured.Unstructured {
-	return &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": "gateway.envoyproxy.io/v1alpha1",
-		"kind":       "SecurityPolicy",
-		"metadata": map[string]any{
-			"name":      routeName,
-			"namespace": in.Namespace,
-			"labels":    toAnyMap(Labels(in.Space, in.App.Name, component)),
-		},
-		"spec": map[string]any{
-			"targetRefs": []any{map[string]any{
-				"group": "gateway.networking.k8s.io",
-				"kind":  "HTTPRoute",
-				"name":  routeName,
+		Spec: gatewayv1beta1.ReferenceGrantSpec{
+			From: []gatewayv1beta1.ReferenceGrantFrom{{
+				Group:     "gateway.networking.k8s.io",
+				Kind:      "HTTPRoute",
+				Namespace: gatewayv1beta1.Namespace(in.Namespace),
 			}},
-			"oidc": map[string]any{
-				"provider": map[string]any{
-					"issuer": in.OIDC.Issuer,
-				},
-				"clientID": in.OIDC.ClientID,
-				"clientSecret": map[string]any{
-					"name": OIDCSecretName(in.App.Name),
-				},
-				"redirectURL": "https://" + host + "/oauth2/callback",
-			},
+			To: []gatewayv1beta1.ReferenceGrantTo{{
+				Kind: "Service",
+				Name: ptrTo(gatewayv1beta1.ObjectName(in.Gateway.Service)),
+			}},
 		},
-	}}
+	}
 }
 
-func toAnyMap(m map[string]string) map[string]any {
-	out := make(map[string]any, len(m))
-	for k, v := range m {
-		out[k] = v
-	}
-	return out
-}
+func ptrTo[T any](v T) *T { return &v }
+
+// The console changes exposure without a deploy, so it re-renders the
+// network objects piecewise — these exports are its building blocks.
+
+// AppRoute is the app's own-hostname route.
+func AppRoute(in Input) runtime.Object { return httpRoute(in) }
+
+// AppCertificateObject is the app's certificate (requires in.TLS.Issuer).
+func AppCertificateObject(in Input) runtime.Object { return appCertificate(in) }
+
+// GatewayGrant allows the app's routes to reference the donkey gateway.
+func GatewayGrant(in Input) runtime.Object { return gatewayGrant(in) }

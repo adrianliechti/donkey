@@ -32,16 +32,18 @@ var gvrFor = map[string]schema.GroupVersionResource{
 	"Deployment":            {Group: "apps", Version: "v1", Resource: "deployments"},
 	"Job":                   {Group: "batch", Version: "v1", Resource: "jobs"},
 	"NetworkPolicy":         {Group: "networking.k8s.io", Version: "v1", Resource: "networkpolicies"},
+	"ClusterRole":           {Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "clusterroles"},
 	"ClusterRoleBinding":    {Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "clusterrolebindings"},
 	"GatewayClass":          {Group: "gateway.networking.k8s.io", Version: "v1", Resource: "gatewayclasses"},
 	"Gateway":               {Group: "gateway.networking.k8s.io", Version: "v1", Resource: "gateways"},
 	"HTTPRoute":             {Group: "gateway.networking.k8s.io", Version: "v1", Resource: "httproutes"},
+	"ReferenceGrant":        {Group: "gateway.networking.k8s.io", Version: "v1beta1", Resource: "referencegrants"},
 	"SecurityPolicy":        {Group: "gateway.envoyproxy.io", Version: "v1alpha1", Resource: "securitypolicies"},
 	"EnvoyProxy":            {Group: "gateway.envoyproxy.io", Version: "v1alpha1", Resource: "envoyproxies"},
 	"Certificate":           {Group: "cert-manager.io", Version: "v1", Resource: "certificates"},
 }
 
-var clusterScoped = map[string]bool{"Namespace": true, "ClusterRoleBinding": true, "GatewayClass": true}
+var clusterScoped = map[string]bool{"Namespace": true, "ClusterRole": true, "ClusterRoleBinding": true, "GatewayClass": true}
 
 // Apply server-side-applies every object with donkey as field manager.
 // It is idempotent: create and update are the same operation.

@@ -44,11 +44,7 @@ export function DiffView({ diff }: { diff: string }) {
               <tr
                 key={i}
                 className={
-                  added
-                    ? 'bg-emerald-500/10 text-emerald-300'
-                    : removed
-                      ? 'bg-rose-500/10 text-rose-300'
-                      : 'text-ink-soft'
+                  added ? 'bg-moss/10 text-moss' : removed ? 'bg-brick/10 text-brick' : 'text-ink-soft'
                 }
               >
                 <td className="w-10 select-none px-2 text-right text-stone">{left}</td>

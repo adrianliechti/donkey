@@ -139,6 +139,29 @@ spec:
 status:
   loadBalancer: {}
 ---
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  labels:
+    app.kubernetes.io/component: web
+    app.kubernetes.io/managed-by: donkey
+    app.kubernetes.io/name: shop
+    app.kubernetes.io/part-of: acme
+    donkey.dev/app: shop
+    donkey.dev/component: web
+    donkey.dev/space: acme
+  name: donkey-gateway-acme-shop-d21b2c
+  namespace: donkey-system
+spec:
+  from:
+  - group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    namespace: donkey-acme
+  to:
+  - group: ""
+    kind: Service
+    name: donkey-gateway
+---
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
@@ -164,6 +187,9 @@ spec:
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
+  annotations:
+    donkey.dev/backend: http://shop.donkey-acme.svc.cluster.local:80
+    donkey.dev/login: required
   labels:
     app.kubernetes.io/component: web
     app.kubernetes.io/managed-by: donkey
@@ -183,51 +209,10 @@ spec:
     sectionName: https
   rules:
   - backendRefs:
-    - name: shop
+    - name: donkey-gateway
+      namespace: donkey-system
       port: 80
     timeouts:
       request: 0s
 status:
   parents: null
----
-apiVersion: v1
-kind: Secret
-metadata:
-  labels:
-    app.kubernetes.io/component: oidc
-    app.kubernetes.io/managed-by: donkey
-    app.kubernetes.io/name: shop
-    app.kubernetes.io/part-of: acme
-    donkey.dev/app: shop
-    donkey.dev/component: oidc
-    donkey.dev/space: acme
-  name: shop-oidc
-  namespace: donkey-acme
-stringData:
-  client-secret: oidc-secret
----
-apiVersion: gateway.envoyproxy.io/v1alpha1
-kind: SecurityPolicy
-metadata:
-  labels:
-    app.kubernetes.io/component: web
-    app.kubernetes.io/managed-by: donkey
-    app.kubernetes.io/name: shop
-    app.kubernetes.io/part-of: acme
-    donkey.dev/app: shop
-    donkey.dev/component: web
-    donkey.dev/space: acme
-  name: shop
-  namespace: donkey-acme
-spec:
-  oidc:
-    clientID: donkey-apps
-    clientSecret:
-      name: shop-oidc
-    provider:
-      issuer: https://id.example.com
-    redirectURL: https://shop.acme.apps.example.com/oauth2/callback
-  targetRefs:
-  - group: gateway.networking.k8s.io
-    kind: HTTPRoute
-    name: shop

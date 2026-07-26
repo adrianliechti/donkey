@@ -59,6 +59,11 @@ type AppListEntry struct {
 	Restarts int32  `json:"restarts,omitempty"`
 	// StartedAt is when the newest pod came up (RFC 3339; empty when none).
 	StartedAt string `json:"startedAt,omitempty"`
+	// Exposure (public | protected | internal), disk and attached services —
+	// what the console's canvas cards show without a per-app request.
+	Exposure   string   `json:"exposure,omitempty"`
+	HasStorage bool     `json:"hasStorage,omitempty"`
+	Addons     []string `json:"addons,omitempty"`
 }
 
 // handleListApps finds every deployed app, with the space it belongs to. The
@@ -86,18 +91,25 @@ func (s *Server) handleListApps(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		entry := AppListEntry{
-			Name:     ref.App,
-			Space:    space,
-			Healthy:  st.Healthy(),
-			Ready:    st.ReadyText(),
-			Image:    st.Image,
-			Restarts: st.Restarts,
+			Name:       ref.App,
+			Space:      space,
+			Healthy:    st.Healthy(),
+			Ready:      st.ReadyText(),
+			Image:      st.Image,
+			Restarts:   st.Restarts,
+			Exposure:   exposureOf(st),
+			HasStorage: s.k8s.HasDataClaim(r.Context(), ref.Namespace, ref.App),
 		}
 		if !st.StartedAt.IsZero() {
 			entry.StartedAt = st.StartedAt.UTC().Format(time.RFC3339)
 		}
 		if st.IngressHost != "" {
 			entry.URL = s.cfg.Scheme() + "://" + st.IngressHost
+		}
+		if bindings, err := s.k8s.ListAddonBindings(r.Context(), ref.Namespace, ref.App); err == nil {
+			for _, b := range bindings {
+				entry.Addons = append(entry.Addons, b.Name)
+			}
 		}
 		apps = append(apps, entry)
 	}

@@ -46,16 +46,13 @@ func testInput(t *testing.T) Input {
 		TLS:              TLSConfig{Issuer: "letsencrypt", Kind: "ClusterIssuer"},
 		GatewayName:      "donkey",
 		GatewayNamespace: "donkey-system",
-		OIDC: OIDCConfig{
-			Issuer:       "https://id.example.com",
-			ClientID:     "donkey-apps",
-			ClientSecret: "oidc-secret",
-		},
+		Gateway:          &GatewayRef{Service: GatewayAppName, Namespace: "donkey-system", Auth: true},
 	}
 }
 
 func TestProtectionRendering(t *testing.T) {
-	// Protected app: HTTPRoute + SecurityPolicy + oidc secret.
+	// Every app routes through the donkey gateway; a protected one is marked
+	// for login, and the cross-namespace reference gets its grant.
 	objs, err := AppObjects(testInput(t))
 	if err != nil {
 		t.Fatal(err)
@@ -64,16 +61,25 @@ func TestProtectionRendering(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"kind: HTTPRoute", "kind: SecurityPolicy", "oauth2/callback", "shop-oidc"} {
+	for _, want := range []string{
+		"kind: HTTPRoute",
+		"kind: ReferenceGrant",
+		"name: " + GatewayAppName,
+		AnnotationLogin + ": " + LoginRequired,
+		AnnotationBackend + ": http://shop.donkey-acme.svc.cluster.local:80",
+	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("protected app should render %s", want)
 		}
 	}
-	if strings.Contains(out, "kind: Ingress") {
-		t.Error("Ingress must not be rendered anymore")
+	// Login lives in donkey-gateway, not in proxy-vendor CRDs.
+	for _, forbidden := range []string{"kind: Ingress", "kind: SecurityPolicy", "shop-oidc"} {
+		if strings.Contains(out, forbidden) {
+			t.Errorf("%s must not be rendered anymore", forbidden)
+		}
 	}
 
-	// public: true opts out of the SecurityPolicy but keeps the route.
+	// public: true drops the login mark but keeps riding the gateway.
 	in := testInput(t)
 	in.App.Public = true
 	objs, err = AppObjects(in)
@@ -84,11 +90,36 @@ func TestProtectionRendering(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(out, "SecurityPolicy") {
-		t.Error("public app must not get a SecurityPolicy")
+	if strings.Contains(out, AnnotationLogin+": "+LoginRequired) {
+		t.Error("public app must not demand a login")
 	}
-	if !strings.Contains(out, "kind: HTTPRoute") {
-		t.Error("public app still needs its route")
+	for _, want := range []string{"kind: HTTPRoute", AnnotationBackend + ":"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("public app still needs %s", want)
+		}
+	}
+}
+
+// Access rules ride on the route for the gateway to enforce — and only on
+// routes that demand a login.
+func TestAccessAnnotation(t *testing.T) {
+	in := testInput(t)
+	in.App.Access = &config.AccessConfig{Users: []string{"ada@example.com"}, Groups: []string{"staff"}}
+	out, err := Render(mustObjects(t, in))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, `donkey.dev/access: '{"users":["ada@example.com"],"groups":["staff"]}'`) {
+		t.Errorf("access rules should ride on the route, got:\n%s", out)
+	}
+
+	in.App.Access = nil
+	out, err = Render(mustObjects(t, in))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, AnnotationAccess) {
+		t.Error("no rules, no annotation")
 	}
 }
 
@@ -359,21 +390,21 @@ func TestPathRoutesShareAnAddress(t *testing.T) {
 	for _, want := range []string{
 		"dashboard.acme.apps.example.com", // the other app's hostname
 		"value: /api",                     // …under this prefix
-		"name: shop",                      // …reaching this app's service
+		AnnotationBackend + ": http://shop.donkey-acme.svc.cluster.local:80", // …reaching this app
 	} {
 		if !strings.Contains(rendered, want) {
 			t.Errorf("a shared-address route should contain %q", want)
 		}
 	}
-	// A public app's shared route carries no login policy, so a machine
-	// client can use it even when the app it shares with is private.
+	// A public app's shared route demands no login, so a machine client can
+	// use it even when the app it shares with is private.
 	in.App.Public = true
 	open, err := Render(mustObjects(t, in))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(open, "kind: SecurityPolicy") {
-		t.Error("a public app must not get login protection on its shared route")
+	if strings.Contains(open, AnnotationLogin+": "+LoginRequired) {
+		t.Error("a public app must not demand a login on its shared route")
 	}
 }
 

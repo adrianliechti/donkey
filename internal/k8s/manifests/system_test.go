@@ -107,8 +107,10 @@ func TestInstallTouchesOnlyItsOwnObjects(t *testing.T) {
 	objs := SystemObjects(in)
 
 	ownCluster := map[string]bool{
-		"GatewayClass:" + GatewayClassName: true,
-		"ClusterRoleBinding:" + serverName: true,
+		"GatewayClass:" + GatewayClassName:     true,
+		"ClusterRoleBinding:" + serverName:     true,
+		"ClusterRole:" + GatewayAppName:        true,
+		"ClusterRoleBinding:" + GatewayAppName: true,
 	}
 	for _, obj := range objs {
 		m, err := meta.Accessor(obj)

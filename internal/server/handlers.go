@@ -46,6 +46,10 @@ type StatusResponse struct {
 	// meaningful then — an app with no volume has nothing donkey can show
 	// that a redeploy would not rebuild.
 	HasStorage bool `json:"hasStorage"`
+	// Exposure is public, protected or internal — how the app is reached.
+	Exposure string `json:"exposure,omitempty"`
+	// Port the app listens on (donkey.yaml's `port`).
+	Port int `json:"port,omitempty"`
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
@@ -77,7 +81,23 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	if st.IngressHost != "" {
 		resp.URL = s.cfg.Scheme() + "://" + st.IngressHost
 	}
+	if st.Found {
+		resp.Exposure = exposureOf(st)
+		resp.Port = int(st.Port)
+	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// exposureOf derives the console's exposure word from cluster state.
+func exposureOf(st *k8s.AppStatus) string {
+	switch {
+	case st.IngressHost == "":
+		return "internal"
+	case st.Protected:
+		return "protected"
+	default:
+		return "public"
+	}
 }
 
 // handleRestart rolls the app's pods without changing anything else — the
@@ -405,8 +425,13 @@ func (s *Server) handleDestroy(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadGateway, err)
 		return
 	}
-	// The certificate lives next to the gateway, so it needs its own goodbye.
+	// The certificate and the gateway grant live next to the gateway, so
+	// they need their own goodbye.
 	if err := s.detachCertificate(r.Context(), r.PathValue("space"), app); err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	if err := s.k8s.DeleteObject(r.Context(), "ReferenceGrant", manifests.SystemNamespace, manifests.GatewayGrantName(r.PathValue("space"), app)); err != nil {
 		writeErr(w, http.StatusBadGateway, err)
 		return
 	}
@@ -471,6 +496,26 @@ func (s *Server) handleDoctor(w http.ResponseWriter, r *http.Request) {
 		certs.Detail = fmt.Sprintf("%s %s", s.cfg.TLSIssuerKind, s.cfg.TLSIssuer)
 	}
 	checks = append(checks, certs)
+
+	// Every app rides through the donkey gateway — if it is down, so is
+	// every app, which is exactly what doctor exists to say plainly.
+	dg := DoctorCheck{Name: "App gateway (donkey-gateway)"}
+	gwURL := fmt.Sprintf("http://%s.%s.svc.cluster.local:%d/healthz",
+		manifests.GatewayAppName, manifests.SystemNamespace, manifests.GatewayHealthServicePort)
+	if req, err := http.NewRequestWithContext(ctx, http.MethodGet, gwURL, nil); err != nil {
+		dg.Detail = err.Error()
+	} else if res, err := http.DefaultClient.Do(req); err != nil {
+		dg.Detail = err.Error()
+	} else {
+		res.Body.Close()
+		if res.StatusCode == http.StatusOK {
+			dg.OK = true
+			dg.Detail = "routing"
+		} else {
+			dg.Detail = fmt.Sprintf("answered %d", res.StatusCode)
+		}
+	}
+	checks = append(checks, dg)
 
 	// donkey needs the assistant to read apps, so doctor checks it like any
 	// other dependency: does the configured model actually answer?

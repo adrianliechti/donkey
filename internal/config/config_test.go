@@ -116,6 +116,27 @@ func TestAppValidate(t *testing.T) {
 		{"single label", func(c *AppConfig) { c.Domain = "shop" }, true},
 		{"trailing dot", func(c *AppConfig) { c.Domain = "shop.example.com." }, true},
 		{"leading dash", func(c *AppConfig) { c.Domain = "-shop.example.com" }, true},
+		// Access refines the login gateway — it cannot exist where there is
+		// no login (public) or no address to guard (internal, no routes).
+		{"access", func(c *AppConfig) { c.Access = &AccessConfig{Users: []string{"ada@example.com"}} }, false},
+		{"access roles", func(c *AppConfig) { c.Access = &AccessConfig{Roles: []string{"developer"}} }, false},
+		{"access on public app", func(c *AppConfig) {
+			c.Public = true
+			c.Access = &AccessConfig{Groups: []string{"staff"}}
+		}, true},
+		{"access on internal app", func(c *AppConfig) {
+			c.Internal = true
+			c.Access = &AccessConfig{Groups: []string{"staff"}}
+		}, true},
+		{"access on internal app with routes", func(c *AppConfig) {
+			c.Internal = true
+			c.Routes = []RouteConfig{{App: "web", Path: "/api"}}
+			c.Access = &AccessConfig{Groups: []string{"staff"}}
+		}, false},
+		{"access entry with spaces", func(c *AppConfig) {
+			c.Access = &AccessConfig{Users: []string{"ada lovelace"}}
+		}, true},
+		{"empty access is fine", func(c *AppConfig) { c.Access = &AccessConfig{} }, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

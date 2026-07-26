@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 )
 
@@ -29,20 +28,27 @@ func PathRouteName(app, targetApp, path string) string {
 //
 // Gateway API matches the most specific path first, so a "/api" route always
 // wins over the target app's own "/" — no ordering to configure. And because
-// login protection attaches to a *route*, not a hostname, the two can differ:
-// a machine-facing API can stay open under a path of a private frontend.
+// each route carries its own login setting, the two can differ: a
+// machine-facing API can stay open under a path of a private frontend.
 func PathRoute(in Input, r RouteTarget) *gatewayv1.HTTPRoute {
+	return PathRouteNamed(in, PathRouteName(in.App.Name, r.App, r.Path), r)
+}
+
+// PathRouteNamed renders a shared-address route under an explicit object
+// name — what the console uses to re-render a route that already exists on
+// the cluster (whose name encodes a target app the cluster no longer spells
+// out).
+func PathRouteNamed(in Input, name string, r RouteTarget) *gatewayv1.HTTPRoute {
 	app := in.App
 	gwNamespace := gatewayv1.Namespace(in.GatewayNamespace)
 	section := gatewayv1.SectionName(HTTPSListenerName)
-	port := gatewayv1.PortNumber(80)
 	noTimeout := gatewayv1.Duration("0s")
 	prefix := gatewayv1.PathMatchPathPrefix
 
-	return &gatewayv1.HTTPRoute{
+	route := &gatewayv1.HTTPRoute{
 		TypeMeta: metav1.TypeMeta{APIVersion: "gateway.networking.k8s.io/v1", Kind: "HTTPRoute"},
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      PathRouteName(app.Name, r.App, r.Path),
+			Name:      name,
 			Namespace: in.Namespace,
 			Labels:    Labels(in.Space, app.Name, ComponentRoute),
 		},
@@ -59,22 +65,11 @@ func PathRoute(in Input, r RouteTarget) *gatewayv1.HTTPRoute {
 				Matches: []gatewayv1.HTTPRouteMatch{{
 					Path: &gatewayv1.HTTPPathMatch{Type: &prefix, Value: &r.Path},
 				}},
-				Timeouts: &gatewayv1.HTTPRouteTimeouts{Request: &noTimeout},
-				BackendRefs: []gatewayv1.HTTPBackendRef{{
-					BackendRef: gatewayv1.BackendRef{
-						BackendObjectReference: gatewayv1.BackendObjectReference{
-							Name: gatewayv1.ObjectName(app.Name),
-							Port: &port,
-						},
-					},
-				}},
+				Timeouts:    &gatewayv1.HTTPRouteTimeouts{Request: &noTimeout},
+				BackendRefs: []gatewayv1.HTTPBackendRef{routeBackend(in)},
 			}},
 		},
 	}
-}
-
-// pathRouteSecurityPolicy protects one shared-address route. Login attaches
-// per route, which is what lets `/` stay private while `/mcp` is open.
-func pathRouteSecurityPolicy(in Input, r RouteTarget) *unstructured.Unstructured {
-	return securityPolicyFor(in, PathRouteName(in.App.Name, r.App, r.Path), r.Host, ComponentRoute)
+	route.Annotations = routeAnnotations(in)
+	return route
 }

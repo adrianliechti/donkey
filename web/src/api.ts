@@ -2,6 +2,9 @@
 // and every request carries it; a 401 clears it and flips the app back to
 // the login screen via the registered handler.
 
+/** How an app is reached: open to anyone, behind the login, or cluster-only. */
+export type Exposure = 'public' | 'protected' | 'internal'
+
 export interface AppSummary {
   name: string
   space: string
@@ -11,6 +14,9 @@ export interface AppSummary {
   url: string
   restarts?: number
   startedAt?: string
+  exposure?: Exposure
+  hasStorage?: boolean
+  addons?: string[]
 }
 
 export interface AppStatus {
@@ -24,6 +30,32 @@ export interface AppStatus {
   startedAt?: string
   /** True when the app owns a disk — the only case where files exist to browse. */
   hasStorage?: boolean
+  exposure?: Exposure
+  port?: number
+}
+
+/** Who may open a login-protected app; empty lists mean "everyone signed in". */
+export interface AccessConfig {
+  users?: string[]
+  groups?: string[]
+  roles?: string[]
+}
+
+export interface RouteEntry {
+  host: string
+  path: string
+}
+
+export interface NetworkInfo {
+  exposure: Exposure
+  url?: string
+  defaultHost: string
+  domain?: string
+  port?: number
+  routes?: RouteEntry[]
+  /** False when the installation has no identity provider — then there is no "protected". */
+  loginAvailable: boolean
+  access?: AccessConfig | null
 }
 
 export interface AddonEntry {
@@ -179,6 +211,19 @@ export const api = {
     request<{ ok: boolean }>(`${appPath(space, app)}?keepData=${keepData}`, { method: 'DELETE' }),
   restart: (space: string, app: string) =>
     request<{ ok: boolean }>(appPath(space, app, '/restart'), { method: 'POST' }),
+  network: (space: string, app: string) => request<NetworkInfo>(appPath(space, app, '/network')),
+  // Changing exposure re-renders the app's routes on the spot — no deploy.
+  // The choice sticks until donkey.yaml itself says otherwise.
+  setNetwork: (space: string, app: string, exposure: Exposure, domain: string) =>
+    request<{ network: NetworkInfo; note?: string }>(appPath(space, app, '/network'), {
+      method: 'PUT',
+      body: JSON.stringify({ exposure, domain }),
+    }),
+  setAccess: (space: string, app: string, access: AccessConfig) =>
+    request<{ ok: boolean; access: AccessConfig | null }>(appPath(space, app, '/access'), {
+      method: 'PUT',
+      body: JSON.stringify({ users: access.users ?? [], groups: access.groups ?? [], roles: access.roles ?? [] }),
+    }),
   addons: (space: string, app: string) =>
     request<{ addons: AddonEntry[] }>(appPath(space, app, '/addons')),
   removeAddon: (space: string, app: string, addon: string, keepData: boolean) =>

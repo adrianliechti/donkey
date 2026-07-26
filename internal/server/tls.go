@@ -56,22 +56,24 @@ func (s *Server) retireLegacyCertificate(ctx context.Context, space, app string)
 	_ = s.k8s.DeleteObject(ctx, "Secret", s.cfg.GatewayNamespace, legacy)
 }
 
-// loginPolicyWait bounds how long a deploy waits for Envoy Gateway to accept
-// an app's login policy.
-const loginPolicyWait = 30 * time.Second
+// routeReadyWait bounds how long a deploy waits for the Gateway to accept a
+// protected app's route (including resolving its cross-namespace reference
+// into the login gateway).
+const routeReadyWait = 30 * time.Second
 
-// waitForLoginPolicy checks that the app's OIDC protection is actually in
-// force. Unlike a pending certificate this is not cosmetic: an unaccepted
-// policy means the app is being served to anyone, so the deploy fails rather
-// than reporting success on an app that was supposed to be private.
-func (s *Server) waitForLoginPolicy(ctx context.Context, ns, app string) error {
-	deadline := time.Now().Add(loginPolicyWait)
+// waitForRouteReady checks that a protected app's route was accepted and its
+// backend — the login gateway — resolved. Unlike a pending certificate this
+// is not cosmetic: protection is the route pointing into donkey-gateway, so
+// an unresolved route means the app doesn't serve, and the deploy says why
+// instead of reporting success.
+func (s *Server) waitForRouteReady(ctx context.Context, ns, app string) error {
+	deadline := time.Now().Add(routeReadyWait)
 	var reason string
 	for {
-		accepted, detail, err := s.k8s.SecurityPolicyAccepted(ctx, ns, app)
+		accepted, detail, err := s.k8s.RouteAccepted(ctx, ns, app)
 		switch {
 		case err != nil && apierrors.IsNotFound(err):
-			reason = "the policy hasn't been picked up yet"
+			reason = "the route hasn't been picked up yet"
 		case err != nil:
 			reason = err.Error()
 		case accepted:
@@ -81,7 +83,7 @@ func (s *Server) waitForLoginPolicy(ctx context.Context, ns, app string) error {
 		}
 		if time.Now().After(deadline) {
 			return fmt.Errorf(
-				"the login protection for %s isn't in force (%s) — the app would be reachable without a login, so donkey stopped here. Check the OIDC settings (`donkey doctor`), or set `public: true` in donkey.yaml if this app is meant to be open",
+				"the login-protected route for %s isn't serving (%s) — check `donkey doctor`, or set `public: true` in donkey.yaml if this app is meant to be open",
 				app, reason)
 		}
 		select {
@@ -90,6 +92,17 @@ func (s *Server) waitForLoginPolicy(ctx context.Context, ns, app string) error {
 		case <-time.After(2 * time.Second):
 		}
 	}
+}
+
+// retractLegacyLogin removes the per-app OIDC objects earlier donkey
+// versions rendered (Envoy SecurityPolicy + client-secret Secret). Login
+// lives in donkey-gateway now; a leftover policy would keep Envoy running
+// its own, second login in front of it.
+func (s *Server) retractLegacyLogin(ctx context.Context, ns, app string) error {
+	if err := s.k8s.DeleteObject(ctx, "SecurityPolicy", ns, app); err != nil {
+		return err
+	}
+	return s.k8s.DeleteObject(ctx, "Secret", ns, manifests.OIDCSecretName(app))
 }
 
 // waitForCertificate reports whether cert-manager finished issuing. It never

@@ -33,6 +33,12 @@ const (
 	// AnnotationDecisions records deploy-time analysis decisions on the
 	// Deployment (JSON), so no-build deploys can keep them.
 	AnnotationDecisions = "donkey.dev/decisions"
+	// AnnotationConsole records network choices made in the admin console
+	// (exposure, domain, access). It is deliberately separate from decisions:
+	// a deploy rewrites the decisions annotation from donkey.yaml, while a
+	// console choice must survive deploys — until donkey.yaml itself settles
+	// the matter, which always wins.
+	AnnotationConsole = "donkey.dev/console"
 	// LabelApp / LabelComponent identify donkey-owned resources;
 	// LabelSpace groups the apps of one space (one namespace holds them all).
 	LabelApp       = "donkey.dev/app"
@@ -50,6 +56,14 @@ const (
 	// storageFSGroup owns that volume so any container user can write to it.
 	storageFSGroup = int64(2000)
 )
+
+func toAnyMap(m map[string]string) map[string]any {
+	out := make(map[string]any, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
+}
 
 // Labels marks one object as donkey's. Callers that don't know the space
 // (older objects, cluster-wide lookups) pass "" and simply get no space label.
@@ -130,9 +144,11 @@ type Input struct {
 	// GatewayName/Namespace identify the shared Gateway routes attach to.
 	GatewayName      string
 	GatewayNamespace string
-	// OIDC configures the login protection; an empty issuer (or a public
-	// app) means no SecurityPolicy is rendered.
-	OIDC OIDCConfig
+	// Gateway points at donkey's own edge proxy (donkey-gateway), the real
+	// backend of every app route. Gateway.Auth says whether an IdP is
+	// configured — without one, nothing can be protected but traffic still
+	// routes through it.
+	Gateway *GatewayRef
 	// Decisions records what deploy-time analysis filled in (storage,
 	// healthcheck) as an annotation on the Deployment, so later no-build
 	// deploys can keep those decisions instead of silently dropping them.
@@ -148,12 +164,6 @@ type RouteTarget struct {
 	App  string
 	Host string
 	Path string
-}
-
-type OIDCConfig struct {
-	Issuer       string
-	ClientID     string
-	ClientSecret string
 }
 
 func PullSecretName(app string) string { return app + "-registry" }
@@ -185,6 +195,21 @@ func AppObjects(in Input) ([]runtime.Object, error) {
 		return nil, err
 	}
 	objs = append(objs, dep, service(in))
+	return append(objs, NetworkObjects(in)...), nil
+}
+
+// NetworkObjects renders everything that decides how the app is reached —
+// certificate, routes and the login-gateway grant. None of it depends on the
+// image, which is what lets the console change an app's exposure without a
+// deploy.
+func NetworkObjects(in Input) []runtime.Object {
+	var objs []runtime.Object
+	// Every app route points across namespaces into the donkey gateway's
+	// Service, which the shared Gateway only resolves with this grant in
+	// place — so it goes first.
+	if in.Gateway != nil && (in.Domain != "" || len(in.RouteTargets) > 0) {
+		objs = append(objs, gatewayGrant(in))
+	}
 	if in.Domain != "" {
 		// The certificate is the app's own, next to the Gateway: one hostname,
 		// one certificate, so any cert-manager solver can issue it.
@@ -192,26 +217,15 @@ func AppObjects(in Input) ([]runtime.Object, error) {
 			objs = append(objs, appCertificate(in))
 		}
 		objs = append(objs, httpRoute(in))
-		// Login protection: every app gets it when OIDC is configured,
-		// unless it opted out with `public: true`.
-		if !app.Public && in.OIDC.Issuer != "" {
-			objs = append(objs, oidcSecret(in), securityPolicy(in))
-		}
 	}
 	// Paths this app answers on somebody else's address. They need no
 	// certificate — the hostname belongs to the app that owns it — but they
 	// carry their own login setting, so a public API can live under a path
 	// of a private frontend.
-	if len(in.RouteTargets) > 0 && !app.Public && in.OIDC.Issuer != "" {
-		objs = append(objs, oidcSecret(in))
-	}
 	for _, r := range in.RouteTargets {
 		objs = append(objs, PathRoute(in, r))
-		if !app.Public && in.OIDC.Issuer != "" {
-			objs = append(objs, pathRouteSecurityPolicy(in, r))
-		}
 	}
-	return objs, nil
+	return objs
 }
 
 // Namespace is the home of one space: every app of the space lives in it and

@@ -26,6 +26,12 @@ type AppStatus struct {
 	UpToDate    bool
 	Pods        []string
 	IngressHost string
+	// Protected says the app's own route sends traffic through the login
+	// gateway (donkey-gateway) rather than straight to the app.
+	Protected bool
+	// Port is the port the app listens on (from donkey.yaml, via the
+	// container spec).
+	Port int32
 	// Restarts sums container restarts across the app's pods — the number
 	// that separates "quietly struggling" from "running".
 	Restarts int32
@@ -46,6 +52,9 @@ func (c *Client) AppStatus(ctx context.Context, namespace, app string) (*AppStat
 	st.Image = dep.Annotations["donkey.dev/image"]
 	if st.Image == "" && len(dep.Spec.Template.Spec.Containers) > 0 {
 		st.Image = dep.Spec.Template.Spec.Containers[0].Image
+	}
+	if containers := dep.Spec.Template.Spec.Containers; len(containers) > 0 && len(containers[0].Ports) > 0 {
+		st.Port = containers[0].Ports[0].ContainerPort
 	}
 	st.WantReplica = 1
 	if dep.Spec.Replicas != nil {
@@ -71,6 +80,7 @@ func (c *Client) AppStatus(ctx context.Context, namespace, app string) (*AppStat
 		if hosts, ok, _ := unstructured.NestedStringSlice(route.Object, "spec", "hostnames"); ok && len(hosts) > 0 {
 			st.IngressHost = hosts[0]
 		}
+		st.Protected = route.GetAnnotations()[manifests.AnnotationLogin] == manifests.LoginRequired
 	}
 	return st, nil
 }

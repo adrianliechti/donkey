@@ -45,7 +45,58 @@ type AppConfig struct {
 	Addons      []AddonConfig     `json:"addons,omitempty"`
 	Storage     *StorageConfig    `json:"storage,omitempty"`
 	Domain      string            `json:"domain,omitempty"`
-	Resources   *Resources        `json:"resources,omitempty"`
+	// Access narrows the login gateway from "anyone your IdP knows" to the
+	// people and groups named here. Omitted means every signed-in user.
+	Access    *AccessConfig `json:"access,omitempty"`
+	Resources *Resources    `json:"resources,omitempty"`
+}
+
+// AccessConfig says who may open a login-protected app. It refines the login
+// gateway, so it means nothing on a `public` app — and it is enforced with
+// the claims of the IdP's ID token, which is where emails, groups and roles
+// live. A visitor passes by matching ANY of the lists.
+type AccessConfig struct {
+	// Users are exact email addresses (the IdP's `email` claim).
+	Users []string `json:"users,omitempty"`
+	// Groups match against the IdP's `groups` claim.
+	Groups []string `json:"groups,omitempty"`
+	// Roles match against the IdP's `roles` claim (Entra app roles) or
+	// Keycloak's realm roles.
+	Roles []string `json:"roles,omitempty"`
+}
+
+// Empty reports whether the access config restricts nobody — the same as not
+// having one.
+func (a *AccessConfig) Empty() bool {
+	return a == nil || (len(a.Users) == 0 && len(a.Groups) == 0 && len(a.Roles) == 0)
+}
+
+// accessEntryRE keeps user and group entries to things that can appear in a
+// JWT claim comparison: no whitespace, no quotes, printable ASCII.
+var accessEntryRE = regexp.MustCompile(`^[\x21-\x7e]+$`)
+
+// Validate is exported because the console submits access rules on their
+// own, outside a whole donkey.yaml.
+func (a *AccessConfig) Validate() error {
+	if a == nil {
+		return nil
+	}
+	for _, u := range a.Users {
+		if !accessEntryRE.MatchString(u) {
+			return fmt.Errorf("access.users entry %q must be a plain email address without spaces", u)
+		}
+	}
+	for _, g := range a.Groups {
+		if !accessEntryRE.MatchString(g) {
+			return fmt.Errorf("access.groups entry %q must be a plain group name without spaces", g)
+		}
+	}
+	for _, r := range a.Roles {
+		if !accessEntryRE.MatchString(r) {
+			return fmt.Errorf("access.roles entry %q must be a plain role name without spaces", r)
+		}
+	}
+	return nil
 }
 
 // StorageConfig asks for disk that survives restarts and redeploys. donkey
@@ -209,6 +260,17 @@ func (c *AppConfig) Validate() error {
 	}
 	if c.Internal && c.Domain != "" {
 		return fmt.Errorf("an internal app has no address, so `domain` has no effect — drop one of the two")
+	}
+	if !c.Access.Empty() {
+		if c.Public {
+			return fmt.Errorf("`access` needs the login gateway, which `public: true` turns off — drop one of the two")
+		}
+		if c.Internal && len(c.Routes) == 0 {
+			return fmt.Errorf("an internal app has no address, so `access` has nobody to let in — drop it, or give the app a `routes:` entry")
+		}
+	}
+	if err := c.Access.Validate(); err != nil {
+		return err
 	}
 	seenRoutes := map[string]bool{}
 	for _, r := range c.Routes {

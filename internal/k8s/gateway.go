@@ -131,16 +131,6 @@ func (c *Client) GatewayAPIAvailable(ctx context.Context) error {
 	return nil
 }
 
-// SecurityPolicyAvailable reports whether Envoy Gateway's SecurityPolicy CRD
-// answers — required for the OIDC login in front of apps.
-func (c *Client) SecurityPolicyAvailable(ctx context.Context) error {
-	_, err := c.Dynamic.Resource(gvrFor["SecurityPolicy"]).Namespace(metav1.NamespaceAll).List(ctx, metav1.ListOptions{Limit: 1})
-	if err != nil {
-		return fmt.Errorf("Envoy Gateway's SecurityPolicy API doesn't answer — the OIDC login in front of apps needs it: %w", err)
-	}
-	return nil
-}
-
 // GatewayProgrammed reports whether the controller accepted and programmed
 // the shared Gateway — the sign that Envoy Gateway is actually running.
 func (c *Client) GatewayProgrammed(ctx context.Context, namespace, name string) (bool, string, error) {
@@ -176,42 +166,6 @@ func (c *Client) HasDefaultStorageClass(ctx context.Context) (bool, error) {
 		}
 	}
 	return false, nil
-}
-
-// SecurityPolicyAccepted reports whether Envoy Gateway accepted the app's
-// login policy. Applying the object only records intent — if the controller
-// rejects it (unreachable issuer, bad client secret, CRD skew after an Envoy
-// Gateway upgrade), the route keeps serving WITHOUT the OIDC filter, so an
-// app donkey promised to protect would be open to anyone.
-func (c *Client) SecurityPolicyAccepted(ctx context.Context, namespace, name string) (bool, string, error) {
-	pol, err := c.Dynamic.Resource(gvrFor["SecurityPolicy"]).Namespace(namespace).Get(ctx, name, metav1.GetOptions{})
-	if err != nil {
-		return false, "", err
-	}
-	// status.ancestors[].conditions[type=Accepted] (Gateway API policy status).
-	ancestors, _, err := unstructured.NestedSlice(pol.Object, "status", "ancestors")
-	if err != nil {
-		return false, "", err
-	}
-	for _, item := range ancestors {
-		ancestor, ok := item.(map[string]any)
-		if !ok {
-			continue
-		}
-		conditions, _, _ := unstructured.NestedSlice(ancestor, "conditions")
-		for _, c := range conditions {
-			cond, ok := c.(map[string]any)
-			if !ok || cond["type"] != "Accepted" {
-				continue
-			}
-			message, _ := cond["message"].(string)
-			if message == "" {
-				message, _ = cond["reason"].(string)
-			}
-			return cond["status"] == "True", message, nil
-		}
-	}
-	return false, "no controller has picked it up yet", nil
 }
 
 // CertificateReady reports whether cert-manager finished issuing, and why not

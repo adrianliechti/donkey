@@ -84,6 +84,11 @@ func (s *Server) routes() http.Handler {
 	mux.Handle("GET /v1/spaces/{space}/apps/{app}/env", s.auth(s.handleGetEnv))
 	mux.Handle("PUT /v1/spaces/{space}/apps/{app}/env", s.auth(s.handlePutEnv))
 	mux.Handle("POST /v1/spaces/{space}/apps/{app}/restart", s.auth(s.handleRestart))
+	// How the app is reached (exposure, domain) and who may open it —
+	// changeable from the console without a deploy.
+	mux.Handle("GET /v1/spaces/{space}/apps/{app}/network", s.auth(s.handleGetNetwork))
+	mux.Handle("PUT /v1/spaces/{space}/apps/{app}/network", s.auth(s.handlePutNetwork))
+	mux.Handle("PUT /v1/spaces/{space}/apps/{app}/access", s.auth(s.handlePutAccess))
 	mux.Handle("POST /v1/spaces/{space}/apps/{app}/diagnose", s.auth(s.handleDiagnose))
 	mux.Handle("GET /v1/spaces/{space}/apps/{app}/addons", s.auth(s.handleListAddons))
 	mux.Handle("POST /v1/spaces/{space}/apps/{app}/addons", s.auth(s.handleAddAddon))

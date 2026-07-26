@@ -38,10 +38,11 @@ three ideas:
    `--space`. A space is one namespace (siblings talk to each other as
    plain `http://backend`) and one level of the address:
    `<app>.<space>.<domain>`. Two teams can both have a `web`.
-4. **Private by default.** Deployed apps sit behind an OIDC login enforced
-   by the gateway itself (Envoy `SecurityPolicy` against your provider,
-   e.g. Entra ID). `public: true` in donkey.yaml opts an app out. No issuer
-   configured — no login, and the install says so.
+4. **Private by default.** Deployed apps sit behind an OIDC login run by
+   donkey's own gateway (**donkey-gateway**, against your provider, e.g.
+   Entra ID) — and `access:` in donkey.yaml (or the console) narrows an app
+   further to named users, groups or roles. `public: true` opts an app out.
+   No issuer configured — no login, and the install says so.
 
 ## Components
 
@@ -52,12 +53,15 @@ three ideas:
 │  (thin client)│   HTTP   │  ├─ donkey-server   REST API, detection,│
 └───────────────┘          │  │      manifests, AI, rollout watching │
                            │  ├─ donkey-buildkitd  image builds      │──▶ registry
- browser ─────────────────▶│  └─ Gateway (Envoy) login ──────OIDC──────▶ Entra ID /
-        │                  ├─────────────────────────────────────────┤    any IdP
-        │  per space:      │ donkey-<space>                          │
-        └─ HTTPRoute ─────▶│  app "web"      Deployment · Service    │
-     <app>.<space>.<domain>│  app "backend"  Deployment · Service    │
-                           │  per app: HTTPRoute · SecurityPolicy    │
+ browser ─────────────────▶│  ├─ Gateway (any Gateway API impl): TLS │
+        │                  │  │      + hostnames, routes to ↓        │
+        │  per app:        │  └─ donkey-gateway  routing · OIDC login│──OIDC──▶ Entra ID /
+        └─ HTTPRoute ──────▶       · access (users/groups/roles) ──▶ app     any IdP
+     <app>.<space>.<domain>├─────────────────────────────────────────┤
+                           │ donkey-<space>                          │
+                           │  app "web"      Deployment · Service    │
+                           │  app "backend"  Deployment · Service    │
+                           │  per app: HTTPRoute (→ donkey-gateway)  │
                            │  one PVC per app · env/addon/pull secrets│
                            └─────────────────────────────────────────┘
 ```
@@ -83,22 +87,31 @@ three ideas:
 - **donkey-buildkitd** — a plain BuildKit deployment; the server drives it
   over gRPC with Railpack-generated LLB (or the app's Dockerfile) and pushes
   straight to the registry.
-- **The Gateway** — donkey installs a `GatewayClass` (bound to
-  [Envoy Gateway](https://gateway.envoyproxy.io), a cluster prerequisite)
-  and one shared `Gateway`; every app and the API attach `HTTPRoute`s to
-  it. No Ingress, no nginx. Login protection is a per-app Envoy
-  `SecurityPolicy` doing the OIDC flow in the proxy itself — no extra auth
-  component runs.
+- **The shared Gateway** — donkey installs a `GatewayClass` (bound to
+  [Envoy Gateway](https://gateway.envoyproxy.io) by default) and one shared
+  `Gateway`; every app and the API attach `HTTPRoute`s to it. No Ingress,
+  no nginx. The shared Gateway only terminates TLS and matches hostnames.
+- **donkey-gateway** — donkey's own edge proxy (same binary as the server,
+  started with `gateway`): every app route's real backend. It routes by
+  hostname and path (from annotations on the HTTPRoutes it watches), runs
+  the OIDC code flow itself where a route demands a login, seals what it
+  learned into an AES-GCM cookie (stateless — replicas just scale), checks
+  the app's access rules (users, groups, roles from the ID token's claims)
+  and forwards with `X-Auth-Request-*` identity headers. Auth lives here
+  because the Gateway API has no standard for it — donkey stays portable
+  across Gateway implementations and IdPs.
 - **Per space** — one namespace (`donkey-<space>`) shared by the apps of
   that space, so they reach each other by plain service name. It is created
   with the first app and removed with the last; a namespace donkey didn't
   create is never taken over.
 - **Per app** — Deployment (probes, `PORT`, `envFrom` secrets), Service,
   HTTPRoute (`<app>.<space>.<baseDomain>`, https only — one shared route
-  redirects plain http), SecurityPolicy + OIDC client secret (unless
-  `public: true`), and Secrets for env vars, registry pull auth and addon
-  bindings. Everything is labeled `donkey.dev/app` and `donkey.dev/space`,
-  so status, logs and destroy know exactly what donkey owns.
+  redirects plain http) pointing at donkey-gateway with the app's backend,
+  login and access rules as annotations, a `ReferenceGrant` for that
+  cross-namespace hop, and Secrets for env vars, registry pull auth and
+  addon bindings. Everything is labeled `donkey.dev/app` and
+  `donkey.dev/space`, so status, logs and destroy know exactly what donkey
+  owns.
 - **Storage** — `storage.paths` in donkey.yaml (or what the assistant
   found) gives an app **one** PersistentVolumeClaim, with every path mounted
   as its own folder on it (`subPath`, derived from the path so data never
@@ -191,6 +204,10 @@ port: 8000                    # the port your code listens on
 
 public: true                  # skip the login gateway (machine clients)
 internal: true                # no address at all; siblings reach it by name
+access:                       # narrow the login to named people (any match)
+  users: [ada@example.com]
+  groups: [staff]
+  roles: [developer]          # Entra app roles / Keycloak realm roles
 routes:                       # …or answer on another app's address
   - app: dashboard
     path: /api
@@ -229,10 +246,14 @@ resources:
 ```
 
 **How an app is reached.** By default it gets `<app>.<space>.<domain>` behind
-the login gateway. `public: true` drops the login. `internal: true` drops the
-address — the app has no hostname, no certificate and nothing on the internet,
-and its siblings call it as `http://<name>`. `routes:` puts it on *another*
-app's address under a path prefix.
+the login gateway. `public: true` drops the login. `access:` narrows it — only
+the named users, groups or roles (any match, from the ID token's claims) get
+past the sign-in. `internal: true` drops the address — the app has no
+hostname, no certificate and nothing on the internet, and its siblings call it
+as `http://<name>`. `routes:` puts it on *another* app's address under a path
+prefix. All of it can also be changed in the console's Settings tab without a
+deploy — a console choice holds until donkey.yaml itself settles the matter,
+which always wins.
 
 Those combine, and the demo uses the combination: its backend is `internal`
 (no address of its own), claims `/api` and `/mcp` on the dashboard's address,

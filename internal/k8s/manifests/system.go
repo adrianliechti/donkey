@@ -20,9 +20,10 @@ import (
 )
 
 // SystemInput describes the donkey control plane (namespace donkey-system):
-// the API server, the in-cluster BuildKit, and the shared Gateway (Gateway
-// API on Envoy Gateway). Login protection is per-app OIDC via Envoy
-// SecurityPolicy — configured here, rendered per app.
+// the API server, the in-cluster BuildKit, the shared Gateway (Gateway API,
+// Envoy Gateway by default) and the donkey gateway — donkey's own edge
+// proxy, which routes every app and runs the OIDC login where a route
+// demands one.
 type SystemInput struct {
 	Namespace   string // "donkey-system"
 	ServerImage string
@@ -60,6 +61,10 @@ type SystemInput struct {
 	OIDCIssuer       string // default: http(s)://id.<baseDomain>
 	OIDCClientID     string
 	OIDCClientSecret string
+	// SessionKey seals the login gateway's session cookies (32 bytes, hex).
+	// Generated at install, reused on re-installs — rotating it signs
+	// everyone out.
+	SessionKey string
 
 	OpenAIBaseURL string
 	OpenAIAPIKey  string
@@ -115,7 +120,7 @@ func SystemObjects(in SystemInput) []runtime.Object {
 		// that mounts it.
 		buildkitConfig(in),
 	}
-	return append(objs,
+	objs = append(objs,
 		buildkitDeployment(in),
 		systemService(in, buildkitName, buildkitPort, buildkitPort),
 		buildkitNetworkPolicy(in),
@@ -125,6 +130,8 @@ func SystemObjects(in SystemInput) []runtime.Object {
 		redirectRoute(in),
 		systemCertificate(in),
 	)
+	// The donkey gateway is the app edge — always there, login or not.
+	return append(objs, donkeyGatewayObjects(in)...)
 }
 
 // configHash changes whenever the given configuration values change, so pods
@@ -208,6 +215,7 @@ func systemSecret(in SystemInput) *corev1.Secret {
 			"openai-api-key":     in.OpenAIAPIKey,
 			"oidc-client-id":     in.OIDCClientID,
 			"oidc-client-secret": in.OIDCClientSecret,
+			"session-key":        in.SessionKey,
 		},
 	}
 }

@@ -186,6 +186,14 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 			newToken = true
 		}
 	}
+	// The session key seals the gateway's login cookies. Reused on
+	// re-installs — rotating it would sign everyone out of every app.
+	sessionKey := existing["session-key"]
+	if sessionKey == "" {
+		if sessionKey, err = randomHexKey(); err != nil {
+			return err
+		}
+	}
 	in := manifests.SystemInput{
 		Namespace:          manifests.SystemNamespace,
 		ServerImage:        settings.Image,
@@ -203,6 +211,7 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 		OIDCIssuer:         settings.Auth.Issuer,
 		OIDCClientID:       settings.Auth.ClientID,
 		OIDCClientSecret:   settings.Auth.ClientSecret,
+		SessionKey:         sessionKey,
 		DefaultPlatform:    settings.DefaultPlatform,
 		OpenAIBaseURL:      settings.AI.BaseURL,
 		OpenAIAPIKey:       settings.AI.APIKey,
@@ -227,11 +236,6 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 	// as a warning — a default StorageClass for apps and addons with disks.
 	if err := client.GatewayAPIAvailable(ctx); err != nil {
 		return fmt.Errorf("%w\n\nInstall it first: https://gateway.envoyproxy.io/docs/tasks/quickstart/", err)
-	}
-	if in.OIDCIssuer != "" {
-		if err := client.SecurityPolicyAvailable(ctx); err != nil {
-			return fmt.Errorf("%w\n\nInstall Envoy Gateway (not just the Gateway API CRDs): https://gateway.envoyproxy.io/docs/tasks/quickstart/", err)
-		}
 	}
 	if hasDefault, err := client.HasDefaultStorageClass(ctx); err == nil && !hasDefault {
 		u.Warn("The cluster has no default StorageClass — apps with storage and provisioned addons won't get disks until one exists (or storage.class is set).")
@@ -265,6 +269,11 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 	}
 	u.Info("Waiting for the server to come up…")
 	if err := client.WaitForRollout(ctx, in.Namespace, "donkey-server"); err != nil {
+		return err
+	}
+	// Every app's traffic rides through the donkey gateway, so an install
+	// isn't done until it routes.
+	if err := client.WaitForRollout(ctx, in.Namespace, manifests.GatewayAppName); err != nil {
 		return err
 	}
 	u.Success("Control plane is running.")
@@ -376,4 +385,13 @@ func randomToken() (string, error) {
 		return "", err
 	}
 	return "dk_" + hex.EncodeToString(b), nil
+}
+
+// randomHexKey is the gateway's cookie-sealing key: 32 bytes, hex-encoded.
+func randomHexKey() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
 }

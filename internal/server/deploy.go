@@ -126,9 +126,9 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 	if took != "" {
 		out.Line("· Building %s — that's the folder with the donkey.yaml.", took)
 	}
-	// The deploy itself must survive a dropped client connection: applying a
-	// SecurityPolicy updates Envoy's listener, which may drain the very
-	// stream this response rides on. The CLI reconnects via status polling.
+	// The deploy itself must survive a dropped client connection: route
+	// changes can drain the very stream this response rides on. The CLI
+	// reconnects via status polling.
 	started := time.Now()
 	res := s.deploy(context.WithoutCancel(r.Context()), out, dir, app, deployOpts{
 		Space:     r.URL.Query().Get("space"),
@@ -222,6 +222,12 @@ func (s *Server) deploy(ctx context.Context, out *lineStreamer, dir string, app 
 	// applies and race their rollout waits, leaving the live image undefined.
 	unlock := s.lockApp(ns, app.Name)
 	defer unlock()
+
+	// Network choices made in the console hold as long as donkey.yaml
+	// doesn't say otherwise — an explicit setting there always wins.
+	for _, line := range s.adoptConsoleChoices(ctx, ns, app) {
+		out.Line("· %s", line)
+	}
 
 	imageRef := opts.Tag
 	if imageRef == "" {
@@ -407,6 +413,74 @@ type deployDecisions struct {
 	HealthcheckPath string                `json:"healthcheckPath,omitempty"`
 }
 
+// consoleChoices are the network settings made in the admin console. They
+// live in their own annotation (donkey.dev/console, written by the console
+// endpoints only, via patch): a deploy re-renders the decisions annotation
+// from donkey.yaml, while a console choice must survive deploys — and it
+// does, because server-side apply only owns the keys it writes.
+type consoleChoices struct {
+	// Exposure is "public", "protected" or "internal"; empty means the
+	// donkeyfile (or the default) decides.
+	Exposure string               `json:"exposure,omitempty"`
+	Domain   string               `json:"domain,omitempty"`
+	Access   *config.AccessConfig `json:"access,omitempty"`
+}
+
+func (s *Server) readConsoleChoices(ctx context.Context, ns, app string) consoleChoices {
+	var c consoleChoices
+	raw, err := s.k8s.DeploymentAnnotation(ctx, ns, app, manifests.AnnotationConsole)
+	if err == nil && raw != "" {
+		_ = json.Unmarshal([]byte(raw), &c)
+	}
+	return c
+}
+
+// adoptConsoleChoices fills the network settings this donkey.yaml leaves
+// open from what the console configured — the file always wins where it
+// speaks (an omitted bool is indistinguishable from an explicit false, so
+// "speaks" means: sets public/internal/domain/access to something). Runs on
+// every deploy; adoption that would make the config invalid is dropped
+// again, and only the adopted values, never the user's own.
+func (s *Server) adoptConsoleChoices(ctx context.Context, ns string, app *config.AppConfig) []string {
+	c := s.readConsoleChoices(ctx, ns, app.Name)
+	var lines []string
+	adoptedExposure, adoptedDomain, adoptedAccess := false, false, false
+	if !app.Public && !app.Internal {
+		switch c.Exposure {
+		case "public":
+			app.Public, adoptedExposure = true, true
+			lines = append(lines, "Keeping the console's setting: no login on this app (public)")
+		case "internal":
+			app.Internal, adoptedExposure = true, true
+			lines = append(lines, "Keeping the console's setting: internal only")
+		}
+	}
+	if app.Domain == "" && c.Domain != "" && !app.Internal {
+		app.Domain = c.Domain
+		adoptedDomain = true
+		lines = append(lines, fmt.Sprintf("Keeping the console's domain: %s", c.Domain))
+	}
+	if app.Access == nil && !c.Access.Empty() {
+		app.Access = c.Access
+		adoptedAccess = true
+		lines = append(lines, fmt.Sprintf("Keeping the console's access rules (%d users, %d groups, %d roles)",
+			len(c.Access.Users), len(c.Access.Groups), len(c.Access.Roles)))
+	}
+	if app.Validate() != nil {
+		if adoptedExposure {
+			app.Public, app.Internal = false, false
+		}
+		if adoptedDomain {
+			app.Domain = ""
+		}
+		if adoptedAccess {
+			app.Access = nil
+		}
+		return nil
+	}
+	return lines
+}
+
 // adoptStoredDecisions fills what this donkey.yaml leaves open from the
 // decisions recorded on the running Deployment, and says what it kept.
 // Adoption never makes the config invalid — an adopted value that no longer
@@ -524,55 +598,49 @@ func (s *Server) applyAndWait(ctx context.Context, out *lineStreamer, app *confi
 	for _, r := range in.RouteTargets {
 		out.Line("· Also answering https://%s%s", r.Host, r.Path)
 	}
+	// Login lived in Envoy SecurityPolicies before the donkey-gateway; the
+	// leftovers must go regardless of exposure, or Envoy keeps enforcing a
+	// config donkey no longer writes.
+	if err := s.retractLegacyLogin(ctx, ns, app.Name); err != nil {
+		return failed(err)
+	}
 	// Server-side apply never deletes what the new set leaves out, so every
 	// way an app can stop being exposed has to retract the objects itself.
-	switch {
-	case in.Domain == "":
-		// Internal: no hostname, so the route, its certificate and its login
-		// policy all go — including when the app used to have them.
-		for _, kind := range []string{"HTTPRoute", "SecurityPolicy"} {
-			if err := s.k8s.DeleteObject(ctx, kind, ns, app.Name); err != nil {
-				return failed(err)
-			}
-		}
-		if err := s.k8s.DeleteObject(ctx, "Secret", ns, manifests.OIDCSecretName(app.Name)); err != nil {
+	if in.Domain == "" {
+		// Internal: no hostname, so the route and its certificate go —
+		// including when the app used to have them.
+		if err := s.k8s.DeleteObject(ctx, "HTTPRoute", ns, app.Name); err != nil {
 			return failed(err)
 		}
 		if err := s.detachCertificate(ctx, space, app.Name); err != nil {
 			return failed(err)
 		}
+		// The donkey-gateway grant stays only while path routes still use it.
+		if len(in.RouteTargets) == 0 {
+			if err := s.k8s.DeleteObject(ctx, "ReferenceGrant", manifests.SystemNamespace, manifests.GatewayGrantName(space, app.Name)); err != nil {
+				return failed(err)
+			}
+		}
 		out.Line("· Internal only — the apps of this space reach it at http://%s", app.Name)
-
-	case app.Public || s.cfg.OIDCIssuer == "":
-		// The app's certificate joins the gateway's https listener; Envoy
-		// serves the right one per hostname.
+	} else {
+		// The app's certificate joins the shared gateway's https listener;
+		// Envoy serves the right one per hostname.
 		if err := s.attachCertificate(ctx, space, app.Name); err != nil {
 			return failed(err)
 		}
 		if note := s.waitForCertificate(ctx, space, app.Name, in.Domain); note != "" {
 			out.Line("· %s", note)
 		}
-		// Now public: retract any login protection from earlier deploys.
-		if err := s.k8s.DeleteObject(ctx, "SecurityPolicy", ns, app.Name); err != nil {
+		// All traffic rides through donkey-gateway, so the route serves only
+		// once the Gateway resolved that cross-namespace reference. For a
+		// protected app this is also the privacy check — the route points
+		// into the login, or it doesn't serve at all.
+		if err := s.waitForRouteReady(ctx, ns, app.Name); err != nil {
 			return failed(err)
 		}
-		if err := s.k8s.DeleteObject(ctx, "Secret", ns, manifests.OIDCSecretName(app.Name)); err != nil {
-			return failed(err)
+		if !app.Public && s.cfg.OIDCIssuer != "" {
+			out.Line("· Login protection is in force.")
 		}
-
-	default:
-		if err := s.attachCertificate(ctx, space, app.Name); err != nil {
-			return failed(err)
-		}
-		if note := s.waitForCertificate(ctx, space, app.Name, in.Domain); note != "" {
-			out.Line("· %s", note)
-		}
-		// Applying the policy only records intent — donkey promised this app
-		// would be private, so it verifies the promise holds.
-		if err := s.waitForLoginPolicy(ctx, ns, app.Name); err != nil {
-			return failed(err)
-		}
-		out.Line("· Login protection is in force.")
 	}
 	if noWait {
 		return DeployResult{OK: true, App: app.Name, Space: space, ImageRef: imageRef, URL: s.cfg.AppURL(space, app)}
@@ -612,16 +680,18 @@ func (s *Server) manifestInput(app *config.AppConfig, imageRef string, includeCr
 		},
 		GatewayName:      s.cfg.GatewayName,
 		GatewayNamespace: s.cfg.GatewayNamespace,
-		OIDC: manifests.OIDCConfig{
-			Issuer:   s.cfg.OIDCIssuer,
-			ClientID: s.cfg.OIDCClientID,
-		},
+	}
+	// The donkey gateway is every route's real backend; whether it can also
+	// offer a login depends on the installation having an IdP.
+	in.Gateway = &manifests.GatewayRef{
+		Service:   manifests.GatewayAppName,
+		Namespace: manifests.SystemNamespace,
+		Auth:      s.cfg.OIDCIssuer != "",
 	}
 	// Credentials only when the objects are going to the cluster. A dry run
-	// prints its YAML to the user's terminal (and into CI logs), so the OIDC
-	// client secret and the registry password must not be in it.
+	// prints its YAML to the user's terminal (and into CI logs), so the
+	// registry password must not be in it.
 	if includeCreds {
-		in.OIDC.ClientSecret = s.cfg.OIDCClientSecret
 		password, err := s.cfg.Registry.Password()
 		if err != nil {
 			return in, err

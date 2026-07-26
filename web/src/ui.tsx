@@ -1,6 +1,7 @@
 // Small shared pieces so every view speaks the same visual language.
 import { Component, type ReactNode } from 'react'
-import { CircleAlert, CircleCheck, Loader2 } from 'lucide-react'
+import { CircleAlert, CircleCheck, Globe, Loader2, Lock, Network } from 'lucide-react'
+import type { Exposure } from './api'
 
 // errText gives every catch block the same voice: the server's own message
 // when there is one, the caller's plain-language fallback otherwise.
@@ -22,14 +23,41 @@ export const healthLine: Record<Health, (ready: string) => string> = {
   unknown: () => 'status unknown — checking again',
 }
 
+// The dots glow: on a dark field, a lit lamp reads faster than a color chip.
 const dotColor: Record<Health, string> = {
-  ok: 'bg-moss',
-  bad: 'bg-brick',
+  ok: 'bg-moss shadow-[0_0_8px_2px] shadow-moss/40',
+  bad: 'bg-brick shadow-[0_0_8px_2px] shadow-brick/40',
   unknown: 'bg-stone',
 }
 
 export function StatusDot({ health }: { health: Health }) {
   return <span className={`inline-block size-2.5 rounded-full ${dotColor[health]}`} aria-hidden />
+}
+
+// ExposureBadge says how the world reaches an app — the console's shorthand
+// for the network settings: open globe, locked door, or stable-only.
+export function ExposureBadge({ exposure }: { exposure?: Exposure }) {
+  if (!exposure) return null
+  const spec = {
+    public: { icon: <Globe className="size-3" aria-hidden />, label: 'public', tone: 'text-ink-soft border-line' },
+    protected: { icon: <Lock className="size-3" aria-hidden />, label: 'login', tone: 'text-hay border-hay/40' },
+    internal: { icon: <Network className="size-3" aria-hidden />, label: 'internal', tone: 'text-stone border-line' },
+  }[exposure]
+  return (
+    <span
+      title={
+        exposure === 'public'
+          ? 'Public — anyone with the address can open it'
+          : exposure === 'protected'
+            ? 'Login-protected — visitors sign in through the identity provider'
+            : 'Internal — only the apps of this space reach it, by name'
+      }
+      className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wide ${spec.tone}`}
+    >
+      {spec.icon}
+      {spec.label}
+    </span>
+  )
 }
 
 export function CheckIcon({ ok }: { ok: boolean }) {
