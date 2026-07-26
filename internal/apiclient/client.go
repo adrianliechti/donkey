@@ -326,14 +326,14 @@ type AddAddonResult struct {
 
 func (c *Client) AddAddon(ctx context.Context, space, app string, req server.AddonRequest) (AddAddonResult, error) {
 	var out AddAddonResult
-	err := c.doJSON(ctx, http.MethodPost, appPath(space, app, "/addons"), nil, req, &out)
+	err := c.doJSON(ctx, http.MethodPost, appPath(space, app, "/services"), nil, req, &out)
 	return out, err
 }
 
 // RemoveAddon detaches the app from a space service; the service keeps
 // running for the space.
 func (c *Client) RemoveAddon(ctx context.Context, space, app, addon string) error {
-	return c.doJSON(ctx, http.MethodDelete, appPath(space, app, "/addons/"+addon), nil, nil, nil)
+	return c.doJSON(ctx, http.MethodDelete, appPath(space, app, "/services/"+addon), nil, nil, nil)
 }
 
 // SpaceAddon is one service of a space and the apps using it.
@@ -347,7 +347,7 @@ func (c *Client) SpaceAddons(ctx context.Context, space string) ([]SpaceAddon, e
 	var out struct {
 		Addons []SpaceAddon `json:"addons"`
 	}
-	err := c.doJSON(ctx, http.MethodGet, "/v1/spaces/"+url.PathEscape(space)+"/addons", nil, nil, &out)
+	err := c.doJSON(ctx, http.MethodGet, "/v1/spaces/"+url.PathEscape(space)+"/services", nil, nil, &out)
 	return out.Addons, err
 }
 
@@ -362,7 +362,7 @@ type AddonBindingInfo struct {
 func (c *Client) AddonBinding(ctx context.Context, space, addon string) (AddonBindingInfo, error) {
 	var out AddonBindingInfo
 	err := c.doJSON(ctx, http.MethodGet,
-		"/v1/spaces/"+url.PathEscape(space)+"/addons/"+url.PathEscape(addon)+"/binding", nil, nil, &out)
+		"/v1/spaces/"+url.PathEscape(space)+"/services/"+url.PathEscape(addon)+"/binding", nil, nil, &out)
 	return out, err
 }
 
@@ -370,7 +370,7 @@ func (c *Client) AddonBinding(ctx context.Context, space, addon string) (AddonBi
 // server bridges the WebSocket onto the service's port.
 func (c *Client) DialAddonTunnel(ctx context.Context, space, addon string) (*websocket.Conn, error) {
 	wsURL := strings.Replace(c.BaseURL, "http", "ws", 1) +
-		"/v1/spaces/" + url.PathEscape(space) + "/addons/" + url.PathEscape(addon) + "/tunnel"
+		"/v1/spaces/" + url.PathEscape(space) + "/services/" + url.PathEscape(addon) + "/tunnel"
 	dialer := websocket.Dialer{
 		Proxy:            http.ProxyFromEnvironment,
 		HandshakeTimeout: 15 * time.Second,
@@ -400,7 +400,7 @@ func (c *Client) RemoveSpaceAddon(ctx context.Context, space, addon string, keep
 	if keepData {
 		q.Set("keepData", "true")
 	}
-	return c.doJSON(ctx, http.MethodDelete, "/v1/spaces/"+url.PathEscape(space)+"/addons/"+addon, q, nil, nil)
+	return c.doJSON(ctx, http.MethodDelete, "/v1/spaces/"+url.PathEscape(space)+"/services/"+addon, q, nil, nil)
 }
 
 func (c *Client) Destroy(ctx context.Context, space, app string, keepData bool) error {

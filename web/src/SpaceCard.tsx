@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Dialog, DialogBackdrop, DialogPanel, DialogTitle } from '@headlessui/react'
-import { Database, ExternalLink, HardDrive, Network, Plus, Trash2 } from 'lucide-react'
+import { Archive, Database, ExternalLink, HardDrive, Network, Plus, Table2, Trash2 } from 'lucide-react'
 import { api, type AddAddonRequest, type AppSummary, type SpaceAddonEntry } from './api'
 import { AddServiceDialog } from './AddonForm'
+import { DatabaseDialog } from './DatabaseDialog'
+import { S3Dialog } from './S3Dialog'
 import { Button, ErrorNote, ExposureBadge, StatusDot, ago, errText, healthLine, healthOf, type Health } from './ui'
 
 /**
@@ -146,6 +148,8 @@ function SpaceServices({
   onChanged: () => void
 }) {
   const [removing, setRemoving] = useState<SpaceAddonEntry | null>(null)
+  const [browsing, setBrowsing] = useState<SpaceAddonEntry | null>(null)
+  const [storeBrowsing, setStoreBrowsing] = useState<SpaceAddonEntry | null>(null)
 
   if (!services || services.length === 0) return null
 
@@ -164,11 +168,28 @@ function SpaceServices({
           >
             <Database className="size-3" aria-hidden />
             {svc.name}
-            <span className="text-stone">
-              {svc.attachedTo.length === 0
-                ? '· not connected'
-                : `· ${svc.attachedTo.length} ${svc.attachedTo.length === 1 ? 'app' : 'apps'}`}
-            </span>
+            {svc.keys.includes('AWS_ENDPOINT_URL_S3') && (
+              <button
+                type="button"
+                title={`Browse the ${svc.name} buckets`}
+                aria-label={`Browse the ${svc.name} buckets`}
+                onClick={() => setStoreBrowsing(svc)}
+                className="rounded p-0.5 text-stone hover:bg-line/50 hover:text-ink"
+              >
+                <Archive className="size-3" aria-hidden />
+              </button>
+            )}
+            {svc.keys.includes('DATABASE_URL') && (
+              <button
+                type="button"
+                title={`Browse the ${svc.name} database`}
+                aria-label={`Browse the ${svc.name} database`}
+                onClick={() => setBrowsing(svc)}
+                className="rounded p-0.5 text-stone hover:bg-line/50 hover:text-ink"
+              >
+                <Table2 className="size-3" aria-hidden />
+              </button>
+            )}
             <button
               type="button"
               title={`Remove ${svc.name} from ${space}`}
@@ -181,6 +202,12 @@ function SpaceServices({
           </span>
         ))}
       </div>
+      {browsing && (
+        <DatabaseDialog space={space} service={browsing.name} onClose={() => setBrowsing(null)} />
+      )}
+      {storeBrowsing && (
+        <S3Dialog space={space} service={storeBrowsing.name} onClose={() => setStoreBrowsing(null)} />
+      )}
       {removing && (
         <RemoveServiceDialog
           space={space}

@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { Dialog, DialogBackdrop, DialogPanel, DialogTitle, Radio, RadioGroup } from '@headlessui/react'
-import { ArrowLeft, Backpack, Database, Server } from 'lucide-react'
+import { Archive, ArrowLeft, Backpack, Database, Server } from 'lucide-react'
 import { api, type AddAddonRequest, type AddonType } from './api'
 import { Button, ErrorNote, Select, Spinner } from './ui'
 
@@ -13,7 +13,11 @@ const diskSizes = ['1Gi', '2Gi', '5Gi', '10Gi', '20Gi', '50Gi']
 
 // Each catalog entry gets a face; unknown future types fall back to a
 // plain server glyph.
-const typeIcons: Record<string, typeof Database> = { postgres: Database, pocketbase: Backpack }
+const typeIcons: Record<string, typeof Database> = {
+  postgres: Database,
+  pocketbase: Backpack,
+  rustfs: Archive,
+}
 
 const addressExamples: Record<string, string> = {
   postgres: 'postgres://user:password@host:5432/dbname',

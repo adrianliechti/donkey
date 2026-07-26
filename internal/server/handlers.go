@@ -128,9 +128,9 @@ func (s *Server) handleRestart(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-// handleListAddons shows which services are bound to the app — names and
+// handleListAppServices shows which services are bound to the app — names and
 // injected env var names only, never the values.
-func (s *Server) handleListAddons(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleListAppServices(w http.ResponseWriter, r *http.Request) {
 	ns, app, err := s.spaceApp(r)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
@@ -303,11 +303,11 @@ type AddonRequest struct {
 	URL      string `json:"url"`
 }
 
-// handleAddAddon connects the app to one of the space's services — services
+// handleAddAppService connects the app to one of the space's services — services
 // belong to the space, apps hold attachments (a copy of the binding Secret,
 // wired into their envFrom). A request naming a type creates the service
 // first when the space doesn't have it yet.
-func (s *Server) handleAddAddon(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleAddAppService(w http.ResponseWriter, r *http.Request) {
 	ns, app, err := s.spaceApp(r)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
@@ -323,7 +323,7 @@ func (s *Server) handleAddAddon(w http.ResponseWriter, r *http.Request) {
 		req.Name = req.Type
 	}
 	if !config.ValidName(req.Name) {
-		writeErr(w, http.StatusBadRequest, fmt.Errorf("%q is not a valid addon name — lowercase letters, digits and dashes", req.Name))
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("%q is not a valid service name — lowercase letters, digits and dashes", req.Name))
 		return
 	}
 	ctx := r.Context()
@@ -346,7 +346,7 @@ func (s *Server) handleAddAddon(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusNotFound, fmt.Errorf("the space has no service named %q — give a type to create it", req.Name))
 			return
 		}
-		shared, version, storage, err = s.createSpaceAddon(ctx, space, ns, req)
+		shared, version, storage, err = s.createSpaceService(ctx, space, ns, req)
 		if err != nil {
 			writeErr(w, statusFor(err), err)
 			return
@@ -382,9 +382,9 @@ func statusFor(err error) int {
 	return http.StatusBadGateway
 }
 
-// createSpaceAddon creates the space's service — provisioned in-cluster, or
+// createSpaceService creates the space's service — provisioned in-cluster, or
 // external as a binding-only Secret — and returns its binding values.
-func (s *Server) createSpaceAddon(ctx context.Context, space, ns string, req AddonRequest) (map[string]string, string, string, error) {
+func (s *Server) createSpaceService(ctx context.Context, space, ns string, req AddonRequest) (map[string]string, string, string, error) {
 	addon, err := addons.Get(req.Type)
 	if err != nil {
 		return nil, "", "", userError{err}
@@ -414,17 +414,17 @@ func (s *Server) createSpaceAddon(ctx context.Context, space, ns string, req Add
 	} else if exists && component != addons.Component(req.Name) {
 		return nil, "", "", userError{fmt.Errorf("the name %q is taken by an app in this space — pick another for the service", req.Name)}
 	}
-	in, err := s.provisionAddon(ctx, space, ns, addons.SharedOwner, req)
+	in, err := s.provisionService(ctx, space, ns, addons.SharedOwner, req)
 	if err != nil {
 		return nil, "", "", err
 	}
 	return addon.Binding(in), in.Version, in.Storage, nil
 }
 
-// provisionAddon creates (or re-applies) one managed addon instance with its
+// provisionService creates (or re-applies) one managed addon instance with its
 // binding secret and waits until it serves. Shared by the addon API and the
 // deploy path, which provisions what donkey.yaml lists.
-func (s *Server) provisionAddon(ctx context.Context, space, ns, app string, req AddonRequest) (addons.Input, error) {
+func (s *Server) provisionService(ctx context.Context, space, ns, app string, req AddonRequest) (addons.Input, error) {
 	addon, err := addons.Get(req.Type)
 	if err != nil {
 		return addons.Input{}, err
@@ -462,10 +462,10 @@ func (s *Server) provisionAddon(ctx context.Context, space, ns, app string, req 
 	return in, s.k8s.WaitForRollout(ctx, ns, in.Name)
 }
 
-// handleAddonTypes is the service catalog: what the console can offer, each
+// handleCatalog is the service catalog: what the console can offer, each
 // type with its defaults, its one-liner, and the env contract connected
 // apps will see — the names only, never values.
-func (s *Server) handleAddonTypes(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleCatalog(w http.ResponseWriter, r *http.Request) {
 	type entry struct {
 		Type        string   `json:"type"`
 		Version     string   `json:"version"`
@@ -489,18 +489,18 @@ func (s *Server) handleAddonTypes(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"types": out})
 }
 
-// handleRemoveAddon detaches the app from a space service — its binding copy
+// handleRemoveAppService detaches the app from a space service — its binding copy
 // and env go away, the service (and every byte of its data) stays. Deleting
 // the service itself is a space-level operation.
-func (s *Server) handleRemoveAddon(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleRemoveAppService(w http.ResponseWriter, r *http.Request) {
 	ns, app, err := s.spaceApp(r)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	name := r.PathValue("addon")
+	name := r.PathValue("service")
 	if !config.ValidName(name) {
-		writeErr(w, http.StatusBadRequest, fmt.Errorf("%q is not a valid addon name", name))
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("%q is not a valid service name", name))
 		return
 	}
 	// Unwire before deleting: a pod template that still references the
@@ -516,9 +516,9 @@ func (s *Server) handleRemoveAddon(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-// handleListSpaceAddons shows the space's services and who uses them —
+// handleListSpaceServices shows the space's services and who uses them —
 // names and injected env var names only, never the values.
-func (s *Server) handleListSpaceAddons(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleListSpaceServices(w http.ResponseWriter, r *http.Request) {
 	ns, err := s.cfg.SpaceNamespace(r.PathValue("space"))
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
@@ -549,9 +549,9 @@ func (s *Server) handleListSpaceAddons(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"addons": out})
 }
 
-// handleAddSpaceAddon creates (or re-applies) a service of the space without
+// handleAddSpaceService creates (or re-applies) a service of the space without
 // attaching any app — the space card's "add".
-func (s *Server) handleAddSpaceAddon(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleAddSpaceService(w http.ResponseWriter, r *http.Request) {
 	space := r.PathValue("space")
 	ns, err := s.cfg.SpaceNamespace(space)
 	if err != nil {
@@ -567,7 +567,7 @@ func (s *Server) handleAddSpaceAddon(w http.ResponseWriter, r *http.Request) {
 		req.Name = req.Type
 	}
 	if !config.ValidName(req.Name) {
-		writeErr(w, http.StatusBadRequest, fmt.Errorf("%q is not a valid addon name — lowercase letters, digits and dashes", req.Name))
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("%q is not a valid service name — lowercase letters, digits and dashes", req.Name))
 		return
 	}
 	ctx := r.Context()
@@ -575,7 +575,7 @@ func (s *Server) handleAddSpaceAddon(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusConflict, err)
 		return
 	}
-	shared, version, storage, err := s.createSpaceAddon(ctx, space, ns, req)
+	shared, version, storage, err := s.createSpaceService(ctx, space, ns, req)
 	if err != nil {
 		writeErr(w, statusFor(err), err)
 		return
@@ -604,18 +604,18 @@ func (s *Server) handleAddSpaceAddon(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "version": version, "storage": storage})
 }
 
-// handleAddonBinding hands over the binding values plus the service's
+// handleServiceBinding hands over the binding values plus the service's
 // in-cluster address — what `donkey addon tunnel` prints and dials. Values
 // go only to the token holder, the same trust level as the app env API.
-func (s *Server) handleAddonBinding(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleServiceBinding(w http.ResponseWriter, r *http.Request) {
 	ns, err := s.cfg.SpaceNamespace(r.PathValue("space"))
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	name := r.PathValue("addon")
+	name := r.PathValue("service")
 	if !config.ValidName(name) {
-		writeErr(w, http.StatusBadRequest, fmt.Errorf("%q is not a valid addon name", name))
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("%q is not a valid service name", name))
 		return
 	}
 	data, err := s.k8s.GetSecretData(r.Context(), ns, addons.SecretName(addons.SharedOwner, name))
@@ -642,18 +642,18 @@ var tunnelUpgrader = websocket.Upgrader{
 	WriteBufferSize: 32 * 1024,
 }
 
-// handleAddonTunnel carries one TCP connection to a space service over a
+// handleServiceTunnel carries one TCP connection to a space service over a
 // WebSocket — the CLI's private line to a database that rightly has no
 // public address. Auth is the bearer token, like every other route.
-func (s *Server) handleAddonTunnel(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleServiceTunnel(w http.ResponseWriter, r *http.Request) {
 	ns, err := s.cfg.SpaceNamespace(r.PathValue("space"))
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	name := r.PathValue("addon")
+	name := r.PathValue("service")
 	if !config.ValidName(name) {
-		writeErr(w, http.StatusBadRequest, fmt.Errorf("%q is not a valid addon name", name))
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("%q is not a valid service name", name))
 		return
 	}
 	host, port, err := s.k8s.ServiceEndpoint(r.Context(), ns, name)
@@ -709,17 +709,17 @@ func (s *Server) handleAddonTunnel(w http.ResponseWriter, r *http.Request) {
 	<-done
 }
 
-// handleRemoveSpaceAddon removes a service from the space, detaching every
+// handleRemoveSpaceService removes a service from the space, detaching every
 // app that uses it first (their pods restart without the binding).
-func (s *Server) handleRemoveSpaceAddon(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleRemoveSpaceService(w http.ResponseWriter, r *http.Request) {
 	ns, err := s.cfg.SpaceNamespace(r.PathValue("space"))
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	name := r.PathValue("addon")
+	name := r.PathValue("service")
 	if !config.ValidName(name) {
-		writeErr(w, http.StatusBadRequest, fmt.Errorf("%q is not a valid addon name", name))
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("%q is not a valid service name", name))
 		return
 	}
 	ctx := r.Context()

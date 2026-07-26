@@ -153,6 +153,45 @@ export interface DoctorReport {
   baseDomain: string
 }
 
+/** One database of a browsed postgres service. */
+export interface DbDatabase {
+  name: string
+  size: number
+}
+
+/** One table of a browsed database; rows is the planner's estimate. */
+export interface DbTable {
+  schema: string
+  name: string
+  rows: number
+}
+
+/** A grid cell travels as text; null stays null. */
+export type DbCell = string | null
+
+export interface DbRowsPage {
+  columns: string[]
+  /** The primary key columns — empty means the grid stays read-only. */
+  key: string[]
+  rows: DbCell[][]
+  total: number
+  limit: number
+  offset: number
+}
+
+/** What a row edit sends: the path names the table, this names the row. */
+export interface DbRowChange {
+  key?: Record<string, string>
+  values?: Record<string, string>
+}
+
+export interface DbQueryResult {
+  columns: string[]
+  rows: DbCell[][]
+  affected: number
+  truncated: boolean
+}
+
 const TOKEN_KEY = 'donkey-token'
 
 export function getToken(): string {
@@ -217,6 +256,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 const appPath = (space: string, app: string, suffix = '') =>
   `/v1/spaces/${encodeURIComponent(space)}/apps/${encodeURIComponent(app)}${suffix}`
 
+const servicePath = (space: string, service: string, suffix = '') =>
+  `/v1/spaces/${encodeURIComponent(space)}/services/${encodeURIComponent(service)}${suffix}`
+
 export const api = {
   // ping is the cheap "server up, token good" check — doctor runs the
   // expensive dependency probes and belongs to the System page alone.
@@ -259,36 +301,113 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ name }),
     }),
-  addonTypes: () => request<{ types: AddonType[] }>('/v1/addon-types'),
+  addonTypes: () => request<{ types: AddonType[] }>('/v1/catalog'),
   // Services belong to the space; apps hold connections to them.
   spaceAddons: (space: string) =>
-    request<{ addons: SpaceAddonEntry[] }>(`/v1/spaces/${encodeURIComponent(space)}/addons`),
+    request<{ addons: SpaceAddonEntry[] }>(`/v1/spaces/${encodeURIComponent(space)}/services`),
   // Creating can take a while the first time (the cluster pulls the image and
   // waits for the service to answer) — the request stays open throughout.
   addSpaceAddon: (space: string, req: AddAddonRequest) =>
-    request<{ ok: boolean; version?: string }>(`/v1/spaces/${encodeURIComponent(space)}/addons`, {
+    request<{ ok: boolean; version?: string }>(`/v1/spaces/${encodeURIComponent(space)}/services`, {
       method: 'POST',
       body: JSON.stringify(req),
     }),
   removeSpaceAddon: (space: string, addon: string, keepData: boolean) =>
     request<{ ok: boolean; detached?: string[] }>(
-      `/v1/spaces/${encodeURIComponent(space)}/addons/${encodeURIComponent(addon)}?keepData=${keepData}`,
+      `/v1/spaces/${encodeURIComponent(space)}/services/${encodeURIComponent(addon)}?keepData=${keepData}`,
       { method: 'DELETE' },
     ),
   addons: (space: string, app: string) =>
-    request<{ addons: AddonEntry[] }>(appPath(space, app, '/addons')),
+    request<{ addons: AddonEntry[] }>(appPath(space, app, '/services')),
   // Connects the app; with a type it creates the space service first when
   // missing (which can take a minute — the request stays open throughout).
   addAddon: (space: string, app: string, req: AddAddonRequest) =>
     request<{ ok: boolean; created?: boolean; restarted?: boolean; version?: string }>(
-      appPath(space, app, '/addons'),
+      appPath(space, app, '/services'),
       { method: 'POST', body: JSON.stringify(req) },
     ),
   // Disconnects the app; the service (and its data) stays with the space.
   removeAddon: (space: string, app: string, addon: string) =>
-    request<{ ok: boolean }>(appPath(space, app, `/addons/${encodeURIComponent(addon)}`), {
+    request<{ ok: boolean }>(appPath(space, app, `/services/${encodeURIComponent(addon)}`), {
       method: 'DELETE',
     }),
+  // The database browser — talks to a space service's postgres through the
+  // server; values travel as strings (or null), which is what a grid edits.
+  // Containment lives in the path (service → database → table → rows);
+  // postgres details like the schema ride the query, defaulting to public.
+  dbDatabases: (space: string, service: string) =>
+    request<{ databases: DbDatabase[]; default: string }>(servicePath(space, service, '/databases')),
+  dbCreateDatabase: (space: string, service: string, name: string) =>
+    request<{ ok: boolean; name: string }>(servicePath(space, service, '/databases'), {
+      method: 'POST',
+      body: JSON.stringify({ name }),
+    }),
+  dbDropDatabase: (space: string, service: string, db: string) =>
+    request<{ ok: boolean }>(servicePath(space, service, `/databases/${encodeURIComponent(db)}`), {
+      method: 'DELETE',
+    }),
+  dbTables: (space: string, service: string, db: string) =>
+    request<{ tables: DbTable[] }>(
+      servicePath(space, service, `/databases/${encodeURIComponent(db)}/tables`),
+    ),
+  dbDropTable: (space: string, service: string, db: string, schema: string, table: string) =>
+    request<{ ok: boolean }>(
+      servicePath(
+        space,
+        service,
+        `/databases/${encodeURIComponent(db)}/tables/${encodeURIComponent(table)}?schema=${encodeURIComponent(schema)}`,
+      ),
+      { method: 'DELETE' },
+    ),
+  dbRows: (
+    space: string,
+    service: string,
+    db: string,
+    schema: string,
+    table: string,
+    limit: number,
+    offset: number,
+  ) =>
+    request<DbRowsPage>(
+      servicePath(
+        space,
+        service,
+        `/databases/${encodeURIComponent(db)}/tables/${encodeURIComponent(table)}/rows?schema=${encodeURIComponent(schema)}&limit=${limit}&offset=${offset}`,
+      ),
+    ),
+  dbInsertRow: (space: string, service: string, db: string, schema: string, table: string, body: DbRowChange) =>
+    request<{ ok: boolean }>(
+      servicePath(
+        space,
+        service,
+        `/databases/${encodeURIComponent(db)}/tables/${encodeURIComponent(table)}/rows?schema=${encodeURIComponent(schema)}`,
+      ),
+      { method: 'POST', body: JSON.stringify(body) },
+    ),
+  dbUpdateRow: (space: string, service: string, db: string, schema: string, table: string, body: DbRowChange) =>
+    request<{ ok: boolean; affected: number }>(
+      servicePath(
+        space,
+        service,
+        `/databases/${encodeURIComponent(db)}/tables/${encodeURIComponent(table)}/rows?schema=${encodeURIComponent(schema)}`,
+      ),
+      { method: 'PUT', body: JSON.stringify(body) },
+    ),
+  dbDeleteRow: (space: string, service: string, db: string, schema: string, table: string, body: DbRowChange) =>
+    request<{ ok: boolean; affected: number }>(
+      servicePath(
+        space,
+        service,
+        `/databases/${encodeURIComponent(db)}/tables/${encodeURIComponent(table)}/rows?schema=${encodeURIComponent(schema)}`,
+      ),
+      { method: 'DELETE', body: JSON.stringify(body) },
+    ),
+  dbQuery: (space: string, service: string, db: string, sql: string) =>
+    request<DbQueryResult>(servicePath(space, service, `/databases/${encodeURIComponent(db)}/query`), {
+      method: 'POST',
+      body: JSON.stringify({ sql }),
+    }),
+
   // diagnose asks the assistant to read the app's current evidence — this
   // can take a while (a model call with real logs behind it).
   diagnose: (space: string, app: string) =>

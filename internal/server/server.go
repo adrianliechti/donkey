@@ -92,15 +92,39 @@ func (s *Server) routes() http.Handler {
 	mux.Handle("POST /v1/spaces/{space}/apps/{app}/diagnose", s.auth(s.handleDiagnose))
 	mux.Handle("GET /v1/spaces", s.auth(s.handleListSpaces))
 	mux.Handle("POST /v1/spaces", s.auth(s.handleCreateSpace))
-	mux.Handle("GET /v1/addon-types", s.auth(s.handleAddonTypes))
-	mux.Handle("GET /v1/spaces/{space}/addons", s.auth(s.handleListSpaceAddons))
-	mux.Handle("POST /v1/spaces/{space}/addons", s.auth(s.handleAddSpaceAddon))
-	mux.Handle("DELETE /v1/spaces/{space}/addons/{addon}", s.auth(s.handleRemoveSpaceAddon))
-	mux.Handle("GET /v1/spaces/{space}/addons/{addon}/binding", s.auth(s.handleAddonBinding))
-	mux.Handle("GET /v1/spaces/{space}/addons/{addon}/tunnel", s.auth(s.handleAddonTunnel))
-	mux.Handle("GET /v1/spaces/{space}/apps/{app}/addons", s.auth(s.handleListAddons))
-	mux.Handle("POST /v1/spaces/{space}/apps/{app}/addons", s.auth(s.handleAddAddon))
-	mux.Handle("DELETE /v1/spaces/{space}/apps/{app}/addons/{addon}", s.auth(s.handleRemoveAddon))
+	// The service catalog, and the services of a space. Containers with safe
+	// names (services, databases, tables, buckets) live in the path; leaf
+	// items with arbitrary names (object keys, row keys) ride in query/body.
+	mux.Handle("GET /v1/catalog", s.auth(s.handleCatalog))
+	mux.Handle("GET /v1/spaces/{space}/services", s.auth(s.handleListSpaceServices))
+	mux.Handle("POST /v1/spaces/{space}/services", s.auth(s.handleAddSpaceService))
+	mux.Handle("DELETE /v1/spaces/{space}/services/{service}", s.auth(s.handleRemoveSpaceService))
+	mux.Handle("GET /v1/spaces/{space}/services/{service}/binding", s.auth(s.handleServiceBinding))
+	mux.Handle("GET /v1/spaces/{space}/services/{service}/tunnel", s.auth(s.handleServiceTunnel))
+	// The bucket browser, for services that speak S3.
+	mux.Handle("GET /v1/spaces/{space}/services/{service}/buckets", s.auth(s.handleS3Buckets))
+	mux.Handle("POST /v1/spaces/{space}/services/{service}/buckets", s.auth(s.handleS3CreateBucket))
+	mux.Handle("DELETE /v1/spaces/{space}/services/{service}/buckets/{bucket}", s.auth(s.handleS3DeleteBucket))
+	mux.Handle("GET /v1/spaces/{space}/services/{service}/buckets/{bucket}/objects", s.auth(s.handleS3Objects))
+	mux.Handle("POST /v1/spaces/{space}/services/{service}/buckets/{bucket}/objects", s.auth(s.handleS3Upload))
+	mux.Handle("GET /v1/spaces/{space}/services/{service}/buckets/{bucket}/objects/download", s.auth(s.handleS3Download))
+	mux.Handle("DELETE /v1/spaces/{space}/services/{service}/buckets/{bucket}/objects", s.auth(s.handleS3DeleteObject))
+	// The database browser, for services that speak SQL. Schema is a query
+	// detail (default public) — most users never touch it.
+	mux.Handle("GET /v1/spaces/{space}/services/{service}/databases", s.auth(s.handleDbDatabases))
+	mux.Handle("POST /v1/spaces/{space}/services/{service}/databases", s.auth(s.handleDbCreateDatabase))
+	mux.Handle("DELETE /v1/spaces/{space}/services/{service}/databases/{db}", s.auth(s.handleDbDropDatabase))
+	mux.Handle("GET /v1/spaces/{space}/services/{service}/databases/{db}/tables", s.auth(s.handleDbTables))
+	mux.Handle("DELETE /v1/spaces/{space}/services/{service}/databases/{db}/tables/{table}", s.auth(s.handleDbDropTable))
+	mux.Handle("GET /v1/spaces/{space}/services/{service}/databases/{db}/tables/{table}/rows", s.auth(s.handleDbRows))
+	mux.Handle("POST /v1/spaces/{space}/services/{service}/databases/{db}/tables/{table}/rows", s.auth(s.handleDbInsertRow))
+	mux.Handle("PUT /v1/spaces/{space}/services/{service}/databases/{db}/tables/{table}/rows", s.auth(s.handleDbUpdateRow))
+	mux.Handle("DELETE /v1/spaces/{space}/services/{service}/databases/{db}/tables/{table}/rows", s.auth(s.handleDbDeleteRow))
+	mux.Handle("POST /v1/spaces/{space}/services/{service}/databases/{db}/query", s.auth(s.handleDbQuery))
+	// The services an app is connected to.
+	mux.Handle("GET /v1/spaces/{space}/apps/{app}/services", s.auth(s.handleListAppServices))
+	mux.Handle("POST /v1/spaces/{space}/apps/{app}/services", s.auth(s.handleAddAppService))
+	mux.Handle("DELETE /v1/spaces/{space}/apps/{app}/services/{service}", s.auth(s.handleRemoveAppService))
 	// The app's disk: browse, upload, download, rename, remove.
 	mux.Handle("GET /v1/spaces/{space}/apps/{app}/files", s.auth(s.handleListFiles))
 	mux.Handle("GET /v1/spaces/{space}/apps/{app}/files/download", s.auth(s.handleReadFile))

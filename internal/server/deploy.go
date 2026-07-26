@@ -580,7 +580,7 @@ func (s *Server) applyAndWait(ctx context.Context, out *lineStreamer, app *confi
 				return failed(fmt.Errorf("addon %s runs elsewhere and its address isn't stored in donkey.yaml — connect it once with `donkey addon attach %s --url …`", a.Name, a.Type))
 			}
 			out.Line("Setting up %s (%s) for the space — the first time can take a minute…", a.Name, a.Type)
-			if shared, _, _, err = s.createSpaceAddon(ctx, space, ns, AddonRequest{Type: a.Type, Name: a.Name, Version: a.Version, Storage: a.Storage}); err != nil {
+			if shared, _, _, err = s.createSpaceService(ctx, space, ns, AddonRequest{Type: a.Type, Name: a.Name, Version: a.Version, Storage: a.Storage}); err != nil {
 				return failed(err)
 			}
 			out.Line("✓ %s is ready.", a.Name)

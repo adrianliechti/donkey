@@ -58,6 +58,7 @@ type Input struct {
 var Registry = map[string]Addon{
 	"postgres":   postgres{},
 	"pocketbase": pocketbase{},
+	"rustfs":     rustfs{},
 }
 
 // Types lists the registered addon types, sorted.
