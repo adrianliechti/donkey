@@ -1,0 +1,506 @@
+package docker
+
+import (
+	"bytes"
+	"context"
+	"crypto/rand"
+	"fmt"
+	"io"
+	"io/fs"
+	"path"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+
+	cerrdefs "github.com/containerd/errdefs"
+	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/mount"
+	"github.com/docker/docker/pkg/stdcopy"
+
+	"github.com/adrianliechti/donkey/internal/config"
+	rt "github.com/adrianliechti/donkey/pkg/runtime"
+)
+
+// The app's disk as a file browser — the same model as on Kubernetes: a
+// small busybox helper holds the whole volume at /data (app images are
+// commonly distroless, and the moment the files matter most is exactly when
+// the app container is crashing), and every operation is a busybox command
+// executed in it. The path rules and stat parsing are shared vocabulary
+// with the Kubernetes provider, kept behavior-identical.
+
+const (
+	filesMount     = "/data"
+	filesImage     = "busybox:1.37"
+	statFormat     = "%f|%s|%Y|%n"
+	filesReadyWait = 60 * time.Second
+)
+
+// File type bits of a Unix mode, spelled out so this file stays portable.
+const (
+	sIFMT   = 0xF000
+	sIFDIR  = 0x4000
+	sIFLNK  = 0xA000
+	sIFIFO  = 0x1000
+	sIFSOCK = 0xC000
+	sIFBLK  = 0x6000
+	sIFCHR  = 0x2000
+)
+
+func filesHelperName(space, app string) string { return ctrName(space, app) + ".files" }
+
+// filesHelper returns a running helper container for the app's disk,
+// starting one if needed.
+func (r *Runtime) filesHelper(ctx context.Context, space, app string) (string, error) {
+	if _, err := r.cli.VolumeInspect(ctx, volName(space, app)); err != nil {
+		// Tell the two "nothing to browse" cases apart.
+		if _, cerr := r.cli.ContainerInspect(ctx, ctrName(space, app)); cerrdefs.IsNotFound(cerr) {
+			return "", rt.ErrNotDeployed
+		}
+		return "", rt.ErrNoDisk
+	}
+	name := filesHelperName(space, app)
+	info, err := r.cli.ContainerInspect(ctx, name)
+	if err == nil && info.State != nil && info.State.Running {
+		return name, nil
+	}
+	if err == nil {
+		if err := r.removeContainer(ctx, name); err != nil {
+			return "", err
+		}
+	}
+	if err := r.pullImage(ctx, filesImage); err != nil {
+		return "", err
+	}
+	labels := appLabels(space, app, "files")
+	_, err = r.cli.ContainerCreate(ctx, &container.Config{
+		Image: filesImage,
+		// The helper stops by itself: browsing files once must not leave a
+		// container behind forever.
+		Entrypoint: []string{"sleep", "2700"},
+		Labels:     labels,
+	}, &container.HostConfig{
+		AutoRemove: true,
+		Mounts: []mount.Mount{{
+			Type: mount.TypeVolume, Source: volName(space, app), Target: filesMount,
+		}},
+	}, nil, nil, name)
+	if err != nil && !strings.Contains(err.Error(), "already in use") {
+		return "", fmt.Errorf("opening the app's disk: %w", err)
+	}
+	if err := r.cli.ContainerStart(ctx, name, container.StartOptions{}); err != nil {
+		return "", err
+	}
+	deadline := time.Now().Add(filesReadyWait)
+	for {
+		info, err := r.cli.ContainerInspect(ctx, name)
+		if err == nil && info.State != nil && info.State.Running {
+			return name, nil
+		}
+		if time.Now().After(deadline) {
+			return "", fmt.Errorf("the app's disk didn't open in time")
+		}
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
+}
+
+// execFiles runs one command in the helper. Only the exit code decides
+// failure — busybox tools write to stderr on success too (dd's transfer
+// stats) — and stderr's first line then makes the error honest.
+func (r *Runtime) execFiles(ctx context.Context, helper string, argv []string, stdin io.Reader, stdout io.Writer) error {
+	exec, err := r.cli.ContainerExecCreate(ctx, helper, container.ExecOptions{
+		Cmd:          argv,
+		AttachStdin:  stdin != nil,
+		AttachStdout: true,
+		AttachStderr: true,
+	})
+	if err != nil {
+		return err
+	}
+	attach, err := r.cli.ContainerExecAttach(ctx, exec.ID, container.ExecStartOptions{})
+	if err != nil {
+		return err
+	}
+	defer attach.Close()
+
+	if stdout == nil {
+		stdout = io.Discard
+	}
+	var stderr bytes.Buffer
+	done := make(chan error, 1)
+	go func() {
+		_, err := stdcopy.StdCopy(stdout, &stderr, attach.Reader)
+		done <- err
+	}()
+	if stdin != nil {
+		if _, err := io.Copy(attach.Conn, stdin); err != nil {
+			return err
+		}
+	}
+	_ = attach.CloseWrite()
+	if err := <-done; err != nil {
+		return err
+	}
+	inspect, err := r.cli.ContainerExecInspect(ctx, exec.ID)
+	if err != nil {
+		return err
+	}
+	if inspect.ExitCode != 0 {
+		if line := firstLine(strings.TrimSpace(stderr.String())); line != "" {
+			return execError(fmt.Errorf("%s", line))
+		}
+		return fmt.Errorf("the command failed (exit code %d)", inspect.ExitCode)
+	}
+	return nil
+}
+
+// execError maps busybox's stderr onto the honest file errors.
+func execError(err error) error {
+	msg := err.Error()
+	switch {
+	case strings.Contains(msg, "No such file or directory"):
+		return rt.ErrNotFound
+	case strings.Contains(msg, "Is a directory"):
+		return rt.ErrNotAFile
+	case strings.Contains(msg, "Not a directory"):
+		return rt.ErrNotAFolder
+	}
+	return err
+}
+
+func firstLine(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return s[:i]
+	}
+	return s
+}
+
+// resolveAll resolves paths in the helper and refuses anything that left the
+// disk on the way — a shortcut on the volume must never become a way to
+// read the machine's own files.
+func (r *Runtime) resolveAll(ctx context.Context, helper string, paths ...string) ([]string, error) {
+	var out bytes.Buffer
+	if err := r.execFiles(ctx, helper, append([]string{"realpath"}, paths...), nil, &out); err != nil {
+		return nil, err
+	}
+	lines := strings.Split(strings.TrimRight(out.String(), "\n"), "\n")
+	if len(lines) != len(paths) {
+		return nil, fmt.Errorf("donkey couldn't work out where %q is on the disk",
+			strings.TrimPrefix(paths[0], filesMount+"/"))
+	}
+	for _, l := range lines {
+		if !insideVolume(l) {
+			return nil, fmt.Errorf("%w — it is a shortcut that leads off the app's disk", rt.ErrBadPath)
+		}
+	}
+	return lines, nil
+}
+
+func (r *Runtime) ListFiles(ctx context.Context, space, app, subPath string) ([]rt.FileEntry, error) {
+	rel, err := cleanRelPath(subPath)
+	if err != nil {
+		return nil, err
+	}
+	helper, err := r.filesHelper(ctx, space, app)
+	if err != nil {
+		return nil, err
+	}
+	resolved, err := r.resolveAll(ctx, helper, volumePath(rel))
+	if err != nil {
+		return nil, err
+	}
+	dir := resolved[0]
+	var out bytes.Buffer
+	if err := r.execFiles(ctx, helper, []string{"find", dir, "-maxdepth", "1", "-exec", "stat", "-c", statFormat, "{}", ";"}, nil, &out); err != nil {
+		return nil, err
+	}
+	entries := []rt.FileEntry{}
+	self := false
+	for _, line := range strings.Split(out.String(), "\n") {
+		e, full, ok := parseStatLine(line)
+		if !ok {
+			continue
+		}
+		if full == dir {
+			if !e.IsDir {
+				return nil, rt.ErrNotAFolder
+			}
+			self = true
+			continue
+		}
+		if len(entries) >= rt.MaxListEntries {
+			break
+		}
+		entries = append(entries, e)
+	}
+	if !self && len(entries) == 0 {
+		return nil, rt.ErrNotFound
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].IsDir != entries[j].IsDir {
+			return entries[i].IsDir
+		}
+		a, b := strings.ToLower(entries[i].Name), strings.ToLower(entries[j].Name)
+		if a != b {
+			return a < b
+		}
+		return entries[i].Name < entries[j].Name
+	})
+	return entries, nil
+}
+
+func (r *Runtime) StorageFolders(ctx context.Context, space, app string) ([]rt.StorageFolder, error) {
+	spec, err := r.runRecord(space, app)
+	if err != nil || spec == nil {
+		return nil, err
+	}
+	var out []rt.StorageFolder
+	for _, p := range spec.Paths {
+		out = append(out, rt.StorageFolder{Name: config.StorageSubPath(p), Path: p})
+	}
+	return out, nil
+}
+
+func (r *Runtime) ReadFile(ctx context.Context, space, app, subPath string, w io.Writer) error {
+	rel, err := cleanRelPath(subPath)
+	if err != nil {
+		return err
+	}
+	if rel == "" {
+		return fmt.Errorf("%w — name the file you want to download", rt.ErrBadPath)
+	}
+	helper, err := r.filesHelper(ctx, space, app)
+	if err != nil {
+		return err
+	}
+	resolved, err := r.resolveAll(ctx, helper, volumePath(rel))
+	if err != nil {
+		return err
+	}
+	return r.execFiles(ctx, helper, []string{"cat", resolved[0]}, nil, w)
+}
+
+func (r *Runtime) WriteFile(ctx context.Context, space, app, subPath string, in io.Reader) error {
+	rel, err := cleanRelPath(subPath)
+	if err != nil {
+		return err
+	}
+	if rel == "" {
+		return fmt.Errorf("%w — name the file you want to write", rt.ErrBadPath)
+	}
+	helper, err := r.filesHelper(ctx, space, app)
+	if err != nil {
+		return err
+	}
+	// Resolve the whole destination, not just its folder: a name that is
+	// already a symlink pointing off the disk would otherwise make `mv`
+	// write through it. A name that doesn't exist yet resolves to itself.
+	paths, err := r.resolveAll(ctx, helper, volumePath(parentRel(rel)), volumePath(rel))
+	if err != nil {
+		return err
+	}
+	dir, target := paths[0], paths[1]
+	tmp := dir + "/.donkey-upload-" + strings.ToLower(rand.Text()[:12])
+
+	limited := io.LimitReader(in, rt.MaxUploadBytes+1)
+	counted := &countingReader{r: limited}
+	if err := r.execFiles(ctx, helper, []string{"dd", "of=" + tmp, "bs=65536"}, counted, nil); err != nil {
+		r.removeQuietly(ctx, helper, tmp)
+		return err
+	}
+	if counted.n > rt.MaxUploadBytes {
+		r.removeQuietly(ctx, helper, tmp)
+		return fmt.Errorf("%w — the limit is %d MB", rt.ErrTooLarge, rt.MaxUploadBytes>>20)
+	}
+	// The app runs as some other user and only shares the disk's group, so a
+	// file donkey wrote must be group-writable or the app can never replace it.
+	if err := r.execFiles(ctx, helper, []string{"chmod", "664", tmp}, nil, nil); err != nil {
+		r.removeQuietly(ctx, helper, tmp)
+		return err
+	}
+	if err := r.execFiles(ctx, helper, []string{"mv", tmp, target}, nil, nil); err != nil {
+		r.removeQuietly(ctx, helper, tmp)
+		return err
+	}
+	return nil
+}
+
+func (r *Runtime) RemoveFile(ctx context.Context, space, app, subPath string) error {
+	rel, err := cleanRelPath(subPath)
+	if err != nil {
+		return err
+	}
+	if rel == "" {
+		return fmt.Errorf("%w — the disk itself cannot be deleted here (use `donkey destroy`)", rt.ErrBadPath)
+	}
+	helper, err := r.filesHelper(ctx, space, app)
+	if err != nil {
+		return err
+	}
+	resolved, err := r.resolveAll(ctx, helper, volumePath(rel))
+	if err != nil {
+		return err
+	}
+	if resolved[0] == filesMount {
+		return fmt.Errorf("%w — the disk itself cannot be deleted here (use `donkey destroy`)", rt.ErrBadPath)
+	}
+	return r.execFiles(ctx, helper, []string{"rm", "-rf", resolved[0]}, nil, nil)
+}
+
+func (r *Runtime) MoveFile(ctx context.Context, space, app, from, to string) error {
+	fromRel, err := cleanRelPath(from)
+	if err != nil {
+		return err
+	}
+	toRel, err := cleanRelPath(to)
+	if err != nil {
+		return err
+	}
+	if fromRel == "" || toRel == "" {
+		return fmt.Errorf("%w — name what to move and where to", rt.ErrBadPath)
+	}
+	helper, err := r.filesHelper(ctx, space, app)
+	if err != nil {
+		return err
+	}
+	paths, err := r.resolveAll(ctx, helper, volumePath(fromRel), volumePath(parentRel(toRel)), volumePath(toRel))
+	if err != nil {
+		return err
+	}
+	return r.execFiles(ctx, helper, []string{"mv", paths[0], paths[2]}, nil, nil)
+}
+
+func (r *Runtime) MakeDir(ctx context.Context, space, app, subPath string) error {
+	rel, err := cleanRelPath(subPath)
+	if err != nil {
+		return err
+	}
+	if rel == "" {
+		return fmt.Errorf("%w — name the folder you want to create", rt.ErrBadPath)
+	}
+	helper, err := r.filesHelper(ctx, space, app)
+	if err != nil {
+		return err
+	}
+	paths, err := r.resolveAll(ctx, helper, volumePath(parentRel(rel)), volumePath(rel))
+	if err != nil {
+		return err
+	}
+	return r.execFiles(ctx, helper, []string{"mkdir", paths[1]}, nil, nil)
+}
+
+func (r *Runtime) removeQuietly(ctx context.Context, helper, target string) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancel()
+	_ = r.execFiles(ctx, helper, []string{"rm", "-f", target}, nil, nil)
+}
+
+type countingReader struct {
+	r io.Reader
+	n int64
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n += int64(n)
+	return n, err
+}
+
+// --- Path rules and stat parsing (shared vocabulary with Kubernetes) ------
+
+// cleanRelPath turns a caller-supplied path into a path relative to the
+// disk. Everything here is attacker-controlled, so it is checked before any
+// command is built: no absolute paths, no ".." escapes, no NUL bytes.
+func cleanRelPath(p string) (string, error) {
+	if strings.TrimSpace(p) == "" {
+		return "", nil
+	}
+	if strings.ContainsRune(p, 0) {
+		return "", fmt.Errorf("%w — it contains a character that isn't allowed in a name", rt.ErrBadPath)
+	}
+	if strings.HasPrefix(p, "/") {
+		return "", fmt.Errorf("%w — paths are relative to the disk, so leave the leading slash off (app-data/uploads, not /app-data/uploads)", rt.ErrBadPath)
+	}
+	clean := path.Clean(p)
+	if clean == "." {
+		return "", nil
+	}
+	if clean == ".." || strings.HasPrefix(clean, "../") {
+		return "", fmt.Errorf("%w — it points outside the app's disk", rt.ErrBadPath)
+	}
+	return clean, nil
+}
+
+func volumePath(rel string) string {
+	if rel == "" {
+		return filesMount
+	}
+	return filesMount + "/" + rel
+}
+
+func parentRel(rel string) string {
+	dir := path.Dir(rel)
+	if dir == "." || dir == "/" {
+		return ""
+	}
+	return dir
+}
+
+func insideVolume(p string) bool {
+	return p == filesMount || strings.HasPrefix(p, filesMount+"/")
+}
+
+func parseStatLine(line string) (rt.FileEntry, string, bool) {
+	line = strings.TrimRight(line, "\r")
+	parts := strings.SplitN(line, "|", 4)
+	if len(parts) != 4 {
+		return rt.FileEntry{}, "", false
+	}
+	raw, err := strconv.ParseUint(strings.TrimSpace(parts[0]), 16, 32)
+	if err != nil {
+		return rt.FileEntry{}, "", false
+	}
+	size, err := strconv.ParseInt(strings.TrimSpace(parts[1]), 10, 64)
+	if err != nil {
+		return rt.FileEntry{}, "", false
+	}
+	secs, err := strconv.ParseInt(strings.TrimSpace(parts[2]), 10, 64)
+	if err != nil {
+		return rt.FileEntry{}, "", false
+	}
+	full := parts[3]
+	if full == "" {
+		return rt.FileEntry{}, "", false
+	}
+	return rt.FileEntry{
+		Name:    path.Base(full),
+		Size:    size,
+		Mode:    modeText(uint32(raw)),
+		ModTime: time.Unix(secs, 0).UTC(),
+		IsDir:   raw&sIFMT == sIFDIR,
+		IsLink:  raw&sIFMT == sIFLNK,
+	}, full, true
+}
+
+func modeText(raw uint32) string {
+	m := fs.FileMode(raw & 0o777)
+	switch raw & sIFMT {
+	case sIFDIR:
+		m |= fs.ModeDir
+	case sIFLNK:
+		m |= fs.ModeSymlink
+	case sIFIFO:
+		m |= fs.ModeNamedPipe
+	case sIFSOCK:
+		m |= fs.ModeSocket
+	case sIFBLK:
+		m |= fs.ModeDevice
+	case sIFCHR:
+		m |= fs.ModeDevice | fs.ModeCharDevice
+	}
+	return m.String()
+}

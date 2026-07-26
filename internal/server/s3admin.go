@@ -25,6 +25,7 @@ import (
 
 	"github.com/adrianliechti/donkey/internal/addons"
 	"github.com/adrianliechti/donkey/internal/config"
+	"github.com/adrianliechti/donkey/pkg/runtime"
 )
 
 const s3Timeout = 30 * time.Second
@@ -37,28 +38,28 @@ const s3MaxUpload = 512 << 20
 // the binding's own values — the browser sees exactly the store the apps
 // see.
 func (s *Server) s3Connect(ctx context.Context, r *http.Request) (*minio.Client, error) {
-	ns, err := s.cfg.SpaceNamespace(r.PathValue("space"))
+	space, err := s.space(r)
 	if err != nil {
-		return nil, userError{err}
+		return nil, runtime.UserError{Err: err}
 	}
 	name := r.PathValue("service")
 	if !config.ValidName(name) {
-		return nil, userError{fmt.Errorf("%q is not a valid service name", name)}
+		return nil, runtime.UserError{Err: fmt.Errorf("%q is not a valid service name", name)}
 	}
-	data, err := s.k8s.GetSecretData(ctx, ns, addons.SecretName(addons.SharedOwner, name))
+	data, err := s.rt.ServiceBinding(ctx, space, addons.SharedOwner, name)
 	if err != nil {
 		return nil, err
 	}
 	if len(data) == 0 {
-		return nil, userError{fmt.Errorf("the space has no service named %q", name)}
+		return nil, runtime.UserError{Err: fmt.Errorf("the space has no service named %q", name)}
 	}
 	endpoint, ok := data["AWS_ENDPOINT_URL_S3"]
 	if !ok {
-		return nil, userError{fmt.Errorf("%s doesn't speak S3 — only services with an AWS_ENDPOINT_URL_S3 binding can be browsed", name)}
+		return nil, runtime.UserError{Err: fmt.Errorf("%s doesn't speak S3 — only services with an AWS_ENDPOINT_URL_S3 binding can be browsed", name)}
 	}
 	u, err := url.Parse(endpoint)
 	if err != nil || u.Host == "" {
-		return nil, userError{fmt.Errorf("the service's endpoint %q is not a usable URL", endpoint)}
+		return nil, runtime.UserError{Err: fmt.Errorf("the service's endpoint %q is not a usable URL", endpoint)}
 	}
 	client, err := minio.New(u.Host, &minio.Options{
 		Creds:  credentials.NewStaticV4(data["AWS_ACCESS_KEY_ID"], data["AWS_SECRET_ACCESS_KEY"], ""),
@@ -75,7 +76,7 @@ func (s *Server) s3Connect(ctx context.Context, r *http.Request) (*minio.Client,
 // mistakes and the store's own 4xx answers stay theirs, everything else is
 // the backend's.
 func s3Status(err error) int {
-	var ue userError
+	var ue runtime.UserError
 	if errors.As(err, &ue) {
 		return http.StatusBadRequest
 	}

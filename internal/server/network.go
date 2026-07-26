@@ -8,10 +8,8 @@ import (
 	"slices"
 	"strings"
 
-	"k8s.io/apimachinery/pkg/runtime"
-
 	"github.com/adrianliechti/donkey/internal/config"
-	"github.com/adrianliechti/donkey/internal/k8s/manifests"
+	"github.com/adrianliechti/donkey/pkg/runtime"
 )
 
 // RouteEntry is one extra address a request can reach the app on.
@@ -21,7 +19,7 @@ type RouteEntry struct {
 }
 
 // NetworkResponse is what the console's network settings show: read from the
-// cluster's objects, never from stored intent.
+// runtime's actual state, never from stored intent.
 type NetworkResponse struct {
 	// Exposure is public, protected or internal.
 	Exposure string `json:"exposure"`
@@ -38,15 +36,15 @@ type NetworkResponse struct {
 	Access         *config.AccessConfig `json:"access,omitempty"`
 }
 
-func (s *Server) networkResponse(r *http.Request, ns, space, app string) (*NetworkResponse, error) {
-	st, err := s.k8s.AppStatus(r.Context(), ns, app)
+func (s *Server) networkResponse(r *http.Request, space, app string) (*NetworkResponse, error) {
+	st, err := s.rt.Status(r.Context(), space, app)
 	if err != nil {
 		return nil, err
 	}
 	if !st.Found {
 		return nil, nil
 	}
-	net, err := s.k8s.AppNetwork(r.Context(), ns, app)
+	net, err := s.rt.Network(r.Context(), space, app)
 	if err != nil {
 		return nil, err
 	}
@@ -77,12 +75,12 @@ func (s *Server) networkResponse(r *http.Request, ns, space, app string) (*Netwo
 }
 
 func (s *Server) handleGetNetwork(w http.ResponseWriter, r *http.Request) {
-	ns, app, err := s.spaceApp(r)
+	space, app, err := s.spaceApp(r)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	resp, err := s.networkResponse(r, ns, r.PathValue("space"), app)
+	resp, err := s.networkResponse(r, space, app)
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err)
 		return
@@ -100,16 +98,15 @@ type PutNetworkRequest struct {
 }
 
 // handlePutNetwork changes how an app is reached — without a deploy. The
-// route, certificate and gateway grant are re-rendered from cluster state;
-// the choice is recorded in the console annotation so later deploys keep it
-// (unless donkey.yaml itself says otherwise, which always wins).
+// runtime re-renders the app's addresses from its actual state; the choice is
+// recorded in the console metadata so later deploys keep it (unless
+// donkey.yaml itself says otherwise, which always wins).
 func (s *Server) handlePutNetwork(w http.ResponseWriter, r *http.Request) {
-	ns, app, err := s.spaceApp(r)
+	space, app, err := s.spaceApp(r)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	space := r.PathValue("space")
 	var req PutNetworkRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
@@ -124,11 +121,11 @@ func (s *Server) handlePutNetwork(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	unlock := s.lockApp(ns, app)
+	unlock := s.lockApp(space, app)
 	defer unlock()
 
 	ctx := r.Context()
-	st, err := s.k8s.AppStatus(ctx, ns, app)
+	st, err := s.rt.Status(ctx, space, app)
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err)
 		return
@@ -141,12 +138,12 @@ func (s *Server) handlePutNetwork(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusConflict, fmt.Errorf("the app's port can't be read from the cluster — deploy it again first"))
 		return
 	}
-	net, err := s.k8s.AppNetwork(ctx, ns, app)
+	net, err := s.rt.Network(ctx, space, app)
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err)
 		return
 	}
-	console := s.readConsoleChoices(ctx, ns, app)
+	console := s.readConsoleChoices(ctx, space, app)
 
 	// A synthetic app config carries the choice through the same validation
 	// and rendering a donkey.yaml would.
@@ -159,7 +156,7 @@ func (s *Server) handlePutNetwork(w http.ResponseWriter, r *http.Request) {
 	}
 	cfg.Domain = strings.TrimSpace(req.Domain)
 	if req.Exposure == "protected" {
-		// Access rules ride along unchanged; cluster state is the truth,
+		// Access rules ride along unchanged; runtime state is the truth,
 		// with the console's memory as fallback (e.g. internal → protected).
 		cfg.Access = net.Access
 		if cfg.Access == nil {
@@ -172,74 +169,21 @@ func (s *Server) handlePutNetwork(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	in, err := s.manifestInput(cfg, st.Image, false)
+	note, err := s.rt.ApplyNetwork(ctx, cfg)
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err)
 		return
 	}
 
-	// Re-render: the grant whenever any route rides the gateway, the app's
-	// own certificate and route unless internal, and every existing path
-	// route under its existing name (its exposure follows the app's).
-	var objs []runtime.Object
-	if in.Gateway != nil && (in.Domain != "" || len(net.Routes) > 0) {
-		objs = append(objs, manifests.GatewayGrant(in))
-	}
-	if in.Domain != "" {
-		if in.TLS.Issuer != "" {
-			objs = append(objs, manifests.AppCertificateObject(in))
-		}
-		objs = append(objs, manifests.AppRoute(in))
-	}
-	for _, pr := range net.Routes {
-		objs = append(objs, manifests.PathRouteNamed(in, pr.Name, manifests.RouteTarget{Host: pr.Host, Path: pr.Path}))
-	}
-	if err := s.k8s.Apply(ctx, objs); err != nil {
-		writeErr(w, http.StatusBadGateway, err)
-		return
-	}
-	if err := s.retractLegacyLogin(ctx, ns, app); err != nil {
-		writeErr(w, http.StatusBadGateway, err)
-		return
-	}
-
-	note := ""
-	if in.Domain == "" {
-		if err := s.k8s.DeleteObject(ctx, "HTTPRoute", ns, app); err != nil {
-			writeErr(w, http.StatusBadGateway, err)
-			return
-		}
-		if err := s.detachCertificate(ctx, space, app); err != nil {
-			writeErr(w, http.StatusBadGateway, err)
-			return
-		}
-		if len(net.Routes) == 0 {
-			if err := s.k8s.DeleteObject(ctx, "ReferenceGrant", manifests.SystemNamespace, manifests.GatewayGrantName(space, app)); err != nil {
-				writeErr(w, http.StatusBadGateway, err)
-				return
-			}
-		}
-	} else {
-		if err := s.attachCertificate(ctx, space, app); err != nil {
-			writeErr(w, http.StatusBadGateway, err)
-			return
-		}
-		note = s.waitForCertificate(ctx, space, app, in.Domain)
-		if err := s.waitForRouteReady(ctx, ns, app); err != nil {
-			writeErr(w, http.StatusBadGateway, err)
-			return
-		}
-	}
-
 	// Record the choice so deploys keep it while donkey.yaml stays silent.
 	console.Exposure = req.Exposure
 	console.Domain = cfg.Domain
-	if err := s.writeConsoleChoices(ctx, ns, app, console); err != nil {
+	if err := s.writeConsoleChoices(ctx, space, app, console); err != nil {
 		writeErr(w, http.StatusBadGateway, err)
 		return
 	}
 
-	resp, err := s.networkResponse(r, ns, space, app)
+	resp, err := s.networkResponse(r, space, app)
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err)
 		return
@@ -254,10 +198,9 @@ type PutAccessRequest struct {
 }
 
 // handlePutAccess narrows (or reopens) who may open a login-protected app.
-// It is an annotation change on the app's routes — the gateway picks it up
-// within seconds, no deploy, no restart.
+// The gateway picks it up within seconds — no deploy, no restart.
 func (s *Server) handlePutAccess(w http.ResponseWriter, r *http.Request) {
-	ns, app, err := s.spaceApp(r)
+	space, app, err := s.spaceApp(r)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
@@ -280,11 +223,11 @@ func (s *Server) handlePutAccess(w http.ResponseWriter, r *http.Request) {
 		access = nil
 	}
 
-	unlock := s.lockApp(ns, app)
+	unlock := s.lockApp(space, app)
 	defer unlock()
 
 	ctx := r.Context()
-	net, err := s.k8s.AppNetwork(ctx, ns, app)
+	net, err := s.rt.Network(ctx, space, app)
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err)
 		return
@@ -298,36 +241,14 @@ func (s *Server) handlePutAccess(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var value *string
-	if access != nil {
-		b, err := json.Marshal(access)
-		if err != nil {
-			writeErr(w, http.StatusInternalServerError, err)
-			return
-		}
-		v := string(b)
-		value = &v
-	}
-	patch := map[string]*string{manifests.AnnotationAccess: value}
-	if net.Protected {
-		if err := s.k8s.SetAnnotations(ctx, "HTTPRoute", ns, app, patch); err != nil {
-			writeErr(w, http.StatusBadGateway, err)
-			return
-		}
-	}
-	for _, pr := range net.Routes {
-		if !pr.Protected {
-			continue
-		}
-		if err := s.k8s.SetAnnotations(ctx, "HTTPRoute", ns, pr.Name, patch); err != nil {
-			writeErr(w, http.StatusBadGateway, err)
-			return
-		}
+	if err := s.rt.SetAccess(ctx, space, app, access); err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
 	}
 
-	console := s.readConsoleChoices(ctx, ns, app)
+	console := s.readConsoleChoices(ctx, space, app)
 	console.Access = access
-	if err := s.writeConsoleChoices(ctx, ns, app, console); err != nil {
+	if err := s.writeConsoleChoices(ctx, space, app, console); err != nil {
 		writeErr(w, http.StatusBadGateway, err)
 		return
 	}
@@ -345,10 +266,10 @@ func cleanList(in []string) []string {
 	return out
 }
 
-// writeConsoleChoices stores the console's network choices on the Deployment
-// — as a patch, so the deploy pipeline's server-side apply (which owns only
-// its own annotation keys) never wipes them.
-func (s *Server) writeConsoleChoices(ctx context.Context, ns, app string, c consoleChoices) error {
+// writeConsoleChoices stores the console's network choices with the deployed
+// app — as app metadata the deploy pipeline never rewrites, so they survive
+// deploys untouched.
+func (s *Server) writeConsoleChoices(ctx context.Context, space, app string, c consoleChoices) error {
 	var value *string
 	if c != (consoleChoices{}) || c.Access != nil {
 		b, err := json.Marshal(c)
@@ -358,5 +279,5 @@ func (s *Server) writeConsoleChoices(ctx context.Context, ns, app string, c cons
 		v := string(b)
 		value = &v
 	}
-	return s.k8s.SetAnnotations(ctx, "Deployment", ns, app, map[string]*string{manifests.AnnotationConsole: value})
+	return s.rt.SetAppMeta(ctx, space, app, runtime.MetaConsole, value)
 }

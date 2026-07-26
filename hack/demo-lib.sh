@@ -6,7 +6,7 @@ DONKEY="${ROOT}/bin/donkey"
 CLUSTER="donkey"
 CTX="kind-${CLUSTER}"
 BASE="apps.test"
-CA_FILE="${ROOT}/.build/platform-ca.crt"
+CA_FILE="${ROOT}/.build/donkey-gateway-ca.crt"
 
 # mint_token seals a CLI token from the installation's session key — the
 # scripted stand-in for the browser round trip `donkey login` runs.
@@ -23,7 +23,9 @@ esac
 
 # donkey reads every app with its assistant, so the demo needs a model: an
 # OpenAI-compatible proxy on host port 8080 (override with OPENAI_BASE_URL /
-# OPENAI_API_KEY).
+# OPENAI_API_KEY). No real model to hand? `task fake-ai` answers every
+# question with "no findings", which is enough for the demos and the e2e
+# suite — donkey then keeps whatever it detected by itself.
 AI_BASE="${OPENAI_BASE_URL:-http://host.docker.internal:8080/v1}"
 AI_KEY="${OPENAI_API_KEY:-local}"
 
@@ -46,10 +48,11 @@ require_ai() {
 No OpenAI-compatible endpoint on host port 8080.
 
 donkey reads every app with its assistant (ports, health routes, data folders),
-so the demo cannot deploy without one. Start your proxy on port 8080, or point
-the demo elsewhere:
+so the demo cannot deploy without one. Three ways out:
 
+  task fake-ai                                   # deterministic stand-in, no key
   OPENAI_BASE_URL=https://api.openai.com/v1 OPENAI_API_KEY=sk-… task demo
+  … or start your own proxy on port 8080
 MSG
     exit 1
   fi

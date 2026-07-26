@@ -21,6 +21,7 @@ import (
 
 	"github.com/adrianliechti/donkey/internal/addons"
 	"github.com/adrianliechti/donkey/internal/config"
+	"github.com/adrianliechti/donkey/pkg/runtime"
 )
 
 const dbTimeout = 30 * time.Second
@@ -34,29 +35,29 @@ var plainIdent = regexp.MustCompile(`^[a-z_][a-z0-9_]*$`)
 // database the apps see. db picks one of the service's databases; empty
 // means the binding's own.
 func (s *Server) dbConnect(ctx context.Context, r *http.Request, db string) (*pgx.Conn, error) {
-	ns, err := s.cfg.SpaceNamespace(r.PathValue("space"))
+	space, err := s.space(r)
 	if err != nil {
-		return nil, userError{err}
+		return nil, runtime.UserError{Err: err}
 	}
 	name := r.PathValue("service")
 	if !config.ValidName(name) {
-		return nil, userError{fmt.Errorf("%q is not a valid service name", name)}
+		return nil, runtime.UserError{Err: fmt.Errorf("%q is not a valid service name", name)}
 	}
-	data, err := s.k8s.GetSecretData(ctx, ns, addons.SecretName(addons.SharedOwner, name))
+	data, err := s.rt.ServiceBinding(ctx, space, addons.SharedOwner, name)
 	if err != nil {
 		return nil, err
 	}
 	if len(data) == 0 {
-		return nil, userError{fmt.Errorf("the space has no service named %q", name)}
+		return nil, runtime.UserError{Err: fmt.Errorf("the space has no service named %q", name)}
 	}
 	dsn, ok := data["DATABASE_URL"]
 	if !ok {
-		return nil, userError{fmt.Errorf("%s doesn't speak SQL — only services with a DATABASE_URL can be browsed", name)}
+		return nil, runtime.UserError{Err: fmt.Errorf("%s doesn't speak SQL — only services with a DATABASE_URL can be browsed", name)}
 	}
 	if db != "" {
 		u, err := url.Parse(dsn)
 		if err != nil {
-			return nil, userError{fmt.Errorf("the binding's DATABASE_URL is not a URL")}
+			return nil, runtime.UserError{Err: fmt.Errorf("the binding's DATABASE_URL is not a URL")}
 		}
 		u.Path = "/" + db
 		dsn = u.String()
@@ -245,7 +246,7 @@ func tableIdent(schema, table string) (string, error) {
 		schema = "public"
 	}
 	if table == "" {
-		return "", userError{fmt.Errorf("which table?")}
+		return "", runtime.UserError{Err: fmt.Errorf("which table?")}
 	}
 	return pgx.Identifier{schema, table}.Sanitize(), nil
 }
@@ -395,13 +396,13 @@ type dbRowRequest struct {
 // half-identified row can never match more than intended.
 func wherePK(key map[string]string, pk []string, args *[]any) (string, error) {
 	if len(pk) == 0 {
-		return "", userError{fmt.Errorf("this table has no primary key — the grid can't safely change rows, use the SQL view")}
+		return "", runtime.UserError{Err: fmt.Errorf("this table has no primary key — the grid can't safely change rows, use the SQL view")}
 	}
 	var parts []string
 	for _, col := range pk {
 		v, ok := key[col]
 		if !ok {
-			return "", userError{fmt.Errorf("the row's %s value is missing", col)}
+			return "", runtime.UserError{Err: fmt.Errorf("the row's %s value is missing", col)}
 		}
 		*args = append(*args, v)
 		parts = append(parts, fmt.Sprintf("%s = $%d", pgx.Identifier{col}.Sanitize(), len(*args)))

@@ -17,8 +17,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/adrianliechti/donkey/internal/addons"
 )
 
 const aiProxyPrefix = "/ai/v1/"
@@ -108,7 +106,7 @@ func (s *Server) aiProxyHandler() http.Handler {
 		// removing the service is the revocation.
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		values, err := s.k8s.SharedBindingValues(ctx, addons.SharedOwner, "OPENAI_API_KEY")
+		values, err := s.rt.SharedServiceValues(ctx, "OPENAI_API_KEY")
 		if err != nil {
 			return nil, err
 		}

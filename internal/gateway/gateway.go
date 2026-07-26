@@ -1,19 +1,20 @@
-// Package gateway is donkey's login gateway — the auth proxy every app's
-// and the console's traffic goes through. The shared Gateway (any Gateway
-// API implementation) terminates TLS and routes hostnames here; this proxy
-// runs the OIDC login itself (browsers get a cookie, `donkey login` a
+// Package gateway is donkey's edge — the proxy every app's and the
+// console's traffic enters through. It terminates TLS (issuing certificates
+// itself: ACME, a built-in CA, or a provided one), routes hostnames to
+// apps, runs the OIDC login itself (browsers get a cookie, `donkey login` a
 // sealed token), checks the route's access rules (users, groups, roles) and
 // forwards the request with identity headers.
 //
-// Keeping login in donkey's own binary — instead of a proxy vendor's CRD —
-// is a deliberate trade: the Gateway API has no standard auth story, so this
-// is the only auth donkey can promise on every Gateway implementation, and
-// the only one that can read the ID token's claims (email, groups) with
-// every IdP.
+// Keeping login and TLS in donkey's own binary — instead of an ingress
+// vendor's CRDs — is a deliberate trade: no proxy stack has a standard auth
+// story, so this is the only auth donkey can promise everywhere, the only
+// one that can read the ID token's claims (email, groups) with every IdP —
+// and the same binary is the edge on every runtime donkey supports.
 package gateway
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -28,19 +29,50 @@ import (
 	"sync"
 	"time"
 
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"golang.org/x/sync/singleflight"
+	corev1 "k8s.io/api/core/v1"
 
 	"github.com/adrianliechti/donkey/internal/config"
-	"github.com/adrianliechti/donkey/internal/k8s"
-	"github.com/adrianliechti/donkey/internal/k8s/manifests"
+	"github.com/adrianliechti/donkey/pkg/runtime/docker"
+	k8s "github.com/adrianliechti/donkey/pkg/runtime/kubernetes"
+	"github.com/adrianliechti/donkey/pkg/runtime/kubernetes/manifests"
 )
 
 type Config struct {
-	// Listen serves app traffic; HealthListen serves the kubelet's probes.
-	// They are separate ports because /healthz on the traffic port would
+	// Runtime is which provider's world the gateway lives in: "kubernetes"
+	// (the default — routes from ConfigMaps, certificates in Secrets) or
+	// "docker" (routes and certificates from the shared state directory).
+	Runtime string
+	// StateDir is the docker runtime's state directory (mounted read-only
+	// from the provider's volume).
+	StateDir string
+
+	// Listen serves plain http (the https redirect, and ACME HTTP-01
+	// challenges); TLSListen terminates TLS. HealthListen serves the
+	// kubelet's probes — separate, because /healthz on a traffic port would
 	// shadow every app's own /healthz.
 	Listen       string
+	TLSListen    string
 	HealthListen string
+
+	// TLSMode is how the gateway gets certificates: "acme" (on-demand per
+	// hostname, Let's Encrypt by default), "ca" (a self-signed CA minting
+	// per-hostname certificates — local and internal installs), "static" (a
+	// provided certificate, usually a wildcard), or "" — no TLS, plain http
+	// on Listen (local development).
+	TLSMode string
+	// ACMEEmail is the ACME account contact; ACMEDirectory overrides the
+	// ACME endpoint (staging, or an internal CA speaking ACME).
+	ACMEEmail     string
+	ACMEDirectory string
+	// TLSSecret names the kubernetes.io/tls Secret of "static" mode.
+	TLSSecret string
+	// SystemNamespace is where the gateway keeps its certificates (the
+	// issued-certs cache, the ACME account, the built-in CA).
+	SystemNamespace string
+	// ServerHost is the console's hostname — always entitled to a
+	// certificate, whatever the routing table says.
+	ServerHost string
 
 	OIDCIssuer       string
 	OIDCClientID     string
@@ -60,12 +92,29 @@ type Config struct {
 
 func FromEnv() (*Config, error) {
 	c := &Config{
+		Runtime:          envOr("DONKEY_RUNTIME", "kubernetes"),
+		StateDir:         envOr("DONKEY_STATE_DIR", "/var/lib/donkey"),
 		Listen:           envOr("DONKEY_LISTEN", ":8090"),
+		TLSListen:        envOr("DONKEY_TLS_LISTEN", ":8443"),
 		HealthListen:     envOr("DONKEY_HEALTH_LISTEN", ":8091"),
+		TLSMode:          os.Getenv("DONKEY_TLS_MODE"),
+		ACMEEmail:        os.Getenv("DONKEY_ACME_EMAIL"),
+		ACMEDirectory:    os.Getenv("DONKEY_ACME_DIRECTORY"),
+		TLSSecret:        envOr("DONKEY_TLS_SECRET", manifests.GatewayStaticTLSSecret),
+		SystemNamespace:  envOr("DONKEY_SYSTEM_NAMESPACE", manifests.SystemNamespace),
+		ServerHost:       os.Getenv("DONKEY_SERVER_HOST"),
 		OIDCIssuer:       os.Getenv("DONKEY_OIDC_ISSUER"),
 		OIDCClientID:     os.Getenv("DONKEY_OIDC_CLIENT_ID"),
 		OIDCClientSecret: os.Getenv("DONKEY_OIDC_CLIENT_SECRET"),
 		Domain:           os.Getenv("DONKEY_DOMAIN"),
+	}
+	switch c.TLSMode {
+	case "", "off", "acme", "ca", "static":
+	default:
+		return nil, fmt.Errorf("DONKEY_TLS_MODE must be acme, ca, static or off, not %q", c.TLSMode)
+	}
+	if c.TLSMode == "off" {
+		c.TLSMode = ""
 	}
 	// No issuer is a legal installation: the gateway still routes every
 	// app, it just has no login to offer — and it fails closed if a route
@@ -102,7 +151,7 @@ func envOr(key, def string) string {
 }
 
 // route is one hostname (or one path prefix of a hostname) this gateway
-// serves, read from the HTTPRoutes donkey rendered.
+// serves, read from the route ConfigMaps donkey rendered.
 type route struct {
 	Host string
 	// Path is the route's prefix; "/" for an app's own address.
@@ -113,29 +162,93 @@ type route struct {
 	Access *config.AccessConfig
 }
 
+// routeSource is where the routing table comes from — the one seam between
+// the gateway and the runtime it serves on.
+type routeSource interface {
+	list(ctx context.Context) ([]route, error)
+}
+
 type Server struct {
-	cfg  *Config
-	k8s  *k8s.Client
-	auth *authenticator
+	cfg    *Config
+	k8s    *k8s.Client // set in kubernetes mode only (routes, cert storage)
+	source routeSource
+	auth   *authenticator
 
 	mu     sync.RWMutex
 	routes map[string][]route // host -> routes, most specific path first
-	// lastRefresh rate-limits the on-miss refresh: a fresh deploy's hostname
-	// must work immediately, an unknown-host scan must not hammer the API.
-	lastRefresh time.Time
+	// lastAttempt rate-limits the on-miss refresh: a fresh deploy's hostname
+	// must work immediately, an unknown-host scan (or a down API server)
+	// must not turn every request into a List.
+	lastAttempt time.Time
+	// refresh collapses concurrent on-miss refreshes into one List — an
+	// unknown-host burst must not fan out to the API server.
+	refresh singleflight.Group
+
+	// warmed remembers which hostnames this process already asked a
+	// certificate for, so route syncs don't re-kick issuance forever.
+	warmed sync.Map
+	// warm pre-issues a certificate for a hostname (set in acme mode).
+	warm func(host string)
 }
 
 func New(cfg *Config) (*Server, error) {
-	client, err := k8s.NewInCluster()
+	s := &Server{
+		cfg:    cfg,
+		auth:   newAuthenticator(cfg),
+		routes: map[string][]route{},
+	}
+	switch cfg.Runtime {
+	case "docker":
+		s.source = fileRoutes{dir: cfg.StateDir}
+	default:
+		client, err := k8s.NewInCluster()
+		if err != nil {
+			return nil, err
+		}
+		s.k8s = client
+		s.source = k8sRoutes{client: client}
+	}
+	return s, nil
+}
+
+// k8sRoutes reads the route ConfigMaps donkey rendered, cluster-wide.
+type k8sRoutes struct{ client *k8s.Client }
+
+func (k k8sRoutes) list(ctx context.Context) ([]route, error) {
+	cms, err := k.client.ListManagedRoutes(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return &Server{
-		cfg:    cfg,
-		k8s:    client,
-		auth:   newAuthenticator(cfg),
-		routes: map[string][]route{},
-	}, nil
+	var out []route
+	for _, cm := range cms {
+		if r, ok := routeFromConfigMap(cm); ok {
+			out = append(out, r)
+		}
+	}
+	return out, nil
+}
+
+// fileRoutes reads the docker provider's routes folder.
+type fileRoutes struct{ dir string }
+
+func (f fileRoutes) list(ctx context.Context) ([]route, error) {
+	records, err := docker.ReadRoutes(f.dir)
+	if err != nil {
+		return nil, err
+	}
+	var out []route
+	for _, rec := range records {
+		target, err := url.Parse(rec.Backend)
+		if err != nil || target.Scheme != "http" || target.Host == "" || rec.Host == "" {
+			continue
+		}
+		r := route{Host: rec.Host, Path: rec.Path, Backend: target, Login: rec.Login, Access: rec.Access}
+		if r.Path == "" {
+			r.Path = "/"
+		}
+		out = append(out, r)
+	}
+	return out, nil
 }
 
 // routePollInterval is how often the routing table is re-read. Routes change
@@ -144,6 +257,17 @@ func New(cfg *Config) (*Server, error) {
 const routePollInterval = 10 * time.Second
 
 func (s *Server) Run(ctx context.Context) error {
+	// TLS first: edgeTLS installs s.warm, and route syncs read it — setting
+	// it up before the first sync (and the poller goroutine) means the
+	// initial routes get their certificates pre-issued too, without a race.
+	var tlsCfg *tls.Config
+	var httpHandler http.Handler
+	if s.cfg.TLSMode != "" {
+		var err error
+		if tlsCfg, httpHandler, err = s.edgeTLS(ctx); err != nil {
+			return err
+		}
+	}
 	if err := s.refreshRoutes(ctx); err != nil {
 		// Not fatal: the API server may still be warming up; requests miss
 		// and retry, and the poller keeps trying.
@@ -158,22 +282,58 @@ func (s *Server) Run(ctx context.Context) error {
 		}
 	}()
 
-	srv := &http.Server{
-		Addr:    s.cfg.Listen,
-		Handler: s.handler(),
-		// App responses stream (SSE, downloads) — no write timeout. Headers
-		// must still arrive promptly.
-		ReadHeaderTimeout: 10 * time.Second,
-	}
-	errs := make(chan error, 1)
-	go func() {
-		log.Printf("donkey-gateway listening on %s (issuer %s)", s.cfg.Listen, s.cfg.OIDCIssuer)
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			errs <- err
-			return
+	errs := make(chan error, 2)
+	servers := []*http.Server{}
+	if s.cfg.TLSMode == "" {
+		// No TLS: one plain listener — local development, or an edge in
+		// front that terminates for us.
+		srv := &http.Server{
+			Addr:    s.cfg.Listen,
+			Handler: s.handler(),
+			// App responses stream (SSE, downloads) — no write timeout.
+			// Headers must still arrive promptly.
+			ReadHeaderTimeout: 10 * time.Second,
 		}
-		errs <- nil
-	}()
+		servers = append(servers, srv)
+		go func() {
+			log.Printf("donkey-gateway listening on %s (no TLS; issuer %s)", s.cfg.Listen, s.cfg.OIDCIssuer)
+			if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				errs <- err
+				return
+			}
+			errs <- nil
+		}()
+	} else {
+		httpsSrv := &http.Server{
+			Addr:              s.cfg.TLSListen,
+			Handler:           s.handler(),
+			TLSConfig:         tlsCfg,
+			ReadHeaderTimeout: 10 * time.Second,
+		}
+		// The plain listener redirects to https — and in acme mode it also
+		// answers the HTTP-01 challenges (edgeTLS wrapped that in).
+		httpSrv := &http.Server{
+			Addr:              s.cfg.Listen,
+			Handler:           httpHandler,
+			ReadHeaderTimeout: 10 * time.Second,
+		}
+		servers = append(servers, httpsSrv, httpSrv)
+		go func() {
+			log.Printf("donkey-gateway serving https on %s (tls %s; issuer %s)", s.cfg.TLSListen, s.cfg.TLSMode, s.cfg.OIDCIssuer)
+			if err := httpsSrv.ListenAndServeTLS("", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				errs <- err
+				return
+			}
+			errs <- nil
+		}()
+		go func() {
+			if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				errs <- err
+				return
+			}
+			errs <- nil
+		}()
+	}
 	select {
 	case err := <-errs:
 		return err
@@ -182,7 +342,13 @@ func (s *Server) Run(ctx context.Context) error {
 	shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	defer cancel()
 	_ = health.Shutdown(shutdownCtx)
-	return srv.Shutdown(shutdownCtx)
+	var err error
+	for _, srv := range servers {
+		if serr := srv.Shutdown(shutdownCtx); serr != nil {
+			err = serr
+		}
+	}
+	return err
 }
 
 func healthMux() *http.ServeMux {
@@ -209,36 +375,48 @@ func (s *Server) pollRoutes(ctx context.Context) {
 	}
 }
 
-// refreshRoutes rebuilds the host table from the HTTPRoutes donkey manages.
-// Only routes carrying the backend annotation are this gateway's to serve —
-// that annotation is how the renderer says "this route points at me".
+// refreshRoutes rebuilds the host table from the route source. Only entries
+// carrying a backend are this gateway's to serve — that is how the renderer
+// says "this route points at me".
 func (s *Server) refreshRoutes(ctx context.Context) error {
-	list, err := s.k8s.ListManagedRoutes(ctx)
-	if err != nil {
-		return err
-	}
-	table := map[string][]route{}
-	for _, obj := range list {
-		r, ok := routeFromObject(obj)
-		if !ok {
-			continue
+	_, err, _ := s.refresh.Do("routes", func() (any, error) {
+		s.mu.Lock()
+		s.lastAttempt = time.Now()
+		s.mu.Unlock()
+		list, err := s.source.list(ctx)
+		if err != nil {
+			return nil, err
 		}
-		table[r.Host] = append(table[r.Host], r)
-	}
-	for host := range table {
-		sort.Slice(table[host], func(i, j int) bool {
-			return len(table[host][i].Path) > len(table[host][j].Path)
-		})
-	}
-	s.mu.Lock()
-	s.routes = table
-	s.lastRefresh = time.Now()
-	s.mu.Unlock()
-	return nil
+		table := map[string][]route{}
+		for _, r := range list {
+			table[r.Host] = append(table[r.Host], r)
+		}
+		for host := range table {
+			sort.Slice(table[host], func(i, j int) bool {
+				return len(table[host][i].Path) > len(table[host][j].Path)
+			})
+		}
+		s.mu.Lock()
+		s.routes = table
+		s.mu.Unlock()
+		// A hostname that just appeared gets its certificate now, not on
+		// its first visit — the deploy's announcement should be
+		// immediately true.
+		if s.warm != nil {
+			for host := range table {
+				if _, seen := s.warmed.LoadOrStore(host, true); !seen {
+					go s.warm(host)
+				}
+			}
+		}
+		return nil, nil
+	})
+	return err
 }
 
-func routeFromObject(obj unstructured.Unstructured) (route, bool) {
-	backend := obj.GetAnnotations()[manifests.AnnotationBackend]
+func routeFromConfigMap(cm corev1.ConfigMap) (route, bool) {
+	ann := cm.Annotations
+	backend := ann[manifests.AnnotationBackend]
 	if backend == "" {
 		return route{}, false
 	}
@@ -248,28 +426,19 @@ func routeFromObject(obj unstructured.Unstructured) (route, bool) {
 	if err != nil || target.Scheme != "http" || target.Host == "" {
 		return route{}, false
 	}
-	hosts, _, _ := unstructured.NestedStringSlice(obj.Object, "spec", "hostnames")
-	if len(hosts) == 0 {
+	if ann[manifests.AnnotationHost] == "" {
 		return route{}, false
 	}
 	r := route{
-		Host:    hosts[0],
+		Host:    ann[manifests.AnnotationHost],
 		Path:    "/",
 		Backend: target,
-		Login:   obj.GetAnnotations()[manifests.AnnotationLogin] == manifests.LoginRequired,
+		Login:   ann[manifests.AnnotationLogin] == manifests.LoginRequired,
 	}
-	if rules, _, _ := unstructured.NestedSlice(obj.Object, "spec", "rules"); len(rules) > 0 {
-		if rule, ok := rules[0].(map[string]any); ok {
-			if matches, _, _ := unstructured.NestedSlice(rule, "matches"); len(matches) > 0 {
-				if m, ok := matches[0].(map[string]any); ok {
-					if v, _, _ := unstructured.NestedString(m, "path", "value"); v != "" {
-						r.Path = v
-					}
-				}
-			}
-		}
+	if p := ann[manifests.AnnotationPath]; p != "" {
+		r.Path = p
 	}
-	if raw := obj.GetAnnotations()[manifests.AnnotationAccess]; raw != "" {
+	if raw := ann[manifests.AnnotationAccess]; raw != "" {
 		var access config.AccessConfig
 		if err := json.Unmarshal([]byte(raw), &access); err == nil {
 			r.Access = &access
@@ -285,7 +454,7 @@ func (s *Server) lookup(ctx context.Context, host, path string) (route, bool) {
 		return r, true
 	}
 	s.mu.RLock()
-	stale := time.Since(s.lastRefresh) > 2*time.Second
+	stale := time.Since(s.lastAttempt) > 2*time.Second
 	s.mu.RUnlock()
 	if stale {
 		if err := s.refreshRoutes(ctx); err == nil {
@@ -306,10 +475,13 @@ func (s *Server) tableLookup(host, path string) (route, bool) {
 	return route{}, false
 }
 
-// requestHost is the hostname the browser is on, without any port.
+// requestHost is the hostname the browser is on, without any port —
+// normalized the way the route table is keyed (and allowHost checks), so an
+// uppercase or trailing-dot spelling doesn't handshake fine and then 404.
 func requestHost(r *http.Request) string {
-	if h, _, err := net.SplitHostPort(r.Host); err == nil {
-		return h
+	h := r.Host
+	if host, _, err := net.SplitHostPort(h); err == nil {
+		h = host
 	}
-	return r.Host
+	return strings.ToLower(strings.TrimSuffix(h, "."))
 }

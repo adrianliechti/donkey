@@ -13,12 +13,12 @@ import (
 
 	"github.com/adrianliechti/donkey/internal/ai"
 	"github.com/adrianliechti/donkey/internal/identity"
-	"github.com/adrianliechti/donkey/internal/k8s"
+	"github.com/adrianliechti/donkey/pkg/runtime"
 )
 
 type Server struct {
 	cfg       *Config
-	k8s       *k8s.Client
+	rt        runtime.Provider
 	assistant ai.Assistant
 
 	// deploying counts the deploys currently in flight, so a terminating pod
@@ -33,23 +33,19 @@ type Server struct {
 	appLocks sync.Map
 }
 
-func New(cfg *Config) (*Server, error) {
-	client, err := k8s.NewInCluster()
-	if err != nil {
-		return nil, err
-	}
+func New(cfg *Config, rt runtime.Provider) (*Server, error) {
 	// donkey reads every app with its assistant, so a control plane without
 	// one is misconfigured — better to say so at startup than to half-work.
 	assistant, err := ai.New(cfg.AIModel)
 	if err != nil {
 		return nil, err
 	}
-	return &Server{cfg: cfg, k8s: client, assistant: assistant}, nil
+	return &Server{cfg: cfg, rt: rt, assistant: assistant}, nil
 }
 
 // lockApp serializes work on one app. The returned function releases it.
-func (s *Server) lockApp(ns, app string) func() {
-	value, _ := s.appLocks.LoadOrStore(ns+"/"+app, &sync.Mutex{})
+func (s *Server) lockApp(space, app string) func() {
+	value, _ := s.appLocks.LoadOrStore(space+"/"+app, &sync.Mutex{})
 	mu := value.(*sync.Mutex)
 	mu.Lock()
 	return mu.Unlock

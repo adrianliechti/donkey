@@ -17,15 +17,13 @@ import (
 	"time"
 
 	"github.com/aymanbagabas/go-udiff"
-	"k8s.io/apimachinery/pkg/runtime"
 
 	"github.com/adrianliechti/donkey/internal/addons"
 	"github.com/adrianliechti/donkey/internal/ai"
 	"github.com/adrianliechti/donkey/internal/build"
 	"github.com/adrianliechti/donkey/internal/config"
 	"github.com/adrianliechti/donkey/internal/detect"
-	"github.com/adrianliechti/donkey/internal/k8s"
-	"github.com/adrianliechti/donkey/internal/k8s/manifests"
+	"github.com/adrianliechti/donkey/pkg/runtime"
 )
 
 // DeployResult is the final JSON line of a deploy stream.
@@ -171,11 +169,6 @@ func appFromParams(name, portStr string) (*config.AppConfig, error) {
 	return app, nil
 }
 
-// preDeployTimeout bounds a pre-deploy step. Migrations on a large table are
-// slow but not endless, and a step that hangs would otherwise hold the deploy
-// open indefinitely.
-const preDeployTimeout = 15 * time.Minute
-
 // analysisDeadline bounds how long a deploy waits for the assistant after the
 // build has finished. It must outlast the assistant's own budget (a 2-minute
 // request timeout with one retry) — a shorter deadline would fail deploys
@@ -211,22 +204,21 @@ func (s *Server) deploy(ctx context.Context, out *lineStreamer, dir string, app 
 		return DeployResult{App: app.Name, Space: space, Error: err.Error()}
 	}
 
-	ns, err := s.cfg.SpaceNamespace(space)
-	if err != nil {
+	if err := s.rt.ValidateSpace(space); err != nil {
 		return fail(err)
 	}
-	if err := s.k8s.CheckNamespaceFree(ctx, ns); err != nil {
+	if err := s.rt.CheckSpaceFree(ctx, space); err != nil {
 		return fail(err)
 	}
 
 	// One deploy per app at a time: concurrent deploys would interleave their
 	// applies and race their rollout waits, leaving the live image undefined.
-	unlock := s.lockApp(ns, app.Name)
+	unlock := s.lockApp(space, app.Name)
 	defer unlock()
 
 	// Network choices made in the console hold as long as donkey.yaml
 	// doesn't say otherwise — an explicit setting there always wins.
-	for _, line := range s.adoptConsoleChoices(ctx, ns, app) {
+	for _, line := range s.adoptConsoleChoices(ctx, space, app) {
 		out.Line("· %s", line)
 	}
 
@@ -235,7 +227,7 @@ func (s *Server) deploy(ctx context.Context, out *lineStreamer, dir string, app 
 	}
 	// Services take plain names too ("postgres" is reachable like an app);
 	// an app cannot move in over one.
-	if data, err := s.k8s.GetSecretData(ctx, ns, addons.SecretName(addons.SharedOwner, app.Name)); err == nil && len(data) > 0 {
+	if data, err := s.rt.ServiceBinding(ctx, space, addons.SharedOwner, app.Name); err == nil && len(data) > 0 {
 		return fail(fmt.Errorf("a service named %q already runs in this space — the app needs another name", app.Name))
 	}
 	// An unknown addon type has to stop the deploy here, not after minutes
@@ -264,13 +256,13 @@ func (s *Server) deploy(ctx context.Context, out *lineStreamer, dir string, app 
 		}
 		// No build means no analysis — keep what the last deploy decided
 		// (storage, health route) instead of silently rendering without it.
-		for _, line := range s.adoptStoredDecisions(ctx, ns, app) {
+		for _, line := range s.adoptStoredDecisions(ctx, space, app) {
 			out.Line("· %s", line)
 		}
 		if opts.DryRun {
 			return s.renderDryRun(app, opts.Tag)
 		}
-		return s.applyAndWait(ctx, out, app, dir, ns, opts.Tag, opts.NoWait)
+		return s.applyAndWait(ctx, out, app, dir, opts.Tag, opts.NoWait)
 	}
 
 	out.Line("Looking at your app…")
@@ -378,7 +370,7 @@ func (s *Server) deploy(ctx context.Context, out *lineStreamer, dir string, app 
 	if err != nil {
 		res := DeployResult{App: app.Name, Space: space, Error: err.Error()}
 		if logs, rerr := os.ReadFile(logFile.Name()); rerr == nil {
-			s.diagnoseWith(ctx, &res, dir, ns, app.Name, "build", tailBytes(logs, 15*1024), nil)
+			s.diagnoseWith(ctx, &res, dir, space, app.Name, "build", tailBytes(logs, 15*1024), nil)
 		}
 		return res
 	}
@@ -395,23 +387,15 @@ func (s *Server) deploy(ctx context.Context, out *lineStreamer, dir string, app 
 		res.ImageRef = result.ImageRef
 		return res
 	}
-	return s.applyAndWait(ctx, out, app, dir, ns, result.ImageRef, opts.NoWait)
+	return s.applyAndWait(ctx, out, app, dir, result.ImageRef, opts.NoWait)
 }
 
-// renderDryRun renders the app's objects without touching the cluster.
+// renderDryRun renders the app's objects without touching the runtime.
 func (s *Server) renderDryRun(app *config.AppConfig, imageRef string) DeployResult {
 	res := DeployResult{App: app.Name, Space: app.Space, ImageRef: imageRef}
-	in, err := s.manifestInput(app, imageRef, false)
-	if err != nil {
-		res.Error = err.Error()
-		return res
-	}
-	objs, err := manifests.AppObjects(in)
-	if err != nil {
-		res.Error = err.Error()
-		return res
-	}
-	rendered, err := manifests.Render(objs)
+	rendered, err := s.rt.Render(runtime.DeploySpec{
+		App: app, Space: app.Space, ImageRef: imageRef, Decisions: decisionsJSON(app),
+	})
 	if err != nil {
 		res.Error = err.Error()
 		return res
@@ -443,9 +427,9 @@ type consoleChoices struct {
 	Access   *config.AccessConfig `json:"access,omitempty"`
 }
 
-func (s *Server) readConsoleChoices(ctx context.Context, ns, app string) consoleChoices {
+func (s *Server) readConsoleChoices(ctx context.Context, space, app string) consoleChoices {
 	var c consoleChoices
-	raw, err := s.k8s.DeploymentAnnotation(ctx, ns, app, manifests.AnnotationConsole)
+	raw, err := s.rt.AppMeta(ctx, space, app, runtime.MetaConsole)
 	if err == nil && raw != "" {
 		_ = json.Unmarshal([]byte(raw), &c)
 	}
@@ -458,8 +442,8 @@ func (s *Server) readConsoleChoices(ctx context.Context, ns, app string) console
 // "speaks" means: sets public/internal/domain/access to something). Runs on
 // every deploy; adoption that would make the config invalid is dropped
 // again, and only the adopted values, never the user's own.
-func (s *Server) adoptConsoleChoices(ctx context.Context, ns string, app *config.AppConfig) []string {
-	c := s.readConsoleChoices(ctx, ns, app.Name)
+func (s *Server) adoptConsoleChoices(ctx context.Context, space string, app *config.AppConfig) []string {
+	c := s.readConsoleChoices(ctx, space, app.Name)
 	var lines []string
 	adoptedExposure, adoptedDomain, adoptedAccess := false, false, false
 	if !app.Public && !app.Internal {
@@ -503,8 +487,8 @@ func (s *Server) adoptConsoleChoices(ctx context.Context, ns string, app *config
 // Adoption never makes the config invalid — an adopted value that no longer
 // fits (say, replicas went up since the disk was found) is dropped again,
 // and only the adopted values, never the user's own.
-func (s *Server) adoptStoredDecisions(ctx context.Context, ns string, app *config.AppConfig) []string {
-	raw, err := s.k8s.DeploymentAnnotation(ctx, ns, app.Name, manifests.AnnotationDecisions)
+func (s *Server) adoptStoredDecisions(ctx context.Context, space string, app *config.AppConfig) []string {
+	raw, err := s.rt.AppMeta(ctx, space, app.Name, runtime.MetaDecisions)
 	if err != nil || raw == "" {
 		return nil
 	}
@@ -538,265 +522,39 @@ func (s *Server) adoptStoredDecisions(ctx context.Context, ns string, app *confi
 	return lines
 }
 
-// applyAndWait applies the app's manifests with the given image and waits
-// for the rollout (unless noWait). The space is settled and validated by the
-// caller; ns is its namespace.
-func (s *Server) applyAndWait(ctx context.Context, out *lineStreamer, app *config.AppConfig, root, ns, imageRef string, noWait bool) DeployResult {
+// applyAndWait hands the built image to the runtime provider, which owns the
+// whole go-live choreography (storage, declared services, routes, waiting),
+// and turns its typed failures into the deploy's result — with the AI
+// diagnosis attached where there is real evidence.
+func (s *Server) applyAndWait(ctx context.Context, out *lineStreamer, app *config.AppConfig, root, imageRef string, noWait bool) DeployResult {
 	space := app.Space
-	failed := func(err error) DeployResult {
-		return DeployResult{App: app.Name, Space: space, ImageRef: imageRef, Error: err.Error()}
-	}
-
-	out.Line("Setting up on the cluster…")
-	// A file-browser helper holds the app's disk, and an RWO volume attaches
-	// to one node at a time — leaving it running would strand the new pod on
-	// another node with a multi-attach error until the rollout times out.
-	if app.HasStorage() {
-		if err := s.k8s.RemoveFilesHelper(ctx, ns, app.Name); err != nil {
-			return failed(err)
-		}
-	}
-	if !app.HasStorage() && s.k8s.HasDataClaim(ctx, ns, app.Name) {
-		out.Line("· A disk from an earlier setup still exists (with its data). This deploy doesn't mount it — add its paths back under `storage:` in donkey.yaml to use it, or `donkey destroy` removes it.")
-	}
-	if app.HasStorage() {
-		out.Line("· One disk (%s) for %s", app.Storage.Size, strings.Join(app.Storage.Paths, ", "))
-		// An app that just gained a disk has to leave rolling updates behind.
-		if err := s.k8s.SwitchToRecreate(ctx, ns, app.Name); err != nil {
-			return failed(fmt.Errorf("couldn't switch %s to single-copy rollouts: %w", app.Name, err))
-		}
-	}
-	// donkey.yaml is declarative about addons too: services belong to the
-	// space, and an entry here means "this app uses that service" — created
-	// on the spot when the space doesn't have it yet, before the app (and
-	// its pre-deploy step) needs the binding. An existing service is left
-	// alone: a second app naming it simply joins it.
-	for _, a := range app.Addons {
-		shared, err := s.k8s.GetSecretData(ctx, ns, addons.SecretName(addons.SharedOwner, a.Name))
-		if err != nil {
-			return failed(err)
-		}
-		if len(shared) == 0 {
-			if a.External {
-				return failed(fmt.Errorf("addon %s runs elsewhere and its address isn't stored in donkey.yaml — connect it once with `donkey addon attach %s --url …`", a.Name, a.Type))
-			}
-			out.Line("Setting up %s (%s) for the space — the first time can take a minute…", a.Name, a.Type)
-			if shared, _, _, err = s.createSpaceService(ctx, space, ns, AddonRequest{Type: a.Type, Name: a.Name, Version: a.Version, Storage: a.Storage}); err != nil {
-				return failed(err)
-			}
-			out.Line("✓ %s is ready.", a.Name)
-		}
-		// The attachment copy is re-applied every deploy, so it stays current
-		// with the space's service.
-		if err := s.k8s.Apply(ctx, []runtime.Object{addons.AttachmentSecret(space, app.Name, ns, a.Name, shared)}); err != nil {
-			return failed(err)
-		}
-	}
-	in, err := s.manifestInput(app, imageRef, true)
+	err := s.rt.Deploy(ctx, runtime.DeploySpec{
+		App:       app,
+		Space:     space,
+		ImageRef:  imageRef,
+		Decisions: decisionsJSON(app),
+		NoWait:    noWait,
+	}, out)
 	if err != nil {
-		return failed(err)
-	}
-	// Addons added in the console aren't in this donkey.yaml; the cluster
-	// knows them by their binding secrets, and they keep working across
-	// deploys instead of silently losing their env.
-	if bindings, err := s.k8s.ListAddonBindings(ctx, ns, app.Name); err == nil {
-		known := map[string]bool{}
-		for _, n := range in.AddonSecretNames {
-			known[n] = true
-		}
-		for _, b := range bindings {
-			if n := addons.SecretName(app.Name, b.Name); !known[n] {
-				in.AddonSecretNames = append(in.AddonSecretNames, n)
-				out.Line("· Keeping %s, attached in the console", b.Name)
-			}
-		}
-	}
-	objs, err := manifests.AppObjects(in)
-	if err != nil {
-		return failed(err)
-	}
-	// The Deployment is applied last. Everything it needs — secrets, the
-	// disk, addon bindings — goes first, so a pre-deploy step runs with the
-	// new configuration while the old version is still the one serving.
-	var deployment []runtime.Object
-	rest := objs[:0]
-	for _, o := range objs {
-		if o.GetObjectKind().GroupVersionKind().Kind == "Deployment" {
-			deployment = append(deployment, o)
-			continue
-		}
-		rest = append(rest, o)
-	}
-	if err := s.k8s.Apply(ctx, rest); err != nil {
-		return failed(fmt.Errorf("the cluster refused the changes: %v", err))
-	}
-	if len(app.PreDeploy) > 0 {
-		out.Line("Running the pre-deploy step…")
-		if err := s.k8s.RunJob(ctx, manifests.PreDeployJob(in), preDeployTimeout); err != nil {
-			// The Deployment was deliberately not touched, so whatever is
-			// live stays live — that is the point of running this first.
-			r := failed(fmt.Errorf("the pre-deploy step failed, so nothing was changed and the running version keeps serving: %w", err))
-			var je *k8s.JobError
-			if errors.As(err, &je) && je.Logs != "" {
-				out.Line("Output of the pre-deploy step:\n%s", je.Logs)
-				s.diagnoseWith(ctx, &r, root, ns, app.Name, "predeploy", je.Logs, nil)
-			}
-			return r
-		}
-		out.Line("✓ Pre-deploy step finished.")
-	}
-	if err := s.k8s.Apply(ctx, deployment); err != nil {
-		return failed(fmt.Errorf("the cluster refused the changes: %v", err))
-	}
-	// A `routes:` entry that was dropped from donkey.yaml has to stop
-	// serving; server-side apply only ever adds.
-	if err := s.retractRemovedRoutes(ctx, ns, in); err != nil {
-		return failed(err)
-	}
-	for _, r := range in.RouteTargets {
-		out.Line("· Also answering https://%s%s", r.Host, r.Path)
-	}
-	// Login lived in Envoy SecurityPolicies before the donkey-gateway; the
-	// leftovers must go regardless of exposure, or Envoy keeps enforcing a
-	// config donkey no longer writes.
-	if err := s.retractLegacyLogin(ctx, ns, app.Name); err != nil {
-		return failed(err)
-	}
-	// Server-side apply never deletes what the new set leaves out, so every
-	// way an app can stop being exposed has to retract the objects itself.
-	if in.Domain == "" {
-		// Internal: no hostname, so the route and its certificate go —
-		// including when the app used to have them.
-		if err := s.k8s.DeleteObject(ctx, "HTTPRoute", ns, app.Name); err != nil {
-			return failed(err)
-		}
-		if err := s.detachCertificate(ctx, space, app.Name); err != nil {
-			return failed(err)
-		}
-		// The donkey-gateway grant stays only while path routes still use it.
-		if len(in.RouteTargets) == 0 {
-			if err := s.k8s.DeleteObject(ctx, "ReferenceGrant", manifests.SystemNamespace, manifests.GatewayGrantName(space, app.Name)); err != nil {
-				return failed(err)
-			}
-		}
-		out.Line("· Internal only — the apps of this space reach it at http://%s", app.Name)
-	} else {
-		// The app's certificate joins the shared gateway's https listener;
-		// Envoy serves the right one per hostname.
-		if err := s.attachCertificate(ctx, space, app.Name); err != nil {
-			return failed(err)
-		}
-		if note := s.waitForCertificate(ctx, space, app.Name, in.Domain); note != "" {
-			out.Line("· %s", note)
-		}
-		// All traffic rides through donkey-gateway, so the route serves only
-		// once the Gateway resolved that cross-namespace reference. For a
-		// protected app this is also the privacy check — the route points
-		// into the login, or it doesn't serve at all.
-		if err := s.waitForRouteReady(ctx, ns, app.Name); err != nil {
-			return failed(err)
-		}
-		if !app.Public && s.cfg.OIDCIssuer != "" {
-			out.Line("· Login protection is in force.")
-		}
-	}
-	if noWait {
-		return DeployResult{OK: true, App: app.Name, Space: space, ImageRef: imageRef, URL: s.cfg.AppURL(space, app)}
-	}
-
-	out.Line("Waiting for the app to become healthy…")
-	if err := s.k8s.WaitForRollout(ctx, ns, app.Name); err != nil {
 		res := DeployResult{App: app.Name, Space: space, ImageRef: imageRef, Error: err.Error()}
-		var re *k8s.RolloutError
+		var je *runtime.JobError
+		if errors.As(err, &je) && je.Logs != "" {
+			out.Line("Output of the pre-deploy step:\n%s", je.Logs)
+			s.diagnoseWith(ctx, &res, root, space, app.Name, "predeploy", je.Logs, nil)
+		}
+		var re *runtime.RolloutError
 		if errors.As(err, &re) {
-			for _, p := range re.Evidence.PodSummaries {
+			for _, p := range re.Evidence.Summaries {
 				out.Line("  %s", p)
 			}
-			if re.Evidence.PodLogs != "" {
-				out.Line("Last lines from the app:\n%s", re.Evidence.PodLogs)
+			if re.Evidence.Logs != "" {
+				out.Line("Last lines from the app:\n%s", re.Evidence.Logs)
 			}
-			s.diagnoseWith(ctx, &res, root, ns, app.Name, "rollout", re.Evidence.PodLogs, re.Evidence.Events)
+			s.diagnoseWith(ctx, &res, root, space, app.Name, "rollout", re.Evidence.Logs, re.Evidence.Events)
 		}
 		return res
 	}
 	return DeployResult{OK: true, App: app.Name, Space: space, ImageRef: imageRef, URL: s.cfg.AppURL(space, app)}
-}
-
-func (s *Server) manifestInput(app *config.AppConfig, imageRef string, includeCreds bool) (manifests.Input, error) {
-	space := app.Space
-	in := manifests.Input{
-		App:          app,
-		Space:        space,
-		Namespace:    s.cfg.Namespace(space),
-		ImageRef:     imageRef,
-		Decisions:    decisionsJSON(app),
-		RegistryHost: s.cfg.Registry.Host(),
-		Domain:       s.cfg.AppHost(space, app),
-		TLS: manifests.TLSConfig{
-			Issuer: s.cfg.TLSIssuer,
-			Kind:   s.cfg.TLSIssuerKind,
-		},
-		GatewayName:      s.cfg.GatewayName,
-		GatewayNamespace: s.cfg.GatewayNamespace,
-	}
-	// The donkey gateway is every route's real backend; whether it can also
-	// offer a login depends on the installation having an IdP.
-	in.Gateway = &manifests.GatewayRef{
-		Service:   manifests.GatewayAppName,
-		Namespace: manifests.SystemNamespace,
-		Auth:      s.cfg.OIDCIssuer != "",
-	}
-	// Credentials only when the objects are going to the cluster. A dry run
-	// prints its YAML to the user's terminal (and into CI logs), so the
-	// registry password must not be in it.
-	if includeCreds {
-		password, err := s.cfg.Registry.Password()
-		if err != nil {
-			return in, err
-		}
-		in.RegistryUsername = s.cfg.Registry.Username
-		in.RegistryPassword = password
-	}
-	for _, a := range app.Addons {
-		in.AddonSecretNames = append(in.AddonSecretNames, addons.SecretName(app.Name, a.Name))
-	}
-	// Each route joins another app's address, so its hostname is that app's.
-	// Only the default hostname is resolvable from here — a target with its
-	// own `domain:` would need looking up, which the validation below says.
-	for _, r := range app.Routes {
-		in.RouteTargets = append(in.RouteTargets, manifests.RouteTarget{
-			App:  r.App,
-			Host: r.App + "." + space + "." + s.cfg.Domain,
-			Path: r.Path,
-		})
-	}
-	return in, nil
-}
-
-// retractRemovedRoutes deletes the shared-address routes (and their login
-// policies) an app used to claim and no longer does. Server-side apply never
-// removes what a new set leaves out, so dropping a `routes:` entry would
-// otherwise keep serving it forever.
-func (s *Server) retractRemovedRoutes(ctx context.Context, ns string, in manifests.Input) error {
-	keep := map[string]bool{}
-	for _, r := range in.RouteTargets {
-		keep[manifests.PathRouteName(in.App.Name, r.App, r.Path)] = true
-	}
-	names, err := s.k8s.ListRouteNames(ctx, ns, in.App.Name)
-	if err != nil {
-		return err
-	}
-	for _, name := range names {
-		if keep[name] {
-			continue
-		}
-		for _, kind := range []string{"SecurityPolicy", "HTTPRoute"} {
-			if err := s.k8s.DeleteObject(ctx, kind, ns, name); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
 }
 
 // decisionsJSON records what this deploy settled on (storage, health route)
@@ -821,7 +579,7 @@ func decisionsJSON(app *config.AppConfig) string {
 // root is the uploaded copy of the app, which the assistant reads to ground
 // its answer in the actual code. It is a temp dir the server owns, never the
 // user's working tree.
-func (s *Server) diagnoseWith(ctx context.Context, res *DeployResult, root, ns, app, stage, logs string, events []string) {
+func (s *Server) diagnoseWith(ctx context.Context, res *DeployResult, root, space, app, stage, logs string, events []string) {
 	dctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 	proposal, aerr := s.assistant.DiagnoseFailure(dctx, &ai.FailureContext{
@@ -829,7 +587,7 @@ func (s *Server) diagnoseWith(ctx context.Context, res *DeployResult, root, ns, 
 		Logs:         logs,
 		Events:       events,
 		Root:         root,
-		KnownSecrets: s.knownSecrets(ctx, ns, app),
+		KnownSecrets: s.knownSecrets(ctx, space, app),
 	})
 	if aerr != nil || proposal == nil {
 		return
@@ -893,19 +651,19 @@ func withDiffs(dir string, actions []ai.FixAction) []ai.FixAction {
 // connection string it tried — so the assistant gets them scrubbed out.
 // Best effort: a secret donkey cannot read is one it cannot redact, but that
 // must never cost the user their diagnosis.
-func (s *Server) knownSecrets(ctx context.Context, ns, app string) []string {
+func (s *Server) knownSecrets(ctx context.Context, space, app string) []string {
 	var out []string
 	add := func(m map[string]string) {
 		for _, v := range m {
 			out = append(out, v)
 		}
 	}
-	if env, err := s.k8s.GetEnv(ctx, ns, app); err == nil {
+	if env, err := s.rt.GetEnv(ctx, space, app); err == nil {
 		add(env)
 	}
-	if bindings, err := s.k8s.ListAddonBindings(ctx, ns, app); err == nil {
+	if bindings, err := s.rt.ListServices(ctx, space, app); err == nil {
 		for _, b := range bindings {
-			if data, err := s.k8s.GetSecretData(ctx, ns, addons.SecretName(app, b.Name)); err == nil {
+			if data, err := s.rt.ServiceBinding(ctx, space, app, b.Name); err == nil {
 				add(data)
 			}
 		}

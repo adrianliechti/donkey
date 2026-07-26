@@ -3,9 +3,6 @@ package addons
 import (
 	"strings"
 	"testing"
-
-	appsv1 "k8s.io/api/apps/v1"
-	corev1 "k8s.io/api/core/v1"
 )
 
 var input = Input{
@@ -29,26 +26,21 @@ func TestRegistryDefaultsProvision(t *testing.T) {
 		if _, ok := binding[a.CredentialKey()]; !ok {
 			t.Fatalf("%s: CredentialKey %s missing from its own binding", a.Type(), a.CredentialKey())
 		}
-		objs, err := a.Objects(in)
+		w, err := a.Workload(in)
 		if err != nil {
 			t.Fatalf("%s: %v", a.Type(), err)
 		}
-		if len(objs) == 0 {
+		if w == nil {
 			continue // a binding-only addon runs nothing in the space
 		}
-		var dep, svc, pvc bool
-		for _, o := range objs {
-			switch o.(type) {
-			case *appsv1.Deployment:
-				dep = true
-			case *corev1.Service:
-				svc = true
-			case *corev1.PersistentVolumeClaim:
-				pvc = true
-			}
+		if w.Image == "" || w.Port == 0 || w.PortName == "" || w.DataPath == "" {
+			t.Fatalf("%s: incomplete workload: %+v", a.Type(), w)
 		}
-		if !dep || !svc || !pvc {
-			t.Fatalf("%s: expected Deployment+Service+PVC, got dep=%v svc=%v pvc=%v", a.Type(), dep, svc, pvc)
+		if w.RunAsUser == 0 {
+			t.Fatalf("%s: a provisioned service must not run as root", a.Type())
+		}
+		if w.ReadyHTTPPath == "" && len(w.ReadyCommand) == 0 {
+			t.Fatalf("%s: a provisioned service needs a readiness check", a.Type())
 		}
 	}
 }
@@ -131,21 +123,6 @@ func TestPocketbaseExternalBinding(t *testing.T) {
 	}
 }
 
-// An attachment is a marked copy: same name and shape as any binding, plus
-// the shared label that detach and cascade-remove select on.
-func TestAttachmentSecret(t *testing.T) {
-	sec := AttachmentSecret("prod", "shop", "donkey-prod", "db", map[string]string{"DATABASE_URL": "x"})
-	if sec.Name != SecretName("shop", "db") {
-		t.Fatalf("name = %q", sec.Name)
-	}
-	if sec.Labels["donkey.dev/shared"] != "true" {
-		t.Fatalf("attachment must carry the shared label, got %v", sec.Labels)
-	}
-	if plain := BindingSecret("prod", "shop", "donkey-prod", "db", nil); plain.Labels["donkey.dev/shared"] != "" {
-		t.Fatalf("a plain binding must not carry the shared label")
-	}
-}
-
 // The openai addon is the platform standing in for a service: the binding
 // points at donkey-server's proxy and carries a stand-in key, never the
 // real one.
@@ -153,6 +130,7 @@ func TestOpenAIBinding(t *testing.T) {
 	a := Registry["openai"]
 	in := input
 	in.Name = "openai"
+	in.AIProxyURL = "http://donkey-server.donkey-system.svc/ai/v1"
 	got := a.Binding(in)
 	if want := "http://donkey-server.donkey-system.svc/ai/v1"; got["OPENAI_BASE_URL"] != want {
 		t.Fatalf("OPENAI_BASE_URL = %q, want %q", got["OPENAI_BASE_URL"], want)
@@ -160,8 +138,8 @@ func TestOpenAIBinding(t *testing.T) {
 	if got["OPENAI_API_KEY"] != "s3cret" {
 		t.Fatalf("the binding must carry the per-space stand-in key, got %v", got)
 	}
-	if objs, err := a.Objects(in); err != nil || len(objs) != 0 {
-		t.Fatalf("openai must run nothing in the space, got %d objects (%v)", len(objs), err)
+	if w, err := a.Workload(in); err != nil || w != nil {
+		t.Fatalf("openai must run nothing in the space, got %+v (%v)", w, err)
 	}
 	ext, err := a.ExternalBinding("https://api.openai.com/v1/")
 	if err != nil {

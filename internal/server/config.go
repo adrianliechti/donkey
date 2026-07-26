@@ -12,7 +12,6 @@ import (
 	"os"
 
 	"github.com/adrianliechti/donkey/internal/config"
-	"github.com/adrianliechti/donkey/internal/k8s/manifests"
 )
 
 // Version is stamped via -ldflags "-X github.com/adrianliechti/donkey/internal/server.Version=…".
@@ -27,14 +26,6 @@ type Config struct {
 	Domain          string
 	BuildkitAddr    string
 	NamespacePrefix string
-
-	// TLSIssuer/TLSIssuerKind name the cert-manager issuer that signs one
-	// certificate per app hostname.
-	TLSIssuer     string
-	TLSIssuerKind string
-
-	GatewayName      string
-	GatewayNamespace string
 
 	OIDCIssuer       string
 	OIDCClientID     string
@@ -65,12 +56,8 @@ func FromEnv() (*Config, error) {
 			CAFile:    os.Getenv("DONKEY_REGISTRY_CA_FILE"),
 		},
 		Domain:           os.Getenv("DONKEY_DOMAIN"),
-		TLSIssuer:        os.Getenv("DONKEY_TLS_ISSUER"),
-		TLSIssuerKind:    envOr("DONKEY_TLS_ISSUER_KIND", "ClusterIssuer"),
 		BuildkitAddr:     os.Getenv("DONKEY_BUILDKIT_ADDR"),
 		NamespacePrefix:  envOr("DONKEY_NAMESPACE_PREFIX", config.DefaultNamespacePrefix),
-		GatewayName:      envOr("DONKEY_GATEWAY_NAME", "donkey"),
-		GatewayNamespace: envOr("DONKEY_GATEWAY_NAMESPACE", "donkey-system"),
 		OIDCIssuer:       os.Getenv("DONKEY_OIDC_ISSUER"),
 		OIDCClientID:     os.Getenv("DONKEY_OIDC_CLIENT_ID"),
 		OIDCClientSecret: os.Getenv("DONKEY_OIDC_CLIENT_SECRET"),
@@ -101,11 +88,6 @@ func FromEnv() (*Config, error) {
 	if c.BuildkitAddr == "" {
 		return nil, fmt.Errorf("DONKEY_BUILDKIT_ADDR is required")
 	}
-	// Apps are always served over https (the login gateway's cookies are
-	// Secure-only), and their certificates come from cert-manager.
-	if c.TLSIssuer == "" {
-		return nil, fmt.Errorf("DONKEY_TLS_ISSUER is required — donkey needs a cert-manager issuer to give apps their certificates")
-	}
 	return c, nil
 }
 
@@ -121,24 +103,6 @@ func envOr(key, def string) string {
 
 // Scheme is always https for apps: the login gateway's cookies require it.
 func (c *Config) Scheme() string { return "https" }
-
-// Namespace is where a space lives: all its apps share it.
-func (c *Config) Namespace(space string) string { return c.NamespacePrefix + space }
-
-// SpaceNamespace maps a space onto its namespace, refusing names that are
-// invalid or that would land in donkey's own namespace — with the default
-// prefix, the space "system" resolves to donkey-system, and one crafted (or
-// innocently repo-named) space must never reach the control plane's objects.
-func (c *Config) SpaceNamespace(space string) (string, error) {
-	if !config.ValidName(space) {
-		return "", fmt.Errorf("%q is not a valid space name — lowercase letters, digits and dashes (max 40 chars)", space)
-	}
-	ns := c.Namespace(space)
-	if ns == manifests.SystemNamespace || ns == c.GatewayNamespace {
-		return "", fmt.Errorf("the space name %q is reserved for donkey itself — pick another (space: <name> in donkey.yaml)", space)
-	}
-	return ns, nil
-}
 
 // AppHost is the address of an app: <app>.<space>.<domain>. The space in
 // the middle is what lets two teams both have a "web". An internal app has no
