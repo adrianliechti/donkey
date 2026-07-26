@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -913,7 +914,7 @@ func (s *Server) knownSecrets(ctx context.Context, ns, app string) []string {
 	if pw, err := s.cfg.Registry.Password(); err == nil {
 		out = append(out, pw)
 	}
-	return append(out, s.cfg.OIDCClientSecret, s.cfg.APIToken)
+	return append(out, s.cfg.OIDCClientSecret, hex.EncodeToString(s.cfg.SessionKey))
 }
 
 func tailBytes(b []byte, n int) string {

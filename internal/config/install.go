@@ -44,12 +44,16 @@ type InstallRegistry struct {
 	CASecret string `json:"caSecret,omitempty"`
 }
 
-// InstallAuth configures the login gateway. With an empty issuer (and no
-// --demo), no gateway is installed and apps are reachable without login.
+// InstallAuth configures the login gateway — the one way in: apps, console
+// and CLI all authenticate against this issuer.
 type InstallAuth struct {
 	Issuer       string `json:"issuer,omitempty"`
 	ClientID     string `json:"clientId,omitempty"`
 	ClientSecret string `json:"clientSecret,omitempty"`
+	// Admins narrows who may use the console and CLI (users/groups/roles,
+	// matched like an app's `access` rules). Empty means everyone the IdP
+	// admits may administer.
+	Admins *AccessConfig `json:"admins,omitempty"`
 }
 
 // InstallGateway tunes the traffic entry point.

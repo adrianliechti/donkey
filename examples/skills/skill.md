@@ -29,9 +29,9 @@ donkey doctor        # client + server health, with plain-language fixes
 ```
 
 If `doctor` reports no login, a human must run
-`donkey login --server https://donkey.<domain> --token …` once — the token
-is not something you can obtain yourself. Everything else in this skill
-works unattended.
+`donkey login --server https://<domain>` once and sign in through the
+browser — that is not something you can do yourself. Everything else in
+this skill works unattended.
 
 Practical CLI facts for scripted use:
 

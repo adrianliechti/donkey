@@ -24,7 +24,6 @@ say() { printf '\n\033[1m== %s ==\033[0m\n' "$*"; }
 
 WORK="$(mktemp -d)"
 CA_FILE="${WORK}/platform-ca.crt"
-TOKEN="dk_e2e_$(date +%s)"
 
 # The assistant is part of every deploy, so the test needs a real endpoint.
 AI_BASE="${OPENAI_BASE_URL:-http://host.docker.internal:8080/v1}"
@@ -104,8 +103,7 @@ say "server install (real command, gateway → demo IdP)"
   --oidc-client-id "donkey-demo" \
   --oidc-client-secret "donkey-demo-secret" \
   --openai-base-url "${AI_BASE}" \
-  --openai-api-key "${AI_KEY}" \
-  --api-token "${TOKEN}"
+  --openai-api-key "${AI_KEY}"
 
 # Dev loop: the :dev image tag is mutable — force the server onto the image
 # just pushed.
@@ -132,6 +130,11 @@ for _ in $(seq 1 30); do
   curl -fsS --max-time 2 "http://127.0.0.1:18088/healthz" >/dev/null 2>&1 && break
   sleep 1
 done
+# A human signs in through the browser; the test mints its token straight
+# from the cluster's session key — the same sealed format the gateway hands
+# a real `donkey login`, verified by the server on this direct path.
+TOKEN="$(DONKEY_SESSION_KEY="$(kubectl --context "${CTX}" -n donkey-system get secret donkey-system-config \
+  -o jsonpath='{.data.session-key}' | base64 -d)" go run "${ROOT}/hack/mint-token")"
 "${DONKEY}" login --server "http://127.0.0.1:18088" --token "${TOKEN}"
 
 say "doctor"

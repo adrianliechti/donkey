@@ -12,7 +12,7 @@ import {
   Upload,
   X,
 } from 'lucide-react'
-import { ApiError, getToken } from './api'
+import { ApiError } from './api'
 import { Button, ErrorNote, Spinner, errText } from './ui'
 
 interface Bucket {
@@ -40,7 +40,7 @@ const s3Path = (space: string, service: string, suffix: string) =>
 async function s3Fetch(path: string, init?: RequestInit): Promise<Response> {
   const res = await fetch(path, {
     ...init,
-    headers: { ...(init?.headers ?? {}), Authorization: `Bearer ${getToken()}` },
+    headers: init?.headers ?? {},
   })
   if (!res.ok) {
     let message = `The server answered HTTP ${res.status}`

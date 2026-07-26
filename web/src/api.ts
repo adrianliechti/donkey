@@ -1,6 +1,6 @@
-// Typed client for the donkey-server API. The token lives in localStorage
-// and every request carries it; a 401 clears it and flips the app back to
-// the login screen via the registered handler.
+// Typed client for the donkey-server API. The session is the gateway's OIDC
+// cookie and rides along on every request by itself; a 401 means it expired,
+// and the registered handler reloads the page so the gateway signs in again.
 
 /** How an app is reached: open to anyone, behind the login, or cluster-only. */
 export type Exposure = 'public' | 'protected' | 'internal'
@@ -192,21 +192,7 @@ export interface DbQueryResult {
   truncated: boolean
 }
 
-const TOKEN_KEY = 'donkey-token'
-
-export function getToken(): string {
-  return localStorage.getItem(TOKEN_KEY) ?? ''
-}
-
-export function setToken(token: string) {
-  localStorage.setItem(TOKEN_KEY, token)
-}
-
-export function clearToken() {
-  localStorage.removeItem(TOKEN_KEY)
-}
-
-// onUnauthorized lets the shell react when the token stops being accepted —
+// onUnauthorized lets the shell react when the session stops being accepted —
 // without it, views would poll forever against a dead session.
 let onUnauthorized: () => void = () => {}
 export function setUnauthorizedHandler(handler: () => void) {
@@ -232,10 +218,12 @@ async function errorMessage(res: Response): Promise<string> {
   return message
 }
 
+// The donkey gateway in front of the console owns the session (an OIDC
+// cookie); requests carry it automatically. A 401 means it expired — a full
+// navigation lets the gateway run the sign-in again.
 function unauthorized(): ApiError {
-  clearToken()
   onUnauthorized()
-  return new ApiError(401, 'The token was not accepted — sign in again.')
+  return new ApiError(401, 'The session expired — signing in again.')
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -243,7 +231,6 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     ...init,
     headers: {
       ...(init?.headers ?? {}),
-      Authorization: `Bearer ${getToken()}`,
       ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
     },
   })
@@ -427,12 +414,10 @@ export const api = {
   // The app's disk. Paths are relative to it, with no leading slash.
   files: (space: string, app: string, path: string) =>
     request<FileListing>(appPath(space, app, `/files?path=${encodeURIComponent(path)}`)),
-  // The download carries the token like every other call, so it goes through
-  // fetch and comes back as a blob — a plain <a href> could not authenticate.
+  // The download rides the session cookie like every other call; fetch keeps
+  // the error handling uniform and hands back a blob.
   downloadFile: async (space: string, app: string, path: string): Promise<Blob> => {
-    const res = await fetch(appPath(space, app, `/files/download?path=${encodeURIComponent(path)}`), {
-      headers: { Authorization: `Bearer ${getToken()}` },
-    })
+    const res = await fetch(appPath(space, app, `/files/download?path=${encodeURIComponent(path)}`))
     if (res.status === 401) throw unauthorized()
     if (!res.ok) throw new ApiError(res.status, await errorMessage(res))
     return res.blob()
@@ -473,7 +458,7 @@ export const api = {
     if (opts.port) params.set('port', opts.port)
     const res = await fetch(`/v1/deploys?${params}`, {
       method: 'POST',
-      headers: { Authorization: `Bearer ${getToken()}`, 'Content-Type': 'application/zip' },
+      headers: { 'Content-Type': 'application/zip' },
       body: blob,
     })
     if (res.status === 401) throw unauthorized()
@@ -527,7 +512,6 @@ export const api = {
     if (opts.follow) params.set('follow', 'true')
     if (opts.since) params.set('since', opts.since)
     const res = await fetch(appPath(space, app, `/logs?${params}`), {
-      headers: { Authorization: `Bearer ${getToken()}` },
       signal,
     })
     if (res.status === 401) throw unauthorized()

@@ -6,6 +6,8 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
+
+	"github.com/adrianliechti/donkey/internal/config"
 )
 
 func systemInput() SystemInput {
@@ -14,7 +16,7 @@ func systemInput() SystemInput {
 		ServerImage: "reg.example.com/donkey-server:test",
 		Domain:      "apps.example.com",
 		RegistryURL: "reg.example.com/donkey",
-		APIToken:    "tok",
+		SessionKey:  "sessionkey",
 	}
 }
 
@@ -180,6 +182,38 @@ func TestServerHostAndCentralCallback(t *testing.T) {
 	// The certificate must still cover the apex — the callback lives there.
 	if !strings.Contains(out, "- apps.example.com") {
 		t.Error("the server certificate should include the domain itself")
+	}
+}
+
+// The console rides through the donkey gateway like any app: its route
+// points at the gateway and carries the real backend and login annotations —
+// plus the admin rules when set. The static API token is gone entirely.
+func TestConsoleBehindGateway(t *testing.T) {
+	in := systemInput()
+	out := componentNames(in)
+	for _, want := range []string{
+		"donkey.dev/backend: http://donkey-server.donkey-system.svc.cluster.local:80",
+		"donkey.dev/login: required",
+		"DONKEY_SESSION_KEY", // the server verifies CLI tokens itself
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("system objects should contain %q", want)
+		}
+	}
+	for _, forbidden := range []string{"api-token", "DONKEY_API_TOKEN"} {
+		if strings.Contains(out, forbidden) {
+			t.Errorf("the static API token must be gone, found %q", forbidden)
+		}
+	}
+	if strings.Contains(out, "donkey.dev/access") {
+		t.Error("empty admin rules must not render an access annotation")
+	}
+
+	restricted := systemInput()
+	restricted.Admins = &config.AccessConfig{Users: []string{"ada@example.com"}}
+	out = componentNames(restricted)
+	if !strings.Contains(out, "donkey.dev/access") || !strings.Contains(out, "ada@example.com") {
+		t.Error("admin rules should reach the console route's access annotation")
 	}
 }
 

@@ -48,15 +48,18 @@ tls:
 
 auth:
   # A real OIDC provider — Pocket ID, Entra ID, Keycloak, anything OIDC.
-  # Register ONE callback URL at it: https://<domain>/oauth2/callback —
-  # every login under the domain rides through it, and one sign-in covers
-  # every app (the session cookie lives on the domain). Only apps with a
-  # custom domain outside it need their own callback registered.
-  # Leave the whole block out to run without a login gateway (apps are then
-  # public).
+  # Required: it is the one way in — apps, the admin console and the CLI all
+  # sign in against it. Register ONE callback URL:
+  # https://<domain>/oauth2/callback — every login under the domain rides
+  # through it, and one sign-in covers everything (the session cookie lives
+  # on the domain). Only apps with a custom domain outside it need their own
+  # callback registered.
   issuer: https://id.example.com
   clientId: <client-id>
   # clientSecret: …           # better: DONKEY_OIDC_CLIENT_SECRET env
+  # admins:                   # who may use the console and CLI — matched
+  #   users: [you@example.com]  # like an app's `access` rules. Empty means
+  #   groups: [platform]        # everyone the IdP admits may administer.
 
 ai:
   # Required: donkey reads every app with its assistant. Any

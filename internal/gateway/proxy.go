@@ -14,6 +14,7 @@ import (
 func (s *Server) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /oauth2/callback", s.handleCallback)
+	mux.HandleFunc("GET /oauth2/cli", s.startCLILogin)
 	mux.HandleFunc("GET /oauth2/logout", s.handleLogout)
 	mux.HandleFunc("/", s.serveApp)
 	return mux
@@ -26,38 +27,39 @@ func (s *Server) serveApp(w http.ResponseWriter, r *http.Request) {
 			"If this app was just deployed, give it a moment and reload.")
 		return
 	}
-	if !rt.Login {
-		s.proxy(rt).ServeHTTP(w, r)
-		return
-	}
-	// The route demands a login. If the installation cannot run one, the
-	// promise of privacy wins over availability: fail closed.
-	if !s.cfg.authConfigured() {
-		s.errorPage(w, http.StatusServiceUnavailable, "This app requires a sign-in, but none is configured.",
-			"The installation has no (complete) OIDC setup — `donkey server install` with auth.issuer, clientId and clientSecret fixes this.")
-		return
-	}
-	sess := s.sessionFrom(r)
-	if sess == nil {
-		// Browsers get the login round trip; API calls get a plain 401 — a
-		// redirect chain into an IdP is useless to a fetch() or a CLI.
-		if wantsHTML(r) {
-			s.startLogin(w, r)
+	// Who this is, decided once: the session cookie (a browser) or a sealed
+	// CLI token as Bearer. Public routes carry the identity too — an app may
+	// greet a signed-in visitor without demanding the login.
+	sess, fromToken := s.identityFrom(r)
+	if rt.Login {
+		// The route demands a login. If the installation cannot run one, the
+		// promise of privacy wins over availability: fail closed.
+		if !s.cfg.authConfigured() {
+			s.errorPage(w, http.StatusServiceUnavailable, "This app requires a sign-in, but none is configured.",
+				"The installation has no (complete) OIDC setup — `donkey server install` with auth.issuer, clientId and clientSecret fixes this.")
 			return
 		}
-		w.Header().Set("WWW-Authenticate", `Bearer realm="donkey"`)
-		http.Error(w, `{"error":"sign-in required"}`, http.StatusUnauthorized)
-		return
-	}
-	if !allowedAccess(rt.Access, sess) {
-		who := sess.Email
-		if who == "" {
-			who = sess.Subject
+		if sess == nil {
+			// Browsers get the login round trip; API calls get a plain 401 —
+			// a redirect chain into an IdP is useless to a fetch() or a CLI.
+			if wantsHTML(r) {
+				s.startLogin(w, r)
+				return
+			}
+			w.Header().Set("WWW-Authenticate", `Bearer realm="donkey"`)
+			http.Error(w, `{"error":"sign-in required"}`, http.StatusUnauthorized)
+			return
 		}
-		s.deniedPage(w, who)
-		return
+		if !rt.Access.Allows(sess.Email, sess.Groups, sess.Roles) {
+			who := sess.Email
+			if who == "" {
+				who = sess.Subject
+			}
+			s.deniedPage(w, who)
+			return
+		}
 	}
-	s.proxy(rt).ServeHTTP(w, r)
+	s.proxy(rt, sess, fromToken).ServeHTTP(w, r)
 }
 
 // wantsHTML says whether the request came from a navigating browser.
@@ -80,10 +82,17 @@ var transport = &http.Transport{
 	ForceAttemptHTTP2:   false,
 }
 
-func (s *Server) proxy(rt route) *httputil.ReverseProxy {
+// proxy forwards to the app. A ReverseProxy is built per request, so the
+// identity serveApp established rides in the closure — nothing is verified
+// twice.
+func (s *Server) proxy(rt route, sess *session, fromToken bool) *httputil.ReverseProxy {
 	return &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
-			sess := s.sessionFrom(pr.In)
+			if fromToken {
+				// The token authenticated to the gateway; the app gets the
+				// identity headers, never the credential itself.
+				pr.Out.Header.Del("Authorization")
+			}
 			pr.SetURL(rt.Backend)
 			// The app sees the address the visitor used — links, redirects
 			// and host-based routing inside the app keep working.

@@ -1,9 +1,9 @@
-// Package gateway is donkey's login gateway — the auth proxy every protected
-// app's traffic goes through. The shared Gateway (any Gateway API
-// implementation) terminates TLS and routes protected hostnames here; this
-// proxy runs the OIDC login itself, seals what it learned into a cookie,
-// checks the app's access rules (users, groups) and forwards the request to
-// the app's Service.
+// Package gateway is donkey's login gateway — the auth proxy every app's
+// and the console's traffic goes through. The shared Gateway (any Gateway
+// API implementation) terminates TLS and routes hostnames here; this proxy
+// runs the OIDC login itself (browsers get a cookie, `donkey login` a
+// sealed token), checks the route's access rules (users, groups, roles) and
+// forwards the request with identity headers.
 //
 // Keeping login in donkey's own binary — instead of a proxy vendor's CRD —
 // is a deliberate trade: the Gateway API has no standard auth story, so this
@@ -114,10 +114,9 @@ type route struct {
 }
 
 type Server struct {
-	cfg    *Config
-	k8s    *k8s.Client
-	sealer *sealer
-	auth   *authenticator
+	cfg  *Config
+	k8s  *k8s.Client
+	auth *authenticator
 
 	mu     sync.RWMutex
 	routes map[string][]route // host -> routes, most specific path first
@@ -134,7 +133,6 @@ func New(cfg *Config) (*Server, error) {
 	return &Server{
 		cfg:    cfg,
 		k8s:    client,
-		sealer: newSealer(cfg.SessionKey),
 		auth:   newAuthenticator(cfg),
 		routes: map[string][]route{},
 	}, nil

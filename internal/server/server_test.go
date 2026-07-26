@@ -1,16 +1,21 @@
 package server
 
 import (
+	"bytes"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
+
+	"github.com/adrianliechti/donkey/internal/config"
+	"github.com/adrianliechti/donkey/internal/identity"
 )
 
 // A draining server answers POST /v1/deploys with 503 before it touches the
 // cluster, which makes it the one state-changing route these tests can drive
 // without one — handy for checking what the middleware in front of it does.
 func drainingServer() *Server {
-	s := &Server{cfg: &Config{APIToken: "dk_test", Domain: "example.com"}}
+	s := &Server{cfg: &Config{Domain: "example.com"}}
 	s.draining.Store(true)
 	return s
 }
@@ -18,13 +23,55 @@ func drainingServer() *Server {
 func post(t *testing.T, s *Server, headers map[string]string) int {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, "https://donkey.example.com/v1/deploys", nil)
-	req.Header.Set("Authorization", "Bearer dk_test")
+	// The identity the gateway forwards after its login — how every real
+	// request arrives.
+	req.Header.Set("X-Auth-Request-User", "u1")
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
 	rec := httptest.NewRecorder()
 	s.routes().ServeHTTP(rec, req)
 	return rec.Code
+}
+
+// Identity comes from the gateway's headers or a sealed CLI token — nothing
+// else. The token path enforces the admin rules itself: it bypasses the
+// gateway, so nobody has checked them yet.
+func TestAuthPaths(t *testing.T) {
+	key := bytes.Repeat([]byte{7}, 32)
+	s := &Server{cfg: &Config{Domain: "example.com", SessionKey: key}}
+	s.draining.Store(true) // deploys answer 503 before touching a cluster
+
+	call := func(mutate func(*http.Request)) int {
+		req := httptest.NewRequest(http.MethodPost, "https://donkey.example.com/v1/deploys", nil)
+		mutate(req)
+		rec := httptest.NewRecorder()
+		s.routes().ServeHTTP(rec, req)
+		return rec.Code
+	}
+
+	if got := call(func(r *http.Request) {}); got != http.StatusUnauthorized {
+		t.Fatalf("anonymous request: want 401, got %d", got)
+	}
+	if got := call(func(r *http.Request) { r.Header.Set("Authorization", "Bearer garbage") }); got != http.StatusUnauthorized {
+		t.Fatalf("garbage token: want 401, got %d", got)
+	}
+	if got := call(func(r *http.Request) { r.Header.Set("X-Auth-Request-User", "u1") }); got != http.StatusServiceUnavailable {
+		t.Fatalf("gateway identity: want past auth (503 drain), got %d", got)
+	}
+
+	tok, err := identity.SealToken(key, identity.Identity{Subject: "u1", Email: "ada@example.com", Expires: time.Now().Add(time.Hour).Unix()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := call(func(r *http.Request) { r.Header.Set("Authorization", "Bearer "+tok) }); got != http.StatusServiceUnavailable {
+		t.Fatalf("sealed token: want past auth (503 drain), got %d", got)
+	}
+
+	s.cfg.Admins = &config.AccessConfig{Users: []string{"bob@example.com"}}
+	if got := call(func(r *http.Request) { r.Header.Set("Authorization", "Bearer "+tok) }); got != http.StatusUnauthorized {
+		t.Fatalf("token outside the admin rules: want 401, got %d", got)
+	}
 }
 
 // The CLI is not a browser: it sends no Origin and no Sec-Fetch-Site, and must

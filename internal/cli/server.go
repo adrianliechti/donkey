@@ -55,7 +55,6 @@ func serverInstallCommand() *cli.Command {
 			&cli.StringFlag{Name: "openai-base-url", Usage: "OpenAI-compatible endpoint for AI assistance (as reachable FROM the cluster)"},
 			&cli.StringFlag{Name: "openai-api-key", Usage: "API key for AI assistance (or $OPENAI_API_KEY)"},
 			&cli.StringFlag{Name: "ai-model", Usage: "model for AI assistance"},
-			&cli.StringFlag{Name: "api-token", Usage: "fix the API token (default: generate one)"},
 		},
 		Action: serverInstallAction,
 	}
@@ -139,6 +138,9 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 	if h := settings.ServerHost; h != "" && h != settings.Domain && !strings.HasSuffix(h, "."+settings.Domain) {
 		return fmt.Errorf("serverHost %q must be the domain %q or a name under it", h, settings.Domain)
 	}
+	if err := settings.Auth.Admins.Validate(); err != nil {
+		return fmt.Errorf("auth.admins: %w", err)
+	}
 
 	kubeContext := s.Resolved.KubeContext
 	client, err := k8s.New(kubeContext)
@@ -153,7 +155,7 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 	// re-run without $DONKEY_REGISTRY_PASSWORD (or the other secret env vars)
 	// set must never blank what the running installation depends on. A read
 	// error is fatal for the same reason: treating it as "no secrets yet"
-	// would silently rotate the API token.
+	// would silently rotate the session key and sign everyone out.
 	existing, err := client.GetSecretData(ctx, manifests.SystemNamespace, "donkey-system-config")
 	if err != nil {
 		return fmt.Errorf("couldn't read the existing installation's secrets: %w", err)
@@ -184,19 +186,9 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 		return fmt.Errorf("these settings are required (via -f file or flags): %v", missing)
 	}
 
-	apiToken := cmd.String("api-token")
-	tokenFromFlag := apiToken != ""
-	newToken := false
-	if apiToken == "" {
-		if apiToken = existing["api-token"]; apiToken == "" {
-			if apiToken, err = randomToken(); err != nil {
-				return err
-			}
-			newToken = true
-		}
-	}
-	// The session key seals the gateway's login cookies. Reused on
-	// re-installs — rotating it would sign everyone out of every app.
+	// The session key seals the gateway's login cookies and the CLI tokens.
+	// Reused on re-installs — rotating it signs everyone out of every app
+	// and revokes every `donkey login`.
 	sessionKey := existing["session-key"]
 	if sessionKey == "" {
 		if sessionKey, err = randomHexKey(); err != nil {
@@ -217,7 +209,7 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 		RegistryPassword:   registryPassword,
 		RegistryInsecure:   settings.Registry.Insecure,
 		RegistryImmutable:  settings.Registry.Immutable,
-		APIToken:           apiToken,
+		Admins:             settings.Auth.Admins,
 		OIDCIssuer:         settings.Auth.Issuer,
 		OIDCClientID:       settings.Auth.ClientID,
 		OIDCClientSecret:   settings.Auth.ClientSecret,
@@ -298,16 +290,14 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 	u.Printf("")
 	u.Printf("  API:        %s", u.Bold(serverURL))
 	switch {
-	case newToken:
-		u.Printf("  API token:  %s", u.Bold(apiToken))
-		u.Printf("  %s", u.Faint("Store this token safely — it is shown only once."))
-	case tokenFromFlag:
-		u.Printf("  API token:  %s", u.Faint("(as provided — replaces the previous one)"))
+	case in.Admins.Empty():
+		u.Printf("  Admins:     %s", u.Faint("everyone your identity provider signs in (narrow it with auth.admins)"))
 	default:
-		u.Printf("  API token:  %s", u.Faint("(unchanged)"))
+		u.Printf("  Admins:     %s", u.Faint("per auth.admins"))
 	}
 	u.Printf("")
-	u.Printf("Connect this machine:  %s", u.Bold(fmt.Sprintf("donkey login --server %s --token <token>", serverURL)))
+	u.Printf("Console:  open %s and sign in", u.Bold(serverURL))
+	u.Printf("CLI:      %s  %s", u.Bold(fmt.Sprintf("donkey login --server %s", serverURL)), u.Faint("(opens the browser)"))
 	u.Printf("Then check the whole setup end to end:  %s", u.Bold("donkey doctor"))
 
 	u.Printf("")
@@ -317,20 +307,12 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 		in.TLSIssuerKind, in.TLSIssuer, in.Domain, in.Domain)))
 
 	callback := fmt.Sprintf("%s://%s/oauth2/callback", in.Scheme(), in.Domain)
-	switch {
-	case in.OIDCIssuer != "" && settings.Auth.ClientID == "":
-		u.Printf("")
-		u.Printf("Login protection: OIDC via %s", in.OIDCIssuer)
-		u.Warn("No OIDC client configured yet — logins can't complete until you register one at the issuer and re-run this install with the client id and secret.")
-		u.Printf("  %s", u.Faint(fmt.Sprintf("Register one callback URL: %s — every login under %s rides through it. Apps with a custom domain outside it keep https://<domain>/oauth2/callback.", callback, in.Domain)))
-	case in.OIDCIssuer != "":
-		u.Printf("")
-		u.Printf("Login protection: OIDC via %s", in.OIDCIssuer)
-		u.Printf("  %s", u.Faint(fmt.Sprintf("Callback URL: %s — one sign-in covers every app under %s. Custom domains outside it use https://<domain>/oauth2/callback (register each).", callback, in.Domain)))
-	default:
-		u.Warn("No login protection configured — deployed apps are reachable without login.")
-		u.Printf("  %s", u.Faint("Set auth.issuer (e.g. Entra ID, or any OIDC provider) to protect them."))
+	u.Printf("")
+	u.Printf("Login: OIDC via %s", in.OIDCIssuer)
+	if settings.Auth.ClientID == "" {
+		u.Warn("No OIDC client configured yet — nobody can sign in (console, CLI or apps) until you register one at the issuer and re-run this install with the client id and secret.")
 	}
+	u.Printf("  %s", u.Faint(fmt.Sprintf("Callback URL: %s — one sign-in covers the console and every app under %s. Custom domains outside it use https://<domain>/oauth2/callback (register each).", callback, in.Domain)))
 	return nil
 }
 
@@ -351,6 +333,12 @@ func missingSettings(settings *config.InstallFile, withSecrets bool) []string {
 	}
 	if settings.Domain == "" {
 		missing = append(missing, "domain")
+	}
+	// The login gateway is the only way in — console, CLI and apps all
+	// authenticate against it, so an installation without an issuer would
+	// have no administrators at all.
+	if settings.Auth.Issuer == "" {
+		missing = append(missing, "auth.issuer (an OIDC provider — it is how admins sign in)")
 	}
 	// Apps are always served over https, and cert-manager issues the
 	// certificates — donkey never mints its own.
@@ -390,15 +378,8 @@ func waitForGateway(ctx context.Context, client *k8s.Client) string {
 	return reason
 }
 
-func randomToken() (string, error) {
-	b := make([]byte, 24)
-	if _, err := rand.Read(b); err != nil {
-		return "", err
-	}
-	return "dk_" + hex.EncodeToString(b), nil
-}
-
-// randomHexKey is the gateway's cookie-sealing key: 32 bytes, hex-encoded.
+// randomHexKey is the installation's sealing key — every session cookie and
+// CLI token hangs off it: 32 bytes, hex-encoded.
 func randomHexKey() (string, error) {
 	b := make([]byte, 32)
 	if _, err := rand.Read(b); err != nil {

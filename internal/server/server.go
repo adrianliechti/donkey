@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"log"
@@ -13,6 +12,7 @@ import (
 	"time"
 
 	"github.com/adrianliechti/donkey/internal/ai"
+	"github.com/adrianliechti/donkey/internal/identity"
 	"github.com/adrianliechti/donkey/internal/k8s"
 )
 
@@ -143,12 +143,12 @@ func (s *Server) routes() http.Handler {
 	// Everything else is the admin console.
 	mux.Handle("/", uiHandler())
 
-	// Browser-side CSRF protection (Go's Fetch-metadata checks). The API's
-	// own auth is a bearer header, which a cross-origin page cannot set, so
-	// this is defence in depth today — but it becomes load-bearing the moment
-	// anything cookie-based sits in front of the console (putting it behind
-	// the gateway's OIDC does exactly that). Non-browser clients send neither
-	// Sec-Fetch-Site nor Origin and are unaffected, so the CLI is untouched.
+	// Browser-side CSRF protection (Go's Fetch-metadata checks). This is
+	// load-bearing: the console rides the gateway's OIDC cookie, which the
+	// browser attaches to any request — including one a hostile page makes.
+	// These checks refuse the cross-site ones. Non-browser clients send
+	// neither Sec-Fetch-Site nor Origin and are unaffected, so the CLI is
+	// untouched.
 	return http.NewCrossOriginProtection().Handler(mux)
 }
 
@@ -204,14 +204,27 @@ func (s *Server) Run(ctx context.Context) error {
 	return srv.Shutdown(shutdownCtx)
 }
 
+// auth is who may call the API. The usual path: the donkey gateway fronted
+// the request, ran the OIDC login (or verified a sealed CLI token), checked
+// the admin rules and forwarded the identity as headers — its presence is
+// the authorization. The direct path (a port-forward past the gateway):
+// a sealed CLI token this server verifies itself, against the same admin
+// rules. In-cluster callers who can reach the Service unprompted are
+// already inside the trust boundary this PoC draws — see the README.
 func (s *Server) auth(next http.HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if subtle.ConstantTimeCompare([]byte(token), []byte(s.cfg.APIToken)) != 1 {
-			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid or missing API token — run `donkey login`"})
+		if r.Header.Get("X-Auth-Request-User") != "" {
+			next(w, r)
 			return
 		}
-		next(w, r)
+		if tok, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer "); ok && tok != "" {
+			if id, err := identity.VerifyToken(s.cfg.SessionKey, tok); err == nil &&
+				s.cfg.Admins.Allows(id.Email, id.Groups, id.Roles) {
+				next(w, r)
+				return
+			}
+		}
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "not signed in — run `donkey login`"})
 	})
 }
 

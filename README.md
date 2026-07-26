@@ -21,8 +21,8 @@ five ideas:
 1. **The cluster does the work.** A control plane (`donkey-server`) runs in
    your cluster and owns everything heavy: recognizing apps, building
    images, pushing to your registry, applying Kubernetes objects, watching
-   rollouts. The `donkey` CLI is a thin, token-authenticated client — no
-   Docker, no kubectl, no build tools on laptops.
+   rollouts. The `donkey` CLI is a thin client that signs in through your
+   browser — no Docker, no kubectl, no build tools on laptops.
 2. **Two readers, one answer.** Every look at an app combines embedded
    [Railpack](https://railpack.com) — which knows how to *build* Python,
    Node, Go, Ruby, PHP, Java and static apps — with an **assistant that
@@ -55,7 +55,7 @@ five ideas:
 ```
  developer machine                     Kubernetes cluster
 ┌───────────────┐          ┌─────────────────────────────────────────┐
-│  donkey CLI   │──token──▶│ donkey-system                           │
+│  donkey CLI   │─sign-in─▶│ donkey-system                           │
 │  (thin client)│   HTTP   │  ├─ donkey-server   REST API, detection,│
 └───────────────┘          │  │      manifests, AI, rollout watching │
                            │  ├─ donkey-buildkitd  image builds      │──▶ registry
@@ -73,16 +73,18 @@ five ideas:
                            └─────────────────────────────────────────┘
 ```
 
-- **donkey CLI** — talks only to the donkey-server API (`donkey login`
-  stores server + token in `~/.config/donkey/config.yaml`). The single
+- **donkey CLI** — talks only to the donkey-server API. `donkey login`
+  opens the installation's OIDC sign-in in the browser and keeps the sealed
+  token it gets back in `~/.config/donkey/config.yaml`. The single
   exception: `donkey server install` uses your kubeconfig to bootstrap the
   control plane.
 - **donkey-server** — stateless API pod; all state lives in Kubernetes
   objects. Deploys arrive as tar.gz uploads and stream progress back as
   NDJSON. Configured entirely via env from the install settings. It also
   serves the **admin console** (React/Tailwind, embedded in the binary) on
-  the domain itself: open `https://<domain>` in a browser, sign in with the
-  API token, and you get the apps overview with health at a glance, live
+  the domain itself: open `https://<domain>` in a browser, sign in at your
+  IdP (the gateway runs the login, like for any app — one sign-in covers
+  console and apps), and you get the apps overview with health at a glance, live
   logs, an env-var editor, restart, an AI "explain what's wrong" for
   unhealthy apps, remove-app, and the system checks. Spaces are managed
   here too — create one before any app exists, remove an empty one — and
@@ -353,7 +355,7 @@ applies anything, and `donkey doctor` keeps checking them after):
 | **[cert-manager](https://cert-manager.io) + an Issuer** | every app hostname gets its own certificate | `tls.issuer` (ClusterIssuer or Issuer). Any solver works: HTTP-01, DNS-01, an internal CA, Vault |
 | **Container registry** the cluster can pull from | donkey pushes every build there | `registry.url` + credentials; `registry.caSecret` when its certificate comes from a private CA |
 | **DNS** for `*.<domain>` and `<domain>` → the gateway address | apps are served at `<app>.<space>.<domain>`, the API and login callback at `<domain>` | one wildcard covers every depth; the apex needs its own record |
-| **OIDC provider** (e.g. Entra ID) | the login gateway in front of every app | optional: without `auth.issuer`, apps are public and the install says so |
+| **OIDC provider** (Pocket ID, Entra ID, Keycloak, …) | the one way in: console, CLI and protected apps all sign in against it | required — `auth.issuer` (+ client id/secret); `auth.admins` optionally narrows who may administer |
 | **OpenAI-compatible endpoint** | donkey reads every app with it (ports, health routes, data folders) | required — the server refuses to start without one. Point it at a model you control: source summaries go there |
 
 A complete copy-paste walkthrough that stands all of this up on a single
@@ -377,9 +379,12 @@ override; secrets come from env:
 donkey server install -f server-install.yaml
 ```
 
-Prints the API URL and a one-time token. Re-running with changed settings
-updates the installation idempotently (server-side apply; existing secrets
-and tokens survive; config changes roll the affected pods).
+Prints where to sign in — there is no API token: the console and the CLI
+authenticate through the same OIDC login the apps use, and `auth.admins`
+(users/groups/roles, matched like an app's `access` rules) narrows who may
+administer; empty means everyone the IdP admits. Re-running with changed
+settings updates the installation idempotently (server-side apply; existing
+secrets and sessions survive; config changes roll the affected pods).
 
 **One callback, one sign-in.** Every login under the domain rides through a
 single OAuth callback on the domain itself
@@ -401,9 +406,14 @@ and login callback live there, so give `<domain>` a record of its own.
 **Day 1 — everyone deploys:**
 
 ```sh
-donkey login --server https://apps.example.com --token …   # once
+donkey login --server https://apps.example.com   # once — opens your browser
 cd your-project && donkey deploy
 ```
+
+`donkey login` opens the installation's OIDC sign-in in the browser and
+receives a sealed token on the loopback — 30 days of CLI access from one
+sign-in, no credential ever typed into a terminal. (`--token` accepts an
+existing token for automation.)
 
 | Command | What it does |
 |---|---|
@@ -433,30 +443,16 @@ What an operator has to know before a team depends on the installation. None
 of this is a gap waiting to be filled — it follows from how donkey is built,
 so plan around it.
 
-**Rotating the API token.** One token exists per installation, and the server
-compares every request against it (`DONKEY_API_TOKEN`, from the
-`donkey-system-config` Secret). Rotating it is a re-install with the new
-value:
-
-```sh
-donkey server install -f server-install.yaml --api-token <new-token>
-```
-
-The token is part of donkey-server's config hash, so the pod rolls and picks
-it up. **There is no overlap window.** The moment the new pod serves, every
-`donkey login` on every machine and every admin-console session is rejected —
-there is no second token, no grace period, no per-user revocation. That cuts
-both ways: it is also the only way to retire a leaked token, and it works
-immediately.
-
-The procedure, in order:
-
-1. generate the new token and get it to everyone who deploys (it is only ever
-   printed for a token donkey generated itself — a token you pass in is
-   yours to hand out);
-2. re-run the install command above with the same settings file;
-3. everyone re-runs `donkey login --server https://<domain> --token
-   <new-token>`, then `donkey doctor` to confirm.
+**Sessions and revocation.** One secret underlies every login: the session
+key in `donkey-system-config` seals the browser cookies (12 h) and the CLI
+tokens (30 days), all derived from an OIDC sign-in. Individual logins expire
+on their own and revive with a fresh sign-in; kicking one specific person out
+happens at the IdP (or by removing them from `auth.admins` and the affected
+apps' `access` rules — the gateway checks those on every request). The big
+lever is rotating the session key itself: delete the `session-key` entry from
+the Secret and re-run the install — a new key is generated, every cookie and
+every CLI token everywhere is invalid the moment the pods roll, and everyone
+signs in again through the browser. **There is no overlap window.**
 
 Running apps are not touched: their pods, disks, routes and certificates stay
 as they are while donkey-server restarts. A re-install also keeps every secret
@@ -474,7 +470,7 @@ deploy. What is *not* reproducible has to live outside the cluster:
 | `DONKEY_REGISTRY_PASSWORD` | donkey stores it, but never invents it; without it the server can't push and apps can't pull |
 | `DONKEY_OIDC_CLIENT_SECRET` (with its client id) | belongs to a registration in your IdP — a new one means updating the IdP as well |
 | `OPENAI_API_KEY` | the assistant is required; no key, no deploys |
-| the API token | a fresh install **generates a new one** and thereby invalidates every existing login. Keeping it lets `--api-token` make the rebuilt installation the same installation |
+| the `session-key` entry of `donkey-system-config` | a fresh install **generates a new one** and thereby invalidates every session and CLI token. Restoring it makes the rebuilt installation the same installation — everyone stays signed in |
 | the registry CA secret (`registry.caSecret`) | donkey only *references* that Secret in `donkey-system` — it never creates it. Whatever created it has to run again |
 | DNS for `*.<domain>` and `<domain>` | they point at the gateway address, which a rebuilt cluster changes |
 
@@ -608,8 +604,15 @@ company with an internal PKI uses. Tear down with `devkube --cluster donkey dele
 
 ## Security notes (PoC status)
 
-- CLI↔API auth is a bearer token (`donkey login`); OIDC device-flow is the
-  intended follow-up.
+- CLI↔API auth is OIDC end to end: `donkey login` runs the browser sign-in
+  through the gateway, which seals the identity into a 30-day token
+  (AES-GCM, the installation's session key). Sealed tokens cannot be revoked
+  individually — rotating the session key revokes all of them at once.
+- The server trusts the `X-Auth-Request-*` identity headers on requests that
+  reached it — sound from outside (the only route to it passes the gateway,
+  which strips inbound copies), but an in-cluster caller who can reach the
+  Service directly can forge them. That caller sits inside the same trust
+  boundary as the cluster-admin ServiceAccount below.
 - donkey-server currently binds cluster-admin; scoping it down is on the
   list.
 - The demo IdP approves everyone by design; it never leaves `hack/demo/`.

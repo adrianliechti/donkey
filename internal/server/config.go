@@ -1,9 +1,13 @@
-// Package server is donkey's control plane: a token-authenticated REST API
-// running inside the cluster, building with the in-cluster BuildKit and
-// applying the same manifests the CLI used to apply directly.
+// Package server is donkey's control plane: a REST API running inside the
+// cluster, building with the in-cluster BuildKit and applying the same
+// manifests the CLI used to apply directly. Identity comes from the donkey
+// gateway in front of it (OIDC login, forwarded as headers) or from a
+// sealed CLI token it verifies itself.
 package server
 
 import (
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 
@@ -40,8 +44,14 @@ type Config struct {
 	// donkey.yaml names one — matches the cluster's nodes.
 	DefaultPlatform string
 
-	APIToken string
-	AIModel  string
+	// SessionKey is the installation's sealing key — the server verifies
+	// the CLI tokens the gateway mints with it (the direct, port-forwarded
+	// path next to the gateway's identity headers).
+	SessionKey []byte
+	// Admins narrows who may administer (users/groups/roles). Empty means
+	// everyone the IdP admits.
+	Admins  *config.AccessConfig
+	AIModel string
 }
 
 func FromEnv() (*Config, error) {
@@ -65,8 +75,19 @@ func FromEnv() (*Config, error) {
 		OIDCClientID:     os.Getenv("DONKEY_OIDC_CLIENT_ID"),
 		OIDCClientSecret: os.Getenv("DONKEY_OIDC_CLIENT_SECRET"),
 		DefaultPlatform:  envOr("DONKEY_DEFAULT_PLATFORM", "linux/amd64"),
-		APIToken:         os.Getenv("DONKEY_API_TOKEN"),
 		AIModel:          envOr("DONKEY_AI_MODEL", config.DefaultAIModel),
+	}
+	key, err := hex.DecodeString(os.Getenv("DONKEY_SESSION_KEY"))
+	if err != nil || len(key) != 32 {
+		return nil, fmt.Errorf("DONKEY_SESSION_KEY must be 32 bytes of hex — `donkey server install` generates it")
+	}
+	c.SessionKey = key
+	if raw := os.Getenv("DONKEY_ADMINS"); raw != "" {
+		var admins config.AccessConfig
+		if err := json.Unmarshal([]byte(raw), &admins); err != nil {
+			return nil, fmt.Errorf("DONKEY_ADMINS is not valid AccessConfig JSON: %w", err)
+		}
+		c.Admins = &admins
 	}
 	if c.Registry.URL == "" {
 		return nil, fmt.Errorf("DONKEY_REGISTRY_URL is required")
@@ -84,9 +105,6 @@ func FromEnv() (*Config, error) {
 	// Secure-only), and their certificates come from cert-manager.
 	if c.TLSIssuer == "" {
 		return nil, fmt.Errorf("DONKEY_TLS_ISSUER is required — donkey needs a cert-manager issuer to give apps their certificates")
-	}
-	if c.APIToken == "" {
-		return nil, fmt.Errorf("DONKEY_API_TOKEN is required")
 	}
 	return c, nil
 }

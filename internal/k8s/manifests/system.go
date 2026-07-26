@@ -3,6 +3,7 @@ package manifests
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -17,6 +18,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
+
+	"github.com/adrianliechti/donkey/internal/config"
 )
 
 // SystemInput describes the donkey control plane (namespace donkey-system):
@@ -61,7 +64,10 @@ type SystemInput struct {
 	// donkey makes every image tag unique.
 	RegistryImmutable bool
 
-	APIToken string
+	// Admins narrows who may use the console and CLI (users/groups/roles,
+	// matched like an app's access rules). Empty means everyone the IdP
+	// admits — the login itself is never optional for the control plane.
+	Admins *config.AccessConfig
 
 	OIDCIssuer       string // OIDC issuer of the login gateway
 	OIDCClientID     string
@@ -139,7 +145,7 @@ func SystemObjects(in SystemInput) []runtime.Object {
 		buildkitNetworkPolicy(in),
 		serverDeployment(in),
 		systemService(in, ServerName, 80, serverPort),
-		systemRoute(in, ServerName, in.ServerHost(), 80),
+		consoleRoute(in),
 		loginRoute(in),
 		redirectRoute(in),
 		systemCertificate(in),
@@ -150,7 +156,7 @@ func SystemObjects(in SystemInput) []runtime.Object {
 
 // configHash changes whenever the given configuration values change, so pods
 // that read them only at startup get rolled on re-install. Each deployment
-// hashes just what it consumes: rotating the API token must not kill in-flight
+// hashes just what it consumes: rotating the session key must not kill in-flight
 // builds, and a new registry host must roll buildkitd (which reads its config
 // file once, at startup).
 func configHash(values ...string) string {
@@ -164,7 +170,7 @@ func configHash(values ...string) string {
 // serverConfigHash covers the secret-backed env vars of donkey-server
 // (secretKeyRef values are only read at pod creation).
 func (in SystemInput) serverConfigHash() string {
-	return configHash(in.APIToken, in.OIDCClientID, in.OIDCClientSecret, in.RegistryPassword, in.OpenAIAPIKey)
+	return configHash(in.SessionKey, in.OIDCClientID, in.OIDCClientSecret, in.RegistryPassword, in.OpenAIAPIKey)
 }
 
 // buildkitConfigHash covers what buildkitd reads at startup: the config file
@@ -224,7 +230,6 @@ func systemSecret(in SystemInput) *corev1.Secret {
 		TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "Secret"},
 		ObjectMeta: metav1.ObjectMeta{Name: "donkey-system-config", Namespace: in.Namespace, Labels: systemLabels(ServerName)},
 		StringData: map[string]string{
-			"api-token":          in.APIToken,
 			"registry-password":  in.RegistryPassword,
 			"openai-api-key":     in.OpenAIAPIKey,
 			"oidc-client-id":     in.OIDCClientID,
@@ -327,7 +332,10 @@ func serverDeployment(in SystemInput) *appsv1.Deployment {
 		secretEnv("DONKEY_OIDC_CLIENT_SECRET", "oidc-client-secret"),
 		{Name: "DONKEY_AI_MODEL", Value: in.AIModel},
 		{Name: "OPENAI_BASE_URL", Value: in.OpenAIBaseURL},
-		secretEnv("DONKEY_API_TOKEN", "api-token"),
+		// The session key lets the server verify sealed CLI tokens itself —
+		// the direct (port-forwarded) path next to the gateway's headers.
+		secretEnv("DONKEY_SESSION_KEY", "session-key"),
+		{Name: "DONKEY_ADMINS", Value: adminsJSON(in)},
 		secretEnv("DONKEY_REGISTRY_PASSWORD", "registry-password"),
 		secretEnv("OPENAI_API_KEY", "openai-api-key"),
 	}
@@ -589,6 +597,45 @@ func systemRoute(in SystemInput, name, host string, port int32) *gatewayv1.HTTPR
 			}},
 		},
 	}
+}
+
+// adminsJSON is the console's access rules as the gateway and server read
+// them; empty rules stay an empty string (everyone the IdP admits).
+func adminsJSON(in SystemInput) string {
+	if in.Admins.Empty() {
+		return ""
+	}
+	b, err := json.Marshal(in.Admins)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+// consoleRoute serves the console and API — through the donkey gateway,
+// exactly like an app: the gateway runs the browser login (or verifies a
+// sealed CLI token) and forwards identity headers; Admins narrows who gets
+// in. The annotations are the gateway's routing table entry.
+func consoleRoute(in SystemInput) *gatewayv1.HTTPRoute {
+	r := systemRoute(in, ServerName, in.ServerHost(), 80)
+	port := gatewayv1.PortNumber(80)
+	r.Spec.Rules[0].BackendRefs = []gatewayv1.HTTPBackendRef{{
+		BackendRef: gatewayv1.BackendRef{
+			BackendObjectReference: gatewayv1.BackendObjectReference{
+				Name: gatewayv1.ObjectName(GatewayAppName),
+				Port: &port,
+			},
+		},
+	}}
+	ann := map[string]string{
+		AnnotationBackend: fmt.Sprintf("http://%s.%s.svc.cluster.local:80", ServerName, in.Namespace),
+		AnnotationLogin:   LoginRequired,
+	}
+	if a := adminsJSON(in); a != "" {
+		ann[AnnotationAccess] = a
+	}
+	r.Annotations = ann
+	return r
 }
 
 // loginRoute serves the central OAuth callback: /oauth2 on the domain itself

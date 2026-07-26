@@ -28,9 +28,9 @@ func uiHandler() http.Handler {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		// The console holds an API token in localStorage, so script injection
-		// or framing would hand over the whole control plane. The bundle is
-		// self-contained (no CDNs), so a strict policy costs nothing —
+		// The console acts with the gateway's session cookie, so script
+		// injection or framing would act as the signed-in admin. The bundle
+		// is self-contained (no CDNs), so a strict policy costs nothing —
 		// 'unsafe-inline' covers only the stylesheet Tailwind injects.
 		w.Header().Set("Content-Security-Policy",
 			"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "+

@@ -10,35 +10,13 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	"github.com/adrianliechti/donkey/internal/config"
+	"github.com/adrianliechti/donkey/internal/identity"
 )
 
-func testSealer() *sealer {
-	return newSealer(bytes.Repeat([]byte{7}, 32))
-}
+var testKey = bytes.Repeat([]byte{7}, 32)
 
-// The cookie is the session store, so sealing has to round-trip — and refuse
-// anything tampered with.
-func TestSessionSealRoundTrip(t *testing.T) {
-	s := testSealer()
-	in := session{Subject: "u1", Email: "ada@example.com", Groups: []string{"staff"}, Roles: []string{"dev"}, Expires: time.Now().Add(time.Hour).Unix()}
-	sealed, err := s.seal(in, purposeSession)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var out session
-	if err := s.unseal(sealed, purposeSession, &out); err != nil {
-		t.Fatal(err)
-	}
-	if out.Email != in.Email || out.Subject != in.Subject || len(out.Groups) != 1 || len(out.Roles) != 1 {
-		t.Errorf("round trip lost data: %+v", out)
-	}
-	if err := s.unseal(sealed[:len(sealed)-2]+"xx", purposeSession, &out); err == nil {
-		t.Error("a tampered value must not unseal")
-	}
-	other := newSealer(bytes.Repeat([]byte{9}, 32))
-	if err := other.unseal(sealed, purposeSession, &out); err == nil {
-		t.Error("a different key must not unseal")
-	}
+func testServer() *Server {
+	return &Server{cfg: &Config{SessionKey: testKey}}
 }
 
 // Both cookies are sealed with the same key, so the only thing keeping one
@@ -47,26 +25,24 @@ func TestSessionSealRoundTrip(t *testing.T) {
 // in, so a state value accepted as a session is an unauthenticated way into
 // every protected app that has no access list.
 func TestSealedValuesDoNotCrossPurposes(t *testing.T) {
-	s := testSealer()
-
 	state := loginState{State: "s", Nonce: "n", Host: "app.example.com", Return: "/",
 		Expires: time.Now().Add(loginTTL).Unix()}
-	sealedState, err := s.seal(state, purposeLogin)
+	sealedState, err := identity.Seal(testKey, purposeLogin, state)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var asSession session
-	if err := s.unseal(sealedState, purposeSession, &asSession); err == nil {
+	if err := identity.Unseal(testKey, purposeSession, sealedState, &asSession); err == nil {
 		t.Fatalf("a login-state cookie unsealed as a session: %+v", asSession)
 	}
 
 	sess := session{Subject: "u1", Expires: time.Now().Add(sessionTTL).Unix()}
-	sealedSession, err := s.seal(sess, purposeSession)
+	sealedSession, err := identity.Seal(testKey, purposeSession, sess)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var asState loginState
-	if err := s.unseal(sealedSession, purposeLogin, &asState); err == nil {
+	if err := identity.Unseal(testKey, purposeLogin, sealedSession, &asState); err == nil {
 		t.Fatalf("a session cookie unsealed as a login state: %+v", asState)
 	}
 }
@@ -74,10 +50,10 @@ func TestSealedValuesDoNotCrossPurposes(t *testing.T) {
 // The end-to-end shape of the bypass: what startLogin hands an anonymous
 // visitor, presented back as the session cookie.
 func TestStateCookieIsNotAcceptedAsSession(t *testing.T) {
-	s := &Server{cfg: &Config{}, sealer: testSealer()}
+	s := testServer()
 	state := loginState{State: randomHex(16), Nonce: randomHex(16),
 		Host: "app.example.com", Return: "/", Expires: time.Now().Add(loginTTL).Unix()}
-	sealed, err := s.sealer.seal(state, purposeLogin)
+	sealed, err := identity.Seal(testKey, purposeLogin, state)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,8 +67,8 @@ func TestStateCookieIsNotAcceptedAsSession(t *testing.T) {
 // A session carries the ID token's subject; a blank one was never vouched
 // for by the IdP, whatever else it decodes into.
 func TestSessionWithoutSubjectIsRejected(t *testing.T) {
-	s := &Server{cfg: &Config{}, sealer: testSealer()}
-	sealed, err := s.sealer.seal(session{Expires: time.Now().Add(sessionTTL).Unix()}, purposeSession)
+	s := testServer()
+	sealed, err := identity.Seal(testKey, purposeSession, session{Expires: time.Now().Add(sessionTTL).Unix()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,6 +76,34 @@ func TestSessionWithoutSubjectIsRejected(t *testing.T) {
 	r.AddCookie(&http.Cookie{Name: sessionCookie, Value: sealed})
 	if sess := s.sessionFrom(r); sess != nil {
 		t.Fatalf("subject-less session accepted: %+v", *sess)
+	}
+}
+
+// A CLI token is a first-class way in: identityFrom accepts it as Bearer —
+// and a session cookie sealed for the browser must not pass as one.
+func TestIdentityFromBearer(t *testing.T) {
+	s := testServer()
+	tok, err := identity.SealToken(testKey, identity.Identity{
+		Subject: "u1", Email: "ada@example.com", Expires: time.Now().Add(time.Hour).Unix(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, _ := http.NewRequest("GET", "https://app.example.com/", nil)
+	r.Header.Set("Authorization", "Bearer "+tok)
+	sess, fromToken := s.identityFrom(r)
+	if sess == nil || !fromToken || sess.Email != "ada@example.com" {
+		t.Fatalf("a valid CLI token should authenticate: %+v", sess)
+	}
+
+	cookie, err := identity.Seal(testKey, purposeSession, session{Subject: "u1", Expires: time.Now().Add(time.Hour).Unix()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, _ = http.NewRequest("GET", "https://app.example.com/", nil)
+	r.Header.Set("Authorization", "Bearer "+cookie)
+	if sess, _ := s.identityFrom(r); sess != nil {
+		t.Fatalf("a session cookie must not pass as a CLI token: %+v", sess)
 	}
 }
 
@@ -120,7 +124,7 @@ func TestAllowedAccess(t *testing.T) {
 		{"groups compare exactly", &config.AccessConfig{Groups: []string{"Staff"}}, false},
 	}
 	for _, c := range cases {
-		if got := allowedAccess(c.access, sess); got != c.want {
+		if got := c.access.Allows(sess.Email, sess.Groups, sess.Roles); got != c.want {
 			t.Errorf("%s: got %v", c.name, got)
 		}
 	}

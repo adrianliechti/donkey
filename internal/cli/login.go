@@ -3,7 +3,11 @@ package cli
 import (
 	"context"
 	"fmt"
+	"net"
+	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/huh"
 	"github.com/urfave/cli/v3"
@@ -16,10 +20,10 @@ import (
 func loginCommand() *cli.Command {
 	return &cli.Command{
 		Name:  "login",
-		Usage: "connect this machine to a donkey server",
+		Usage: "connect this machine to a donkey server (opens your browser)",
 		Flags: []cli.Flag{
-			&cli.StringFlag{Name: "server", Usage: "server address, e.g. https://donkey.apps.example.com"},
-			&cli.StringFlag{Name: "token", Usage: "API token (from `donkey server install`)"},
+			&cli.StringFlag{Name: "server", Usage: "server address, e.g. https://example.com"},
+			&cli.StringFlag{Name: "token", Usage: "use an existing donkey token instead of the browser (automation)"},
 			&cli.StringFlag{Name: "ca-file", Usage: "PEM file of the certificate authority to trust (private-CA installations)"},
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
@@ -54,11 +58,11 @@ func runLogin(ctx context.Context, cmd *cli.Command) error {
 		caFile = cfg.Server.CAFile
 	}
 
-	if (url == "" || token == "") && u.Interactive {
+	if url == "" && u.Interactive {
 		form := huh.NewForm(huh.NewGroup(
 			huh.NewInput().
 				Title("Address of your donkey server").
-				Description("Example: http://donkey.apps.example.com — ask whoever set it up.").
+				Description("Example: https://example.com — ask whoever set it up.").
 				Value(&url).
 				Validate(func(v string) error {
 					if !strings.HasPrefix(v, "http://") && !strings.HasPrefix(v, "https://") {
@@ -66,18 +70,23 @@ func runLogin(ctx context.Context, cmd *cli.Command) error {
 					}
 					return nil
 				}),
-			huh.NewInput().
-				Title("API token").
-				Description("Printed by `donkey server install`.").
-				EchoMode(huh.EchoModePassword).
-				Value(&token),
 		))
 		if err := form.Run(); err != nil {
 			return fmt.Errorf("login was cancelled")
 		}
 	}
-	if url == "" || token == "" {
-		return fmt.Errorf("donkey needs both --server and --token to connect")
+	if url == "" {
+		return fmt.Errorf("donkey needs --server to connect")
+	}
+	url = strings.TrimSuffix(url, "/")
+
+	// The browser is the credential: the gateway at the server runs the OIDC
+	// round trip and hands a sealed token to a listener on the loopback. The
+	// terminal never sees a password — only the finished token.
+	if token == "" {
+		if token, err = browserLogin(ctx, u, url); err != nil {
+			return err
+		}
 	}
 
 	u.Info("Checking the connection…")
@@ -88,10 +97,61 @@ func runLogin(ctx context.Context, cmd *cli.Command) error {
 	if err := client.Ping(ctx); err != nil {
 		return fmt.Errorf("that didn't work: %w", err)
 	}
-	cfg.Server = config.ServerConfig{URL: strings.TrimSuffix(url, "/"), Token: token, CAFile: caFile}
+	cfg.Server = config.ServerConfig{URL: url, Token: token, CAFile: caFile}
 	if err := cfg.Save(globalPath); err != nil {
 		return err
 	}
 	u.Success("Connected to %s — you're ready to %s.", u.Bold(cfg.Server.URL), u.Bold("donkey deploy"))
 	return nil
 }
+
+// browserLogin opens the sign-in in the person's browser and waits on the
+// loopback for the token the gateway's callback hands over.
+func browserLogin(ctx context.Context, u *ui.UI, serverURL string) (string, error) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return "", fmt.Errorf("couldn't open a local port for the sign-in: %w", err)
+	}
+	defer ln.Close()
+	port := ln.Addr().(*net.TCPAddr).Port
+	loginURL := serverURL + "/oauth2/cli?port=" + strconv.Itoa(port)
+
+	tokens := make(chan string, 1)
+	srv := &http.Server{
+		ReadHeaderTimeout: 5 * time.Second,
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			tok := r.URL.Query().Get("token")
+			if r.URL.Path != "/callback" || tok == "" {
+				http.NotFound(w, r)
+				return
+			}
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			fmt.Fprint(w, loginDonePage)
+			select {
+			case tokens <- tok:
+			default:
+			}
+		}),
+	}
+	go func() { _ = srv.Serve(ln) }()
+	defer srv.Close()
+
+	u.Info("Opening your browser to sign in…")
+	u.Printf("  %s", u.Faint(loginURL+"   (open it yourself if nothing happens)"))
+	_ = browse(loginURL)
+
+	select {
+	case tok := <-tokens:
+		return tok, nil
+	case <-time.After(3 * time.Minute):
+		return "", fmt.Errorf("the sign-in didn't complete within 3 minutes — run `donkey login` again")
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+}
+
+const loginDonePage = `<!doctype html><meta charset="utf-8"><title>donkey</title>
+<body style="font-family:system-ui;display:grid;place-items:center;height:100vh;margin:0">
+<div style="text-align:center"><div style="font-size:3rem">🫏</div>
+<h1 style="margin:.5rem 0 0">Signed in</h1>
+<p style="color:#777">Close this tab and return to the terminal.</p></div>`

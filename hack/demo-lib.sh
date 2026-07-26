@@ -7,7 +7,14 @@ CLUSTER="donkey"
 CTX="kind-${CLUSTER}"
 BASE="apps.test"
 CA_FILE="${ROOT}/.build/platform-ca.crt"
-TOKEN="${DONKEY_TOKEN:-dk_demo_local}"
+
+# mint_token seals a CLI token from the installation's session key — the
+# scripted stand-in for the browser round trip `donkey login` runs.
+mint_token() {
+  DONKEY_SESSION_KEY="$(kubectl --context "${CTX}" -n donkey-system get secret donkey-system-config \
+    -o jsonpath='{.data.session-key}' | base64 -d)" \
+    go run "${ROOT}/hack/mint-token"
+}
 
 case "$(uname -m)" in
   arm64|aarch64) PLATFORM="linux/arm64" ;;

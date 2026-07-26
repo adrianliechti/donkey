@@ -11,6 +11,9 @@ set -euo pipefail
 require_ai
 
 say "connecting this machine"
+# A human runs `donkey login` and signs in through the browser; the script
+# mints its token straight from the cluster's session key instead.
+TOKEN="$(mint_token)"
 "${DONKEY}" login --server "https://${BASE}" --token "${TOKEN}" --ca-file "${CA_FILE}"
 
 # Apps live in a space: <app>.<space>.<domain>, one namespace per space.
@@ -36,7 +39,7 @@ cat <<EOF
                 The backend behind it is internal: no hostname, no certificate,
                 nothing on the internet — only the dashboard reaches it, as
                 http://backend.
-  Admin console: https://${BASE}   (sign in with the API token)
+  Admin console: https://${BASE}   (the fake IdP signs you straight in)
   Identity:     http://auth.donkey-identity   (fake, approves everyone)
 
   Try next:     cd examples/demo/backend && donkey files ls   (the DuckDB file)

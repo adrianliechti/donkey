@@ -1,17 +1,11 @@
 package gateway
 
 import (
-	"crypto/aes"
-	"crypto/cipher"
-	"crypto/rand"
-	"encoding/base64"
-	"encoding/json"
-	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
-	"github.com/adrianliechti/donkey/internal/config"
+	"github.com/adrianliechti/donkey/internal/identity"
 )
 
 // session is what a completed login learned about the visitor. It lives
@@ -40,8 +34,12 @@ type loginState struct {
 	Host string `json:"host,omitempty"`
 	// Return is a path (+query) on Host — never a full URL, so the callback
 	// can't be turned into an open redirect.
-	Return  string `json:"return"`
-	Expires int64  `json:"exp"`
+	Return string `json:"return"`
+	// CLIPort is set when `donkey login` started this round trip: the
+	// callback then mints a sealed CLI token and hands it to the CLI
+	// waiting on 127.0.0.1:<CLIPort>.
+	CLIPort int   `json:"cli,omitempty"`
+	Expires int64 `json:"exp"`
 }
 
 const (
@@ -52,66 +50,20 @@ const (
 	loginTTL   = 15 * time.Minute
 )
 
-// Sealed values carry the purpose they were minted for as the AEAD's
-// associated data, so one cookie can never be replayed as the other. Both
-// cookies are sealed with the same key and both are plain JSON, and the two
-// structs share the "exp" field while every other field of each is optional
-// to the other — so without this binding a sealed loginState opens as a
-// perfectly valid (if blank) session, and a sealed session opens as a
+// Every sealed value (identity.Seal) carries the purpose it was minted for
+// as the AEAD's associated data, so nothing can stand in for anything else.
+// Both cookies are sealed with the same key and both are plain JSON, and
+// the two structs share the "exp" field while every other field of each is
+// optional to the other — so without this binding a sealed loginState opens
+// as a perfectly valid (if blank) session, and a sealed session opens as a
 // loginState whose State and Nonce are empty. The gateway hands the
 // loginState cookie to every anonymous visitor before they sign in, which
 // made that first direction an unauthenticated way into any protected app.
+// (The CLI tokens carry their own purpose inside the identity package.)
 const (
 	purposeSession = "donkey/session/v1"
 	purposeLogin   = "donkey/login/v1"
 )
-
-// sealer authenticates-and-encrypts small JSON payloads into cookie values.
-type sealer struct {
-	aead cipher.AEAD
-}
-
-func newSealer(key []byte) *sealer {
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		panic(err) // key length is validated by FromEnv
-	}
-	aead, err := cipher.NewGCM(block)
-	if err != nil {
-		panic(err)
-	}
-	return &sealer{aead: aead}
-}
-
-func (s *sealer) seal(v any, purpose string) (string, error) {
-	plain, err := json.Marshal(v)
-	if err != nil {
-		return "", err
-	}
-	nonce := make([]byte, s.aead.NonceSize())
-	if _, err := rand.Read(nonce); err != nil {
-		return "", err
-	}
-	sealed := s.aead.Seal(nonce, nonce, plain, []byte(purpose))
-	return base64.RawURLEncoding.EncodeToString(sealed), nil
-}
-
-// unseal opens a value sealed for exactly this purpose; one sealed for
-// another fails authentication here rather than decoding into the wrong type.
-func (s *sealer) unseal(value, purpose string, v any) error {
-	raw, err := base64.RawURLEncoding.DecodeString(value)
-	if err != nil {
-		return err
-	}
-	if len(raw) < s.aead.NonceSize() {
-		return fmt.Errorf("sealed value too short")
-	}
-	plain, err := s.aead.Open(nil, raw[:s.aead.NonceSize()], raw[s.aead.NonceSize():], []byte(purpose))
-	if err != nil {
-		return err
-	}
-	return json.Unmarshal(plain, v)
-}
 
 // sessionFrom reads and validates the visitor's session; nil means "not
 // signed in" (missing, tampered or expired — all the same to the caller).
@@ -121,7 +73,7 @@ func (s *Server) sessionFrom(r *http.Request) *session {
 		return nil
 	}
 	var sess session
-	if s.sealer.unseal(c.Value, purposeSession, &sess) != nil {
+	if identity.Unseal(s.cfg.SessionKey, purposeSession, c.Value, &sess) != nil {
 		return nil
 	}
 	// Every session this gateway mints carries the ID token's subject. A
@@ -146,7 +98,7 @@ func (s *Server) cookieDomain(host string) string {
 }
 
 func (s *Server) setSession(w http.ResponseWriter, sess *session, domain string) error {
-	value, err := s.sealer.seal(sess, purposeSession)
+	value, err := identity.Seal(s.cfg.SessionKey, purposeSession, sess)
 	if err != nil {
 		return err
 	}
@@ -175,34 +127,24 @@ func clearCookie(w http.ResponseWriter, name, path, domain string) {
 	})
 }
 
-// allowedAccess reports whether the session's identity satisfies the route's
-// access rules — by matching any of them. Emails compare case-insensitively
-// (IdPs disagree on casing); groups and roles compare exactly (they are
-// identifiers, often GUIDs).
-func allowedAccess(access *config.AccessConfig, sess *session) bool {
-	if access.Empty() {
-		return true
+// identityFrom is who the request is: the gateway's session cookie (a
+// browser), or a sealed CLI token in the Authorization header (`donkey
+// login`). The bool reports the token case — the header was the gateway's
+// to consume then, and must not travel on to the app.
+func (s *Server) identityFrom(r *http.Request) (*session, bool) {
+	if sess := s.sessionFrom(r); sess != nil {
+		return sess, false
 	}
-	for _, u := range access.Users {
-		if sess.Email != "" && strings.EqualFold(u, sess.Email) {
-			return true
-		}
+	tok, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if !ok || tok == "" {
+		return nil, false
 	}
-	return anyOverlap(access.Groups, sess.Groups) || anyOverlap(access.Roles, sess.Roles)
-}
-
-func anyOverlap(wanted, have []string) bool {
-	if len(wanted) == 0 || len(have) == 0 {
-		return false
+	id, err := identity.VerifyToken(s.cfg.SessionKey, tok)
+	if err != nil {
+		return nil, false
 	}
-	mine := make(map[string]bool, len(have))
-	for _, v := range have {
-		mine[v] = true
-	}
-	for _, v := range wanted {
-		if mine[v] {
-			return true
-		}
-	}
-	return false
+	return &session{
+		Subject: id.Subject, Email: id.Email, Name: id.Name,
+		Groups: id.Groups, Roles: id.Roles, Expires: id.Expires,
+	}, true
 }

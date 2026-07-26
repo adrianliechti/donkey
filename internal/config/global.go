@@ -30,7 +30,8 @@ type ServerConfig struct {
 	CAFile string `json:"caFile,omitempty"`
 }
 
-// ResolveToken returns the API token: $DONKEY_TOKEN wins over the config file.
+// ResolveToken returns the CLI's sealed login token: $DONKEY_TOKEN wins over
+// the config file.
 func (s ServerConfig) ResolveToken() string {
 	if t := os.Getenv("DONKEY_TOKEN"); t != "" {
 		return t

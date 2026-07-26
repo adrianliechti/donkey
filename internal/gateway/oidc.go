@@ -6,13 +6,17 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/http"
+	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
 	"golang.org/x/oauth2"
+
+	"github.com/adrianliechti/donkey/internal/identity"
 )
 
 // authenticator wraps the OIDC provider. Discovery happens lazily with
@@ -90,6 +94,22 @@ func (a *authenticator) oauthConfig(host string) *oauth2.Config {
 // startLogin sends the visitor to the IdP, leaving a sealed state cookie
 // behind so the callback can verify the round trip.
 func (s *Server) startLogin(w http.ResponseWriter, r *http.Request) {
+	s.beginLogin(w, r, 0, r.URL.RequestURI())
+}
+
+// startCLILogin begins a login on behalf of `donkey login`, which waits on
+// 127.0.0.1:<port> for the sealed token the callback mints. Anyone the IdP
+// admits may hold a token — what it may do stays a per-route decision.
+func (s *Server) startCLILogin(w http.ResponseWriter, r *http.Request) {
+	port, err := strconv.Atoi(r.URL.Query().Get("port"))
+	if err != nil || port < 1 || port > 65535 {
+		s.errorPage(w, http.StatusBadRequest, "This sign-in link is incomplete.", "Run `donkey login` again.")
+		return
+	}
+	s.beginLogin(w, r, port, "/")
+}
+
+func (s *Server) beginLogin(w http.ResponseWriter, r *http.Request, cliPort int, ret string) {
 	if err := s.auth.ready(r.Context()); err != nil {
 		s.errorPage(w, http.StatusBadGateway, "The sign-in service isn't reachable.", err.Error())
 		return
@@ -99,10 +119,11 @@ func (s *Server) startLogin(w http.ResponseWriter, r *http.Request) {
 		State:   randomHex(16),
 		Nonce:   randomHex(16),
 		Host:    host,
-		Return:  r.URL.RequestURI(),
+		Return:  ret,
+		CLIPort: cliPort,
 		Expires: time.Now().Add(loginTTL).Unix(),
 	}
-	sealed, err := s.sealer.seal(state, purposeLogin)
+	sealed, err := identity.Seal(s.cfg.SessionKey, purposeLogin, state)
 	if err != nil {
 		s.errorPage(w, http.StatusInternalServerError, "Sign-in couldn't start.", err.Error())
 		return
@@ -132,7 +153,7 @@ func (s *Server) handleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var state loginState
-	if err := s.sealer.unseal(c.Value, purposeLogin, &state); err != nil || time.Now().Unix() >= state.Expires {
+	if err := identity.Unseal(s.cfg.SessionKey, purposeLogin, c.Value, &state); err != nil || time.Now().Unix() >= state.Expires {
 		s.errorPage(w, http.StatusBadRequest, "This sign-in attempt is stale.", "Start again from the app's address.")
 		return
 	}
@@ -210,6 +231,21 @@ func (s *Server) handleCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.setSession(w, sess, s.cookieDomain(requestHost(r))); err != nil {
 		s.errorPage(w, http.StatusInternalServerError, "The session couldn't be stored.", err.Error())
+		return
+	}
+	// A CLI round trip ends on the loopback: the terminal gets a sealed
+	// token — and the browser keeps its session too, it just signed in.
+	if state.CLIPort != 0 {
+		tok, err := identity.SealToken(s.cfg.SessionKey, identity.Identity{
+			Subject: sess.Subject, Email: sess.Email, Name: sess.Name,
+			Groups: sess.Groups, Roles: sess.Roles,
+			Expires: time.Now().Add(identity.TokenTTL).Unix(),
+		})
+		if err != nil {
+			s.errorPage(w, http.StatusInternalServerError, "The sign-in couldn't be handed to the CLI.", err.Error())
+			return
+		}
+		http.Redirect(w, r, fmt.Sprintf("http://127.0.0.1:%d/callback?token=%s", state.CLIPort, url.QueryEscape(tok)), http.StatusFound)
 		return
 	}
 	http.Redirect(w, r, loginReturnURL(s.cfg, requestHost(r), state), http.StatusFound)

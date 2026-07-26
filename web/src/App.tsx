@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect } from 'react'
 import {
   createHashHistory,
   createRootRouteWithContext,
@@ -14,11 +14,10 @@ import {
 } from '@tanstack/react-router'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Activity, UploadCloud } from 'lucide-react'
-import { clearToken, getToken, setUnauthorizedHandler } from './api'
+import { setUnauthorizedHandler } from './api'
 import { AppDetail, type AppTab } from './AppDetail'
 import { AppsList } from './AppsList'
 import { DeployView } from './DeployView'
-import { Login } from './Login'
 import { fleetQuery, statusQuery } from './queries'
 import { SystemView } from './SystemView'
 import { UserMenu } from './UserMenu'
@@ -35,10 +34,6 @@ const APP_TABS: AppTab[] = ['overview', 'logs', 'files', 'variables', 'settings'
 const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: 1, staleTime: 5_000 } },
 })
-
-// Signing out is triggered inside the router's tree but owned by App (it
-// holds the connected state) — this hook is the one thread between them.
-let signOut = () => {}
 
 function Shell() {
   const navigate = useNavigate()
@@ -74,8 +69,9 @@ function Shell() {
             </button>
             <UserMenu
               onSignOut={() => {
-                clearToken()
-                signOut()
+                // The gateway owns the session — its logout page clears the
+                // cookie for the console and every app at once.
+                window.location.href = '/oauth2/logout'
               }}
             />
           </div>
@@ -277,18 +273,13 @@ declare module '@tanstack/react-router' {
 }
 
 export default function App() {
-  const [connected, setConnected] = useState(() => getToken() !== '')
-
   useEffect(() => {
-    // When the token stops being accepted, return to the login screen
-    // instead of leaving every panel polling a dead session.
-    setUnauthorizedHandler(() => setConnected(false))
-    signOut = () => setConnected(false)
+    // The gateway owns the session. When it expires, a full navigation is
+    // the sign-in: reload, the gateway redirects through the IdP (instant
+    // while its session lives) and lands back here.
+    setUnauthorizedHandler(() => window.location.reload())
   }, [])
 
-  if (!connected) {
-    return <Login onConnected={() => setConnected(true)} />
-  }
   return (
     <QueryClientProvider client={queryClient}>
       <RouterProvider router={router} />

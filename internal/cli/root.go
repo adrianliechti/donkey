@@ -93,7 +93,7 @@ func newSession(cmd *cli.Command) (*session, error) {
 // api returns the server transport, or a friendly error when not logged in.
 func (s *session) api() (*apiclient.Client, error) {
 	if s.Resolved.Global == nil || s.Resolved.Global.Server.URL == "" {
-		return nil, fmt.Errorf("donkey isn't connected to a server yet — run `donkey login --server https://donkey.<your-domain> --token …` (or ask whoever ran `donkey server install` for the address and token)")
+		return nil, fmt.Errorf("donkey isn't connected to a server yet — run `donkey login --server https://<your-domain>` and sign in through the browser (ask whoever ran `donkey server install` for the address)")
 	}
 	server := s.Resolved.Global.Server
 	return apiclient.New(server.URL, server.ResolveToken(), server.CAFile)

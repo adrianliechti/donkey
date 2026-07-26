@@ -234,14 +234,17 @@ character:
 curl -s https://id.dihei.ai/.well-known/openid-configuration | jq -r .issuer
 ```
 
+This one client is the whole identity story: apps, the **admin console** and
+the **CLI** (`donkey login` opens the browser) all sign in through it. Every
+app requires login unless its `donkey.yaml` says `public: true`, and because
+the session cookie lives on the domain, signing in once covers everything —
+console included (and signing out anywhere signs you out everywhere).
+
 Group-based access works out of the box: donkey requests the `groups` scope
 whenever the provider advertises it, and Pocket ID's user groups then match
-`access.groups` in an app's `donkey.yaml` (`access.roles` is for
-Entra/Keycloak-style role claims, which Pocket ID doesn't have). With the
-gateway installed, **every app requires login** unless its `donkey.yaml` says
-`public: true` — and because the session cookie lives on the domain, signing
-in to one app signs you in to all of them (and signing out anywhere signs
-you out everywhere).
+`access.groups` in an app's `donkey.yaml` — or `admins.groups` in
+`server.yaml`, which narrows who may administer (`access.roles` is for
+Entra/Keycloak-style role claims, which Pocket ID doesn't have).
 
 ## 7. Release donkey
 
@@ -330,7 +333,9 @@ export DONKEY_OIDC_CLIENT_SECRET=…
 donkey server install -f server.yaml
 ```
 
-It prints the API URL and a one-time token — keep it. A warning that the
+It prints where to sign in — there is no API token: console and CLI use the
+same Pocket ID login as the apps (add `admins:` under `auth:` to narrow who
+may administer; empty means every Pocket ID account). A warning that the
 server's certificate is still pending is expected here: issuance needs port
 80, which the next step wires up.
 
@@ -413,7 +418,7 @@ isn't in place).
 From your laptop:
 
 ```sh
-donkey login --server https://dihei.app --token dk_…
+donkey login --server https://dihei.app     # opens the Pocket ID sign-in
 donkey doctor
 cd your-project
 donkey init
@@ -435,8 +440,8 @@ are in the README under *Running it in production*.
 **Backups.** Three things on the host: `/data/donkey/volumes` (app disks and
 addon data), `/data/donkey/registry` (images — losing it only costs rebuilds),
 and the `donkey-system` secrets
-(`kubectl -n donkey-system get secret -o yaml`) — they hold the API token and
-the session key. The cluster itself is disposable: recreate it (steps 2–5),
+(`kubectl -n donkey-system get secret -o yaml`) — above all the session key,
+which every sign-in and CLI token hangs off. The cluster itself is disposable: recreate it (steps 2–5),
 reinstall (step 8–9), restore the volumes.
 
 **Reboots.** The node and the registry both carry Docker restart policies. If

@@ -71,6 +71,38 @@ func (a *AccessConfig) Empty() bool {
 	return a == nil || (len(a.Users) == 0 && len(a.Groups) == 0 && len(a.Roles) == 0)
 }
 
+// Allows reports whether an identity satisfies the rules — by matching any
+// of them; empty rules allow every signed-in identity. Emails compare
+// case-insensitively (IdPs disagree on casing); groups and roles compare
+// exactly (they are identifiers, often GUIDs).
+func (a *AccessConfig) Allows(email string, groups, roles []string) bool {
+	if a.Empty() {
+		return true
+	}
+	for _, u := range a.Users {
+		if email != "" && strings.EqualFold(u, email) {
+			return true
+		}
+	}
+	return anyOverlap(a.Groups, groups) || anyOverlap(a.Roles, roles)
+}
+
+func anyOverlap(wanted, have []string) bool {
+	if len(wanted) == 0 || len(have) == 0 {
+		return false
+	}
+	mine := make(map[string]bool, len(have))
+	for _, v := range have {
+		mine[v] = true
+	}
+	for _, v := range wanted {
+		if mine[v] {
+			return true
+		}
+	}
+	return false
+}
+
 // accessEntryRE keeps user and group entries to things that can appear in a
 // JWT claim comparison: no whitespace, no quotes, printable ASCII.
 var accessEntryRE = regexp.MustCompile(`^[\x21-\x7e]+$`)
