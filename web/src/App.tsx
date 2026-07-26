@@ -99,22 +99,38 @@ function useTitle(title: string) {
   }, [title])
 }
 
-function FleetPage() {
+// The fleet is a layout, not a page: the app panel renders into its Outlet,
+// so opening an app or switching its tabs never unmounts the canvas behind
+// it — no refetch, no skeleton flash.
+function FleetLayout() {
   useTitle('Donkey — admin')
   const navigate = useNavigate()
   return (
-    <AppsList
-      onOpen={(space, name) => navigate({ to: '/app/$space/$name', params: { space, name } })}
-    />
+    <>
+      <AppsList
+        onOpen={(space, name) =>
+          navigate({ to: '/app/$space/$name/{-$tab}', params: { space, name, tab: undefined } })
+        }
+      />
+      <Outlet />
+    </>
   )
 }
 
 // The app panel slides over the fleet instead of replacing it — the canvas
 // behind it keeps saying how everything else is doing.
 function AppOverlay({ space, name, tab }: { space: string; name: string; tab: AppTab }) {
-  useTitle(`${name} · Donkey`)
   const navigate = useNavigate()
   const close = () => navigate({ to: '/' })
+
+  // The overlay owns the title while it is up, and hands it back on close —
+  // the layout underneath only sets its own once, on mount.
+  useEffect(() => {
+    document.title = `${name} · Donkey`
+    return () => {
+      document.title = 'Donkey — admin'
+    }
+  }, [name])
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -127,7 +143,6 @@ function AppOverlay({ space, name, tab }: { space: string; name: string; tab: Ap
 
   return (
     <>
-      <AppsList onOpen={(s, n) => navigate({ to: '/app/$space/$name', params: { space: s, name: n } })} />
       <div className="fixed inset-0 z-40 bg-black/50" onClick={close} aria-hidden />
       <aside
         role="dialog"
@@ -136,13 +151,16 @@ function AppOverlay({ space, name, tab }: { space: string; name: string; tab: Ap
         className="fixed inset-y-0 right-0 z-50 flex w-full max-w-3xl flex-col overflow-y-auto border-l border-line bg-card shadow-[-24px_0_60px_rgba(0,0,0,.5)]"
       >
         <AppDetail
+          // A different app resets the panel; a different tab must not.
+          key={`${space}/${name}`}
           space={space}
           app={name}
           tab={tab}
           onTab={(next) =>
-            next === 'overview'
-              ? navigate({ to: '/app/$space/$name', params: { space, name } })
-              : navigate({ to: '/app/$space/$name/$tab', params: { space, name, tab: next } })
+            navigate({
+              to: '/app/$space/$name/{-$tab}',
+              params: { space, name, tab: next === 'overview' ? undefined : next },
+            })
           }
           onBack={close}
         />
@@ -163,7 +181,9 @@ function DeployPage({ space, name }: { space: string; name: string }) {
     <DeployView
       space={space}
       name={name}
-      onDeployed={(s, n) => navigate({ to: '/app/$space/$name', params: { space: s, name: n } })}
+      onDeployed={(s, n) =>
+        navigate({ to: '/app/$space/$name/{-$tab}', params: { space: s, name: n, tab: undefined } })
+      }
     />
   )
 }
@@ -171,10 +191,19 @@ function DeployPage({ space, name }: { space: string; name: string }) {
 // Code-style routes: the whole map in one place, typed params included.
 const rootRoute = createRootRoute({ component: Shell })
 
+// Pathless layout: it has no path of its own, so it stays mounted for both
+// the bare fleet ('/') and an open app panel ('/app/…') — that persistence
+// is the whole point (see FleetLayout).
 const fleetRoute = createRoute({
   getParentRoute: () => rootRoute,
+  id: 'fleet',
+  component: FleetLayout,
+})
+
+const fleetIndexRoute = createRoute({
+  getParentRoute: () => fleetRoute,
   path: '/',
-  component: FleetPage,
+  component: () => null,
 })
 
 // The previous console called the fleet "#/apps" — old bookmarks land here.
@@ -207,20 +236,14 @@ const deployAppRoute = createRoute({
   },
 })
 
+// One route for the panel and every one of its tabs ({-$tab} is optional,
+// so old "/app/space/name" links still land on the overview). Crossing tabs
+// stays inside this route — nothing above it re-renders, nothing reloads.
 const appRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: '/app/$space/$name',
+  getParentRoute: () => fleetRoute,
+  path: '/app/$space/$name/{-$tab}',
   component: () => {
-    const { space, name } = appRoute.useParams()
-    return <AppOverlay space={space} name={name} tab="overview" />
-  },
-})
-
-const appTabRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: '/app/$space/$name/$tab',
-  component: () => {
-    const { space, name, tab } = appTabRoute.useParams()
+    const { space, name, tab } = appRoute.useParams()
     // The tab comes from the URL, so it can name something that doesn't
     // exist — fall back rather than render an empty panel.
     const known = APP_TABS.find((t) => t === tab) ?? 'overview'
@@ -229,13 +252,11 @@ const appTabRoute = createRoute({
 })
 
 const routeTree = rootRoute.addChildren([
-  fleetRoute,
+  fleetRoute.addChildren([fleetIndexRoute, appRoute]),
   legacyAppsRoute,
   systemRoute,
   deployRoute,
   deployAppRoute,
-  appRoute,
-  appTabRoute,
 ])
 
 const router = createRouter({
