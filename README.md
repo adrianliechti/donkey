@@ -92,10 +92,12 @@ five ideas:
   browser per capability (tables, rows and SQL for a database; buckets and
   objects for storage; a streaming chat for the AI — see
   [Services](#services)). Deploys work straight from the browser: drop a
-  project folder or a .zip on the Deploy page and the same pipeline runs,
-  streaming its progress.
-  A dropped folder is packed client-side with the CLI's exclusion rules;
-  an upload without donkey.yaml just needs a name and port in the form.
+  project folder or a .zip on the Deploy page and donkey reads it first —
+  the same [plan](#the-plan-read-first-then-deploy) `donkey init` prints —
+  then shows what it found for review before anything is built. Nothing is
+  asked before the upload: the port comes out of the code, the disks out of
+  the folders the app writes to, the services out of its imports. A dropped
+  folder is packed client-side with the CLI's exclusion rules.
   Views are linkable (`#/app/<space>/<name>`) and follow your light/dark
   preference.
 - **donkey-buildkitd** — a plain BuildKit deployment; the server drives it
@@ -157,6 +159,31 @@ Two readers run over the folder and their answers are combined:
 The detector's verdict is handed to the assistant as evidence, so the model
 confirms or corrects it instead of guessing from scratch.
 
+### The plan: read first, then deploy
+
+Both readers run **on the server**, as one step called a plan — the app is
+uploaded, read, and checked against the cluster (is this name free, does the
+space exist, what runs there now), and out comes everything below plus the
+`donkey.yaml` it amounts to. Nothing is built and nothing changes.
+
+That plan is the one thing `donkey init` and the console both show, which is
+why neither ever asks for something it could work out:
+
+- **`donkey init`** (and the first `donkey deploy` in a folder) prints it,
+  asks the few questions worth asking, and writes the file the server
+  rendered. The deploy that follows carries the plan's id, so the assistant
+  reads the app once, not twice.
+- **The console** shows it as a review screen: name, space, port and health
+  route already filled in with where each answer came from, the data folders
+  and services as ticked choices carrying the assistant's reason, the
+  address the app will answer on, every warning, and anything that *blocks*
+  the deploy before a minute of building finds it instead. Editing anything
+  re-runs the checks on the spot. The rendered `donkey.yaml` is there to
+  copy into the project, because a browser deploy has no folder to write it
+  back to.
+
+Plans expire after two hours; losing one costs a re-upload, never a build.
+
 **What comes out**
 
 | Finding | How it is used | Overridable by |
@@ -165,7 +192,7 @@ confirms or corrects it instead of guessing from scratch.
 | **Port** — read from the source (`app.listen(4000)`, `uvicorn --port`, …); "0" means the app honors `PORT` and any port works | container port, Service target, probes | `port` (required in donkey.yaml, never overwritten — a mismatch is reported as a warning) |
 | **Health route** — a real unauthenticated route such as `/healthz`; when none exists donkey probes the TCP port instead of guessing a path | readiness + liveness probes | `healthcheck.path` |
 | **Data folders** — folders the code writes to and cannot regenerate: uploads, an SQLite file's folder, generated documents, search indexes. Caches, logs, `/tmp` and build output are refused by construction | one PVC per app, each folder mounted as its own `subPath` | `storage.paths` (an empty list means "no disk", and is respected) |
-| **Backing services** — e.g. a `DATABASE_URL` default or a `psycopg` import | reported as a suggestion; never provisioned behind your back | `donkey addon add postgres` |
+| **Backing services** — e.g. a `DATABASE_URL` default or a `psycopg` import | offered in the plan (ticked, with the reason) and provisioned by the deploy only once confirmed; a plain deploy just reports it | `donkey addon add postgres`, or untick it |
 | **Addresses that only work on a laptop** — `http://localhost:3001/api` and friends. The assistant says where the code runs, because that decides whether it's a mistake: in browser code localhost is the *visitor's* machine (always wrong), in server code it's the app's own container (wrong only when it meant another app) | reported as a warning, with the fix | rewrite the call, or set the real address in `build.env` |
 | **Failure diagnosis** — on a failed build or rollout, logs and cluster events go back to the assistant | plain-language explanation + up to 3 proposed fixes | proposals are printed, never applied |
 
@@ -176,8 +203,10 @@ confirms or corrects it instead of guessing from scratch.
   code listens on 5000").
 - *Nothing silent.* Every filled-in value is printed as its own line during
   the deploy, with the reason the assistant gave.
-- *Nothing written behind your back.* `donkey init` asks before saving a
-  proposed Dockerfile or a storage block; deploy-time findings are recorded on
+- *Nothing written behind your back.* `donkey init` and the console's review
+  screen ask before saving a proposed Dockerfile, a storage block or a
+  service — and unattended (`--yes`, no terminal) nothing is provisioned at
+  all; deploy-time findings are recorded on
   the app's Deployment (never in your files), so a later `--no-build` redeploy
   keeps the same disks and health checks instead of silently dropping them —
   committing them to `donkey.yaml` stays your choice.
@@ -287,6 +316,9 @@ forwarding, so there is no proxy to write.
 serving, with the app's env, addon bindings and disk. Migrations are the
 reason it exists. If it fails, the deploy stops and the version already
 running keeps serving — nothing is swapped for something that cannot start.
+It is yours to write: the assistant points out when an app looks like it
+needs one, but a command donkey *runs* is never something a plan ticks for
+you the way a disk or a service is.
 
 **`env` vs `build.env`.** `env` reaches the running container. `build.env`
 reaches the build, which is where a bundler inlines values — a browser bundle
@@ -426,7 +458,7 @@ existing token for automation.)
 |---|---|
 | `donkey` | friendly overview and next step |
 | `donkey doctor` | client + server health with plain-language fixes |
-| `donkey init` | reads the app (detector + assistant), writes `donkey.yaml` incl. space and storage |
+| `donkey init` | reads the app on the server (detector + assistant + cluster checks), writes the `donkey.yaml` that plan amounts to |
 | `donkey apps` | everything deployed, grouped by space |
 | `donkey deploy` | upload → detect → build → deploy → URL (`--dry-run`, `--build-only`, `--no-build --tag`, `--no-wait`, `--platform`) |
 | `donkey status` / `logs -f` / `open` | day-2 basics (scoped to the folder's space) |

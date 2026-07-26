@@ -41,7 +41,7 @@ func TestAwkwardNamesSurvive(t *testing.T) {
 	gz.Close()
 
 	dir := t.TempDir()
-	if err := extractContext(&buf, dir); err != nil {
+	if _, err := extractContext(&buf, dir); err != nil {
 		t.Fatal(err)
 	}
 	for _, n := range names {

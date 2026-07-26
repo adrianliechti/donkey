@@ -63,6 +63,9 @@ func deployAction(ctx context.Context, cmd *cli.Command) error {
 		}
 	}
 
+	// plan names the reading `donkey init` just paid for, when this deploy is
+	// the one that set the app up.
+	plan := ""
 	if s.Resolved.App == nil {
 		// A folder with no donkey.yaml is not necessarily a new app: it is
 		// just as likely to be the root of a repository whose apps live one or
@@ -73,8 +76,9 @@ func deployAction(ctx context.Context, cmd *cli.Command) error {
 		if subs := findAppDirs(s.Resolved.Flags.AppDir); len(subs) > 0 {
 			return deployEach(ctx, cmd, u, subs)
 		}
-		// First deploy in this folder: run the init flow, then continue.
-		if _, err := initFlow(ctx, s, cmd); err != nil {
+		// First deploy in this folder: run the init flow, then continue. Its
+		// plan carries the reading this deploy would otherwise pay for again.
+		if _, plan, err = initFlow(ctx, s, cmd); err != nil {
 			return err
 		}
 		if s, err = newSession(cmd); err != nil {
@@ -112,6 +116,7 @@ func deployAction(ctx context.Context, cmd *cli.Command) error {
 	}
 	result, err := uploadAndDeploy(ctx, s, api, apiclient.DeployOpts{
 		Space:     s.Space,
+		Plan:      plan,
 		Platform:  cmd.String("platform"),
 		Tag:       cmd.String("tag"),
 		DryRun:    cmd.Bool("dry-run"),

@@ -47,7 +47,7 @@ func TestExtractContextZip(t *testing.T) {
 		".env":                      "SECRET=1",
 		"certs/server.key":          "key material",
 	})
-	if err := extractContext(bytes.NewReader(b), dir); err != nil {
+	if _, err := extractContext(bytes.NewReader(b), dir); err != nil {
 		t.Fatal(err)
 	}
 	if got := mustRead(t, dir, "donkey.yaml"); got != "name: web\nport: 3000\n" {
@@ -67,7 +67,7 @@ func TestExtractContextZipStripsSingleRoot(t *testing.T) {
 		"myapp-main/donkey.yaml": "name: web\nport: 3000\n",
 		"myapp-main/app.js":      "listen()",
 	})
-	if err := extractContext(bytes.NewReader(b), dir); err != nil {
+	if _, err := extractContext(bytes.NewReader(b), dir); err != nil {
 		t.Fatal(err)
 	}
 	mustRead(t, dir, "donkey.yaml")
@@ -87,7 +87,7 @@ func TestExtractContextZipFinderStyle(t *testing.T) {
 		"myapp/.git/config":           "[core]",
 		"myapp/node_modules/dep/i.js": "junk",
 	})
-	if err := extractContext(bytes.NewReader(b), dir); err != nil {
+	if _, err := extractContext(bytes.NewReader(b), dir); err != nil {
 		t.Fatal(err)
 	}
 	mustRead(t, dir, "donkey.yaml")
@@ -118,7 +118,7 @@ func TestExtractContextTarWithoutDirEntries(t *testing.T) {
 	}
 	tw.Close()
 	gz.Close()
-	if err := extractContext(&buf, dir); err != nil {
+	if _, err := extractContext(&buf, dir); err != nil {
 		t.Fatal(err)
 	}
 	mustRead(t, dir, "src/deep/main.py")
@@ -131,7 +131,7 @@ func TestExtractContextTarWithoutDirEntries(t *testing.T) {
 func TestExtractContextZipRejectsTraversal(t *testing.T) {
 	dir := t.TempDir()
 	b := zipBytes(t, map[string]string{"../evil.txt": "x"})
-	if err := extractContext(bytes.NewReader(b), dir); err == nil {
+	if _, err := extractContext(bytes.NewReader(b), dir); err == nil {
 		t.Fatal("expected a traversal error")
 	}
 }
@@ -150,7 +150,7 @@ func TestExtractContextTarGz(t *testing.T) {
 	}
 	tw.Close()
 	gz.Close()
-	if err := extractContext(&buf, dir); err != nil {
+	if _, err := extractContext(&buf, dir); err != nil {
 		t.Fatal(err)
 	}
 	if got := mustRead(t, dir, "donkey.yaml"); got != content {
@@ -159,7 +159,7 @@ func TestExtractContextTarGz(t *testing.T) {
 }
 
 func TestExtractContextRejectsGarbage(t *testing.T) {
-	if err := extractContext(bytes.NewReader([]byte("hello, not an archive")), t.TempDir()); err == nil {
+	if _, err := extractContext(bytes.NewReader([]byte("hello, not an archive")), t.TempDir()); err == nil {
 		t.Fatal("expected an error for a non-archive upload")
 	}
 }
@@ -187,7 +187,7 @@ func TestContextRootFindsSubfolderApp(t *testing.T) {
 		"repo-main/backend/main.py":     "x",
 		"repo-main/README.md":           "docs",
 	})
-	if err := extractContext(bytes.NewReader(b), dir); err != nil {
+	if _, err := extractContext(bytes.NewReader(b), dir); err != nil {
 		t.Fatal(err)
 	}
 	root, took, err := contextRoot(dir, "")
@@ -206,7 +206,7 @@ func TestContextRootAmbiguousMonorepo(t *testing.T) {
 		"api/donkey.yaml": "name: api\nport: 8000\n",
 		"web/donkey.yaml": "name: web\nport: 3000\n",
 	})
-	if err := extractContext(bytes.NewReader(b), dir); err != nil {
+	if _, err := extractContext(bytes.NewReader(b), dir); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := contextRoot(dir, ""); err == nil {

@@ -88,13 +88,28 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 	s.deploying.Add(1)
 	defer s.deploying.Done()
 
+	// A reviewed plan carries the answers somebody already gave: the config
+	// they confirmed, and the assistant's reading that produced it. Asking
+	// the model the same question twice would risk a second, different answer
+	// to a screen the user already said yes to.
+	var planned *storedPlan
+	if id := r.URL.Query().Get("plan"); id != "" {
+		p, ok := s.plans.get(id)
+		if !ok {
+			writeErr(w, http.StatusGone,
+				fmt.Errorf("this deploy's plan has expired — upload the app again"))
+			return
+		}
+		planned = p
+	}
+
 	dir, err := os.MkdirTemp("", "donkey-ctx-*")
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
 	defer os.RemoveAll(dir)
-	if err := extractContext(r.Body, dir); err != nil {
+	if _, err := extractContext(r.Body, dir); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
@@ -110,7 +125,17 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	if app == nil {
+	switch {
+	case planned != nil:
+		// The reviewed plan is the config: it already carries what the
+		// upload's donkey.yaml said, plus every decision the person deploying
+		// confirmed on top of it.
+		app = planned.appCopy()
+		if err := app.Validate(); err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+	case app == nil:
 		// Browser uploads have no `donkey init` to lean on — name and port
 		// from the deploy form stand in for a donkey.yaml. One in the upload
 		// always wins (it is the app's own config, not the form's).
@@ -129,8 +154,16 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 	// changes can drain the very stream this response rides on. The CLI
 	// reconnects via status polling.
 	started := time.Now()
+	// A reviewed plan settles the space too — it is one of the things the
+	// review screen shows, so a query parameter left over from before the
+	// review must not quietly move the app somewhere else.
+	space := r.URL.Query().Get("space")
+	if planned != nil {
+		space = ""
+	}
 	res := s.deploy(context.WithoutCancel(r.Context()), out, dir, app, deployOpts{
-		Space:     r.URL.Query().Get("space"),
+		Analysis:  planned.reading(),
+		Space:     space,
 		Platform:  r.URL.Query().Get("platform"),
 		Tag:       r.URL.Query().Get("tag"),
 		DryRun:    r.URL.Query().Get("dryRun") == "true",
@@ -184,6 +217,9 @@ type deployOpts struct {
 	BuildOnly bool
 	NoBuild   bool
 	SHA       string
+	// Analysis is the assistant's reading of this app, when a reviewed plan
+	// already has one. Nil means this deploy asks for itself.
+	Analysis *ai.Analysis
 }
 
 func (s *Server) deploy(ctx context.Context, out *lineStreamer, dir string, app *config.AppConfig, opts deployOpts) DeployResult {
@@ -281,9 +317,14 @@ func (s *Server) deploy(ctx context.Context, out *lineStreamer, dir string, app 
 		analysis, err := s.analyzeApp(ctx, dir, det, detErr)
 		analysisReady <- analysisResult{analysis, err}
 	}
-	if detErr != nil {
+	switch {
+	case opts.Analysis != nil:
+		// A reviewed plan already asked, and its answer is the one the user
+		// said yes to.
+		analysisReady <- analysisResult{opts.Analysis, nil}
+	case detErr != nil:
 		run() // nothing to build yet — the proposal has to come first
-	} else {
+	default:
 		go run()
 	}
 
@@ -318,8 +359,8 @@ func (s *Server) deploy(ctx context.Context, out *lineStreamer, dir string, app 
 		if res.err != nil {
 			return res.err
 		}
-		for _, line := range mergeAnalysis(app, res.analysis) {
-			out.Line("· %s", line)
+		for _, f := range mergeAnalysis(app, res.analysis) {
+			out.Line("· %s", f.Text())
 		}
 		// The merge changed the config after its load-time validation — a
 		// proposal that produces an invalid combination must not reach the

@@ -20,6 +20,10 @@ type Server struct {
 	cfg       *Config
 	rt        runtime.Provider
 	assistant ai.Assistant
+	// plans holds what donkey read about an upload between the review and the
+	// deploy that follows it — so the assistant answers once per app, not once
+	// per screen.
+	plans *planStore
 
 	// deploying counts the deploys currently in flight, so a terminating pod
 	// can finish them instead of killing builds halfway.
@@ -40,7 +44,7 @@ func New(cfg *Config, rt runtime.Provider) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Server{cfg: cfg, rt: rt, assistant: assistant}, nil
+	return &Server{cfg: cfg, rt: rt, assistant: assistant, plans: newPlanStore()}, nil
 }
 
 // lockApp serializes work on one app. The returned function releases it.
@@ -73,6 +77,12 @@ func (s *Server) routes() http.Handler {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "version": Version})
 	}))
 	mux.Handle("POST /v1/deploys", s.auth(s.handleDeploy))
+	// A plan is a deploy read out loud before it happens: what the app is,
+	// how it will be built, what it needs and what will break. The console
+	// reviews one, `donkey init` prints one, and the deploy that follows
+	// carries its id so the assistant is asked once, not twice.
+	mux.Handle("POST /v1/plans", s.auth(s.handlePlan))
+	mux.Handle("PUT /v1/plans/{id}", s.auth(s.handlePlanUpdate))
 	// Apps live in a space, so their address does too.
 	mux.Handle("GET /v1/apps", s.auth(s.handleListApps))
 	mux.Handle("GET /v1/spaces/{space}/apps/{app}/status", s.auth(s.handleStatus))
@@ -135,7 +145,6 @@ func (s *Server) routes() http.Handler {
 	// token; the real upstream credential never travels past this handler.
 	mux.Handle(aiProxyPrefix, s.aiProxyHandler())
 	mux.Handle("GET /v1/doctor", s.auth(s.handleDoctor))
-	mux.Handle("POST /v1/ai/analyze", s.auth(s.handleAIAnalyze))
 	// Everything else is the admin console.
 	mux.Handle("/", uiHandler())
 

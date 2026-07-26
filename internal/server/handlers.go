@@ -700,21 +700,3 @@ func (s *Server) handleDoctor(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, map[string]any{"checks": checks, "domain": s.cfg.Domain})
 }
-
-// maxAnalyzeBytes caps what one analyze request may send to the model —
-// without it the endpoint is an unbounded proxy onto somebody's AI budget.
-const maxAnalyzeBytes = 1 << 20
-
-func (s *Server) handleAIAnalyze(w http.ResponseWriter, r *http.Request) {
-	var in ai.AnalyzeInput
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxAnalyzeBytes)).Decode(&in); err != nil {
-		writeErr(w, http.StatusBadRequest, err)
-		return
-	}
-	out, err := s.assistant.Analyze(r.Context(), &in)
-	if err != nil {
-		writeErr(w, http.StatusBadGateway, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, out)
-}

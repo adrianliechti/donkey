@@ -461,9 +461,21 @@ var (
 	dashRunRE      = regexp.MustCompile(`-{2,}`)
 )
 
-// Save writes donkey.yaml into dir, stripping values that equal the defaults
-// so the file stays as small as the user wrote it.
+// Save writes donkey.yaml into dir.
 func (c *AppConfig) Save(dir string) error {
+	b, err := c.Render()
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, AppFileName), b, 0o644)
+}
+
+// Render is the donkey.yaml this config amounts to, with values that equal
+// the defaults stripped so the file stays as small as the user would have
+// written it. The console shows it for copying into the project: a browser
+// deploy has no folder to write back to, and an app whose repo doesn't know
+// what the console decided is an app that deploys differently next time.
+func (c *AppConfig) Render() ([]byte, error) {
 	out := *c
 	if out.Build.Type == BuildAuto {
 		out.Build.Type = ""
@@ -495,7 +507,7 @@ func (c *AppConfig) Save(dir string) error {
 	}
 	b, err := yaml.Marshal(&out)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	// Empty struct fields marshal as "field: {}" noise — drop those lines.
 	var lines []string
@@ -505,5 +517,5 @@ func (c *AppConfig) Save(dir string) error {
 		}
 		lines = append(lines, line)
 	}
-	return os.WriteFile(filepath.Join(dir, AppFileName), []byte(strings.Join(lines, "\n")), 0o644)
+	return []byte(strings.Join(lines, "\n")), nil
 }
