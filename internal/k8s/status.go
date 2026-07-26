@@ -170,6 +170,28 @@ func (c *Client) ListAddonBindings(ctx context.Context, namespace, app string) (
 	return out, nil
 }
 
+// SharedBindingValues collects one key's values across every space's shared
+// binding Secrets — the AI proxy's token list. owner is the pseudo-app the
+// shared bindings belong to.
+func (c *Client) SharedBindingValues(ctx context.Context, owner, key string) ([]string, error) {
+	secrets, err := c.Clientset.CoreV1().Secrets("").List(ctx, metav1.ListOptions{
+		LabelSelector: manifests.LabelApp + "=" + owner,
+	})
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, sec := range secrets.Items {
+		if !strings.HasPrefix(sec.Labels[manifests.LabelComponent], "addon-") {
+			continue
+		}
+		if v, ok := sec.Data[key]; ok && len(v) > 0 {
+			out = append(out, string(v))
+		}
+	}
+	return out, nil
+}
+
 // ListAddonAttachments names the apps holding a copy of the shared addon's
 // binding (the component carries the addon- prefix already).
 func (c *Client) ListAddonAttachments(ctx context.Context, namespace, component string) ([]string, error) {

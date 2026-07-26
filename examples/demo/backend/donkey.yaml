@@ -20,3 +20,10 @@ storage:
   size: 1Gi
   paths:
     - /app/data
+# The space services behind /api/notes and /api/files: shared notes in
+# postgres, attachments in rustfs, summaries through the platform's openai
+# proxy. The deploy provisions them and injects each binding as env.
+addons:
+  - type: postgres
+  - type: rustfs
+  - type: openai

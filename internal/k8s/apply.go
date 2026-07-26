@@ -264,6 +264,43 @@ func (c *Client) ListApps(ctx context.Context) ([]AppRef, error) {
 	return out, nil
 }
 
+// DeleteSpace removes an app-less space: its namespace, and with it any
+// services and their data. Spaces that still hold apps keep their own
+// removal flow (with its own warnings) — this refuses them.
+func (c *Client) DeleteSpace(ctx context.Context, namespace string) error {
+	ns, err := c.Clientset.CoreV1().Namespaces().Get(ctx, namespace, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if ns.Annotations[manifests.AnnotationManaged] != "true" {
+		return fmt.Errorf("that namespace isn't donkey's to delete")
+	}
+	apps, err := c.Clientset.AppsV1().Deployments(namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: fmt.Sprintf("%s=%s", manifests.LabelComponent, manifests.ComponentWeb),
+	})
+	if err != nil {
+		return err
+	}
+	if n := len(apps.Items); n > 0 {
+		return fmt.Errorf("the space still holds %d %s — remove them first", n, plural(n, "app"))
+	}
+	err = c.Clientset.CoreV1().Namespaces().Delete(ctx, namespace, metav1.DeleteOptions{})
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	return err
+}
+
+func plural(n int, word string) string {
+	if n == 1 {
+		return word
+	}
+	return word + "s"
+}
+
 // ListSpaces finds every donkey space namespace, including ones holding no
 // app — a space can carry only services now, and it must not vanish from
 // view for that.

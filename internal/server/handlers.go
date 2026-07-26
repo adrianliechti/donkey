@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -211,6 +212,11 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 	component := q.Get("component")
 	if component == "" {
 		component = "web"
+	}
+	// A space's services belong to the pseudo-app "shared", whatever app the
+	// caller came through — their pods carry that owner label, not the app's.
+	if strings.HasPrefix(component, "addon-") {
+		app = addons.SharedOwner
 	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
@@ -458,6 +464,11 @@ func (s *Server) provisionService(ctx context.Context, space, ns, app string, re
 	objs = append(objs, addonObjs...)
 	if err := s.k8s.Apply(ctx, objs); err != nil {
 		return in, err
+	}
+	// A binding-only service (like openai) runs nothing — there is no
+	// rollout to wait for.
+	if len(addonObjs) == 0 {
+		return in, nil
 	}
 	return in, s.k8s.WaitForRollout(ctx, ns, in.Name)
 }

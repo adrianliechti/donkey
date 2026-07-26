@@ -59,6 +59,7 @@ var Registry = map[string]Addon{
 	"postgres":   postgres{},
 	"pocketbase": pocketbase{},
 	"rustfs":     rustfs{},
+	"openai":     openai{},
 }
 
 // Types lists the registered addon types, sorted.

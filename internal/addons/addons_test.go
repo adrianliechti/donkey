@@ -33,6 +33,9 @@ func TestRegistryDefaultsProvision(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: %v", a.Type(), err)
 		}
+		if len(objs) == 0 {
+			continue // a binding-only addon runs nothing in the space
+		}
 		var dep, svc, pvc bool
 		for _, o := range objs {
 			switch o.(type) {
@@ -140,6 +143,35 @@ func TestAttachmentSecret(t *testing.T) {
 	}
 	if plain := BindingSecret("prod", "shop", "donkey-prod", "db", nil); plain.Labels["donkey.dev/shared"] != "" {
 		t.Fatalf("a plain binding must not carry the shared label")
+	}
+}
+
+// The openai addon is the platform standing in for a service: the binding
+// points at donkey-server's proxy and carries a stand-in key, never the
+// real one.
+func TestOpenAIBinding(t *testing.T) {
+	a := Registry["openai"]
+	in := input
+	in.Name = "openai"
+	got := a.Binding(in)
+	if want := "http://donkey-server.donkey-system.svc/ai/v1"; got["OPENAI_BASE_URL"] != want {
+		t.Fatalf("OPENAI_BASE_URL = %q, want %q", got["OPENAI_BASE_URL"], want)
+	}
+	if got["OPENAI_API_KEY"] != "s3cret" {
+		t.Fatalf("the binding must carry the per-space stand-in key, got %v", got)
+	}
+	if objs, err := a.Objects(in); err != nil || len(objs) != 0 {
+		t.Fatalf("openai must run nothing in the space, got %d objects (%v)", len(objs), err)
+	}
+	ext, err := a.ExternalBinding("https://api.openai.com/v1/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ext["OPENAI_BASE_URL"] != "https://api.openai.com/v1" {
+		t.Fatalf("external OPENAI_BASE_URL = %q", ext["OPENAI_BASE_URL"])
+	}
+	if _, err := a.ExternalBinding("api.openai.com"); err == nil {
+		t.Fatal("a schemeless address should not pass")
 	}
 }
 

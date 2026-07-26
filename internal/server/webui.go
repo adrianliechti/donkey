@@ -98,6 +98,21 @@ func (s *Server) handleCreateSpace(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "name": req.Name})
 }
 
+// handleDeleteSpace removes a space that holds no apps — the console made
+// it, the console can unmake it. Its services and their data go with it.
+func (s *Server) handleDeleteSpace(w http.ResponseWriter, r *http.Request) {
+	ns, err := s.cfg.SpaceNamespace(r.PathValue("space"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := s.k8s.DeleteSpace(r.Context(), ns); err != nil {
+		writeErr(w, http.StatusConflict, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
 // AppListEntry is one row of the admin console's overview.
 type AppListEntry struct {
 	Name     string `json:"name"`

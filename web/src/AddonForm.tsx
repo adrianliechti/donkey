@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { Dialog, DialogBackdrop, DialogPanel, DialogTitle, Radio, RadioGroup } from '@headlessui/react'
-import { Archive, ArrowLeft, Backpack, Database, Server } from 'lucide-react'
+import { Archive, ArrowLeft, Backpack, Database, Server, Sparkles } from 'lucide-react'
 import { api, type AddAddonRequest, type AddonType } from './api'
 import { Button, ErrorNote, Select, Spinner } from './ui'
 
@@ -17,10 +17,12 @@ const typeIcons: Record<string, typeof Database> = {
   postgres: Database,
   pocketbase: Backpack,
   rustfs: Archive,
+  openai: Sparkles,
 }
 
 const addressExamples: Record<string, string> = {
   postgres: 'postgres://user:password@host:5432/dbname',
+  openai: 'https://api.openai.com/v1',
 }
 
 function Eyebrow({ children }: { children: ReactNode }) {
@@ -251,7 +253,9 @@ export function AddonForm({
         <p className="text-xs text-stone">
           {external
             ? 'Nothing runs in the cluster for this — only the connection is stored.'
-            : `${chosen.type} ${chosen.version}${needsDisk ? ` · ${disk} disk` : ''} · shared by the whole space`}
+            : chosen.version
+              ? `${chosen.type} ${chosen.version}${needsDisk ? ` · ${disk} disk` : ''} · shared by the whole space`
+              : `${chosen.type} · provided by the platform — nothing runs in your space`}
         </p>
         <div className="flex gap-2">
           <Button kind="quiet" onClick={onCancel} disabled={busy}>

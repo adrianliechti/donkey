@@ -301,7 +301,16 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ name }),
     }),
+  // Only for spaces without apps — their services and data go with it.
+  deleteSpace: (space: string) =>
+    request<{ ok: boolean }>(`/v1/spaces/${encodeURIComponent(space)}`, { method: 'DELETE' }),
   addonTypes: () => request<{ types: AddonType[] }>('/v1/catalog'),
+  // The binding with values — what the AI explorer chats with. Token-holder
+  // territory, same trust level as the env API.
+  serviceBinding: (space: string, service: string) =>
+    request<{ binding: Record<string, string>; host: string; port: number }>(
+      servicePath(space, service, '/binding'),
+    ),
   // Services belong to the space; apps hold connections to them.
   spaceAddons: (space: string) =>
     request<{ addons: SpaceAddonEntry[] }>(`/v1/spaces/${encodeURIComponent(space)}/services`),

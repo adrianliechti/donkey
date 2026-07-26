@@ -1,0 +1,9 @@
+fastmcp==3.4.4
+fastapi==0.140.0
+uvicorn==0.51.0
+duckdb==1.5.5
+psycopg[binary]==3.3.4
+boto3==1.43.56
+openai==2.48.0
+# FastAPI needs this one to read the multipart upload behind POST /api/files.
+python-multipart==0.0.32

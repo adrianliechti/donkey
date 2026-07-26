@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -280,6 +281,31 @@ func TestAppSaveKeepsSpaceAndStorage(t *testing.T) {
 	}
 	if out.Space != "acme" || len(out.Storage.Paths) != 1 || out.Storage.Paths[0] != "/app/uploads" {
 		t.Fatalf("roundtrip lost space or storage: %+v", out)
+	}
+}
+
+// Save minimizes an addon whose name just repeats its type — that must drop
+// the field entirely, not leave a `name: ""` behind.
+func TestAppSaveOmitsDefaultAddonName(t *testing.T) {
+	dir := t.TempDir()
+	c := AppConfig{Name: "web", Port: 3000, Addons: []AddonConfig{{Type: "openai"}}}
+	c.ApplyDefaults()
+	if err := c.Save(dir); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(filepath.Join(dir, AppFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "name: \"\"") {
+		t.Fatalf("minimized addon leaked an empty name:\n%s", b)
+	}
+	out, err := LoadApp(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Addons) != 1 || out.Addons[0].Name != "openai" {
+		t.Fatalf("roundtrip lost the addon or its defaulted name: %+v", out.Addons)
 	}
 }
 

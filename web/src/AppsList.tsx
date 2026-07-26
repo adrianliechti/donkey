@@ -135,7 +135,14 @@ export function AppsList({ onOpen }: { onOpen: (space: string, app: string) => v
       )}
 
       {spaces.map(([space, spaceApps]) => (
-        <SpaceCard key={space} space={space} apps={spaceApps} onOpen={onOpen} onRemove={setRemoving} />
+        <SpaceCard
+          key={space}
+          space={space}
+          apps={spaceApps}
+          onOpen={onOpen}
+          onRemove={setRemoving}
+          onChanged={reload}
+        />
       ))}
 
       {removing && (

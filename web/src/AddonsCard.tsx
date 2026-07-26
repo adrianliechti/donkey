@@ -78,20 +78,31 @@ export function AddonsCard({ space, app }: { space: string; app: string }) {
       {addons !== null && addons.length === 0 && (
         <p className="mt-2 text-sm text-stone">Not connected to any service yet.</p>
       )}
-      <ul className="mt-2 space-y-2">
+      <ul className="mt-2 space-y-3">
         {(addons ?? []).map((a) => (
-          <li key={a.name} className="flex flex-wrap items-center justify-between gap-2">
-            <div className="min-w-0">
+          <li key={a.name} className="border-b border-line/40 pb-3 last:border-0 last:pb-0">
+            {/* The button holds its corner whatever the key list does below —
+                nine postgres keys and one URL lay out the same way. */}
+            <div className="flex items-center justify-between gap-2">
               <span className="font-mono text-sm font-medium">{a.name}</span>
-              <span className="ml-2 font-mono text-xs text-stone">{a.keys.join(' · ')}</span>
+              <Button
+                kind="quiet"
+                disabled={busy}
+                onClick={() => run(() => api.removeAddon(space, app, a.name), '')}
+              >
+                Disconnect
+              </Button>
             </div>
-            <Button
-              kind="quiet"
-              disabled={busy}
-              onClick={() => run(() => api.removeAddon(space, app, a.name), '')}
-            >
-              Disconnect
-            </Button>
+            <div className="mt-1.5 flex flex-wrap gap-1">
+              {a.keys.map((k) => (
+                <span
+                  key={k}
+                  className="rounded bg-raised px-1.5 py-0.5 font-mono text-[10px] text-stone"
+                >
+                  {k}
+                </span>
+              ))}
+            </div>
           </li>
         ))}
       </ul>

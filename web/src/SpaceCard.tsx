@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Dialog, DialogBackdrop, DialogPanel, DialogTitle } from '@headlessui/react'
-import { Archive, Database, ExternalLink, HardDrive, Network, Plus, Table2, Trash2 } from 'lucide-react'
+import { Archive, Database, ExternalLink, HardDrive, Network, Plus, Sparkles, Table2, Trash2 } from 'lucide-react'
 import { api, type AddAddonRequest, type AppSummary, type SpaceAddonEntry } from './api'
 import { AddServiceDialog } from './AddonForm'
+import { AiDialog } from './AiDialog'
 import { DatabaseDialog } from './DatabaseDialog'
 import { S3Dialog } from './S3Dialog'
 import { Button, ErrorNote, ExposureBadge, StatusDot, ago, errText, healthLine, healthOf, type Health } from './ui'
@@ -22,14 +23,19 @@ export function SpaceCard({
   apps,
   onOpen,
   onRemove,
+  onChanged,
 }: {
   space: string
   apps: AppSummary[]
   onOpen: (space: string, app: string) => void
   onRemove: (r: { space: string; apps: string[]; siblings: string[] }) => void
+  // The fleet's refresh — an empty space removing itself has no other way
+  // to disappear from the overview.
+  onChanged: () => void
 }) {
   const [services, setServices] = useState<SpaceAddonEntry[] | null>(null)
   const [adding, setAdding] = useState(false)
+  const [deletingSpace, setDeletingSpace] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
 
@@ -86,17 +92,31 @@ export function SpaceCard({
           >
             <Plus className="size-4" aria-hidden />
           </button>
-          {apps.length > 0 && (
-            <button
-              type="button"
-              title={apps.length > 1 ? `Remove all ${apps.length} apps in ${space}` : `Remove ${apps[0]?.name ?? space}`}
-              aria-label={apps.length > 1 ? `Remove all ${apps.length} apps in ${space}` : `Remove ${apps[0]?.name ?? space}`}
-              onClick={() => onRemove({ space, apps: apps.map((a) => a.name), siblings: [] })}
-              className="rounded-md p-1.5 text-stone hover:bg-brick/10 hover:text-brick focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-hay-deep"
-            >
-              <Trash2 className="size-4" aria-hidden />
-            </button>
-          )}
+          <button
+            type="button"
+            title={
+              apps.length === 0
+                ? `Remove the space ${space}`
+                : apps.length > 1
+                  ? `Remove all ${apps.length} apps in ${space}`
+                  : `Remove ${apps[0]?.name ?? space}`
+            }
+            aria-label={
+              apps.length === 0
+                ? `Remove the space ${space}`
+                : apps.length > 1
+                  ? `Remove all ${apps.length} apps in ${space}`
+                  : `Remove ${apps[0]?.name ?? space}`
+            }
+            onClick={() =>
+              apps.length === 0
+                ? setDeletingSpace(true)
+                : onRemove({ space, apps: apps.map((a) => a.name), siblings: [] })
+            }
+            className="rounded-md p-1.5 text-stone hover:bg-brick/10 hover:text-brick focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-hay-deep"
+          >
+            <Trash2 className="size-4" aria-hidden />
+          </button>
         </div>
       </div>
 
@@ -115,6 +135,56 @@ export function SpaceCard({
           <AppCard key={app.name} app={app} onOpen={onOpen} siblings={apps} onRemove={onRemove} />
         ))}
       </div>
+
+      {deletingSpace && (
+        <Dialog open onClose={() => !busy && setDeletingSpace(false)} className="relative z-50">
+          <DialogBackdrop className="fixed inset-0 bg-black/60" />
+          <div className="fixed inset-0 flex items-start justify-center p-4 pt-[18vh]">
+            <DialogPanel className="w-full max-w-md rounded-lg border border-line bg-card p-4 shadow-2xl">
+              <DialogTitle className="font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-stone">
+                Remove the space {space}
+              </DialogTitle>
+              <ErrorNote message={error} />
+              <div className="mt-3 space-y-2 text-sm text-ink-soft">
+                <p>It holds no apps.</p>
+                {(services ?? []).length > 0 ? (
+                  <p className="text-brick">
+                    Its {(services ?? []).length === 1 ? 'service' : 'services'}{' '}
+                    <span className="font-mono">{(services ?? []).map((s) => s.name).join(', ')}</span>{' '}
+                    and all their data will be deleted with it.
+                  </p>
+                ) : (
+                  <p className="text-stone">It holds no services either — nothing of value goes with it.</p>
+                )}
+              </div>
+              <div className="mt-4 flex justify-end gap-2">
+                <Button kind="quiet" onClick={() => setDeletingSpace(false)} disabled={busy}>
+                  Cancel
+                </Button>
+                <Button
+                  kind="danger"
+                  disabled={busy}
+                  onClick={async () => {
+                    setBusy(true)
+                    setError('')
+                    try {
+                      await api.deleteSpace(space)
+                      setDeletingSpace(false)
+                      onChanged()
+                    } catch (err) {
+                      setError(errText(err, 'Removing did not work.'))
+                    } finally {
+                      setBusy(false)
+                    }
+                  }}
+                >
+                  {busy ? 'Removing…' : `Remove ${space}`}
+                </Button>
+              </div>
+            </DialogPanel>
+          </div>
+        </Dialog>
+      )}
 
       <AddServiceDialog
         open={adding}
@@ -150,6 +220,7 @@ function SpaceServices({
   const [removing, setRemoving] = useState<SpaceAddonEntry | null>(null)
   const [browsing, setBrowsing] = useState<SpaceAddonEntry | null>(null)
   const [storeBrowsing, setStoreBrowsing] = useState<SpaceAddonEntry | null>(null)
+  const [chatting, setChatting] = useState<SpaceAddonEntry | null>(null)
 
   if (!services || services.length === 0) return null
 
@@ -168,6 +239,17 @@ function SpaceServices({
           >
             <Database className="size-3" aria-hidden />
             {svc.name}
+            {svc.keys.includes('OPENAI_BASE_URL') && (
+              <button
+                type="button"
+                title={`Try the ${svc.name} service in a chat`}
+                aria-label={`Try the ${svc.name} service in a chat`}
+                onClick={() => setChatting(svc)}
+                className="rounded p-0.5 text-stone hover:bg-line/50 hover:text-ink"
+              >
+                <Sparkles className="size-3" aria-hidden />
+              </button>
+            )}
             {svc.keys.includes('AWS_ENDPOINT_URL_S3') && (
               <button
                 type="button"
@@ -208,6 +290,7 @@ function SpaceServices({
       {storeBrowsing && (
         <S3Dialog space={space} service={storeBrowsing.name} onClose={() => setStoreBrowsing(null)} />
       )}
+      {chatting && <AiDialog space={space} service={chatting.name} onClose={() => setChatting(null)} />}
       {removing && (
         <RemoveServiceDialog
           space={space}

@@ -16,7 +16,7 @@ $ donkey deploy
 ## The concept
 
 Donkey is a small PaaS for teams that already run Kubernetes. It follows
-three ideas:
+five ideas:
 
 1. **The cluster does the work.** A control plane (`donkey-server`) runs in
    your cluster and owns everything heavy: recognizing apps, building
@@ -43,6 +43,12 @@ three ideas:
    Entra ID) — and `access:` in donkey.yaml (or the console) narrows an app
    further to named users, groups or roles. `public: true` opts an app out.
    No issuer configured — no login, and the install says so.
+5. **Services belong to the space.** A database is the project's, not one
+   container's: postgres, S3-style storage, and the platform's AI are
+   provisioned once per space from a small catalog, and apps *connect* —
+   each gets a canonical env contract (`DATABASE_URL`, `AWS_*`,
+   `OPENAI_*`) injected, whether the service runs in the cluster or
+   somewhere else. See [Services](#services).
 
 ## Components
 
@@ -61,8 +67,9 @@ three ideas:
                            │ donkey-<space>                          │
                            │  app "web"      Deployment · Service    │
                            │  app "backend"  Deployment · Service    │
+                           │  service "postgres"  Deployment · PVC   │
                            │  per app: HTTPRoute (→ donkey-gateway)  │
-                           │  one PVC per app · env/addon/pull secrets│
+                           │  one PVC per app · env/binding secrets  │
                            └─────────────────────────────────────────┘
 ```
 
@@ -76,10 +83,15 @@ three ideas:
   serves the **admin console** (React/Tailwind, embedded in the binary) at
   its own URL: open `donkey.<baseDomain>` in a browser, sign in with the
   API token, and you get the apps overview with health at a glance, live
-  logs, an env-var editor, restart, attached services, an AI "explain
-  what's wrong" for unhealthy apps, remove-app, and the system checks —
-  plus deploys straight from the browser: drop a project folder or a .zip
-  on the Deploy page and the same pipeline runs, streaming its progress.
+  logs, an env-var editor, restart, an AI "explain what's wrong" for
+  unhealthy apps, remove-app, and the system checks. Spaces are managed
+  here too — create one before any app exists, remove an empty one — and
+  each space card carries its services: a catalog to add from, plus a
+  browser per capability (tables, rows and SQL for a database; buckets and
+  objects for storage; a streaming chat for the AI — see
+  [Services](#services)). Deploys work straight from the browser: drop a
+  project folder or a .zip on the Deploy page and the same pipeline runs,
+  streaming its progress.
   A dropped folder is packed client-side with the CLI's exclusion rules;
   an upload without donkey.yaml just needs a name and port in the form.
   Views are linkable (`#/app/<space>/<name>`) and follow your light/dark
@@ -101,15 +113,18 @@ three ideas:
   because the Gateway API has no standard for it — donkey stays portable
   across Gateway implementations and IdPs.
 - **Per space** — one namespace (`donkey-<space>`) shared by the apps of
-  that space, so they reach each other by plain service name. It is created
-  with the first app and removed with the last; a namespace donkey didn't
-  create is never taken over.
+  that space, so they reach each other by plain service name — and that
+  includes its services: a space's postgres is simply `postgres` to its
+  siblings. The namespace is created with the first app (or ahead of time
+  in the console), and goes away with the last app unless kept data or
+  services still live there; a namespace donkey didn't create is never
+  taken over.
 - **Per app** — Deployment (probes, `PORT`, `envFrom` secrets), Service,
   HTTPRoute (`<app>.<space>.<baseDomain>`, https only — one shared route
   redirects plain http) pointing at donkey-gateway with the app's backend,
   login and access rules as annotations, a `ReferenceGrant` for that
   cross-namespace hop, and Secrets for env vars, registry pull auth and
-  addon bindings. Everything is labeled `donkey.dev/app` and
+  service bindings. Everything is labeled `donkey.dev/app` and
   `donkey.dev/space`, so status, logs and destroy know exactly what donkey
   owns.
 - **Storage** — `storage.paths` in donkey.yaml (or what the assistant
@@ -123,20 +138,9 @@ three ideas:
   short-lived helper pod mounts the volume, which works whatever the app's
   image contains — and still works when the app is crash-looping or stopped,
   which is when a full disk usually needs looking at.
-- **Addons** belong to the space, and apps connect to them — a monorepo's
-  postgres is the project's database, not one container's. Each service is
-  provisioned once in-cluster (Deployment + PVC), or bound from elsewhere
-  with `addon attach <type> --url …`; a connected app holds a copy of the
-  binding Secret with a canonical env contract per type — `DATABASE_URL`,
-  `PG*` and Heroku's `JDBC_*` convention for postgres; `POCKETBASE_URL`
-  plus admin credentials for pocketbase — wired into its `envFrom`, so the
-  app cannot tell managed from remote. `addon add <type>` creates the
-  service if the space lacks it and connects the app; a second app naming
-  it simply joins. Disconnecting an app deletes nothing — only removing the
-  service from the space (console or `addon remove NAME --space`) touches
-  data. Services connected in the console reach the running app immediately
-  and survive later CLI deploys; `addons:` in `donkey.yaml` is provisioned
-  by the deploy itself, so a cloned repository comes up with its services.
+- **Services** (postgres & co.) belong to the space, not to one app; apps
+  hold *connections* — a copy of the service's binding Secret, wired into
+  their `envFrom`. The whole model has [its own section](#services).
 
 ## What donkey works out for you
 
@@ -239,7 +243,8 @@ storage:                      # one disk, each path its own folder on it
 
 addons:                       # space services this app uses; the deploy
   - type: postgres            # creates missing ones. postgres | pocketbase
-    name: db                  # apps naming the same service share it
+    name: db                  # | rustfs (S3) | openai (the platform's AI).
+                              # apps naming the same service share it
 
 build:
   type: auto                  # auto | railpack | dockerfile
@@ -282,6 +287,52 @@ reaches the build, which is where a bundler inlines values — a browser bundle
 cannot read a runtime variable, because it was built long before the container
 started.
 
+## Services
+
+A space owns its services; apps connect to them. Connecting injects the
+service's env contract — canonical variable names every ecosystem already
+understands — and disconnecting removes them again without touching the
+service or its data. Only removing the service *from the space* deletes
+anything, and that is where the confirmation lives.
+
+| Type | What it is | Connected apps see |
+|---|---|---|
+| `postgres` | the relational database (its own Deployment + disk) | `DATABASE_URL`, the `PG*` family, Heroku's `JDBC_*` convention for the Java world |
+| `pocketbase` | accounts, file uploads and a records API in one small server | `POCKETBASE_URL` + admin credentials |
+| `rustfs` | S3-compatible object storage | the AWS SDK convention (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_ENDPOINT_URL_S3`, `AWS_REGION`) + `S3_URL` |
+| `openai` | the platform's AI — nothing runs in the space | `OPENAI_BASE_URL`, `OPENAI_API_KEY`, `OPENAI_MODEL` |
+
+Ways in and out, all equivalent:
+
+- `donkey addon add postgres` creates the service if the space lacks it and
+  connects the app; a second app naming the same service simply joins it.
+  `addons:` in donkey.yaml means the deploy itself provisions what's
+  missing — a cloned repository comes up with its services.
+- `donkey addon attach <type> --url …` binds a service that already runs
+  elsewhere (a managed database, a real S3, an OpenAI account). The binding
+  is derived from the address, so **the app cannot tell managed from
+  remote** — swapping a provisioned postgres for RDS is an attach, not a
+  code change.
+- The console does the same from the space card's catalog; a service
+  connected there reaches the running app immediately and survives later
+  CLI deploys.
+
+**The `openai` service hides the real credential.** Its binding points apps
+at a proxy inside donkey-server with a generated per-space token; the proxy
+checks that token against the bindings it issued, swaps in the platform's
+actual key upstream, and streams the answer back (SSE included). The real
+key never leaves `donkey-system`, and removing the service from the space
+*is* the revocation.
+
+**Getting at a service yourself.** Services rightly have no public address,
+so donkey provides the ways in: `donkey addon tunnel NAME` opens a private
+line from your machine (localhost listener, carried over the authenticated
+API, alive only while the command runs — the printed `DATABASE_URL` is
+psql-ready), and the console opens a browser per capability — tables, rows
+and a SQL view for anything with a `DATABASE_URL`; buckets, uploads and
+downloads for anything speaking S3; a streaming markdown chat for the AI,
+using the very token and proxy an app would.
+
 ## Requirements for a real deployment
 
 donkey installs into a cluster you already run, and stays inside its own
@@ -297,7 +348,7 @@ applies anything, and `donkey doctor` keeps checking them after):
 
 | Requirement | Why | Notes |
 |---|---|---|
-| **Kubernetes cluster** with a default StorageClass | apps with `storage.paths` and provisioned addons claim volumes | any conformant cluster; nothing donkey-specific |
+| **Kubernetes cluster** with a default StorageClass | apps with `storage.paths` and provisioned services claim volumes | any conformant cluster; nothing donkey-specific |
 | **[Envoy Gateway](https://gateway.envoyproxy.io)** | donkey attaches one shared Gateway and per-app HTTPRoutes; the OIDC login runs in the proxy itself | donkey creates the `GatewayClass` and `Gateway`, not the controller. Traffic enters through a `LoadBalancer` service; on clusters where nothing assigns those an address (kind), set `gateway.serviceType: ClusterIP` |
 | **[cert-manager](https://cert-manager.io) + an Issuer** | every app hostname gets its own certificate | `tls.issuer` (ClusterIssuer or Issuer). Any solver works: HTTP-01, DNS-01, an internal CA, Vault |
 | **Container registry** the cluster can pull from | donkey pushes every build there | `registry.url` + credentials; `registry.caSecret` when its certificate comes from a private CA |
@@ -353,7 +404,7 @@ cd your-project && donkey deploy
 | `donkey status` / `logs -f` / `open` | day-2 basics (scoped to the folder's space) |
 | `donkey env set/unset/list` | env vars as cluster Secrets, auto-restart |
 | `donkey files ls/get/put/rm/mv` | what's on the app's disk — seed it, fetch something out, clear it |
-| `donkey addon add/attach/remove/list` | databases & co. with injected bindings |
+| `donkey addon add/attach/remove/list` | the space's services (see [Services](#services)); `remove NAME` disconnects the app, `remove NAME --space` deletes the service itself |
 | `donkey addon tunnel NAME` | reach a service from your machine — a private line while the command runs; services never get a public address |
 | `donkey destroy` | remove everything donkey created for the app (`--keep-data` spares disks and secrets — a kept database keeps its credentials; deleting data always asks — `--force` for scripts) |
 
@@ -418,8 +469,8 @@ deploy. What is *not* reproducible has to live outside the cluster:
 
 Two more things exist only in the cluster: env values set with `donkey env
 set` (the ones in `donkey.yaml` come back with the app, the rest don't), and
-the generated password of a provisioned addon — which matters only as long as
-its data does.
+the generated credential of a provisioned service — which matters only as
+long as its data does.
 
 **PVC data is the one thing that cannot be reconstructed.** Everything above
 is a copy of something you have; a volume is not. donkey never snapshots,
@@ -489,16 +540,17 @@ internal/
   build/              BuildKit gRPC builder (railpack LLB / dockerfile.v0), registry auth, tags
   k8s/                client-go wrapper: server-side apply, rollout wait, logs, env secrets
   k8s/manifests/      pure config→object rendering (app + control plane) — golden-tested
-  addons/             addon registry + postgres (provisioned & external bindings)
+  addons/             service catalog: postgres, pocketbase, rustfs, openai (provisioned & external bindings)
   ai/                 Assistant interface (analysis + failure diagnosis), OpenAI impl, secret-safe summarizer, log redaction
   config/             donkey.yaml, client config, install settings file
   doctor/             client-side check engine behind `donkey doctor`
   ui/                 all terminal output: plain language, jargon behind -v
   gitutil/            pure-Go .git reader: HEAD sha (image tags), repo root (default space)
 testdata/             deployable samples incl. a kitchen-sink monorepo; golden files
+examples/             what a finished project looks like: the demo (two apps, one
+                      address, three services) + server-install.yaml reference
 hack/                 dev/demo scaffolding only — never part of the product
                       (cluster.sh → devkube, demo-ca.sh, demo/fake-idp)
-examples/             server-install.yaml reference
 ```
 
 Conventions: everything under `internal/`; `config` and `k8s/manifests` are
@@ -518,7 +570,7 @@ deliberately trivial auto-approving identity provider
 (`hack/demo/fake-idp/` — everyone is instantly demo@example.com).
 
 ```sh
-task demo            # cluster + control plane + the demo app (dashboard + MCP backend)
+task demo            # cluster + control plane + the demo app (dashboard, MCP backend, three services)
 task test            # unit tests (no cluster needed)
 task e2e             # full smoke test, isolated from your real config
 task demo:samples    # deploy every testdata sample and report what donkey got right alone
@@ -583,3 +635,9 @@ company with an internal PKI uses. Tear down with `devkube --cluster donkey dele
   boundary: source summaries of every deployed app go there, and redacted
   failure logs when something breaks. Point it at a model you control (the
   install takes any OpenAI-compatible base URL).
+- The `openai` service never hands out the platform's real AI key: bindings
+  carry a generated per-space stand-in, donkey-server's proxy swaps it for
+  the real one on the way upstream, and the swap only happens for tokens
+  the server itself issued — so removing the service revokes the space's
+  access, and the upstream credential exists nowhere outside
+  `donkey-system`.

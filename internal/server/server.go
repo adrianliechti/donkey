@@ -92,6 +92,7 @@ func (s *Server) routes() http.Handler {
 	mux.Handle("POST /v1/spaces/{space}/apps/{app}/diagnose", s.auth(s.handleDiagnose))
 	mux.Handle("GET /v1/spaces", s.auth(s.handleListSpaces))
 	mux.Handle("POST /v1/spaces", s.auth(s.handleCreateSpace))
+	mux.Handle("DELETE /v1/spaces/{space}", s.auth(s.handleDeleteSpace))
 	// The service catalog, and the services of a space. Containers with safe
 	// names (services, databases, tables, buckets) live in the path; leaf
 	// items with arbitrary names (object keys, row keys) ride in query/body.
@@ -134,6 +135,9 @@ func (s *Server) routes() http.Handler {
 	mux.Handle("POST /v1/spaces/{space}/apps/{app}/files/move", s.auth(s.handleMoveFile))
 	mux.Handle("POST /v1/spaces/{space}/apps/{app}/files/folder", s.auth(s.handleMakeFolder))
 	mux.Handle("DELETE /v1/spaces/{space}/apps/{app}", s.auth(s.handleDestroy))
+	// The openai addon's proxy — its own per-space tokens, not the admin
+	// token; the real upstream credential never travels past this handler.
+	mux.Handle(aiProxyPrefix, s.aiProxyHandler())
 	mux.Handle("GET /v1/doctor", s.auth(s.handleDoctor))
 	mux.Handle("POST /v1/ai/analyze", s.auth(s.handleAIAnalyze))
 	// Everything else is the admin console.

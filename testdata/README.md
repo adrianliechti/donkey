@@ -18,11 +18,9 @@ and works out the name, the port, the build, the start command, the health
 route, and whether the app needs a disk. A sample that declares those in a
 `donkey.yaml` is not testing detection; it is testing YAML parsing.
 
-So only three samples ship one, each for reasons that have nothing to do with
+So only two samples ship one, each for reasons that have nothing to do with
 convenience:
 
-- **`demo/`** — it is the showcase for what you *can* only say explicitly:
-  `internal`, `routes`, `storage`, a fixed `space`.
 - **`monorepo-root/services/api/`** — the file *is* the test. Subfolder
   discovery finds an app by looking for a `donkey.yaml`, so removing it would
   remove the thing the sample exercises.
@@ -31,13 +29,11 @@ convenience:
   earns a suggestion), so `addons:` in the file is the only way to say them —
   and the deploy provisioning what the file lists is what's under test.
 
+(The showcase that says everything explicitly — `internal`, `routes`,
+`storage`, `addons`, a fixed `space` — lives in [examples/](../examples/):
+it stopped being a detection challenge long ago.)
+
 Everything else is bare. When you add a sample, add it bare.
-
-## The demo
-
-| Sample | Stack | The challenge |
-|---|---|---|
-| `demo/` | FastAPI + FastMCP + DuckDB, and a React/Tailwind dashboard | **One** address for two apps: the dashboard is the only thing on the internet, and the backend claims `/api` and `/mcp` on that same address while being `internal: true` — no hostname, no certificate, reachable only as `http://backend` from inside the space. Plus MCP and REST over one embedded database, and a disk that survives redeploys. This is what `task demo` deploys. |
 
 ## Attached services
 

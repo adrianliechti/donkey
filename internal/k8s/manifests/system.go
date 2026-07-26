@@ -80,10 +80,12 @@ type SystemInput struct {
 
 const (
 	SystemNamespace = "donkey-system"
-	serverName      = "donkey-server"
-	buildkitName    = "donkey-buildkitd"
-	serverPort      = 8088
-	buildkitPort    = 1234
+	// ServerName is donkey-server's Service — the openai addon points app
+	// bindings at its AI proxy path.
+	ServerName   = "donkey-server"
+	buildkitName = "donkey-buildkitd"
+	serverPort   = 8088
+	buildkitPort = 1234
 
 	// GatewayName is the shared Gateway all app routes attach to; the
 	// GatewayClass is bound to Envoy Gateway's controller.
@@ -125,8 +127,8 @@ func SystemObjects(in SystemInput) []runtime.Object {
 		systemService(in, buildkitName, buildkitPort, buildkitPort),
 		buildkitNetworkPolicy(in),
 		serverDeployment(in),
-		systemService(in, serverName, 80, serverPort),
-		systemRoute(in, serverName, in.ServerHost(), 80),
+		systemService(in, ServerName, 80, serverPort),
+		systemRoute(in, ServerName, in.ServerHost(), 80),
 		redirectRoute(in),
 		systemCertificate(in),
 	)
@@ -189,7 +191,7 @@ func systemNamespace(in SystemInput) *corev1.Namespace {
 func serverServiceAccount(in SystemInput) *corev1.ServiceAccount {
 	return &corev1.ServiceAccount{
 		TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "ServiceAccount"},
-		ObjectMeta: metav1.ObjectMeta{Name: serverName, Namespace: in.Namespace, Labels: systemLabels(serverName)},
+		ObjectMeta: metav1.ObjectMeta{Name: ServerName, Namespace: in.Namespace, Labels: systemLabels(ServerName)},
 	}
 }
 
@@ -199,16 +201,16 @@ func serverServiceAccount(in SystemInput) *corev1.ServiceAccount {
 func serverClusterRoleBinding(in SystemInput) *rbacv1.ClusterRoleBinding {
 	return &rbacv1.ClusterRoleBinding{
 		TypeMeta:   metav1.TypeMeta{APIVersion: "rbac.authorization.k8s.io/v1", Kind: "ClusterRoleBinding"},
-		ObjectMeta: metav1.ObjectMeta{Name: serverName, Labels: systemLabels(serverName)},
+		ObjectMeta: metav1.ObjectMeta{Name: ServerName, Labels: systemLabels(ServerName)},
 		RoleRef:    rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "ClusterRole", Name: "cluster-admin"},
-		Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: serverName, Namespace: in.Namespace}},
+		Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: ServerName, Namespace: in.Namespace}},
 	}
 }
 
 func systemSecret(in SystemInput) *corev1.Secret {
 	return &corev1.Secret{
 		TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "Secret"},
-		ObjectMeta: metav1.ObjectMeta{Name: "donkey-system-config", Namespace: in.Namespace, Labels: systemLabels(serverName)},
+		ObjectMeta: metav1.ObjectMeta{Name: "donkey-system-config", Namespace: in.Namespace, Labels: systemLabels(ServerName)},
 		StringData: map[string]string{
 			"api-token":          in.APIToken,
 			"registry-password":  in.RegistryPassword,
@@ -283,7 +285,7 @@ func buildkitDeployment(in SystemInput) *appsv1.Deployment {
 }
 
 func serverDeployment(in SystemInput) *appsv1.Deployment {
-	labels := systemLabels(serverName)
+	labels := systemLabels(ServerName)
 	replicas := int32(1)
 	secretEnv := func(name, key string) corev1.EnvVar {
 		return corev1.EnvVar{Name: name, ValueFrom: &corev1.EnvVarSource{
@@ -321,7 +323,7 @@ func serverDeployment(in SystemInput) *appsv1.Deployment {
 		HTTPGet: &corev1.HTTPGetAction{Path: "/healthz", Port: intstr.FromInt32(serverPort)},
 	}
 	spec := corev1.PodSpec{
-		ServiceAccountName: serverName,
+		ServiceAccountName: ServerName,
 		PriorityClassName:  systemPriorityClass,
 		Containers: []corev1.Container{{
 			Name:            "server",
@@ -365,12 +367,12 @@ func serverDeployment(in SystemInput) *appsv1.Deployment {
 	}
 	return &appsv1.Deployment{
 		TypeMeta:   metav1.TypeMeta{APIVersion: "apps/v1", Kind: "Deployment"},
-		ObjectMeta: metav1.ObjectMeta{Name: serverName, Namespace: in.Namespace, Labels: labels},
+		ObjectMeta: metav1.ObjectMeta{Name: ServerName, Namespace: in.Namespace, Labels: labels},
 		Spec: appsv1.DeploymentSpec{
 			Replicas: &replicas,
 			Selector: &metav1.LabelSelector{MatchLabels: labels},
 			Template: corev1.PodTemplateSpec{
-				ObjectMeta: in.hashedTemplateMeta(serverName, in.serverConfigHash()),
+				ObjectMeta: in.hashedTemplateMeta(ServerName, in.serverConfigHash()),
 				Spec:       spec,
 			},
 		},
@@ -518,7 +520,7 @@ func buildkitNetworkPolicy(in SystemInput) *networkingv1.NetworkPolicy {
 			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
 			Ingress: []networkingv1.NetworkPolicyIngressRule{{
 				From: []networkingv1.NetworkPolicyPeer{{
-					PodSelector:       &metav1.LabelSelector{MatchLabels: systemLabels(serverName)},
+					PodSelector:       &metav1.LabelSelector{MatchLabels: systemLabels(ServerName)},
 					NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": in.Namespace}},
 				}},
 				Ports: []networkingv1.NetworkPolicyPort{{Protocol: &tcp, Port: &port}},
@@ -678,7 +680,7 @@ func systemCertificate(in SystemInput) *unstructured.Unstructured {
 		"metadata": map[string]any{
 			"name":      ServerCertName,
 			"namespace": in.Namespace,
-			"labels":    toAnyMap(systemLabels(serverName)),
+			"labels":    toAnyMap(systemLabels(ServerName)),
 		},
 		"spec": map[string]any{
 			"secretName": ServerCertName,

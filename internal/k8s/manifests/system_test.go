@@ -108,7 +108,7 @@ func TestInstallTouchesOnlyItsOwnObjects(t *testing.T) {
 
 	ownCluster := map[string]bool{
 		"GatewayClass:" + GatewayClassName:     true,
-		"ClusterRoleBinding:" + serverName:     true,
+		"ClusterRoleBinding:" + ServerName:     true,
 		"ClusterRole:" + GatewayAppName:        true,
 		"ClusterRoleBinding:" + GatewayAppName: true,
 	}

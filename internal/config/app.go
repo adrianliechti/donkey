@@ -152,7 +152,10 @@ type RouteConfig struct {
 }
 
 type AddonConfig struct {
-	Name     string `json:"name"`
+	// Name is optional in donkey.yaml (it defaults to the type), so Save
+	// must be able to drop it again — omitempty keeps a minimized entry
+	// from serializing as `name: ""`.
+	Name     string `json:"name,omitempty"`
 	Type     string `json:"type"`
 	External bool   `json:"external,omitempty"`
 	Version  string `json:"version,omitempty"`

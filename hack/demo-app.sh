@@ -16,10 +16,10 @@ say "connecting this machine"
 # Apps live in a space: <app>.<space>.<domain>, one namespace per space.
 # The demo space holds two apps that talk to each other by plain service name.
 say "deploying the backend — FastAPI + MCP over DuckDB (space: demo)"
-(cd "${ROOT}/testdata/demo/backend" && "${DONKEY}" --yes deploy)
+(cd "${ROOT}/examples/demo/backend" && "${DONKEY}" --yes deploy)
 
 say "deploying the dashboard — React + Tailwind (space: demo)"
-(cd "${ROOT}/testdata/demo/dashboard" && "${DONKEY}" --yes deploy)
+(cd "${ROOT}/examples/demo/dashboard" && "${DONKEY}" --yes deploy)
 
 say "demo ready"
 cat <<EOF
@@ -39,7 +39,7 @@ cat <<EOF
   Admin console: https://donkey.${BASE}   (sign in with the API token)
   Identity:     http://auth.donkey-identity   (fake, approves everyone)
 
-  Try next:     cd testdata/demo/backend && donkey files ls   (the DuckDB file)
+  Try next:     cd examples/demo/backend && donkey files ls   (the DuckDB file)
                 donkey logs -f · donkey status · donkey env set GREETING=hello
                 donkey apps  (everything deployed, grouped by space)
 

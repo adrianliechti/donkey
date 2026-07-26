@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 	"sync"
 	"time"
 
@@ -29,6 +30,9 @@ func (c *Client) StreamLogs(ctx context.Context, namespace, app string, opts Log
 		return err
 	}
 	if len(pods.Items) == 0 {
+		if strings.HasPrefix(opts.Component, "addon-") {
+			return fmt.Errorf("no running copies found — is the service still in the space? `donkey addon list` shows them")
+		}
 		return fmt.Errorf("no running copies found — is the app deployed?")
 	}
 
