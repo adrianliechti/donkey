@@ -1,7 +1,16 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Dialog, DialogBackdrop, DialogPanel, DialogTitle } from '@headlessui/react'
-import { ChevronLeft, ChevronRight, Plus, RefreshCw, Table2, Terminal, Trash2 } from 'lucide-react'
+import {
+  getCoreRowModel,
+  getSortedRowModel,
+  useReactTable,
+  type ColumnDef,
+  type Row,
+  type SortingState,
+} from '@tanstack/react-table'
+import { Check, ChevronLeft, ChevronRight, Plus, RefreshCw, Table2, Terminal, Trash2, X } from 'lucide-react'
 import { api, type DbCell, type DbDatabase, type DbRowsPage, type DbTable } from './api'
+import { DataGrid } from './DataGrid'
 import { Button, ErrorNote, Select, Spinner, errText } from './ui'
 
 const inputStyle =
@@ -21,6 +30,53 @@ function fmtBytes(n: number): string {
 function CellText({ value }: { value: DbCell }) {
   if (value === null) return <span className="italic text-stone">null</span>
   return <>{value}</>
+}
+
+/**
+ * A cell that is quietly always an input — it reads as text until focused,
+ * commits its own change on blur, reverts on Escape (or when the server
+ * says no). No edit mode, no buttons: the grid behaves like a spreadsheet.
+ */
+function EditableCell({
+  initial,
+  isNull,
+  label,
+  onCommit,
+}: {
+  initial: string
+  isNull: boolean
+  label: string
+  onCommit: (value: string) => Promise<boolean>
+}) {
+  const [value, setValue] = useState(initial)
+  useEffect(() => {
+    setValue(initial)
+  }, [initial])
+
+  return (
+    <input
+      value={value}
+      onChange={(e) => setValue(e.target.value)}
+      onBlur={async () => {
+        if (value === initial) return
+        if (!(await onCommit(value))) setValue(initial)
+      }}
+      onKeyDown={(e) => {
+        if (e.key === 'Escape') {
+          // This Escape is ours (revert the cell) — without stopping it,
+          // the dialog underneath reads it as "close".
+          e.stopPropagation()
+          setValue(initial)
+          e.currentTarget.blur()
+        }
+        if (e.key === 'Enter') e.currentTarget.blur()
+      }}
+      placeholder={isNull ? 'null' : undefined}
+      aria-label={label}
+      title={isNull && value === '' ? 'null — type to set a value' : undefined}
+      className="w-full border-b border-transparent bg-transparent font-mono text-xs text-ink-soft outline-none placeholder:italic placeholder:text-stone focus:border-hay-deep focus:text-ink"
+    />
+  )
 }
 
 /**
@@ -47,6 +103,7 @@ export function DatabaseDialog({
   const [droppingDb, setDroppingDb] = useState(false)
   const [tables, setTables] = useState<DbTable[] | null>(null)
   const [current, setCurrent] = useState<DbTable | null>(null)
+  const [droppingTable, setDroppingTable] = useState<DbTable | null>(null)
   // What the main panel shows: a table, the new-table form, or SQL.
   const [view, setView] = useState<'tables' | 'sql' | 'create'>('tables')
   const [seedSql, setSeedSql] = useState('')
@@ -96,6 +153,23 @@ export function DatabaseDialog({
       setCurrent(null)
     } catch (err) {
       setError(errText(err, 'Creating the database did not work.'))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function dropTable() {
+    const t = droppingTable
+    if (!t) return
+    setBusy(true)
+    setError('')
+    try {
+      await api.dbDropTable(space, service, db, t.schema, t.name)
+      setDroppingTable(null)
+      if (current?.schema === t.schema && current?.name === t.name) setCurrent(null)
+      loadTables()
+    } catch (err) {
+      setError(errText(err, 'Dropping the table did not work.'))
     } finally {
       setBusy(false)
     }
@@ -274,24 +348,69 @@ export function DatabaseDialog({
                 {tables !== null && tables.length === 0 && (
                   <p className="px-1 text-xs text-stone">Nothing here yet.</p>
                 )}
-                {(tables ?? []).map((t) => (
-                  <button
-                    key={`${t.schema}.${t.name}`}
-                    type="button"
-                    onClick={() => setCurrent(t)}
-                    className={`flex w-full items-baseline justify-between gap-2 rounded-md px-2 py-1.5 text-left font-mono text-xs ${
-                      current?.schema === t.schema && current?.name === t.name
-                        ? 'bg-hay-wash text-ink'
-                        : 'text-ink-soft hover:bg-line/40'
-                    }`}
-                  >
-                    <span className="truncate">
-                      {t.schema !== 'public' ? `${t.schema}.` : ''}
-                      {t.name}
-                    </span>
-                    <span className="text-[10px] text-stone">~{t.rows}</span>
-                  </button>
-                ))}
+                {(tables ?? []).map((t) =>
+                  droppingTable?.schema === t.schema && droppingTable?.name === t.name ? (
+                    // Dropping is decided where the table lives — in its
+                    // own list row, compactly.
+                    <div
+                      key={`${t.schema}.${t.name}`}
+                      className="flex w-full items-center justify-between gap-1 rounded-md bg-brick/10 px-2 py-1.5 font-mono text-xs text-brick"
+                    >
+                      <span className="truncate">drop {t.name}?</span>
+                      <span className="flex shrink-0 gap-0.5">
+                        <button
+                          type="button"
+                          title={`Drop ${t.name} and its rows`}
+                          aria-label={`Drop ${t.name} and its rows`}
+                          onClick={dropTable}
+                          disabled={busy}
+                          className="rounded p-0.5 hover:bg-brick/20 disabled:opacity-40"
+                        >
+                          <Check className="size-3" aria-hidden />
+                        </button>
+                        <button
+                          type="button"
+                          title="Keep it"
+                          aria-label="Keep the table"
+                          onClick={() => setDroppingTable(null)}
+                          className="rounded p-0.5 text-stone hover:bg-line/50"
+                        >
+                          <X className="size-3" aria-hidden />
+                        </button>
+                      </span>
+                    </div>
+                  ) : (
+                    <div
+                      key={`${t.schema}.${t.name}`}
+                      className={`group/tbl flex w-full items-center rounded-md pr-1 ${
+                        current?.schema === t.schema && current?.name === t.name
+                          ? 'bg-hay-wash text-ink'
+                          : 'text-ink-soft hover:bg-line/40'
+                      }`}
+                    >
+                      <button
+                        type="button"
+                        onClick={() => setCurrent(t)}
+                        className="flex min-w-0 flex-1 items-baseline justify-between gap-2 px-2 py-1.5 text-left font-mono text-xs"
+                      >
+                        <span className="truncate">
+                          {t.schema !== 'public' ? `${t.schema}.` : ''}
+                          {t.name}
+                        </span>
+                        <span className="text-[10px] text-stone">~{t.rows}</span>
+                      </button>
+                      <button
+                        type="button"
+                        title={`Drop the table ${t.name}`}
+                        aria-label={`Drop the table ${t.name}`}
+                        onClick={() => setDroppingTable(t)}
+                        className="invisible rounded p-1 text-stone hover:bg-brick/10 hover:text-brick group-hover/tbl:visible"
+                      >
+                        <Trash2 className="size-3" aria-hidden />
+                      </button>
+                    </div>
+                  ),
+                )}
               </aside>
               {current ? (
                 <TableView
@@ -300,10 +419,6 @@ export function DatabaseDialog({
                   service={service}
                   db={db}
                   table={current}
-                  onDropped={() => {
-                    setCurrent(null)
-                    loadTables()
-                  }}
                 />
               ) : tables !== null && tables.length === 0 ? (
                 <div className="flex flex-1 items-center justify-center p-8">
@@ -536,37 +651,35 @@ function TableView({
   service,
   db,
   table,
-  onDropped,
 }: {
   space: string
   service: string
   db: string
   table: DbTable
-  onDropped: () => void
 }) {
   const [page, setPage] = useState<DbRowsPage | null>(null)
   const [offset, setOffset] = useState(0)
+  const [sorting, setSorting] = useState<SortingState>([])
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
-  // One row is in hand at a time: being edited, confirmed for deletion, or
-  // the fresh one being added.
-  const [editing, setEditing] = useState<number | null>(null)
+  // Cells edit themselves in place; only deletion, dropping the table and
+  // the add-row form still hold state here.
   const [deleting, setDeleting] = useState<number | null>(null)
   const [adding, setAdding] = useState(false)
-  const [dropping, setDropping] = useState(false)
   const [draft, setDraft] = useState<Record<string, string>>({})
 
   const limit = 50
 
+  const order = sorting.length > 0 ? { column: sorting[0].id, desc: sorting[0].desc } : undefined
   const load = useCallback(() => {
     api
-      .dbRows(space, service, db, table.schema, table.name, limit, offset)
+      .dbRows(space, service, db, table.schema, table.name, limit, offset, order)
       .then((res) => {
         setPage(res)
         setError('')
       })
       .catch((err) => setError(errText(err, 'Loading rows did not work.')))
-  }, [space, service, db, table.schema, table.name, offset])
+  }, [space, service, db, table.schema, table.name, offset, order?.column, order?.desc])
 
   useEffect(() => {
     load()
@@ -588,7 +701,6 @@ function TableView({
     setError('')
     try {
       await work()
-      setEditing(null)
       setDeleting(null)
       setAdding(false)
       setDraft({})
@@ -600,16 +712,29 @@ function TableView({
     }
   }
 
-  const save = (row: DbCell[]) => {
-    const values: Record<string, string> = {}
-    page?.columns.forEach((c, i) => {
-      const now = draft[c] ?? ''
-      const before = row[i] ?? ''
-      if (now !== before && !page.key.includes(c)) values[c] = now
-    })
-    return run(() =>
-      api.dbUpdateRow(space, service, db, table.schema, table.name, { key: rowKey(row), values }),
-    )
+  // One cell, one UPDATE. The page is patched in place on success, so
+  // tabbing across a row never reloads the grid under the cursor.
+  async function commitCell(rowIndex: number, colIndex: number, column: string, value: string) {
+    const row = page?.rows[rowIndex]
+    if (!row) return false
+    try {
+      await api.dbUpdateRow(space, service, db, table.schema, table.name, {
+        key: rowKey(row),
+        values: { [column]: value },
+      })
+      setPage(
+        (p) =>
+          p && {
+            ...p,
+            rows: p.rows.map((r, i) => (i === rowIndex ? r.map((v, ci) => (ci === colIndex ? value : v)) : r)),
+          },
+      )
+      setError('')
+      return true
+    } catch (err) {
+      setError(errText(err, 'That change did not stick.'))
+      return false
+    }
   }
 
   const insert = () => {
@@ -621,6 +746,95 @@ function TableView({
     })
     return run(() => api.dbInsertRow(space, service, db, table.schema, table.name, { values }))
   }
+
+  // Column defs are rebuilt every render on purpose: the cell renderers
+  // close over live editing state, which spares the meta indirection the
+  // memoized-columns pattern needs. At fifty rows a page, that's free.
+  const columns: ColumnDef<DbCell[]>[] = [
+    ...(page?.columns ?? []).map(
+      (c, ci): ColumnDef<DbCell[]> => ({
+        id: c,
+        accessorFn: (r: DbCell[]) => r[ci] ?? '',
+        header: () => (
+          <>
+            {c}
+            {page?.key.includes(c) && (
+              <span className="ml-1 text-[9px] text-hay" title="primary key">
+                key
+              </span>
+            )}
+          </>
+        ),
+        cell: ({ row }: { row: Row<DbCell[]> }) =>
+          editable && !page?.key.includes(c) ? (
+            <EditableCell
+              initial={row.original[ci] ?? ''}
+              isNull={row.original[ci] === null}
+              label={c}
+              onCommit={(value) => commitCell(row.index, ci, c, value)}
+            />
+          ) : (
+            <span title={row.original[ci] ?? undefined}>
+              <CellText value={row.original[ci]} />
+            </span>
+          ),
+      }),
+    ),
+    {
+      id: '__actions',
+      header: () => null,
+      enableSorting: false,
+      cell: ({ row }) =>
+        deleting === row.index ? (
+          <div className="flex gap-1">
+            <Button
+              kind="danger"
+              onClick={() =>
+                run(() =>
+                  api.dbDeleteRow(space, service, db, table.schema, table.name, {
+                    key: rowKey(row.original),
+                  }),
+                )
+              }
+              disabled={busy}
+            >
+              Delete
+            </Button>
+            <Button kind="quiet" onClick={() => setDeleting(null)} disabled={busy}>
+              ✕
+            </Button>
+          </div>
+        ) : editable ? (
+          // invisible, not hidden: the button keeps its space at all times,
+          // so hovering never changes the row's height.
+          <div className="invisible flex gap-0.5 group-hover/row:visible">
+            <button
+              type="button"
+              title="Delete row"
+              aria-label="Delete row"
+              onClick={() => setDeleting(row.index)}
+              className="rounded p-1 text-stone hover:bg-brick/10 hover:text-brick"
+            >
+              <Trash2 className="size-3" aria-hidden />
+            </button>
+          </div>
+        ) : null,
+    },
+  ]
+
+  const grid = useReactTable({
+    data: page?.rows ?? [],
+    columns,
+    state: { sorting },
+    onSortingChange: (updater) => {
+      // A new order starts from the first page — offsets into the old
+      // order would show arbitrary rows.
+      setOffset(0)
+      setSorting(updater)
+    },
+    manualSorting: true,
+    getCoreRowModel: getCoreRowModel(),
+  })
 
   if (page === null) {
     return (
@@ -635,43 +849,23 @@ function TableView({
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line px-3 py-2">
         <span className="font-mono text-xs text-ink-soft">
           {page.total} {page.total === 1 ? 'row' : 'rows'}
-          {!editable && <span className="ml-2 text-stone">read-only (no primary key)</span>}
+          {editable ? (
+            <span className="ml-2 text-stone">click a cell to edit — blur saves, Esc reverts</span>
+          ) : (
+            <span className="ml-2 text-stone">read-only (no primary key)</span>
+          )}
         </span>
         <div className="flex items-center gap-1.5">
-          {dropping ? (
-            <>
-              <span className="text-xs text-brick">
-                Drop <span className="font-mono">{table.name}</span> and its rows?
-              </span>
-              <Button
-                kind="danger"
-                disabled={busy}
-                onClick={() =>
-                  run(() => api.dbDropTable(space, service, db, table.schema, table.name)).then(onDropped)
-                }
-              >
-                {busy ? 'Dropping…' : 'Drop table'}
-              </Button>
-              <Button kind="quiet" onClick={() => setDropping(false)} disabled={busy}>
-                ✕
-              </Button>
-            </>
-          ) : (
-            <button
-              type="button"
-              title={`Drop the table ${table.name}`}
-              aria-label={`Drop the table ${table.name}`}
-              onClick={() => setDropping(true)}
-              className="rounded p-1.5 text-stone hover:bg-brick/10 hover:text-brick"
-            >
-              <Trash2 className="size-3.5" aria-hidden />
-            </button>
-          )}
-          <Button kind="quiet" onClick={() => setAdding(true)} disabled={busy || adding}>
-            <span className="flex items-center gap-1">
-              <Plus className="size-3.5" aria-hidden /> Add row
-            </span>
-          </Button>
+          <button
+            type="button"
+            onClick={() => setAdding(true)}
+            disabled={busy || adding}
+            title="Add a row"
+            aria-label="Add a row"
+            className="rounded p-1.5 text-stone hover:bg-line/50 hover:text-ink disabled:opacity-40"
+          >
+            <Plus className="size-3.5" aria-hidden />
+          </button>
           <button
             type="button"
             onClick={load}
@@ -710,145 +904,66 @@ function TableView({
         <ErrorNote message={error} />
       </div>
       <div className="min-h-0 flex-1 overflow-auto px-3 pb-3">
-        <table className="w-full border-separate border-spacing-0 font-mono text-xs">
-          <thead className="sticky top-0 z-10">
-            <tr>
-              {page.columns.map((c) => (
-                <th
-                  key={c}
-                  className="border-b border-line bg-card px-2 py-1.5 text-left font-semibold text-stone"
-                >
-                  {c}
-                  {page.key.includes(c) && (
-                    <span className="ml-1 text-[9px] text-hay" title="primary key">
-                      key
-                    </span>
-                  )}
-                </th>
-              ))}
-              <th className="w-16 border-b border-line bg-card" />
-            </tr>
-          </thead>
-          <tbody>
-            {adding && (
-              <tr className="bg-hay-wash/50">
-                {page.columns.map((c) => (
-                  <td key={c} className="border-b border-line/50 px-1 py-1">
+        <DataGrid
+          table={grid}
+          leadingRow={
+            adding ? (
+              // The pending row speaks the same language as the cells
+              // around it: bare inputs, Enter saves, Escape discards — the
+              // tint is what says "not stored yet".
+              <tr className="bg-hay-wash/40">
+                {page.columns.map((c, ci) => (
+                  <td key={c} className="border-b border-line/50 px-2 py-1">
                     <input
+                      autoFocus={ci === 0}
                       value={draft[c] ?? ''}
                       onChange={(e) => setDraft({ ...draft, [c]: e.target.value })}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') insert()
+                        if (e.key === 'Escape') {
+                          // Ours too: discard the pending row, keep the
+                          // dialog open.
+                          e.stopPropagation()
+                          setAdding(false)
+                          setDraft({})
+                        }
+                      }}
                       placeholder="default"
                       aria-label={`New ${c}`}
-                      className={`${inputStyle} w-full`}
+                      className="w-full border-b border-transparent bg-transparent font-mono text-xs text-ink outline-none placeholder:italic placeholder:text-stone/60 focus:border-hay-deep"
                     />
                   </td>
                 ))}
                 <td className="border-b border-line/50 px-1 py-1">
-                  <div className="flex gap-1">
-                    <Button onClick={insert} disabled={busy}>
-                      Save
-                    </Button>
-                    <Button
-                      kind="quiet"
+                  <div className="flex gap-0.5">
+                    <button
+                      type="button"
+                      title="Save the row (Enter)"
+                      aria-label="Save the row"
+                      onClick={insert}
+                      disabled={busy}
+                      className="rounded p-1 text-moss hover:bg-moss/10 disabled:opacity-40"
+                    >
+                      <Check className="size-3" aria-hidden />
+                    </button>
+                    <button
+                      type="button"
+                      title="Discard (Esc)"
+                      aria-label="Discard the row"
                       onClick={() => {
                         setAdding(false)
                         setDraft({})
                       }}
-                      disabled={busy}
+                      className="rounded p-1 text-stone hover:bg-line/50"
                     >
-                      ✕
-                    </Button>
+                      <X className="size-3" aria-hidden />
+                    </button>
                   </div>
                 </td>
               </tr>
-            )}
-            {page.rows.map((row, i) => (
-              <tr key={i} className="group/row hover:bg-line/20">
-                {page.columns.map((c, ci) => (
-                  <td key={c} className="max-w-64 truncate border-b border-line/50 px-2 py-1 text-ink-soft">
-                    {editing === i && !page.key.includes(c) ? (
-                      <input
-                        value={draft[c] ?? ''}
-                        onChange={(e) => setDraft({ ...draft, [c]: e.target.value })}
-                        aria-label={c}
-                        className={`${inputStyle} w-full`}
-                      />
-                    ) : (
-                      <span title={row[ci] ?? undefined}>
-                        <CellText value={row[ci]} />
-                      </span>
-                    )}
-                  </td>
-                ))}
-                <td className="border-b border-line/50 px-1 py-1">
-                  {editing === i ? (
-                    <div className="flex gap-1">
-                      <Button onClick={() => save(row)} disabled={busy}>
-                        Save
-                      </Button>
-                      <Button kind="quiet" onClick={() => setEditing(null)} disabled={busy}>
-                        ✕
-                      </Button>
-                    </div>
-                  ) : deleting === i ? (
-                    <div className="flex gap-1">
-                      <Button
-                        kind="danger"
-                        onClick={() =>
-                          run(() =>
-                            api.dbDeleteRow(space, service, db, table.schema, table.name, {
-                              key: rowKey(row),
-                            }),
-                          )
-                        }
-                        disabled={busy}
-                      >
-                        Delete
-                      </Button>
-                      <Button kind="quiet" onClick={() => setDeleting(null)} disabled={busy}>
-                        ✕
-                      </Button>
-                    </div>
-                  ) : (
-                    editable && (
-                      <div className="hidden gap-0.5 group-hover/row:flex">
-                        <button
-                          type="button"
-                          title="Edit row"
-                          aria-label="Edit row"
-                          onClick={() => {
-                            setEditing(i)
-                            setDeleting(null)
-                            const d: Record<string, string> = {}
-                            page.columns.forEach((c, ci) => {
-                              d[c] = row[ci] ?? ''
-                            })
-                            setDraft(d)
-                          }}
-                          className="rounded p-1 text-stone hover:bg-line/50 hover:text-ink"
-                        >
-                          ✎
-                        </button>
-                        <button
-                          type="button"
-                          title="Delete row"
-                          aria-label="Delete row"
-                          onClick={() => {
-                            setDeleting(i)
-                            setEditing(null)
-                          }}
-                          className="rounded p-1 text-stone hover:bg-brick/10 hover:text-brick"
-                        >
-                          <Trash2 className="size-3" aria-hidden />
-                        </button>
-                      </div>
-                    )
-                  )}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+            ) : undefined
+          }
+        />
         {page.rows.length === 0 && !adding && (
           <p className="py-8 text-center text-sm text-stone">No rows yet — Add row puts the first one in.</p>
         )}
@@ -922,35 +1037,32 @@ function SqlView({
               {result.truncated && (
                 <p className="pb-1 text-xs text-stone">Showing the first {result.rows.length} rows.</p>
               )}
-              <table className="w-full border-separate border-spacing-0 font-mono text-xs">
-                <thead className="sticky top-0">
-                  <tr>
-                    {result.columns.map((c) => (
-                      <th
-                        key={c}
-                        className="border-b border-line bg-card px-2 py-1.5 text-left font-semibold text-stone"
-                      >
-                        {c}
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {result.rows.map((row, i) => (
-                    <tr key={i}>
-                      {row.map((v, vi) => (
-                        <td key={vi} className="max-w-64 truncate border-b border-line/50 px-2 py-1 text-ink-soft">
-                          <CellText value={v} />
-                        </td>
-                      ))}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+              <SqlResultGrid columns={result.columns} rows={result.rows} />
             </>
           )}
         </div>
       )}
     </div>
   )
+}
+
+
+/** SQL results, sortable client-side — the whole set is already here. */
+function SqlResultGrid({ columns, rows }: { columns: string[]; rows: DbCell[][] }) {
+  const [sorting, setSorting] = useState<SortingState>([])
+  const defs: ColumnDef<DbCell[]>[] = columns.map((c, i) => ({
+    id: c,
+    accessorFn: (r: DbCell[]) => r[i] ?? '',
+    header: c,
+    cell: ({ row }: { row: Row<DbCell[]> }) => <CellText value={row.original[i]} />,
+  }))
+  const table = useReactTable({
+    data: rows,
+    columns: defs,
+    state: { sorting },
+    onSortingChange: setSorting,
+    getCoreRowModel: getCoreRowModel(),
+    getSortedRowModel: getSortedRowModel(),
+  })
+  return <DataGrid table={table} />
 }

@@ -376,12 +376,14 @@ export const api = {
     table: string,
     limit: number,
     offset: number,
+    order?: { column: string; desc: boolean },
   ) =>
     request<DbRowsPage>(
       servicePath(
         space,
         service,
-        `/databases/${encodeURIComponent(db)}/tables/${encodeURIComponent(table)}/rows?schema=${encodeURIComponent(schema)}&limit=${limit}&offset=${offset}`,
+        `/databases/${encodeURIComponent(db)}/tables/${encodeURIComponent(table)}/rows?schema=${encodeURIComponent(schema)}&limit=${limit}&offset=${offset}` +
+          (order ? `&order=${encodeURIComponent(order.column)}&dir=${order.desc ? 'desc' : 'asc'}` : ''),
       ),
     ),
   dbInsertRow: (space: string, service: string, db: string, schema: string, table: string, body: DbRowChange) =>

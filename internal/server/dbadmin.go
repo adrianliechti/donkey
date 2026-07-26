@@ -338,15 +338,23 @@ func (s *Server) handleDbRows(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadGateway, err)
 		return
 	}
-	// Stable paging needs a stable order; the key provides one when it
-	// exists.
-	order := ""
-	if len(key) > 0 {
-		quoted := make([]string, len(key))
-		for i, k := range key {
-			quoted[i] = pgx.Identifier{k}.Sanitize()
+	// The caller may sort by one column (?order=&dir=); the key columns are
+	// always appended — stable paging needs a stable order, and a sort
+	// column with duplicates alone would shuffle pages.
+	var ordering []string
+	if col := r.URL.Query().Get("order"); col != "" {
+		dir := " ASC"
+		if r.URL.Query().Get("dir") == "desc" {
+			dir = " DESC"
 		}
-		order = " ORDER BY " + strings.Join(quoted, ", ")
+		ordering = append(ordering, pgx.Identifier{col}.Sanitize()+dir)
+	}
+	for _, k := range key {
+		ordering = append(ordering, pgx.Identifier{k}.Sanitize())
+	}
+	order := ""
+	if len(ordering) > 0 {
+		order = " ORDER BY " + strings.Join(ordering, ", ")
 	}
 
 	var total int64
