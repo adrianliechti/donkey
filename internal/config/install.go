@@ -18,8 +18,13 @@ type InstallFile struct {
 	// DefaultBuildkitImage) — an air-gapped installation mirrors it.
 	BuildkitImage string          `json:"buildkitImage,omitempty"`
 	Registry      InstallRegistry `json:"registry,omitempty"`
-	// BaseDomain: apps become <app>.<space>.<baseDomain>.
-	BaseDomain string         `json:"baseDomain,omitempty"`
+	// Domain: apps become <app>.<space>.<domain>.
+	Domain string `json:"domain,omitempty"`
+	// ServerHost is where the API and console live (default: the domain
+	// itself). It must be the domain or a name under it — the central OAuth
+	// callback always stays on the domain, and the login cookie's domain has
+	// to cover the console too.
+	ServerHost string         `json:"serverHost,omitempty"`
 	Gateway    InstallGateway `json:"gateway,omitempty"`
 	TLS        InstallTLS     `json:"tls,omitempty"`
 	// DefaultPlatform is the build platform of the cluster's nodes

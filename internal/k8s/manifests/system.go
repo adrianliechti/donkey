@@ -27,7 +27,12 @@ import (
 type SystemInput struct {
 	Namespace   string // "donkey-system"
 	ServerImage string
-	BaseDomain  string
+	Domain      string
+
+	// ServerHostname overrides where the API and console live (default: the
+	// domain itself). It must be the domain or a name under it — the login
+	// cookie's domain has to cover it.
+	ServerHostname string
 
 	// TLSIssuer/TLSIssuerKind name the cert-manager issuer that signs app
 	// certificates. TLSCertificateRefs carries the app certificates the
@@ -58,7 +63,7 @@ type SystemInput struct {
 
 	APIToken string
 
-	OIDCIssuer       string // default: http(s)://id.<baseDomain>
+	OIDCIssuer       string // OIDC issuer of the login gateway
 	OIDCClientID     string
 	OIDCClientSecret string
 	// SessionKey seals the login gateway's session cookies (32 bytes, hex).
@@ -105,8 +110,14 @@ const (
 // Secure-only, so plain http was never a real option.
 func (in SystemInput) Scheme() string { return "https" }
 
-// ServerHost is where the donkey API lives.
-func (in SystemInput) ServerHost() string { return "donkey." + in.BaseDomain }
+// ServerHost is where the donkey API and console live — the domain itself,
+// unless overridden.
+func (in SystemInput) ServerHost() string {
+	if in.ServerHostname != "" {
+		return in.ServerHostname
+	}
+	return in.Domain
+}
 
 // SystemObjects renders the whole control plane, in apply order.
 func SystemObjects(in SystemInput) []runtime.Object {
@@ -129,6 +140,7 @@ func SystemObjects(in SystemInput) []runtime.Object {
 		serverDeployment(in),
 		systemService(in, ServerName, 80, serverPort),
 		systemRoute(in, ServerName, in.ServerHost(), 80),
+		loginRoute(in),
 		redirectRoute(in),
 		systemCertificate(in),
 	)
@@ -302,7 +314,7 @@ func serverDeployment(in SystemInput) *appsv1.Deployment {
 		{Name: "DONKEY_REGISTRY_INSECURE", Value: strconv.FormatBool(in.RegistryInsecure)},
 		{Name: "DONKEY_REGISTRY_IMMUTABLE", Value: strconv.FormatBool(in.RegistryImmutable)},
 		{Name: "DONKEY_REGISTRY_CA_FILE", Value: registryCAFile(in)},
-		{Name: "DONKEY_BASE_DOMAIN", Value: in.BaseDomain},
+		{Name: "DONKEY_DOMAIN", Value: in.Domain},
 		{Name: "DONKEY_TLS_ISSUER", Value: in.TLSIssuer},
 		{Name: "DONKEY_TLS_ISSUER_KIND", Value: in.TLSIssuerKind},
 		{Name: "DONKEY_BUILDKIT_ADDR", Value: fmt.Sprintf("tcp://%s.%s.svc.cluster.local:%d", buildkitName, in.Namespace, buildkitPort)},
@@ -579,6 +591,20 @@ func systemRoute(in SystemInput, name, host string, port int32) *gatewayv1.HTTPR
 	}
 }
 
+// loginRoute serves the central OAuth callback: /oauth2 on the domain itself
+// belongs to the donkey gateway, so one redirect URI registered at the IdP
+// covers every app under the domain. The console shares the hostname —
+// Gateway API picks the most specific path, so the two never collide.
+func loginRoute(in SystemInput) *gatewayv1.HTTPRoute {
+	r := systemRoute(in, GatewayAppName, in.Domain, 80)
+	prefix := gatewayv1.PathMatchPathPrefix
+	path := "/oauth2"
+	r.Spec.Rules[0].Matches = []gatewayv1.HTTPRouteMatch{{
+		Path: &gatewayv1.HTTPPathMatch{Type: &prefix, Value: &path},
+	}}
+	return r
+}
+
 // redirectRoute sends every plain-http visitor to https. One catch-all route
 // on the http listener covers all apps and the API; cert-manager's HTTP-01
 // solver routes carry specific hostnames and paths, which take precedence.
@@ -668,11 +694,17 @@ func gatewayClass(in SystemInput) *gatewayv1.GatewayClass {
 // serves itself the same way it serves apps.
 const ServerCertName = "donkey-tls-server"
 
-// systemCertificate asks cert-manager for the API's certificate.
+// systemCertificate asks cert-manager for the API's certificate. It always
+// covers the domain itself too: the central OAuth callback lives there,
+// wherever the API is.
 func systemCertificate(in SystemInput) *unstructured.Unstructured {
 	kind := in.TLSIssuerKind
 	if kind == "" {
 		kind = "ClusterIssuer"
+	}
+	names := []any{in.ServerHost()}
+	if in.ServerHost() != in.Domain {
+		names = append(names, in.Domain)
 	}
 	return &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "cert-manager.io/v1",
@@ -684,7 +716,7 @@ func systemCertificate(in SystemInput) *unstructured.Unstructured {
 		},
 		"spec": map[string]any{
 			"secretName": ServerCertName,
-			"dnsNames":   []any{in.ServerHost()},
+			"dnsNames":   names,
 			"issuerRef": map[string]any{
 				"name":  in.TLSIssuer,
 				"kind":  kind,

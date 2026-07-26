@@ -91,6 +91,10 @@ func donkeyGatewayDeployment(in SystemInput) *appsv1.Deployment {
 		{Name: "DONKEY_LISTEN", Value: fmt.Sprintf(":%d", donkeyGatewayPort)},
 		{Name: "DONKEY_HEALTH_LISTEN", Value: fmt.Sprintf(":%d", donkeyGatewayHealthPort)},
 		{Name: "DONKEY_OIDC_ISSUER", Value: in.OIDCIssuer},
+		// The central callback lives on the base domain itself; hostnames
+		// under it share it (and one session cookie — SSO), custom domains
+		// outside keep per-host callbacks.
+		{Name: "DONKEY_DOMAIN", Value: in.Domain},
 		secretEnv("DONKEY_OIDC_CLIENT_ID", "oidc-client-id"),
 		secretEnv("DONKEY_OIDC_CLIENT_SECRET", "oidc-client-secret"),
 		secretEnv("DONKEY_SESSION_KEY", "session-key"),

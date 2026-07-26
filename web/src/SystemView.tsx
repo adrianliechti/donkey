@@ -39,10 +39,10 @@ export function SystemView() {
           <Card className="p-4">
             <SectionTitle>Apps are served on</SectionTitle>
             <p className="mt-1 font-mono text-sm">
-              {'<app>'}.{'<space>'}.{report.baseDomain}
+              {'<app>'}.{'<space>'}.{report.domain}
             </p>
             <p className="mt-1 text-xs text-stone">
-              One DNS wildcard per space: *.{'<space>'}.{report.baseDomain} → the gateway's address.
+              One *.{report.domain} record covers every app — plus {report.domain} itself for the console and login.
             </p>
           </Card>
         </>

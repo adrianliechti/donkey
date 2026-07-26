@@ -1,0 +1,61 @@
+version: 2
+
+before:
+  hooks:
+    - go mod tidy
+    # The admin console is embedded into the binaries.
+    - sh -c "cd web && npm install --no-audit --no-fund && npm run build"
+
+# The CLI only — the server ships as an image via `task publish`.
+builds:
+  - main: ./cmd/donkey
+    binary: donkey
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - windows
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X github.com/adrianliechti/donkey/internal/cli.version={{ .Version }}
+      - -X github.com/adrianliechti/donkey/internal/server.Version={{ .Version }}
+
+# The plain lowercase name keeps scripted downloads simple:
+# donkey_linux_amd64.tar.gz, donkey_darwin_arm64.tar.gz, …
+archives:
+  - name_template: "donkey_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  sort: asc
+
+# A formula, not a cask, on purpose: casks are macOS-only, while the formula
+# goreleaser writes carries a Linux block too — so the same
+# `brew install adrianliechti/tap/donkey` works on the server. (goreleaser
+# flags `brews` as deprecated; the cask successor can't cover Linux.)
+brews:
+  - repository:
+      owner: adrianliechti
+      name: homebrew-tap
+
+    commit_author:
+      name: Adrian Liechti
+      email: adrian@localhost
+
+scoops:
+  - repository:
+      owner: adrianliechti
+      name: scoop-bucket
+
+    commit_author:
+      name: Adrian Liechti
+      email: adrian@localhost

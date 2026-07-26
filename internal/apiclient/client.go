@@ -422,11 +422,11 @@ func (c *Client) Apps(ctx context.Context) ([]server.AppListEntry, error) {
 
 func (c *Client) Doctor(ctx context.Context) ([]server.DoctorCheck, string, error) {
 	var out struct {
-		Checks     []server.DoctorCheck `json:"checks"`
-		BaseDomain string               `json:"baseDomain"`
+		Checks []server.DoctorCheck `json:"checks"`
+		Domain string               `json:"domain"`
 	}
 	err := c.doJSON(ctx, http.MethodGet, "/v1/doctor", nil, nil, &out)
-	return out.Checks, out.BaseDomain, err
+	return out.Checks, out.Domain, err
 }
 
 // Analyze asks the server's assistant to read a repository summary. The CLI

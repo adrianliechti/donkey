@@ -51,7 +51,7 @@ func (s *Server) networkResponse(r *http.Request, ns, space, app string) (*Netwo
 		return nil, err
 	}
 	resp := &NetworkResponse{
-		DefaultHost:    app + "." + space + "." + s.cfg.BaseDomain,
+		DefaultHost:    app + "." + space + "." + s.cfg.Domain,
 		Port:           int(st.Port),
 		LoginAvailable: s.cfg.OIDCIssuer != "",
 		Access:         net.Access,

@@ -171,7 +171,7 @@ func (s *Server) Run(ctx context.Context) error {
 
 	errs := make(chan error, 1)
 	go func() {
-		log.Printf("donkey-server %s listening on %s (domain *.%s)", Version, s.cfg.Listen, s.cfg.BaseDomain)
+		log.Printf("donkey-server %s listening on %s (domain *.%s)", Version, s.cfg.Listen, s.cfg.Domain)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errs <- err
 			return

@@ -96,7 +96,7 @@ say "server install (real command, gateway → demo IdP)"
   --image "registry.platform/donkey/donkey-server:dev" \
   --registry-url "registry.platform/donkey" \
   --registry-ca-secret "donkey-registry-ca" \
-  --base-domain "${BASE}" \
+  --domain "${BASE}" \
   --gateway-service-type "ClusterIP" \
   --tls-issuer "platform" \
   --default-platform "${PLATFORM}" \

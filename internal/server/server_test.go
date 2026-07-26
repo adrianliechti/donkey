@@ -10,7 +10,7 @@ import (
 // cluster, which makes it the one state-changing route these tests can drive
 // without one — handy for checking what the middleware in front of it does.
 func drainingServer() *Server {
-	s := &Server{cfg: &Config{APIToken: "dk_test", BaseDomain: "example.com"}}
+	s := &Server{cfg: &Config{APIToken: "dk_test", Domain: "example.com"}}
 	s.draining.Store(true)
 	return s
 }

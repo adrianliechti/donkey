@@ -316,7 +316,7 @@ func TestExampleInstallFileParses(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if f.BaseDomain == "" || f.Registry.URL == "" {
+	if f.Domain == "" || f.Registry.URL == "" {
 		t.Fatalf("example lost its key settings: %+v", f)
 	}
 }

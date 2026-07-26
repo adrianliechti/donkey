@@ -150,7 +150,7 @@ export interface DoctorCheck {
 
 export interface DoctorReport {
   checks: DoctorCheck[]
-  baseDomain: string
+  domain: string
 }
 
 /** One database of a browsed postgres service. */

@@ -34,8 +34,12 @@ type session struct {
 type loginState struct {
 	State string `json:"state"`
 	Nonce string `json:"nonce"`
-	// Return is a same-host path (+query) — never a full URL, so the
-	// callback can't be turned into an open redirect.
+	// Host is the hostname the visitor was on. The central callback serves
+	// every hostname of the base domain, so the path alone no longer says
+	// where to return.
+	Host string `json:"host,omitempty"`
+	// Return is a path (+query) on Host — never a full URL, so the callback
+	// can't be turned into an open redirect.
 	Return  string `json:"return"`
 	Expires int64  `json:"exp"`
 }
@@ -46,6 +50,20 @@ const (
 
 	sessionTTL = 12 * time.Hour
 	loginTTL   = 15 * time.Minute
+)
+
+// Sealed values carry the purpose they were minted for as the AEAD's
+// associated data, so one cookie can never be replayed as the other. Both
+// cookies are sealed with the same key and both are plain JSON, and the two
+// structs share the "exp" field while every other field of each is optional
+// to the other — so without this binding a sealed loginState opens as a
+// perfectly valid (if blank) session, and a sealed session opens as a
+// loginState whose State and Nonce are empty. The gateway hands the
+// loginState cookie to every anonymous visitor before they sign in, which
+// made that first direction an unauthenticated way into any protected app.
+const (
+	purposeSession = "donkey/session/v1"
+	purposeLogin   = "donkey/login/v1"
 )
 
 // sealer authenticates-and-encrypts small JSON payloads into cookie values.
@@ -65,7 +83,7 @@ func newSealer(key []byte) *sealer {
 	return &sealer{aead: aead}
 }
 
-func (s *sealer) seal(v any) (string, error) {
+func (s *sealer) seal(v any, purpose string) (string, error) {
 	plain, err := json.Marshal(v)
 	if err != nil {
 		return "", err
@@ -74,11 +92,13 @@ func (s *sealer) seal(v any) (string, error) {
 	if _, err := rand.Read(nonce); err != nil {
 		return "", err
 	}
-	sealed := s.aead.Seal(nonce, nonce, plain, nil)
+	sealed := s.aead.Seal(nonce, nonce, plain, []byte(purpose))
 	return base64.RawURLEncoding.EncodeToString(sealed), nil
 }
 
-func (s *sealer) unseal(value string, v any) error {
+// unseal opens a value sealed for exactly this purpose; one sealed for
+// another fails authentication here rather than decoding into the wrong type.
+func (s *sealer) unseal(value, purpose string, v any) error {
 	raw, err := base64.RawURLEncoding.DecodeString(value)
 	if err != nil {
 		return err
@@ -86,7 +106,7 @@ func (s *sealer) unseal(value string, v any) error {
 	if len(raw) < s.aead.NonceSize() {
 		return fmt.Errorf("sealed value too short")
 	}
-	plain, err := s.aead.Open(nil, raw[:s.aead.NonceSize()], raw[s.aead.NonceSize():], nil)
+	plain, err := s.aead.Open(nil, raw[:s.aead.NonceSize()], raw[s.aead.NonceSize():], []byte(purpose))
 	if err != nil {
 		return err
 	}
@@ -101,7 +121,12 @@ func (s *Server) sessionFrom(r *http.Request) *session {
 		return nil
 	}
 	var sess session
-	if s.sealer.unseal(c.Value, &sess) != nil {
+	if s.sealer.unseal(c.Value, purposeSession, &sess) != nil {
+		return nil
+	}
+	// Every session this gateway mints carries the ID token's subject. A
+	// blank one is not a visitor the IdP ever vouched for.
+	if sess.Subject == "" {
 		return nil
 	}
 	if time.Now().Unix() >= sess.Expires {
@@ -110,15 +135,26 @@ func (s *Server) sessionFrom(r *http.Request) *session {
 	return &sess
 }
 
-func (s *Server) setSession(w http.ResponseWriter, sess *session) error {
-	value, err := s.sealer.seal(sess)
+// cookieDomain picks the Domain attribute for the given hostname: hosts of
+// the base domain share their cookies — that is what makes one login cover
+// every app — while custom domains keep theirs to themselves.
+func (s *Server) cookieDomain(host string) string {
+	if s.cfg.ssoHost(host) {
+		return s.cfg.Domain
+	}
+	return ""
+}
+
+func (s *Server) setSession(w http.ResponseWriter, sess *session, domain string) error {
+	value, err := s.sealer.seal(sess, purposeSession)
 	if err != nil {
 		return err
 	}
 	http.SetCookie(w, &http.Cookie{
-		Name:  sessionCookie,
-		Value: value,
-		Path:  "/",
+		Name:   sessionCookie,
+		Value:  value,
+		Path:   "/",
+		Domain: domain,
 		// Secure: the browser only ever talks to the shared Gateway over
 		// https; this hop is behind it. Lax keeps the IdP redirect working.
 		Secure:   true,
@@ -129,9 +165,12 @@ func (s *Server) setSession(w http.ResponseWriter, sess *session) error {
 	return nil
 }
 
-func clearCookie(w http.ResponseWriter, name string) {
+// clearCookie needs the same Path and Domain the cookie was set with — a
+// Set-Cookie under different attributes creates a sibling instead of
+// deleting anything.
+func clearCookie(w http.ResponseWriter, name, path, domain string) {
 	http.SetCookie(w, &http.Cookie{
-		Name: name, Value: "", Path: "/",
+		Name: name, Value: "", Path: path, Domain: domain,
 		Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode, MaxAge: -1,
 	})
 }

@@ -11,7 +11,7 @@ set -euo pipefail
 require_ai
 
 say "connecting this machine"
-"${DONKEY}" login --server "https://donkey.${BASE}" --token "${TOKEN}" --ca-file "${CA_FILE}"
+"${DONKEY}" login --server "https://${BASE}" --token "${TOKEN}" --ca-file "${CA_FILE}"
 
 # Apps live in a space: <app>.<space>.<domain>, one namespace per space.
 # The demo space holds two apps that talk to each other by plain service name.
@@ -36,7 +36,7 @@ cat <<EOF
                 The backend behind it is internal: no hostname, no certificate,
                 nothing on the internet — only the dashboard reaches it, as
                 http://backend.
-  Admin console: https://donkey.${BASE}   (sign in with the API token)
+  Admin console: https://${BASE}   (sign in with the API token)
   Identity:     http://auth.donkey-identity   (fake, approves everyone)
 
   Try next:     cd examples/demo/backend && donkey files ls   (the DuckDB file)

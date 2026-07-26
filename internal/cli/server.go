@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/urfave/cli/v3"
@@ -42,8 +43,9 @@ func serverInstallCommand() *cli.Command {
 			&cli.BoolFlag{Name: "registry-insecure", Usage: "registry is plain HTTP (local/testing)"},
 			&cli.BoolFlag{Name: "registry-immutable", Usage: "registry refuses to overwrite tags (ECR/GHCR/Harbor immutability) — donkey then makes every tag unique"},
 			&cli.StringFlag{Name: "registry-ca-secret", Usage: "secret in donkey-system holding ca.crt of the registry's certificate authority"},
-			&cli.StringFlag{Name: "base-domain", Usage: "apps become <name>.<base-domain>"},
-			&cli.StringFlag{Name: "gateway-service-type", Usage: "service type traffic enters through: LoadBalancer (default) or ClusterIP (clusters without a load-balancer controller, e.g. kind)"},
+			&cli.StringFlag{Name: "domain", Usage: "apps become <app>.<space>.<domain>"},
+			&cli.StringFlag{Name: "server-host", Usage: "hostname of the API and console (default: the domain itself)"},
+			&cli.StringFlag{Name: "gateway-service-type", Usage: "service type traffic enters through: LoadBalancer (default), ClusterIP or NodePort (clusters without a load-balancer controller, e.g. kind)"},
 			&cli.StringFlag{Name: "default-platform", Usage: "build platform of the cluster nodes (default linux/amd64)"},
 			&cli.StringFlag{Name: "tls-issuer", Usage: "cert-manager issuer that signs app certificates (required)"},
 			&cli.StringFlag{Name: "tls-issuer-kind", Usage: "ClusterIssuer (default) or Issuer"},
@@ -79,7 +81,8 @@ func installSettings(cmd *cli.Command) (*config.InstallFile, error) {
 	strOver(&settings.Registry.URL, "registry-url")
 	strOver(&settings.Registry.Username, "registry-username")
 	strOver(&settings.Registry.CASecret, "registry-ca-secret")
-	strOver(&settings.BaseDomain, "base-domain")
+	strOver(&settings.Domain, "domain")
+	strOver(&settings.ServerHost, "server-host")
 	strOver(&settings.Gateway.ServiceType, "gateway-service-type")
 	strOver(&settings.DefaultPlatform, "default-platform")
 	strOver(&settings.Auth.Issuer, "oidc-issuer")
@@ -129,6 +132,12 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 	case "", "LoadBalancer", "ClusterIP", "NodePort":
 	default:
 		return fmt.Errorf("gateway.serviceType must be LoadBalancer, ClusterIP or NodePort, not %q", settings.Gateway.ServiceType)
+	}
+	// The central login callback lives on the server host, and its session
+	// cookie's domain is the base domain — a server host outside it could
+	// never complete a login.
+	if h := settings.ServerHost; h != "" && h != settings.Domain && !strings.HasSuffix(h, "."+settings.Domain) {
+		return fmt.Errorf("serverHost %q must be the domain %q or a name under it", h, settings.Domain)
 	}
 
 	kubeContext := s.Resolved.KubeContext
@@ -197,7 +206,8 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 	in := manifests.SystemInput{
 		Namespace:          manifests.SystemNamespace,
 		ServerImage:        settings.Image,
-		BaseDomain:         settings.BaseDomain,
+		Domain:             settings.Domain,
+		ServerHostname:     settings.ServerHost,
 		GatewayServiceType: settings.Gateway.ServiceType,
 		TLSIssuer:          settings.TLS.Issuer,
 		TLSIssuerKind:      settings.TLS.Kind,
@@ -301,21 +311,22 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 	u.Printf("Then check the whole setup end to end:  %s", u.Bold("donkey doctor"))
 
 	u.Printf("")
-	u.Info("Apps are served at https://<app>.<space>.%s.", in.BaseDomain)
+	u.Info("Apps are served at https://<app>.<space>.%s.", in.Domain)
 	u.Printf("  %s", u.Faint(fmt.Sprintf(
-		"%s %s signs one certificate per app; point *.<space>.%s at the gateway's address.",
-		in.TLSIssuerKind, in.TLSIssuer, in.BaseDomain)))
+		"%s %s signs one certificate per app; point *.%s and %s itself at the gateway — one wildcard covers every depth, but never the apex.",
+		in.TLSIssuerKind, in.TLSIssuer, in.Domain, in.Domain)))
 
+	callback := fmt.Sprintf("%s://%s/oauth2/callback", in.Scheme(), in.Domain)
 	switch {
 	case in.OIDCIssuer != "" && settings.Auth.ClientID == "":
 		u.Printf("")
 		u.Printf("Login protection: OIDC via %s", in.OIDCIssuer)
 		u.Warn("No OIDC client configured yet — logins can't complete until you register one at the issuer and re-run this install with the client id and secret.")
-		u.Printf("  %s", u.Faint(fmt.Sprintf("Callback URLs are per app: %s://<app>.<space>.%s/oauth2/callback (register each, or a wildcard if your IdP allows it).", in.Scheme(), in.BaseDomain)))
+		u.Printf("  %s", u.Faint(fmt.Sprintf("Register one callback URL: %s — every login under %s rides through it. Apps with a custom domain outside it keep https://<domain>/oauth2/callback.", callback, in.Domain)))
 	case in.OIDCIssuer != "":
 		u.Printf("")
 		u.Printf("Login protection: OIDC via %s", in.OIDCIssuer)
-		u.Printf("  %s", u.Faint(fmt.Sprintf("Callback URLs are per app: %s://<app>.<space>.%s/oauth2/callback.", in.Scheme(), in.BaseDomain)))
+		u.Printf("  %s", u.Faint(fmt.Sprintf("Callback URL: %s — one sign-in covers every app under %s. Custom domains outside it use https://<domain>/oauth2/callback (register each).", callback, in.Domain)))
 	default:
 		u.Warn("No login protection configured — deployed apps are reachable without login.")
 		u.Printf("  %s", u.Faint("Set auth.issuer (e.g. Entra ID, or any OIDC provider) to protect them."))
@@ -338,8 +349,8 @@ func missingSettings(settings *config.InstallFile, withSecrets bool) []string {
 	if settings.Registry.URL == "" {
 		missing = append(missing, "registry.url")
 	}
-	if settings.BaseDomain == "" {
-		missing = append(missing, "baseDomain")
+	if settings.Domain == "" {
+		missing = append(missing, "domain")
 	}
 	// Apps are always served over https, and cert-manager issues the
 	// certificates — donkey never mints its own.

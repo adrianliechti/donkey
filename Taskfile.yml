@@ -77,10 +77,30 @@ tasks:
       - task: image
         vars:
           CMD: ./cmd/donkey-server
-          BIN: donkey-server
+          # Dockerfile.server picks the binary by TARGETARCH, which a plain
+          # build resolves to the daemon's own arch — this machine's.
+          BIN: donkey-server-{{.ARCH}}
           IMAGE: '{{.IMAGE | default "donkey/donkey-server:dev"}}'
           DOCKERFILE: hack/Dockerfile.server
           CONTEXT: .build
+
+  publish:
+    desc: "Build the donkey-server image (amd64 + arm64) and push it to GHCR: task publish VERSION=0.2.0"
+    # A precondition, not a dep: the version check runs before any work, so a
+    # forgotten VERSION fails instantly.
+    preconditions:
+      - sh: '[ "{{.VERSION}}" != "dev" ]'
+        msg: "publish needs a real version: task publish VERSION=0.2.0"
+    vars:
+      IMAGE: '{{.IMAGE | default "ghcr.io/adrianliechti/donkey-server"}}'
+    cmds:
+      # Needs a prior `docker login ghcr.io` (token with write:packages).
+      - task: web-build
+      - mkdir -p .build/publish
+      - CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "{{.LDFLAGS}}" -o .build/publish/donkey-server-amd64 ./cmd/donkey-server
+      - CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags "{{.LDFLAGS}}" -o .build/publish/donkey-server-arm64 ./cmd/donkey-server
+      - cp hack/Dockerfile.server .build/publish/Dockerfile
+      - docker buildx build --platform linux/amd64,linux/arm64 -t {{.IMAGE}}:{{.VERSION}} --push .build/publish
 
   demo-idp-image:
     desc: Build the DEMO fake identity provider image and load it into the cluster

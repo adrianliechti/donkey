@@ -877,7 +877,7 @@ func (s *Server) handleDoctor(w http.ResponseWriter, r *http.Request) {
 	}
 	checks = append(checks, assistant)
 
-	writeJSON(w, http.StatusOK, map[string]any{"checks": checks, "baseDomain": s.cfg.BaseDomain})
+	writeJSON(w, http.StatusOK, map[string]any{"checks": checks, "domain": s.cfg.Domain})
 }
 
 // maxAnalyzeBytes caps what one analyze request may send to the model —

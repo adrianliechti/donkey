@@ -20,7 +20,7 @@ type Config struct {
 	Listen string
 
 	Registry        config.Registry
-	BaseDomain      string
+	Domain          string
 	BuildkitAddr    string
 	NamespacePrefix string
 
@@ -54,7 +54,7 @@ func FromEnv() (*Config, error) {
 			Immutable: os.Getenv("DONKEY_REGISTRY_IMMUTABLE") == "true",
 			CAFile:    os.Getenv("DONKEY_REGISTRY_CA_FILE"),
 		},
-		BaseDomain:       os.Getenv("DONKEY_BASE_DOMAIN"),
+		Domain:           os.Getenv("DONKEY_DOMAIN"),
 		TLSIssuer:        os.Getenv("DONKEY_TLS_ISSUER"),
 		TLSIssuerKind:    envOr("DONKEY_TLS_ISSUER_KIND", "ClusterIssuer"),
 		BuildkitAddr:     os.Getenv("DONKEY_BUILDKIT_ADDR"),
@@ -74,8 +74,8 @@ func FromEnv() (*Config, error) {
 	if err := c.Registry.Validate(); err != nil {
 		return nil, err
 	}
-	if c.BaseDomain == "" {
-		return nil, fmt.Errorf("DONKEY_BASE_DOMAIN is required")
+	if c.Domain == "" {
+		return nil, fmt.Errorf("DONKEY_DOMAIN is required")
 	}
 	if c.BuildkitAddr == "" {
 		return nil, fmt.Errorf("DONKEY_BUILDKIT_ADDR is required")
@@ -122,7 +122,7 @@ func (c *Config) SpaceNamespace(space string) (string, error) {
 	return ns, nil
 }
 
-// AppHost is the address of an app: <app>.<space>.<baseDomain>. The space in
+// AppHost is the address of an app: <app>.<space>.<domain>. The space in
 // the middle is what lets two teams both have a "web". An internal app has no
 // address at all — its siblings reach it by service name.
 func (c *Config) AppHost(space string, app *config.AppConfig) string {
@@ -132,7 +132,7 @@ func (c *Config) AppHost(space string, app *config.AppConfig) string {
 	if app.Domain != "" {
 		return app.Domain
 	}
-	return app.Name + "." + space + "." + c.BaseDomain
+	return app.Name + "." + space + "." + c.Domain
 }
 
 func (c *Config) AppURL(space string, app *config.AppConfig) string {

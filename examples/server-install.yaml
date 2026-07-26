@@ -19,16 +19,25 @@ registry:
                               # random suffix, so two deploys of one commit in
                               # the same second can't collide on a push.
 
-baseDomain: apps.example.com   # apps become <app>.<space>.apps.example.com
+domain: example.com            # apps become <app>.<space>.example.com; the
+                               # API, console and the one OAuth callback live
+                               # on the domain itself. DNS needs *.example.com
+                               # AND example.com (a wildcard covers any depth,
+                               # but never the apex).
+
+# serverHost: console.example.com
+                               # moves the API + console off the apex; must be
+                               # the domain or a name under it. The OAuth
+                               # callback stays on the domain either way.
 
 # gateway:
 #   serviceType: ClusterIP     # how traffic enters the cluster. The default,
                                # LoadBalancer, is right wherever something
                                # assigns those an address (cloud, MetalLB).
                                # Clusters without that (kind, local demos)
-                               # need ClusterIP — an address-less LoadBalancer
-                               # leaves the gateway unprogrammed and every
-                               # donkey hostname unroutable.
+                               # need ClusterIP or NodePort — an address-less
+                               # LoadBalancer leaves the gateway unprogrammed
+                               # and every donkey hostname unroutable.
 
 tls:
   # Required. Apps are always served over https (the login gateway's cookies
@@ -38,10 +47,15 @@ tls:
   # kind: ClusterIssuer       # or Issuer (in donkey-system)
 
 auth:
-  # A real OIDC provider — e.g. Entra ID. Leave the whole block out to run
-  # without a login gateway (apps are then public).
-  issuer: https://login.microsoftonline.com/<tenant-id>/v2.0
-  clientId: <application-client-id>
+  # A real OIDC provider — Pocket ID, Entra ID, Keycloak, anything OIDC.
+  # Register ONE callback URL at it: https://<domain>/oauth2/callback —
+  # every login under the domain rides through it, and one sign-in covers
+  # every app (the session cookie lives on the domain). Only apps with a
+  # custom domain outside it need their own callback registered.
+  # Leave the whole block out to run without a login gateway (apps are then
+  # public).
+  issuer: https://id.example.com
+  clientId: <client-id>
   # clientSecret: …           # better: DONKEY_OIDC_CLIENT_SECRET env
 
 ai:

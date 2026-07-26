@@ -12,7 +12,7 @@ func systemInput() SystemInput {
 	return SystemInput{
 		Namespace:   SystemNamespace,
 		ServerImage: "reg.example.com/donkey-server:test",
-		BaseDomain:  "apps.example.com",
+		Domain:      "apps.example.com",
 		RegistryURL: "reg.example.com/donkey",
 		APIToken:    "tok",
 	}
@@ -145,6 +145,41 @@ func TestInstallTouchesOnlyItsOwnObjects(t *testing.T) {
 		if strings.Contains(rendered, forbidden) {
 			t.Errorf("the installation must not contain %q — that is cluster-wide or node-level state donkey doesn't own", forbidden)
 		}
+	}
+}
+
+// The API lives on the domain itself (serverHost can move it below), and the
+// central OAuth callback always stays on the domain: its /oauth2 route points
+// at the donkey gateway, the server certificate covers the apex, and the
+// gateway learns the domain for its cookie.
+func TestServerHostAndCentralCallback(t *testing.T) {
+	in := systemInput()
+	if got := in.ServerHost(); got != "apps.example.com" {
+		t.Errorf("the API should default to the domain itself, got %s", got)
+	}
+	out := componentNames(in)
+	for _, want := range []string{
+		"value: /oauth2",       // the callback route…
+		"name: donkey-gateway", // …points at the donkey gateway
+		"DONKEY_DOMAIN",        // the gateway knows the cookie/callback domain
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("system objects should contain %q", want)
+		}
+	}
+
+	moved := systemInput()
+	moved.ServerHostname = "console.apps.example.com"
+	if got := moved.ServerHost(); got != "console.apps.example.com" {
+		t.Errorf("serverHost must override the API hostname, got %s", got)
+	}
+	out = componentNames(moved)
+	if !strings.Contains(out, "console.apps.example.com") {
+		t.Error("the API route should serve the overridden hostname")
+	}
+	// The certificate must still cover the apex — the callback lives there.
+	if !strings.Contains(out, "- apps.example.com") {
+		t.Error("the server certificate should include the domain itself")
 	}
 }
 

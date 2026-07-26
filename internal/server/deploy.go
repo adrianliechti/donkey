@@ -765,7 +765,7 @@ func (s *Server) manifestInput(app *config.AppConfig, imageRef string, includeCr
 	for _, r := range app.Routes {
 		in.RouteTargets = append(in.RouteTargets, manifests.RouteTarget{
 			App:  r.App,
-			Host: r.App + "." + space + "." + s.cfg.BaseDomain,
+			Host: r.App + "." + space + "." + s.cfg.Domain,
 			Path: r.Path,
 		})
 	}

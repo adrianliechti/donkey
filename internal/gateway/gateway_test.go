@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"bytes"
+	"net/http"
 	"net/url"
 	"testing"
 	"time"
@@ -20,23 +21,85 @@ func testSealer() *sealer {
 func TestSessionSealRoundTrip(t *testing.T) {
 	s := testSealer()
 	in := session{Subject: "u1", Email: "ada@example.com", Groups: []string{"staff"}, Roles: []string{"dev"}, Expires: time.Now().Add(time.Hour).Unix()}
-	sealed, err := s.seal(in)
+	sealed, err := s.seal(in, purposeSession)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var out session
-	if err := s.unseal(sealed, &out); err != nil {
+	if err := s.unseal(sealed, purposeSession, &out); err != nil {
 		t.Fatal(err)
 	}
 	if out.Email != in.Email || out.Subject != in.Subject || len(out.Groups) != 1 || len(out.Roles) != 1 {
 		t.Errorf("round trip lost data: %+v", out)
 	}
-	if err := s.unseal(sealed[:len(sealed)-2]+"xx", &out); err == nil {
+	if err := s.unseal(sealed[:len(sealed)-2]+"xx", purposeSession, &out); err == nil {
 		t.Error("a tampered value must not unseal")
 	}
 	other := newSealer(bytes.Repeat([]byte{9}, 32))
-	if err := other.unseal(sealed, &out); err == nil {
+	if err := other.unseal(sealed, purposeSession, &out); err == nil {
 		t.Error("a different key must not unseal")
+	}
+}
+
+// Both cookies are sealed with the same key, so the only thing keeping one
+// from being replayed as the other is the purpose bound into each. The
+// login-state cookie is handed to every anonymous visitor before they sign
+// in, so a state value accepted as a session is an unauthenticated way into
+// every protected app that has no access list.
+func TestSealedValuesDoNotCrossPurposes(t *testing.T) {
+	s := testSealer()
+
+	state := loginState{State: "s", Nonce: "n", Host: "app.example.com", Return: "/",
+		Expires: time.Now().Add(loginTTL).Unix()}
+	sealedState, err := s.seal(state, purposeLogin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var asSession session
+	if err := s.unseal(sealedState, purposeSession, &asSession); err == nil {
+		t.Fatalf("a login-state cookie unsealed as a session: %+v", asSession)
+	}
+
+	sess := session{Subject: "u1", Expires: time.Now().Add(sessionTTL).Unix()}
+	sealedSession, err := s.seal(sess, purposeSession)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var asState loginState
+	if err := s.unseal(sealedSession, purposeLogin, &asState); err == nil {
+		t.Fatalf("a session cookie unsealed as a login state: %+v", asState)
+	}
+}
+
+// The end-to-end shape of the bypass: what startLogin hands an anonymous
+// visitor, presented back as the session cookie.
+func TestStateCookieIsNotAcceptedAsSession(t *testing.T) {
+	s := &Server{cfg: &Config{}, sealer: testSealer()}
+	state := loginState{State: randomHex(16), Nonce: randomHex(16),
+		Host: "app.example.com", Return: "/", Expires: time.Now().Add(loginTTL).Unix()}
+	sealed, err := s.sealer.seal(state, purposeLogin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, _ := http.NewRequest("GET", "https://app.example.com/", nil)
+	r.AddCookie(&http.Cookie{Name: sessionCookie, Value: sealed})
+	if sess := s.sessionFrom(r); sess != nil {
+		t.Fatalf("anonymous login-state cookie accepted as a session: %+v", *sess)
+	}
+}
+
+// A session carries the ID token's subject; a blank one was never vouched
+// for by the IdP, whatever else it decodes into.
+func TestSessionWithoutSubjectIsRejected(t *testing.T) {
+	s := &Server{cfg: &Config{}, sealer: testSealer()}
+	sealed, err := s.sealer.seal(session{Expires: time.Now().Add(sessionTTL).Unix()}, purposeSession)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, _ := http.NewRequest("GET", "https://app.example.com/", nil)
+	r.AddCookie(&http.Cookie{Name: sessionCookie, Value: sealed})
+	if sess := s.sessionFrom(r); sess != nil {
+		t.Fatalf("subject-less session accepted: %+v", *sess)
 	}
 }
 
@@ -85,6 +148,61 @@ func TestTableLookupPrefersLongestPrefix(t *testing.T) {
 	}
 	if _, ok := s.tableLookup("other.example.com", "/"); ok {
 		t.Error("unknown hosts must miss")
+	}
+}
+
+// One callback URL on the domain serves every hostname under it; custom
+// domains keep their own. This is what lets a single registered redirect URI
+// (and a single sign-in) cover the whole installation.
+func TestSSOHost(t *testing.T) {
+	cfg := &Config{Domain: "dihei.app"}
+	for host, want := range map[string]bool{
+		"dihei.app":             true,
+		"web.acme.dihei.app":    true,
+		"shop.example.com":      false,
+		"dihei.app.example.com": false,
+		"evildihei.app":         false,
+	} {
+		if got := cfg.ssoHost(host); got != want {
+			t.Errorf("ssoHost(%q) = %v, want %v", host, got, want)
+		}
+	}
+	if (&Config{}).ssoHost("web.acme.dihei.app") {
+		t.Error("without a domain there is no shared login")
+	}
+}
+
+// The callback may finish on a different hostname than the visitor started
+// on — the return target must stay inside the installation.
+func TestLoginReturnURL(t *testing.T) {
+	cfg := &Config{Domain: "dihei.app"}
+	cases := []struct {
+		name  string
+		state loginState
+		want  string
+	}{
+		{"same host keeps a plain path", loginState{Host: "dihei.app", Return: "/x?y=1"}, "/x?y=1"},
+		{"cross-host returns to the app", loginState{Host: "web.acme.dihei.app", Return: "/orders"}, "https://web.acme.dihei.app/orders"},
+		{"a foreign host is not followed", loginState{Host: "evil.example.com", Return: "/x"}, "/x"},
+		{"protocol-relative returns are cut", loginState{Host: "web.acme.dihei.app", Return: "//evil.example.com"}, "https://web.acme.dihei.app/"},
+		{"legacy state without a host", loginState{Return: "/x"}, "/x"},
+	}
+	for _, c := range cases {
+		if got := loginReturnURL(cfg, "dihei.app", c.state); got != c.want {
+			t.Errorf("%s: got %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+// The session cookie's Domain attribute is what turns a login into SSO — and
+// what must never leak onto a custom domain outside the installation.
+func TestCookieDomain(t *testing.T) {
+	s := &Server{cfg: &Config{Domain: "dihei.app"}}
+	if got := s.cookieDomain("web.acme.dihei.app"); got != "dihei.app" {
+		t.Errorf("app hostnames share the domain cookie, got %q", got)
+	}
+	if got := s.cookieDomain("shop.example.com"); got != "" {
+		t.Errorf("custom domains keep host-scoped cookies, got %q", got)
 	}
 }
 

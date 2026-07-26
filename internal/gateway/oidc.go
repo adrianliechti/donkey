@@ -65,18 +65,24 @@ func (a *authenticator) ready(ctx context.Context) error {
 	return nil
 }
 
-// oauthConfig is per request: the redirect URL has to be on the hostname the
-// browser is actually visiting.
+// oauthConfig is per request: hostnames of the base domain share the central
+// callback — one redirect URI to register at the IdP — while a custom domain
+// outside it falls back to a callback on its own hostname (which the IdP
+// must then know about).
 func (a *authenticator) oauthConfig(host string) *oauth2.Config {
 	scopes := []string{oidc.ScopeOpenID, "profile", "email"}
 	if a.groupsScope {
 		scopes = append(scopes, "groups")
 	}
+	callbackHost := host
+	if a.cfg.ssoHost(host) {
+		callbackHost = a.cfg.Domain
+	}
 	return &oauth2.Config{
 		ClientID:     a.cfg.OIDCClientID,
 		ClientSecret: a.cfg.OIDCClientSecret,
 		Endpoint:     a.provider.Endpoint(),
-		RedirectURL:  "https://" + host + "/oauth2/callback",
+		RedirectURL:  "https://" + callbackHost + "/oauth2/callback",
 		Scopes:       scopes,
 	}
 }
@@ -88,23 +94,28 @@ func (s *Server) startLogin(w http.ResponseWriter, r *http.Request) {
 		s.errorPage(w, http.StatusBadGateway, "The sign-in service isn't reachable.", err.Error())
 		return
 	}
+	host := requestHost(r)
 	state := loginState{
 		State:   randomHex(16),
 		Nonce:   randomHex(16),
+		Host:    host,
 		Return:  r.URL.RequestURI(),
 		Expires: time.Now().Add(loginTTL).Unix(),
 	}
-	sealed, err := s.sealer.seal(state)
+	sealed, err := s.sealer.seal(state, purposeLogin)
 	if err != nil {
 		s.errorPage(w, http.StatusInternalServerError, "Sign-in couldn't start.", err.Error())
 		return
 	}
+	// On the shared domain the callback arrives on the central host — the
+	// state cookie has to travel there, so it gets the domain too.
 	http.SetCookie(w, &http.Cookie{
 		Name: stateCookie, Value: sealed, Path: "/oauth2/",
+		Domain: s.cookieDomain(host),
 		Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode,
 		MaxAge: int(loginTTL / time.Second),
 	})
-	url := s.auth.oauthConfig(requestHost(r)).AuthCodeURL(state.State, oidc.Nonce(state.Nonce))
+	url := s.auth.oauthConfig(host).AuthCodeURL(state.State, oidc.Nonce(state.Nonce))
 	http.Redirect(w, r, url, http.StatusFound)
 }
 
@@ -121,11 +132,18 @@ func (s *Server) handleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var state loginState
-	if err := s.sealer.unseal(c.Value, &state); err != nil || time.Now().Unix() >= state.Expires {
+	if err := s.sealer.unseal(c.Value, purposeLogin, &state); err != nil || time.Now().Unix() >= state.Expires {
 		s.errorPage(w, http.StatusBadRequest, "This sign-in attempt is stale.", "Start again from the app's address.")
 		return
 	}
-	clearCookie(w, stateCookie)
+	// startLogin always fills both, so a blank one cannot be a state this
+	// gateway issued — and comparing a blank State or Nonce with != would
+	// wave through a callback that carries neither.
+	if state.State == "" || state.Nonce == "" {
+		s.errorPage(w, http.StatusBadRequest, "This sign-in attempt is stale.", "Start again from the app's address.")
+		return
+	}
+	clearCookie(w, stateCookie, "/oauth2/", s.cookieDomain(requestHost(r)))
 	if errCode := r.URL.Query().Get("error"); errCode != "" {
 		s.errorPage(w, http.StatusBadRequest, "The identity provider refused the sign-in.",
 			errCode+": "+r.URL.Query().Get("error_description"))
@@ -190,21 +208,35 @@ func (s *Server) handleCallback(w http.ResponseWriter, r *http.Request) {
 		Roles:   roles,
 		Expires: time.Now().Add(sessionTTL).Unix(),
 	}
-	if err := s.setSession(w, sess); err != nil {
+	if err := s.setSession(w, sess, s.cookieDomain(requestHost(r))); err != nil {
 		s.errorPage(w, http.StatusInternalServerError, "The session couldn't be stored.", err.Error())
 		return
 	}
-	// Return is sealed and was written by this gateway, but an open redirect
-	// is cheap to rule out anyway: same-host paths only.
-	target := state.Return
-	if !strings.HasPrefix(target, "/") || strings.HasPrefix(target, "//") {
-		target = "/"
-	}
-	http.Redirect(w, r, target, http.StatusFound)
+	http.Redirect(w, r, loginReturnURL(s.cfg, requestHost(r), state), http.StatusFound)
 }
 
+// loginReturnURL is where a finished login lands. The state is sealed, so its
+// content is the gateway's own — but an open redirect is cheap to rule out
+// anyway: paths only on the callback's own host, and a cross-host return only
+// onto another hostname of the base domain.
+func loginReturnURL(cfg *Config, callbackHost string, state loginState) string {
+	path := state.Return
+	if !strings.HasPrefix(path, "/") || strings.HasPrefix(path, "//") {
+		path = "/"
+	}
+	if state.Host == "" || state.Host == callbackHost {
+		return path
+	}
+	if !cfg.ssoHost(state.Host) {
+		return path
+	}
+	return "https://" + state.Host + path
+}
+
+// handleLogout clears the session — on the shared domain that is one cookie
+// for every app, so signing out anywhere signs out everywhere.
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
-	clearCookie(w, sessionCookie)
+	clearCookie(w, sessionCookie, "/", s.cookieDomain(requestHost(r)))
 	s.messagePage(w, http.StatusOK, "Signed out.", "Close the tab, or open the app again to sign back in.")
 }
 

@@ -80,8 +80,8 @@ five ideas:
 - **donkey-server** — stateless API pod; all state lives in Kubernetes
   objects. Deploys arrive as tar.gz uploads and stream progress back as
   NDJSON. Configured entirely via env from the install settings. It also
-  serves the **admin console** (React/Tailwind, embedded in the binary) at
-  its own URL: open `donkey.<baseDomain>` in a browser, sign in with the
+  serves the **admin console** (React/Tailwind, embedded in the binary) on
+  the domain itself: open `https://<domain>` in a browser, sign in with the
   API token, and you get the apps overview with health at a glance, live
   logs, an env-var editor, restart, an AI "explain what's wrong" for
   unhealthy apps, remove-app, and the system checks. Spaces are managed
@@ -120,7 +120,7 @@ five ideas:
   services still live there; a namespace donkey didn't create is never
   taken over.
 - **Per app** — Deployment (probes, `PORT`, `envFrom` secrets), Service,
-  HTTPRoute (`<app>.<space>.<baseDomain>`, https only — one shared route
+  HTTPRoute (`<app>.<space>.<domain>`, https only — one shared route
   redirects plain http) pointing at donkey-gateway with the app's backend,
   login and access rules as annotations, a `ReferenceGrant` for that
   cross-namespace hop, and Secrets for env vars, registry pull auth and
@@ -352,9 +352,14 @@ applies anything, and `donkey doctor` keeps checking them after):
 | **[Envoy Gateway](https://gateway.envoyproxy.io)** | donkey attaches one shared Gateway and per-app HTTPRoutes; the OIDC login runs in the proxy itself | donkey creates the `GatewayClass` and `Gateway`, not the controller. Traffic enters through a `LoadBalancer` service; on clusters where nothing assigns those an address (kind), set `gateway.serviceType: ClusterIP` |
 | **[cert-manager](https://cert-manager.io) + an Issuer** | every app hostname gets its own certificate | `tls.issuer` (ClusterIssuer or Issuer). Any solver works: HTTP-01, DNS-01, an internal CA, Vault |
 | **Container registry** the cluster can pull from | donkey pushes every build there | `registry.url` + credentials; `registry.caSecret` when its certificate comes from a private CA |
-| **DNS** for `*.<space>.<baseDomain>` → the gateway address | apps are served at `<app>.<space>.<baseDomain>` | one wildcard per space, or a record per app |
+| **DNS** for `*.<domain>` and `<domain>` → the gateway address | apps are served at `<app>.<space>.<domain>`, the API and login callback at `<domain>` | one wildcard covers every depth; the apex needs its own record |
 | **OIDC provider** (e.g. Entra ID) | the login gateway in front of every app | optional: without `auth.issuer`, apps are public and the install says so |
 | **OpenAI-compatible endpoint** | donkey reads every app with it (ports, health routes, data folders) | required — the server refuses to start without one. Point it at a model you control: source summaries go there |
+
+A complete copy-paste walkthrough that stands all of this up on a single
+Debian server — kind, Envoy Gateway, cert-manager with Let's Encrypt, a
+registry container, an OIDC provider — is in
+[examples/INSTALL.md](examples/INSTALL.md).
 
 RBAC: donkey-server currently binds `cluster-admin` (it creates namespaces and
 everything inside them). Scoping that down is on the list — see
@@ -374,23 +379,29 @@ donkey server install -f server-install.yaml
 
 Prints the API URL and a one-time token. Re-running with changed settings
 updates the installation idempotently (server-side apply; existing secrets
-and tokens survive; config changes roll the affected pods). Note for
-Entra ID: with the OIDC flow in the gateway, callback URLs are per app
-(`https://<app>.<space>.<domain>/oauth2/callback`) — register each, or use
-a wildcard-capable provider.
+and tokens survive; config changes roll the affected pods).
 
-**Certificates and spaces.** Apps sit one DNS level below the base domain,
-and a wildcard covers only one level: `*.apps.example.com` does *not* match
-`web.acme.apps.example.com`. So the gateway certificate needs a name per
-space (`*.<space>.apps.example.com`) — donkey warns on the first deploy
-into a space it cannot serve. For demos and evaluations, `tls.selfSigned`
-(`--tls-self-signed`) lets donkey issue the certificate and extend it with
-a new name each time a space appears.
+**One callback, one sign-in.** Every login under the domain rides through a
+single OAuth callback on the domain itself
+(`https://<domain>/oauth2/callback`) — one redirect URI to register at any
+OIDC provider, no wildcard support needed. The session cookie lives on the
+domain, so signing in to one app signs you in to all of them. Only apps
+with a custom `domain:` outside the installation's domain keep a per-host
+callback (`https://<their-domain>/oauth2/callback`) — register those
+individually.
+
+**Certificates and DNS.** cert-manager issues one certificate per app
+hostname — a TLS wildcard covers only one level, so no single certificate
+could — which means any solver works, HTTP-01 included. DNS is simpler than
+TLS here: one `*.<domain>` record covers every depth, because DNS wildcards
+match multiple labels (as long as no explicit record sits at an intermediate
+name). Only the apex is never covered by the wildcard — and the API, console
+and login callback live there, so give `<domain>` a record of its own.
 
 **Day 1 — everyone deploys:**
 
 ```sh
-donkey login --server https://donkey.apps.example.com --token …   # once
+donkey login --server https://apps.example.com --token …   # once
 cd your-project && donkey deploy
 ```
 
@@ -444,7 +455,7 @@ The procedure, in order:
    printed for a token donkey generated itself — a token you pass in is
    yours to hand out);
 2. re-run the install command above with the same settings file;
-3. everyone re-runs `donkey login --server https://donkey.<baseDomain> --token
+3. everyone re-runs `donkey login --server https://<domain> --token
    <new-token>`, then `donkey doctor` to confirm.
 
 Running apps are not touched: their pods, disks, routes and certificates stay
@@ -465,7 +476,7 @@ deploy. What is *not* reproducible has to live outside the cluster:
 | `OPENAI_API_KEY` | the assistant is required; no key, no deploys |
 | the API token | a fresh install **generates a new one** and thereby invalidates every existing login. Keeping it lets `--api-token` make the rebuilt installation the same installation |
 | the registry CA secret (`registry.caSecret`) | donkey only *references* that Secret in `donkey-system` — it never creates it. Whatever created it has to run again |
-| DNS for `*.<space>.<baseDomain>` | it points at the gateway address, which a rebuilt cluster changes |
+| DNS for `*.<domain>` and `<domain>` | they point at the gateway address, which a rebuilt cluster changes |
 
 Two more things exist only in the cluster: env values set with `donkey env
 set` (the ones in `donkey.yaml` come back with the app, the rest don't), and

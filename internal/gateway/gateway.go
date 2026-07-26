@@ -46,6 +46,13 @@ type Config struct {
 	OIDCClientID     string
 	OIDCClientSecret string
 
+	// Domain turns logins central: every hostname under it shares one
+	// callback (https://<Domain>/oauth2/callback) and one domain-wide
+	// session cookie — a single redirect URI to register at the IdP, and
+	// signing in once covers every app. Hostnames outside the base domain
+	// (custom `domain:` apps) keep the per-host flow.
+	Domain string
+
 	// SessionKey seals the session cookie (32 bytes, hex). Sessions live in
 	// the cookie, not in memory, so replicas need nothing but the same key.
 	SessionKey []byte
@@ -58,6 +65,7 @@ func FromEnv() (*Config, error) {
 		OIDCIssuer:       os.Getenv("DONKEY_OIDC_ISSUER"),
 		OIDCClientID:     os.Getenv("DONKEY_OIDC_CLIENT_ID"),
 		OIDCClientSecret: os.Getenv("DONKEY_OIDC_CLIENT_SECRET"),
+		Domain:           os.Getenv("DONKEY_DOMAIN"),
 	}
 	// No issuer is a legal installation: the gateway still routes every
 	// app, it just has no login to offer — and it fails closed if a route
@@ -73,6 +81,17 @@ func FromEnv() (*Config, error) {
 // authConfigured says the installation can actually run a login round trip.
 func (c *Config) authConfigured() bool {
 	return c.OIDCIssuer != "" && c.OIDCClientID != "" && c.OIDCClientSecret != ""
+}
+
+// ssoHost reports whether host shares the installation's session domain —
+// its logins ride the central callback on the base domain and a cookie the
+// whole domain sees. Without a base domain (an older installation), every
+// host keeps its own flow.
+func (c *Config) ssoHost(host string) bool {
+	if c.Domain == "" {
+		return false
+	}
+	return host == c.Domain || strings.HasSuffix(host, "."+c.Domain)
 }
 
 func envOr(key, def string) string {
