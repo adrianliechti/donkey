@@ -22,8 +22,15 @@ import (
 // Addon provisions an in-cluster instance of a service type.
 type Addon interface {
 	Type() string
+	// Description is the catalog's one-liner: what a person gets, not how
+	// it is wired.
+	Description() string
 	// Binding returns the env contract for a provisioned instance.
 	Binding(in Input) map[string]string
+	// ExternalBinding derives the same env contract from a user-supplied
+	// connection URL, so a service running elsewhere binds exactly like a
+	// provisioned one.
+	ExternalBinding(raw string) (map[string]string, error)
 	// Objects returns the Kubernetes objects for a provisioned instance
 	// (excluding the binding secret, which donkey manages).
 	Objects(in Input) ([]runtime.Object, error)
@@ -49,7 +56,22 @@ type Input struct {
 
 // Registry holds the addon types donkey knows.
 var Registry = map[string]Addon{
-	"postgres": postgres{},
+	"postgres":   postgres{},
+	"pocketbase": pocketbase{},
+}
+
+// Types lists the registered addon types, sorted.
+func Types() []Addon {
+	names := make([]string, 0, len(Registry))
+	for t := range Registry {
+		names = append(names, t)
+	}
+	sort.Strings(names)
+	out := make([]Addon, 0, len(names))
+	for _, t := range names {
+		out = append(out, Registry[t])
+	}
+	return out
 }
 
 func Get(typ string) (Addon, error) {
@@ -65,22 +87,15 @@ func Get(typ string) (Addon, error) {
 	return a, nil
 }
 
+// SharedOwner is the pseudo-app owning a space's shared addons. Everything
+// app-scoped — instance names, binding secrets, labels, deletion — works
+// verbatim with this as the app, which is the whole trick. The name is
+// reserved: an actual app called "shared" would be deleted together with the
+// space's services.
+const SharedOwner = "shared"
+
 func SecretName(app, addon string) string { return app + "-addon-" + addon }
 func Component(addon string) string       { return "addon-" + addon }
-
-// InstanceName is the object name for a provisioned addon's workload.
-func InstanceName(app, addon string) string { return app + "-" + addon }
-
-// ValidateNames refuses app/addon combinations whose derived object names
-// would exceed Kubernetes limits — the Service name (DNS-1035, 63 chars)
-// with the "-data" suffix of the PVC is the tightest one. Without this, an
-// addon add fails halfway through with a raw apiserver error.
-func ValidateNames(app, addon string) error {
-	if n := len(InstanceName(app, addon)) + len("-data"); n > 63 {
-		return fmt.Errorf("the app and addon names together are too long (%d chars) — their combination must stay under 59", n)
-	}
-	return nil
-}
 
 // BindingSecret wraps the env contract in the Secret the app's envFrom picks
 // up. Identical shape for provisioned and external addons.
@@ -98,6 +113,15 @@ func BindingSecret(space, app, namespace, name string, data map[string]string) *
 		},
 		Data: bytes,
 	}
+}
+
+// AttachmentSecret is an app's copy of a space-shared addon's binding — the
+// same contract, pointing at the shared instance, marked so that removing
+// the shared addon can find its copies (and only them).
+func AttachmentSecret(space, app, namespace, name string, data map[string]string) *corev1.Secret {
+	sec := BindingSecret(space, app, namespace, name, data)
+	sec.Labels[manifests.LabelShared] = "true"
+	return sec
 }
 
 // NewPassword generates a credential for a provisioned addon.

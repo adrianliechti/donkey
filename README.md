@@ -123,10 +123,20 @@ three ideas:
   short-lived helper pod mounts the volume, which works whatever the app's
   image contains — and still works when the app is crash-looping or stopped,
   which is when a full disk usually needs looking at.
-- **Addons** follow the attached-resource pattern: a binding Secret with a
-  canonical contract (`DATABASE_URL`, `PG*`). `addon add postgres`
-  provisions in-cluster (Deployment + PVC); `addon attach postgres --url …`
-  binds a remote database — the app cannot tell the difference.
+- **Addons** belong to the space, and apps connect to them — a monorepo's
+  postgres is the project's database, not one container's. Each service is
+  provisioned once in-cluster (Deployment + PVC), or bound from elsewhere
+  with `addon attach <type> --url …`; a connected app holds a copy of the
+  binding Secret with a canonical env contract per type — `DATABASE_URL`,
+  `PG*` and Heroku's `JDBC_*` convention for postgres; `POCKETBASE_URL`
+  plus admin credentials for pocketbase — wired into its `envFrom`, so the
+  app cannot tell managed from remote. `addon add <type>` creates the
+  service if the space lacks it and connects the app; a second app naming
+  it simply joins. Disconnecting an app deletes nothing — only removing the
+  service from the space (console or `addon remove NAME --space`) touches
+  data. Services connected in the console reach the running app immediately
+  and survive later CLI deploys; `addons:` in `donkey.yaml` is provisioned
+  by the deploy itself, so a cloned repository comes up with its services.
 
 ## What donkey works out for you
 
@@ -227,9 +237,9 @@ storage:                      # one disk, each path its own folder on it
   paths:
     - /app/data
 
-addons:
-  - type: postgres
-    name: db
+addons:                       # space services this app uses; the deploy
+  - type: postgres            # creates missing ones. postgres | pocketbase
+    name: db                  # apps naming the same service share it
 
 build:
   type: auto                  # auto | railpack | dockerfile
@@ -344,6 +354,7 @@ cd your-project && donkey deploy
 | `donkey env set/unset/list` | env vars as cluster Secrets, auto-restart |
 | `donkey files ls/get/put/rm/mv` | what's on the app's disk — seed it, fetch something out, clear it |
 | `donkey addon add/attach/remove/list` | databases & co. with injected bindings |
+| `donkey addon tunnel NAME` | reach a service from your machine — a private line while the command runs; services never get a public address |
 | `donkey destroy` | remove everything donkey created for the app (`--keep-data` spares disks and secrets — a kept database keeps its credentials; deleting data always asks — `--force` for scripts) |
 
 Image tags are `<git-sha>-<timestamp>` (the CLI reads the sha locally and

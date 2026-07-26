@@ -63,6 +63,33 @@ export interface AddonEntry {
   keys: string[]
 }
 
+/** One service of a space, and the apps connected to it. */
+export interface SpaceAddonEntry {
+  name: string
+  keys: string[]
+  attachedTo: string[]
+}
+
+/** One catalog entry: a service type donkey can provide, with its defaults
+ * and the env variable names connected apps will see. */
+export interface AddonType {
+  type: string
+  version: string
+  storage: string
+  description?: string
+  keys?: string[]
+}
+
+export interface AddAddonRequest {
+  /** Omitted when connecting to a service the space already has. */
+  type?: string
+  name?: string
+  version?: string
+  storage?: string
+  external?: boolean
+  url?: string
+}
+
 export interface FixAction {
   type: string
   path?: string
@@ -224,10 +251,42 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ users: access.users ?? [], groups: access.groups ?? [], roles: access.roles ?? [] }),
     }),
+  // Every space, with or without apps — one that holds only services still
+  // needs its card.
+  spaces: () => request<{ spaces: string[] }>('/v1/spaces'),
+  createSpace: (name: string) =>
+    request<{ ok: boolean; name: string }>('/v1/spaces', {
+      method: 'POST',
+      body: JSON.stringify({ name }),
+    }),
+  addonTypes: () => request<{ types: AddonType[] }>('/v1/addon-types'),
+  // Services belong to the space; apps hold connections to them.
+  spaceAddons: (space: string) =>
+    request<{ addons: SpaceAddonEntry[] }>(`/v1/spaces/${encodeURIComponent(space)}/addons`),
+  // Creating can take a while the first time (the cluster pulls the image and
+  // waits for the service to answer) — the request stays open throughout.
+  addSpaceAddon: (space: string, req: AddAddonRequest) =>
+    request<{ ok: boolean; version?: string }>(`/v1/spaces/${encodeURIComponent(space)}/addons`, {
+      method: 'POST',
+      body: JSON.stringify(req),
+    }),
+  removeSpaceAddon: (space: string, addon: string, keepData: boolean) =>
+    request<{ ok: boolean; detached?: string[] }>(
+      `/v1/spaces/${encodeURIComponent(space)}/addons/${encodeURIComponent(addon)}?keepData=${keepData}`,
+      { method: 'DELETE' },
+    ),
   addons: (space: string, app: string) =>
     request<{ addons: AddonEntry[] }>(appPath(space, app, '/addons')),
-  removeAddon: (space: string, app: string, addon: string, keepData: boolean) =>
-    request<{ ok: boolean }>(appPath(space, app, `/addons/${encodeURIComponent(addon)}?keepData=${keepData}`), {
+  // Connects the app; with a type it creates the space service first when
+  // missing (which can take a minute — the request stays open throughout).
+  addAddon: (space: string, app: string, req: AddAddonRequest) =>
+    request<{ ok: boolean; created?: boolean; restarted?: boolean; version?: string }>(
+      appPath(space, app, '/addons'),
+      { method: 'POST', body: JSON.stringify(req) },
+    ),
+  // Disconnects the app; the service (and its data) stays with the space.
+  removeAddon: (space: string, app: string, addon: string) =>
+    request<{ ok: boolean }>(appPath(space, app, `/addons/${encodeURIComponent(addon)}`), {
       method: 'DELETE',
     }),
   // diagnose asks the assistant to read the app's current evidence — this

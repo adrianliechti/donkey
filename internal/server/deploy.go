@@ -229,6 +229,22 @@ func (s *Server) deploy(ctx context.Context, out *lineStreamer, dir string, app 
 		out.Line("· %s", line)
 	}
 
+	if app.Name == addons.SharedOwner {
+		return fail(fmt.Errorf("the app name %q is reserved for a space's shared services — pick another name", addons.SharedOwner))
+	}
+	// Services take plain names too ("postgres" is reachable like an app);
+	// an app cannot move in over one.
+	if data, err := s.k8s.GetSecretData(ctx, ns, addons.SecretName(addons.SharedOwner, app.Name)); err == nil && len(data) > 0 {
+		return fail(fmt.Errorf("a service named %q already runs in this space — the app needs another name", app.Name))
+	}
+	// An unknown addon type has to stop the deploy here, not after minutes
+	// of building.
+	for _, a := range app.Addons {
+		if _, err := addons.Get(a.Type); err != nil {
+			return fail(err)
+		}
+	}
+
 	imageRef := opts.Tag
 	if imageRef == "" {
 		imageRef = build.ImageTag(s.cfg.Registry.URL, app.Name, opts.SHA, time.Now(), s.cfg.Registry.Immutable)
@@ -549,9 +565,50 @@ func (s *Server) applyAndWait(ctx context.Context, out *lineStreamer, app *confi
 			return failed(fmt.Errorf("couldn't switch %s to single-copy rollouts: %w", app.Name, err))
 		}
 	}
+	// donkey.yaml is declarative about addons too: services belong to the
+	// space, and an entry here means "this app uses that service" — created
+	// on the spot when the space doesn't have it yet, before the app (and
+	// its pre-deploy step) needs the binding. An existing service is left
+	// alone: a second app naming it simply joins it.
+	for _, a := range app.Addons {
+		shared, err := s.k8s.GetSecretData(ctx, ns, addons.SecretName(addons.SharedOwner, a.Name))
+		if err != nil {
+			return failed(err)
+		}
+		if len(shared) == 0 {
+			if a.External {
+				return failed(fmt.Errorf("addon %s runs elsewhere and its address isn't stored in donkey.yaml — connect it once with `donkey addon attach %s --url …`", a.Name, a.Type))
+			}
+			out.Line("Setting up %s (%s) for the space — the first time can take a minute…", a.Name, a.Type)
+			if shared, _, _, err = s.createSpaceAddon(ctx, space, ns, AddonRequest{Type: a.Type, Name: a.Name, Version: a.Version, Storage: a.Storage}); err != nil {
+				return failed(err)
+			}
+			out.Line("✓ %s is ready.", a.Name)
+		}
+		// The attachment copy is re-applied every deploy, so it stays current
+		// with the space's service.
+		if err := s.k8s.Apply(ctx, []runtime.Object{addons.AttachmentSecret(space, app.Name, ns, a.Name, shared)}); err != nil {
+			return failed(err)
+		}
+	}
 	in, err := s.manifestInput(app, imageRef, true)
 	if err != nil {
 		return failed(err)
+	}
+	// Addons added in the console aren't in this donkey.yaml; the cluster
+	// knows them by their binding secrets, and they keep working across
+	// deploys instead of silently losing their env.
+	if bindings, err := s.k8s.ListAddonBindings(ctx, ns, app.Name); err == nil {
+		known := map[string]bool{}
+		for _, n := range in.AddonSecretNames {
+			known[n] = true
+		}
+		for _, b := range bindings {
+			if n := addons.SecretName(app.Name, b.Name); !known[n] {
+				in.AddonSecretNames = append(in.AddonSecretNames, n)
+				out.Line("· Keeping %s, attached in the console", b.Name)
+			}
+		}
 	}
 	objs, err := manifests.AppObjects(in)
 	if err != nil {

@@ -36,6 +36,11 @@ say "installing the control plane (real install command, demo settings)"
   --openai-api-key "${AI_KEY}" \
   --api-token "${TOKEN}"
 
+# The install applies the same :dev tag every time, so an already-running
+# server never rolls on its own — without this, a re-run keeps serving the
+# previous build (and its embedded console).
+kubectl --context "${CTX}" -n donkey-system rollout restart deployment donkey-server >/dev/null 2>&1 || true
+
 say "donkey is installed"
 cat <<EOF
 

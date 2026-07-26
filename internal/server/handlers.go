@@ -3,11 +3,16 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"maps"
+	"net"
 	"net/http"
+	"slices"
 	"strconv"
 	"time"
 
+	"github.com/gorilla/websocket"
 	bkclient "github.com/moby/buildkit/client"
 	"k8s.io/apimachinery/pkg/runtime"
 
@@ -27,6 +32,9 @@ func (s *Server) spaceApp(r *http.Request) (ns, app string, err error) {
 	app = r.PathValue("app")
 	if !config.ValidName(app) {
 		return "", "", fmt.Errorf("%q is not a valid app name", app)
+	}
+	if app == addons.SharedOwner {
+		return "", "", fmt.Errorf("%q is reserved for a space's shared services", addons.SharedOwner)
 	}
 	ns, err = s.cfg.SpaceNamespace(r.PathValue("space"))
 	return ns, app, err
@@ -285,6 +293,8 @@ func (s *Server) handlePutEnv(w http.ResponseWriter, r *http.Request) {
 }
 
 type AddonRequest struct {
+	// Type is empty when the request attaches a service the space already
+	// has; naming one creates the service first if it is missing.
 	Type     string `json:"type"`
 	Name     string `json:"name"`
 	Version  string `json:"version"`
@@ -293,6 +303,10 @@ type AddonRequest struct {
 	URL      string `json:"url"`
 }
 
+// handleAddAddon connects the app to one of the space's services — services
+// belong to the space, apps hold attachments (a copy of the binding Secret,
+// wired into their envFrom). A request naming a type creates the service
+// first when the space doesn't have it yet.
 func (s *Server) handleAddAddon(w http.ResponseWriter, r *http.Request) {
 	ns, app, err := s.spaceApp(r)
 	if err != nil {
@@ -312,10 +326,6 @@ func (s *Server) handleAddAddon(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, fmt.Errorf("%q is not a valid addon name — lowercase letters, digits and dashes", req.Name))
 		return
 	}
-	if err := addons.ValidateNames(app, req.Name); err != nil {
-		writeErr(w, http.StatusBadRequest, err)
-		return
-	}
 	ctx := r.Context()
 	// The addon may be the first thing in a fresh space — but never a reason
 	// to take over a namespace donkey didn't create.
@@ -324,32 +334,100 @@ func (s *Server) handleAddAddon(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var objs []runtime.Object
-	objs = append(objs, manifests.Namespace(space, ns))
-
-	if req.External {
-		if req.Type != "postgres" {
-			writeErr(w, http.StatusBadRequest, fmt.Errorf("attach currently supports postgres"))
-			return
-		}
-		binding, err := addons.ExternalPostgresBinding(req.URL)
-		if err != nil {
-			writeErr(w, http.StatusBadRequest, err)
-			return
-		}
-		objs = append(objs, addons.BindingSecret(space, app, ns, req.Name, binding))
-		if err := s.k8s.Apply(ctx, objs); err != nil {
-			writeErr(w, http.StatusBadGateway, err)
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	shared, err := s.k8s.GetSecretData(ctx, ns, addons.SecretName(addons.SharedOwner, req.Name))
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err)
 		return
 	}
+	created := false
+	var version, storage string
+	if len(shared) == 0 {
+		if req.Type == "" {
+			writeErr(w, http.StatusNotFound, fmt.Errorf("the space has no service named %q — give a type to create it", req.Name))
+			return
+		}
+		shared, version, storage, err = s.createSpaceAddon(ctx, space, ns, req)
+		if err != nil {
+			writeErr(w, statusFor(err), err)
+			return
+		}
+		created = true
+	}
 
+	if err := s.k8s.Apply(ctx, []runtime.Object{addons.AttachmentSecret(space, app, ns, req.Name, shared)}); err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	// An app that is already deployed picks the binding up on the spot; one
+	// that isn't gets it wired by its first deploy.
+	wired, err := s.k8s.SetAddonEnvFrom(ctx, ns, app, addons.SecretName(app, req.Name), true)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok": true, "created": created, "restarted": wired, "version": version, "storage": storage,
+	})
+}
+
+// userError marks a failure the caller caused (a bad type, name or URL), so
+// handlers answer 400 instead of blaming the cluster.
+type userError struct{ error }
+
+func statusFor(err error) int {
+	var ue userError
+	if errors.As(err, &ue) {
+		return http.StatusBadRequest
+	}
+	return http.StatusBadGateway
+}
+
+// createSpaceAddon creates the space's service — provisioned in-cluster, or
+// external as a binding-only Secret — and returns its binding values.
+func (s *Server) createSpaceAddon(ctx context.Context, space, ns string, req AddonRequest) (map[string]string, string, string, error) {
 	addon, err := addons.Get(req.Type)
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, err)
-		return
+		return nil, "", "", userError{err}
+	}
+	if req.External {
+		binding, err := addon.ExternalBinding(req.URL)
+		if err != nil {
+			return nil, "", "", userError{err}
+		}
+		objs := []runtime.Object{
+			manifests.Namespace(space, ns),
+			addons.BindingSecret(space, addons.SharedOwner, ns, req.Name, binding),
+		}
+		if err := s.k8s.Apply(ctx, objs); err != nil {
+			return nil, "", "", err
+		}
+		return binding, "", "", nil
+	}
+	if !config.ValidName(req.Name) {
+		return nil, "", "", userError{fmt.Errorf("%q is not a valid service name — lowercase letters, digits and dashes", req.Name)}
+	}
+	// The service takes its plain name, reachable as e.g. "postgres" the way
+	// siblings reach each other — so it must not seize a name an app (or a
+	// differently-named service) already holds.
+	if component, exists, err := s.k8s.DeploymentComponent(ctx, ns, req.Name); err != nil {
+		return nil, "", "", err
+	} else if exists && component != addons.Component(req.Name) {
+		return nil, "", "", userError{fmt.Errorf("the name %q is taken by an app in this space — pick another for the service", req.Name)}
+	}
+	in, err := s.provisionAddon(ctx, space, ns, addons.SharedOwner, req)
+	if err != nil {
+		return nil, "", "", err
+	}
+	return addon.Binding(in), in.Version, in.Storage, nil
+}
+
+// provisionAddon creates (or re-applies) one managed addon instance with its
+// binding secret and waits until it serves. Shared by the addon API and the
+// deploy path, which provisions what donkey.yaml lists.
+func (s *Server) provisionAddon(ctx context.Context, space, ns, app string, req AddonRequest) (addons.Input, error) {
+	addon, err := addons.Get(req.Type)
+	if err != nil {
+		return addons.Input{}, err
 	}
 	in := addons.Input{App: app, Space: space, Namespace: ns, Name: req.Name, Version: req.Version, Storage: req.Storage}
 	if in.Version == "" {
@@ -360,35 +438,60 @@ func (s *Server) handleAddAddon(w http.ResponseWriter, r *http.Request) {
 	}
 	existing, err := s.k8s.GetSecretData(ctx, ns, addons.SecretName(app, req.Name))
 	if err != nil {
-		writeErr(w, http.StatusBadGateway, err)
-		return
+		return in, err
 	}
 	// Reuse the credential the instance was initialized with — rotating it
 	// here would lock the service out of its own kept data.
 	if pw, ok := existing[addon.CredentialKey()]; ok {
 		in.Password = pw
 	} else if in.Password, err = addons.NewPassword(); err != nil {
-		writeErr(w, http.StatusInternalServerError, err)
-		return
+		return in, err
 	}
-	objs = append(objs, addons.BindingSecret(space, app, ns, req.Name, addon.Binding(in)))
+	objs := []runtime.Object{
+		manifests.Namespace(space, ns),
+		addons.BindingSecret(space, app, ns, in.Name, addon.Binding(in)),
+	}
 	addonObjs, err := addon.Objects(in)
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, err)
-		return
+		return in, err
 	}
 	objs = append(objs, addonObjs...)
 	if err := s.k8s.Apply(ctx, objs); err != nil {
-		writeErr(w, http.StatusBadGateway, err)
-		return
+		return in, err
 	}
-	if err := s.k8s.WaitForRollout(ctx, ns, addons.InstanceName(app, req.Name)); err != nil {
-		writeErr(w, http.StatusBadGateway, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "version": in.Version, "storage": in.Storage})
+	return in, s.k8s.WaitForRollout(ctx, ns, in.Name)
 }
 
+// handleAddonTypes is the service catalog: what the console can offer, each
+// type with its defaults, its one-liner, and the env contract connected
+// apps will see — the names only, never values.
+func (s *Server) handleAddonTypes(w http.ResponseWriter, r *http.Request) {
+	type entry struct {
+		Type        string   `json:"type"`
+		Version     string   `json:"version"`
+		Storage     string   `json:"storage"`
+		Description string   `json:"description"`
+		Keys        []string `json:"keys"`
+	}
+	out := []entry{}
+	for _, a := range addons.Types() {
+		// A throwaway binding yields the contract's variable names.
+		dummy := addons.Input{
+			App: addons.SharedOwner, Space: "space", Namespace: "ns",
+			Name: a.Type(), Version: a.DefaultVersion(), Storage: a.DefaultStorage(), Password: "x",
+		}
+		keys := slices.Sorted(maps.Keys(a.Binding(dummy)))
+		out = append(out, entry{
+			Type: a.Type(), Version: a.DefaultVersion(), Storage: a.DefaultStorage(),
+			Description: a.Description(), Keys: keys,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"types": out})
+}
+
+// handleRemoveAddon detaches the app from a space service — its binding copy
+// and env go away, the service (and every byte of its data) stays. Deleting
+// the service itself is a space-level operation.
 func (s *Server) handleRemoveAddon(w http.ResponseWriter, r *http.Request) {
 	ns, app, err := s.spaceApp(r)
 	if err != nil {
@@ -400,12 +503,247 @@ func (s *Server) handleRemoveAddon(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, fmt.Errorf("%q is not a valid addon name", name))
 		return
 	}
-	keepData := r.URL.Query().Get("keepData") == "true"
-	if err := s.k8s.DeleteComponent(r.Context(), ns, app, addons.Component(name), keepData); err != nil {
+	// Unwire before deleting: a pod template that still references the
+	// binding secret would fail to start once the secret is gone.
+	if _, err := s.k8s.SetAddonEnvFrom(r.Context(), ns, app, addons.SecretName(app, name), false); err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	if err := s.k8s.DetachAddon(r.Context(), ns, app, addons.Component(name)); err != nil {
 		writeErr(w, http.StatusBadGateway, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// handleListSpaceAddons shows the space's services and who uses them —
+// names and injected env var names only, never the values.
+func (s *Server) handleListSpaceAddons(w http.ResponseWriter, r *http.Request) {
+	ns, err := s.cfg.SpaceNamespace(r.PathValue("space"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	bindings, err := s.k8s.ListAddonBindings(r.Context(), ns, addons.SharedOwner)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	type entry struct {
+		Name       string   `json:"name"`
+		Keys       []string `json:"keys"`
+		AttachedTo []string `json:"attachedTo"`
+	}
+	out := []entry{}
+	for _, b := range bindings {
+		attached, err := s.k8s.ListAddonAttachments(r.Context(), ns, addons.Component(b.Name))
+		if err != nil {
+			writeErr(w, http.StatusBadGateway, err)
+			return
+		}
+		if attached == nil {
+			attached = []string{}
+		}
+		out = append(out, entry{Name: b.Name, Keys: b.Keys, AttachedTo: attached})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"addons": out})
+}
+
+// handleAddSpaceAddon creates (or re-applies) a service of the space without
+// attaching any app — the space card's "add".
+func (s *Server) handleAddSpaceAddon(w http.ResponseWriter, r *http.Request) {
+	space := r.PathValue("space")
+	ns, err := s.cfg.SpaceNamespace(space)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	var req AddonRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if req.Name == "" {
+		req.Name = req.Type
+	}
+	if !config.ValidName(req.Name) {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("%q is not a valid addon name — lowercase letters, digits and dashes", req.Name))
+		return
+	}
+	ctx := r.Context()
+	if err := s.k8s.CheckNamespaceFree(ctx, ns); err != nil {
+		writeErr(w, http.StatusConflict, err)
+		return
+	}
+	shared, version, storage, err := s.createSpaceAddon(ctx, space, ns, req)
+	if err != nil {
+		writeErr(w, statusFor(err), err)
+		return
+	}
+	// Re-creating an external service may change its address — the copies
+	// the attached apps hold have to follow, and their pods restart to see
+	// the new values. (A managed re-apply keeps host and credential, so the
+	// copies come out identical and nothing restarts.)
+	attached, err := s.k8s.ListAddonAttachments(ctx, ns, addons.Component(req.Name))
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	for _, app := range attached {
+		if err := s.k8s.Apply(ctx, []runtime.Object{addons.AttachmentSecret(space, app, ns, req.Name, shared)}); err != nil {
+			writeErr(w, http.StatusBadGateway, err)
+			return
+		}
+		if req.External {
+			if _, err := s.k8s.RestartApp(ctx, ns, app); err != nil {
+				writeErr(w, http.StatusBadGateway, err)
+				return
+			}
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "version": version, "storage": storage})
+}
+
+// handleAddonBinding hands over the binding values plus the service's
+// in-cluster address — what `donkey addon tunnel` prints and dials. Values
+// go only to the token holder, the same trust level as the app env API.
+func (s *Server) handleAddonBinding(w http.ResponseWriter, r *http.Request) {
+	ns, err := s.cfg.SpaceNamespace(r.PathValue("space"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	name := r.PathValue("addon")
+	if !config.ValidName(name) {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("%q is not a valid addon name", name))
+		return
+	}
+	data, err := s.k8s.GetSecretData(r.Context(), ns, addons.SecretName(addons.SharedOwner, name))
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	if len(data) == 0 {
+		writeErr(w, http.StatusNotFound, fmt.Errorf("the space has no service named %q", name))
+		return
+	}
+	// A missing Service means the addon is external — reachable at its own
+	// address, so there is nothing to tunnel to.
+	host, port, err := s.k8s.ServiceEndpoint(r.Context(), ns, name)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"binding": data, "host": host, "port": port})
+}
+
+var tunnelUpgrader = websocket.Upgrader{
+	ReadBufferSize:  32 * 1024,
+	WriteBufferSize: 32 * 1024,
+}
+
+// handleAddonTunnel carries one TCP connection to a space service over a
+// WebSocket — the CLI's private line to a database that rightly has no
+// public address. Auth is the bearer token, like every other route.
+func (s *Server) handleAddonTunnel(w http.ResponseWriter, r *http.Request) {
+	ns, err := s.cfg.SpaceNamespace(r.PathValue("space"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	name := r.PathValue("addon")
+	if !config.ValidName(name) {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("%q is not a valid addon name", name))
+		return
+	}
+	host, port, err := s.k8s.ServiceEndpoint(r.Context(), ns, name)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	if host == "" {
+		writeErr(w, http.StatusNotFound, fmt.Errorf("no service named %q runs in this space — one attached from elsewhere is reached at its own address", name))
+		return
+	}
+	// Dial before upgrading, so a dead backend still gets a proper HTTP error.
+	backend, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", host, port), 10*time.Second)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, fmt.Errorf("%s is not answering: %w", name, err))
+		return
+	}
+	ws, err := tunnelUpgrader.Upgrade(w, r, nil)
+	if err != nil {
+		backend.Close()
+		return
+	}
+	defer ws.Close()
+	defer backend.Close()
+	done := make(chan struct{}, 2)
+	go func() {
+		defer func() { done <- struct{}{} }()
+		for {
+			_, msg, err := ws.ReadMessage()
+			if err != nil {
+				return
+			}
+			if _, err := backend.Write(msg); err != nil {
+				return
+			}
+		}
+	}()
+	go func() {
+		defer func() { done <- struct{}{} }()
+		buf := make([]byte, 32*1024)
+		for {
+			n, err := backend.Read(buf)
+			if n > 0 {
+				if werr := ws.WriteMessage(websocket.BinaryMessage, buf[:n]); werr != nil {
+					return
+				}
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+	<-done
+}
+
+// handleRemoveSpaceAddon removes a service from the space, detaching every
+// app that uses it first (their pods restart without the binding).
+func (s *Server) handleRemoveSpaceAddon(w http.ResponseWriter, r *http.Request) {
+	ns, err := s.cfg.SpaceNamespace(r.PathValue("space"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	name := r.PathValue("addon")
+	if !config.ValidName(name) {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("%q is not a valid addon name", name))
+		return
+	}
+	ctx := r.Context()
+	keepData := r.URL.Query().Get("keepData") == "true"
+	attached, err := s.k8s.ListAddonAttachments(ctx, ns, addons.Component(name))
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	for _, app := range attached {
+		if _, err := s.k8s.SetAddonEnvFrom(ctx, ns, app, addons.SecretName(app, name), false); err != nil {
+			writeErr(w, http.StatusBadGateway, err)
+			return
+		}
+		if err := s.k8s.DetachAddon(ctx, ns, app, addons.Component(name)); err != nil {
+			writeErr(w, http.StatusBadGateway, err)
+			return
+		}
+	}
+	if err := s.k8s.DeleteComponent(ctx, ns, addons.SharedOwner, addons.Component(name), keepData); err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "detached": attached})
 }
 
 func (s *Server) handleDestroy(w http.ResponseWriter, r *http.Request) {

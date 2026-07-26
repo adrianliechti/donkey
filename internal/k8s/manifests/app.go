@@ -44,6 +44,9 @@ const (
 	LabelApp       = "donkey.dev/app"
 	LabelComponent = "donkey.dev/component"
 	LabelSpace     = "donkey.dev/space"
+	// LabelShared marks an app's binding Secret as a copy of a space-shared
+	// addon's — removing the shared addon has to find (only) these copies.
+	LabelShared = "donkey.dev/shared"
 
 	ComponentWeb          = "web"
 	ComponentRegistryAuth = "registry-auth"

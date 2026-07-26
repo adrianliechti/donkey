@@ -12,7 +12,7 @@ func destroyCommand() *cli.Command {
 		Name:  "destroy",
 		Usage: "remove this app and everything donkey created for it from the cluster",
 		Flags: []cli.Flag{
-			&cli.BoolFlag{Name: "keep-data", Usage: "keep stored data (databases) and the namespace"},
+			&cli.BoolFlag{Name: "keep-data", Usage: "keep the app's disk and the namespace (the space's services are never touched)"},
 			&cli.BoolFlag{Name: "force", Usage: "don't ask for confirmation (for scripts)"},
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {

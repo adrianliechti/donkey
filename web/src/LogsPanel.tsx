@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { RefreshCw } from 'lucide-react'
 import { api } from './api'
-import { Card, ErrorNote, errText, SectionTitle } from './ui'
+import { Card, ErrorNote, errText, SectionTitle, Select } from './ui'
 
 export function LogsPanel({ space, app }: { space: string; app: string }) {
   const [logs, setLogs] = useState('')
@@ -67,26 +67,24 @@ export function LogsPanel({ space, app }: { space: string; app: string }) {
             />
             Follow
           </label>
-          <select
+          <Select
+            size="sm"
+            ariaLabel="How far back"
             value={since}
-            onChange={(e) => setSince(e.target.value)}
-            aria-label="How far back"
-            className="rounded-md border border-line bg-surface px-2 py-1 text-xs focus:outline-2 focus:outline-hay-deep"
-          >
-            <option value="">all</option>
-            <option value="5m">last 5 min</option>
-            <option value="1h">last hour</option>
-          </select>
-          <select
+            onChange={setSince}
+            options={[
+              { value: '', label: 'all' },
+              { value: '5m', label: 'last 5 min' },
+              { value: '1h', label: 'last hour' },
+            ]}
+          />
+          <Select
+            size="sm"
+            ariaLabel="How many lines"
             value={tail}
-            onChange={(e) => setTail(Number(e.target.value))}
-            aria-label="How many lines"
-            className="rounded-md border border-line bg-surface px-2 py-1 text-xs focus:outline-2 focus:outline-hay-deep"
-          >
-            <option value={100}>last 100</option>
-            <option value={200}>last 200</option>
-            <option value={500}>last 500</option>
-          </select>
+            onChange={setTail}
+            options={[100, 200, 500].map((n) => ({ value: n, label: `last ${n}` }))}
+          />
           <button
             onClick={load}
             className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-stone hover:bg-line/50 focus-visible:outline-2 focus-visible:outline-hay-deep"

@@ -1,15 +1,19 @@
-import { Database, ExternalLink, HardDrive, Network, Trash2 } from 'lucide-react'
-import type { AppSummary } from './api'
-import { ExposureBadge, StatusDot, ago, healthLine, healthOf, type Health } from './ui'
+import { useCallback, useEffect, useState } from 'react'
+import { Dialog, DialogBackdrop, DialogPanel, DialogTitle } from '@headlessui/react'
+import { Database, ExternalLink, HardDrive, Network, Plus, Trash2 } from 'lucide-react'
+import { api, type AddAddonRequest, type AppSummary, type SpaceAddonEntry } from './api'
+import { AddServiceDialog } from './AddonForm'
+import { Button, ErrorNote, ExposureBadge, StatusDot, ago, errText, healthLine, healthOf, type Health } from './ui'
 
 /**
  * One section of the paddock per space.
  *
  * A space is the project — it defaults to the repository its apps came from,
- * so a monorepo's frontend and backend land in the same one. Its apps sit on
- * the dotted field as cards: the card answers "is it up, how do I reach it,
- * what is attached" without opening anything, and clicking it slides the
- * app's panel over the fleet.
+ * so a monorepo's frontend and backend land in the same one. Its services
+ * (databases & co.) live here too, and its apps sit on the dotted field as
+ * cards: the card answers "is it up, how do I reach it, what is attached"
+ * without opening anything, and clicking it slides the app's panel over the
+ * fleet.
  */
 export function SpaceCard({
   space,
@@ -22,6 +26,36 @@ export function SpaceCard({
   onOpen: (space: string, app: string) => void
   onRemove: (r: { space: string; apps: string[]; siblings: string[] }) => void
 }) {
+  const [services, setServices] = useState<SpaceAddonEntry[] | null>(null)
+  const [adding, setAdding] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+
+  const load = useCallback(() => {
+    api
+      .spaceAddons(space)
+      .then((res) => setServices(res.addons ?? []))
+      .catch(() => setServices([]))
+  }, [space])
+
+  useEffect(() => {
+    load()
+  }, [load])
+
+  async function add(req: AddAddonRequest) {
+    setBusy(true)
+    setError('')
+    try {
+      await api.addSpaceAddon(space, req)
+      setAdding(false)
+      load()
+    } catch (err) {
+      setError(errText(err, 'Adding did not work.'))
+    } finally {
+      setBusy(false)
+    }
+  }
+
   // The project's own health is the worst of its parts: a frontend that is
   // up is not good news when the backend it calls is down.
   const worst: Health = apps.some((a) => healthOf(a.healthy, a.ready) === 'bad')
@@ -40,23 +74,212 @@ export function SpaceCard({
             {apps.length === 1 ? '1 app' : `${apps.length} apps`}
           </span>
         </div>
-        <button
-          type="button"
-          title={apps.length > 1 ? `Remove all ${apps.length} apps in ${space}` : `Remove ${apps[0]?.name ?? space}`}
-          aria-label={apps.length > 1 ? `Remove all ${apps.length} apps in ${space}` : `Remove ${apps[0]?.name ?? space}`}
-          onClick={() => onRemove({ space, apps: apps.map((a) => a.name), siblings: [] })}
-          className="rounded-md p-1.5 text-stone hover:bg-brick/10 hover:text-brick focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-hay-deep"
-        >
-          <Trash2 className="size-4" aria-hidden />
-        </button>
+        <div className="flex items-center gap-0.5">
+          <button
+            type="button"
+            title={`Add a service to ${space} (database & co.)`}
+            aria-label={`Add a service to ${space}`}
+            onClick={() => setAdding(true)}
+            className="rounded-md p-1.5 text-stone hover:bg-line/60 hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-hay-deep"
+          >
+            <Plus className="size-4" aria-hidden />
+          </button>
+          {apps.length > 0 && (
+            <button
+              type="button"
+              title={apps.length > 1 ? `Remove all ${apps.length} apps in ${space}` : `Remove ${apps[0]?.name ?? space}`}
+              aria-label={apps.length > 1 ? `Remove all ${apps.length} apps in ${space}` : `Remove ${apps[0]?.name ?? space}`}
+              onClick={() => onRemove({ space, apps: apps.map((a) => a.name), siblings: [] })}
+              className="rounded-md p-1.5 text-stone hover:bg-brick/10 hover:text-brick focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-hay-deep"
+            >
+              <Trash2 className="size-4" aria-hidden />
+            </button>
+          )}
+        </div>
       </div>
+
+      <SpaceServices space={space} services={services} onChanged={load} />
+
+      {apps.length === 0 && (
+        <p className="text-sm text-stone">
+          No apps yet — deploy into this space with{' '}
+          <code className="rounded bg-surface px-1.5 py-0.5 font-mono text-xs">space: {space}</code> in
+          donkey.yaml, or the Deploy button above.
+        </p>
+      )}
 
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
         {apps.map((app) => (
           <AppCard key={app.name} app={app} onOpen={onOpen} siblings={apps} onRemove={onRemove} />
         ))}
       </div>
+
+      <AddServiceDialog
+        open={adding}
+        title={`Add a service to ${space}`}
+        submitLabel="Add to the space"
+        busy={busy}
+        error={error}
+        note={busy ? 'Setting up — the first time can take a minute while the cluster downloads the image.' : ''}
+        onSubmit={add}
+        onClose={() => {
+          setAdding(false)
+          setError('')
+        }}
+      />
     </section>
+  )
+}
+
+/**
+ * The space's services as a chip row. Removing one is the only place data
+ * can go away, so that is where the confirmation lives — apps merely
+ * disconnect, over on their own panel.
+ */
+function SpaceServices({
+  space,
+  services,
+  onChanged,
+}: {
+  space: string
+  services: SpaceAddonEntry[] | null
+  onChanged: () => void
+}) {
+  const [removing, setRemoving] = useState<SpaceAddonEntry | null>(null)
+
+  if (!services || services.length === 0) return null
+
+  return (
+    <div className="mb-3">
+      <div className="flex flex-wrap items-center gap-2">
+        {services.map((svc) => (
+          <span
+            key={svc.name}
+            className="inline-flex items-center gap-1.5 rounded border border-line bg-raised px-2 py-1 font-mono text-xs text-ink-soft"
+            title={
+              svc.attachedTo.length > 0
+                ? `Used by ${svc.attachedTo.join(', ')}`
+                : 'Not connected to any app yet'
+            }
+          >
+            <Database className="size-3" aria-hidden />
+            {svc.name}
+            <span className="text-stone">
+              {svc.attachedTo.length === 0
+                ? '· not connected'
+                : `· ${svc.attachedTo.length} ${svc.attachedTo.length === 1 ? 'app' : 'apps'}`}
+            </span>
+            <button
+              type="button"
+              title={`Remove ${svc.name} from ${space}`}
+              aria-label={`Remove ${svc.name} from ${space}`}
+              onClick={() => setRemoving(svc)}
+              className="rounded p-0.5 text-stone hover:bg-brick/10 hover:text-brick"
+            >
+              <Trash2 className="size-3" aria-hidden />
+            </button>
+          </span>
+        ))}
+      </div>
+      {removing && (
+        <RemoveServiceDialog
+          space={space}
+          service={removing}
+          onClose={() => setRemoving(null)}
+          onRemoved={() => {
+            setRemoving(null)
+            onChanged()
+          }}
+        />
+      )}
+    </div>
+  )
+}
+
+/**
+ * The one destructive act in the addon world gets a proper stop: it says
+ * who loses the service, and deleting the data is the default — keeping a
+ * disk around is the deliberate choice, not the accident.
+ */
+function RemoveServiceDialog({
+  space,
+  service,
+  onClose,
+  onRemoved,
+}: {
+  space: string
+  service: SpaceAddonEntry
+  onClose: () => void
+  onRemoved: () => void
+}) {
+  const [keepData, setKeepData] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+
+  async function remove() {
+    setBusy(true)
+    setError('')
+    try {
+      await api.removeSpaceAddon(space, service.name, keepData)
+      onRemoved()
+    } catch (err) {
+      setError(errText(err, 'Removing did not work.'))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Dialog open onClose={() => !busy && onClose()} className="relative z-50">
+      <DialogBackdrop className="fixed inset-0 bg-black/60" />
+      <div className="fixed inset-0 flex items-start justify-center p-4 pt-[18vh]">
+        <DialogPanel className="w-full max-w-md rounded-lg border border-line bg-card p-4 shadow-2xl">
+          <DialogTitle className="font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-stone">
+            Remove {service.name} from {space}
+          </DialogTitle>
+          <ErrorNote message={error} />
+          <div className="mt-3 space-y-2 text-sm text-ink-soft">
+            {service.attachedTo.length > 0 ? (
+              <p>
+                <span className="font-mono">{service.attachedTo.join(', ')}</span>{' '}
+                {service.attachedTo.length === 1 ? 'is' : 'are'} connected — {service.attachedTo.length === 1 ? 'it' : 'they'} will restart
+                without its variables.
+              </p>
+            ) : (
+              <p>No app is connected to it.</p>
+            )}
+            {keepData ? (
+              <p className="text-stone">
+                Its disk stays — adding a service with the same name later picks the data back up.
+              </p>
+            ) : (
+              <p className="text-brick">Its disk and everything on it will be deleted.</p>
+            )}
+          </div>
+          <label className="mt-3 flex items-center gap-1.5 text-xs text-ink-soft">
+            <input
+              type="checkbox"
+              checked={keepData}
+              onChange={(e) => setKeepData(e.target.checked)}
+              className="size-3.5 accent-hay-deep"
+            />
+            Keep its data
+          </label>
+          <div className="mt-4 flex justify-end gap-2">
+            <Button kind="quiet" onClick={onClose} disabled={busy}>
+              Cancel
+            </Button>
+            <Button kind="danger" onClick={remove} disabled={busy}>
+              {busy
+                ? 'Removing…'
+                : keepData
+                  ? `Remove ${service.name}, keep data`
+                  : `Remove ${service.name} and its data`}
+            </Button>
+          </div>
+        </DialogPanel>
+      </div>
+    </Dialog>
   )
 }
 
@@ -124,7 +347,7 @@ function AppCard({
               <span
                 key={addon}
                 className="inline-flex items-center gap-1 rounded bg-raised px-1.5 py-0.5 font-mono text-[10px] text-ink-soft"
-                title={`Attached service: ${addon}`}
+                title={`Connected service: ${addon}`}
               >
                 <Database className="size-3" aria-hidden /> {addon}
               </span>

@@ -17,6 +17,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gorilla/websocket"
+
 	"github.com/adrianliechti/donkey/internal/ai"
 	"github.com/adrianliechti/donkey/internal/server"
 )
@@ -314,16 +316,91 @@ func (c *Client) PutEnv(ctx context.Context, space, app string, env map[string]s
 	return out.Restarted, err
 }
 
-func (c *Client) AddAddon(ctx context.Context, space, app string, req server.AddonRequest) error {
-	return c.doJSON(ctx, http.MethodPost, appPath(space, app, "/addons"), nil, req, nil)
+// AddAddonResult says what connecting a service changed: whether the space
+// service was created on this occasion, and whether the running app was
+// restarted with the binding.
+type AddAddonResult struct {
+	Created   bool `json:"created"`
+	Restarted bool `json:"restarted"`
 }
 
-func (c *Client) RemoveAddon(ctx context.Context, space, app, addon string, keepData bool) error {
+func (c *Client) AddAddon(ctx context.Context, space, app string, req server.AddonRequest) (AddAddonResult, error) {
+	var out AddAddonResult
+	err := c.doJSON(ctx, http.MethodPost, appPath(space, app, "/addons"), nil, req, &out)
+	return out, err
+}
+
+// RemoveAddon detaches the app from a space service; the service keeps
+// running for the space.
+func (c *Client) RemoveAddon(ctx context.Context, space, app, addon string) error {
+	return c.doJSON(ctx, http.MethodDelete, appPath(space, app, "/addons/"+addon), nil, nil, nil)
+}
+
+// SpaceAddon is one service of a space and the apps using it.
+type SpaceAddon struct {
+	Name       string   `json:"name"`
+	Keys       []string `json:"keys"`
+	AttachedTo []string `json:"attachedTo"`
+}
+
+func (c *Client) SpaceAddons(ctx context.Context, space string) ([]SpaceAddon, error) {
+	var out struct {
+		Addons []SpaceAddon `json:"addons"`
+	}
+	err := c.doJSON(ctx, http.MethodGet, "/v1/spaces/"+url.PathEscape(space)+"/addons", nil, nil, &out)
+	return out.Addons, err
+}
+
+// AddonBindingInfo is a service's contract with values, plus its in-cluster
+// address (empty for one running elsewhere).
+type AddonBindingInfo struct {
+	Binding map[string]string `json:"binding"`
+	Host    string            `json:"host"`
+	Port    int               `json:"port"`
+}
+
+func (c *Client) AddonBinding(ctx context.Context, space, addon string) (AddonBindingInfo, error) {
+	var out AddonBindingInfo
+	err := c.doJSON(ctx, http.MethodGet,
+		"/v1/spaces/"+url.PathEscape(space)+"/addons/"+url.PathEscape(addon)+"/binding", nil, nil, &out)
+	return out, err
+}
+
+// DialAddonTunnel opens one carried TCP connection to a space service — the
+// server bridges the WebSocket onto the service's port.
+func (c *Client) DialAddonTunnel(ctx context.Context, space, addon string) (*websocket.Conn, error) {
+	wsURL := strings.Replace(c.BaseURL, "http", "ws", 1) +
+		"/v1/spaces/" + url.PathEscape(space) + "/addons/" + url.PathEscape(addon) + "/tunnel"
+	dialer := websocket.Dialer{
+		Proxy:            http.ProxyFromEnvironment,
+		HandshakeTimeout: 15 * time.Second,
+	}
+	// The tunnel must trust the same private CA the rest of the client does —
+	// but with the HTTP/2 protocol advertisement stripped: net/http adds "h2"
+	// to the shared config, and a WebSocket cannot ride on it.
+	if tr, ok := c.http.Transport.(*http.Transport); ok && tr != nil && tr.TLSClientConfig != nil {
+		cfg := tr.TLSClientConfig.Clone()
+		cfg.NextProtos = nil
+		dialer.TLSClientConfig = cfg
+	}
+	conn, resp, err := dialer.DialContext(ctx, wsURL, http.Header{"Authorization": {"Bearer " + c.Token}})
+	if err != nil {
+		if resp != nil {
+			return nil, apiError(resp)
+		}
+		return nil, fmt.Errorf("couldn't open the tunnel: %w", err)
+	}
+	return conn, nil
+}
+
+// RemoveSpaceAddon removes a service from the space, detaching every app
+// that uses it.
+func (c *Client) RemoveSpaceAddon(ctx context.Context, space, addon string, keepData bool) error {
 	q := url.Values{}
 	if keepData {
 		q.Set("keepData", "true")
 	}
-	return c.doJSON(ctx, http.MethodDelete, appPath(space, app, "/addons/"+addon), q, nil, nil)
+	return c.doJSON(ctx, http.MethodDelete, "/v1/spaces/"+url.PathEscape(space)+"/addons/"+addon, q, nil, nil)
 }
 
 func (c *Client) Destroy(ctx context.Context, space, app string, keepData bool) error {

@@ -49,6 +49,9 @@ SHOULD_WORK=(
   "sqlite-notes"
   "local-habits"
   "monorepo-root"
+  # The donkey.yaml is the sample: two addons the deploy has to provision
+  # (postgres and pocketbase) before the app can start against them.
+  "addons-sample"
   # These three say how they start (a Procfile, or a host and port read from
   # the environment) but still declare no port, health route or donkey.yaml.
   "flask-beginner"

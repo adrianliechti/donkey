@@ -98,6 +98,36 @@ func (c *Client) DeploymentAnnotation(ctx context.Context, namespace, name, key 
 	return dep.Annotations[key], nil
 }
 
+// ServiceEndpoint returns the in-cluster host and port of a space service
+// ("" when none runs) — donkey-server sits in the cluster and can dial it
+// directly, which is what the tunnel rides on.
+func (c *Client) ServiceEndpoint(ctx context.Context, namespace, name string) (string, int32, error) {
+	svc, err := c.Clientset.CoreV1().Services(namespace).Get(ctx, name, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return "", 0, nil
+	}
+	if err != nil {
+		return "", 0, err
+	}
+	if len(svc.Spec.Ports) == 0 {
+		return "", 0, fmt.Errorf("the service %s exposes no port", name)
+	}
+	return fmt.Sprintf("%s.%s.svc", name, namespace), svc.Spec.Ports[0].Port, nil
+}
+
+// DeploymentComponent reports whether a Deployment of this name exists, and
+// which donkey component it belongs to ("" for an unlabeled one).
+func (c *Client) DeploymentComponent(ctx context.Context, namespace, name string) (string, bool, error) {
+	dep, err := c.Clientset.AppsV1().Deployments(namespace).Get(ctx, name, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return dep.Labels[manifests.LabelComponent], true, nil
+}
+
 // Healthy reports whether the app's latest version is fully up.
 func (s *AppStatus) Healthy() bool {
 	return s.Found && s.UpToDate && s.ReadyReplica >= s.WantReplica
@@ -137,6 +167,25 @@ func (c *Client) ListAddonBindings(ctx context.Context, namespace, app string) (
 		out = append(out, b)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, nil
+}
+
+// ListAddonAttachments names the apps holding a copy of the shared addon's
+// binding (the component carries the addon- prefix already).
+func (c *Client) ListAddonAttachments(ctx context.Context, namespace, component string) ([]string, error) {
+	secrets, err := c.Clientset.CoreV1().Secrets(namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: manifests.LabelComponent + "=" + component + "," + manifests.LabelShared + "=true",
+	})
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, sec := range secrets.Items {
+		if app := sec.Labels[manifests.LabelApp]; app != "" {
+			out = append(out, app)
+		}
+	}
+	sort.Strings(out)
 	return out, nil
 }
 

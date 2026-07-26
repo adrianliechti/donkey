@@ -1,46 +1,83 @@
 import { useCallback, useEffect, useState } from 'react'
-import { api, type AddonEntry } from './api'
+import { Plus } from 'lucide-react'
+import { api, type AddAddonRequest, type AddonEntry, type SpaceAddonEntry } from './api'
+import { AddServiceDialog } from './AddonForm'
 import { Button, Card, ErrorNote, errText, SectionTitle, Spinner } from './ui'
 
+/**
+ * The services this app is connected to. Services belong to the space —
+ * disconnecting here never deletes anything, and the space's other services
+ * are one click away.
+ */
 export function AddonsCard({ space, app }: { space: string; app: string }) {
   const [addons, setAddons] = useState<AddonEntry[] | null>(null)
-  const [removing, setRemoving] = useState('')
-  const [keepData, setKeepData] = useState(true)
+  const [available, setAvailable] = useState<SpaceAddonEntry[]>([])
+  const [adding, setAdding] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const [note, setNote] = useState('')
 
   const load = useCallback(() => {
     api
       .addons(space, app)
       .then((res) => setAddons(res.addons ?? []))
       .catch((err) => setError(errText(err, 'Loading failed.')))
+    api
+      .spaceAddons(space)
+      .then((res) => setAvailable(res.addons ?? []))
+      .catch(() => setAvailable([]))
   }, [space, app])
 
   useEffect(() => {
     load()
   }, [load])
 
-  async function remove(name: string) {
+  const connected = new Set((addons ?? []).map((a) => a.name))
+  const others = available.filter((s) => !connected.has(s.name))
+
+  async function run(work: () => Promise<{ ok?: boolean; restarted?: boolean } | void>, doing: string) {
     setBusy(true)
     setError('')
+    setNote(doing)
     try {
-      await api.removeAddon(space, app, name, keepData)
-      setRemoving('')
+      const res = await work()
+      setAdding(false)
+      setNote(
+        res && res.restarted
+          ? 'Done — the app is restarting with the change.'
+          : 'Done — the app picks it up with its next deploy.',
+      )
       load()
     } catch (err) {
-      setError(errText(err, 'Removing did not work.'))
+      setNote('')
+      setError(errText(err, 'That did not work.'))
     } finally {
       setBusy(false)
     }
   }
 
-  if (addons !== null && addons.length === 0 && !error) return null
+  const create = (req: AddAddonRequest) =>
+    run(
+      () => api.addAddon(space, app, req),
+      req.external ? '' : 'Setting up — the first time can take a minute while the cluster downloads the image.',
+    )
 
   return (
     <Card className="p-4">
-      <SectionTitle>Attached services</SectionTitle>
+      <div className="flex items-center justify-between gap-2">
+        <SectionTitle>Connected services</SectionTitle>
+        <Button kind="quiet" onClick={() => setAdding(true)}>
+          <span className="flex items-center gap-1">
+            <Plus className="size-3.5" aria-hidden /> Add a service
+          </span>
+        </Button>
+      </div>
       <ErrorNote message={error} />
+      {note && <p className="mt-2 text-xs text-ink-soft">{note}</p>}
       {addons === null && !error && <Spinner label="Loading…" />}
+      {addons !== null && addons.length === 0 && (
+        <p className="mt-2 text-sm text-stone">Not connected to any service yet.</p>
+      )}
       <ul className="mt-2 space-y-2">
         {(addons ?? []).map((a) => (
           <li key={a.name} className="flex flex-wrap items-center justify-between gap-2">
@@ -48,35 +85,44 @@ export function AddonsCard({ space, app }: { space: string; app: string }) {
               <span className="font-mono text-sm font-medium">{a.name}</span>
               <span className="ml-2 font-mono text-xs text-stone">{a.keys.join(' · ')}</span>
             </div>
-            {removing === a.name ? (
-              <div className="flex items-center gap-2">
-                <label className="flex items-center gap-1.5 text-xs text-ink-soft">
-                  <input
-                    type="checkbox"
-                    checked={keepData}
-                    onChange={(e) => setKeepData(e.target.checked)}
-                    className="size-3.5 accent-hay-deep"
-                  />
-                  Keep its data
-                </label>
-                <Button kind="danger" onClick={() => remove(a.name)} disabled={busy}>
-                  {busy ? 'Removing…' : keepData ? 'Remove, keep data' : 'Remove with data'}
-                </Button>
-                <Button kind="quiet" onClick={() => setRemoving('')} disabled={busy}>
-                  Cancel
-                </Button>
-              </div>
-            ) : (
-              <Button kind="quiet" onClick={() => setRemoving(a.name)}>
-                Remove
-              </Button>
-            )}
+            <Button
+              kind="quiet"
+              disabled={busy}
+              onClick={() => run(() => api.removeAddon(space, app, a.name), '')}
+            >
+              Disconnect
+            </Button>
           </li>
         ))}
       </ul>
+      {others.length > 0 && (
+        <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-line pt-3">
+          <span className="text-xs text-stone">Also in this space:</span>
+          {others.map((s) => (
+            <Button
+              key={s.name}
+              kind="quiet"
+              disabled={busy}
+              onClick={() => run(() => api.addAddon(space, app, { name: s.name }), '')}
+            >
+              <span className="font-mono text-xs">Connect {s.name}</span>
+            </Button>
+          ))}
+        </div>
+      )}
+      <AddServiceDialog
+        open={adding}
+        title="Add a service"
+        submitLabel="Add and connect"
+        busy={busy}
+        error={error}
+        note={busy ? note : ''}
+        onSubmit={create}
+        onClose={() => setAdding(false)}
+      />
       <p className="mt-3 text-xs text-stone">
-        The variables above are injected into the app. Add services from the project folder:{' '}
-        <code className="font-mono">donkey addon add postgres</code>
+        The variables above are injected into the app. Services belong to the space — disconnecting
+        deletes nothing, and the space card manages the services themselves.
       </p>
     </Card>
   )

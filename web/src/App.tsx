@@ -42,7 +42,7 @@ function Shell() {
               <span className="text-xl" aria-hidden>
                 🫏
               </span>
-              donkey
+              Donkey
             </button>
             <Breadcrumb />
           </div>

@@ -1,12 +1,16 @@
 package server
 
 import (
+	"encoding/json"
 	"io/fs"
 	"net/http"
 	"sort"
 	"strings"
 	"time"
 
+	"k8s.io/apimachinery/pkg/runtime"
+
+	"github.com/adrianliechti/donkey/internal/k8s/manifests"
 	"github.com/adrianliechti/donkey/web"
 )
 
@@ -46,6 +50,52 @@ func uiHandler() http.Handler {
 		}
 		http.ServeFileFS(w, r, sub, "index.html")
 	})
+}
+
+// handleListSpaces names every space, with or without apps — a space that
+// holds only services still needs its card in the console.
+func (s *Server) handleListSpaces(w http.ResponseWriter, r *http.Request) {
+	refs, err := s.k8s.ListSpaces(r.Context())
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	names := []string{}
+	for _, ref := range refs {
+		space := ref.Space
+		if space == "" {
+			space = strings.TrimPrefix(ref.Namespace, s.cfg.NamespacePrefix)
+		}
+		names = append(names, space)
+	}
+	sort.Strings(names)
+	writeJSON(w, http.StatusOK, map[string]any{"spaces": names})
+}
+
+// handleCreateSpace makes an empty space — a home to put services into
+// before any app arrives.
+func (s *Server) handleCreateSpace(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	ns, err := s.cfg.SpaceNamespace(req.Name)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := s.k8s.CheckNamespaceFree(r.Context(), ns); err != nil {
+		writeErr(w, http.StatusConflict, err)
+		return
+	}
+	if err := s.k8s.Apply(r.Context(), []runtime.Object{manifests.Namespace(req.Name, ns)}); err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "name": req.Name})
 }
 
 // AppListEntry is one row of the admin console's overview.

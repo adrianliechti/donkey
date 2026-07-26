@@ -49,7 +49,7 @@ export function DangerZone({ space, app, onDestroyed }: { space: string; app: st
               onChange={(e) => setKeepData(e.target.checked)}
               className="size-4 accent-hay-deep"
             />
-            Keep stored data (databases, disks)
+            Keep its disk (the space's services are never touched)
           </label>
           <div className="flex gap-2">
             <Button kind="danger" onClick={destroy} disabled={busy}>

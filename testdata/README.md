@@ -18,7 +18,7 @@ and works out the name, the port, the build, the start command, the health
 route, and whether the app needs a disk. A sample that declares those in a
 `donkey.yaml` is not testing detection; it is testing YAML parsing.
 
-So only two samples ship one, both for reasons that have nothing to do with
+So only three samples ship one, each for reasons that have nothing to do with
 convenience:
 
 - **`demo/`** — it is the showcase for what you *can* only say explicitly:
@@ -26,6 +26,10 @@ convenience:
 - **`monorepo-root/services/api/`** — the file *is* the test. Subfolder
   discovery finds an app by looking for a `donkey.yaml`, so removing it would
   remove the thing the sample exercises.
+- **`addons-sample/`** — same reason, different feature: addons are the one
+  thing donkey never provisions from detection alone (a `psycopg` import only
+  earns a suggestion), so `addons:` in the file is the only way to say them —
+  and the deploy provisioning what the file lists is what's under test.
 
 Everything else is bare. When you add a sample, add it bare.
 
@@ -34,6 +38,12 @@ Everything else is bare. When you add a sample, add it bare.
 | Sample | Stack | The challenge |
 |---|---|---|
 | `demo/` | FastAPI + FastMCP + DuckDB, and a React/Tailwind dashboard | **One** address for two apps: the dashboard is the only thing on the internet, and the backend claims `/api` and `/mcp` on that same address while being `internal: true` — no hostname, no certificate, reachable only as `http://backend` from inside the space. Plus MCP and REST over one embedded database, and a disk that survives redeploys. This is what `task demo` deploys. |
+
+## Attached services
+
+| Sample | Stack | The challenge |
+|---|---|---|
+| `addons-sample/` | An Express guestbook on Postgres + PocketBase | The `donkey.yaml` lists two `addons:` — the deploy has to provision both for the space (each a Deployment with its own disk), wait for them, and only then start the app with `DATABASE_URL` and `POCKETBASE_URL` injected. Notes land in Postgres, each signing is logged to a PocketBase collection via the admin binding. Nothing in the folder holds an address or a credential. |
 
 ## The way apps are actually generated
 
@@ -96,6 +106,8 @@ health route, which folder holds data, and sometimes what to install.
 - `local-habits/` deploys **and warns** about `App.jsx`, while staying silent
   about `vite.config.js`.
 - `sqlite-notes/` proposes a disk for `./data` before the first deploy.
+- `addons-sample/` provisions its postgres and pocketbase first; signing the
+  guestbook writes to both, and the notes survive a redeploy.
 - `monorepo-root/` builds `services/api` and says that it did.
 - `kitchen-sink-sample/{api,web,worker}` each deploy on their own — railpack
   recognizes all three, and finding them separately is the actual test.

@@ -144,6 +144,13 @@ func (c *Client) DeleteComponent(ctx context.Context, namespace, app, component 
 		fmt.Sprintf("%s=%s,%s=%s", manifests.LabelApp, app, manifests.LabelComponent, component), keepData)
 }
 
+// DetachAddon removes an app's copy of a shared addon's binding — only the
+// copy: the shared marker keeps an app-owned addon of the same name safe.
+func (c *Client) DetachAddon(ctx context.Context, namespace, app, component string) error {
+	return c.deleteBySelector(ctx, namespace,
+		fmt.Sprintf("%s=%s,%s=%s,%s=true", manifests.LabelApp, app, manifests.LabelComponent, component, manifests.LabelShared), false)
+}
+
 // DeleteAppResources deletes every donkey-owned object of the app across the
 // fixed kind list. The namespace belongs to the whole space, so it only goes
 // away with the space's last app.
@@ -253,6 +260,29 @@ func (c *Client) ListApps(ctx context.Context) ([]AppRef, error) {
 			App:       name,
 			Namespace: d.Namespace,
 		})
+	}
+	return out, nil
+}
+
+// ListSpaces finds every donkey space namespace, including ones holding no
+// app — a space can carry only services now, and it must not vanish from
+// view for that.
+func (c *Client) ListSpaces(ctx context.Context) ([]AppRef, error) {
+	namespaces, err := c.Clientset.CoreV1().Namespaces().List(ctx, metav1.ListOptions{
+		LabelSelector: manifests.LabelSpace,
+	})
+	if err != nil {
+		return nil, err
+	}
+	var out []AppRef
+	for _, ns := range namespaces.Items {
+		if ns.Name == manifests.SystemNamespace || ns.DeletionTimestamp != nil {
+			continue
+		}
+		if ns.Annotations[manifests.AnnotationManaged] != "true" {
+			continue
+		}
+		out = append(out, AppRef{Space: ns.Labels[manifests.LabelSpace], Namespace: ns.Name})
 	}
 	return out, nil
 }

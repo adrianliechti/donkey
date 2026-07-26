@@ -1,6 +1,7 @@
 // Small shared pieces so every view speaks the same visual language.
 import { Component, type ReactNode } from 'react'
-import { CircleAlert, CircleCheck, Globe, Loader2, Lock, Network } from 'lucide-react'
+import { Listbox, ListboxButton, ListboxOption, ListboxOptions } from '@headlessui/react'
+import { Check, ChevronDown, CircleAlert, CircleCheck, Globe, Loader2, Lock, Network } from 'lucide-react'
 import type { Exposure } from './api'
 
 // errText gives every catch block the same voice: the server's own message
@@ -116,6 +117,56 @@ export function Button({
     >
       {children}
     </button>
+  )
+}
+
+// Select is the console's dropdown — a Headless UI Listbox wearing the same
+// clothes as the text inputs, with keyboard navigation and focus handling
+// the native element never styled well.
+export function Select<T extends string | number>({
+  value,
+  onChange,
+  options,
+  ariaLabel,
+  size = 'md',
+}: {
+  value: T
+  onChange: (value: T) => void
+  options: { value: T; label: string }[]
+  ariaLabel: string
+  size?: 'sm' | 'md'
+}) {
+  const pad = size === 'sm' ? 'px-2 py-1 text-xs' : 'px-2 py-1.5 text-sm'
+  const current = options.find((o) => o.value === value)
+  return (
+    <Listbox value={value} onChange={onChange}>
+      <ListboxButton
+        aria-label={ariaLabel}
+        className={`flex items-center gap-1.5 rounded-md border border-line bg-surface font-mono ${pad} focus:outline-2 focus:outline-hay-deep data-open:border-line-bright`}
+      >
+        {current?.label ?? String(value)}
+        <ChevronDown className="size-3.5 text-stone" aria-hidden />
+      </ListboxButton>
+      <ListboxOptions
+        anchor="bottom start"
+        className="z-50 mt-1 min-w-(--button-width) overflow-hidden rounded-md border border-line bg-card py-1 shadow-lg focus:outline-none"
+      >
+        {options.map((o) => (
+          <ListboxOption
+            key={String(o.value)}
+            value={o.value}
+            className={`flex cursor-default items-center justify-between gap-2 ${pad} font-mono text-ink-soft data-focus:bg-hay-wash data-focus:text-ink`}
+          >
+            {({ selected }) => (
+              <>
+                {o.label}
+                <Check className={`size-3.5 ${selected ? '' : 'invisible'}`} aria-hidden />
+              </>
+            )}
+          </ListboxOption>
+        ))}
+      </ListboxOptions>
+    </Listbox>
   )
 }
 
