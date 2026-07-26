@@ -54,9 +54,6 @@ type Options struct {
 	// reach apps for tunnels and probes, the gateway to proxy).
 	ServerContainer  string
 	GatewayContainer string
-	// AuthAvailable says the installation has an IdP — without one there is
-	// no "protected", only public and internal.
-	AuthAvailable bool
 }
 
 // Runtime runs donkey's apps on a Docker engine.

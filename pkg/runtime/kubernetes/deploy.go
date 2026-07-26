@@ -78,6 +78,12 @@ func (r *Runtime) Deploy(ctx context.Context, spec rt.DeploySpec, out rt.Progres
 	if err != nil {
 		return err
 	}
+	if in.Domain != "" {
+		if owner := r.hostOwner(ctx, space, in.Domain, app.Name); owner != "" {
+			return fmt.Errorf("%s already answers on %s — two apps cannot share one address (give one of them a different `host`)", owner, in.Domain)
+		}
+	}
+	r.resolveRouteTargets(ctx, space, &in)
 	// Addons added in the console aren't in this donkey.yaml; the cluster
 	// knows them by their binding secrets, and they keep working across
 	// deploys instead of silently losing their env.
@@ -142,7 +148,7 @@ func (r *Runtime) Deploy(ctx context.Context, spec rt.DeploySpec, out rt.Progres
 			return err
 		}
 		out.Line("· Internal only — the apps of this space reach it at http://%s", app.Name)
-	} else if !app.Public && r.opts.AuthAvailable {
+	} else if !app.Public {
 		out.Line("· Login protection is in force.")
 	}
 	if spec.NoWait {
@@ -179,17 +185,9 @@ func (r *Runtime) Destroy(ctx context.Context, space, app string, keepData bool)
 	return r.c.DeleteAppResources(ctx, ns, app, keepData)
 }
 
-// appHost is the address of an app: <app>.<space>.<domain>. The space in the
-// middle is what lets two teams both have a "web". An internal app has no
-// address at all — its siblings reach it by service name.
+// appHost is the address of an app — see config.AppHost for the rule.
 func (r *Runtime) appHost(space string, app *config.AppConfig) string {
-	if app.Internal {
-		return ""
-	}
-	if app.Domain != "" {
-		return app.Domain
-	}
-	return app.Name + "." + space + "." + r.opts.Domain
+	return config.AppHost(app, space, r.opts.Domain)
 }
 
 func (r *Runtime) manifestInput(spec rt.DeploySpec, includeCreds bool) (manifests.Input, error) {
@@ -203,13 +201,6 @@ func (r *Runtime) manifestInput(spec rt.DeploySpec, includeCreds bool) (manifest
 		RegistryHost: r.opts.Registry.Host(),
 		Domain:       r.appHost(space, app),
 	}
-	// The donkey gateway is every route's real backend; whether it can also
-	// offer a login depends on the installation having an IdP.
-	in.Gateway = &manifests.GatewayRef{
-		Service:   manifests.GatewayAppName,
-		Namespace: manifests.SystemNamespace,
-		Auth:      r.opts.AuthAvailable,
-	}
 	if includeCreds {
 		password, err := r.opts.Registry.Password()
 		if err != nil {
@@ -221,9 +212,9 @@ func (r *Runtime) manifestInput(spec rt.DeploySpec, includeCreds bool) (manifest
 	for _, a := range app.Addons {
 		in.AddonSecretNames = append(in.AddonSecretNames, addons.SecretName(app.Name, a.Name))
 	}
-	// Each route joins another app's address, so its hostname is that app's.
-	// Only the default hostname is resolvable from here — a target with its
-	// own `domain:` would need looking up.
+	// Each route joins another app's address. The default shape is the
+	// assumption; resolveRouteTargets corrects it against what that app
+	// actually serves on, which it alone knows.
 	for _, route := range app.Routes {
 		in.RouteTargets = append(in.RouteTargets, manifests.RouteTarget{
 			App:  route.App,
@@ -232,6 +223,40 @@ func (r *Runtime) manifestInput(spec rt.DeploySpec, includeCreds bool) (manifest
 		})
 	}
 	return in, nil
+}
+
+// resolveRouteTargets replaces each target's assumed hostname with the one
+// that app really answers on — it may sit at the space's own address, under
+// a label of its own, or on a custom hostname. A target that isn't deployed
+// yet keeps the assumption, which is what it will get when it is.
+func (r *Runtime) resolveRouteTargets(ctx context.Context, space string, in *manifests.Input) {
+	for i, target := range in.RouteTargets {
+		net, err := r.c.AppNetwork(ctx, r.ns(space), target.App)
+		if err == nil && net.RouteFound && net.Host != "" {
+			in.RouteTargets[i].Host = net.Host
+		}
+	}
+}
+
+// hostOwner names the app already serving host in this space, or "" when it
+// is free. Two apps on one hostname would both write a route for it and the
+// gateway would serve whichever it sorted first — better to refuse than to
+// let a deploy quietly take an address over.
+func (r *Runtime) hostOwner(ctx context.Context, space, host, self string) string {
+	cms, err := r.c.ListManagedRoutes(ctx)
+	if err != nil {
+		return ""
+	}
+	ns := r.ns(space)
+	for _, cm := range cms {
+		if cm.Namespace != ns || cm.Annotations[manifests.AnnotationHost] != host {
+			continue
+		}
+		if owner := cm.Labels[manifests.LabelApp]; owner != "" && owner != self {
+			return owner
+		}
+	}
+	return ""
 }
 
 // retractRemovedRoutes deletes the shared-address routes an app used to

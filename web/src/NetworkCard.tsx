@@ -7,7 +7,7 @@ import { Button, Card, ErrorNote, errText, SectionTitle, Spinner } from './ui'
  * How the app is reached, changed on the spot — no deploy.
  *
  * The donkeyfile stays the source of truth where it speaks: a choice made
- * here holds until donkey.yaml itself sets public/internal/domain/access,
+ * here holds until donkey.yaml itself sets public/internal/host/access,
  * which always wins on the next deploy.
  */
 export function NetworkCard({
@@ -21,7 +21,7 @@ export function NetworkCard({
 }) {
   const [net, setNet] = useState<NetworkInfo | null>(null)
   const [exposure, setExposure] = useState<Exposure>('protected')
-  const [domain, setDomain] = useState('')
+  const [hostOverride, setHostOverride] = useState('')
   const [busy, setBusy] = useState(false)
   const [note, setNote] = useState('')
   const [error, setError] = useState('')
@@ -32,7 +32,7 @@ export function NetworkCard({
       .then((info) => {
         setNet(info)
         setExposure(info.exposure)
-        setDomain(info.domain ?? '')
+        setHostOverride(info.hostOverride ?? '')
       })
       .catch((err) => setError(errText(err, 'Loading failed.')))
   }, [space, app])
@@ -41,17 +41,17 @@ export function NetworkCard({
     load()
   }, [load])
 
-  const dirty = net !== null && (exposure !== net.exposure || (domain.trim() || '') !== (net.domain ?? ''))
+  const dirty = net !== null && (exposure !== net.exposure || (hostOverride.trim() || '') !== (net.hostOverride ?? ''))
 
   async function apply() {
     setBusy(true)
     setError('')
     setNote('')
     try {
-      const res = await api.setNetwork(space, app, exposure, exposure === 'internal' ? '' : domain.trim())
+      const res = await api.setNetwork(space, app, exposure, exposure === 'internal' ? '' : hostOverride.trim())
       setNet(res.network)
       setExposure(res.network.exposure)
-      setDomain(res.network.domain ?? '')
+      setHostOverride(res.network.hostOverride ?? '')
       setNote(res.note || 'Applied — the change is live.')
       onChanged()
     } catch (err) {
@@ -61,15 +61,12 @@ export function NetworkCard({
     }
   }
 
-  const options: { id: Exposure; icon: React.ReactNode; label: string; hint: string; disabled?: boolean }[] = [
+  const options: { id: Exposure; icon: React.ReactNode; label: string; hint: string }[] = [
     {
       id: 'protected',
       icon: <Lock className="size-4" aria-hidden />,
       label: 'Login-protected',
-      hint: net?.loginAvailable
-        ? 'Visitors sign in through the identity provider. Narrow it further below.'
-        : 'Needs an identity provider — this installation has none (set auth.issuer at install).',
-      disabled: !net?.loginAvailable,
+      hint: 'Visitors sign in through the identity provider. Narrow it further below.',
     },
     {
       id: 'public',
@@ -99,7 +96,6 @@ export function NetworkCard({
                   key={o.id}
                   role="radio"
                   aria-checked={exposure === o.id}
-                  disabled={o.disabled}
                   onClick={() => setExposure(o.id)}
                   className={`rounded-lg border p-3 text-left transition-colors focus-visible:outline-2 focus-visible:outline-hay-deep disabled:opacity-40 ${
                     exposure === o.id
@@ -118,16 +114,17 @@ export function NetworkCard({
 
             {exposure !== 'internal' && (
               <label className="block">
-                <span className="text-sm font-medium">Custom domain</span>
+                <span className="text-sm font-medium">Address</span>
                 <input
-                  value={domain}
-                  onChange={(e) => setDomain(e.target.value)}
-                  placeholder={net.defaultHost}
+                  value={hostOverride}
+                  onChange={(e) => setHostOverride(e.target.value)}
+                  placeholder={net.host}
                   className="mt-1 w-full rounded-md border border-line bg-surface px-3 py-2 font-mono text-sm placeholder:text-stone/60 focus:outline-2 focus:outline-hay-deep"
                 />
                 <span className="mt-1 block text-xs text-stone">
-                  Leave empty for <span className="font-mono">{net.defaultHost}</span>. A custom domain
-                  needs its DNS pointed at the gateway's address.
+                  Leave empty for <span className="font-mono">{net.host}</span>. A plain name
+                  sits under the space, <span className="font-mono">@</span> takes the space's own
+                  address, and a full hostname needs its DNS pointed at the gateway.
                 </span>
               </label>
             )}
@@ -168,7 +165,7 @@ export function NetworkCard({
         )}
       </Card>
 
-      {net?.loginAvailable && exposure === 'protected' && (
+      {net && exposure === 'protected' && (
         <AccessCard space={space} app={app} initial={net.access ?? null} />
       )}
     </>

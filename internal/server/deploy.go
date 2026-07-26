@@ -422,9 +422,9 @@ type deployDecisions struct {
 type consoleChoices struct {
 	// Exposure is "public", "protected" or "internal"; empty means the
 	// donkeyfile (or the default) decides.
-	Exposure string               `json:"exposure,omitempty"`
-	Domain   string               `json:"domain,omitempty"`
-	Access   *config.AccessConfig `json:"access,omitempty"`
+	Exposure     string               `json:"exposure,omitempty"`
+	HostOverride string               `json:"hostOverride,omitempty"`
+	Access       *config.AccessConfig `json:"access,omitempty"`
 }
 
 func (s *Server) readConsoleChoices(ctx context.Context, space, app string) consoleChoices {
@@ -445,7 +445,7 @@ func (s *Server) readConsoleChoices(ctx context.Context, space, app string) cons
 func (s *Server) adoptConsoleChoices(ctx context.Context, space string, app *config.AppConfig) []string {
 	c := s.readConsoleChoices(ctx, space, app.Name)
 	var lines []string
-	adoptedExposure, adoptedDomain, adoptedAccess := false, false, false
+	adoptedExposure, adoptedHost, adoptedAccess := false, false, false
 	if !app.Public && !app.Internal {
 		switch c.Exposure {
 		case "public":
@@ -456,10 +456,10 @@ func (s *Server) adoptConsoleChoices(ctx context.Context, space string, app *con
 			lines = append(lines, "Keeping the console's setting: internal only")
 		}
 	}
-	if app.Domain == "" && c.Domain != "" && !app.Internal {
-		app.Domain = c.Domain
-		adoptedDomain = true
-		lines = append(lines, fmt.Sprintf("Keeping the console's domain: %s", c.Domain))
+	if app.Host == "" && c.HostOverride != "" && !app.Internal {
+		app.Host = c.HostOverride
+		adoptedHost = true
+		lines = append(lines, fmt.Sprintf("Keeping the console's address: %s", c.HostOverride))
 	}
 	if app.Access == nil && !c.Access.Empty() {
 		app.Access = c.Access
@@ -471,8 +471,8 @@ func (s *Server) adoptConsoleChoices(ctx context.Context, space string, app *con
 		if adoptedExposure {
 			app.Public, app.Internal = false, false
 		}
-		if adoptedDomain {
-			app.Domain = ""
+		if adoptedHost {
+			app.Host = ""
 		}
 		if adoptedAccess {
 			app.Access = nil

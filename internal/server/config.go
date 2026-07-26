@@ -104,17 +104,9 @@ func envOr(key, def string) string {
 // Scheme is always https for apps: the login gateway's cookies require it.
 func (c *Config) Scheme() string { return "https" }
 
-// AppHost is the address of an app: <app>.<space>.<domain>. The space in
-// the middle is what lets two teams both have a "web". An internal app has no
-// address at all — its siblings reach it by service name.
+// AppHost is the address of an app — see config.AppHost for the rule.
 func (c *Config) AppHost(space string, app *config.AppConfig) string {
-	if app.Internal {
-		return ""
-	}
-	if app.Domain != "" {
-		return app.Domain
-	}
-	return app.Name + "." + space + "." + c.Domain
+	return config.AppHost(app, space, c.Domain)
 }
 
 func (c *Config) AppURL(space string, app *config.AppConfig) string {

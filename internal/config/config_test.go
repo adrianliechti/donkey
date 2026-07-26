@@ -105,18 +105,22 @@ func TestAppValidate(t *testing.T) {
 		{"dup addon names", func(c *AppConfig) {
 			c.Addons = []AddonConfig{{Name: "db", Type: "postgres"}, {Name: "db", Type: "redis"}}
 		}, true},
-		// The domain becomes a route hostname, a certificate name and part of
-		// the login callback URL — anything but a plain hostname breaks one of
-		// them, and a wildcard would hand the app everything under it.
-		{"plain domain", func(c *AppConfig) { c.Domain = "shop.example.com" }, false},
-		{"wildcard domain", func(c *AppConfig) { c.Domain = "*.example.com" }, true},
-		{"domain with scheme", func(c *AppConfig) { c.Domain = "https://shop.example.com" }, true},
-		{"domain with path", func(c *AppConfig) { c.Domain = "shop.example.com/app" }, true},
-		{"domain with port", func(c *AppConfig) { c.Domain = "shop.example.com:8443" }, true},
-		{"uppercase domain", func(c *AppConfig) { c.Domain = "Shop.example.com" }, true},
-		{"single label", func(c *AppConfig) { c.Domain = "shop" }, true},
-		{"trailing dot", func(c *AppConfig) { c.Domain = "shop.example.com." }, true},
-		{"leading dash", func(c *AppConfig) { c.Domain = "-shop.example.com" }, true},
+		// `host` becomes a route hostname, a certificate name and part of the
+		// login callback URL — anything but one of its three legal shapes
+		// breaks one of them, and a wildcard would hand the app everything
+		// under it.
+		{"host: full hostname", func(c *AppConfig) { c.Host = "shop.example.com" }, false},
+		{"host: space root", func(c *AppConfig) { c.Host = "@" }, false},
+		{"host: own label", func(c *AppConfig) { c.Host = "shop" }, false},
+		{"host: wildcard", func(c *AppConfig) { c.Host = "*.example.com" }, true},
+		{"host: with scheme", func(c *AppConfig) { c.Host = "https://shop.example.com" }, true},
+		{"host: with path", func(c *AppConfig) { c.Host = "shop.example.com/app" }, true},
+		{"host: with port", func(c *AppConfig) { c.Host = "shop.example.com:8443" }, true},
+		{"host: uppercase", func(c *AppConfig) { c.Host = "Shop.example.com" }, true},
+		{"host: trailing dot", func(c *AppConfig) { c.Host = "shop.example.com." }, true},
+		{"host: leading dash", func(c *AppConfig) { c.Host = "-shop.example.com" }, true},
+		{"host: uppercase label", func(c *AppConfig) { c.Host = "Shop" }, true},
+		{"host: on internal app", func(c *AppConfig) { c.Internal, c.Host = true, "@" }, true},
 		// Access refines the login gateway — it cannot exist where there is
 		// no login (public) or no address to guard (internal, no routes).
 		{"access", func(c *AppConfig) { c.Access = &AccessConfig{Users: []string{"ada@example.com"}} }, false},

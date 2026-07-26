@@ -254,14 +254,20 @@ build:
     VITE_API_URL: https://api.example.com
 
 replicas: 2
-domain: shop.example.com      # a hostname of your own instead of the default
+host: shop.example.com        # where this app answers: a full hostname, a
+                              # plain name to sit under the space (shop →
+                              # shop.<space>.<domain>), or "@" for the
+                              # space's own address. Omitted = <app>.<space>.<domain>
 resources:
   requests: { cpu: 100m, memory: 128Mi }
   limits:   { memory: 512Mi }
 ```
 
 **How an app is reached.** By default it gets `<app>.<space>.<domain>` behind
-the login gateway. `public: true` drops the login. `access:` narrows it — only
+the login gateway. `host:` moves it: `"@"` puts it at the space's own address
+(`<space>.<domain>` — one app per space can be that front door), a plain name
+gives it a label of its own under the space (so the address outlives a rename),
+and anything with a dot is taken as an exact hostname. `public: true` drops the login. `access:` narrows it — only
 the named users, groups or roles (any match, from the ID token's claims) get
 past the sign-in. `internal: true` drops the address — the app has no
 hostname, no certificate and nothing on the internet, and its siblings call it
@@ -388,7 +394,7 @@ single OAuth callback on the domain itself
 (`https://<domain>/oauth2/callback`) — one redirect URI to register at any
 OIDC provider, no wildcard support needed. The session cookie lives on the
 domain, so signing in to one app signs you in to all of them. Only apps
-with a custom `domain:` outside the installation's domain keep a per-host
+with a `host:` outside the installation's domain keep a per-host
 callback (`https://<their-domain>/oauth2/callback`) — register those
 individually.
 

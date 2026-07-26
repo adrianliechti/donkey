@@ -25,9 +25,6 @@ type Options struct {
 	Domain string
 	// Registry feeds the per-app image pull secret.
 	Registry config.Registry
-	// AuthAvailable says the installation has an IdP — without one there is
-	// no "protected", only public and internal.
-	AuthAvailable bool
 }
 
 // Runtime runs donkey's apps on a Kubernetes cluster. It deliberately does

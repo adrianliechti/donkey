@@ -108,6 +108,12 @@ func (r *Runtime) Deploy(ctx context.Context, spec rt.DeploySpec, out rt.Progres
 		return err
 	}
 
+	if host := r.appHost(space, app); host != "" {
+		if owner := r.hostOwner(space, host, app.Name); owner != "" {
+			return fmt.Errorf("%s already answers on %s — two apps cannot share one address (give one of them a different `host`)", owner, host)
+		}
+	}
+
 	run := runSpec{Image: r.pullRef(spec.ImageRef), Port: app.Port}
 	if app.HasStorage() {
 		run.Paths = app.Storage.Paths
@@ -144,7 +150,7 @@ func (r *Runtime) Deploy(ctx context.Context, spec rt.DeploySpec, out rt.Progres
 	}
 	if app.Internal {
 		out.Line("· Internal only — the apps of this space reach it at http://%s", app.Name)
-	} else if !app.Public && r.opts.AuthAvailable {
+	} else if !app.Public {
 		out.Line("· Login protection is in force.")
 	}
 
@@ -162,22 +168,16 @@ func optional(v string) *string {
 	return &v
 }
 
-// appHost is the address of an app: <app>.<space>.<domain>.
+// appHost is the address of an app — see config.AppHost for the rule.
 func (r *Runtime) appHost(space string, app *config.AppConfig) string {
-	if app.Internal {
-		return ""
-	}
-	if app.Domain != "" {
-		return app.Domain
-	}
-	return app.Name + "." + space + "." + r.opts.Domain
+	return config.AppHost(app, space, r.opts.Domain)
 }
 
 // applyRoutes writes the app's routing table entries and retracts the ones
 // it no longer claims.
 func (r *Runtime) applyRoutes(ctx context.Context, space string, app *config.AppConfig, port int) error {
 	backend := fmt.Sprintf("http://%s:%d", ctrName(space, app.Name), port)
-	login := !app.Public && r.opts.AuthAvailable
+	login := !app.Public
 
 	host := r.appHost(space, app)
 	if host == "" {
@@ -199,7 +199,7 @@ func (r *Runtime) applyRoutes(ctx context.Context, space string, app *config.App
 		name := pathRouteName(app.Name, target.App, target.Path)
 		keep[name] = true
 		route := Route{
-			Host:    target.App + "." + space + "." + r.opts.Domain,
+			Host:    r.targetHost(space, target.App),
 			Path:    target.Path,
 			Backend: backend,
 			Login:   login,
@@ -223,6 +223,40 @@ func (r *Runtime) applyRoutes(ctx context.Context, space string, app *config.App
 		}
 	}
 	return nil
+}
+
+// targetHost is the address another app of the space really answers on —
+// it may sit at the space's own address, under a label of its own, or on a
+// custom hostname. One that isn't deployed yet gets the default shape,
+// which is what it will have when it is.
+func (r *Runtime) targetHost(space, app string) string {
+	if route, err := r.state.route(space, app); err == nil && route != nil && route.Host != "" {
+		return route.Host
+	}
+	return app + "." + space + "." + r.opts.Domain
+}
+
+// hostOwner names the app already serving host in this space, or "" when it
+// is free. Two apps on one hostname would both write a route for it and the
+// gateway would serve whichever it sorted first — better to refuse than to
+// let a deploy quietly take an address over.
+func (r *Runtime) hostOwner(space, host, self string) string {
+	names, err := r.state.listRoutes(space)
+	if err != nil {
+		return ""
+	}
+	for _, name := range names {
+		if name == self || strings.HasPrefix(name, self+".on.") {
+			continue
+		}
+		route, err := r.state.route(space, name)
+		if err == nil && route != nil && route.Host == host && route.Path == "/" {
+			// Path routes share a hostname on purpose; only an app's own
+			// address (path "/") owns it.
+			return strings.SplitN(name, ".on.", 2)[0]
+		}
+	}
+	return ""
 }
 
 // pullImage fetches the image unless the daemon already has it.
@@ -578,7 +612,7 @@ func (r *Runtime) ApplyNetwork(ctx context.Context, cfg *config.AppConfig) (stri
 	if spec != nil {
 		port = spec.Port
 	}
-	login := !cfg.Public && r.opts.AuthAvailable
+	login := !cfg.Public
 
 	if host := r.appHost(space, cfg); host == "" {
 		if err := r.state.removeRoute(space, app); err != nil {

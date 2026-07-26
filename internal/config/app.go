@@ -44,11 +44,68 @@ type AppConfig struct {
 	Env         map[string]string `json:"env,omitempty"`
 	Addons      []AddonConfig     `json:"addons,omitempty"`
 	Storage     *StorageConfig    `json:"storage,omitempty"`
-	Domain      string            `json:"domain,omitempty"`
+	// Host is the address this app answers on. See AppHost for the three
+	// shapes it takes; omitted keeps the default, <app>.<space>.<domain>.
+	Host string `json:"host,omitempty"`
 	// Access narrows the login gateway from "anyone your IdP knows" to the
 	// people and groups named here. Omitted means every signed-in user.
 	Access    *AccessConfig `json:"access,omitempty"`
 	Resources *Resources    `json:"resources,omitempty"`
+}
+
+// RootHost is what `host` says to claim the space's own address. It
+// borrows the DNS zone-file convention for "the root of this zone", and it
+// is legal as neither an app name nor a hostname — so it can never be
+// mistaken for either of the other two shapes.
+const RootHost = "@"
+
+// AppHost is the address an app is served at, and the one place the rule
+// lives — the control plane and every runtime provider ask here, so they
+// cannot drift apart:
+//
+//	internal: true        no address at all (siblings reach it by name)
+//	host: "@"             <space>.<domain> — the space's own front door
+//	host: shop.acme.com   exactly that hostname (it has a dot)
+//	host: shop            shop.<space>.<domain> — a label of its own
+//	otherwise             <app>.<space>.<domain>
+//
+// A dot is what tells a hostname from a label, and that is exact rather
+// than a guess: dots are illegal in app and space names, and a hostname
+// always has at least two labels.
+//
+// The space in the middle of the default shape is what lets two teams both
+// have a "web"; a label of its own is what lets an app's address outlive
+// its name.
+func AppHost(app *AppConfig, space, domain string) string {
+	switch {
+	case app.Internal:
+		return ""
+	case app.Host == RootHost:
+		return space + "." + domain
+	case strings.Contains(app.Host, "."):
+		return app.Host
+	case app.Host != "":
+		return app.Host + "." + space + "." + domain
+	default:
+		return app.Name + "." + space + "." + domain
+	}
+}
+
+// validateHost checks the three shapes `host` may take. A wildcard is
+// refused with the rest: it would hand the app every name underneath it,
+// and no certificate donkey issues covers one.
+func validateHost(host string) error {
+	switch {
+	case host == "" || host == RootHost:
+		return nil
+	case strings.Contains(host, "."):
+		if !domainRE.MatchString(host) || len(host) > 253 {
+			return fmt.Errorf("host %q must be a plain hostname like %q — lowercase, no wildcard, no https:// and no path", host, "app.example.com")
+		}
+	case !nameRE.MatchString(host):
+		return fmt.Errorf("host %q must be a plain name (lowercase letters, digits and dashes) to sit under the space, %q for the space's own address, or a full hostname like %q", host, RootHost, "app.example.com")
+	}
+	return nil
 }
 
 // AccessConfig says who may open a login-protected app. It refines the login
@@ -293,8 +350,8 @@ func (c *AppConfig) Validate() error {
 	if c.Internal && c.Public && len(c.Routes) == 0 {
 		return fmt.Errorf("an internal app has no address, so `public: true` has nothing to open — drop it, or give the app a `routes:` entry on another app's address")
 	}
-	if c.Internal && c.Domain != "" {
-		return fmt.Errorf("an internal app has no address, so `domain` has no effect — drop one of the two")
+	if c.Internal && c.Host != "" {
+		return fmt.Errorf("an internal app has no address, so `host` has no effect — drop one of the two")
 	}
 	if !c.Access.Empty() {
 		if c.Public {
@@ -341,10 +398,8 @@ func (c *AppConfig) Validate() error {
 	if p := c.Healthcheck.Path; p != "" && !strings.HasPrefix(p, "/") {
 		return fmt.Errorf("healthcheck.path must start with a slash, e.g. /healthz")
 	}
-	// A wildcard would ask cert-manager for a certificate no HTTP-01 solver
-	// can issue, and would hand the app every hostname under it.
-	if d := c.Domain; d != "" && (!domainRE.MatchString(d) || len(d) > 253) {
-		return fmt.Errorf("domain %q must be a plain hostname like %q — lowercase, no wildcard, no https:// and no path", d, "app.example.com")
+	if err := validateHost(c.Host); err != nil {
+		return err
 	}
 	seen := map[string]bool{}
 	for _, a := range c.Addons {

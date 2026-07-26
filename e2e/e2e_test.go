@@ -134,19 +134,45 @@ func (s *suite) get(t *testing.T, url string, withToken bool) (*http.Response, s
 }
 
 // waitBody polls a URL through the gateway until the body contains want.
+// A transport error counts as "not yet", not as a failure: a hostname that
+// just appeared is briefly unknown to the gateway, and until it syncs its
+// routes it has no certificate to offer — the handshake fails rather than
+// the request.
 func (s *suite) waitBody(t *testing.T, url, want string, timeout time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	var last string
 	for time.Now().Before(deadline) {
-		resp, body := s.get(t, url, true)
-		last = fmt.Sprintf("%d: %s", resp.StatusCode, body)
-		if resp.StatusCode == http.StatusOK && strings.Contains(body, want) {
+		status, body, err := s.try(url, true)
+		switch {
+		case err != nil:
+			last = err.Error()
+		case status == http.StatusOK && strings.Contains(body, want):
 			return
+		default:
+			last = fmt.Sprintf("%d: %s", status, body)
 		}
 		time.Sleep(2 * time.Second)
 	}
-	t.Fatalf("%s never served %q; last response: %s", url, want, last)
+	t.Fatalf("%s never served %q; last: %s", url, want, last)
+}
+
+// try is one attempt that reports its own failure instead of ending the test.
+func (s *suite) try(url string, withToken bool) (int, string, error) {
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return 0, "", err
+	}
+	if withToken {
+		req.Header.Set("Authorization", "Bearer "+s.token)
+	}
+	resp, err := s.edge.Do(req)
+	if err != nil {
+		return 0, "", err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	return resp.StatusCode, string(body), nil
 }
 
 // raw calls a server endpoint the CLI has no verb for (network, spaces).
@@ -197,6 +223,20 @@ func (s *suite) raw(t *testing.T, method, path string, body any, out any) *http.
 	return resp
 }
 
+// rawTry is a request whose failure is not this test's business — used to
+// clear leftovers that may or may not be there.
+func (s *suite) rawTry(method, path string) {
+	req, err := http.NewRequest(method, s.server+path, nil)
+	if err != nil {
+		return
+	}
+	req.Header.Set("Authorization", "Bearer "+s.token)
+	resp, err := (&http.Client{Timeout: time.Minute}).Do(req)
+	if err == nil {
+		resp.Body.Close()
+	}
+}
+
 func (s *suite) appURL(path string) string {
 	return "https://" + app + "." + space + "." + s.domain + path
 }
@@ -212,6 +252,15 @@ func TestEndToEnd(t *testing.T) {
 		if err := s.api.Ping(ctx); err != nil {
 			t.Fatalf("the server didn't accept the connection: %v", err)
 		}
+	})
+
+	// Start from nothing. An app left behind by an interrupted run carries
+	// its console choices into this one's first deploy, and the suite would
+	// then be testing yesterday's settings.
+	t.Run("clean-slate", func(t *testing.T) {
+		_ = s.api.Destroy(ctx, space, app, false)
+		_ = s.api.RemoveSpaceAddon(ctx, space, "postgres", false)
+		s.rawTry(http.MethodDelete, "/v1/spaces/"+space)
 	})
 
 	t.Run("doctor", func(t *testing.T) {
@@ -375,6 +424,45 @@ func TestEndToEnd(t *testing.T) {
 				}
 				time.Sleep(2 * time.Second)
 			}
+		})
+
+		// `host` moves an app off its default address without a deploy:
+		// "@" claims the space's own, a plain name gives it a label of its
+		// own, and the console must read back the shape, not where it
+		// resolved to.
+		t.Run("network/host", func(t *testing.T) {
+			setHost := func(t *testing.T, host string) *server.NetworkResponse {
+				t.Helper()
+				var out struct {
+					Network *server.NetworkResponse `json:"network"`
+				}
+				s.raw(t, http.MethodPut, "/v1/spaces/"+space+"/apps/"+app+"/network",
+					map[string]string{"exposure": "public", "hostOverride": host}, &out)
+				return out.Network
+			}
+
+			net := setHost(t, "@")
+			if net.HostOverride != "@" {
+				t.Errorf(`the space root should read back as "@", got %q`, net.HostOverride)
+			}
+			spaceHost := space + "." + s.domain
+			if net.URL != "https://"+spaceHost {
+				t.Errorf("expected the space's own address, got %q", net.URL)
+			}
+			s.waitBody(t, "https://"+spaceHost+"/healthz", `"ok":true`, 2*time.Minute)
+
+			net = setHost(t, "shop")
+			if net.HostOverride != "shop" {
+				t.Errorf("a label of its own should read back as %q, got %q", "shop", net.HostOverride)
+			}
+			s.waitBody(t, "https://shop."+space+"."+s.domain+"/healthz", `"ok":true`, 2*time.Minute)
+
+			// Back to the default: the console reports no override at all.
+			net = setHost(t, "")
+			if net.HostOverride != "" {
+				t.Errorf("the default address should read back empty, got %q", net.HostOverride)
+			}
+			s.waitBody(t, s.appURL("/healthz"), `"ok":true`, 2*time.Minute)
 		})
 
 		t.Run("network/internal", func(t *testing.T) {

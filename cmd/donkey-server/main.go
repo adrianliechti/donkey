@@ -52,11 +52,10 @@ func main() {
 	switch os.Getenv("DONKEY_RUNTIME") {
 	case "docker":
 		provider, err := docker.New(docker.Options{
-			Domain:        cfg.Domain,
-			StateDir:      os.Getenv("DONKEY_STATE_DIR"),
-			Registry:      cfg.Registry,
-			PullRegistry:  os.Getenv("DONKEY_PULL_REGISTRY"),
-			AuthAvailable: cfg.OIDCIssuer != "",
+			Domain:       cfg.Domain,
+			StateDir:     os.Getenv("DONKEY_STATE_DIR"),
+			Registry:     cfg.Registry,
+			PullRegistry: os.Getenv("DONKEY_PULL_REGISTRY"),
 		})
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "startup error:", err)
@@ -91,7 +90,6 @@ func main() {
 			NamespacePrefix: cfg.NamespacePrefix,
 			Domain:          cfg.Domain,
 			Registry:        cfg.Registry,
-			AuthAvailable:   cfg.OIDCIssuer != "",
 		})
 	}
 	srv, err := server.New(cfg, rt)

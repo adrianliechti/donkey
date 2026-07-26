@@ -49,12 +49,13 @@ export interface RouteEntry {
 export interface NetworkInfo {
   exposure: Exposure
   url?: string
-  defaultHost: string
-  domain?: string
+  /** The app's default address, <app>.<space>.<domain> — the placeholder. */
+  host: string
+  /** Set when the app answers somewhere else: a name of its own under the
+   * space, "@" for the space's own address, or a full hostname. */
+  hostOverride?: string
   port?: number
   routes?: RouteEntry[]
-  /** False when the installation has no identity provider — then there is no "protected". */
-  loginAvailable: boolean
   access?: AccessConfig | null
 }
 
@@ -270,10 +271,10 @@ export const api = {
   network: (space: string, app: string) => request<NetworkInfo>(appPath(space, app, '/network')),
   // Changing exposure re-renders the app's routes on the spot — no deploy.
   // The choice sticks until donkey.yaml itself says otherwise.
-  setNetwork: (space: string, app: string, exposure: Exposure, domain: string) =>
+  setNetwork: (space: string, app: string, exposure: Exposure, hostOverride: string) =>
     request<{ network: NetworkInfo; note?: string }>(appPath(space, app, '/network'), {
       method: 'PUT',
-      body: JSON.stringify({ exposure, domain }),
+      body: JSON.stringify({ exposure, hostOverride }),
     }),
   setAccess: (space: string, app: string, access: AccessConfig) =>
     request<{ ok: boolean; access: AccessConfig | null }>(appPath(space, app, '/access'), {

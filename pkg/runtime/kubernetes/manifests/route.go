@@ -33,18 +33,11 @@ const (
 	LoginRequired = "required"
 )
 
-// GatewayRef points at donkey's own edge proxy — every app route's real
-// backend. Auth says whether an IdP is configured; without one nothing can
-// be protected, but traffic still routes.
-type GatewayRef struct {
-	Service   string
-	Namespace string
-	Auth      bool
-}
-
-// protected says visitors of this app's routes must sign in.
+// protected says visitors of this app's routes must sign in. Every
+// installation has an identity provider (auth.issuer is required), so the
+// app's own choice is the whole answer.
 func protected(in Input) bool {
-	return !in.App.Public && in.Gateway != nil && in.Gateway.Auth
+	return !in.App.Public
 }
 
 // backendURL is where the gateway forwards this app's traffic: the app's

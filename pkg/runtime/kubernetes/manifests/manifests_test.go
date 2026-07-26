@@ -43,7 +43,6 @@ func testInput(t *testing.T) Input {
 		RegistryPassword: "hunter2",
 		AddonSecretNames: []string{"shop-addon-db"},
 		Domain:           "shop.acme.apps.example.com",
-		Gateway:          &GatewayRef{Service: GatewayAppName, Namespace: "donkey-system", Auth: true},
 	}
 }
 

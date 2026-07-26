@@ -142,11 +142,6 @@ type Input struct {
 	AddonSecretNames []string
 	// Domain is the hostname the app is served on; empty skips the route.
 	Domain string
-	// Gateway points at donkey's own edge proxy (donkey-gateway), the real
-	// backend of every app route. Gateway.Auth says whether an IdP is
-	// configured — without one, nothing can be protected but traffic still
-	// routes through it.
-	Gateway *GatewayRef
 	// Decisions records what deploy-time analysis filled in (storage,
 	// healthcheck) as an annotation on the Deployment, so later no-build
 	// deploys can keep those decisions instead of silently dropping them.

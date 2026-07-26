@@ -24,16 +24,16 @@ type NetworkResponse struct {
 	// Exposure is public, protected or internal.
 	Exposure string `json:"exposure"`
 	URL      string `json:"url,omitempty"`
-	// DefaultHost is what the app is called without a custom domain.
-	DefaultHost string `json:"defaultHost"`
-	// Domain is set when the app serves on a custom hostname.
-	Domain string       `json:"domain,omitempty"`
-	Port   int          `json:"port,omitempty"`
-	Routes []RouteEntry `json:"routes,omitempty"`
-	// LoginAvailable says the installation has an IdP — without one there is
-	// no "protected", only public and internal.
-	LoginAvailable bool                 `json:"loginAvailable"`
-	Access         *config.AccessConfig `json:"access,omitempty"`
+	// Host is the address the app has by default: <app>.<space>.<domain>.
+	// The console shows it as the placeholder.
+	Host string `json:"host"`
+	// HostOverride is set when the app answers somewhere else — a name of
+	// its own under the space, "@" for the space's own address, or a custom
+	// hostname. It is exactly what donkey.yaml's `host:` would say.
+	HostOverride string               `json:"hostOverride,omitempty"`
+	Port         int                  `json:"port,omitempty"`
+	Routes       []RouteEntry         `json:"routes,omitempty"`
+	Access       *config.AccessConfig `json:"access,omitempty"`
 }
 
 func (s *Server) networkResponse(r *http.Request, space, app string) (*NetworkResponse, error) {
@@ -49,10 +49,9 @@ func (s *Server) networkResponse(r *http.Request, space, app string) (*NetworkRe
 		return nil, err
 	}
 	resp := &NetworkResponse{
-		DefaultHost:    app + "." + space + "." + s.cfg.Domain,
-		Port:           int(st.Port),
-		LoginAvailable: s.cfg.OIDCIssuer != "",
-		Access:         net.Access,
+		Host:   config.AppHost(&config.AppConfig{Name: app}, space, s.cfg.Domain),
+		Port:   int(st.Port),
+		Access: net.Access,
 	}
 	switch {
 	case !net.RouteFound:
@@ -64,14 +63,31 @@ func (s *Server) networkResponse(r *http.Request, space, app string) (*NetworkRe
 	}
 	if net.Host != "" {
 		resp.URL = s.cfg.Scheme() + "://" + net.Host
-		if net.Host != resp.DefaultHost {
-			resp.Domain = net.Host
-		}
+		resp.HostOverride = hostShape(net.Host, resp.Host, space, s.cfg.Domain)
 	}
 	for _, pr := range net.Routes {
 		resp.Routes = append(resp.Routes, RouteEntry{Host: pr.Host, Path: pr.Path})
 	}
 	return resp, nil
+}
+
+// hostShape turns the hostname an app actually serves on back into the
+// donkey.yaml `host:` value that would produce it — "" for the default,
+// "@" for the space's own address, a bare label for one of its own, and the
+// hostname itself for anything else. Without this the console would read
+// "@" back as a literal hostname and the app would stop following its space.
+func hostShape(host, defaultHost, space, domain string) string {
+	spaceSuffix := "." + space + "." + domain
+	switch {
+	case host == defaultHost:
+		return ""
+	case host == space+"."+domain:
+		return config.RootHost
+	case strings.HasSuffix(host, spaceSuffix):
+		return strings.TrimSuffix(host, spaceSuffix)
+	default:
+		return host
+	}
 }
 
 func (s *Server) handleGetNetwork(w http.ResponseWriter, r *http.Request) {
@@ -94,7 +110,11 @@ func (s *Server) handleGetNetwork(w http.ResponseWriter, r *http.Request) {
 
 type PutNetworkRequest struct {
 	Exposure string `json:"exposure"`
-	Domain   string `json:"domain"`
+	// HostOverride is where the app should answer instead of its default
+	// address — see config.AppHost: a plain name sits under the space, "@"
+	// is the space's own address, anything with a dot is an exact hostname,
+	// and empty puts it back on the default.
+	HostOverride string `json:"hostOverride"`
 }
 
 // handlePutNetwork changes how an app is reached — without a deploy. The
@@ -114,10 +134,6 @@ func (s *Server) handlePutNetwork(w http.ResponseWriter, r *http.Request) {
 	}
 	if !slices.Contains([]string{"public", "protected", "internal"}, req.Exposure) {
 		writeErr(w, http.StatusBadRequest, fmt.Errorf("exposure must be public, protected or internal"))
-		return
-	}
-	if req.Exposure == "protected" && s.cfg.OIDCIssuer == "" {
-		writeErr(w, http.StatusBadRequest, fmt.Errorf("this installation has no identity provider, so there is no login to put in front of the app — `donkey server install` with auth.issuer adds one"))
 		return
 	}
 
@@ -154,7 +170,7 @@ func (s *Server) handlePutNetwork(w http.ResponseWriter, r *http.Request) {
 	case "internal":
 		cfg.Internal = true
 	}
-	cfg.Domain = strings.TrimSpace(req.Domain)
+	cfg.Host = strings.TrimSpace(req.HostOverride)
 	if req.Exposure == "protected" {
 		// Access rules ride along unchanged; runtime state is the truth,
 		// with the console's memory as fallback (e.g. internal → protected).
@@ -177,7 +193,7 @@ func (s *Server) handlePutNetwork(w http.ResponseWriter, r *http.Request) {
 
 	// Record the choice so deploys keep it while donkey.yaml stays silent.
 	console.Exposure = req.Exposure
-	console.Domain = cfg.Domain
+	console.HostOverride = cfg.Host
 	if err := s.writeConsoleChoices(ctx, space, app, console); err != nil {
 		writeErr(w, http.StatusBadGateway, err)
 		return
@@ -203,10 +219,6 @@ func (s *Server) handlePutAccess(w http.ResponseWriter, r *http.Request) {
 	space, app, err := s.spaceApp(r)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
-		return
-	}
-	if s.cfg.OIDCIssuer == "" {
-		writeErr(w, http.StatusBadRequest, fmt.Errorf("this installation has no identity provider, so there are no signed-in users to tell apart"))
 		return
 	}
 	var req PutAccessRequest

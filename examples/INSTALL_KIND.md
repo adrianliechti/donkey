@@ -159,7 +159,7 @@ In the Pocket ID admin (`https://id.dihei.ai`) add an OIDC client:
 - **Callback URL**: `https://dihei.app/oauth2/callback` — exactly one.
   Every login under the domain rides through this central callback, whatever
   app it started on; no wildcard support needed. (Only an app with a custom
-  `domain:` outside dihei.app would need its own callback registered.)
+  `host:` outside dihei.app would need its own callback registered.)
 - Copy the **client ID** and generate a **client secret** — donkey's gateway
   is a confidential client and keeps the secret server-side.
 
