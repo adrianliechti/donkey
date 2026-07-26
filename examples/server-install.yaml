@@ -1,5 +1,6 @@
 # Example settings for `donkey server install -f server-install.yaml`.
-# The cluster (with Envoy Gateway installed) must already exist.
+# The cluster must already exist; donkey brings its own edge (TLS, routing,
+# login) — no ingress controller, no cert-manager.
 # Secrets can come from env instead: DONKEY_REGISTRY_PASSWORD,
 # DONKEY_OIDC_CLIENT_SECRET, OPENAI_API_KEY.
 
@@ -36,15 +37,27 @@ domain: example.com            # apps become <app>.<space>.example.com; the
                                # assigns those an address (cloud, MetalLB).
                                # Clusters without that (kind, local demos)
                                # need ClusterIP or NodePort — an address-less
-                               # LoadBalancer leaves the gateway unprogrammed
-                               # and every donkey hostname unroutable.
+                               # LoadBalancer leaves every donkey hostname
+                               # unroutable.
+#   httpNodePort: 30080        # NodePort only: pin the node ports so port
+#   httpsNodePort: 30443       # mappings and firewall rules can rely on them.
 
 tls:
-  # Required. Apps are always served over https (the login gateway's cookies
-  # are Secure-only) and cert-manager issues one certificate per app
-  # hostname — so any solver works, HTTP-01 included.
-  issuer: letsencrypt-prod
-  # kind: ClusterIssuer       # or Issuer (in donkey-system)
+  # How the gateway gets its certificates. Apps are always served over https
+  # (the login gateway's cookies are Secure-only); the gateway issues the
+  # certificates itself — no cert-manager.
+  mode: acme                  # one certificate per hostname from
+                              # Let's Encrypt, requested on demand; the
+                              # gateway must be reachable on ports 80/443.
+  email: you@example.com      # ACME account contact (expiry notices)
+  # directory: https://acme-staging-v02.api.letsencrypt.org/directory
+                              # while experimenting (rate limits)
+  # mode: ca                  # or: a built-in CA for internal installs —
+                              # export & trust its one certificate:
+                              # kubectl -n donkey-system get secret \
+                              #   donkey-gateway-ca -o jsonpath='{.data.ca\.crt}' | base64 -d
+  # mode: static              # or: bring your own (wildcard) certificate
+  # secret: donkey-gateway-tls  # kubernetes.io/tls Secret in donkey-system
 
 auth:
   # A real OIDC provider — Pocket ID, Entra ID, Keycloak, anything OIDC.

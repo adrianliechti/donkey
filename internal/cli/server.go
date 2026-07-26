@@ -7,13 +7,12 @@ import (
 	"fmt"
 	"os"
 	"strings"
-	"time"
 
 	"github.com/urfave/cli/v3"
 
 	"github.com/adrianliechti/donkey/internal/config"
-	"github.com/adrianliechti/donkey/internal/k8s"
-	"github.com/adrianliechti/donkey/internal/k8s/manifests"
+	k8s "github.com/adrianliechti/donkey/pkg/runtime/kubernetes"
+	"github.com/adrianliechti/donkey/pkg/runtime/kubernetes/manifests"
 )
 
 func serverCommand() *cli.Command {
@@ -36,6 +35,7 @@ func serverInstallCommand() *cli.Command {
 		Usage: "install (or update) the donkey control plane into an existing cluster",
 		Flags: []cli.Flag{
 			&cli.StringFlag{Name: "file", Aliases: []string{"f"}, Usage: "settings file (see docs); flags override individual values"},
+			&cli.StringFlag{Name: "runtime", Usage: "where donkey runs apps: kubernetes (default) or docker (straight on a Docker engine, no cluster)"},
 			&cli.StringFlag{Name: "image", Usage: "donkey-server image reference (pullable by the cluster)"},
 			&cli.StringFlag{Name: "buildkit-image", Usage: "build engine image (default: a digest-pinned moby/buildkit)"},
 			&cli.StringFlag{Name: "registry-url", Usage: "registry prefix for app images, as reachable FROM the cluster"},
@@ -47,8 +47,10 @@ func serverInstallCommand() *cli.Command {
 			&cli.StringFlag{Name: "server-host", Usage: "hostname of the API and console (default: the domain itself)"},
 			&cli.StringFlag{Name: "gateway-service-type", Usage: "service type traffic enters through: LoadBalancer (default), ClusterIP or NodePort (clusters without a load-balancer controller, e.g. kind)"},
 			&cli.StringFlag{Name: "default-platform", Usage: "build platform of the cluster nodes (default linux/amd64)"},
-			&cli.StringFlag{Name: "tls-issuer", Usage: "cert-manager issuer that signs app certificates (required)"},
-			&cli.StringFlag{Name: "tls-issuer-kind", Usage: "ClusterIssuer (default) or Issuer"},
+			&cli.StringFlag{Name: "tls-mode", Usage: "how the gateway gets certificates: acme (default), ca (built-in CA for local/internal installs) or static (bring your own)"},
+			&cli.StringFlag{Name: "acme-email", Usage: "ACME account contact for expiry warnings (tls-mode acme)"},
+			&cli.StringFlag{Name: "acme-directory", Usage: "ACME endpoint override, e.g. Let's Encrypt staging (tls-mode acme)"},
+			&cli.StringFlag{Name: "tls-secret", Usage: "kubernetes.io/tls Secret in donkey-system with the certificate (tls-mode static)"},
 			&cli.StringFlag{Name: "oidc-issuer", Usage: "OIDC issuer for the login gateway (e.g. Entra ID); empty = no gateway"},
 			&cli.StringFlag{Name: "oidc-client-id", Usage: "OIDC client id for the gateway"},
 			&cli.StringFlag{Name: "oidc-client-secret", Usage: "OIDC client secret (or $DONKEY_OIDC_CLIENT_SECRET)"},
@@ -75,6 +77,7 @@ func installSettings(cmd *cli.Command) (*config.InstallFile, error) {
 			*dst = v
 		}
 	}
+	strOver(&settings.Runtime, "runtime")
 	strOver(&settings.Image, "image")
 	strOver(&settings.BuildkitImage, "buildkit-image")
 	strOver(&settings.Registry.URL, "registry-url")
@@ -90,8 +93,10 @@ func installSettings(cmd *cli.Command) (*config.InstallFile, error) {
 	strOver(&settings.AI.BaseURL, "openai-base-url")
 	strOver(&settings.AI.APIKey, "openai-api-key")
 	strOver(&settings.AI.Model, "ai-model")
-	strOver(&settings.TLS.Issuer, "tls-issuer")
-	strOver(&settings.TLS.Kind, "tls-issuer-kind")
+	strOver(&settings.TLS.Mode, "tls-mode")
+	strOver(&settings.TLS.Email, "acme-email")
+	strOver(&settings.TLS.Directory, "acme-directory")
+	strOver(&settings.TLS.Secret, "tls-secret")
 	if cmd.Bool("registry-insecure") {
 		settings.Registry.Insecure = true
 	}
@@ -119,6 +124,13 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 	if err != nil {
 		return err
 	}
+	switch settings.Runtime {
+	case "", "kubernetes":
+	case "docker":
+		return dockerInstallAction(ctx, u, settings)
+	default:
+		return fmt.Errorf("runtime must be kubernetes or docker, not %q", settings.Runtime)
+	}
 	// Everything checkable without the cluster is checked first — a missing
 	// kubeconfig must not hide the list of missing settings.
 	if missing := missingSettings(settings, false); len(missing) > 0 {
@@ -131,6 +143,11 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 	case "", "LoadBalancer", "ClusterIP", "NodePort":
 	default:
 		return fmt.Errorf("gateway.serviceType must be LoadBalancer, ClusterIP or NodePort, not %q", settings.Gateway.ServiceType)
+	}
+	switch settings.TLS.Mode {
+	case "", "acme", "ca", "static":
+	default:
+		return fmt.Errorf("tls.mode must be acme, ca or static, not %q", settings.TLS.Mode)
 	}
 	// The central login callback lives on the server host, and its session
 	// cookie's domain is the base domain — a server host outside it could
@@ -196,30 +213,34 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 		}
 	}
 	in := manifests.SystemInput{
-		Namespace:          manifests.SystemNamespace,
-		ServerImage:        settings.Image,
-		Domain:             settings.Domain,
-		ServerHostname:     settings.ServerHost,
-		GatewayServiceType: settings.Gateway.ServiceType,
-		TLSIssuer:          settings.TLS.Issuer,
-		TLSIssuerKind:      settings.TLS.Kind,
-		RegistryURL:        settings.Registry.URL,
-		RegistryUsername:   settings.Registry.Username,
-		RegistryCASecret:   settings.Registry.CASecret,
-		RegistryPassword:   registryPassword,
-		RegistryInsecure:   settings.Registry.Insecure,
-		RegistryImmutable:  settings.Registry.Immutable,
-		Admins:             settings.Auth.Admins,
-		OIDCIssuer:         settings.Auth.Issuer,
-		OIDCClientID:       settings.Auth.ClientID,
-		OIDCClientSecret:   settings.Auth.ClientSecret,
-		SessionKey:         sessionKey,
-		DefaultPlatform:    settings.DefaultPlatform,
-		OpenAIBaseURL:      settings.AI.BaseURL,
-		OpenAIAPIKey:       settings.AI.APIKey,
-		AIModel:            settings.AI.Model,
-		BuildkitImage:      settings.BuildkitImage,
-		NamespacePrefix:    "donkey-",
+		Namespace:            manifests.SystemNamespace,
+		ServerImage:          settings.Image,
+		Domain:               settings.Domain,
+		ServerHostname:       settings.ServerHost,
+		GatewayServiceType:   settings.Gateway.ServiceType,
+		GatewayHTTPNodePort:  settings.Gateway.HTTPNodePort,
+		GatewayHTTPSNodePort: settings.Gateway.HTTPSNodePort,
+		TLSMode:              settings.TLS.Mode,
+		ACMEEmail:            settings.TLS.Email,
+		ACMEDirectory:        settings.TLS.Directory,
+		TLSSecret:            settings.TLS.Secret,
+		RegistryURL:          settings.Registry.URL,
+		RegistryUsername:     settings.Registry.Username,
+		RegistryCASecret:     settings.Registry.CASecret,
+		RegistryPassword:     registryPassword,
+		RegistryInsecure:     settings.Registry.Insecure,
+		RegistryImmutable:    settings.Registry.Immutable,
+		Admins:               settings.Auth.Admins,
+		OIDCIssuer:           settings.Auth.Issuer,
+		OIDCClientID:         settings.Auth.ClientID,
+		OIDCClientSecret:     settings.Auth.ClientSecret,
+		SessionKey:           sessionKey,
+		DefaultPlatform:      settings.DefaultPlatform,
+		OpenAIBaseURL:        settings.AI.BaseURL,
+		OpenAIAPIKey:         settings.AI.APIKey,
+		AIModel:              settings.AI.Model,
+		BuildkitImage:        settings.BuildkitImage,
+		NamespacePrefix:      "donkey-",
 	}
 	if in.BuildkitImage == "" {
 		in.BuildkitImage = config.DefaultBuildkitImage
@@ -229,36 +250,10 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 		in.OIDCClientSecret = pendingOIDC
 	}
 
-	if in.TLSIssuerKind == "" {
-		in.TLSIssuerKind = "ClusterIssuer"
-	}
-
-	// The prerequisites, checked before anything is applied: Envoy Gateway
-	// (everything donkey serves attaches to it), cert-manager (below), and —
-	// as a warning — a default StorageClass for apps and addons with disks.
-	if err := client.GatewayAPIAvailable(ctx); err != nil {
-		return fmt.Errorf("%w\n\nInstall it first: https://gateway.envoyproxy.io/docs/tasks/quickstart/", err)
-	}
+	// The one preflight left: disks. TLS and routing are donkey's own now —
+	// no Envoy Gateway, no cert-manager to check for.
 	if hasDefault, err := client.HasDefaultStorageClass(ctx); err == nil && !hasDefault {
 		u.Warn("The cluster has no default StorageClass — apps with storage and provisioned addons won't get disks until one exists (or storage.class is set).")
-	}
-	// Every deployed app has its certificate on the gateway's https listener.
-	// Re-installing renders that listener again, so carry the existing
-	// certificates over — otherwise a re-install would take https away from
-	// every running app until each one redeploys.
-	refs, err := client.GatewayCertificateRefs(ctx, manifests.SystemNamespace, manifests.GatewayName)
-	if err != nil {
-		return fmt.Errorf("couldn't read the existing gateway: %w", err)
-	}
-	in.TLSCertificateRefs = refs
-
-	if err := client.CertManagerInstalled(ctx); err != nil {
-		return fmt.Errorf("%w\n\nInstall it first: kubectl apply -f https://github.com/cert-manager/cert-manager/releases/latest/download/cert-manager.yaml", err)
-	}
-	if ready, detail, err := client.IssuerReady(ctx, in.TLSIssuerKind, in.TLSIssuer, manifests.SystemNamespace); err != nil {
-		return fmt.Errorf("couldn't find the %s %q that should sign app certificates: %w", in.TLSIssuerKind, in.TLSIssuer, err)
-	} else if !ready {
-		u.Warn("The %s %q isn't ready yet (%s) — apps will deploy, but https starts working once it is.", in.TLSIssuerKind, in.TLSIssuer, detail)
 	}
 
 	contextName := kubeContext
@@ -273,18 +268,12 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 	if err := client.WaitForRollout(ctx, in.Namespace, "donkey-server"); err != nil {
 		return err
 	}
-	// Every app's traffic rides through the donkey gateway, so an install
+	// Every app's traffic enters through the donkey gateway, so an install
 	// isn't done until it routes.
 	if err := client.WaitForRollout(ctx, in.Namespace, manifests.GatewayAppName); err != nil {
 		return err
 	}
 	u.Success("Control plane is running.")
-
-	// The Gateway only serves once Envoy Gateway programs it — say so when
-	// that hasn't happened, instead of printing an API URL that won't answer.
-	if reason := waitForGateway(ctx, client); reason != "" {
-		u.Warn("Envoy Gateway hasn't picked up the donkey gateway yet (%s) — the URLs below start working once it does.", reason)
-	}
 
 	serverURL := in.Scheme() + "://" + in.ServerHost()
 	u.Printf("")
@@ -303,8 +292,18 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 	u.Printf("")
 	u.Info("Apps are served at https://<app>.<space>.%s.", in.Domain)
 	u.Printf("  %s", u.Faint(fmt.Sprintf(
-		"%s %s signs one certificate per app; point *.%s and %s itself at the gateway — one wildcard covers every depth, but never the apex.",
-		in.TLSIssuerKind, in.TLSIssuer, in.Domain, in.Domain)))
+		"Point *.%s and %s itself at the donkey-gateway service — one wildcard DNS record covers every depth, but never the apex.",
+		in.Domain, in.Domain)))
+	switch in.TLSMode {
+	case "", "acme":
+		u.Printf("  %s", u.Faint("TLS: the gateway requests one certificate per hostname via ACME (Let's Encrypt) — it must be reachable from the internet on ports 80 and 443."))
+	case "ca":
+		u.Printf("  %s", u.Faint(fmt.Sprintf(
+			"TLS: the gateway signs certificates with its own CA. Export it once and trust it: kubectl -n %s get secret %s -o jsonpath='{.data.ca\\.crt}' | base64 -d",
+			manifests.SystemNamespace, manifests.GatewayCASecret)))
+	case "static":
+		u.Printf("  %s", u.Faint(fmt.Sprintf("TLS: served from the certificate in Secret %s/%s.", manifests.SystemNamespace, in.TLSSecret)))
+	}
 
 	callback := fmt.Sprintf("%s://%s/oauth2/callback", in.Scheme(), in.Domain)
 	u.Printf("")
@@ -340,42 +339,12 @@ func missingSettings(settings *config.InstallFile, withSecrets bool) []string {
 	if settings.Auth.Issuer == "" {
 		missing = append(missing, "auth.issuer (an OIDC provider — it is how admins sign in)")
 	}
-	// Apps are always served over https, and cert-manager issues the
-	// certificates — donkey never mints its own.
-	if settings.TLS.Issuer == "" {
-		missing = append(missing, "tls.issuer (a cert-manager ClusterIssuer or Issuer)")
-	}
 	// donkey reads every app with its assistant — an installation without one
 	// could not deploy anything, so this is a required setting.
 	if withSecrets && settings.AI.APIKey == "" {
 		missing = append(missing, "ai.apiKey (or the OPENAI_API_KEY environment variable)")
 	}
 	return missing
-}
-
-// waitForGateway gives the controller a moment to program the shared Gateway
-// and returns why it hasn't ("" once it has). Non-fatal: DNS or the
-// controller may simply still be on their way.
-func waitForGateway(ctx context.Context, client *k8s.Client) string {
-	deadline := time.Now().Add(30 * time.Second)
-	reason := "no status yet"
-	for time.Now().Before(deadline) {
-		ok, detail, err := client.GatewayProgrammed(ctx, manifests.SystemNamespace, manifests.GatewayName)
-		if err == nil && ok {
-			return ""
-		}
-		if err != nil {
-			reason = err.Error()
-		} else if detail != "" {
-			reason = detail
-		}
-		select {
-		case <-ctx.Done():
-			return reason
-		case <-time.After(2 * time.Second):
-		}
-	}
-	return reason
 }
 
 // randomHexKey is the installation's sealing key — every session cookie and

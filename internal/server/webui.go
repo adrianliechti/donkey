@@ -8,9 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"k8s.io/apimachinery/pkg/runtime"
-
-	"github.com/adrianliechti/donkey/internal/k8s/manifests"
 	"github.com/adrianliechti/donkey/web"
 )
 
@@ -55,19 +52,13 @@ func uiHandler() http.Handler {
 // handleListSpaces names every space, with or without apps — a space that
 // holds only services still needs its card in the console.
 func (s *Server) handleListSpaces(w http.ResponseWriter, r *http.Request) {
-	refs, err := s.k8s.ListSpaces(r.Context())
+	spaces, err := s.rt.ListSpaces(r.Context())
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err)
 		return
 	}
 	names := []string{}
-	for _, ref := range refs {
-		space := ref.Space
-		if space == "" {
-			space = strings.TrimPrefix(ref.Namespace, s.cfg.NamespacePrefix)
-		}
-		names = append(names, space)
-	}
+	names = append(names, spaces...)
 	sort.Strings(names)
 	writeJSON(w, http.StatusOK, map[string]any{"spaces": names})
 }
@@ -82,16 +73,15 @@ func (s *Server) handleCreateSpace(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	ns, err := s.cfg.SpaceNamespace(req.Name)
-	if err != nil {
+	if err := s.rt.ValidateSpace(req.Name); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	if err := s.k8s.CheckNamespaceFree(r.Context(), ns); err != nil {
+	if err := s.rt.CheckSpaceFree(r.Context(), req.Name); err != nil {
 		writeErr(w, http.StatusConflict, err)
 		return
 	}
-	if err := s.k8s.Apply(r.Context(), []runtime.Object{manifests.Namespace(req.Name, ns)}); err != nil {
+	if err := s.rt.CreateSpace(r.Context(), req.Name); err != nil {
 		writeErr(w, http.StatusBadGateway, err)
 		return
 	}
@@ -101,12 +91,12 @@ func (s *Server) handleCreateSpace(w http.ResponseWriter, r *http.Request) {
 // handleDeleteSpace removes a space that holds no apps — the console made
 // it, the console can unmake it. Its services and their data go with it.
 func (s *Server) handleDeleteSpace(w http.ResponseWriter, r *http.Request) {
-	ns, err := s.cfg.SpaceNamespace(r.PathValue("space"))
+	space, err := s.space(r)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	if err := s.k8s.DeleteSpace(r.Context(), ns); err != nil {
+	if err := s.rt.DeleteSpace(r.Context(), space); err != nil {
 		writeErr(w, http.StatusConflict, err)
 		return
 	}
@@ -134,22 +124,18 @@ type AppListEntry struct {
 // handleListApps finds every deployed app, with the space it belongs to. The
 // console groups by space; the CLI prints the same grouping.
 func (s *Server) handleListApps(w http.ResponseWriter, r *http.Request) {
-	refs, err := s.k8s.ListApps(r.Context())
+	refs, err := s.rt.ListApps(r.Context())
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err)
 		return
 	}
 	apps := []AppListEntry{}
 	for _, ref := range refs {
-		space := ref.Space
-		if space == "" {
-			space = strings.TrimPrefix(ref.Namespace, s.cfg.NamespacePrefix)
-		}
-		st, err := s.k8s.AppStatus(r.Context(), ref.Namespace, ref.App)
+		st, err := s.rt.Status(r.Context(), ref.Space, ref.App)
 		if err != nil {
 			// A transient status error must not make a running app vanish
 			// from the overview.
-			apps = append(apps, AppListEntry{Name: ref.App, Space: space, Ready: "status unavailable"})
+			apps = append(apps, AppListEntry{Name: ref.App, Space: ref.Space, Ready: "status unavailable"})
 			continue
 		}
 		if !st.Found {
@@ -157,13 +143,13 @@ func (s *Server) handleListApps(w http.ResponseWriter, r *http.Request) {
 		}
 		entry := AppListEntry{
 			Name:       ref.App,
-			Space:      space,
+			Space:      ref.Space,
 			Healthy:    st.Healthy(),
 			Ready:      st.ReadyText(),
 			Image:      st.Image,
 			Restarts:   st.Restarts,
 			Exposure:   exposureOf(st),
-			HasStorage: s.k8s.HasDataClaim(r.Context(), ref.Namespace, ref.App),
+			HasStorage: s.rt.HasData(r.Context(), ref.Space, ref.App),
 		}
 		if !st.StartedAt.IsZero() {
 			entry.StartedAt = st.StartedAt.UTC().Format(time.RFC3339)
@@ -171,7 +157,7 @@ func (s *Server) handleListApps(w http.ResponseWriter, r *http.Request) {
 		if st.IngressHost != "" {
 			entry.URL = s.cfg.Scheme() + "://" + st.IngressHost
 		}
-		if bindings, err := s.k8s.ListAddonBindings(r.Context(), ref.Namespace, ref.App); err == nil {
+		if bindings, err := s.rt.ListServices(r.Context(), ref.Space, ref.App); err == nil {
 			for _, b := range bindings {
 				entry.Addons = append(entry.Addons, b.Name)
 			}

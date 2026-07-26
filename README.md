@@ -59,16 +59,16 @@ five ideas:
 │  (thin client)│   HTTP   │  ├─ donkey-server   REST API, detection,│
 └───────────────┘          │  │      manifests, AI, rollout watching │
                            │  ├─ donkey-buildkitd  image builds      │──▶ registry
- browser ─────────────────▶│  ├─ Gateway (any Gateway API impl): TLS │
-        │                  │  │      + hostnames, routes to ↓        │
-        │  per app:        │  └─ donkey-gateway  routing · OIDC login│──OIDC──▶ Entra ID /
-        └─ HTTPRoute ──────▶       · access (users/groups/roles) ──▶ app     any IdP
-     <app>.<space>.<domain>├─────────────────────────────────────────┤
+ browser ────80/443───────▶│  └─ donkey-gateway  TLS (ACME/CA/static)│──OIDC──▶ Entra ID /
+                           │       · routing by hostname and path    │        any IdP
+     <app>.<space>.<domain>│       · OIDC login                      │
+                           │       · access (users/groups/roles) ──▶ app
+                           ├─────────────────────────────────────────┤
                            │ donkey-<space>                          │
                            │  app "web"      Deployment · Service    │
                            │  app "backend"  Deployment · Service    │
                            │  service "postgres"  Deployment · PVC   │
-                           │  per app: HTTPRoute (→ donkey-gateway)  │
+                           │  per app: a route entry (ConfigMap)     │
                            │  one PVC per app · env/binding secrets  │
                            └─────────────────────────────────────────┘
 ```
@@ -101,19 +101,18 @@ five ideas:
 - **donkey-buildkitd** — a plain BuildKit deployment; the server drives it
   over gRPC with Railpack-generated LLB (or the app's Dockerfile) and pushes
   straight to the registry.
-- **The shared Gateway** — donkey installs a `GatewayClass` (bound to
-  [Envoy Gateway](https://gateway.envoyproxy.io) by default) and one shared
-  `Gateway`; every app and the API attach `HTTPRoute`s to it. No Ingress,
-  no nginx. The shared Gateway only terminates TLS and matches hostnames.
-- **donkey-gateway** — donkey's own edge proxy (same binary as the server,
-  started with `gateway`): every app route's real backend. It routes by
-  hostname and path (from annotations on the HTTPRoutes it watches), runs
-  the OIDC code flow itself where a route demands a login, seals what it
-  learned into an AES-GCM cookie (stateless — replicas just scale), checks
-  the app's access rules (users, groups, roles from the ID token's claims)
-  and forwards with `X-Auth-Request-*` identity headers. Auth lives here
-  because the Gateway API has no standard for it — donkey stays portable
-  across Gateway implementations and IdPs.
+- **donkey-gateway** — donkey's own edge (same binary as the server,
+  started with `gateway`): traffic enters the cluster here, on ports 80 and
+  443. It terminates TLS and issues the certificates itself — one per
+  hostname via ACME (Let's Encrypt) on demand, or minted by its own CA for
+  internal installs, or a provided wildcard (`tls.mode`) — routes by
+  hostname and path (from the route ConfigMaps it watches), runs the OIDC
+  code flow itself where a route demands a login, seals what it learned
+  into an AES-GCM cookie (stateless — replicas just scale), checks the
+  app's access rules (users, groups, roles from the ID token's claims) and
+  forwards with `X-Auth-Request-*` identity headers. TLS and auth live here
+  because no ingress vendor has a standard for the latter — donkey needs no
+  ingress controller, no Gateway API, no cert-manager.
 - **Per space** — one namespace (`donkey-<space>`) shared by the apps of
   that space, so they reach each other by plain service name — and that
   includes its services: a space's postgres is simply `postgres` to its
@@ -121,12 +120,11 @@ five ideas:
   in the console), and goes away with the last app unless kept data or
   services still live there; a namespace donkey didn't create is never
   taken over.
-- **Per app** — Deployment (probes, `PORT`, `envFrom` secrets), Service,
-  HTTPRoute (`<app>.<space>.<domain>`, https only — one shared route
-  redirects plain http) pointing at donkey-gateway with the app's backend,
-  login and access rules as annotations, a `ReferenceGrant` for that
-  cross-namespace hop, and Secrets for env vars, registry pull auth and
-  service bindings. Everything is labeled `donkey.dev/app` and
+- **Per app** — Deployment (probes, `PORT`, `envFrom` secrets), Service, a
+  route entry (`<app>.<space>.<domain>`, https only — the gateway's http
+  listener redirects) — a ConfigMap carrying the app's backend, hostname,
+  login and access rules as annotations — and Secrets for env vars,
+  registry pull auth and service bindings. Everything is labeled `donkey.dev/app` and
   `donkey.dev/space`, so status, logs and destroy know exactly what donkey
   owns.
 - **Storage** — `storage.paths` in donkey.yaml (or what the assistant
@@ -350,18 +348,18 @@ applies anything, and `donkey doctor` keeps checking them after):
 
 | Requirement | Why | Notes |
 |---|---|---|
-| **Kubernetes cluster** with a default StorageClass | apps with `storage.paths` and provisioned services claim volumes | any conformant cluster; nothing donkey-specific |
-| **[Envoy Gateway](https://gateway.envoyproxy.io)** | donkey attaches one shared Gateway and per-app HTTPRoutes; the OIDC login runs in the proxy itself | donkey creates the `GatewayClass` and `Gateway`, not the controller. Traffic enters through a `LoadBalancer` service; on clusters where nothing assigns those an address (kind), set `gateway.serviceType: ClusterIP` |
-| **[cert-manager](https://cert-manager.io) + an Issuer** | every app hostname gets its own certificate | `tls.issuer` (ClusterIssuer or Issuer). Any solver works: HTTP-01, DNS-01, an internal CA, Vault |
+| **Kubernetes cluster** with a default StorageClass | apps with `storage.paths` and provisioned services claim volumes | any conformant cluster; nothing donkey-specific. No ingress controller, no Gateway API, no cert-manager — donkey brings its own edge. Traffic enters through the donkey-gateway `LoadBalancer` service; on clusters where nothing assigns those an address (kind), set `gateway.serviceType: NodePort` or `ClusterIP` |
 | **Container registry** the cluster can pull from | donkey pushes every build there | `registry.url` + credentials; `registry.caSecret` when its certificate comes from a private CA |
 | **DNS** for `*.<domain>` and `<domain>` → the gateway address | apps are served at `<app>.<space>.<domain>`, the API and login callback at `<domain>` | one wildcard covers every depth; the apex needs its own record |
 | **OIDC provider** (Pocket ID, Entra ID, Keycloak, …) | the one way in: console, CLI and protected apps all sign in against it | required — `auth.issuer` (+ client id/secret); `auth.admins` optionally narrows who may administer |
 | **OpenAI-compatible endpoint** | donkey reads every app with it (ports, health routes, data folders) | required — the server refuses to start without one. Point it at a model you control: source summaries go there |
 
 A complete copy-paste walkthrough that stands all of this up on a single
-Debian server — kind, Envoy Gateway, cert-manager with Let's Encrypt, a
-registry container, an OIDC provider — is in
-[examples/INSTALL.md](examples/INSTALL.md).
+Debian server — TLS comes from the gateway itself via Let's Encrypt — exists
+twice: [examples/INSTALL_KIND.md](examples/INSTALL_KIND.md) (kind cluster, a
+registry container, an OIDC provider) and
+[examples/INSTALL_DOCKER.md](examples/INSTALL_DOCKER.md) (no Kubernetes at
+all — `runtime: docker` runs apps straight on the Docker engine).
 
 RBAC: donkey-server currently binds `cluster-admin` (it creates namespaces and
 everything inside them). Scoping that down is on the list — see
@@ -369,9 +367,8 @@ everything inside them). Scoping that down is on the list — see
 
 ## Deployment model
 
-**Day 0 — admin installs the control plane** into an existing cluster with
-[Envoy Gateway](https://gateway.envoyproxy.io/docs/tasks/quickstart/)
-installed. Settings live in a file
+**Day 0 — admin installs the control plane** into an existing cluster.
+Settings live in a file
 ([examples/server-install.yaml](examples/server-install.yaml)); flags
 override; secrets come from env:
 
@@ -395,13 +392,17 @@ with a custom `domain:` outside the installation's domain keep a per-host
 callback (`https://<their-domain>/oauth2/callback`) — register those
 individually.
 
-**Certificates and DNS.** cert-manager issues one certificate per app
+**Certificates and DNS.** The gateway issues one certificate per app
 hostname — a TLS wildcard covers only one level, so no single certificate
-could — which means any solver works, HTTP-01 included. DNS is simpler than
-TLS here: one `*.<domain>` record covers every depth, because DNS wildcards
-match multiple labels (as long as no explicit record sits at an intermediate
-name). Only the apex is never covered by the wildcard — and the API, console
-and login callback live there, so give `<domain>` a record of its own.
+could. `tls.mode: acme` requests them from Let's Encrypt on demand (the
+gateway answers its own HTTP-01 challenges); `tls.mode: ca` mints them from
+the gateway's own CA for installs the internet can't reach (trust that one
+CA certificate and every app is covered); `tls.mode: static` serves a
+provided certificate. DNS is simpler than TLS here: one `*.<domain>` record
+covers every depth, because DNS wildcards match multiple labels (as long as
+no explicit record sits at an intermediate name). Only the apex is never
+covered by the wildcard — and the API, console and login callback live
+there, so give `<domain>` a record of its own.
 
 **Day 1 — everyone deploys:**
 
@@ -564,39 +565,51 @@ Conventions: everything under `internal/`; `config` and `k8s/manifests` are
 pure (no I/O) and unit-tested; nothing in the product shells out to
 external CLIs (the one exception: `donkey open` launching your browser);
 demo concerns are code-review-enforced out of the product
-(`TestSystemObjectsGatewayAPI`, `TestInstallTouchesOnlyItsOwnObjects`).
+(`TestSystemObjectsSelfContainedEdge`, `TestInstallTouchesOnlyItsOwnObjects`).
 
 ## Trying it out
 
 The local playground is [devkube](https://github.com/adrianliechti/devkube),
-which brings exactly the prerequisites above: a cluster, cert-manager with its
-`platform` CA ClusterIssuer, an in-cluster registry the nodes already trust,
-and Envoy Gateway. donkey is then installed with the same
-`donkey server install` an admin runs — the demo adds nothing but a
-deliberately trivial auto-approving identity provider
-(`hack/demo/fake-idp/` — everyone is instantly demo@example.com).
+which brings exactly the prerequisites above: a cluster and an in-cluster
+registry the nodes already trust. donkey is then installed with the same
+`donkey server install` an admin runs (`tls.mode: ca` — the gateway mints
+its own certificates locally) — the demo adds nothing but a deliberately
+trivial auto-approving identity provider (`hack/demo/fake-idp/` — everyone
+is instantly demo@example.com).
 
 ```sh
-task demo            # cluster + control plane + the demo app (dashboard, MCP backend, three services)
+task demo            # kind cluster + control plane + the demo app (dashboard, MCP backend, three services)
 task test            # unit tests (no cluster needed)
-task e2e             # full smoke test, isolated from your real config
+task e2e             # from nothing to verified: setup:kind + install:kind + the Go e2e suite
 task demo:samples    # deploy every testdata sample and report what donkey got right alone
 task demo:broken     # deploy apps that MUST fail, and check each was explained and patched
 ```
 
-`task demo` is three phases, each runnable on its own when you only want to
-redo one of them:
+The phases are tasks of their own — and the docker runtime has its own
+install:
 
 ```sh
-task demo:cluster    # the local cluster and donkey's prerequisites
-task demo:setup      # the identity provider, the CA, and donkey itself
-task demo:app        # log in and deploy the demo app
+task fake-ai         # a deterministic AI endpoint on :8080 — demos and e2e without a model or a key
+task setup:kind      # the local kind cluster and donkey's prerequisites
+task install:kind    # the identity provider, the CA, and donkey itself
+task install:docker  # donkey straight on the local Docker engine (apps.localhost, no cluster)
+task demo:app        # log in and deploy the demo app (kind; needs devkube connect)
+task verify          # the Go e2e suite against the running kind installation
+task verify:docker   # the same suite against the running docker installation
 ```
 
-Hostnames resolve through `sudo devkube connect`, which watches donkey's own
-HTTPRoutes and keeps their hostnames in `/etc/hosts` while it runs. That is why
-this repo no longer patches CoreDNS, pins NodePorts or writes registry files on
-nodes — the demo cluster is left as unmodified as a real one.
+The e2e suite (`./e2e`, Go, `-tags e2e`) tests a RUNNING installation end to
+end through the same doors users take — the server API and the gateway's
+https edge: deploy, status, logs, login redirect, token access, env, addon,
+network flips, files, destroy. Because it never talks to Kubernetes or
+Docker directly, one suite verifies both runtimes.
+
+Hostnames resolve through `sudo devkube connect`, which keeps donkey's
+hostnames in `/etc/hosts` while it runs. That is why this repo no longer
+patches CoreDNS, pins NodePorts or writes registry files on nodes — the demo
+cluster is left as unmodified as a real one. (devkube/loop needs a version
+that discovers donkey's hostnames from its route ConfigMaps — earlier
+versions read the HTTPRoutes donkey no longer creates.)
 
 The demo's certificates come from the cluster's own CA, so the CLI is pointed
 at it with `donkey login --ca-file .build/platform-ca.crt` — the same flag a

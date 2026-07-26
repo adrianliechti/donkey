@@ -6,10 +6,7 @@ import (
 	"os"
 	"strings"
 
-	"k8s.io/apimachinery/pkg/runtime"
-
 	"github.com/adrianliechti/donkey/internal/config"
-	"github.com/adrianliechti/donkey/internal/k8s/manifests"
 )
 
 // openai is a binding-only addon: nothing runs in the space. Apps get the
@@ -28,7 +25,9 @@ func (openai) DefaultStorage() string { return "" }
 
 func (openai) Binding(in Input) map[string]string {
 	b := map[string]string{
-		"OPENAI_BASE_URL": fmt.Sprintf("http://%s.%s.svc/ai/v1", manifests.ServerName, manifests.SystemNamespace),
+		// The runtime provider says where donkey-server's AI proxy is
+		// reachable from apps — its address is runtime vocabulary.
+		"OPENAI_BASE_URL": in.AIProxyURL,
 		"OPENAI_API_KEY":  in.Password,
 	}
 	// Binding runs inside donkey-server, which knows the configured model —
@@ -57,5 +56,5 @@ func (openai) ExternalBinding(raw string) (map[string]string, error) {
 	}, nil
 }
 
-// Objects is empty on purpose — the service is the platform itself.
-func (openai) Objects(in Input) ([]runtime.Object, error) { return nil, nil }
+// Workload is nil on purpose — the service is the platform itself.
+func (openai) Workload(in Input) (*Workload, error) { return nil, nil }

@@ -5,18 +5,18 @@
 # real identity provider.
 #
 # The phases are also tasks of their own, if you want to redo just one:
-#   task demo:cluster   the local cluster and donkey's prerequisites
-#   task demo:setup     the identity provider, the CA, and donkey itself
+#   task setup:kind     the local cluster and donkey's prerequisites
+#   task install:kind   the identity provider, the CA, and donkey itself
 #   task demo:app       login and deploy the demo app
 set -euo pipefail
 . "$(dirname "$0")/demo-lib.sh"
 
 require_ai
 
-say "cluster + prerequisites (devkube: cert-manager, registry, Envoy Gateway)"
-"${ROOT}/hack/cluster.sh"
+say "cluster + prerequisites (devkube: registry)"
+"${ROOT}/hack/setup-kind.sh"
 
-"${ROOT}/hack/demo-setup.sh"
+"${ROOT}/hack/install-kind.sh"
 
 printf '\nLeave `sudo devkube --cluster donkey connect` running in a second terminal, then press enter here.\n'
 read -r _

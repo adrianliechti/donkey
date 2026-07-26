@@ -7,7 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/adrianliechti/donkey/internal/config"
 	"github.com/adrianliechti/donkey/internal/identity"
@@ -210,25 +211,19 @@ func TestCookieDomain(t *testing.T) {
 	}
 }
 
-func TestRouteFromObject(t *testing.T) {
-	obj := unstructured.Unstructured{Object: map[string]any{
-		"metadata": map[string]any{
-			"annotations": map[string]any{
+func TestRouteFromConfigMap(t *testing.T) {
+	cm := corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Annotations: map[string]string{
 				"donkey.dev/backend": "http://shop.donkey-acme.svc.cluster.local:80",
+				"donkey.dev/host":    "shop.example.com",
+				"donkey.dev/path":    "/api",
 				"donkey.dev/login":   "required",
 				"donkey.dev/access":  `{"users":["ada@example.com"],"roles":["developer"]}`,
 			},
 		},
-		"spec": map[string]any{
-			"hostnames": []any{"shop.example.com"},
-			"rules": []any{map[string]any{
-				"matches": []any{map[string]any{
-					"path": map[string]any{"type": "PathPrefix", "value": "/api"},
-				}},
-			}},
-		},
-	}}
-	rt, ok := routeFromObject(obj)
+	}
+	rt, ok := routeFromConfigMap(cm)
 	if !ok {
 		t.Fatal("route with backend annotation should be picked up")
 	}
@@ -239,19 +234,21 @@ func TestRouteFromObject(t *testing.T) {
 		t.Errorf("access rules should be parsed: %+v", rt.Access)
 	}
 
-	// No backend annotation → not the gateway's route (e.g. donkey's own
-	// API route, or a leftover from an older version).
-	plain := unstructured.Unstructured{Object: map[string]any{
-		"spec": map[string]any{"hostnames": []any{"donkey.example.com"}},
-	}}
-	if _, ok := routeFromObject(plain); ok {
+	// No backend annotation → not the gateway's route (an unrelated
+	// ConfigMap that happens to carry donkey labels).
+	plain := corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Annotations: map[string]string{"donkey.dev/host": "donkey.example.com"},
+		},
+	}
+	if _, ok := routeFromConfigMap(plain); ok {
 		t.Error("routes without a backend annotation are not ours to serve")
 	}
 
 	// A non-http backend must be refused, not proxied.
-	bad := obj.DeepCopy()
-	bad.SetAnnotations(map[string]string{"donkey.dev/backend": "https://evil.example.com"})
-	if _, ok := routeFromObject(*bad); ok {
+	bad := cm.DeepCopy()
+	bad.Annotations["donkey.dev/backend"] = "https://evil.example.com"
+	if _, ok := routeFromConfigMap(*bad); ok {
 		t.Error("only in-cluster plain-http backends are proxied")
 	}
 }

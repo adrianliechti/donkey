@@ -56,8 +56,10 @@ tasks:
       - npm install --no-audit --no-fund
       - npm run dev
 
-  # image cross-compiles one command, wraps it in its Dockerfile and loads it
-  # into the cluster. Both images donkey builds go through here.
+  # image cross-compiles one command, wraps it in its Dockerfile and builds
+  # it into the local Docker daemon. Both images donkey builds go through
+  # here; the kind flow additionally loads them into the cluster registry
+  # (server-image:kind, demo-idp-image:kind).
   image:
     internal: true
     requires:
@@ -67,11 +69,9 @@ tasks:
       - CGO_ENABLED=0 GOOS=linux GOARCH={{.ARCH}} go build -ldflags "{{.LDFLAGS}}" -o {{.CONTEXT}}/{{.BIN}} {{.CMD}}
       - cp {{.DOCKERFILE}} {{.CONTEXT}}/Dockerfile
       - docker build -q -t {{.IMAGE}} {{.CONTEXT}}
-      # devkube pushes it into the in-cluster registry (registry.platform).
-      - devkube --cluster {{.CLUSTER}} load {{.IMAGE}}
 
   server-image:
-    desc: Build the donkey-server image and load it into the cluster registry
+    desc: Build the donkey-server image (into the local Docker daemon)
     deps: [web-build]
     cmds:
       - task: image
@@ -83,6 +83,13 @@ tasks:
           IMAGE: '{{.IMAGE | default "donkey/donkey-server:dev"}}'
           DOCKERFILE: hack/Dockerfile.server
           CONTEXT: .build
+
+  server-image:kind:
+    desc: Build the donkey-server image and load it into the kind cluster registry
+    cmds:
+      - task: server-image
+      # devkube pushes it into the in-cluster registry (registry.platform).
+      - devkube --cluster {{.CLUSTER}} load donkey/donkey-server:dev
 
   publish:
     desc: "Build the donkey-server image (amd64 + arm64) and push it to GHCR: task publish VERSION=0.2.0"
@@ -103,7 +110,7 @@ tasks:
       - docker buildx build --platform linux/amd64,linux/arm64 -t {{.IMAGE}}:{{.VERSION}} --push .build/publish
 
   demo-idp-image:
-    desc: Build the DEMO fake identity provider image and load it into the cluster
+    desc: Build the DEMO fake identity provider image (into the local Docker daemon)
     cmds:
       - task: image
         vars:
@@ -112,6 +119,17 @@ tasks:
           IMAGE: '{{.IMAGE | default "donkey/fake-idp:dev"}}'
           DOCKERFILE: hack/demo/fake-idp/Dockerfile
           CONTEXT: .build/fake-idp
+
+  demo-idp-image:kind:
+    desc: Build the DEMO fake identity provider image and load it into the kind cluster registry
+    cmds:
+      - task: demo-idp-image
+      - devkube --cluster {{.CLUSTER}} load donkey/fake-idp:dev
+
+  fake-ai:
+    desc: "DEMO/TEST: a deterministic OpenAI-compatible endpoint on :8080 — every answer is \"no findings\", so demos and e2e run without a model or a key"
+    cmds:
+      - go run ./hack/demo/fake-ai
 
   test:
     desc: Run unit tests (no cluster or docker needed)
@@ -126,7 +144,7 @@ tasks:
   fmt:
     desc: Format the Go sources
     cmds:
-      - gofmt -w cmd internal
+      - gofmt -w cmd internal pkg e2e
 
   lint:
     desc: Lint the admin console
@@ -137,29 +155,53 @@ tasks:
   check:
     desc: Everything CI would run — format check, vet, tests, console typecheck and lint
     cmds:
-      - test -z "$(gofmt -l cmd internal)" || { echo "gofmt needed — run 'task fmt'"; gofmt -l cmd internal; exit 1; }
+      - test -z "$(gofmt -l cmd internal pkg e2e)" || { echo "gofmt needed — run 'task fmt'"; gofmt -l cmd internal pkg e2e; exit 1; }
       - task: vet
+      # The e2e suite is behind a build tag — vet it too, or it rots.
+      - go vet -tags e2e ./e2e
       - task: test
       - cd web && npx tsc -b
       - task: lint
+
+  setup:kind:
+    desc: "Create the local devkube/kind cluster with donkey's prerequisites (in-cluster registry)"
+    cmds:
+      - hack/setup-kind.sh
+
+  install:kind:
+    desc: "Install donkey into the kind cluster — fake identity provider, registry CA, control plane (needs setup:kind)"
+    cmds:
+      - hack/install-kind.sh
+
+  install:docker:
+    desc: "Install donkey straight onto the local Docker engine — no cluster; apps at https://<app>.<space>.apps.localhost"
+    cmds:
+      - hack/install-docker.sh
+
+  verify:
+    desc: "Run the Go e2e suite against the running kind installation (needs install:kind)"
+    cmds:
+      - hack/verify.sh kind
+
+  verify:docker:
+    desc: "Run the Go e2e suite against the running docker installation (needs install:docker)"
+    cmds:
+      - hack/verify.sh docker
+
+  e2e:
+    desc: "From nothing to verified: setup:kind + install:kind + the Go e2e suite"
+    cmds:
+      - hack/setup-kind.sh
+      - hack/install-kind.sh
+      - hack/verify.sh kind
 
   demo:
     desc: "DEMO: create a local devkube cluster, install the full donkey stack (auto-login fake IdP) and deploy the demo app (dashboard + MCP backend)"
     cmds:
       - hack/demo.sh
 
-  demo:cluster:
-    desc: "DEMO 1/3: create the local devkube cluster with donkey's prerequisites (cert-manager, registry, Envoy Gateway)"
-    cmds:
-      - hack/cluster.sh
-
-  demo:setup:
-    desc: "DEMO 2/3: install donkey into the cluster — fake identity provider, CA, control plane"
-    cmds:
-      - hack/demo-setup.sh
-
   demo:app:
-    desc: "DEMO 3/3: log in and deploy the demo app (dashboard + MCP backend); needs `devkube connect` running"
+    desc: "DEMO: log in and deploy the demo app (dashboard + MCP backend); needs install:kind and `devkube connect` running"
     cmds:
       - hack/demo-app.sh
 
@@ -172,11 +214,6 @@ tasks:
     desc: "Deploy the apps that are MEANT to fail, and check donkey explained each one and proposed a patch"
     cmds:
       - hack/demo-broken.sh
-
-  e2e:
-    desc: "End-to-end smoke test on devkube: install → login → deploy → certificate → gateway login → addon → env → spaces → storage → destroy"
-    cmds:
-      - hack/e2e.sh
 
   down:
     desc: Delete the local demo/e2e cluster

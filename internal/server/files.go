@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/adrianliechti/donkey/internal/k8s"
+	"github.com/adrianliechti/donkey/pkg/runtime"
 )
 
 // The app's disk as a file browser. Every operation opens a short-lived
@@ -60,7 +60,7 @@ type ListFilesResponse struct {
 }
 
 func (s *Server) handleListFiles(w http.ResponseWriter, r *http.Request) {
-	ns, app, err := s.spaceApp(r)
+	space, app, err := s.spaceApp(r)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
@@ -69,7 +69,7 @@ func (s *Server) handleListFiles(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	p := r.URL.Query().Get("path")
-	entries, err := s.k8s.ListFiles(ctx, ns, app, p)
+	entries, err := s.rt.ListFiles(ctx, space, app, p)
 	if err != nil {
 		writeFilesErr(w, err)
 		return
@@ -77,7 +77,7 @@ func (s *Server) handleListFiles(w http.ResponseWriter, r *http.Request) {
 	resp := ListFilesResponse{
 		Path:      p,
 		Entries:   make([]FileInfo, 0, len(entries)),
-		Truncated: len(entries) >= k8s.MaxListEntries,
+		Truncated: len(entries) >= runtime.MaxListEntries,
 	}
 	for _, e := range entries {
 		resp.Entries = append(resp.Entries, FileInfo{
@@ -92,7 +92,7 @@ func (s *Server) handleListFiles(w http.ResponseWriter, r *http.Request) {
 	// At the root, "app-data" means nothing on its own — the Deployment knows
 	// it is the app's /app/data, so the listing says so.
 	if p == "" {
-		if folders, ferr := s.k8s.StorageFolders(ctx, ns, app); ferr == nil {
+		if folders, ferr := s.rt.StorageFolders(ctx, space, app); ferr == nil {
 			for _, f := range folders {
 				resp.Folders = append(resp.Folders, StorageFolderInfo{Name: f.Name, Path: f.Path})
 			}
@@ -104,7 +104,7 @@ func (s *Server) handleListFiles(w http.ResponseWriter, r *http.Request) {
 // handleReadFile streams one file out. Nothing is buffered, so downloading a
 // multi-gigabyte file costs the server nothing but time.
 func (s *Server) handleReadFile(w http.ResponseWriter, r *http.Request) {
-	ns, app, err := s.spaceApp(r)
+	space, app, err := s.spaceApp(r)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
@@ -114,7 +114,7 @@ func (s *Server) handleReadFile(w http.ResponseWriter, r *http.Request) {
 
 	p := r.URL.Query().Get("path")
 	out := &downloadWriter{w: w, name: path.Base(p), inline: r.URL.Query().Get("inline") == "true"}
-	if err := s.k8s.ReadFile(ctx, ns, app, p, out); err != nil {
+	if err := s.rt.ReadFile(ctx, space, app, p, out); err != nil {
 		if out.started {
 			// The response is already on its way, so there is no status left
 			// to send: the client sees a download that stops short.
@@ -131,14 +131,14 @@ func (s *Server) handleReadFile(w http.ResponseWriter, r *http.Request) {
 // handleWriteFile stores an upload. It takes either a multipart form (what a
 // browser sends) or the raw request body, so `curl --data-binary` works too.
 func (s *Server) handleWriteFile(w http.ResponseWriter, r *http.Request) {
-	ns, app, err := s.spaceApp(r)
+	space, app, err := s.spaceApp(r)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	if r.ContentLength > k8s.MaxUploadBytes {
+	if r.ContentLength > runtime.MaxUploadBytes {
 		writeErr(w, http.StatusRequestEntityTooLarge,
-			fmt.Errorf("that file is too large to upload — the limit is %d MB", k8s.MaxUploadBytes>>20))
+			fmt.Errorf("that file is too large to upload — the limit is %d MB", runtime.MaxUploadBytes>>20))
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), filesTransferTimeout)
@@ -167,7 +167,7 @@ func (s *Server) handleWriteFile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	counted := &countingReader{r: body}
-	if err := s.k8s.WriteFile(ctx, ns, app, p, counted); err != nil {
+	if err := s.rt.WriteFile(ctx, space, app, p, counted); err != nil {
 		writeFilesErr(w, err)
 		return
 	}
@@ -175,7 +175,7 @@ func (s *Server) handleWriteFile(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeleteFile(w http.ResponseWriter, r *http.Request) {
-	ns, app, err := s.spaceApp(r)
+	space, app, err := s.spaceApp(r)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
@@ -184,7 +184,7 @@ func (s *Server) handleDeleteFile(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	p := r.URL.Query().Get("path")
-	if err := s.k8s.RemoveFile(ctx, ns, app, p); err != nil {
+	if err := s.rt.RemoveFile(ctx, space, app, p); err != nil {
 		writeFilesErr(w, err)
 		return
 	}
@@ -194,7 +194,7 @@ func (s *Server) handleDeleteFile(w http.ResponseWriter, r *http.Request) {
 // handleMoveFile renames or moves something on the disk. A destination that
 // is an existing folder means "move it in there".
 func (s *Server) handleMoveFile(w http.ResponseWriter, r *http.Request) {
-	ns, app, err := s.spaceApp(r)
+	space, app, err := s.spaceApp(r)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
@@ -204,7 +204,7 @@ func (s *Server) handleMoveFile(w http.ResponseWriter, r *http.Request) {
 
 	q := r.URL.Query()
 	from, to := q.Get("from"), q.Get("to")
-	if err := s.k8s.MoveFile(ctx, ns, app, from, to); err != nil {
+	if err := s.rt.MoveFile(ctx, space, app, from, to); err != nil {
 		writeFilesErr(w, err)
 		return
 	}
@@ -213,7 +213,7 @@ func (s *Server) handleMoveFile(w http.ResponseWriter, r *http.Request) {
 
 // handleMakeFolder creates one folder; its parent has to exist already.
 func (s *Server) handleMakeFolder(w http.ResponseWriter, r *http.Request) {
-	ns, app, err := s.spaceApp(r)
+	space, app, err := s.spaceApp(r)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
@@ -222,7 +222,7 @@ func (s *Server) handleMakeFolder(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	p := r.URL.Query().Get("path")
-	if err := s.k8s.MakeDir(ctx, ns, app, p); err != nil {
+	if err := s.rt.MakeDir(ctx, space, app, p); err != nil {
 		writeFilesErr(w, err)
 		return
 	}
@@ -234,11 +234,11 @@ func (s *Server) handleMakeFolder(w http.ResponseWriter, r *http.Request) {
 // is donkey's fault.
 func writeFilesErr(w http.ResponseWriter, err error) {
 	switch {
-	case errors.Is(err, k8s.ErrNoDisk), errors.Is(err, k8s.ErrNotDeployed), errors.Is(err, k8s.ErrNotFound):
+	case errors.Is(err, runtime.ErrNoDisk), errors.Is(err, runtime.ErrNotDeployed), errors.Is(err, runtime.ErrNotFound):
 		writeErr(w, http.StatusNotFound, err)
-	case errors.Is(err, k8s.ErrBadPath), errors.Is(err, k8s.ErrNotAFile), errors.Is(err, k8s.ErrNotAFolder):
+	case errors.Is(err, runtime.ErrBadPath), errors.Is(err, runtime.ErrNotAFile), errors.Is(err, runtime.ErrNotAFolder):
 		writeErr(w, http.StatusBadRequest, err)
-	case errors.Is(err, k8s.ErrTooLarge):
+	case errors.Is(err, runtime.ErrTooLarge):
 		writeErr(w, http.StatusRequestEntityTooLarge, err)
 	case errors.Is(err, context.DeadlineExceeded):
 		writeErr(w, http.StatusGatewayTimeout, fmt.Errorf("the app's disk didn't answer in time — try again"))

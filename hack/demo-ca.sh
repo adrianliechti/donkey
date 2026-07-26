@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# DEV/DEMO ONLY — hands the cluster's own certificate authority to the two
-# places that need it:
-#   · donkey-system/donkey-registry-ca — so donkey-server and the build engine
-#     trust the in-cluster registry (`--registry-ca-secret`)
-#   · a local PEM file — so the CLI trusts the API (`donkey login --ca-file`)
+# DEV/DEMO ONLY — hands the registry's certificate authority to donkey:
+# donkey-system/donkey-registry-ca, so donkey-server and the build engine
+# trust the in-cluster registry (`--registry-ca-secret`).
 #
-# A real installation does the same thing with whatever CA its registry and
-# gateway certificates come from; only the source of the CA is demo-specific.
+# A real installation does the same thing with whatever CA its registry
+# certificate comes from; only the source of the CA is demo-specific. (The
+# CA of the https donkey serves is separate — the gateway's own, exported by
+# hack/demo-gateway-ca.sh after the install.)
 set -euo pipefail
 
 CONTEXT="${1:-kind-donkey}"
@@ -17,7 +17,7 @@ kubectl --context "${CONTEXT}" create namespace donkey-system \
 
 CA="$(kubectl --context "${CONTEXT}" -n cert-manager get secret platform-ca -o jsonpath='{.data.ca\.crt}')"
 if [ -z "${CA}" ]; then
-  echo "the cluster has no platform-ca secret — run hack/cluster.sh first" >&2
+  echo "the cluster has no platform-ca secret — run task setup:kind first" >&2
   exit 1
 fi
 

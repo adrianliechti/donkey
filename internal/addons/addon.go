@@ -1,8 +1,12 @@
 // Package addons implements donkey's attached-resource model: an addon is a
-// binding Secret with a canonical env contract (e.g. DATABASE_URL), injected
-// into the app via envFrom. Whether donkey provisioned the service in-cluster
-// or the user attached a remote one, the app sees the exact same contract —
-// the two are freely swappable.
+// binding with a canonical env contract (e.g. DATABASE_URL), injected into
+// the app's environment. Whether donkey provisioned the service or the user
+// attached a remote one, the app sees the exact same contract — the two are
+// freely swappable.
+//
+// The package is runtime-neutral on purpose: an addon describes what a
+// provisioned instance is (image, port, env, data path — a Workload), and
+// each runtime provider materializes that its own way.
 package addons
 
 import (
@@ -11,15 +15,9 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-
-	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
-
-	"github.com/adrianliechti/donkey/internal/k8s/manifests"
 )
 
-// Addon provisions an in-cluster instance of a service type.
+// Addon provisions an instance of a service type.
 type Addon interface {
 	Type() string
 	// Description is the catalog's one-liner: what a person gets, not how
@@ -31,9 +29,10 @@ type Addon interface {
 	// connection URL, so a service running elsewhere binds exactly like a
 	// provisioned one.
 	ExternalBinding(raw string) (map[string]string, error)
-	// Objects returns the Kubernetes objects for a provisioned instance
-	// (excluding the binding secret, which donkey manages).
-	Objects(in Input) ([]runtime.Object, error)
+	// Workload describes the provisioned instance for the runtime to
+	// materialize. Nil (with no error) means the addon is binding-only —
+	// nothing runs (e.g. openai, whose service is the platform itself).
+	Workload(in Input) (*Workload, error)
 	// CredentialKey names the binding entry that holds the credential the
 	// provisioned instance was initialized with — re-adds reuse it, because
 	// rotating it would lock the service out of its own kept data.
@@ -41,6 +40,34 @@ type Addon interface {
 	// DefaultVersion and DefaultStorage document the defaults per type.
 	DefaultVersion() string
 	DefaultStorage() string
+}
+
+// Workload describes one provisioned service instance, free of any
+// runtime's vocabulary. Kubernetes materializes it as a PVC + Deployment +
+// Service, Docker as a container + volume; the security posture (an
+// unprivileged user, no escalation, the data volume group-owned) is the
+// materializer's job, the same for every addon.
+type Workload struct {
+	// Image is the full reference including tag.
+	Image string
+	// Port is the one port the service speaks; PortName says what it is
+	// ("postgres", "http", "s3").
+	Port     int32
+	PortName string
+	// Env is plain configuration. SecretEnv maps env var names onto keys of
+	// the instance's binding, for values that are credentials — a runtime
+	// may reference them (Kubernetes: secretKeyRef) instead of inlining.
+	Env       map[string]string
+	SecretEnv map[string]string
+	// DataPath is where the instance's data volume mounts; the size comes
+	// from Input.Storage.
+	DataPath string
+	// RunAsUser is the unprivileged identity the image expects; the data
+	// volume is group-owned accordingly.
+	RunAsUser int64
+	// Readiness: an HTTP path on Port, or a command to run — exactly one.
+	ReadyHTTPPath string
+	ReadyCommand  []string
 }
 
 type Input struct {
@@ -52,6 +79,9 @@ type Input struct {
 	Version  string
 	Storage  string
 	Password string
+	// AIProxyURL is where donkey-server's AI proxy is reachable from apps —
+	// the runtime provider fills it in (its address is runtime vocabulary).
+	AIProxyURL string
 }
 
 // Registry holds the addon types donkey knows.
@@ -98,33 +128,6 @@ const SharedOwner = "shared"
 
 func SecretName(app, addon string) string { return app + "-addon-" + addon }
 func Component(addon string) string       { return "addon-" + addon }
-
-// BindingSecret wraps the env contract in the Secret the app's envFrom picks
-// up. Identical shape for provisioned and external addons.
-func BindingSecret(space, app, namespace, name string, data map[string]string) *corev1.Secret {
-	bytes := map[string][]byte{}
-	for k, v := range data {
-		bytes[k] = []byte(v)
-	}
-	return &corev1.Secret{
-		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Secret"},
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      SecretName(app, name),
-			Namespace: namespace,
-			Labels:    manifests.Labels(space, app, Component(name)),
-		},
-		Data: bytes,
-	}
-}
-
-// AttachmentSecret is an app's copy of a space-shared addon's binding — the
-// same contract, pointing at the shared instance, marked so that removing
-// the shared addon can find its copies (and only them).
-func AttachmentSecret(space, app, namespace, name string, data map[string]string) *corev1.Secret {
-	sec := BindingSecret(space, app, namespace, name, data)
-	sec.Labels[manifests.LabelShared] = "true"
-	return sec
-}
 
 // NewPassword generates a credential for a provisioned addon.
 func NewPassword() (string, error) {

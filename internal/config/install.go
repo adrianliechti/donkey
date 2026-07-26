@@ -12,6 +12,9 @@ import (
 // individual fields; secrets can come from env instead
 // (DONKEY_REGISTRY_PASSWORD, DONKEY_OIDC_CLIENT_SECRET, OPENAI_API_KEY).
 type InstallFile struct {
+	// Runtime is where donkey runs apps: "kubernetes" (the default) or
+	// "docker" — straight on a Docker engine, no cluster.
+	Runtime string `json:"runtime,omitempty"`
 	// Image is the donkey-server image, pullable by the cluster.
 	Image string `json:"image,omitempty"`
 	// BuildkitImage is the build engine's image (default
@@ -59,22 +62,42 @@ type InstallAuth struct {
 // InstallGateway tunes the traffic entry point.
 type InstallGateway struct {
 	// ServiceType is the type of the service traffic enters the cluster
-	// through: LoadBalancer (the default) or ClusterIP. Clusters without a
-	// load-balancer controller (kind, local demos) need ClusterIP — a
-	// LoadBalancer service never gets an address there, which leaves the
-	// gateway unprogrammed and every donkey hostname unroutable.
+	// through: LoadBalancer (the default), NodePort or ClusterIP. Clusters
+	// without a load-balancer controller (kind, local demos) need NodePort
+	// or ClusterIP — a LoadBalancer service never gets an address there,
+	// which would leave every donkey hostname unroutable.
 	ServiceType string `json:"serviceType,omitempty"`
+	// HTTPNodePort/HTTPSNodePort pin the node ports of a NodePort service,
+	// so port mappings (kind) or firewall rules can rely on them.
+	HTTPNodePort  int32 `json:"httpNodePort,omitempty"`
+	HTTPSNodePort int32 `json:"httpsNodePort,omitempty"`
 }
 
-// InstallTLS names the cert-manager issuer that signs app certificates.
-// donkey always serves apps over https — the login gateway's cookies require
-// it — and always asks cert-manager for one certificate per app hostname, so
-// any solver works (HTTP-01 included, which no wildcard could use).
+// InstallTLS is how the gateway gets its certificates. donkey always serves
+// apps over https — the login gateway's cookies require it — and the
+// gateway issues the certificates itself: no cert-manager, no ingress
+// vendor.
 type InstallTLS struct {
-	// Issuer is the cert-manager issuer's name.
+	// Mode is "acme" (one certificate per hostname from Let's Encrypt, the
+	// default — the gateway must be reachable on ports 80/443), "ca" (a
+	// self-signed CA minting per-hostname certificates — local and internal
+	// installs; trust its one CA certificate and every app is covered), or
+	// "static" (a provided certificate, usually a wildcard, in the Secret
+	// named by Secret).
+	Mode string `json:"mode,omitempty"`
+	// Email is the ACME account contact (expiry warnings); optional.
+	Email string `json:"email,omitempty"`
+	// Directory overrides the ACME endpoint — Let's Encrypt staging, or an
+	// internal CA speaking ACME.
+	Directory string `json:"directory,omitempty"`
+	// Secret names a kubernetes.io/tls Secret in donkey-system holding the
+	// certificate for static mode (default donkey-gateway-tls).
+	Secret string `json:"secret,omitempty"`
+
+	// Issuer and Kind configured cert-manager in earlier donkey versions.
+	// They are ignored now — kept so old install files still parse.
 	Issuer string `json:"issuer,omitempty"`
-	// Kind is ClusterIssuer (default) or Issuer.
-	Kind string `json:"kind,omitempty"`
+	Kind   string `json:"kind,omitempty"`
 }
 
 // DefaultBuildkitImage is the build engine donkey installs. It is pinned to a

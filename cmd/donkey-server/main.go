@@ -9,6 +9,9 @@ import (
 
 	"github.com/adrianliechti/donkey/internal/gateway"
 	"github.com/adrianliechti/donkey/internal/server"
+	"github.com/adrianliechti/donkey/pkg/runtime"
+	"github.com/adrianliechti/donkey/pkg/runtime/docker"
+	"github.com/adrianliechti/donkey/pkg/runtime/kubernetes"
 )
 
 // One binary, two roles: the control plane by default, the login gateway
@@ -43,7 +46,55 @@ func main() {
 		fmt.Fprintln(os.Stderr, "configuration error:", err)
 		os.Exit(1)
 	}
-	srv, err := server.New(cfg)
+	// The control plane runs against one runtime provider — DONKEY_RUNTIME
+	// picks which; everything else is identical.
+	var rt runtime.Provider
+	switch os.Getenv("DONKEY_RUNTIME") {
+	case "docker":
+		provider, err := docker.New(docker.Options{
+			Domain:        cfg.Domain,
+			StateDir:      os.Getenv("DONKEY_STATE_DIR"),
+			Registry:      cfg.Registry,
+			PullRegistry:  os.Getenv("DONKEY_PULL_REGISTRY"),
+			AuthAvailable: cfg.OIDCIssuer != "",
+		})
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "startup error:", err)
+			os.Exit(1)
+		}
+		rt = provider
+		// The console is one more entry in the gateway's routing table; on
+		// Docker the server writes its own at startup (on Kubernetes the
+		// installer renders it).
+		serverHost := os.Getenv("DONKEY_SERVER_HOST")
+		if serverHost == "" {
+			serverHost = cfg.Domain
+		}
+		stateDir := os.Getenv("DONKEY_STATE_DIR")
+		if stateDir == "" {
+			stateDir = "/var/lib/donkey"
+		}
+		if err := docker.WriteSystemRoute(stateDir, "console", docker.Route{
+			Host: serverHost, Path: "/", Backend: "http://donkey-server:8088",
+			Login: true, Access: cfg.Admins,
+		}); err != nil {
+			fmt.Fprintln(os.Stderr, "startup error:", err)
+			os.Exit(1)
+		}
+	default:
+		client, err := kubernetes.NewInCluster()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "startup error:", err)
+			os.Exit(1)
+		}
+		rt = kubernetes.NewRuntime(client, kubernetes.Options{
+			NamespacePrefix: cfg.NamespacePrefix,
+			Domain:          cfg.Domain,
+			Registry:        cfg.Registry,
+			AuthAvailable:   cfg.OIDCIssuer != "",
+		})
+	}
+	srv, err := server.New(cfg, rt)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "startup error:", err)
 		os.Exit(1)

@@ -30,7 +30,7 @@ cat <<EOF
   The demo app: https://dashboard.demo.${BASE}
                 One address for the whole thing. Sales figures read live from
                 DuckDB; sign in on the demo identity page — you are in as
-                demo@example.com. Certificates come from the cluster's own CA
+                demo@example.com. Certificates come from the gateway's own CA
                 (${CA_FILE}), so your browser asks you to accept it once.
                   /api   the dashboard's own calls
                   /mcp   the same data as tools an assistant can call

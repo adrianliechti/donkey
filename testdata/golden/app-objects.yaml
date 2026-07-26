@@ -139,57 +139,14 @@ spec:
 status:
   loadBalancer: {}
 ---
-apiVersion: gateway.networking.k8s.io/v1beta1
-kind: ReferenceGrant
-metadata:
-  labels:
-    app.kubernetes.io/component: web
-    app.kubernetes.io/managed-by: donkey
-    app.kubernetes.io/name: shop
-    app.kubernetes.io/part-of: acme
-    donkey.dev/app: shop
-    donkey.dev/component: web
-    donkey.dev/space: acme
-  name: donkey-gateway-acme-shop-d21b2c
-  namespace: donkey-system
-spec:
-  from:
-  - group: gateway.networking.k8s.io
-    kind: HTTPRoute
-    namespace: donkey-acme
-  to:
-  - group: ""
-    kind: Service
-    name: donkey-gateway
----
-apiVersion: cert-manager.io/v1
-kind: Certificate
-metadata:
-  labels:
-    app.kubernetes.io/component: web
-    app.kubernetes.io/managed-by: donkey
-    app.kubernetes.io/name: shop
-    app.kubernetes.io/part-of: acme
-    donkey.dev/app: shop
-    donkey.dev/component: web
-    donkey.dev/space: acme
-  name: donkey-tls-acme-shop-d21b2c
-  namespace: donkey-system
-spec:
-  dnsNames:
-  - shop.acme.apps.example.com
-  issuerRef:
-    group: cert-manager.io
-    kind: ClusterIssuer
-    name: letsencrypt
-  secretName: donkey-tls-acme-shop-d21b2c
----
-apiVersion: gateway.networking.k8s.io/v1
-kind: HTTPRoute
+apiVersion: v1
+kind: ConfigMap
 metadata:
   annotations:
     donkey.dev/backend: http://shop.donkey-acme.svc.cluster.local:80
+    donkey.dev/host: shop.acme.apps.example.com
     donkey.dev/login: required
+    donkey.dev/path: /
   labels:
     app.kubernetes.io/component: web
     app.kubernetes.io/managed-by: donkey
@@ -200,19 +157,3 @@ metadata:
     donkey.dev/space: acme
   name: shop
   namespace: donkey-acme
-spec:
-  hostnames:
-  - shop.acme.apps.example.com
-  parentRefs:
-  - name: donkey
-    namespace: donkey-system
-    sectionName: https
-  rules:
-  - backendRefs:
-    - name: donkey-gateway
-      namespace: donkey-system
-      port: 80
-    timeouts:
-      request: 0s
-status:
-  parents: null
