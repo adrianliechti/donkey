@@ -1,21 +1,25 @@
 import { useEffect, useState } from 'react'
 import {
   createHashHistory,
-  createRootRoute,
+  createRootRouteWithContext,
   createRoute,
   createRouter,
+  HeadContent,
+  Navigate,
   Outlet,
   redirect,
   RouterProvider,
   useNavigate,
   useParams,
 } from '@tanstack/react-router'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Activity, UploadCloud } from 'lucide-react'
 import { clearToken, getToken, setUnauthorizedHandler } from './api'
 import { AppDetail, type AppTab } from './AppDetail'
 import { AppsList } from './AppsList'
 import { DeployView } from './DeployView'
 import { Login } from './Login'
+import { fleetQuery, statusQuery } from './queries'
 import { SystemView } from './SystemView'
 import { UserMenu } from './UserMenu'
 
@@ -23,6 +27,14 @@ import { UserMenu } from './UserMenu'
 // place, an unhealthy app can be linked to a teammate, and bookmarks from
 // the previous console keep working.
 const APP_TABS: AppTab[] = ['overview', 'logs', 'files', 'variables', 'settings']
+
+// One cache for the whole console. Short staleness keeps panels honest
+// while still letting a remounted view show what it knew instantly. The
+// router carries the client in its context, so route loaders can warm the
+// cache before a view renders.
+const queryClient = new QueryClient({
+  defaultOptions: { queries: { retry: 1, staleTime: 5_000 } },
+})
 
 // Signing out is triggered inside the router's tree but owned by App (it
 // holds the connected state) — this hook is the one thread between them.
@@ -32,6 +44,7 @@ function Shell() {
   const navigate = useNavigate()
   return (
     <div className="flex min-h-screen flex-col">
+      <HeadContent />
       <header className="sticky top-0 z-30 border-b border-line bg-card/95 backdrop-blur">
         <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-4 py-2.5">
           <div className="flex min-w-0 items-center gap-3">
@@ -93,25 +106,13 @@ function Breadcrumb() {
   )
 }
 
-function useTitle(title: string) {
-  useEffect(() => {
-    document.title = title
-  }, [title])
-}
-
 // The fleet is a layout, not a page: the app panel renders into its Outlet,
 // so opening an app or switching its tabs never unmounts the canvas behind
 // it — no refetch, no skeleton flash.
 function FleetLayout() {
-  useTitle('Donkey — admin')
-  const navigate = useNavigate()
   return (
     <>
-      <AppsList
-        onOpen={(space, name) =>
-          navigate({ to: '/app/$space/$name/{-$tab}', params: { space, name, tab: undefined } })
-        }
-      />
+      <AppsList />
       <Outlet />
     </>
   )
@@ -122,15 +123,6 @@ function FleetLayout() {
 function AppOverlay({ space, name, tab }: { space: string; name: string; tab: AppTab }) {
   const navigate = useNavigate()
   const close = () => navigate({ to: '/' })
-
-  // The overlay owns the title while it is up, and hands it back on close —
-  // the layout underneath only sets its own once, on mount.
-  useEffect(() => {
-    document.title = `${name} · Donkey`
-    return () => {
-      document.title = 'Donkey — admin'
-    }
-  }, [name])
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -169,13 +161,7 @@ function AppOverlay({ space, name, tab }: { space: string; name: string; tab: Ap
   )
 }
 
-function SystemPage() {
-  useTitle('System · Donkey')
-  return <SystemView />
-}
-
 function DeployPage({ space, name }: { space: string; name: string }) {
-  useTitle('Deploy · Donkey')
   const navigate = useNavigate()
   return (
     <DeployView
@@ -189,7 +175,12 @@ function DeployPage({ space, name }: { space: string; name: string }) {
 }
 
 // Code-style routes: the whole map in one place, typed params included.
-const rootRoute = createRootRoute({ component: Shell })
+// Titles live on the routes (HeadContent renders them); loaders warm the
+// query cache so a view opens with its data already there.
+const rootRoute = createRootRouteWithContext<{ queryClient: QueryClient }>()({
+  component: Shell,
+  head: () => ({ meta: [{ title: 'Donkey — admin' }] }),
+})
 
 // Pathless layout: it has no path of its own, so it stays mounted for both
 // the bare fleet ('/') and an open app panel ('/app/…') — that persistence
@@ -198,6 +189,7 @@ const fleetRoute = createRoute({
   getParentRoute: () => rootRoute,
   id: 'fleet',
   component: FleetLayout,
+  loader: ({ context }) => context.queryClient.ensureQueryData(fleetQuery),
 })
 
 const fleetIndexRoute = createRoute({
@@ -218,13 +210,15 @@ const legacyAppsRoute = createRoute({
 const systemRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/system',
-  component: SystemPage,
+  component: SystemView,
+  head: () => ({ meta: [{ title: 'System · Donkey' }] }),
 })
 
 const deployRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/deploy',
   component: () => <DeployPage space="" name="" />,
+  head: () => ({ meta: [{ title: 'Deploy · Donkey' }] }),
 })
 
 const deployAppRoute = createRoute({
@@ -234,6 +228,7 @@ const deployAppRoute = createRoute({
     const { space, name } = deployAppRoute.useParams()
     return <DeployPage space={space} name={name} />
   },
+  head: () => ({ meta: [{ title: 'Deploy · Donkey' }] }),
 })
 
 // One route for the panel and every one of its tabs ({-$tab} is optional,
@@ -242,6 +237,9 @@ const deployAppRoute = createRoute({
 const appRoute = createRoute({
   getParentRoute: () => fleetRoute,
   path: '/app/$space/$name/{-$tab}',
+  loader: ({ context, params }) =>
+    context.queryClient.ensureQueryData(statusQuery(params.space, params.name)),
+  head: ({ params }) => ({ meta: [{ title: `${params.name} · Donkey` }] }),
   component: () => {
     const { space, name, tab } = appRoute.useParams()
     // The tab comes from the URL, so it can name something that doesn't
@@ -262,12 +260,14 @@ const routeTree = rootRoute.addChildren([
 const router = createRouter({
   routeTree,
   history: createHashHistory(),
-  defaultNotFoundComponent: () => {
-    // An unknown hash is an old or mistyped link — the fleet is always a
-    // sensible place to land.
-    location.hash = '#/'
-    return null
-  },
+  context: { queryClient },
+  // Hovering a card warms its data through the loader; staleness is
+  // Query's business, so the router's own preload timer is switched off.
+  defaultPreload: 'intent',
+  defaultPreloadStaleTime: 0,
+  // An unknown hash is an old or mistyped link — the fleet is always a
+  // sensible place to land.
+  defaultNotFoundComponent: () => <Navigate to="/" replace />,
 })
 
 declare module '@tanstack/react-router' {
@@ -289,5 +289,9 @@ export default function App() {
   if (!connected) {
     return <Login onConnected={() => setConnected(true)} />
   }
-  return <RouterProvider router={router} />
+  return (
+    <QueryClientProvider client={queryClient}>
+      <RouterProvider router={router} />
+    </QueryClientProvider>
+  )
 }

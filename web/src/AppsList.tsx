@@ -1,20 +1,17 @@
-import { useCallback, useState } from 'react'
+import { useState } from 'react'
 import { Dialog, DialogBackdrop, DialogPanel, DialogTitle } from '@headlessui/react'
+import { Link } from '@tanstack/react-router'
 import { FolderPlus, RefreshCw } from 'lucide-react'
 import { api, type AppSummary } from './api'
-import { usePoll } from './hooks'
+import { useFleet } from './queries'
 import { RemoveApps } from './RemoveApps'
 import { SpaceCard } from './SpaceCard'
 import { Button, ErrorNote, Skeleton, errText, healthLine, healthOf, type Health } from './ui'
 
 const healthRank: Record<Health, number> = { bad: 0, unknown: 1, ok: 2 }
 
-export function AppsList({ onOpen }: { onOpen: (space: string, app: string) => void }) {
-  const fetcher = useCallback(async () => {
-    const [apps, spaces] = await Promise.all([api.apps(), api.spaces()])
-    return { apps: apps.apps, spaces: spaces.spaces }
-  }, [])
-  const { data, error, reload } = usePoll(fetcher, 10_000)
+export function AppsList() {
+  const { data, error, reload } = useFleet()
   const apps = data?.apps ?? null
   // What the remove dialog is asking about: one app, or a whole space.
   const [removing, setRemoving] = useState<{ space: string; apps: string[]; siblings: string[] } | null>(null)
@@ -93,11 +90,12 @@ export function AppsList({ onOpen }: { onOpen: (space: string, app: string) => v
                       ? 'bg-brick shadow-[0_0_10px_1px] shadow-brick/40'
                       : 'bg-stone/50'
                 return (
-                  <button
+                  <Link
                     key={`${app.space}/${app.name}`}
                     role="listitem"
                     title={`${app.name} (${app.space}) — ${healthLine[h](app.ready)}`}
-                    onClick={() => onOpen(app.space, app.name)}
+                    to="/app/$space/$name/{-$tab}"
+                    params={{ space: app.space, name: app.name, tab: undefined }}
                     className={`h-3.5 w-6 rounded-sm ${tone} transition-transform hover:scale-y-125 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-hay-deep`}
                   />
                 )
@@ -135,14 +133,7 @@ export function AppsList({ onOpen }: { onOpen: (space: string, app: string) => v
       )}
 
       {spaces.map(([space, spaceApps]) => (
-        <SpaceCard
-          key={space}
-          space={space}
-          apps={spaceApps}
-          onOpen={onOpen}
-          onRemove={setRemoving}
-          onChanged={reload}
-        />
+        <SpaceCard key={space} space={space} apps={spaceApps} onRemove={setRemoving} onChanged={reload} />
       ))}
 
       {removing && (

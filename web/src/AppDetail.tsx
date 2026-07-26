@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react'
+import { useState } from 'react'
 import {
   ExternalLink,
   FileText,
@@ -18,7 +18,7 @@ import { EnvEditor } from './EnvEditor'
 import { FilesPanel } from './FilesPanel'
 import { LogsPanel } from './LogsPanel'
 import { NetworkCard } from './NetworkCard'
-import { usePoll } from './hooks'
+import { useAppStatus } from './queries'
 import {
   ago,
   Button,
@@ -61,8 +61,7 @@ export function AppDetail({
   onTab: (tab: AppTab) => void
   onBack: () => void
 }) {
-  const fetcher = useCallback(() => api.status(space, app), [space, app])
-  const { data: status, error, updatedAt, reload } = usePoll(fetcher, 10_000)
+  const { data: status, error, updatedAt, reload } = useAppStatus(space, app)
   // The tab also comes from the URL, so it can name one that is not offered:
   // .../files for an app with no disk. Fall back rather than leave the panel
   // blank with nothing selected.

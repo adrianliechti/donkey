@@ -1,15 +1,9 @@
-import { useCallback } from 'react'
 import { RefreshCw } from 'lucide-react'
-import { api } from './api'
-import { usePoll } from './hooks'
+import { useDoctor } from './queries'
 import { Card, CheckIcon, ErrorNote, SectionTitle, Spinner, UpdatedAgo } from './ui'
 
 export function SystemView() {
-  const fetcher = useCallback(() => api.doctor(), [])
-  // Doctor probes everything (build engine, registry, gateway, assistant)
-  // and can take up to ~15s — poll gently and keep the last report visible
-  // while a new one is on its way.
-  const { data: report, error, updatedAt, reload } = usePoll(fetcher, 60_000)
+  const { data: report, error, updatedAt, reload } = useDoctor()
 
   return (
     <div className="space-y-4">

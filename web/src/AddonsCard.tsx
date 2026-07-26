@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useState } from 'react'
 import { Plus } from 'lucide-react'
-import { api, type AddAddonRequest, type AddonEntry, type SpaceAddonEntry } from './api'
+import { api, type AddAddonRequest } from './api'
 import { AddServiceDialog } from './AddonForm'
+import { useAppServices, useInvalidateServices, useSpaceServices } from './queries'
 import { Button, Card, ErrorNote, errText, SectionTitle, Spinner } from './ui'
 
 /**
@@ -10,30 +11,17 @@ import { Button, Card, ErrorNote, errText, SectionTitle, Spinner } from './ui'
  * are one click away.
  */
 export function AddonsCard({ space, app }: { space: string; app: string }) {
-  const [addons, setAddons] = useState<AddonEntry[] | null>(null)
-  const [available, setAvailable] = useState<SpaceAddonEntry[]>([])
   const [adding, setAdding] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [note, setNote] = useState('')
 
-  const load = useCallback(() => {
-    api
-      .addons(space, app)
-      .then((res) => setAddons(res.addons ?? []))
-      .catch((err) => setError(errText(err, 'Loading failed.')))
-    api
-      .spaceAddons(space)
-      .then((res) => setAvailable(res.addons ?? []))
-      .catch(() => setAvailable([]))
-  }, [space, app])
-
-  useEffect(() => {
-    load()
-  }, [load])
+  const { data: addons, error: loadError } = useAppServices(space, app)
+  const { data: available } = useSpaceServices(space)
+  const invalidate = useInvalidateServices()
 
   const connected = new Set((addons ?? []).map((a) => a.name))
-  const others = available.filter((s) => !connected.has(s.name))
+  const others = (available ?? []).filter((s) => !connected.has(s.name))
 
   async function run(work: () => Promise<{ ok?: boolean; restarted?: boolean } | void>, doing: string) {
     setBusy(true)
@@ -47,7 +35,7 @@ export function AddonsCard({ space, app }: { space: string; app: string }) {
           ? 'Done — the app is restarting with the change.'
           : 'Done — the app picks it up with its next deploy.',
       )
-      load()
+      invalidate(space)
     } catch (err) {
       setNote('')
       setError(errText(err, 'That did not work.'))
@@ -72,7 +60,7 @@ export function AddonsCard({ space, app }: { space: string; app: string }) {
           </span>
         </Button>
       </div>
-      <ErrorNote message={error} />
+      <ErrorNote message={error || loadError} />
       {note && <p className="mt-2 text-xs text-ink-soft">{note}</p>}
       {addons === null && !error && <Spinner label="Loading…" />}
       {addons !== null && addons.length === 0 && (

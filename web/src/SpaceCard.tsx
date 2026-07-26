@@ -1,10 +1,12 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useState } from 'react'
+import { Link } from '@tanstack/react-router'
 import { Dialog, DialogBackdrop, DialogPanel, DialogTitle } from '@headlessui/react'
 import { Archive, Database, ExternalLink, HardDrive, Network, Plus, Sparkles, Table2, Trash2 } from 'lucide-react'
 import { api, type AddAddonRequest, type AppSummary, type SpaceAddonEntry } from './api'
 import { AddServiceDialog } from './AddonForm'
 import { AiDialog } from './AiDialog'
 import { DatabaseDialog } from './DatabaseDialog'
+import { useInvalidateServices, useSpaceServices } from './queries'
 import { S3Dialog } from './S3Dialog'
 import { Button, ErrorNote, ExposureBadge, StatusDot, ago, errText, healthLine, healthOf, type Health } from './ui'
 
@@ -21,34 +23,23 @@ import { Button, ErrorNote, ExposureBadge, StatusDot, ago, errText, healthLine, 
 export function SpaceCard({
   space,
   apps,
-  onOpen,
   onRemove,
   onChanged,
 }: {
   space: string
   apps: AppSummary[]
-  onOpen: (space: string, app: string) => void
   onRemove: (r: { space: string; apps: string[]; siblings: string[] }) => void
   // The fleet's refresh — an empty space removing itself has no other way
   // to disappear from the overview.
   onChanged: () => void
 }) {
-  const [services, setServices] = useState<SpaceAddonEntry[] | null>(null)
   const [adding, setAdding] = useState(false)
   const [deletingSpace, setDeletingSpace] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
 
-  const load = useCallback(() => {
-    api
-      .spaceAddons(space)
-      .then((res) => setServices(res.addons ?? []))
-      .catch(() => setServices([]))
-  }, [space])
-
-  useEffect(() => {
-    load()
-  }, [load])
+  const { data: services } = useSpaceServices(space)
+  const invalidate = useInvalidateServices()
 
   async function add(req: AddAddonRequest) {
     setBusy(true)
@@ -56,7 +47,7 @@ export function SpaceCard({
     try {
       await api.addSpaceAddon(space, req)
       setAdding(false)
-      load()
+      invalidate(space)
     } catch (err) {
       setError(errText(err, 'Adding did not work.'))
     } finally {
@@ -120,7 +111,7 @@ export function SpaceCard({
         </div>
       </div>
 
-      <SpaceServices space={space} services={services} onChanged={load} />
+      <SpaceServices space={space} services={services} onChanged={() => invalidate(space)} />
 
       {apps.length === 0 && (
         <p className="text-sm text-stone">
@@ -132,7 +123,7 @@ export function SpaceCard({
 
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
         {apps.map((app) => (
-          <AppCard key={app.name} app={app} onOpen={onOpen} siblings={apps} onRemove={onRemove} />
+          <AppCard key={app.name} app={app} siblings={apps} onRemove={onRemove} />
         ))}
       </div>
 
@@ -396,12 +387,10 @@ function RemoveServiceDialog({
 function AppCard({
   app,
   siblings,
-  onOpen,
   onRemove,
 }: {
   app: AppSummary
   siblings: AppSummary[]
-  onOpen: (space: string, app: string) => void
   onRemove: (r: { space: string; apps: string[]; siblings: string[] }) => void
 }) {
   const h = healthOf(app.healthy, app.ready)
@@ -412,13 +401,11 @@ function AppCard({
     <div
       className={`group relative rounded-lg border bg-card transition-colors ${edge}`}
     >
-      <a
-        href={`#/app/${encodeURIComponent(app.space)}/${encodeURIComponent(app.name)}`}
-        onClick={(e) => {
-          if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return
-          e.preventDefault()
-          onOpen(app.space, app.name)
-        }}
+      {/* A real router Link: modifier clicks, middle clicks and copy-link
+          behave like the web, with none of the hand-rolled handling. */}
+      <Link
+        to="/app/$space/$name/{-$tab}"
+        params={{ space: app.space, name: app.name, tab: undefined }}
         className="block p-3.5 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-hay-deep"
       >
         <div className="flex items-center justify-between gap-2">
@@ -472,7 +459,7 @@ function AppCard({
             )}
           </div>
         )}
-      </a>
+      </Link>
 
       {/* Quick actions surface on hover, out of the card's click target. */}
       <div className="absolute right-2 top-2 hidden items-center gap-0.5 rounded-md bg-card group-hover:flex">

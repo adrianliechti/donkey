@@ -1,7 +1,8 @@
-import { useEffect, useState, type ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 import { Dialog, DialogBackdrop, DialogPanel, DialogTitle, Radio, RadioGroup } from '@headlessui/react'
 import { Archive, ArrowLeft, Backpack, Database, Server, Sparkles } from 'lucide-react'
-import { api, type AddAddonRequest, type AddonType } from './api'
+import { type AddAddonRequest } from './api'
+import { useCatalog } from './queries'
 import { Button, ErrorNote, Select, Spinner } from './ui'
 
 const inputStyle =
@@ -94,22 +95,17 @@ export function AddonForm({
   onSubmit: (req: AddAddonRequest) => void
   onCancel: () => void
 }) {
-  const [types, setTypes] = useState<AddonType[]>([])
-  const [loaded, setLoaded] = useState(false)
+  const { data: catalog, error: catalogError } = useCatalog()
+  const types = catalog ?? []
+  // An errored fetch counts as loaded — the empty-catalog message says what
+  // to do, a spinner would just spin.
+  const loaded = catalog !== null || catalogError !== ''
   // '' means the catalog step; a type name means its configuration step.
   const [type, setType] = useState('')
   const [name, setName] = useState('')
   const [storage, setStorage] = useState('')
   const [source, setSource] = useState<'cluster' | 'external'>('cluster')
   const [url, setUrl] = useState('')
-
-  useEffect(() => {
-    api
-      .addonTypes()
-      .then((res) => setTypes(res.types ?? []))
-      .catch(() => setTypes([]))
-      .finally(() => setLoaded(true))
-  }, [])
 
   const chosen = types.find((t) => t.type === type)
   const external = source === 'external'
