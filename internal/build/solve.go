@@ -31,6 +31,10 @@ import (
 type BuildKitBuilder struct {
 	Registry     config.Registry
 	BuildkitAddr string
+	// Settings is the installation's build configuration: the images the
+	// buildpacks builder runs, and the environment every build is handed on
+	// top of the app's own.
+	Settings config.BuildSettings
 }
 
 func (b *BuildKitBuilder) Build(ctx context.Context, req Request) (*Result, error) {
@@ -43,14 +47,40 @@ func (b *BuildKitBuilder) Build(ctx context.Context, req Request) (*Result, erro
 	}
 	defer c.Close()
 
+	// Buildpacks are their own shape of build: the CNB lifecycle pushes the
+	// image itself, so there is no image exporter and the digest comes back
+	// in a report file rather than from the exporter's response.
+	if req.Strategy == config.BuildBuildpacks {
+		return b.buildBuildpacks(ctx, c, req)
+	}
+
 	def, opt, err := b.solveOpt(ctx, req)
 	if err != nil {
 		return nil, err
 	}
 
+	var resp *bkclient.SolveResponse
+	if err := b.withProgress(ctx, req, func(ctx context.Context, ch chan *bkclient.SolveStatus) error {
+		var err error
+		resp, err = c.Solve(ctx, def, *opt, ch)
+		return err
+	}); err != nil {
+		return nil, err
+	}
+	return &Result{
+		ImageRef: req.ImageRef,
+		Digest:   resp.ExporterResponse["containerimage.digest"],
+		LogPath:  req.Progress.LogPath,
+	}, nil
+}
+
+// withProgress runs one solve while its progress stream is rendered into the
+// build log (and, when someone is following, into their response). The solve
+// closes the status channel itself.
+func (b *BuildKitBuilder) withProgress(ctx context.Context, req Request, solve func(context.Context, chan *bkclient.SolveStatus) error) error {
 	logFile, err := os.Create(req.Progress.LogPath)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer logFile.Close()
 	var progressOut io.Writer = logFile
@@ -60,12 +90,7 @@ func (b *BuildKitBuilder) Build(ctx context.Context, req Request) (*Result, erro
 
 	ch := make(chan *bkclient.SolveStatus)
 	eg, ectx := errgroup.WithContext(ctx)
-	var resp *bkclient.SolveResponse
-	eg.Go(func() error {
-		var err error
-		resp, err = c.Solve(ectx, def, *opt, ch)
-		return err
-	})
+	eg.Go(func() error { return solve(ectx, ch) })
 	eg.Go(func() error {
 		display, err := progressui.NewDisplay(progressOut, progressui.PlainMode)
 		if err != nil {
@@ -75,13 +100,9 @@ func (b *BuildKitBuilder) Build(ctx context.Context, req Request) (*Result, erro
 		return err
 	})
 	if err := eg.Wait(); err != nil {
-		return nil, fmt.Errorf("the build failed: %w", err)
+		return fmt.Errorf("the build failed: %w", err)
 	}
-	return &Result{
-		ImageRef: req.ImageRef,
-		Digest:   resp.ExporterResponse["containerimage.digest"],
-		LogPath:  req.Progress.LogPath,
-	}, nil
+	return nil
 }
 
 func (b *BuildKitBuilder) solveOpt(ctx context.Context, req Request) (*llb.Definition, *bkclient.SolveOpt, error) {
@@ -108,6 +129,12 @@ func (b *BuildKitBuilder) solveOpt(ctx context.Context, req Request) (*llb.Defin
 		return nil, nil, err
 	}
 
+	// The installation's build environment sits under the app's own. This is
+	// the one place layer #3 of the mirroring problem is solved for every
+	// builder: BuildKit hands these to every RUN, so a mirrored package
+	// registry reaches build steps donkey never sees.
+	buildEnv := b.Settings.MergeEnv(req.BuildEnv)
+
 	switch req.Strategy {
 	case config.BuildDockerfile:
 		// The Dockerfile path comes from the uploaded donkey.yaml and must
@@ -128,7 +155,7 @@ func (b *BuildKitBuilder) solveOpt(ctx context.Context, req Request) (*llb.Defin
 			"filename": filepath.Base(dockerfilePath),
 			"platform": req.Platform,
 		}
-		for k, v := range req.BuildEnv {
+		for k, v := range buildEnv {
 			opt.FrontendAttrs["build-arg:"+k] = v
 		}
 		opt.LocalMounts = map[string]fsutil.FS{
@@ -147,7 +174,7 @@ func (b *BuildKitBuilder) solveOpt(ctx context.Context, req Request) (*llb.Defin
 		}
 		state, image, err := rpbuildkit.ConvertPlanToLLB(req.RailpackPlan.Result.Plan, rpbuildkit.ConvertPlanOptions{
 			BuildPlatform: platform,
-			SecretsHash:   secretsHash(req.BuildEnv),
+			SecretsHash:   secretsHash(buildEnv),
 		})
 		if err != nil {
 			return nil, nil, fmt.Errorf("preparing the build steps: %w", err)
@@ -163,7 +190,7 @@ func (b *BuildKitBuilder) solveOpt(ctx context.Context, req Request) (*llb.Defin
 		opt.Exports[0].Attrs["containerimage.config"] = string(imageBytes)
 		opt.LocalMounts = map[string]fsutil.FS{"context": contextFS}
 		secretsMap := map[string][]byte{}
-		for k, v := range req.BuildEnv {
+		for k, v := range buildEnv {
 			secretsMap[k] = []byte(v)
 		}
 		opt.Session = append(opt.Session, secretsprovider.FromMap(secretsMap))

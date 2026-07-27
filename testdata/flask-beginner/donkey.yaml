@@ -1,0 +1,5 @@
+name: flask-beginner
+port: 8080
+space: bptest
+storage:
+  paths: []

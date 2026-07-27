@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"strconv"
 	"strings"
 	"time"
@@ -21,6 +22,7 @@ import (
 
 	"github.com/adrianliechti/donkey/internal/config"
 	"github.com/adrianliechti/donkey/internal/ui"
+	"github.com/adrianliechti/donkey/pkg/runtime/kubernetes/manifests"
 )
 
 // The Docker installation: donkey straight on a Docker engine, no cluster.
@@ -48,6 +50,12 @@ const (
 	dockerGatewayName = "donkey-gateway"
 )
 
+// dockerNoProxy is what must never be sent to a forward proxy: donkey's own
+// containers, the Docker engine's socket and the loopback registry all live
+// on this machine, and no corporate proxy can route them.
+const dockerNoProxy = "localhost,127.0.0.1," +
+	dockerRegistryName + "," + dockerBuildkitName + "," + dockerServerName + "," + dockerGatewayName
+
 // dockerInstallAction stands the whole control plane up on the local Docker
 // engine (or DOCKER_HOST).
 func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.InstallFile) error {
@@ -64,6 +72,9 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 	case "", "acme", "ca", "static":
 	default:
 		return fmt.Errorf("tls.mode must be acme, ca or static, not %q", settings.TLS.Mode)
+	}
+	if err := settings.Build.Validate(); err != nil {
+		return err
 	}
 
 	cli, err := dockerclient.NewClientWithOpts(dockerclient.FromEnv, dockerclient.WithAPIVersionNegotiation())
@@ -117,13 +128,20 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 		return err
 	}
 
-	// The build engine, told that the registry speaks plain http.
-	buildkitToml := fmt.Sprintf("[worker.oci]\n  gc = true\n  reservedSpace = %q\n  maxUsedSpace = %q\n\n[registry.%q]\n  http = true\n", "5GB", "8GB", dockerRegistryName+":5000")
+	// The build engine, told that the bundled registry speaks plain http —
+	// and about the mirrors, if this installation only reaches registries
+	// through one.
+	buildkitToml := manifests.BuildkitTOML(manifests.BuildkitConfig{
+		RegistryHost:      dockerRegistryName + ":5000",
+		RegistryPlainHTTP: true,
+		Mirrors:           settings.Build.RegistryMirrors,
+	})
 	if err := replaceInfraContainer(ctx, cli, infraContainer{
 		Name:       dockerBuildkitName,
 		Image:      buildkitImage,
 		Cmd:        []string{"--addr", "tcp://0.0.0.0:1234", "--config", "/etc/buildkit/buildkitd.toml"},
 		Privileged: true,
+		Env:        proxyEnvMap(settings.Build.Proxy),
 		Mounts: []mount.Mount{
 			{Type: mount.TypeVolume, Source: dockerBuildkitVolume, Target: "/var/lib/buildkit"},
 		},
@@ -166,7 +184,24 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 		"DONKEY_AI_MODEL":           settings.AI.Model,
 		"OPENAI_BASE_URL":           settings.AI.BaseURL,
 		"OPENAI_API_KEY":            settings.AI.APIKey,
+
+		"DONKEY_BUILD_BUILDER":                  string(settings.Build.Builder),
+		"DONKEY_BUILD_BUILDPACKS_BUILDER_IMAGE": settings.Build.Buildpacks.BuilderImage,
+		"DONKEY_BUILD_BUILDPACKS_RUN_IMAGE":     settings.Build.Buildpacks.RunImage,
+		"DONKEY_BUILD_BUILDPACKS_PLATFORM_API":  settings.Build.Buildpacks.PlatformAPI,
+		"DONKEY_BUILD_RAILPACK_BUILDER_IMAGE":   settings.Build.Railpack.BuilderImage,
+		"DONKEY_BUILD_RAILPACK_RUNTIME_IMAGE":   settings.Build.Railpack.RuntimeImage,
 	}
+	if len(settings.Build.Env) > 0 {
+		raw, err := json.Marshal(settings.Build.Env)
+		if err != nil {
+			return err
+		}
+		serverEnv["DONKEY_BUILD_ENV"] = string(raw)
+	}
+	// The server resolves versions and image configuration itself, so it
+	// needs the proxy as much as the build engine does.
+	maps.Copy(serverEnv, proxyEnvMap(settings.Build.Proxy))
 	// A password only exists for an external registry — the bundled one is
 	// loopback-only and credential-less.
 	if pw, err := settings.Registry.Password(); err != nil {
@@ -235,6 +270,7 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 	serverURL := "https://" + serverHost
 	u.Printf("")
 	u.Printf("  API:        %s", u.Bold(serverURL))
+	u.Printf("  Builder:    %s", u.Faint(builderSummary(settings.Build)))
 	u.Printf("")
 	u.Printf("Console:  open %s and sign in", u.Bold(serverURL))
 	u.Printf("CLI:      %s  %s", u.Bold(fmt.Sprintf("donkey login --server %s", serverURL)), u.Faint("(opens the browser)"))
@@ -255,6 +291,30 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 		u.Warn("No OIDC client configured yet — nobody can sign in until you register one at the issuer and re-run this install with the client id and secret.")
 	}
 	return nil
+}
+
+// proxyEnvMap is the forward proxy in the spelling every tool already reads.
+// Both cases: some tools read only the lowercase form, and Go's own HTTP
+// client ignores an uppercase HTTP_PROXY for CGI-safety reasons.
+func proxyEnvMap(p config.InstallProxy) map[string]string {
+	env := map[string]string{}
+	if p.HTTP != "" || p.HTTPS != "" {
+		// donkey's containers reach each other by name on their own Docker
+		// network; a corporate proxy cannot route those.
+		p.NoProxy = strings.Trim(strings.TrimSpace(p.NoProxy)+","+dockerNoProxy, ",")
+	}
+	for name, value := range map[string]string{
+		"HTTP_PROXY":  p.HTTP,
+		"HTTPS_PROXY": p.HTTPS,
+		"NO_PROXY":    p.NoProxy,
+	} {
+		if value == "" {
+			continue
+		}
+		env[name] = value
+		env[strings.ToLower(name)] = value
+	}
+	return env
 }
 
 func adminsJSONString(admins *config.AccessConfig) string {

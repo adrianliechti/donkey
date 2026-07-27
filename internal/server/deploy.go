@@ -302,7 +302,7 @@ func (s *Server) deploy(ctx context.Context, out *lineStreamer, dir string, app 
 	}
 
 	out.Line("Looking at your app…")
-	det, detErr := detect.Detect(dir, app)
+	det, detErr := detect.Detect(dir, app, s.cfg.Build)
 
 	// The assistant reads every deploy: it confirms the detection and, more
 	// usefully, finds the folders whose contents have to survive a restart.
@@ -339,7 +339,7 @@ func (s *Server) deploy(ctx context.Context, out *lineStreamer, dir string, app 
 			return fail(fmt.Errorf("%w\n\nthe assistant couldn't propose a way to build it either", detErr))
 		}
 		var err error
-		if det, err = detect.Detect(dir, app); err != nil {
+		if det, err = detect.Detect(dir, app, s.cfg.Build); err != nil {
 			return fail(err)
 		}
 	}
@@ -396,7 +396,7 @@ func (s *Server) deploy(ctx context.Context, out *lineStreamer, dir string, app 
 	defer os.Remove(logFile.Name())
 
 	out.Line("Building the image…")
-	builder := &build.BuildKitBuilder{Registry: s.cfg.Registry, BuildkitAddr: s.cfg.BuildkitAddr}
+	builder := &build.BuildKitBuilder{Registry: s.cfg.Registry, BuildkitAddr: s.cfg.BuildkitAddr, Settings: s.cfg.Build}
 	result, err := builder.Build(ctx, build.Request{
 		ContextDir:     dir,
 		ImageRef:       imageRef,

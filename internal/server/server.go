@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/adrianliechti/donkey/internal/ai"
+	"github.com/adrianliechti/donkey/internal/build"
 	"github.com/adrianliechti/donkey/internal/identity"
 	"github.com/adrianliechti/donkey/pkg/runtime"
 )
@@ -43,6 +44,21 @@ func New(cfg *Config, rt runtime.Provider) (*Server, error) {
 	assistant, err := ai.New(cfg.AIModel)
 	if err != nil {
 		return nil, err
+	}
+	// railpack's images are package variables, so an installation that
+	// mirrors them redirects them once, here, before any build runs.
+	build.ConfigureRailpackImages(cfg.Build.Railpack)
+	// The version resolver is the one thing railpack downloads from inside
+	// this process. Staging it now turns a mid-deploy timeout into a line in
+	// the log at startup.
+	//
+	// Unconditionally, even where buildpacks is the installation's builder:
+	// an app's own donkey.yaml may still say build.type: railpack, and on the
+	// restricted network this all exists for, that deploy would otherwise
+	// hang reaching for github.com. The binary is baked into donkey's image
+	// either way, so staging it costs a file copy.
+	if err := build.EnsureMise(context.Background(), cfg.Build.Env); err != nil {
+		log.Printf("railpack's version resolver isn't ready: %v", err)
 	}
 	return &Server{cfg: cfg, rt: rt, assistant: assistant, plans: newPlanStore()}, nil
 }

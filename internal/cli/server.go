@@ -47,6 +47,13 @@ func serverInstallCommand() *cli.Command {
 			&cli.StringFlag{Name: "server-host", Usage: "hostname of the API and console (default: the domain itself)"},
 			&cli.StringFlag{Name: "gateway-service-type", Usage: "service type traffic enters through: LoadBalancer (default), ClusterIP or NodePort (clusters without a load-balancer controller, e.g. kind)"},
 			&cli.StringFlag{Name: "default-platform", Usage: "build platform of the cluster nodes (default linux/amd64)"},
+			&cli.StringFlag{Name: "builder", Usage: "how apps without a Dockerfile are built: railpack (default) or buildpacks (needs no egress beyond the registry)"},
+			&cli.StringFlag{Name: "buildpacks-builder-image", Usage: "CNB builder image holding the buildpacks and the lifecycle"},
+			&cli.StringFlag{Name: "buildpacks-run-image", Usage: "base image of built apps (default: the builder's own, from its metadata)"},
+			&cli.StringFlag{Name: "railpack-builder-image", Usage: "railpack builder image (mirror it for a restricted network)"},
+			&cli.StringFlag{Name: "railpack-runtime-image", Usage: "railpack runtime image (mirror it for a restricted network)"},
+			&cli.StringFlag{Name: "https-proxy", Usage: "forward proxy for donkey-server and the build engine"},
+			&cli.StringFlag{Name: "no-proxy", Usage: "hosts that bypass the forward proxy, comma-separated"},
 			&cli.StringFlag{Name: "tls-mode", Usage: "how the gateway gets certificates: acme (default), ca (built-in CA for local/internal installs) or static (bring your own)"},
 			&cli.StringFlag{Name: "acme-email", Usage: "ACME account contact for expiry warnings (tls-mode acme)"},
 			&cli.StringFlag{Name: "acme-directory", Usage: "ACME endpoint override, e.g. Let's Encrypt staging (tls-mode acme)"},
@@ -87,6 +94,15 @@ func installSettings(cmd *cli.Command) (*config.InstallFile, error) {
 	strOver(&settings.ServerHost, "server-host")
 	strOver(&settings.Gateway.ServiceType, "gateway-service-type")
 	strOver(&settings.DefaultPlatform, "default-platform")
+	if v := cmd.String("builder"); v != "" {
+		settings.Build.Builder = config.BuildStrategy(v)
+	}
+	strOver(&settings.Build.Buildpacks.BuilderImage, "buildpacks-builder-image")
+	strOver(&settings.Build.Buildpacks.RunImage, "buildpacks-run-image")
+	strOver(&settings.Build.Railpack.BuilderImage, "railpack-builder-image")
+	strOver(&settings.Build.Railpack.RuntimeImage, "railpack-runtime-image")
+	strOver(&settings.Build.Proxy.HTTPS, "https-proxy")
+	strOver(&settings.Build.Proxy.NoProxy, "no-proxy")
 	strOver(&settings.Auth.Issuer, "oidc-issuer")
 	strOver(&settings.Auth.ClientID, "oidc-client-id")
 	strOver(&settings.Auth.ClientSecret, "oidc-client-secret")
@@ -157,6 +173,9 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 	}
 	if err := settings.Auth.Admins.Validate(); err != nil {
 		return fmt.Errorf("auth.admins: %w", err)
+	}
+	if err := settings.Build.Validate(); err != nil {
+		return err
 	}
 
 	kubeContext := s.Resolved.KubeContext
@@ -239,6 +258,7 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 		OpenAIBaseURL:        settings.AI.BaseURL,
 		OpenAIAPIKey:         settings.AI.APIKey,
 		AIModel:              settings.AI.Model,
+		Build:                settings.Build,
 		BuildkitImage:        settings.BuildkitImage,
 		NamespacePrefix:      "donkey-",
 	}
@@ -278,6 +298,7 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 	serverURL := in.Scheme() + "://" + in.ServerHost()
 	u.Printf("")
 	u.Printf("  API:        %s", u.Bold(serverURL))
+	u.Printf("  Builder:    %s", u.Faint(builderSummary(settings.Build)))
 	switch {
 	case in.Admins.Empty():
 		u.Printf("  Admins:     %s", u.Faint("everyone your identity provider signs in (narrow it with auth.admins)"))
@@ -313,6 +334,17 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 	}
 	u.Printf("  %s", u.Faint(fmt.Sprintf("Callback URL: %s — one sign-in covers the console and every app under %s. Custom domains outside it use https://<domain>/oauth2/callback (register each).", callback, in.Domain)))
 	return nil
+}
+
+// builderSummary says how apps that bring no Dockerfile will be built, and
+// what that means for what the installation has to reach.
+func builderSummary(b config.InstallBuild) string {
+	switch b.BuilderOrDefault() {
+	case config.BuildBuildpacks:
+		return "Cloud Native Buildpacks — " + b.BuildpacksBuilderImage()
+	default:
+		return "railpack (needs egress to github.com to resolve package versions; build.builder: buildpacks does not)"
+	}
 }
 
 // pendingOIDC marks an OIDC client that isn't registered yet — logins can't

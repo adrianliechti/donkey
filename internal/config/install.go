@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"maps"
 	"os"
 
 	"sigs.k8s.io/yaml"
@@ -34,8 +35,147 @@ type InstallFile struct {
 	// (default linux/amd64).
 	DefaultPlatform string `json:"defaultPlatform,omitempty"`
 
+	Build InstallBuild `json:"build,omitempty"`
+
 	Auth InstallAuth `json:"auth,omitempty"`
 	AI   InstallAI   `json:"ai,omitempty"`
+}
+
+// InstallBuild covers how apps are built: which builder runs for an app that
+// brings no Dockerfile, and how every build reaches the outside world. An
+// installation whose only egress is a mirror configures all of it here.
+//
+// It splits in two. BuildSettings is what donkey-server needs at build time
+// and travels to it as environment; the fields below it are consumed where
+// the installation is written — mirrors into the build engine's config file,
+// the proxy into both pods' environment.
+type InstallBuild struct {
+	BuildSettings `json:",inline"`
+
+	// RegistryMirrors maps an upstream registry host to the mirror serving
+	// it ("docker.io": "https://jfrog.corp/docker-remote"). It is written
+	// into the build engine's config, so it covers every image a build pulls
+	// — the builder image, the run image and every FROM in a Dockerfile.
+	RegistryMirrors map[string]string `json:"registryMirrors,omitempty"`
+
+	// Proxy is a forward proxy for donkey-server and the build engine
+	// themselves — not for the app's build steps, which read Env.
+	Proxy InstallProxy `json:"proxy,omitempty"`
+}
+
+// BuildSettings is the part of the build configuration donkey-server itself
+// acts on: which builder to run, and with what.
+type BuildSettings struct {
+	// Builder is the default for apps with no Dockerfile: "railpack" (the
+	// default) or "buildpacks". A donkey.yaml with an explicit build.type
+	// still wins, and a Dockerfile always beats both.
+	Builder BuildStrategy `json:"builder,omitempty"`
+
+	// Env is injected into every app build, under the app's own build.env.
+	// BuildKit hands these to every RUN, which is what puts a package
+	// manager's mirror (NPM_CONFIG_REGISTRY, PIP_INDEX_URL, GOPROXY) in
+	// reach of build steps donkey never sees.
+	Env map[string]string `json:"env,omitempty"`
+
+	Buildpacks InstallBuildpacks `json:"buildpacks,omitempty"`
+	Railpack   InstallRailpack   `json:"railpack,omitempty"`
+}
+
+// InstallProxy is the forward proxy donkey's own processes use, in the
+// spelling every tool already understands.
+type InstallProxy struct {
+	HTTP    string `json:"http,omitempty"`
+	HTTPS   string `json:"https,omitempty"`
+	NoProxy string `json:"noProxy,omitempty"`
+}
+
+// InstallBuildpacks configures the Cloud Native Buildpacks builder. Both
+// images stay pure configuration, so any CNB builder works — Paketo, Google's,
+// or an in-house one.
+type InstallBuildpacks struct {
+	// BuilderImage holds the buildpacks and the lifecycle
+	// (default DefaultBuildpacksBuilderImage).
+	BuilderImage string `json:"builderImage,omitempty"`
+	// RunImage is the base of the built app image. Empty reads the builder's
+	// own default out of its io.buildpacks.builder.metadata label, which is
+	// what a matched builder/run pair is for — set it only to override.
+	RunImage string `json:"runImage,omitempty"`
+	// PlatformAPI is the CNB platform contract version. Empty lets the
+	// lifecycle in the builder pick its own, which is right unless a builder
+	// needs pinning.
+	PlatformAPI string `json:"platformApi,omitempty"`
+}
+
+// InstallRailpack overrides the two images railpack's plans reference. They
+// are ordinary registry references, so an installation behind a mirror points
+// them at it.
+type InstallRailpack struct {
+	BuilderImage string `json:"builderImage,omitempty"`
+	RuntimeImage string `json:"runtimeImage,omitempty"`
+}
+
+// DefaultBuildpacksBuilderImage is the CNB builder donkey uses when an
+// installation chooses buildpacks without naming one.
+//
+// Google's builder is the one that behaves most like donkey's own detection:
+// measured against testdata/, it is the only CNB builder that works out a
+// start command for an app that ships no Procfile (gunicorn for Flask,
+// uvicorn for FastAPI) and honours $PORT the way donkey sets it. Paketo's
+// jammy base builder left the same apps with no process to launch, and its
+// cpython is built without sqlite3; Heroku's needs a Procfile.
+//
+// It is published for linux/amd64 only, which matches donkey's own default
+// platform. An installation whose nodes are arm64 needs a builder built for
+// it — heroku/builder:24 is one — or its builds run under emulation.
+const DefaultBuildpacksBuilderImage = "gcr.io/buildpacks/builder:google-24"
+
+// Validate checks the parts of the build section that can be wrong on their
+// own. The builder is the fallback for apps that bring no Dockerfile, so
+// "dockerfile" and "auto" are not answers to it.
+func (b InstallBuild) Validate() error {
+	switch b.Builder {
+	case "", BuildRailpack, BuildBuildpacks:
+	default:
+		return fmt.Errorf("build.builder must be railpack or buildpacks, not %q", b.Builder)
+	}
+	for host, mirror := range b.RegistryMirrors {
+		if host == "" {
+			return fmt.Errorf("build.registryMirrors has an entry with no registry host")
+		}
+		if mirror == "" {
+			return fmt.Errorf("build.registryMirrors[%q] has no mirror address", host)
+		}
+	}
+	return nil
+}
+
+// BuilderOrDefault is the builder an app without a Dockerfile gets.
+func (b BuildSettings) BuilderOrDefault() BuildStrategy {
+	if b.Builder == "" {
+		return BuildRailpack
+	}
+	return b.Builder
+}
+
+// BuildpacksBuilderImage is the CNB builder image to run, defaulted.
+func (b BuildSettings) BuildpacksBuilderImage() string {
+	if b.Buildpacks.BuilderImage == "" {
+		return DefaultBuildpacksBuilderImage
+	}
+	return b.Buildpacks.BuilderImage
+}
+
+// MergeEnv layers an app's own build.env over the installation's. The app
+// wins: a project that pins its own package registry has a reason to, and
+// the installation's entry is the fallback for everyone who didn't.
+func (b BuildSettings) MergeEnv(appEnv map[string]string) map[string]string {
+	if len(b.Env) == 0 {
+		return appEnv
+	}
+	merged := make(map[string]string, len(b.Env)+len(appEnv))
+	maps.Copy(merged, b.Env)
+	maps.Copy(merged, appEnv)
+	return merged
 }
 
 // InstallRegistry describes the registry app images are pushed to. CASecret

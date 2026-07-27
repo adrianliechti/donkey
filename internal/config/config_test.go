@@ -100,7 +100,8 @@ func TestAppValidate(t *testing.T) {
 		{"uppercase name", func(c *AppConfig) { c.Name = "MyApp" }, true},
 		{"empty name", func(c *AppConfig) { c.Name = "" }, true},
 		{"bad port", func(c *AppConfig) { c.Port = 0 }, true},
-		{"bad build type", func(c *AppConfig) { c.Build.Type = "buildpacks" }, true},
+		{"bad build type", func(c *AppConfig) { c.Build.Type = "nixpacks" }, true},
+		{"buildpacks build type", func(c *AppConfig) { c.Build.Type = BuildBuildpacks }, false},
 		{"bad health path", func(c *AppConfig) { c.Healthcheck.Path = "healthz" }, true},
 		{"dup addon names", func(c *AppConfig) {
 			c.Addons = []AddonConfig{{Name: "db", Type: "postgres"}, {Name: "db", Type: "redis"}}

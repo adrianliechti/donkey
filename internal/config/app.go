@@ -206,6 +206,11 @@ const (
 	BuildAuto       BuildStrategy = "auto"
 	BuildRailpack   BuildStrategy = "railpack"
 	BuildDockerfile BuildStrategy = "dockerfile"
+	// BuildBuildpacks runs the Cloud Native Buildpacks lifecycle inside a
+	// builder image. Unlike railpack it detects the app *in the build*, so
+	// nothing about the app is worked out on the machine holding the source —
+	// which is what lets it work with no egress beyond the image registry.
+	BuildBuildpacks BuildStrategy = "buildpacks"
 )
 
 type BuildConfig struct {
@@ -383,9 +388,9 @@ func (c *AppConfig) Validate() error {
 		return fmt.Errorf("an app with storage runs as a single copy — its disk can only be attached to one machine at a time (set replicas: 1, or drop storage.paths)")
 	}
 	switch c.Build.Type {
-	case BuildAuto, BuildRailpack, BuildDockerfile:
+	case BuildAuto, BuildRailpack, BuildDockerfile, BuildBuildpacks:
 	default:
-		return fmt.Errorf("build.type %q is not one of auto, railpack, dockerfile", c.Build.Type)
+		return fmt.Errorf("build.type %q is not one of auto, railpack, buildpacks, dockerfile", c.Build.Type)
 	}
 	if c.Replicas != nil && *c.Replicas < 0 {
 		return fmt.Errorf("replicas cannot be negative")

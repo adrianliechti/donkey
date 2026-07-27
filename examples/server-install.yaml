@@ -59,6 +59,94 @@ tls:
   # mode: static              # or: bring your own (wildcard) certificate
   # secret: donkey-gateway-tls  # kubernetes.io/tls Secret in donkey-system
 
+# build:
+#   # How an app with no Dockerfile gets built. A Dockerfile in the app folder
+#   # always wins, and a donkey.yaml with an explicit build.type wins over
+#   # this.
+#   #
+#   #   railpack    (default) detects the app in donkey-server and plans the
+#   #               build. It resolves package versions by calling out to
+#   #               github.com, so it needs egress — a registry mirror alone
+#   #               is not enough (see "Restricted networks" below).
+#   #   buildpacks  runs the Cloud Native Buildpacks lifecycle inside a builder
+#   #               image. Detection and build both happen there, with
+#   #               toolchains already baked in, so the only thing pulled is
+#   #               the builder and run images.
+#   builder: buildpacks
+#
+#   buildpacks:
+#     # Any CNB builder works. Google's is the default: measured against
+#     # donkey's own sample apps it is the only one that works out a start
+#     # command for an app with no Procfile (gunicorn for Flask, uvicorn for
+#     # FastAPI) and honours the $PORT donkey sets. Paketo's jammy-base left
+#     # those apps with no process to launch and ships a cpython without
+#     # sqlite3; Heroku's wants a Procfile.
+#     #
+#     # Watch the architecture: Google's and Paketo's builders are published
+#     # for linux/amd64 only, which matches donkey's default platform. On
+#     # arm64 nodes use a builder built for it (heroku/builder:24 is one), or
+#     # the whole build runs under emulation.
+#     builderImage: gcr.io/buildpacks/builder:google-24
+#     # The base image for built apps. Empty reads the builder's own, which is
+#     # what you want unless the builder's default is unreachable — the
+#     # lifecycle pulls this from INSIDE the build, so registryMirrors below
+#     # do not apply to it. Behind a mirror, write the mirrored reference.
+#     # runImage: registry.example.com/mirror/buildpacks/google-24/run
+#     # platformApi: "0.14"    # empty lets the builder's lifecycle choose
+#
+#   railpack:
+#     # The two images railpack's plans reference; mirror them for a cluster
+#     # that can't reach ghcr.io.
+#     # builderImage: registry.example.com/mirror/railwayapp/railpack-builder:mise-2026.7.11
+#     # runtimeImage: registry.example.com/mirror/railwayapp/railpack-runtime:mise-2026.7.11
+#     #
+#     # railpack also resolves package versions by running mise, which it
+#     # downloads from github.com the first time (through the proxy above, if
+#     # there is one). donkey's image does not carry a copy — it is 90 MB and
+#     # only railpack wants it. To avoid that download, mount your own and set
+#     # DONKEY_MISE_BINARY on donkey-server; donkey then stages it where
+#     # railpack looks, as a shim that re-injects the proxy and any MISE_*
+#     # from build.env. `donkey doctor` reports which of the two is in play.
+#
+#   ### Restricted networks ###
+#   #
+#   # registryMirrors is written into the build engine's configuration, so it
+#   # covers every image a build pulls: the builder images above, and every
+#   # FROM in an app's Dockerfile. Keys are upstream registry hosts; a scheme
+#   # is optional. Mirror hosts inherit registry.caSecret, which is the usual
+#   # shape when the mirror is an in-house Artifactory behind a private CA.
+#   #
+#   # Note that buildkitImage (above) is pulled by the cluster itself, not by
+#   # the build engine — mirror that one by setting it directly.
+#   registryMirrors:
+#     docker.io: https://artifactory.example.com/docker-remote
+#     ghcr.io: https://artifactory.example.com/ghcr-remote
+#     gcr.io: https://artifactory.example.com/gcr-remote
+#
+#   # env reaches every build step of every app — donkey layers it under the
+#   # app's own build.env, so a project that pins its own registry still wins.
+#   # This is where package managers are pointed at their mirrors.
+#   env:
+#     NPM_CONFIG_REGISTRY: https://artifactory.example.com/api/npm/npm
+#     PIP_INDEX_URL: https://artifactory.example.com/api/pypi/pypi/simple
+#     GOPROXY: https://artifactory.example.com/api/go/go
+#     # With builder: buildpacks and a mirror that speaks plain http, the CNB
+#     # lifecycle needs telling — it pulls the run image itself, from inside
+#     # the build, and an image reference carries no scheme for donkey to
+#     # read. List every plain-http host (this replaces what donkey sets on
+#     # its own, so include donkey's registry too if that is one):
+#     # CNB_INSECURE_REGISTRIES: mirror.internal:5000
+#
+#   # A forward proxy for donkey's own components — the server, the build
+#   # engine, and the gateway (which needs it for the OIDC token exchange and
+#   # for ACME). The app's build steps read env, above. donkey adds its own
+#   # cluster addresses and its registry to noProxy on top of what you write.
+#   # With a proxy, railpack's version resolution works too; without one,
+#   # choose builder: buildpacks.
+#   proxy:
+#     https: http://proxy.example.com:3128
+#     noProxy: .example.com,10.0.0.0/8,.svc.cluster.local
+
 auth:
   # A real OIDC provider — Pocket ID, Entra ID, Keycloak, anything OIDC.
   # Required: it is the one way in — apps, the admin console and the CLI all

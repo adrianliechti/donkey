@@ -35,6 +35,11 @@ type Config struct {
 	// donkey.yaml names one — matches the cluster's nodes.
 	DefaultPlatform string
 
+	// Build is how this installation builds apps: the builder an app with no
+	// Dockerfile gets, the images that builder runs, and the environment
+	// every build is handed.
+	Build config.BuildSettings
+
 	// SessionKey is the installation's sealing key — the server verifies
 	// the CLI tokens the gateway mints with it (the direct, port-forwarded
 	// path next to the gateway's identity headers).
@@ -63,6 +68,30 @@ func FromEnv() (*Config, error) {
 		OIDCClientSecret: os.Getenv("DONKEY_OIDC_CLIENT_SECRET"),
 		DefaultPlatform:  envOr("DONKEY_DEFAULT_PLATFORM", "linux/amd64"),
 		AIModel:          envOr("DONKEY_AI_MODEL", config.DefaultAIModel),
+		Build: config.BuildSettings{
+			Builder: config.BuildStrategy(os.Getenv("DONKEY_BUILD_BUILDER")),
+			Buildpacks: config.InstallBuildpacks{
+				BuilderImage: os.Getenv("DONKEY_BUILD_BUILDPACKS_BUILDER_IMAGE"),
+				RunImage:     os.Getenv("DONKEY_BUILD_BUILDPACKS_RUN_IMAGE"),
+				PlatformAPI:  os.Getenv("DONKEY_BUILD_BUILDPACKS_PLATFORM_API"),
+			},
+			Railpack: config.InstallRailpack{
+				BuilderImage: os.Getenv("DONKEY_BUILD_RAILPACK_BUILDER_IMAGE"),
+				RuntimeImage: os.Getenv("DONKEY_BUILD_RAILPACK_RUNTIME_IMAGE"),
+			},
+		},
+	}
+	// The build environment is a map, so it travels as JSON — the same way
+	// DONKEY_ADMINS does.
+	if raw := os.Getenv("DONKEY_BUILD_ENV"); raw != "" {
+		if err := json.Unmarshal([]byte(raw), &c.Build.Env); err != nil {
+			return nil, fmt.Errorf("DONKEY_BUILD_ENV is not a JSON object of build variables: %w", err)
+		}
+	}
+	switch c.Build.Builder {
+	case "", config.BuildRailpack, config.BuildBuildpacks:
+	default:
+		return nil, fmt.Errorf("DONKEY_BUILD_BUILDER must be railpack or buildpacks, not %q", c.Build.Builder)
 	}
 	key, err := hex.DecodeString(os.Getenv("DONKEY_SESSION_KEY"))
 	if err != nil || len(key) != 32 {

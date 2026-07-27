@@ -17,6 +17,11 @@ RUN apk add --no-cache git bash curl ca-certificates
 # the mise binary railpack downloads to /tmp/railpack at plan time. HOME
 # points there for the same reason; a numeric uid would otherwise be handed
 # /root, which it cannot write.
+#
+# mise is deliberately NOT baked in: it is 90 MB, it is railpack's dependency
+# alone, and railpack fetches it itself through HTTPS_PROXY like anything
+# else. An installation that cannot reach github.com at all mounts its own
+# copy and points DONKEY_MISE_BINARY at it — see internal/build/mise.go.
 ENV HOME=/tmp
 # TARGETARCH comes from BuildKit: the daemon's own arch for a plain build,
 # each platform in turn for a multi-arch `task publish`.

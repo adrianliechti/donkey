@@ -654,8 +654,59 @@ type DoctorCheck struct {
 	Detail string `json:"detail,omitempty"`
 }
 
+// builderChecks probes what this installation needs in order to build an app
+// that brings no Dockerfile. Every image is resolved through the build engine
+// rather than from here, so the answer accounts for the engine's mirrors —
+// the whole point on a network where donkey-server and the engine reach
+// different things.
+func (s *Server) builderChecks(ctx context.Context) []DoctorCheck {
+	builder := s.cfg.Build.BuilderOrDefault()
+	image := func(name, ref string) DoctorCheck {
+		c := DoctorCheck{Name: name, Detail: ref}
+		if err := build.CheckImage(ctx, s.cfg.BuildkitAddr, s.cfg.Registry, ref, s.cfg.DefaultPlatform); err != nil {
+			c.Detail = err.Error()
+			return c
+		}
+		c.OK = true
+		return c
+	}
+
+	var checks []DoctorCheck
+	if builder == config.BuildBuildpacks {
+		checks = append(checks, image("Buildpacks builder image", s.cfg.Build.BuildpacksBuilderImage()))
+		// An empty run image is the normal case — the lifecycle reads the
+		// builder's own. There is nothing to probe until one is named.
+		if run := s.cfg.Build.Buildpacks.RunImage; run != "" {
+			checks = append(checks, image("Buildpacks run image", run))
+		}
+	} else {
+		builderImage, runtimeImage := build.RailpackImages()
+		checks = append(checks,
+			image("Railpack builder image", builderImage),
+			image("Railpack runtime image", runtimeImage),
+		)
+	}
+
+	// railpack resolves package versions by running mise, and downloads it
+	// from github.com if donkey hasn't staged one first. Checked whichever
+	// builder the installation chose: an app's own donkey.yaml can ask for
+	// railpack regardless, and this is the check that says whether that
+	// would work.
+	mise := DoctorCheck{Name: "Railpack version resolver (mise " + build.MiseVersion() + ")"}
+	if detail, err := build.CheckMise(ctx); err != nil {
+		mise.Detail = err.Error()
+	} else {
+		mise.OK = true
+		mise.Detail = detail
+	}
+	return append(checks, mise)
+}
+
 func (s *Server) handleDoctor(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	// Longer than the other probes want, because the builder checks pull
+	// image manifests through whatever mirrors and proxies stand in the way —
+	// which is exactly the setup that is slow when it is misconfigured.
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 	var checks []DoctorCheck
 
@@ -680,6 +731,8 @@ func (s *Server) handleDoctor(w http.ResponseWriter, r *http.Request) {
 		reg.Detail = err.Error()
 	}
 	checks = append(checks, reg)
+
+	checks = append(checks, s.builderChecks(ctx)...)
 
 	// The runtime probes its own dependencies — gateway, certificates,
 	// whatever this runtime needs to serve apps.

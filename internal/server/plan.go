@@ -347,7 +347,7 @@ type planInput struct {
 // donkey.yaml left open. A failure here is a failure to read the app at all,
 // which is a reason to stop rather than to deploy something half-understood.
 func (s *Server) readApp(ctx context.Context, dir string, app *config.AppConfig, in planInput) (*storedPlan, error) {
-	det, detErr := detect.Detect(dir, app)
+	det, detErr := detect.Detect(dir, app, s.cfg.Build)
 	analysis, err := s.analyzeApp(ctx, dir, det, detErr)
 	if err != nil {
 		if detErr != nil {
@@ -378,7 +378,7 @@ func (s *Server) readApp(ctx context.Context, dir string, app *config.AppConfig,
 		if err := writeProposal(dir, proposal); err != nil {
 			return nil, err
 		}
-		if det, err = detect.Detect(dir, app); err != nil {
+		if det, err = detect.Detect(dir, app, s.cfg.Build); err != nil {
 			return nil, err
 		}
 		sp.build.Proposal = proposal

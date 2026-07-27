@@ -101,8 +101,9 @@ five ideas:
   Views are linkable (`#/app/<space>/<name>`) and follow your light/dark
   preference.
 - **donkey-buildkitd** — a plain BuildKit deployment; the server drives it
-  over gRPC with Railpack-generated LLB (or the app's Dockerfile) and pushes
-  straight to the registry.
+  over gRPC with Railpack-generated LLB, the app's Dockerfile, or the Cloud
+  Native Buildpacks lifecycle, and pushes straight to the registry. Registry
+  mirrors for restricted networks are configured here (`build.registryMirrors`).
 - **donkey-gateway** — donkey's own edge (same binary as the server,
   started with `gateway`): traffic enters the cluster here, on ports 80 and
   443. It terminates TLS and issues the certificates itself — one per
@@ -275,7 +276,10 @@ addons:                       # space services this app uses; the deploy
                               # apps naming the same service share it
 
 build:
-  type: auto                  # auto | railpack | dockerfile
+  type: auto                  # auto | railpack | buildpacks | dockerfile
+                              # auto: your Dockerfile if there is one, else
+                              # whatever the installation's `build.builder`
+                              # says (railpack by default)
   dockerfile: Dockerfile
   platform: linux/arm64
   env:                        # build-time values (VITE_*, build args)
@@ -400,6 +404,88 @@ all — `runtime: docker` runs apps straight on the Docker engine).
 RBAC: donkey-server currently binds `cluster-admin` (it creates namespaces and
 everything inside them). Scoping that down is on the list — see
 [Security notes](#security-notes-poc-status).
+
+### Choosing a builder
+
+An app that brings a Dockerfile is built with it, always. For everything
+else, the installation picks the builder in `build.builder`:
+
+| | **railpack** (default) | **buildpacks** |
+|---|---|---|
+| Where the app is recognized | in `donkey-server`, before the build | inside the builder image, during the build |
+| What it pulls | the railpack builder + runtime images from ghcr.io | the CNB builder + run images |
+| Other egress | resolves every package version through mise, which it downloads from github.com and which then asks the GitHub API — even for exactly pinned versions | none |
+| Works behind a registry mirror alone | no | **yes** |
+| `donkey init` on a laptop | runs detection locally, so the laptop needs the same egress | no egress at all |
+
+The difference that decides it: railpack's version resolution is not
+mirrorable. It reaches GitHub over HTTPS, and no registry mirror can serve
+that. With a forward proxy (`build.proxy`) railpack works; on a network whose
+only egress is a mirror, it does not — and that is what `build.builder:
+buildpacks` is for.
+
+Both builders are configured in the same place, and any CNB builder works
+(Paketo by default, Google's, or an in-house one):
+
+```yaml
+build:
+  builder: buildpacks
+  buildpacks:
+    builderImage: gcr.io/buildpacks/builder:google-24
+```
+
+Google's builder is the default because it behaves most like donkey's own
+detection. Measured against `testdata/`, it is the only CNB builder that
+works out a start command for an app shipping no Procfile (gunicorn for
+Flask, uvicorn for FastAPI) and honours the `$PORT` donkey sets. Paketo's
+`builder-jammy-base` left the same apps with no process to launch and builds
+cpython without `sqlite3`; Heroku's wants a Procfile.
+
+Two caveats worth knowing before switching a whole installation over:
+
+- **Architecture.** Google's and Paketo's builders are published for
+  linux/amd64 only, which matches donkey's default platform. On arm64 nodes,
+  name a builder built for it (`heroku/builder:24` is one) or every build
+  runs under emulation.
+- **Coverage is not railpack's.** Buildpacks recognize what their buildpack
+  set recognizes — a plain static site, for instance, matches no buildpack in
+  any of the three builders, while railpack builds it. Railpack stays the
+  default for that reason; buildpacks is the answer when the network is the
+  constraint.
+
+### Restricted networks
+
+`build.registryMirrors` is written into the build engine's own configuration,
+so it covers every image a build pulls — the builder images and every `FROM`
+in an app's Dockerfile. `build.env` reaches every build *step*, which is where
+package managers are pointed at their mirrors; donkey layers it under each
+app's own `build.env`, so a project that pins its own registry still wins.
+
+```yaml
+build:
+  builder: buildpacks
+  registryMirrors:
+    docker.io: https://artifactory.example.com/docker-remote
+    ghcr.io: https://artifactory.example.com/ghcr-remote
+  env:
+    NPM_CONFIG_REGISTRY: https://artifactory.example.com/api/npm/npm
+    PIP_INDEX_URL: https://artifactory.example.com/api/pypi/pypi/simple
+    GOPROXY: https://artifactory.example.com/api/go/go
+```
+
+Two images are **not** covered by those mirrors, because neither is pulled by
+the build engine:
+
+- `buildkitImage` — the cluster pulls it. Mirror it by setting it directly.
+- `build.buildpacks.runImage` — the CNB lifecycle pulls it from inside the
+  build. Leaving it empty uses the builder's own default, which is the right
+  answer everywhere except here; behind a mirror, write the mirrored
+  reference explicitly.
+
+Mirror hosts inherit `registry.caSecret`, so an in-house Artifactory behind a
+private CA needs nothing further. `donkey doctor` resolves every one of these
+images through the build engine — the same path a build takes — so a mirror
+that is wrong is a failed check rather than a failed deploy.
 
 ## Deployment model
 
@@ -580,8 +666,8 @@ internal/
   cli/                one file per command; session/config wiring
   apiclient/          CLI↔server transport: tar upload, NDJSON stream, typed calls
   server/             REST handlers, deploy pipeline, env-based config
-  detect/             build strategy decision (donkey.yaml > Dockerfile > railpack > AI)
-  build/              BuildKit gRPC builder (railpack LLB / dockerfile.v0), registry auth, tags
+  detect/             build strategy decision (donkey.yaml > Dockerfile > the installation's builder > AI)
+  build/              BuildKit gRPC builder (railpack LLB / dockerfile.v0 / CNB lifecycle), registry auth, tags
   k8s/                client-go wrapper: server-side apply, rollout wait, logs, env secrets
   k8s/manifests/      pure config→object rendering (app + control plane) — golden-tested
   addons/             service catalog: postgres, pocketbase, rustfs, openai (provisioned & external bindings)
