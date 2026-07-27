@@ -171,7 +171,6 @@ export interface PlanApp {
   healthcheck?: string
   storage: string[]
   storageSize?: string
-  preDeploy: string[]
   exposure: Exposure
   url?: string
 }

@@ -67,22 +67,12 @@ type Analysis struct {
 	// LocalURLs are addresses baked into the code that will not resolve to
 	// what the author meant once the app runs on a cluster.
 	LocalURLs []LocalURL `json:"localURLs"`
-	// PreDeploy are commands that must finish before the new version starts
-	// serving — database migrations, almost always. Without them the app
-	// deploys green and fails on its first real request.
-	PreDeploy []PreDeployStep `json:"preDeploy"`
 	// HostRestriction is set when the app refuses requests whose Host header
 	// it does not recognize. Deployed behind a gateway, every request carries
 	// a hostname the author never listed, so the app rejects all of them
 	// while looking perfectly healthy from the outside.
 	HostRestriction *HostRestriction `json:"hostRestriction"`
 	Notes           string           `json:"notes"`
-}
-
-// PreDeployStep is one command to run before the new version serves.
-type PreDeployStep struct {
-	Command string `json:"command"`
-	Reason  string `json:"reason"`
 }
 
 // HostRestriction describes a host allowlist the app enforces itself, and how

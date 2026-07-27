@@ -124,22 +124,6 @@ func (a *Analysis) sanitize() {
 	}
 	a.LocalURLs = urls
 
-	// preDeploy commands run in the cluster, so they are held to what a
-	// migration looks like: one line, no shell chaining, and nothing that
-	// would sit there forever and block the deploy behind it.
-	steps := a.PreDeploy[:0]
-	seenCmd := map[string]bool{}
-	for _, s := range a.PreDeploy {
-		s.Command = strings.TrimSpace(s.Command)
-		if s.Command == "" || seenCmd[s.Command] || len(s.Command) > 300 ||
-			strings.ContainsAny(s.Command, "\n\r") || unsafePreDeploy(s.Command) {
-			continue
-		}
-		seenCmd[s.Command] = true
-		steps = append(steps, s)
-	}
-	a.PreDeploy = steps
-
 	if h := a.HostRestriction; h != nil {
 		h.Setting = strings.TrimSpace(h.Setting)
 		h.EnvVar = strings.TrimSpace(h.EnvVar)
@@ -147,23 +131,6 @@ func (a *Analysis) sanitize() {
 			a.HostRestriction = nil
 		}
 	}
-}
-
-// unsafePreDeploy rejects commands that are not the "run the migrations and
-// exit" shape: shell operators (which turn one reviewed command into several
-// unreviewed ones) and anything that serves rather than finishes.
-func unsafePreDeploy(cmd string) bool {
-	if strings.ContainsAny(cmd, "&|;`$><") {
-		return true
-	}
-	fields := strings.Fields(strings.ToLower(cmd))
-	for _, f := range fields {
-		switch f {
-		case "runserver", "serve", "start", "up", "watch", "tail", "sleep":
-			return true
-		}
-	}
-	return false
 }
 
 // excludedVolume rejects folders that must never become persistent storage:

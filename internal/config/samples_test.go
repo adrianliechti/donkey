@@ -21,7 +21,7 @@ func TestSampleConfigsLoad(t *testing.T) {
 			t.Errorf("%s: %v", m, err)
 			continue
 		}
-		t.Logf("%-46s internal=%v public=%v routes=%d predeploy=%v",
-			filepath.Base(dir), app.Internal, app.Public, len(app.Routes), app.PreDeploy)
+		t.Logf("%-46s internal=%v public=%v routes=%d storage=%v",
+			filepath.Base(dir), app.Internal, app.Public, len(app.Routes), app.HasStorage())
 	}
 }

@@ -172,20 +172,6 @@ func analysisWarnings(app *config.AppConfig, analysis *ai.Analysis) []Finding {
 	}
 	out = append(out, localURLWarnings(analysis)...)
 
-	// The app already declares its own steps — repeating the suggestion would
-	// only be noise.
-	if len(app.PreDeploy) == 0 {
-		for _, step := range analysis.PreDeploy {
-			out = append(out, Finding{
-				Level:  LevelWarn,
-				Code:   "predeploy",
-				Title:  fmt.Sprintf("This app looks like it needs `%s` to run before each deploy", step.Command),
-				Detail: step.Reason,
-				Fix:    "Add it under `preDeploy:` in donkey.yaml, or the first request will fail on a database that was never migrated.",
-			})
-		}
-	}
-
 	// Green probe, working app, 400 for everyone. Worth saying plainly.
 	if h := analysis.HostRestriction; h != nil {
 		fix := "Add the app's address there, or allow any host."

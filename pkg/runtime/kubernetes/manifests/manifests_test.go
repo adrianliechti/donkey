@@ -4,7 +4,6 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 
@@ -314,49 +313,6 @@ func TestInternalAppIsNotExposed(t *testing.T) {
 		if !strings.Contains(rendered, want) {
 			t.Errorf("an internal app still needs %q", want)
 		}
-	}
-}
-
-// A pre-deploy step must see exactly what the app sees — its env, its addon
-// bindings and its disk — or a migration cannot reach the database.
-func TestPreDeployJobMatchesTheApp(t *testing.T) {
-	in := testInput(t)
-	// Each entry is a command *line*, exactly as it appears in donkey.yaml.
-	in.App.PreDeploy = []string{"python manage.py migrate --noinput", "python manage.py collectstatic --noinput"}
-	in.App.Storage = &config.StorageConfig{Size: "1Gi", Paths: []string{"/app/data"}}
-	in.AddonSecretNames = []string{"shop-addon-db"}
-
-	job := PreDeployJob(in)
-	spec := job.Spec.Template.Spec
-	c := spec.Containers[0]
-
-	if c.Image != in.ImageRef {
-		t.Errorf("job image %q, want the app's %q", c.Image, in.ImageRef)
-	}
-	// It has to reach a shell. Handed to Command directly, Kubernetes treats
-	// the whole line as the name of an executable and the container dies in
-	// exec() before it can print anything that would explain why.
-	if len(c.Command) != 3 || c.Command[0] != "sh" || c.Command[1] != "-c" {
-		t.Fatalf("the steps must run through a shell, got %q", c.Command)
-	}
-	want := "python manage.py migrate --noinput && python manage.py collectstatic --noinput"
-	if c.Command[2] != want {
-		t.Errorf("steps should run in order and stop at the first failure:\n got %q\nwant %q", c.Command[2], want)
-	}
-	if spec.RestartPolicy != corev1.RestartPolicyNever {
-		t.Error("a half-applied migration must not be retried automatically")
-	}
-	var envFrom []string
-	for _, f := range c.EnvFrom {
-		envFrom = append(envFrom, f.SecretRef.Name)
-	}
-	for _, want := range []string{EnvSecretName(in.App.Name), "shop-addon-db"} {
-		if !slices.Contains(envFrom, want) {
-			t.Errorf("the job must receive %s", want)
-		}
-	}
-	if len(c.VolumeMounts) == 0 {
-		t.Error("the job must mount the app's disk — a migration often creates the database file")
 	}
 }
 

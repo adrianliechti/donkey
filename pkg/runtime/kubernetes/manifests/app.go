@@ -60,14 +60,6 @@ const (
 	storageFSGroup = int64(2000)
 )
 
-func toAnyMap(m map[string]string) map[string]any {
-	out := make(map[string]any, len(m))
-	for k, v := range m {
-		out[k] = v
-	}
-	return out
-}
-
 // Labels marks one object as donkey's. Callers that don't know the space
 // (older objects, cluster-wide lookups) pass "" and simply get no space label.
 //
@@ -306,9 +298,7 @@ func pullSecret(in Input) (*corev1.Secret, error) {
 }
 
 // appEnvironment is everything the app is handed at runtime: its own env
-// secret, its addon bindings, and the env block from donkey.yaml. The
-// pre-deploy job uses the identical set, because a migration that cannot see
-// DATABASE_URL is worse than no migration at all.
+// secret, its addon bindings, and the env block from donkey.yaml.
 func appEnvironment(in Input) ([]corev1.EnvVar, []corev1.EnvFromSource) {
 	app := in.App
 	optional := true

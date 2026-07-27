@@ -578,11 +578,6 @@ func (s *Server) applyAndWait(ctx context.Context, out *lineStreamer, app *confi
 	}, out)
 	if err != nil {
 		res := DeployResult{App: app.Name, Space: space, ImageRef: imageRef, Error: err.Error()}
-		var je *runtime.JobError
-		if errors.As(err, &je) && je.Logs != "" {
-			out.Line("Output of the pre-deploy step:\n%s", je.Logs)
-			s.diagnoseWith(ctx, &res, root, space, app.Name, "predeploy", je.Logs, nil)
-		}
 		var re *runtime.RolloutError
 		if errors.As(err, &re) {
 			for _, p := range re.Evidence.Summaries {

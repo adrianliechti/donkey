@@ -58,8 +58,7 @@ type Provider interface {
 	// Deploy takes a built image live: everything after the build, in this
 	// runtime's own choreography — storage, declared services, the app
 	// itself, its addresses — narrated through progress. Failures carry
-	// their evidence: *JobError for a failed pre-deploy step, *RolloutError
-	// for an app that never became healthy.
+	// their evidence: *RolloutError for an app that never became healthy.
 	Deploy(ctx context.Context, spec DeploySpec, progress Progress) error
 	// Render returns what Deploy would create, as text for human review,
 	// without touching the runtime. Credentials are left out — the result
@@ -245,14 +244,6 @@ type RolloutError struct {
 func (e *RolloutError) Error() string {
 	return fmt.Sprintf("the new version of %s didn't become healthy: %s", e.App, e.Reason)
 }
-
-// JobError means a run-to-completion step (pre-deploy) failed.
-type JobError struct {
-	Reason string
-	Logs   string
-}
-
-func (e *JobError) Error() string { return e.Reason }
 
 // UserError marks a failure the caller caused (a bad type, name or URL), so
 // API handlers answer 400 instead of blaming the runtime.

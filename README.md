@@ -256,7 +256,6 @@ routes:                       # …or answer on another app's address
     path: /api
 
 command: ["node", "server.js"]        # override the image's start command
-preDeploy: ["python", "manage.py", "migrate"]
 
 healthcheck:
   path: /healthz              # empty = check that the port answers
@@ -312,13 +311,12 @@ dashboard around them still asks for a login. Protection attaches per route,
 not per hostname, which is what makes that possible. The gateway does the
 forwarding, so there is no proxy to write.
 
-**`preDeploy`** runs once against the new image before the new version starts
-serving, with the app's env, addon bindings and disk. Migrations are the
-reason it exists. If it fails, the deploy stops and the version already
-running keeps serving — nothing is swapped for something that cannot start.
-It is yours to write: the assistant points out when an app looks like it
-needs one, but a command donkey *runs* is never something a plan ticks for
-you the way a disk or a service is.
+**Schema setup belongs to the app.** donkey runs no command of its own
+against your image: an app whose tables have to exist before the first
+request creates them in its own start path — `Base.metadata.create_all`,
+`db.create_all`, a `migrate()` call before the server listens — written so it
+is safe to run again on every deploy and every restart. A container that
+starts by migrating is one fewer moving part than a container plus a job.
 
 **`env` vs `build.env`.** `env` reaches the running container. `build.env`
 reaches the build, which is where a bundler inlines values — a browser bundle

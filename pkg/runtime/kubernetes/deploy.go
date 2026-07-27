@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"time"
 
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"
 
@@ -15,15 +14,10 @@ import (
 	"github.com/adrianliechti/donkey/pkg/runtime/kubernetes/manifests"
 )
 
-// preDeployTimeout bounds a pre-deploy step. Migrations on a large table are
-// slow but not endless, and a step that hangs would otherwise hold the deploy
-// open indefinitely.
-const preDeployTimeout = 15 * time.Minute
-
 // Deploy applies the app's objects with the given image and waits for the
 // rollout (unless spec.NoWait). Everything the Deployment needs — secrets,
-// the disk, addon bindings — goes first, so a pre-deploy step runs with the
-// new configuration while the old version is still the one serving.
+// the disk, addon bindings — goes first, so the new version comes up with its
+// configuration already in place.
 func (r *Runtime) Deploy(ctx context.Context, spec rt.DeploySpec, out rt.Progress) error {
 	app := spec.App
 	space := spec.Space
@@ -50,9 +44,9 @@ func (r *Runtime) Deploy(ctx context.Context, spec rt.DeploySpec, out rt.Progres
 	}
 	// donkey.yaml is declarative about addons too: services belong to the
 	// space, and an entry here means "this app uses that service" — created
-	// on the spot when the space doesn't have it yet, before the app (and
-	// its pre-deploy step) needs the binding. An existing service is left
-	// alone: a second app naming it simply joins it.
+	// on the spot when the space doesn't have it yet, before the app needs
+	// the binding. An existing service is left alone: a second app naming it
+	// simply joins it.
 	for _, a := range app.Addons {
 		shared, err := r.c.GetSecretData(ctx, ns, addons.SecretName(addons.SharedOwner, a.Name))
 		if err != nil {
@@ -104,8 +98,8 @@ func (r *Runtime) Deploy(ctx context.Context, spec rt.DeploySpec, out rt.Progres
 		return err
 	}
 	// The Deployment is applied last. Everything it needs — secrets, the
-	// disk, addon bindings — goes first, so a pre-deploy step runs with the
-	// new configuration while the old version is still the one serving.
+	// disk, addon bindings — goes first, so the pods that start are never
+	// briefly missing something they were promised.
 	var deployment []k8sruntime.Object
 	rest := objs[:0]
 	for _, o := range objs {
@@ -117,15 +111,6 @@ func (r *Runtime) Deploy(ctx context.Context, spec rt.DeploySpec, out rt.Progres
 	}
 	if err := r.c.Apply(ctx, rest); err != nil {
 		return fmt.Errorf("the cluster refused the changes: %v", err)
-	}
-	if len(app.PreDeploy) > 0 {
-		out.Line("Running the pre-deploy step…")
-		if err := r.c.RunJob(ctx, manifests.PreDeployJob(in), preDeployTimeout); err != nil {
-			// The Deployment was deliberately not touched, so whatever is
-			// live stays live — that is the point of running this first.
-			return fmt.Errorf("the pre-deploy step failed, so nothing was changed and the running version keeps serving: %w", err)
-		}
-		out.Line("✓ Pre-deploy step finished.")
 	}
 	if err := r.c.Apply(ctx, deployment); err != nil {
 		return fmt.Errorf("the cluster refused the changes: %v", err)

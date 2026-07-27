@@ -58,11 +58,9 @@ type Plan struct {
 	// turned down stays visible and unticked, because a control that vanishes
 	// when you clear it can never be set again.
 	//
-	// Migrations are deliberately not among them. A disk and a database are
-	// things donkey creates; a pre-deploy step is a command it runs, and a
-	// command the assistant proposed is not something to run because nobody
-	// unticked it. They stay a warning (see analysisWarnings), which is what
-	// a deploy does with them too.
+	// Both are things donkey *creates*. It deliberately never proposes a
+	// command to run: donkey has no hook for one, and a model-written command
+	// executed because nobody unticked it is not a feature worth having.
 	Volumes  []PlanVolume  `json:"volumes"`
 	Services []PlanService `json:"services"`
 	// Skipped is what the upload lost on the way in (secret-shaped files,
@@ -90,7 +88,6 @@ type PlanApp struct {
 	Healthcheck string   `json:"healthcheck,omitempty"`
 	Storage     []string `json:"storage"`
 	StorageSize string   `json:"storageSize,omitempty"`
-	PreDeploy   []string `json:"preDeploy"`
 	// Exposure is public, protected or internal — how the app will be reached.
 	Exposure string `json:"exposure"`
 	// URL is the address the app will answer on (empty for internal).
@@ -566,7 +563,6 @@ func (s *Server) renderPlan(ctx context.Context, id string, sp *storedPlan) *Pla
 			PortReason:  sp.analysis.PortReason,
 			Healthcheck: app.Healthcheck.Path,
 			Storage:     []string{},
-			PreDeploy:   []string{},
 			Exposure:    exposureOfConfig(app),
 			URL:         s.cfg.AppURL(app.Space, app),
 		},
@@ -575,8 +571,6 @@ func (s *Server) renderPlan(ctx context.Context, id string, sp *storedPlan) *Pla
 		p.App.Storage = append(p.App.Storage, app.Storage.Paths...)
 		p.App.StorageSize = app.Storage.Size
 	}
-	p.App.PreDeploy = append(p.App.PreDeploy, app.PreDeploy...)
-
 	p.Findings = analysisWarnings(app, sp.analysis)
 	p.Findings = append(p.Findings, s.clusterFindings(ctx, app, sp.services)...)
 	if !sp.hasConfig {

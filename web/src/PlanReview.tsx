@@ -17,7 +17,6 @@ import {
   HardDrive,
   Info,
   Loader2,
-  Terminal,
   TriangleAlert,
 } from 'lucide-react'
 import type { Exposure, Finding, Plan, PlanEdit, PortSource } from './api'
@@ -366,30 +365,6 @@ export function PlanReview({
               />
             ))}
           </div>
-        </Card>
-      )}
-
-      {/* What donkey.yaml itself asks for before the new version serves. Not
-          a choice here: a command donkey runs belongs in the project's own
-          file, not in a checkbox the assistant pre-ticked. */}
-      {plan.app.preDeploy.length > 0 && (
-        <Card className="space-y-2 p-4">
-          <SectionTitle>
-            <span className="flex items-center gap-1.5">
-              <Terminal className="size-3.5" aria-hidden /> Before each deploy
-            </span>
-          </SectionTitle>
-          <ul className="space-y-1">
-            {plan.app.preDeploy.map((cmd) => (
-              <li key={cmd} className="font-mono text-sm">
-                {cmd}
-              </li>
-            ))}
-          </ul>
-          <p className="text-xs text-stone">
-            From donkey.yaml. Each runs against the new image before it serves; a failure stops the
-            deploy and the version already running keeps serving.
-          </p>
         </Card>
       )}
 

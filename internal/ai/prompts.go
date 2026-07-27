@@ -69,20 +69,6 @@ Report:
   config a build never ships: a vite/webpack devServer proxy, test fixtures,
   docker-compose files, comments, README examples, and any default that an
   environment variable overrides at runtime.
-- preDeploy: commands that MUST finish before the new version starts serving,
-  because the app cannot work without them. In practice this is database
-  migrations: "python manage.py migrate", "alembic upgrade head",
-  "npx prisma migrate deploy", "bundle exec rails db:migrate". Give the
-  command exactly as it would run in the container's working directory, and a
-  reason naming the evidence (a migrations folder, an alembic.ini, a
-  schema.prisma). Rules:
-  · Only migrations and equally mandatory setup. NOT seeding with demo data,
-    NOT collectstatic or asset builds (those belong to the build), NOT tests,
-    NOT anything that starts a server or runs forever.
-  · The command runs on every deploy, so it must be safe to run twice. Every
-    migration tool above already is; a hand-rolled script may not be — leave
-    those out.
-  · Most apps need none. An empty list is the common, correct answer.
 - hostRestriction: set this ONLY when the app itself rejects requests whose
   Host header is not on a list it keeps. Django's ALLOWED_HOSTS is the case
   that matters: the generator leaves it empty, and Django then answers 400 to
@@ -196,18 +182,6 @@ var analysisSchema = map[string]any{
 				"additionalProperties": false,
 			},
 		},
-		"preDeploy": map[string]any{
-			"type": "array",
-			"items": map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"command": map[string]any{"type": "string"},
-					"reason":  map[string]any{"type": "string"},
-				},
-				"required":             []string{"command", "reason"},
-				"additionalProperties": false,
-			},
-		},
 		"hostRestriction": map[string]any{
 			"type": []string{"object", "null"},
 			"properties": map[string]any{
@@ -224,7 +198,7 @@ var analysisSchema = map[string]any{
 	"required": []string{"appType", "strategy", "dockerfile", "railpackConfig", "port", "portReason",
 		"bindsLoopback", "bindReason",
 		"healthcheckPath", "volumes", "services", "localURLs",
-		"preDeploy", "hostRestriction", "notes"},
+		"hostRestriction", "notes"},
 	"additionalProperties": false,
 }
 

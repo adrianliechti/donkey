@@ -32,11 +32,6 @@ type AppConfig struct {
 	Replicas *int32      `json:"replicas,omitempty"`
 	Build    BuildConfig `json:"build,omitempty"`
 	Command  []string    `json:"command,omitempty"`
-	// PreDeploy runs once against the new image before the new version starts
-	// serving — database migrations, above all. It has the app's env, its
-	// addon bindings and its disk. If it fails, the deploy stops and the
-	// version already running keeps serving.
-	PreDeploy []string `json:"preDeploy,omitempty"`
 	// Routes put this app on another app's hostname under a path prefix, so
 	// a frontend and its API can share one address.
 	Routes      []RouteConfig     `json:"routes,omitempty"`

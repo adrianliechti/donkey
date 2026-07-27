@@ -223,8 +223,8 @@ func buildProgressPrinter(u *ui.UI) func(string) {
 
 // newVersionRunning guards the reconnect path against a false green: with an
 // explicit tag the running image must match it; otherwise it must at least
-// have changed from what ran before the deploy — and when the pre-deploy
-// state couldn't be read at all, "healthy" alone proves nothing.
+// have changed from what ran before the deploy — and when the state before
+// the deploy couldn't be read at all, "healthy" alone proves nothing.
 func newVersionRunning(current, expectedTag, priorImage string, priorKnown bool) bool {
 	if expectedTag != "" {
 		return current == expectedTag
