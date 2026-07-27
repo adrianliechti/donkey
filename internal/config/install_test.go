@@ -18,7 +18,7 @@ domain: example.com
 registry:
   url: registry.example.com/donkey
 build:
-  builder: buildpacks
+  builder: ai
   registryMirrors:
     docker.io: https://artifactory.example.com/docker-remote
   env:
@@ -26,10 +26,10 @@ build:
   proxy:
     https: http://proxy.example.com:3128
     noProxy: .example.com,10.0.0.0/8
-  buildpacks:
-    builderImage: artifactory.example.com/paketobuildpacks/builder-jammy-base:latest
-    runImage: artifactory.example.com/paketobuildpacks/run-jammy-base:latest
-    platformApi: "0.14"
+  ai:
+    verify: false
+    verifySeconds: 90
+    attempts: 2
   railpack:
     builderImage: artifactory.example.com/railwayapp/railpack-builder:mise-2026.7.11
     runtimeImage: artifactory.example.com/railwayapp/railpack-runtime:mise-2026.7.11
@@ -44,8 +44,8 @@ build:
 	if err != nil {
 		t.Fatalf("LoadInstallFile: %v", err)
 	}
-	if f.Build.Builder != BuildBuildpacks {
-		t.Errorf("builder = %q, want buildpacks", f.Build.Builder)
+	if f.Build.Builder != BuildAI {
+		t.Errorf("builder = %q, want ai", f.Build.Builder)
 	}
 	if got := f.Build.RegistryMirrors["docker.io"]; got != "https://artifactory.example.com/docker-remote" {
 		t.Errorf("registryMirrors[docker.io] = %q", got)
@@ -56,8 +56,8 @@ build:
 	if f.Build.Proxy.HTTPS != "http://proxy.example.com:3128" || f.Build.Proxy.NoProxy != ".example.com,10.0.0.0/8" {
 		t.Errorf("proxy = %+v", f.Build.Proxy)
 	}
-	if f.Build.Buildpacks.PlatformAPI != "0.14" || f.Build.Buildpacks.RunImage == "" {
-		t.Errorf("buildpacks = %+v", f.Build.Buildpacks)
+	if f.Build.VerifyStartup() || f.Build.VerifySeconds() != 90 || f.Build.AIAttempts() != 2 {
+		t.Errorf("ai builder settings did not survive: %+v", f.Build.AI)
 	}
 	if f.Build.Railpack.RuntimeImage == "" {
 		t.Errorf("railpack = %+v", f.Build.Railpack)
@@ -72,7 +72,7 @@ build:
 	if err := yaml.UnmarshalStrict(out, &again); err != nil {
 		t.Fatalf("what donkey writes, donkey cannot read: %v\n%s", err, out)
 	}
-	if again.Build.Builder != f.Build.Builder || again.Build.Buildpacks != f.Build.Buildpacks {
+	if again.Build.Builder != f.Build.Builder || again.Build.VerifySeconds() != f.Build.VerifySeconds() {
 		t.Errorf("the build section did not survive the round trip:\n%s", out)
 	}
 }
@@ -85,7 +85,7 @@ func TestInstallBuildValidate(t *testing.T) {
 	}{
 		{"empty", InstallBuild{}, false},
 		{"railpack", InstallBuild{BuildSettings: BuildSettings{Builder: BuildRailpack}}, false},
-		{"buildpacks", InstallBuild{BuildSettings: BuildSettings{Builder: BuildBuildpacks}}, false},
+		{"ai", InstallBuild{BuildSettings: BuildSettings{Builder: BuildAI}}, false},
 		// The builder is what an app with no Dockerfile gets, so these two
 		// are not answers to the question.
 		{"dockerfile", InstallBuild{BuildSettings: BuildSettings{Builder: BuildDockerfile}}, true},
@@ -135,11 +135,16 @@ func TestBuildSettingsDefaults(t *testing.T) {
 	if s.BuilderOrDefault() != BuildRailpack {
 		t.Errorf("the default builder changed to %q", s.BuilderOrDefault())
 	}
-	if s.BuildpacksBuilderImage() != DefaultBuildpacksBuilderImage {
-		t.Errorf("BuildpacksBuilderImage() = %q", s.BuildpacksBuilderImage())
+	// Startup verification is on unless an installation says otherwise —
+	// an unset pointer must not read as "off".
+	if !s.VerifyStartup() {
+		t.Error("startup verification should default to on")
 	}
-	s.Buildpacks.BuilderImage = "example.com/my/builder:1"
-	if s.BuildpacksBuilderImage() != "example.com/my/builder:1" {
-		t.Errorf("a configured builder image was ignored")
+	if s.VerifySeconds() != DefaultVerifySeconds || s.AIAttempts() != DefaultAIAttempts {
+		t.Errorf("defaults not applied: %ds, %d attempts", s.VerifySeconds(), s.AIAttempts())
+	}
+	s.AI.Verify = new(false)
+	if s.VerifyStartup() {
+		t.Error("an explicit verify: false was ignored")
 	}
 }

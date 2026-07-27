@@ -101,9 +101,10 @@ five ideas:
   Views are linkable (`#/app/<space>/<name>`) and follow your light/dark
   preference.
 - **donkey-buildkitd** — a plain BuildKit deployment; the server drives it
-  over gRPC with Railpack-generated LLB, the app's Dockerfile, or the Cloud
-  Native Buildpacks lifecycle, and pushes straight to the registry. Registry
-  mirrors for restricted networks are configured here (`build.registryMirrors`).
+  over gRPC with Railpack-generated LLB or a Dockerfile (the app's own, or one
+  donkey's assistant wrote), and pushes straight to the registry. It is also
+  where a freshly built image is run to check it starts. Registry mirrors for
+  restricted networks are configured here (`build.registryMirrors`).
 - **donkey-gateway** — donkey's own edge (same binary as the server,
   started with `gateway`): traffic enters the cluster here, on ports 80 and
   443. It terminates TLS and issues the certificates itself — one per
@@ -276,10 +277,11 @@ addons:                       # space services this app uses; the deploy
                               # apps naming the same service share it
 
 build:
-  type: auto                  # auto | railpack | buildpacks | dockerfile
-                              # auto: your Dockerfile if there is one, else
-                              # whatever the installation's `build.builder`
-                              # says (railpack by default)
+  type: auto                  # auto | railpack | ai | dockerfile
+                              # auto: your Dockerfile if there is one, then
+                              # one donkey wrote earlier (.donkey/Dockerfile),
+                              # else whatever the installation's
+                              # `build.builder` says (railpack by default)
   dockerfile: Dockerfile
   platform: linux/arm64
   env:                        # build-time values (VITE_*, build args)
@@ -410,60 +412,66 @@ everything inside them). Scoping that down is on the list — see
 An app that brings a Dockerfile is built with it, always. For everything
 else, the installation picks the builder in `build.builder`:
 
-| | **railpack** (default) | **buildpacks** |
+| | **railpack** (default) | **ai** — donkey's own |
 |---|---|---|
-| Where the app is recognized | in `donkey-server`, before the build | inside the builder image, during the build |
-| What it pulls | the railpack builder + runtime images from ghcr.io | the CNB builder + run images |
+| How the build is worked out | railpack's detector, in `donkey-server` | the assistant writes a Dockerfile |
+| What it pulls | the railpack builder + runtime images from ghcr.io | whatever base images the Dockerfile names |
 | Other egress | resolves every package version through mise, which it downloads from github.com and which then asks the GitHub API — even for exactly pinned versions | none |
 | Works behind a registry mirror alone | no | **yes** |
-| `donkey init` on a laptop | runs detection locally, so the laptop needs the same egress | no egress at all |
+| Repeatable | yes | yes, once the Dockerfile is saved — see below |
 
 The difference that decides it: railpack's version resolution is not
 mirrorable. It reaches GitHub over HTTPS, and no registry mirror can serve
 that. With a forward proxy (`build.proxy`) railpack works; on a network whose
-only egress is a mirror, it does not — and that is what `build.builder:
-buildpacks` is for.
-
-Both builders are configured in the same place, and any CNB builder works
-(Paketo by default, Google's, or an in-house one):
+only egress is a mirror, it does not — and that is what `build.builder: ai`
+is for, because a Dockerfile's `FROM python:3.12-slim` is an ordinary
+registry pull that `registryMirrors` covers like any other.
 
 ```yaml
 build:
-  builder: buildpacks
-  buildpacks:
-    builderImage: gcr.io/buildpacks/builder:google-24
+  builder: ai
 ```
 
-Google's builder is the default because it behaves most like donkey's own
-detection. Measured against `testdata/`, it is the only CNB builder that
-works out a start command for an app shipping no Procfile (gunicorn for
-Flask, uvicorn for FastAPI) and honours the `$PORT` donkey sets. Paketo's
-`builder-jammy-base` left the same apps with no process to launch and builds
-cpython without `sqlite3`; Heroku's wants a Procfile.
+**The Dockerfile is the deliverable, not the model.** donkey prints what it
+wrote and tells you to save it as `.donkey/Dockerfile`. Once it is there,
+detection prefers it over any builder, so every later deploy is a plain,
+repeatable Dockerfile build with no model in the path at all. The assistant
+is how the file gets written the first time — not a step in every build.
 
-Two caveats worth knowing before switching a whole installation over:
+**Built images are run before they are published.** A generated Dockerfile
+fails in ways a build log cannot show, because the build succeeded: an
+interpreter that is not on `PATH`, a dependency that was never installed, an
+entrypoint that exits at once. So donkey starts the image, waits for it to
+listen on the port it will be deployed with, and only exports it once it
+does. When it does not, the failure goes back to the assistant with the log
+and it writes another one — `build.ai.attempts` times, three by default.
 
-- **Architecture.** Google's and Paketo's builders are published for
-  linux/amd64 only, which matches donkey's default platform. On arm64 nodes,
-  name a builder built for it (`heroku/builder:24` is one) or every build
-  runs under emulation.
-- **Coverage is not railpack's.** Buildpacks recognize what their buildpack
-  set recognizes — a plain static site, for instance, matches no buildpack in
-  any of the three builders, while railpack builds it. Railpack stays the
-  default for that reason; buildpacks is the answer when the network is the
-  constraint.
+The check is deliberately narrow: it fails an image whose process *exits*,
+and passes one that is still running but not yet listening. An app whose
+first act is to open its database would otherwise fail in a sandbox that has
+no database, and be "fixed" by a model with nothing to fix.
+
+```yaml
+build:
+  builder: ai
+  ai:
+    verify: true          # default; false skips running the image
+    verifySeconds: 45     # how long the app gets to come up
+    attempts: 3           # the first Dockerfile plus two revisions
+```
 
 ### Restricted networks
 
 `build.registryMirrors` is written into the build engine's own configuration,
 so it covers every image a build pulls — the builder images and every `FROM`
-in an app's Dockerfile. `build.env` reaches every build *step*, which is where
-package managers are pointed at their mirrors; donkey layers it under each
-app's own `build.env`, so a project that pins its own registry still wins.
+in a Dockerfile, generated or not. `build.env` reaches every build *step*,
+which is where package managers are pointed at their mirrors; donkey layers
+it under each app's own `build.env`, so a project that pins its own registry
+still wins.
 
 ```yaml
 build:
-  builder: buildpacks
+  builder: ai
   registryMirrors:
     docker.io: https://artifactory.example.com/docker-remote
     ghcr.io: https://artifactory.example.com/ghcr-remote
@@ -473,17 +481,11 @@ build:
     GOPROXY: https://artifactory.example.com/api/go/go
 ```
 
-Two images are **not** covered by those mirrors, because neither is pulled by
-the build engine:
-
-- `buildkitImage` — the cluster pulls it. Mirror it by setting it directly.
-- `build.buildpacks.runImage` — the CNB lifecycle pulls it from inside the
-  build. Leaving it empty uses the builder's own default, which is the right
-  answer everywhere except here; behind a mirror, write the mirrored
-  reference explicitly.
+One image is **not** covered by those mirrors: `buildkitImage`, which the
+cluster pulls itself. Mirror it by setting it directly.
 
 Mirror hosts inherit `registry.caSecret`, so an in-house Artifactory behind a
-private CA needs nothing further. `donkey doctor` resolves every one of these
+private CA needs nothing further. `donkey doctor` resolves the railpack
 images through the build engine — the same path a build takes — so a mirror
 that is wrong is a failed check rather than a failed deploy.
 
@@ -667,7 +669,7 @@ internal/
   apiclient/          CLI↔server transport: tar upload, NDJSON stream, typed calls
   server/             REST handlers, deploy pipeline, env-based config
   detect/             build strategy decision (donkey.yaml > Dockerfile > the installation's builder > AI)
-  build/              BuildKit gRPC builder (railpack LLB / dockerfile.v0 / CNB lifecycle), registry auth, tags
+  build/              BuildKit gRPC builder (railpack LLB / dockerfile.v0), startup verification, registry auth, tags
   k8s/                client-go wrapper: server-side apply, rollout wait, logs, env secrets
   k8s/manifests/      pure config→object rendering (app + control plane) — golden-tested
   addons/             service catalog: postgres, pocketbase, rustfs, openai (provisioned & external bindings)

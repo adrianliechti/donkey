@@ -397,7 +397,7 @@ func (s *Server) deploy(ctx context.Context, out *lineStreamer, dir string, app 
 
 	out.Line("Building the image…")
 	builder := &build.BuildKitBuilder{Registry: s.cfg.Registry, BuildkitAddr: s.cfg.BuildkitAddr, Settings: s.cfg.Build}
-	result, err := builder.Build(ctx, build.Request{
+	req := build.Request{
 		ContextDir:     dir,
 		ImageRef:       imageRef,
 		Platform:       platform,
@@ -407,7 +407,34 @@ func (s *Server) deploy(ctx context.Context, out *lineStreamer, dir string, app 
 		DockerfilePath: det.DockerfilePath,
 		RailpackPlan:   det.Railpack,
 		Progress:       build.ProgressSink{LogPath: logFile.Name(), Writer: out},
-	})
+	}
+	var result *build.Result
+	if det.Strategy == config.BuildAI {
+		// donkey's own builder writes the Dockerfile, and gets more than one
+		// go at it — every failure is something the assistant can be shown.
+		req.Verify = s.aiVerifySpec(app)
+		outcome, aerr := s.buildWithAI(ctx, out, builder, dir, app, req)
+		if aerr == nil {
+			result, err = outcome.Result, nil
+			if outcome.Attempts > 1 {
+				out.Line("· It took %d tries to get an image that starts.", outcome.Attempts)
+			}
+			if outcome.NeverListened {
+				out.Line("· Careful: the image starts, but it never listened on port %d while donkey watched it. If it listens somewhere else, set `port:` in donkey.yaml.", app.Port)
+			}
+			// The Dockerfile is the durable part of this: kept next to the
+			// app, the next deploy is a plain Dockerfile build with no model
+			// in the way.
+			out.Line("· Save this as %s to keep every later build identical:", detect.AIDockerfilePath)
+			for _, line := range strings.Split(strings.TrimRight(outcome.Dockerfile, "\n"), "\n") {
+				out.Line("    %s", line)
+			}
+		} else {
+			err = aerr
+		}
+	} else {
+		result, err = builder.Build(ctx, req)
+	}
 	if err != nil {
 		res := DeployResult{App: app.Name, Space: space, Error: err.Error()}
 		if logs, rerr := os.ReadFile(logFile.Name()); rerr == nil {

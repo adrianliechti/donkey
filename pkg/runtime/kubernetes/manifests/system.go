@@ -575,11 +575,11 @@ func buildEnv(b config.InstallBuild) []corev1.EnvVar {
 	// builds renders the deployment it always did.
 	for _, e := range []corev1.EnvVar{
 		{Name: "DONKEY_BUILD_BUILDER", Value: string(b.Builder)},
-		{Name: "DONKEY_BUILD_BUILDPACKS_BUILDER_IMAGE", Value: b.Buildpacks.BuilderImage},
-		{Name: "DONKEY_BUILD_BUILDPACKS_RUN_IMAGE", Value: b.Buildpacks.RunImage},
-		{Name: "DONKEY_BUILD_BUILDPACKS_PLATFORM_API", Value: b.Buildpacks.PlatformAPI},
 		{Name: "DONKEY_BUILD_RAILPACK_BUILDER_IMAGE", Value: b.Railpack.BuilderImage},
 		{Name: "DONKEY_BUILD_RAILPACK_RUNTIME_IMAGE", Value: b.Railpack.RuntimeImage},
+		{Name: "DONKEY_BUILD_AI_VERIFY", Value: aiVerifyValue(b.AI)},
+		{Name: "DONKEY_BUILD_AI_VERIFY_SECONDS", Value: positiveOrEmpty(b.AI.VerifySeconds)},
+		{Name: "DONKEY_BUILD_AI_ATTEMPTS", Value: positiveOrEmpty(b.AI.Attempts)},
 	} {
 		if e.Value != "" {
 			env = append(env, e)
@@ -591,6 +591,25 @@ func buildEnv(b config.InstallBuild) []corev1.EnvVar {
 		env = append(env, secretEnvVar("DONKEY_BUILD_ENV", "build-env"))
 	}
 	return env
+}
+
+// aiVerifyValue renders the tri-state startup-verification setting: empty
+// leaves the server on its own default (on), so only an explicit choice
+// travels.
+func aiVerifyValue(ai config.InstallAIBuilder) string {
+	if ai.Verify == nil {
+		return ""
+	}
+	return strconv.FormatBool(*ai.Verify)
+}
+
+// positiveOrEmpty renders an optional numeric setting; zero means "unset",
+// which the server's accessor turns into the default.
+func positiveOrEmpty(n int) string {
+	if n <= 0 {
+		return ""
+	}
+	return strconv.Itoa(n)
 }
 
 // buildEnvJSON is the build environment as donkey-server reads it.

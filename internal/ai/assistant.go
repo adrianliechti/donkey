@@ -24,6 +24,22 @@ type Assistant interface {
 	Analyze(ctx context.Context, in *AnalyzeInput) (*Analysis, error)
 	// DiagnoseFailure explains a build/deploy failure and proposes fixes.
 	DiagnoseFailure(ctx context.Context, fc *FailureContext) (*FixProposal, error)
+	// WriteDockerfile writes the Dockerfile donkey's own builder builds. It
+	// is also how that builder recovers: a Dockerfile that failed, together
+	// with what it failed with, comes back in and a corrected one goes out.
+	WriteDockerfile(ctx context.Context, in *DockerfileInput) (string, error)
+}
+
+// DockerfileInput is what the assistant needs to write an app's Dockerfile.
+type DockerfileInput struct {
+	Summary *RepoSummary `json:"summary"`
+	// Port is what donkey will tell the app to listen on, through PORT.
+	Port int `json:"port"`
+	// Previous is the Dockerfile that was already tried, and Failure is what
+	// went wrong with it — both empty on the first attempt. Handing the model
+	// its own last answer back is what makes a second attempt worth making.
+	Previous string `json:"previous"`
+	Failure  string `json:"failure"`
 }
 
 // AnalyzeInput is what the assistant gets to look at.

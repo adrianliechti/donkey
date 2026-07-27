@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 
 	"github.com/adrianliechti/donkey/internal/config"
 )
@@ -70,11 +71,6 @@ func FromEnv() (*Config, error) {
 		AIModel:          envOr("DONKEY_AI_MODEL", config.DefaultAIModel),
 		Build: config.BuildSettings{
 			Builder: config.BuildStrategy(os.Getenv("DONKEY_BUILD_BUILDER")),
-			Buildpacks: config.InstallBuildpacks{
-				BuilderImage: os.Getenv("DONKEY_BUILD_BUILDPACKS_BUILDER_IMAGE"),
-				RunImage:     os.Getenv("DONKEY_BUILD_BUILDPACKS_RUN_IMAGE"),
-				PlatformAPI:  os.Getenv("DONKEY_BUILD_BUILDPACKS_PLATFORM_API"),
-			},
 			Railpack: config.InstallRailpack{
 				BuilderImage: os.Getenv("DONKEY_BUILD_RAILPACK_BUILDER_IMAGE"),
 				RuntimeImage: os.Getenv("DONKEY_BUILD_RAILPACK_RUNTIME_IMAGE"),
@@ -89,9 +85,16 @@ func FromEnv() (*Config, error) {
 		}
 	}
 	switch c.Build.Builder {
-	case "", config.BuildRailpack, config.BuildBuildpacks:
+	case "", config.BuildRailpack, config.BuildAI:
 	default:
-		return nil, fmt.Errorf("DONKEY_BUILD_BUILDER must be railpack or buildpacks, not %q", c.Build.Builder)
+		return nil, fmt.Errorf("DONKEY_BUILD_BUILDER must be railpack or ai, not %q", c.Build.Builder)
+	}
+	c.Build.AI = config.InstallAIBuilder{
+		VerifySeconds: envInt("DONKEY_BUILD_AI_VERIFY_SECONDS"),
+		Attempts:      envInt("DONKEY_BUILD_AI_ATTEMPTS"),
+	}
+	if v := os.Getenv("DONKEY_BUILD_AI_VERIFY"); v != "" {
+		c.Build.AI.Verify = new(v == "true")
 	}
 	key, err := hex.DecodeString(os.Getenv("DONKEY_SESSION_KEY"))
 	if err != nil || len(key) != 32 {
@@ -122,6 +125,16 @@ func FromEnv() (*Config, error) {
 
 // The registry password flows through the same env var the Registry type
 // already reads (DONKEY_REGISTRY_PASSWORD), set from the system secret.
+
+// envInt reads an optional numeric setting; anything unreadable falls back to
+// the default the accessor applies.
+func envInt(key string) int {
+	n, err := strconv.Atoi(os.Getenv(key))
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
+}
 
 func envOr(key, def string) string {
 	if v := os.Getenv(key); v != "" {

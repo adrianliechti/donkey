@@ -654,6 +654,15 @@ type DoctorCheck struct {
 	Detail string `json:"detail,omitempty"`
 }
 
+// aiBuilderDetail says what donkey's own builder will do, in one line.
+func aiBuilderDetail(b config.BuildSettings) string {
+	if !b.VerifyStartup() {
+		return "the assistant writes each app's Dockerfile (startup verification off)"
+	}
+	return fmt.Sprintf("the assistant writes each app's Dockerfile; images are run and must start within %ds before they are published",
+		b.VerifySeconds())
+}
+
 // builderChecks probes what this installation needs in order to build an app
 // that brings no Dockerfile. Every image is resolved through the build engine
 // rather than from here, so the answer accounts for the engine's mirrors —
@@ -672,13 +681,15 @@ func (s *Server) builderChecks(ctx context.Context) []DoctorCheck {
 	}
 
 	var checks []DoctorCheck
-	if builder == config.BuildBuildpacks {
-		checks = append(checks, image("Buildpacks builder image", s.cfg.Build.BuildpacksBuilderImage()))
-		// An empty run image is the normal case — the lifecycle reads the
-		// builder's own. There is nothing to probe until one is named.
-		if run := s.cfg.Build.Buildpacks.RunImage; run != "" {
-			checks = append(checks, image("Buildpacks run image", run))
-		}
+	if builder == config.BuildAI {
+		// There is no builder image to probe: the Dockerfile the assistant
+		// writes names its own base, and whether that resolves is a question
+		// only the finished Dockerfile can ask. What is checkable is that the
+		// assistant answers at all, which the assistant check below covers.
+		checks = append(checks, DoctorCheck{
+			Name: "Builder (donkey writes the Dockerfile)", OK: true,
+			Detail: aiBuilderDetail(s.cfg.Build),
+		})
 	} else {
 		builderImage, runtimeImage := build.RailpackImages()
 		checks = append(checks,

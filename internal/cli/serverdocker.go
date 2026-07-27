@@ -185,13 +185,11 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 		"OPENAI_BASE_URL":           settings.AI.BaseURL,
 		"OPENAI_API_KEY":            settings.AI.APIKey,
 
-		"DONKEY_BUILD_BUILDER":                  string(settings.Build.Builder),
-		"DONKEY_BUILD_BUILDPACKS_BUILDER_IMAGE": settings.Build.Buildpacks.BuilderImage,
-		"DONKEY_BUILD_BUILDPACKS_RUN_IMAGE":     settings.Build.Buildpacks.RunImage,
-		"DONKEY_BUILD_BUILDPACKS_PLATFORM_API":  settings.Build.Buildpacks.PlatformAPI,
-		"DONKEY_BUILD_RAILPACK_BUILDER_IMAGE":   settings.Build.Railpack.BuilderImage,
-		"DONKEY_BUILD_RAILPACK_RUNTIME_IMAGE":   settings.Build.Railpack.RuntimeImage,
+		"DONKEY_BUILD_BUILDER":                string(settings.Build.Builder),
+		"DONKEY_BUILD_RAILPACK_BUILDER_IMAGE": settings.Build.Railpack.BuilderImage,
+		"DONKEY_BUILD_RAILPACK_RUNTIME_IMAGE": settings.Build.Railpack.RuntimeImage,
 	}
+	maps.Copy(serverEnv, aiBuilderEnvMap(settings.Build.AI))
 	if len(settings.Build.Env) > 0 {
 		raw, err := json.Marshal(settings.Build.Env)
 		if err != nil {
@@ -291,6 +289,22 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 		u.Warn("No OIDC client configured yet — nobody can sign in until you register one at the issuer and re-run this install with the client id and secret.")
 	}
 	return nil
+}
+
+// aiBuilderEnvMap is donkey's own builder's settings; only what was chosen
+// travels, so the server keeps its defaults for everything else.
+func aiBuilderEnvMap(ai config.InstallAIBuilder) map[string]string {
+	env := map[string]string{}
+	if ai.Verify != nil {
+		env["DONKEY_BUILD_AI_VERIFY"] = strconv.FormatBool(*ai.Verify)
+	}
+	if ai.VerifySeconds > 0 {
+		env["DONKEY_BUILD_AI_VERIFY_SECONDS"] = strconv.Itoa(ai.VerifySeconds)
+	}
+	if ai.Attempts > 0 {
+		env["DONKEY_BUILD_AI_ATTEMPTS"] = strconv.Itoa(ai.Attempts)
+	}
+	return env
 }
 
 // proxyEnvMap is the forward proxy in the spelling every tool already reads.

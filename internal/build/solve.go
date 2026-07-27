@@ -47,11 +47,12 @@ func (b *BuildKitBuilder) Build(ctx context.Context, req Request) (*Result, erro
 	}
 	defer c.Close()
 
-	// Buildpacks are their own shape of build: the CNB lifecycle pushes the
-	// image itself, so there is no image exporter and the digest comes back
-	// in a report file rather than from the exporter's response.
-	if req.Strategy == config.BuildBuildpacks {
-		return b.buildBuildpacks(ctx, c, req)
+	// A build that has to prove the image starts runs through the gateway
+	// instead: the frontend's result is solved first, the probe runs on it,
+	// and only then is the image exported. Nothing that cannot start is ever
+	// pushed under an app's name.
+	if req.Verify != nil {
+		return b.buildVerified(ctx, c, req)
 	}
 
 	def, opt, err := b.solveOpt(ctx, req)

@@ -226,3 +226,57 @@ var proposalSchema = map[string]any{
 	"required":             []string{"diagnosis", "actions"},
 	"additionalProperties": false,
 }
+
+// dockerfileInstructions drive donkey's own builder. The Dockerfile it
+// produces is the whole build — there is no buildpack underneath to fill
+// anything in — and donkey runs the result before publishing it, so a
+// plausible-looking image that cannot start is caught rather than shipped.
+const dockerfileInstructions = `You write the Dockerfile for a deployment tool called donkey.
+You get a file tree and key file contents. Answer with one complete Dockerfile
+that builds the application from the repository root.
+
+Requirements, all of which donkey checks:
+- It must build with no arguments, from the repository root as context.
+- The image must START. donkey runs it before publishing it: it launches your
+  ENTRYPOINT/CMD and waits for the app to listen. An image that exits
+  immediately fails the deploy.
+- Always give an explicit ENTRYPOINT or CMD. An image with neither cannot be
+  started at all.
+- The app is given a PORT environment variable and must listen on it. Prefer a
+  start command that passes $PORT through; where the app reads PORT itself,
+  leave it alone. Never hard-code a different port.
+- Listen on 0.0.0.0, never 127.0.0.1: a container that binds loopback answers
+  nobody, and it looks healthy while doing it.
+- Pin base images to a real, specific tag (python:3.12-slim, node:22-alpine,
+  golang:1.23-alpine, eclipse-temurin:21-jre). Never ":latest".
+- Install exactly the dependencies the manifest files name. Do not invent
+  packages, and do not skip system packages a library needs to build.
+- Prefer a multi-stage build where it removes a compiler from the final image.
+- Do not EXPOSE a port, do not add HEALTHCHECK, and do not set PORT yourself —
+  donkey handles all three.
+- The container runs with EVERY Linux capability dropped and no privilege
+  escalation. Anything needing chown, chmod of another user's files, setuid,
+  or a port below 1024 fails at runtime even as root. Stock nginx is the
+  classic trap: its entrypoint chowns its cache directory and dies. Reach for
+  an image built to run unprivileged (nginxinc/nginx-unprivileged) or do the
+  ownership work at BUILD time, in a RUN line, where it is still allowed.
+- Everything outside a mounted volume is lost on restart, so write nothing at
+  runtime that has to survive.
+- Write no explanation, no markdown fences: the dockerfile field is the file.
+
+When you are given a previous Dockerfile and the failure it produced, fix THAT
+failure. Read the error before rewriting: a missing shared library, an
+interpreter that is not on PATH, a start command that exits, a file the build
+never copied. Change what is wrong and keep what worked.`
+
+// dockerfileSchema is deliberately two fields: the file, and one line about
+// what changed — which is what donkey shows when a retry happened.
+var dockerfileSchema = map[string]any{
+	"type": "object",
+	"properties": map[string]any{
+		"dockerfile": map[string]any{"type": "string"},
+		"notes":      map[string]any{"type": "string"},
+	},
+	"required":             []string{"dockerfile", "notes"},
+	"additionalProperties": false,
+}

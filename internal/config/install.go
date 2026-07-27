@@ -67,8 +67,8 @@ type InstallBuild struct {
 // acts on: which builder to run, and with what.
 type BuildSettings struct {
 	// Builder is the default for apps with no Dockerfile: "railpack" (the
-	// default) or "buildpacks". A donkey.yaml with an explicit build.type
-	// still wins, and a Dockerfile always beats both.
+	// default) or "ai". A donkey.yaml with an explicit build.type still
+	// wins, and a Dockerfile always beats both.
 	Builder BuildStrategy `json:"builder,omitempty"`
 
 	// Env is injected into every app build, under the app's own build.env.
@@ -77,8 +77,8 @@ type BuildSettings struct {
 	// reach of build steps donkey never sees.
 	Env map[string]string `json:"env,omitempty"`
 
-	Buildpacks InstallBuildpacks `json:"buildpacks,omitempty"`
-	Railpack   InstallRailpack   `json:"railpack,omitempty"`
+	AI       InstallAIBuilder `json:"ai,omitempty"`
+	Railpack InstallRailpack  `json:"railpack,omitempty"`
 }
 
 // InstallProxy is the forward proxy donkey's own processes use, in the
@@ -89,21 +89,21 @@ type InstallProxy struct {
 	NoProxy string `json:"noProxy,omitempty"`
 }
 
-// InstallBuildpacks configures the Cloud Native Buildpacks builder. Both
-// images stay pure configuration, so any CNB builder works — Paketo, Google's,
-// or an in-house one.
-type InstallBuildpacks struct {
-	// BuilderImage holds the buildpacks and the lifecycle
-	// (default DefaultBuildpacksBuilderImage).
-	BuilderImage string `json:"builderImage,omitempty"`
-	// RunImage is the base of the built app image. Empty reads the builder's
-	// own default out of its io.buildpacks.builder.metadata label, which is
-	// what a matched builder/run pair is for — set it only to override.
-	RunImage string `json:"runImage,omitempty"`
-	// PlatformAPI is the CNB platform contract version. Empty lets the
-	// lifecycle in the builder pick its own, which is right unless a builder
-	// needs pinning.
-	PlatformAPI string `json:"platformApi,omitempty"`
+// InstallAIBuilder tunes donkey's own builder: the assistant writes the
+// Dockerfile, donkey builds it and checks the result starts.
+type InstallAIBuilder struct {
+	// Verify runs the built image and waits for it to come up before the
+	// image is published. A pointer so "unset" is distinguishable from
+	// "off" — unset means on, because an image that cannot start is the one
+	// failure a build is in a position to catch.
+	Verify *bool `json:"verify,omitempty"`
+	// VerifySeconds is how long the app is given to start listening
+	// (default DefaultVerifySeconds).
+	VerifySeconds int `json:"verifySeconds,omitempty"`
+	// Attempts is how many Dockerfiles the assistant may write for one
+	// deploy: the first, plus one revision per failure it is shown
+	// (default DefaultAIAttempts).
+	Attempts int `json:"attempts,omitempty"`
 }
 
 // InstallRailpack overrides the two images railpack's plans reference. They
@@ -114,29 +114,31 @@ type InstallRailpack struct {
 	RuntimeImage string `json:"runtimeImage,omitempty"`
 }
 
-// DefaultBuildpacksBuilderImage is the CNB builder donkey uses when an
-// installation chooses buildpacks without naming one.
-//
-// Google's builder is the one that behaves most like donkey's own detection:
-// measured against testdata/, it is the only CNB builder that works out a
-// start command for an app that ships no Procfile (gunicorn for Flask,
-// uvicorn for FastAPI) and honours $PORT the way donkey sets it. Paketo's
-// jammy base builder left the same apps with no process to launch, and its
-// cpython is built without sqlite3; Heroku's needs a Procfile.
-//
-// It is published for linux/amd64 only, which matches donkey's own default
-// platform. An installation whose nodes are arm64 needs a builder built for
-// it — heroku/builder:24 is one — or its builds run under emulation.
-const DefaultBuildpacksBuilderImage = "gcr.io/buildpacks/builder:google-24"
+const (
+	// DefaultVerifySeconds is how long a freshly built image is given to
+	// start listening. Long enough for a JVM or a cold interpreter, short
+	// enough that a genuinely broken image fails the deploy quickly.
+	DefaultVerifySeconds = 45
+	// DefaultAIAttempts is the first Dockerfile plus two revisions. Beyond
+	// that a model that has seen the failure twice is not converging, and
+	// the honest answer is to show the person the error.
+	DefaultAIAttempts = 3
+)
 
 // Validate checks the parts of the build section that can be wrong on their
 // own. The builder is the fallback for apps that bring no Dockerfile, so
 // "dockerfile" and "auto" are not answers to it.
 func (b InstallBuild) Validate() error {
 	switch b.Builder {
-	case "", BuildRailpack, BuildBuildpacks:
+	case "", BuildRailpack, BuildAI:
 	default:
-		return fmt.Errorf("build.builder must be railpack or buildpacks, not %q", b.Builder)
+		return fmt.Errorf("build.builder must be railpack or ai, not %q", b.Builder)
+	}
+	if b.AI.Attempts < 0 {
+		return fmt.Errorf("build.ai.attempts cannot be negative")
+	}
+	if b.AI.VerifySeconds < 0 {
+		return fmt.Errorf("build.ai.verifySeconds cannot be negative")
 	}
 	for host, mirror := range b.RegistryMirrors {
 		if host == "" {
@@ -157,12 +159,26 @@ func (b BuildSettings) BuilderOrDefault() BuildStrategy {
 	return b.Builder
 }
 
-// BuildpacksBuilderImage is the CNB builder image to run, defaulted.
-func (b BuildSettings) BuildpacksBuilderImage() string {
-	if b.Buildpacks.BuilderImage == "" {
-		return DefaultBuildpacksBuilderImage
+// VerifyStartup reports whether a freshly built image is run before it is
+// published. On unless an installation turns it off.
+func (b BuildSettings) VerifyStartup() bool {
+	return b.AI.Verify == nil || *b.AI.Verify
+}
+
+// VerifySeconds is how long the app is given to come up, defaulted.
+func (b BuildSettings) VerifySeconds() int {
+	if b.AI.VerifySeconds <= 0 {
+		return DefaultVerifySeconds
 	}
-	return b.Buildpacks.BuilderImage
+	return b.AI.VerifySeconds
+}
+
+// AIAttempts is how many Dockerfiles the assistant may write, defaulted.
+func (b BuildSettings) AIAttempts() int {
+	if b.AI.Attempts <= 0 {
+		return DefaultAIAttempts
+	}
+	return b.AI.Attempts
 }
 
 // MergeEnv layers an app's own build.env over the installation's. The app

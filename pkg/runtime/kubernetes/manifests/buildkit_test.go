@@ -169,9 +169,8 @@ func TestBuildConfigReachesBothPods(t *testing.T) {
 	in := systemInput()
 	in.Build = config.InstallBuild{
 		BuildSettings: config.BuildSettings{
-			Builder:    config.BuildBuildpacks,
-			Env:        map[string]string{"NPM_CONFIG_REGISTRY": "https://mirror.example.com/npm"},
-			Buildpacks: config.InstallBuildpacks{BuilderImage: "mirror.example.com/builder:1"},
+			Builder: config.BuildAI,
+			Env:     map[string]string{"NPM_CONFIG_REGISTRY": "https://mirror.example.com/npm"},
 		},
 		RegistryMirrors: map[string]string{"docker.io": "https://mirror.example.com/docker"},
 		Proxy:           config.InstallProxy{HTTPS: "http://proxy.example.com:3128", NoProxy: ".example.com"},
@@ -182,9 +181,7 @@ func TestBuildConfigReachesBothPods(t *testing.T) {
 	}
 	for _, want := range []string{
 		"DONKEY_BUILD_BUILDER",
-		"buildpacks",
-		"DONKEY_BUILD_BUILDPACKS_BUILDER_IMAGE",
-		"mirror.example.com/builder:1",
+		"ai",
 		// The build variables travel as JSON, the way DONKEY_ADMINS does.
 		"DONKEY_BUILD_ENV",
 		"NPM_CONFIG_REGISTRY",

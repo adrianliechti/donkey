@@ -3,7 +3,6 @@ package detect
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/adrianliechti/donkey/internal/config"
@@ -26,20 +25,17 @@ func TestDetectAutoUsesConfiguredBuilder(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "main.go", "package main\n")
 
-	got, err := Detect(dir, nil, config.BuildSettings{Builder: config.BuildBuildpacks})
+	got, err := Detect(dir, nil, config.BuildSettings{Builder: config.BuildAI})
 	if err != nil {
 		t.Fatalf("Detect: %v", err)
 	}
-	if got.Strategy != config.BuildBuildpacks {
-		t.Errorf("strategy = %q, want buildpacks", got.Strategy)
+	if got.Strategy != config.BuildAI {
+		t.Errorf("strategy = %q, want ai", got.Strategy)
 	}
-	if !strings.Contains(got.Summary, config.DefaultBuildpacksBuilderImage) {
-		t.Errorf("the summary doesn't say which builder will run: %q", got.Summary)
-	}
-	// Buildpacks detect inside the build, so nothing about the app is read
-	// here — and there is no provider list to guess a port from.
+	// donkey's own builder decides nothing here: the Dockerfile is written
+	// during the build, so there is no provider list to guess a port from.
 	if got.Railpack != nil {
-		t.Error("the buildpacks path produced a railpack plan")
+		t.Error("donkey's own builder produced a railpack plan")
 	}
 }
 
@@ -49,7 +45,7 @@ func TestDetectDockerfileBeatsConfiguredBuilder(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "Dockerfile", "FROM scratch\n")
 
-	got, err := Detect(dir, nil, config.BuildSettings{Builder: config.BuildBuildpacks})
+	got, err := Detect(dir, nil, config.BuildSettings{Builder: config.BuildAI})
 	if err != nil {
 		t.Fatalf("Detect: %v", err)
 	}
@@ -63,24 +59,24 @@ func TestDetectDockerfileBeatsConfiguredBuilder(t *testing.T) {
 func TestDetectAppBuildTypeWins(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "main.go", "package main\n")
-	app := &config.AppConfig{Build: config.BuildConfig{Type: config.BuildBuildpacks}}
+	app := &config.AppConfig{Build: config.BuildConfig{Type: config.BuildAI}}
 
 	got, err := Detect(dir, app, config.BuildSettings{Builder: config.BuildRailpack})
 	if err != nil {
 		t.Fatalf("Detect: %v", err)
 	}
-	if got.Strategy != config.BuildBuildpacks {
-		t.Errorf("strategy = %q, want buildpacks", got.Strategy)
+	if got.Strategy != config.BuildAI {
+		t.Errorf("strategy = %q, want ai", got.Strategy)
 	}
 }
 
-// The AI-proposed Dockerfile is still preferred over the configured builder:
+// A Dockerfile donkey wrote earlier is preferred over the configured builder:
 // it only exists because someone accepted it for this app.
 func TestDetectAIDockerfileBeatsConfiguredBuilder(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, AIDockerfilePath, "FROM scratch\n")
 
-	got, err := Detect(dir, nil, config.BuildSettings{Builder: config.BuildBuildpacks})
+	got, err := Detect(dir, nil, config.BuildSettings{Builder: config.BuildAI})
 	if err != nil {
 		t.Fatalf("Detect: %v", err)
 	}

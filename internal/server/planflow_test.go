@@ -29,6 +29,10 @@ func (a planAssistant) Analyze(context.Context, *ai.AnalyzeInput) (*ai.Analysis,
 	return a.analysis, nil
 }
 
+func (planAssistant) WriteDockerfile(context.Context, *ai.DockerfileInput) (string, error) {
+	return "FROM scratch\n", nil
+}
+
 func (planAssistant) DiagnoseFailure(context.Context, *ai.FailureContext) (*ai.FixProposal, error) {
 	return nil, nil
 }

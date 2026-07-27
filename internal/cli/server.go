@@ -47,9 +47,8 @@ func serverInstallCommand() *cli.Command {
 			&cli.StringFlag{Name: "server-host", Usage: "hostname of the API and console (default: the domain itself)"},
 			&cli.StringFlag{Name: "gateway-service-type", Usage: "service type traffic enters through: LoadBalancer (default), ClusterIP or NodePort (clusters without a load-balancer controller, e.g. kind)"},
 			&cli.StringFlag{Name: "default-platform", Usage: "build platform of the cluster nodes (default linux/amd64)"},
-			&cli.StringFlag{Name: "builder", Usage: "how apps without a Dockerfile are built: railpack (default) or buildpacks (needs no egress beyond the registry)"},
-			&cli.StringFlag{Name: "buildpacks-builder-image", Usage: "CNB builder image holding the buildpacks and the lifecycle"},
-			&cli.StringFlag{Name: "buildpacks-run-image", Usage: "base image of built apps (default: the builder's own, from its metadata)"},
+			&cli.StringFlag{Name: "builder", Usage: "how apps without a Dockerfile are built: railpack (default) or ai (donkey writes the Dockerfile; needs no egress beyond the registry)"},
+			&cli.BoolFlag{Name: "no-verify", Usage: "skip running a freshly built image to check it starts (builder ai)"},
 			&cli.StringFlag{Name: "railpack-builder-image", Usage: "railpack builder image (mirror it for a restricted network)"},
 			&cli.StringFlag{Name: "railpack-runtime-image", Usage: "railpack runtime image (mirror it for a restricted network)"},
 			&cli.StringFlag{Name: "https-proxy", Usage: "forward proxy for donkey-server and the build engine"},
@@ -97,8 +96,9 @@ func installSettings(cmd *cli.Command) (*config.InstallFile, error) {
 	if v := cmd.String("builder"); v != "" {
 		settings.Build.Builder = config.BuildStrategy(v)
 	}
-	strOver(&settings.Build.Buildpacks.BuilderImage, "buildpacks-builder-image")
-	strOver(&settings.Build.Buildpacks.RunImage, "buildpacks-run-image")
+	if cmd.Bool("no-verify") {
+		settings.Build.AI.Verify = new(false)
+	}
 	strOver(&settings.Build.Railpack.BuilderImage, "railpack-builder-image")
 	strOver(&settings.Build.Railpack.RuntimeImage, "railpack-runtime-image")
 	strOver(&settings.Build.Proxy.HTTPS, "https-proxy")
@@ -340,10 +340,14 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 // what that means for what the installation has to reach.
 func builderSummary(b config.InstallBuild) string {
 	switch b.BuilderOrDefault() {
-	case config.BuildBuildpacks:
-		return "Cloud Native Buildpacks — " + b.BuildpacksBuilderImage()
+	case config.BuildAI:
+		s := "donkey writes a Dockerfile for each app"
+		if b.VerifyStartup() {
+			s += ", and checks the image starts before publishing it"
+		}
+		return s
 	default:
-		return "railpack (needs egress to github.com to resolve package versions; build.builder: buildpacks does not)"
+		return "railpack (needs egress to github.com to resolve package versions; build.builder: ai does not)"
 	}
 }
 

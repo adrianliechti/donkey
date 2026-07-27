@@ -78,6 +78,55 @@ func (o *openAI) Analyze(ctx context.Context, in *AnalyzeInput) (*Analysis, erro
 	return &out, nil
 }
 
+// WriteDockerfile asks for the Dockerfile donkey's own builder builds.
+func (o *openAI) WriteDockerfile(ctx context.Context, in *DockerfileInput) (string, error) {
+	var b strings.Builder
+	if in.Port > 0 {
+		fmt.Fprintf(&b, "donkey will set PORT=%d.\n\n", in.Port)
+	}
+	// The failure goes first: on a retry it is the only thing that matters,
+	// and burying it under a file tree is how a model misses it.
+	if in.Failure != "" {
+		fmt.Fprintf(&b, "Your previous Dockerfile did not work. What happened:\n%s\n\n", in.Failure)
+		if in.Previous != "" {
+			fmt.Fprintf(&b, "The Dockerfile that produced it:\n%s\n\n", in.Previous)
+		}
+	}
+	if in.Summary != nil {
+		b.WriteString(in.Summary.Render())
+	}
+
+	var out struct {
+		Dockerfile string `json:"dockerfile"`
+		Notes      string `json:"notes"`
+	}
+	if err := o.structured(ctx, dockerfileInstructions, b.String(), "dockerfile", dockerfileSchema, &out); err != nil {
+		return "", err
+	}
+	// Models reach for a fence even when told not to; stripping it is cheaper
+	// than a build that fails on line one.
+	df := strings.TrimSpace(stripCodeFence(out.Dockerfile))
+	if df == "" {
+		return "", fmt.Errorf("the assistant returned no Dockerfile")
+	}
+	return df + "\n", nil
+}
+
+// stripCodeFence removes a ```dockerfile … ``` wrapper if one came back.
+func stripCodeFence(s string) string {
+	t := strings.TrimSpace(s)
+	if !strings.HasPrefix(t, "```") {
+		return s
+	}
+	if _, rest, ok := strings.Cut(t, "\n"); ok {
+		t = rest
+	}
+	if i := strings.LastIndex(t, "```"); i >= 0 {
+		t = t[:i]
+	}
+	return t
+}
+
 // sanitize drops answers donkey would refuse anyway, so callers can trust
 // what they get: a model that invents /tmp volumes or a bare health path
 // shouldn't be able to break a deploy.

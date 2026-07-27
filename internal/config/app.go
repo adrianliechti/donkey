@@ -206,11 +206,14 @@ const (
 	BuildAuto       BuildStrategy = "auto"
 	BuildRailpack   BuildStrategy = "railpack"
 	BuildDockerfile BuildStrategy = "dockerfile"
-	// BuildBuildpacks runs the Cloud Native Buildpacks lifecycle inside a
-	// builder image. Unlike railpack it detects the app *in the build*, so
-	// nothing about the app is worked out on the machine holding the source —
-	// which is what lets it work with no egress beyond the image registry.
-	BuildBuildpacks BuildStrategy = "buildpacks"
+	// BuildAI is donkey's own builder: the assistant writes a Dockerfile for
+	// the app, donkey builds it, and then checks that what came out actually
+	// starts. The Dockerfile is kept (.donkey/Dockerfile), so the app is read
+	// once and every later deploy is an ordinary, repeatable Dockerfile build.
+	//
+	// It needs nothing but the base images the Dockerfile names, which are
+	// ordinary registry pulls — so it works wherever the registry mirrors do.
+	BuildAI BuildStrategy = "ai"
 )
 
 type BuildConfig struct {
@@ -388,9 +391,9 @@ func (c *AppConfig) Validate() error {
 		return fmt.Errorf("an app with storage runs as a single copy — its disk can only be attached to one machine at a time (set replicas: 1, or drop storage.paths)")
 	}
 	switch c.Build.Type {
-	case BuildAuto, BuildRailpack, BuildDockerfile, BuildBuildpacks:
+	case BuildAuto, BuildRailpack, BuildDockerfile, BuildAI:
 	default:
-		return fmt.Errorf("build.type %q is not one of auto, railpack, buildpacks, dockerfile", c.Build.Type)
+		return fmt.Errorf("build.type %q is not one of auto, railpack, ai, dockerfile", c.Build.Type)
 	}
 	if c.Replicas != nil && *c.Replicas < 0 {
 		return fmt.Errorf("replicas cannot be negative")
