@@ -59,6 +59,82 @@ tls:
   # mode: static              # or: bring your own (wildcard) certificate
   # secret: donkey-gateway-tls  # kubernetes.io/tls Secret in donkey-system
 
+# build:
+#   # How an app with no Dockerfile gets built. A Dockerfile in the app folder
+#   # always wins; so does one donkey wrote earlier (.donkey/Dockerfile), and
+#   # so does a donkey.yaml with an explicit build.type.
+#   #
+#   #   railpack  (default) detects the app in donkey-server and plans the
+#   #             build. It resolves package versions by calling out to
+#   #             github.com, so it needs egress — a registry mirror alone is
+#   #             not enough (see "Restricted networks" below).
+#   #   ai        donkey's own: the assistant writes the app's Dockerfile,
+#   #             donkey builds it and runs the result to check it starts.
+#   #             The only things pulled are the base images the Dockerfile
+#   #             names, which registryMirrors covers — so this works on a
+#   #             network whose only egress is a mirror.
+#   builder: ai
+#
+#   ai:
+#     # donkey runs every image it builds before publishing it: it starts the
+#     # container and waits for the app to listen on the port it will be
+#     # deployed with. An image whose process exits fails the deploy, and the
+#     # failure goes back to the assistant to write a better Dockerfile.
+#     #
+#     # An app that is still running but not yet listening PASSES — otherwise
+#     # anything that opens a database on startup would fail here, where there
+#     # is no database, and be "fixed" by a model with nothing to fix.
+#     verify: true
+#     verifySeconds: 45        # how long the app gets to come up
+#     attempts: 3              # first Dockerfile plus two revisions
+#
+#   railpack:
+#     # The two images railpack's plans reference; mirror them for a cluster
+#     # that can't reach ghcr.io.
+#     # builderImage: registry.example.com/mirror/railwayapp/railpack-builder:mise-2026.7.11
+#     # runtimeImage: registry.example.com/mirror/railwayapp/railpack-runtime:mise-2026.7.11
+#     #
+#     # railpack also resolves package versions by running mise, which it
+#     # downloads from github.com the first time (through the proxy below, if
+#     # there is one). donkey's image does not carry a copy — it is 90 MB and
+#     # only railpack wants it. To avoid that download, mount your own and set
+#     # DONKEY_MISE_BINARY on donkey-server; donkey then stages it where
+#     # railpack looks, as a shim that re-injects the proxy and any MISE_*
+#     # from build.env. `donkey doctor` reports which of the two is in play.
+#
+#   ### Restricted networks ###
+#   #
+#   # registryMirrors is written into the build engine's configuration, so it
+#   # covers every image a build pulls: the railpack images above, and every
+#   # FROM in a Dockerfile — the app's own or one donkey wrote. Keys are
+#   # upstream registry hosts; a scheme is optional. Mirror hosts inherit
+#   # registry.caSecret, which is the usual shape when the mirror is an
+#   # in-house Artifactory behind a private CA.
+#   #
+#   # Note that buildkitImage (above) is pulled by the cluster itself, not by
+#   # the build engine — mirror that one by setting it directly.
+#   registryMirrors:
+#     docker.io: https://artifactory.example.com/docker-remote
+#     ghcr.io: https://artifactory.example.com/ghcr-remote
+#
+#   # env reaches every build step of every app — donkey layers it under the
+#   # app's own build.env, so a project that pins its own registry still wins.
+#   # This is where package managers are pointed at their mirrors.
+#   env:
+#     NPM_CONFIG_REGISTRY: https://artifactory.example.com/api/npm/npm
+#     PIP_INDEX_URL: https://artifactory.example.com/api/pypi/pypi/simple
+#     GOPROXY: https://artifactory.example.com/api/go/go
+#
+#   # A forward proxy for donkey's own components — the server, the build
+#   # engine, and the gateway (which needs it for the OIDC token exchange and
+#   # for ACME). The app's build steps read env, above. donkey adds its own
+#   # cluster addresses and its registry to noProxy on top of what you write.
+#   # With a proxy, railpack's version resolution works too; without one,
+#   # choose builder: ai.
+#   proxy:
+#     https: http://proxy.example.com:3128
+#     noProxy: .example.com,10.0.0.0/8,.svc.cluster.local
+
 auth:
   # A real OIDC provider — Pocket ID, Entra ID, Keycloak, anything OIDC.
   # Required: it is the one way in — apps, the admin console and the CLI all

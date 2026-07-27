@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/adrianliechti/donkey/internal/gateway"
 	"github.com/adrianliechti/donkey/internal/server"
@@ -62,6 +63,11 @@ func main() {
 			os.Exit(1)
 		}
 		rt = provider
+		// Any recreation of donkey's own containers drops the space networks
+		// they were on, and Docker's DNS only answers for networks the asking
+		// container is attached to — so without this the gateway silently
+		// stops resolving every app deployed before the last install.
+		go provider.ReconcileOwnNetworks(ctx, time.Minute)
 		// The console is one more entry in the gateway's routing table; on
 		// Docker the server writes its own at startup (on Kubernetes the
 		// installer renders it).

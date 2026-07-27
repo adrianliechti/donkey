@@ -30,7 +30,7 @@ Per-space authorization still does not exist, so "an authenticated operator can 
 | # | Severity | Finding | Status |
 |---|---|---|---|
 | 1 | **Critical** | Any tenant workload forges operator identity to `donkey-server` with one header | Open |
-| 2 | High | Model-proposed `preDeploy` commands are auto-applied and run as a shell with every secret | Open |
+| 2 | High | Model-proposed `preDeploy` commands are auto-applied and run as a shell with every secret | **Resolved** — feature removed |
 | 3 | High | `donkey-server` runs as `cluster-admin` | Open (carried) |
 | 4 | High | Privileged BuildKit with an unauthenticated TCP listener | Open (carried) |
 | 5 | High | Docker runtime containers get no capability drop, no `no-new-privileges`, no non-root user | Open (new surface) |
@@ -110,7 +110,19 @@ Also set a default for `Admins`, or refuse to start when it is empty, so an unco
 
 ## 2. High — model-proposed `preDeploy` commands are auto-applied and run as a shell with every secret
 
-**Location:** `internal/cli/init.go:119-121` and `internal/server/analyze.go:128-130`; screening at `internal/ai/openai.go:130-141,155-167`; execution at `pkg/runtime/kubernetes/manifests/predeploy.go:44` and `pkg/runtime/docker/deploy.go:123-131`.
+> **Resolved by removing the feature.** `preDeploy` no longer exists: not as a
+> `donkey.yaml` field, not in the assistant's schema, and not in either
+> runtime. Deleted with it went the auto-apply sites, the character blocklist
+> this finding showed does not hold, the `sh -c` execution in
+> `manifests/predeploy.go` and `docker/deploy.go`, and the Job runner that
+> only ever served them. donkey now has no hook that runs a command of its own
+> against an app image, so there is nothing left to confirm or to screen. The
+> finding is kept below as the record of why.
+>
+> The trade: an app whose tables have to exist before its first request now
+> creates them in its own start path, idempotently.
+
+**Location (all removed):** `internal/cli/init.go:119-121` and `internal/server/analyze.go:128-130`; screening at `internal/ai/openai.go:130-141,155-167`; execution at `pkg/runtime/kubernetes/manifests/predeploy.go:44` and `pkg/runtime/docker/deploy.go:123-131`.
 
 ```go
 for _, step := range analysis.PreDeploy {
@@ -145,7 +157,9 @@ Starting position: a repository the developer opens. `README.md` is in the summa
 
 **Honest scoping:** deploying a hostile repo already runs its code, so the marginal gain is not "code execution" per se. What is additive is that the command lands in a *reviewed-looking* config file with no confirmation, persists across deploys including after the app itself is fixed, and runs as a shell with the addon bindings attached even when the app image is scrutinized. The inconsistency is the real finding: `internal/cli/fix.go:52-58` refuses to apply model-proposed *source edits* under `--yes` and demands per-file confirmation, while model-proposed *command execution* — strictly more dangerous — gets neither.
 
-**Fix:** confirm each command explicitly and refuse under `--yes`, exactly as `fix.go` already does. Replace the character blocklist with an allowlist of known migration argv-0s (`alembic`, `python manage.py migrate`, `npx prisma migrate deploy`, `bundle exec rails db:migrate`, `flask db upgrade`). Never join multiple steps into one `sh -c`.
+**Fix as proposed:** confirm each command explicitly and refuse under `--yes`, exactly as `fix.go` already does. Replace the character blocklist with an allowlist of known migration argv-0s (`alembic`, `python manage.py migrate`, `npx prisma migrate deploy`, `bundle exec rails db:migrate`, `flask db upgrade`). Never join multiple steps into one `sh -c`.
+
+**Fix as taken:** the feature was removed instead. An allowlist would have kept a model-influenced command-execution path in the product for the sake of one convenience; deleting it removes the class rather than narrowing it.
 
 ---
 
@@ -401,7 +415,7 @@ Worth recording, because it shapes where effort should go. Each was re-verified 
 ### Corrections to the previous review
 
 - **REGRESSED — "the admin console keeps bearer auth and bypasses the gateway."** Both halves are now false. See finding 1.
-- **OVERSTATED — "pod hardening: app pods and pre-deploy jobs set `RunAsNonRoot` and non-root UID/GID."** They do not (`manifests/app.go:394-404`, `predeploy.go:47-58`). They set the other four controls. This is plausibly deliberate, since app images choose their own user, but the control as written was not accurate. The files helper and all addons *do* pin non-root UIDs.
+- **OVERSTATED — "pod hardening: app pods and pre-deploy jobs set `RunAsNonRoot` and non-root UID/GID."** They do not (`manifests/app.go:394-404`, and `predeploy.go:47-58` before that file was removed with finding 2). They set the other four controls. This is plausibly deliberate, since app images choose their own user, but the control as written was not accurate. The files helper and all addons *do* pin non-root UIDs.
 - **STALE — "`exec.Command` appears exactly once."** Now three times, one per OS branch in `browse()` (`internal/cli/open.go:48,50,52`). Still argv arrays, still never through a shell.
 - **IMPROVED — the console no longer receives the API token.** The static token is gone; the console rides the gateway's `HttpOnly; Secure; SameSite=Lax` session cookie and sets no `Authorization` header (`web/src/api.ts:1-3,224-236`).
 
@@ -411,7 +425,7 @@ Worth recording, because it shapes where effort should go. Each was re-verified 
 
 **Archive and path handling.** Build-context extraction (`internal/server/untar.go:297-314`) rejects traversal, absolute and drive-relative paths, normalizes backslashes, drops symlinks, hardlinks and device nodes in both the tar and zip paths, masks setuid/setgid, and caps unpacked size and file count. The file browser resolves every path with `realpath` inside the pod and **re-checks containment on the resolved output** (`pkg/runtime/kubernetes/files.go:407-409,481-497`), resolving the leaf as well as the parent so a pre-existing symlink cannot be written through. The Docker provider mirrors this (`pkg/runtime/docker/files.go:185-201,418-443`). There is no client-side extraction at all. Tar packing uses `IsRegular()` and does not follow symlinks.
 
-**Command execution.** Every helper invocation is an argv slice, never a shell line, in both runtimes. The two `sh -c` sites are the app's own `preDeploy` (finding 2) and `initVolumeDirs`, whose interpolated values are `StorageSubPath` slugs restricted to `[a-z0-9-]` by construction.
+**Command execution.** Every helper invocation is an argv slice, never a shell line, in both runtimes. With `preDeploy` removed (finding 2), the only remaining `sh -c` site is `initVolumeDirs`, whose interpolated values are `StorageSubPath` slugs restricted to `[a-z0-9-]` by construction.
 
 **Namespace and space boundaries.** `ValidateSpace` reserves the namespace mapping onto `donkey-system`; `CheckNamespaceFree` refuses to adopt any namespace lacking donkey's annotation; both deletion paths re-check it; `DeleteSpace` refuses a space still holding apps. Name collisions are guarded in both directions (an addon cannot take an app's name and vice versa), and the `shared` pseudo-owner is reserved. On Docker, `ctrName`/`netName`/`volName` interpolate only `ValidName`-checked labels, which exclude the dot separator the scheme relies on.
 
@@ -432,7 +446,7 @@ Worth recording, because it shapes where effort should go. Each was re-verified 
 ## Remaining work, in suggested order
 
 1. **Finding 1** — the one that matters. Seal the forwarded identity with the session key both sides already hold, and add the NetworkPolicy in front of `donkey-server`. Also decide what an empty `Admins` should mean; "every account the IdP admits" is a surprising default.
-2. **Finding 2** — confirm `preDeploy` commands and refuse them under `--yes`, matching what `fix.go` already does for source edits. Replace the metacharacter blocklist with an allowlist.
+2. ~~**Finding 2**~~ — done: `preDeploy` was removed outright, so there is no command for donkey to run, confirm or screen.
 3. **Finding 5** — three lines in `replaceContainer` (`CapDrop`, `SecurityOpt`, `User`) bring the Docker runtime to parity with the Kubernetes posture.
 4. **Findings 6, 7, 13** — small and self-contained: `resourceNames` on the gateway's secrets Role, `email_verified` in the claims struct, a `state` parameter on the CLI login callback.
 5. **Findings 14 and 15** — a few lines each: reject `http://` for non-loopback hosts, `os.Chmod` the token file after writing.

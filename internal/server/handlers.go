@@ -201,6 +201,18 @@ func (s *Server) handleDiagnose(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// validComponent bounds what may reach a provider as part of an identifier.
+// On Docker the component becomes a container name, which the engine client
+// path.Joins into its request URL — so an unchecked "addon-x/../../.." would
+// collapse out of the containers endpoint and read any container on the host.
+func validComponent(c string) bool {
+	if c == "web" {
+		return true
+	}
+	name, ok := strings.CutPrefix(c, "addon-")
+	return ok && config.ValidName(name)
+}
+
 func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 	space, app, err := s.spaceApp(r)
 	if err != nil {
@@ -221,6 +233,13 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 	component := q.Get("component")
 	if component == "" {
 		component = "web"
+	}
+	// The component reaches a provider as part of an identifier — a label
+	// selector on Kubernetes, a container name on Docker — so it is validated
+	// here, once, for every runtime. Only "web" and "addon-<name>" exist.
+	if !validComponent(component) {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("%q is not a part of this app — use web, or addon-<service>", component))
+		return
 	}
 	// A space's services belong to the pseudo-app "shared", whatever app the
 	// caller came through — their pods carry that owner label, not the app's.
@@ -280,11 +299,10 @@ func (s *Server) handlePutEnv(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	// PORT is donkey's own: it is rendered from donkey.yaml's `port` directly
-	// on the container, where it always beats the env secret — accepting a
-	// new value here would store something that never reaches the app. An
-	// unchanged PORT is tolerated: clients read-modify-write the whole map,
-	// and a leftover from before this rule must not brick every other edit.
+	// PORT comes from donkey.yaml's `port` directly on the container, where it
+	// beats the env secret — accepting one here would store what never reaches
+	// the app. An unchanged PORT is tolerated, since clients read-modify-write
+	// the whole map.
 	if v, ok := req.Env["PORT"]; ok {
 		stored, gerr := s.rt.GetEnv(r.Context(), space, app)
 		if gerr != nil || stored["PORT"] != v {
@@ -654,8 +672,31 @@ type DoctorCheck struct {
 	Detail string `json:"detail,omitempty"`
 }
 
+// builderDetail says what donkey's own builder will do, in one line.
+func builderDetail(b config.BuildSettings) string {
+	if !b.VerifyStartup() {
+		return "the assistant writes each app's Dockerfile (startup verification off)"
+	}
+	return fmt.Sprintf("the assistant writes each app's Dockerfile; images are run and must start within %ds before they are published",
+		b.VerifyWindow())
+}
+
+// builderChecks has no builder image to probe, which is the design: the
+// assistant's Dockerfile names its own bases, and only the finished file can
+// ask whether they resolve. That the assistant answers at all is covered by
+// the assistant check.
+func (s *Server) builderChecks(context.Context) []DoctorCheck {
+	return []DoctorCheck{{
+		Name: "Builder (donkey writes the Dockerfile)", OK: true,
+		Detail: builderDetail(s.cfg.Build),
+	}}
+}
+
 func (s *Server) handleDoctor(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	// Longer than the other probes want, because the builder checks pull
+	// image manifests through whatever mirrors and proxies stand in the way —
+	// which is exactly the setup that is slow when it is misconfigured.
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 	var checks []DoctorCheck
 
@@ -681,6 +722,8 @@ func (s *Server) handleDoctor(w http.ResponseWriter, r *http.Request) {
 	}
 	checks = append(checks, reg)
 
+	checks = append(checks, s.builderChecks(ctx)...)
+
 	// The runtime probes its own dependencies — gateway, certificates,
 	// whatever this runtime needs to serve apps.
 	for _, c := range s.rt.Checks(ctx) {
@@ -699,22 +742,4 @@ func (s *Server) handleDoctor(w http.ResponseWriter, r *http.Request) {
 	checks = append(checks, assistant)
 
 	writeJSON(w, http.StatusOK, map[string]any{"checks": checks, "domain": s.cfg.Domain})
-}
-
-// maxAnalyzeBytes caps what one analyze request may send to the model —
-// without it the endpoint is an unbounded proxy onto somebody's AI budget.
-const maxAnalyzeBytes = 1 << 20
-
-func (s *Server) handleAIAnalyze(w http.ResponseWriter, r *http.Request) {
-	var in ai.AnalyzeInput
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxAnalyzeBytes)).Decode(&in); err != nil {
-		writeErr(w, http.StatusBadRequest, err)
-		return
-	}
-	out, err := s.assistant.Analyze(r.Context(), &in)
-	if err != nil {
-		writeErr(w, http.StatusBadGateway, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, out)
 }

@@ -126,15 +126,48 @@ tasks:
       - task: demo-idp-image
       - devkube --cluster {{.CLUSTER}} load donkey/fake-idp:dev
 
-  fake-ai:
-    desc: "DEMO/TEST: a deterministic OpenAI-compatible endpoint on :8080 — every answer is \"no findings\", so demos and e2e run without a model or a key"
-    cmds:
-      - go run ./hack/demo/fake-ai
-
   test:
     desc: Run unit tests (no cluster or docker needed)
     cmds:
       - go test ./...
+
+  # How good is the builder? Three rungs, each costlier and more convincing
+  # than the last: what donkey works out by reading, what the assistant writes,
+  # and whether the result actually runs.
+  #
+  #   builder:detect   122 apps · no model · no builds · seconds
+  #   builder:write     10 apps · model    · no builds · minutes
+  #   demo:samples      19 apps · model    · real builds and deploys · ~20 min
+
+  builder:corpus:
+    desc: >-
+      Fetch Railpack's example projects — 122 real apps, each with the build plan
+      Railpack commits for it — into .build/corpus. The fixture builder:detect scores against.
+    status:
+      - test -d .build/corpus/railpack-main/examples
+    cmds:
+      - mkdir -p .build/corpus
+      - curl -fsSL https://github.com/railwayapp/railpack/archive/refs/heads/main.tar.gz -o .build/corpus/railpack.tar.gz
+      - tar -xzf .build/corpus/railpack.tar.gz -C .build/corpus
+      - rm -f .build/corpus/railpack.tar.gz
+      - echo "corpus ready — $(ls .build/corpus/railpack-main/examples | wc -l | tr -d ' ') example projects"
+
+  builder:detect:
+    desc: >-
+      Score donkey's detection against Railpack's, app by app, over those 122.
+      No model and no builds — the deterministic rung, and the number to watch
+      when a detection rule changes.
+    deps: [builder:corpus]
+    cmds:
+      - DONKEY_CORPUS={{.ROOT_DIR}}/.build/corpus/railpack-main go test ./internal/ai -run TestCorpus -v -count=1
+
+  builder:write:
+    desc: >-
+      Have a real model write Dockerfiles for donkey's own testdata apps and check
+      what comes back — no builds. Needs OPENAI_BASE_URL / OPENAI_API_KEY;
+      set DONKEY_MODEL to pick the model (default claude-sonnet-5).
+    cmds:
+      - go test ./internal/ai -run TestLive -v -count=1 -timeout 20m
 
   vet:
     desc: Run go vet
@@ -206,7 +239,7 @@ tasks:
       - hack/demo-app.sh
 
   demo:samples:
-    desc: "Deploy every testdata sample into one space and report which ones donkey got right on its own"
+    desc: "Deploy every testdata sample and require every one to build, start and become healthy"
     cmds:
       - hack/demo-samples.sh
 

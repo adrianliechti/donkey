@@ -1,7 +1,10 @@
 package docker
 
 import (
+	"cmp"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"sort"
@@ -19,9 +22,6 @@ import (
 	"github.com/adrianliechti/donkey/internal/config"
 	rt "github.com/adrianliechti/donkey/pkg/runtime"
 )
-
-// preDeployTimeout bounds a pre-deploy step, same as on Kubernetes.
-const preDeployTimeout = 15 * time.Minute
 
 // runSpec is everything needed to (re)create an app's container: stored at
 // deploy, replayed by Restart — which is how changed env and bindings take
@@ -47,8 +47,8 @@ func (r *Runtime) setRunRecord(space, app string, spec runSpec) error {
 }
 
 // Deploy takes a built image live as a container. The same choreography as
-// on Kubernetes — storage, declared services, pre-deploy, the app, its
-// routes — with Docker's vocabulary underneath.
+// on Kubernetes — storage, declared services, the app, its routes — with
+// Docker's vocabulary underneath.
 func (r *Runtime) Deploy(ctx context.Context, spec rt.DeploySpec, out rt.Progress) error {
 	app := spec.App
 	space := spec.Space
@@ -124,16 +124,6 @@ func (r *Runtime) Deploy(ctx context.Context, spec rt.DeploySpec, out rt.Progres
 
 	if err := r.pullImage(ctx, run.Image); err != nil {
 		return err
-	}
-
-	if len(app.PreDeploy) > 0 {
-		out.Line("Running the pre-deploy step…")
-		if err := r.preDeploy(ctx, space, app.Name, run, app.PreDeploy); err != nil {
-			// The app container was deliberately not touched, so whatever is
-			// live stays live.
-			return fmt.Errorf("the pre-deploy step failed, so nothing was changed and the running version keeps serving: %w", err)
-		}
-		out.Line("✓ Pre-deploy step finished.")
 	}
 
 	if err := r.runApp(ctx, space, app.Name, run); err != nil {
@@ -270,8 +260,29 @@ func (r *Runtime) pullImage(ctx context.Context, ref string) error {
 		return fmt.Errorf("couldn't pull %s: %w", ref, err)
 	}
 	defer rc.Close()
-	_, err = io.Copy(io.Discard, rc)
-	return err
+	// The body has to be read, not discarded: the engine reports a pull that
+	// failed partway (a rate limit, a layer that would not download) as a JSON
+	// object inside the stream, with no transport error. Discarding it made a
+	// failed pull look successful — and the caller removes the running
+	// container before creating the new one.
+	dec := json.NewDecoder(rc)
+	for {
+		var msg struct {
+			Error       string `json:"error"`
+			ErrorDetail struct {
+				Message string `json:"message"`
+			} `json:"errorDetail"`
+		}
+		if derr := dec.Decode(&msg); derr != nil {
+			if errors.Is(derr, io.EOF) {
+				return nil
+			}
+			return fmt.Errorf("couldn't pull %s: %w", ref, derr)
+		}
+		if detail := cmp.Or(msg.ErrorDetail.Message, msg.Error); detail != "" {
+			return fmt.Errorf("couldn't pull %s: %s", ref, detail)
+		}
+	}
 }
 
 // appEnv composes the container's environment: stored env, the addon
@@ -389,54 +400,6 @@ func (r *Runtime) runApp(ctx context.Context, space, app string, spec runSpec) e
 	})
 }
 
-// preDeploy runs the app's pre-deploy commands in a one-shot container with
-// exactly the app's configuration — env, bindings, disk.
-func (r *Runtime) preDeploy(ctx context.Context, space, app string, spec runSpec, steps []string) error {
-	env, err := r.appEnv(space, app, spec.Port)
-	if err != nil {
-		return err
-	}
-	name := ctrName(space, app) + ".predeploy"
-	volumes, err := r.appMounts(ctx, space, app, spec)
-	if err != nil {
-		return err
-	}
-	if err := r.replaceContainer(ctx, name, runConfig{
-		Image:      spec.Image,
-		Env:        env,
-		Labels:     appLabels(space, app, "predeploy"),
-		Network:    netName(space),
-		Volumes:    volumes,
-		Entrypoint: []string{"sh", "-c", strings.Join(steps, " && ")},
-		OneShot:    true,
-	}); err != nil {
-		return err
-	}
-	defer func() { _ = r.removeContainer(context.WithoutCancel(ctx), name) }()
-
-	waitCtx, cancel := context.WithTimeout(ctx, preDeployTimeout)
-	defer cancel()
-	okC, errC := r.cli.ContainerWait(waitCtx, name, container.WaitConditionNotRunning)
-	select {
-	case status := <-okC:
-		if status.StatusCode != 0 {
-			return &rt.JobError{
-				Reason: fmt.Sprintf("it exited with code %d", status.StatusCode),
-				Logs:   r.logsTail(ctx, name, 100),
-			}
-		}
-		return nil
-	case err := <-errC:
-		if waitCtx.Err() != nil {
-			return &rt.JobError{
-				Reason: fmt.Sprintf("it was still running after %s", preDeployTimeout),
-				Logs:   r.logsTail(ctx, name, 100),
-			}
-		}
-		return err
-	}
-}
-
 type volumeMount struct {
 	Volume  string
 	Subpath string
@@ -550,7 +513,6 @@ func (r *Runtime) Render(spec rt.DeploySpec) (string, error) {
 func (r *Runtime) Destroy(ctx context.Context, space, app string, keepData bool) error {
 	for _, name := range []string{
 		ctrName(space, app),
-		ctrName(space, app) + ".predeploy",
 		ctrName(space, app) + ".files",
 	} {
 		if err := r.removeContainer(ctx, name); err != nil {
@@ -619,6 +581,12 @@ func (r *Runtime) ApplyNetwork(ctx context.Context, cfg *config.AppConfig) (stri
 			return "", err
 		}
 	} else {
+		// The same guard a deploy applies: without it the console could hand
+		// this app an address another one already serves, and the gateway
+		// would answer with whichever it sorted first.
+		if owner := r.hostOwner(space, host, app); owner != "" {
+			return "", rt.UserError{Err: fmt.Errorf("%s already answers on %s — two apps cannot share one address", owner, host)}
+		}
 		route := Route{
 			Host:    host,
 			Path:    "/",

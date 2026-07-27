@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"strconv"
 	"strings"
 	"time"
@@ -21,6 +22,8 @@ import (
 
 	"github.com/adrianliechti/donkey/internal/config"
 	"github.com/adrianliechti/donkey/internal/ui"
+	"github.com/adrianliechti/donkey/pkg/runtime/docker"
+	"github.com/adrianliechti/donkey/pkg/runtime/kubernetes/manifests"
 )
 
 // The Docker installation: donkey straight on a Docker engine, no cluster.
@@ -48,6 +51,12 @@ const (
 	dockerGatewayName = "donkey-gateway"
 )
 
+// dockerNoProxy is what must never be sent to a forward proxy: donkey's own
+// containers, the Docker engine's socket and the loopback registry all live
+// on this machine, and no corporate proxy can route them.
+const dockerNoProxy = "localhost,127.0.0.1," +
+	dockerRegistryName + "," + dockerBuildkitName + "," + dockerServerName + "," + dockerGatewayName
+
 // dockerInstallAction stands the whole control plane up on the local Docker
 // engine (or DOCKER_HOST).
 func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.InstallFile) error {
@@ -64,6 +73,9 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 	case "", "acme", "ca", "static":
 	default:
 		return fmt.Errorf("tls.mode must be acme, ca or static, not %q", settings.TLS.Mode)
+	}
+	if err := settings.Build.Validate(); err != nil {
+		return err
 	}
 
 	cli, err := dockerclient.NewClientWithOpts(dockerclient.FromEnv, dockerclient.WithAPIVersionNegotiation())
@@ -89,6 +101,11 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 	}
 	if missing := missingSettings(settings, true); len(missing) > 0 {
 		return fmt.Errorf("these settings are required (via -f file or flags): %v", missing)
+	}
+	// Same as the cluster install: prove the assistant answers before the
+	// installation changes.
+	if err := checkAssistant(ctx, u, settings.AI); err != nil {
+		return err
 	}
 	if settings.Auth.ClientID == "" {
 		settings.Auth.ClientID = pendingOIDC
@@ -117,13 +134,20 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 		return err
 	}
 
-	// The build engine, told that the registry speaks plain http.
-	buildkitToml := fmt.Sprintf("[worker.oci]\n  gc = true\n  reservedSpace = %q\n  maxUsedSpace = %q\n\n[registry.%q]\n  http = true\n", "5GB", "8GB", dockerRegistryName+":5000")
+	// The build engine, told that the bundled registry speaks plain http —
+	// and about the mirrors, if this installation only reaches registries
+	// through one.
+	buildkitToml := manifests.BuildkitTOML(manifests.BuildkitConfig{
+		RegistryHost:      dockerRegistryName + ":5000",
+		RegistryPlainHTTP: true,
+		Mirrors:           settings.Build.RegistryMirrors,
+	})
 	if err := replaceInfraContainer(ctx, cli, infraContainer{
 		Name:       dockerBuildkitName,
 		Image:      buildkitImage,
 		Cmd:        []string{"--addr", "tcp://0.0.0.0:1234", "--config", "/etc/buildkit/buildkitd.toml"},
 		Privileged: true,
+		Env:        proxyEnvMap(settings.Build.Proxy),
 		Mounts: []mount.Mount{
 			{Type: mount.TypeVolume, Source: dockerBuildkitVolume, Target: "/var/lib/buildkit"},
 		},
@@ -167,6 +191,17 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 		"OPENAI_BASE_URL":           settings.AI.BaseURL,
 		"OPENAI_API_KEY":            settings.AI.APIKey,
 	}
+	maps.Copy(serverEnv, builderEnvMap(settings.Build.BuildSettings))
+	if len(settings.Build.Env) > 0 {
+		raw, err := json.Marshal(settings.Build.Env)
+		if err != nil {
+			return err
+		}
+		serverEnv["DONKEY_BUILD_ENV"] = string(raw)
+	}
+	// The server resolves versions and image configuration itself, so it
+	// needs the proxy as much as the build engine does.
+	maps.Copy(serverEnv, proxyEnvMap(settings.Build.Proxy))
 	// A password only exists for an external registry — the bundled one is
 	// loopback-only and credential-less.
 	if pw, err := settings.Registry.Password(); err != nil {
@@ -230,11 +265,18 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 	if err := waitDockerRunning(ctx, cli, dockerGatewayName, 90*time.Second); err != nil {
 		return err
 	}
+	// Both containers were just recreated, which dropped the space networks
+	// they were on. Re-attach them, or every app deployed before this install
+	// stays unreachable until it is redeployed.
+	if err := docker.AttachOwnContainers(ctx, cli, dockerServerName, dockerGatewayName); err != nil {
+		return err
+	}
 	u.Success("Control plane is running.")
 
 	serverURL := "https://" + serverHost
 	u.Printf("")
 	u.Printf("  API:        %s", u.Bold(serverURL))
+	u.Printf("  Builder:    %s", u.Faint(builderSummary(settings.Build)))
 	u.Printf("")
 	u.Printf("Console:  open %s and sign in", u.Bold(serverURL))
 	u.Printf("CLI:      %s  %s", u.Bold(fmt.Sprintf("donkey login --server %s", serverURL)), u.Faint("(opens the browser)"))
@@ -255,6 +297,46 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 		u.Warn("No OIDC client configured yet — nobody can sign in until you register one at the issuer and re-run this install with the client id and secret.")
 	}
 	return nil
+}
+
+// builderEnvMap is the builder's settings; only what was chosen travels, so
+// the server keeps its defaults for everything else.
+func builderEnvMap(b config.BuildSettings) map[string]string {
+	env := map[string]string{}
+	if b.Verify != nil {
+		env["DONKEY_BUILDER_VERIFY"] = strconv.FormatBool(*b.Verify)
+	}
+	if b.VerifySeconds > 0 {
+		env["DONKEY_BUILDER_VERIFY_SECONDS"] = strconv.Itoa(b.VerifySeconds)
+	}
+	if b.Attempts > 0 {
+		env["DONKEY_BUILDER_ATTEMPTS"] = strconv.Itoa(b.Attempts)
+	}
+	return env
+}
+
+// proxyEnvMap is the forward proxy in the spelling every tool already reads.
+// Both cases: some tools read only the lowercase form, and Go's own HTTP
+// client ignores an uppercase HTTP_PROXY for CGI-safety reasons.
+func proxyEnvMap(p config.InstallProxy) map[string]string {
+	env := map[string]string{}
+	if p.HTTP != "" || p.HTTPS != "" {
+		// donkey's containers reach each other by name on their own Docker
+		// network; a corporate proxy cannot route those.
+		p.NoProxy = strings.Trim(strings.TrimSpace(p.NoProxy)+","+dockerNoProxy, ",")
+	}
+	for name, value := range map[string]string{
+		"HTTP_PROXY":  p.HTTP,
+		"HTTPS_PROXY": p.HTTPS,
+		"NO_PROXY":    p.NoProxy,
+	} {
+		if value == "" {
+			continue
+		}
+		env[name] = value
+		env[strings.ToLower(name)] = value
+	}
+	return env
 }
 
 func adminsJSONString(admins *config.AccessConfig) string {

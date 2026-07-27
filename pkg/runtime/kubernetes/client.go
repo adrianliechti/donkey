@@ -5,6 +5,8 @@ package kubernetes
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"net/url"
 
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/dynamic"
@@ -68,6 +70,14 @@ func NewInCluster() (*Client, error) {
 	}
 	cfg.QPS = 50
 	cfg.Burst = 100
+	// The API server is never reached through a forward proxy. client-go
+	// otherwise falls back to http.ProxyFromEnvironment, so an installation
+	// that sets build.proxy (for the build engine, and for donkey-server's
+	// own reach to a registry on the internet) would send every API call to a
+	// proxy that cannot route a cluster service address — which takes the
+	// whole control plane down. Saying so here beats trying to spell the
+	// service CIDR into NO_PROXY, which differs per cluster.
+	cfg.Proxy = func(*http.Request) (*url.URL, error) { return nil, nil }
 	return fromRest(cfg)
 }
 

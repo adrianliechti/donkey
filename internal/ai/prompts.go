@@ -11,12 +11,6 @@ redeploy), and runs behind a load balancer.
 
 Report:
 - appType: what this is, in plain words for a non-technical user.
-- strategy: "" when donkey's detection works and needs no help. Only when
-  donkey could not detect the app, choose "railpack" with a railpack config
-  (JSON, https://railpack.com schema: {"provider": "...", "buildCommand": "...",
-  "startCommand": "...", "packages": {...}}) for a standard
-  Python/Node/Go/Ruby/PHP/Java/static setup, or "dockerfile" with a complete,
-  production-quality Dockerfile that builds from the repository root.
 - port: the fixed TCP port the app listens on, read from the source/config.
   If the app reads the PORT environment variable (process.env.PORT,
   os.environ, os.Getenv, ENV["PORT"], …) and would use it, answer 0 — any port
@@ -69,20 +63,6 @@ Report:
   config a build never ships: a vite/webpack devServer proxy, test fixtures,
   docker-compose files, comments, README examples, and any default that an
   environment variable overrides at runtime.
-- preDeploy: commands that MUST finish before the new version starts serving,
-  because the app cannot work without them. In practice this is database
-  migrations: "python manage.py migrate", "alembic upgrade head",
-  "npx prisma migrate deploy", "bundle exec rails db:migrate". Give the
-  command exactly as it would run in the container's working directory, and a
-  reason naming the evidence (a migrations folder, an alembic.ini, a
-  schema.prisma). Rules:
-  · Only migrations and equally mandatory setup. NOT seeding with demo data,
-    NOT collectstatic or asset builds (those belong to the build), NOT tests,
-    NOT anything that starts a server or runs forever.
-  · The command runs on every deploy, so it must be safe to run twice. Every
-    migration tool above already is; a hand-rolled script may not be — leave
-    those out.
-  · Most apps need none. An empty list is the common, correct answer.
 - hostRestriction: set this ONLY when the app itself rejects requests whose
   Host header is not on a list it keeps. Django's ALLOWED_HOSTS is the case
   that matters: the generator leaves it empty, and Django then answers 400 to
@@ -93,6 +73,44 @@ Report:
   Only report a list that is empty or that cannot match the deployed hostname.
   null when the app serves any Host, which is the usual case.
 - notes: one short sentence for a non-technical user.`
+
+// analyzeExploreInstruction sends the assistant into the code before it
+// answers. Every field of an Analysis is a claim about source — the port the
+// process binds, the folder it writes to, the route that answers without
+// authentication — and a file tree cannot settle any of them. The specific
+// instructions below are the questions whose wrong answers are silent: an app
+// deployed on the wrong port, or without a disk, looks completely healthy
+// until the moment it does not.
+const analyzeExploreInstruction = `
+Read this app before you answer. You have list_files, read_file, search_files
+and find_files, all read-only and confined to this app.
+
+Go and settle these, rather than inferring them from the file tree:
+- The port. Search for "PORT", "listen", "bind", "host=" or the framework's
+  equivalent, and read the file you find. What matters is whether the code
+  reads the PORT environment variable, and what it does when that is unset.
+- The bind address. A literal 127.0.0.1 or "localhost" in a listen call is
+  fatal in a container and invisible from outside — find the actual call.
+- Folders written at runtime. Search for the app opening files for writing, an
+  SQLite path, an upload directory. Resolve each to an absolute container path
+  before reporting it.
+- A health route, only if one really exists. Read the routes; do not guess a
+  path from convention.
+- Backing services, from the code that connects to them rather than from a
+  dependency being present.
+
+A few well-chosen reads settle all of this. Stop when they do.`
+
+// analyzeConcludeInstruction is a reminder of the answers that must be
+// withheld rather than guessed. Every one of these fields does something to a
+// deployment, so an invented value is worse than an empty one.
+const analyzeConcludeInstruction = `Now give your answer, based on what you read.
+
+Where you did not find evidence, say nothing rather than something plausible:
+port 0 when the app honors PORT, "" for a healthcheck path you did not see in
+the routes, an empty volume list when nothing is written that must survive,
+null for hostRestriction unless you read a host allowlist. A guessed value here
+is applied to a real deployment.`
 
 const diagnoseInstructions = `You help a deployment tool called donkey explain failures to users who may
 not be technical. You get the failure stage, config, cluster events and logs.
@@ -150,9 +168,6 @@ var analysisSchema = map[string]any{
 	"type": "object",
 	"properties": map[string]any{
 		"appType":         map[string]any{"type": "string"},
-		"strategy":        map[string]any{"type": "string", "enum": []string{"", "railpack", "dockerfile"}},
-		"dockerfile":      map[string]any{"type": "string"},
-		"railpackConfig":  map[string]any{"type": "string"},
 		"port":            map[string]any{"type": "integer"},
 		"portReason":      map[string]any{"type": "string"},
 		"bindsLoopback":   map[string]any{"type": "boolean"},
@@ -196,18 +211,6 @@ var analysisSchema = map[string]any{
 				"additionalProperties": false,
 			},
 		},
-		"preDeploy": map[string]any{
-			"type": "array",
-			"items": map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"command": map[string]any{"type": "string"},
-					"reason":  map[string]any{"type": "string"},
-				},
-				"required":             []string{"command", "reason"},
-				"additionalProperties": false,
-			},
-		},
 		"hostRestriction": map[string]any{
 			"type": []string{"object", "null"},
 			"properties": map[string]any{
@@ -221,10 +224,10 @@ var analysisSchema = map[string]any{
 		},
 		"notes": map[string]any{"type": "string"},
 	},
-	"required": []string{"appType", "strategy", "dockerfile", "railpackConfig", "port", "portReason",
+	"required": []string{"appType", "port", "portReason",
 		"bindsLoopback", "bindReason",
 		"healthcheckPath", "volumes", "services", "localURLs",
-		"preDeploy", "hostRestriction", "notes"},
+		"hostRestriction", "notes"},
 	"additionalProperties": false,
 }
 
@@ -250,5 +253,208 @@ var proposalSchema = map[string]any{
 		},
 	},
 	"required":             []string{"diagnosis", "actions"},
+	"additionalProperties": false,
+}
+
+// dockerfileInstructions drive donkey's own builder. The Dockerfile it
+// produces is the whole build — there is no buildpack underneath to fill
+// anything in — and donkey runs the result before publishing it, so a
+// plausible-looking image that cannot start is caught rather than shipped.
+//
+// The rules below are mostly not style: each one is a failure that has
+// actually shipped. They are written as consequences rather than commands
+// because a model that knows why a rule exists applies it to the case the rule
+// did not anticipate.
+const dockerfileInstructions = `You write the Dockerfile for a deployment tool called donkey. You are given
+what donkey established about the app by reading it, a file tree, key file
+contents, and tools to read anything else you want. Answer with one complete
+Dockerfile that builds the app from the repository root.
+
+You are replacing a buildpack. Nothing fills in what you leave out, and
+nothing corrects what you get wrong — so establish facts from the files
+instead of assuming the shape of a typical project.
+
+# The contract the image runs under
+
+- donkey sets PORT and the app must listen on it. Pass $PORT through in the
+  start command where the app takes a flag; leave it alone where the app reads
+  PORT itself. Never hard-code a different port.
+- Listen on 0.0.0.0, never 127.0.0.1. A container bound to loopback answers
+  nobody while looking perfectly healthy, so this failure is invisible until
+  every request times out.
+- EVERY Linux capability is dropped and privilege escalation is off. At
+  runtime that means: no chown or chmod of files owned by someone else, no
+  setuid, no binding a port below 1024 — even as root. Do all ownership work
+  at BUILD time in a RUN line, where it is still allowed.
+  Stock nginx is the classic casualty: its entrypoint chowns its cache
+  directory and dies. Use nginxinc/nginx-unprivileged, or Caddy, instead.
+- The filesystem is ephemeral. Anything written outside a mounted volume is
+  gone on restart, so nothing the app must keep may be written at runtime.
+- Run as a non-root user where the base image offers one (node, and most
+  -slim images, ship one). Create the user and chown what it needs in a RUN
+  line, then USER it. If that turns out to fight the app, root is acceptable —
+  a working image beats a tidy one.
+
+# What donkey checks before publishing
+
+donkey builds the image and then RUNS it, with PORT set, and waits for it to
+listen. An image that exits immediately fails the deploy. So:
+
+- Always give an explicit ENTRYPOINT or CMD. Neither one means nothing starts.
+- The start command must be the real production server. A development server
+  (` + "`npm run dev`, `vite`, `flask run`, `manage.py runserver`, `rails server`" + `
+  in dev mode) will start and may even pass the check, and is wrong: it is
+  slow, single-threaded, often binds loopback, and reloads on file changes
+  that cannot happen.
+- Do not EXPOSE a port, do not add HEALTHCHECK, and do not set PORT yourself.
+  donkey handles all three.
+
+# Getting the build right
+
+- Pin base images to a real, specific tag: python:3.12-slim, node:22-alpine,
+  golang:1.23-alpine, eclipse-temurin:21-jre. Never ":latest".
+- Match the version the repo asks for. .python-version, .nvmrc,
+  .tool-versions, go.mod's go directive and package.json's engines are
+  statements about what the code needs; a newer base image is a build failure
+  waiting to happen, not an upgrade.
+- Use the package manager the lockfile names, and its reproducible install:
+  ` + "`npm ci` (only with package-lock.json), `pnpm install --frozen-lockfile`," + `
+  ` + "`yarn install --immutable`, `bun install --frozen-lockfile`, `uv sync --frozen`," + `
+  ` + "`poetry install --no-root`, `pipenv install --deploy`, `bundle install`." + `
+  With no lockfile, use the forgiving form (` + "`npm install`" + `) — the strict one
+  fails outright.
+- Install the OS packages native dependencies need, and install them in the
+  stage that needs them: -dev packages to compile, the plain runtime library
+  in the final image. A missing runtime library is the worst failure of all,
+  because the build is green and the app dies on first import.
+- Alpine and Python are a bad pair: musl has no manylinux wheels, so every
+  package compiles from source, slowly, and some do not compile at all. Use
+  a -slim Debian base for Python unless there is a reason not to.
+- Prefer a multi-stage build wherever it drops a compiler or a full dependency
+  tree from the final image — a Go or Rust binary onto a minimal base, a Java
+  jar onto a JRE, a built front end onto a web server.
+- Writing a config file inline? Quote the heredoc delimiter: ` + "`COPY <<'EOF' …`" + `.
+  With an unquoted ` + "`<<EOF`" + ` the Dockerfile parser expands ` + "`$VAR`" + ` at BUILD time,
+  so anything meant to be read at run time — a ` + "`$PORT`" + ` in a server config, a
+  ` + "`$HOME`" + ` in a shell script — silently becomes an empty string in the shipped
+  file. Quote it, and the content is taken literally.
+
+# Static front ends
+
+If the app compiles to static files — Vite, Astro, Create React App, Angular,
+Expo web, a Next.js export, a SvelteKit static adapter, or plain HTML — then
+the finished image is a web server holding a folder, not a Node process.
+Build in one stage and copy ONLY the output directory into a Caddy stage:
+
+    FROM caddy:2-alpine
+    COPY --from=build /app/dist /srv
+    COPY Caddyfile /etc/caddy/Caddyfile
+
+with a Caddyfile written by you, of the shape:
+
+    :{$PORT}
+    root * /srv
+    encode gzip
+    try_files {path} /index.html
+    file_server
+
+Caddy reads {$PORT} from the environment at run time and needs no entrypoint
+work, which is exactly what the capability rules above allow. Two details that
+decide whether this works at all:
+
+- Write the file with a QUOTED heredoc — ` + "`COPY <<'EOF' /etc/caddy/Caddyfile`" + ` —
+  or escape the dollar as ` + "`{\\$PORT}`" + `. An unquoted ` + "`<<EOF`" + ` is expanded by the
+  Dockerfile parser at BUILD time, and since PORT is not a build argument it
+  expands to nothing: the image ships ` + "`:{}`" + `, Caddy rejects the config, and the
+  container exits before it ever listens.
+- Leave the image running as root, or chown ` + "`/data`" + ` and ` + "`/config`" + ` as well as
+  ` + "`/srv`" + ` if you add a user. Caddy writes its own state to both on startup,
+  so a non-root user without them dies immediately — and none of that
+  ownership work is allowed at run time.
+
+Drop the try_files line for a multi-page site (Astro static, a docs site);
+keep it for anything with client-side routing.
+
+Do NOT do this when the framework emits a server — Next.js without
+` + "`output: 'export'`, Nuxt, Remix, SvelteKit with a node adapter, Astro with" + `
+` + "`output: 'server'`" + ` — or when the author wrote their own start script. Those
+apps have server-side code that serving files would silently discard.
+
+# Finding the start command
+
+Look, in this order, and stop at the first real answer:
+1. A Procfile's ` + "`web:`" + ` line — the author saying it outright.
+2. package.json ` + "`scripts.start`" + `, or the framework's documented production
+   command (` + "`next start`, `node .output/server/index.mjs` for Nuxt" + `).
+3. package.json ` + "`main`" + `, or an index.js / index.ts / server.js at the root.
+4. For Python, the ASGI/WSGI app object, served by uvicorn or gunicorn — find
+   the module path by reading the file that creates the app.
+   Django needs ` + "`gunicorn <project>.wsgi`" + ` plus ` + "`collectstatic`" + ` during the
+   build, and usually migrations at startup.
+5. For a compiled language, the binary the build produced.
+
+If you genuinely cannot find one, say so in notes and pick the most defensible
+option rather than inventing a script that does not exist.
+
+# Answering
+
+The dockerfile field is the file itself: no explanation, no markdown fences.
+Keep notes to one sentence — what you built and anything the user should know.`
+
+// dockerfileExploreInstruction turns writing a Dockerfile into an
+// investigation. The gain is not that the model reads more; it is that it
+// reads the specific files whose contents it would otherwise have to invent —
+// the vite config that moves the output directory, the settings module a
+// Django project is actually named after, the workspace file that says the app
+// is not at the root. Those are the guesses that cost a whole failed build.
+const dockerfileExploreInstruction = `
+Before you answer, read the app. You have list_files, read_file, search_files
+and find_files. They are read-only and confined to this app.
+
+You do not need to read much — you need to read the right things. Establish,
+by looking rather than by assuming:
+
+- Which directory is actually the app. In a monorepo the root manifest is
+  often not the thing being deployed.
+- The exact install command, from the lockfile that is present.
+- The build command and, if it produces static files, the output directory —
+  read the framework config, do not assume ./dist.
+- The start command, and for Python or Ruby the real module path of the app
+  object (search for the line that creates it).
+- Whether the app reads PORT, and what it falls back to. Search for "PORT",
+  "listen", "bind" or the framework's equivalent.
+- Anything that will not exist at runtime: a file the build never copies, a
+  binary from a dev dependency, a path outside the build context.
+
+Stop as soon as you can write the Dockerfile with no guesses left in it.`
+
+// dockerfileConcludeInstruction closes the investigation. Restating the hard
+// constraints here is deliberate: after a dozen tool results, the instructions
+// are a long way up the context, and these are the ones whose violation is not
+// caught until the app is live.
+const dockerfileConcludeInstruction = `Now write the Dockerfile.
+
+Before you answer, check it against the things that fail silently:
+- Does it have an explicit ENTRYPOINT or CMD?
+- Does the app end up listening on $PORT, on 0.0.0.0?
+- Is the start command a production server, not a development one?
+- Does every file the start command needs get copied into the final stage?
+- Does the final stage have the runtime libraries — not just the -dev ones
+  used to build?
+- Does anything chown, chmod or bind a low port at runtime? Move it to build
+  time or choose a different base image.`
+
+// dockerfileSchema also asks for a .dockerignore, which donkey uses only when
+// the app has none of its own. A build context carrying a stale ./dist or a
+// node_modules built on someone's laptop is a real and common failure, and the
+// model has just read the tree closely enough to know what does not belong.
+var dockerfileSchema = map[string]any{
+	"type": "object",
+	"properties": map[string]any{
+		"dockerfile":   map[string]any{"type": "string"},
+		"dockerignore": map[string]any{"type": "string"},
+		"notes":        map[string]any{"type": "string"},
+	},
+	"required":             []string{"dockerfile", "dockerignore", "notes"},
 	"additionalProperties": false,
 }

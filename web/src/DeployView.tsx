@@ -1,12 +1,27 @@
+// Deploying from the browser: drop a project, donkey reads it, you check what
+// it found, it goes live.
+//
+// The reading is the point. A folder full of source is not something a form
+// can ask about — which port, which folders hold data, which services, what
+// will break behind a gateway — so nothing is asked before the upload: the
+// server reads the code and answers all of it, and this view shows the
+// answers as a plan to confirm. That plan is the same one `donkey init`
+// prints, and the deploy that follows carries its id, so the app is only
+// read once.
 import { useRef, useState } from 'react'
-import { CheckCircle2, ExternalLink, FileArchive, FolderUp, UploadCloud } from 'lucide-react'
+import { useQueryClient } from '@tanstack/react-query'
+import { CheckCircle2, ExternalLink, FileArchive, FolderUp, Loader2, UploadCloud } from 'lucide-react'
 import { zipSync } from 'fflate'
-import { api, type DeployResult } from './api'
+import { api, type DeployResult, type Plan, type PlanEdit } from './api'
 import { Button, Card, ErrorNote, errText, SectionTitle } from './ui'
 import { DiffView } from './DiffView'
+import { PlanReview } from './PlanReview'
+import { fleetQuery, useFleet } from './queries'
 
 // The same exclusions the CLI applies while packing — a browser upload
-// should not ship what `donkey deploy` would leave behind.
+// should not ship what `donkey deploy` would leave behind. The server
+// enforces them again for any client; doing it here means the bytes never
+// leave the machine in the first place.
 const SKIP_DIRS = new Set(['.git', 'node_modules', '.venv', 'venv', '__pycache__', '.idea', '.vscode'])
 const SENSITIVE_EXT = ['.pem', '.key', '.p12', '.pfx']
 const SSH_KEYS = new Set(['id_rsa', 'id_dsa', 'id_ecdsa', 'id_ed25519'])
@@ -100,6 +115,10 @@ interface Upload {
   blob: Blob | null
   roots: { dir: string; hasConfig: boolean }[]
   skipped: string[]
+  // name is what the app should be called if the upload carries no
+  // donkey.yaml. Only the browser knows it: the archive it sends is rebased
+  // to the app's folder, so the folder's own name is gone by then.
+  name: string
 }
 
 // zipFrom packs the chosen folder, rebased so the app sits at the zip root.
@@ -126,7 +145,7 @@ async function uploadFromDrop(
   }
   // A single .zip is sent as-is; everything else is packed client-side.
   if (entries.length === 1 && entries[0].isFile && looseZip && /\.zip$/i.test(looseZip.name)) {
-    return { blob: looseZip, label: looseZip.name, files: null, roots: [], skipped: [] }
+    return zipUpload(looseZip)
   }
   const collected: Collected[] = []
   const skipped: string[] = []
@@ -166,13 +185,29 @@ async function uploadFromDrop(
     files: collected,
     roots: candidateRoots(collected.map((c) => c.path)),
     skipped,
+    name: entries.length === 1 ? entries[0].name : '',
+  }
+}
+
+function zipUpload(file: File): Upload {
+  return {
+    blob: file,
+    label: file.name,
+    files: null,
+    roots: [],
+    skipped: [],
+    name: file.name.replace(/\.zip$/i, ''),
   }
 }
 
 type Phase =
   | { step: 'pick' }
-  | { step: 'ready'; upload: Upload }
-  | { step: 'deploying'; upload: Upload }
+  // Several apps in one drop: which one is a question only the person
+  // dropping can answer, and it has to be answered before the upload.
+  | { step: 'root'; upload: Upload }
+  | { step: 'reading'; upload: Upload }
+  | { step: 'review'; upload: Upload; blob: Blob; plan: Plan }
+  | { step: 'deploying'; plan: Plan }
   | { step: 'done'; result: DeployResult }
 
 export function DeployView({
@@ -186,60 +221,99 @@ export function DeployView({
 }) {
   const [phase, setPhase] = useState<Phase>({ step: 'pick' })
   const [dragOver, setDragOver] = useState(false)
-  const [appName, setAppName] = useState(name)
-  const [port, setPort] = useState('')
-  const [spaceName, setSpaceName] = useState(space)
-  const [root, setRoot] = useState('')
   const [lines, setLines] = useState<string[]>([])
   const [buildLog, setBuildLog] = useState('')
   const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
   const fileInput = useRef<HTMLInputElement>(null)
   const buffers = useRef(new Map<string, Uint8Array>())
+  const fleet = useFleet()
+  const queryClient = useQueryClient()
 
   async function accept(makeUpload: () => Promise<Upload>) {
     setError('')
     try {
       const upload = await makeUpload()
-      // Nearest app folder wins by default; the picker below appears when
-      // there is more than one to choose from.
-      setRoot(upload.roots[0]?.dir ?? '')
-      setPhase({ step: 'ready', upload })
+      // One app in the drop (the usual case) goes straight to the server —
+      // asking "which folder?" when there is only one is noise.
+      if (upload.roots.length > 1) {
+        setPhase({ step: 'root', upload })
+        return
+      }
+      read(upload, upload.roots[0]?.dir ?? '')
     } catch (err) {
       setError(errText(err, 'That did not work.'))
     }
   }
 
-  async function deploy(upload: Upload) {
-    setPhase({ step: 'deploying', upload })
-    setLines([])
-    setBuildLog('')
+  // read uploads the project and asks the server what it is. It is the slow
+  // step (a model reading real code), and the only one that happens without
+  // the user having decided anything — which is the whole idea.
+  async function read(upload: Upload, root: string) {
     setError('')
+    setPhase({ step: 'reading', upload })
     try {
       const blob = upload.blob ?? zipFrom(upload.files ?? [], root, buffers.current)
-      const result = await api.deployUpload(
-        blob,
-        { space: spaceName.trim(), name: appName.trim(), port: port.trim() },
-        (line) => setLines((prev) => [...prev, line]),
-        (progress) => setBuildLog((prev) => prev + progress),
-      )
-      setPhase({ step: 'done', result })
+      const hint = root ? root.split('/').pop() || upload.name : upload.name
+      const plan = await api.plan(blob, { space: space || undefined, name: name || hint })
+      setPhase({ step: 'review', upload, blob, plan })
     } catch (err) {
-      setError(errText(err, 'The deploy did not work.'))
-      setPhase({ step: 'ready', upload })
+      setError(errText(err, "Donkey couldn't read that project."))
+      setPhase({ step: 'pick' })
     }
   }
 
-  // The chosen folder's own donkey.yaml decides; without one the form does.
-  const chosen = phase.step === 'ready' ? phase.upload.roots.find((r) => r.dir === root) : undefined
-  const hasConfig =
-    phase.step === 'ready' ? (phase.upload.files === null ? null : (chosen?.hasConfig ?? false)) : null
-  const needsIdentity = phase.step === 'ready' && hasConfig !== true
+  // recheck sends the answers back: the server re-decides the config and
+  // re-runs the checks that are only true right now (a free name, an existing
+  // space, a service already running).
+  async function recheck(at: Extract<Phase, { step: 'review' }>, edit: PlanEdit) {
+    try {
+      const next = await api.updatePlan(at.plan.id, edit)
+      setPhase({ ...at, plan: next })
+      setError('')
+    } catch (err) {
+      setError(errText(err, 'That change could not be checked.'))
+    }
+  }
+
+  async function deploy(at: Extract<Phase, { step: 'review' }>, edit: PlanEdit) {
+    setBusy(true)
+    setError('')
+    try {
+      // The answers go up one last time, so what deploys is exactly what the
+      // screen showed — including anything typed in the last 400ms.
+      const settled = await api.updatePlan(at.plan.id, edit)
+      if (!settled.ready) {
+        setPhase({ ...at, plan: settled })
+        setError('Something still blocks this deploy — see the checks above.')
+        return
+      }
+      setLines([])
+      setBuildLog('')
+      setPhase({ step: 'deploying', plan: settled })
+      const result = await api.deployUpload(
+        at.blob,
+        { plan: settled.id },
+        (line) => setLines((prev) => [...prev, line]),
+        (progress) => setBuildLog((prev) => prev + progress),
+      )
+      queryClient.invalidateQueries({ queryKey: fleetQuery.queryKey })
+      setPhase({ step: 'done', result })
+    } catch (err) {
+      // The plan and the packed project are both still here, so the way back
+      // is the review screen — not the drop zone the folder came from.
+      setError(errText(err, 'The deploy did not work.'))
+      setPhase(at)
+    } finally {
+      setBusy(false)
+    }
+  }
 
   return (
     <div className="mx-auto max-w-2xl space-y-5">
       <h1 className="text-lg font-semibold">Deploy</h1>
 
-      {(phase.step === 'pick' || phase.step === 'ready') && (
+      {(phase.step === 'pick' || phase.step === 'root') && (
         <>
           <div
             role="button"
@@ -265,7 +339,7 @@ export function DeployView({
             }`}
           >
             <UploadCloud className="size-8 text-hay-deep" aria-hidden />
-            {phase.step === 'ready' ? (
+            {phase.step === 'root' ? (
               <p className="flex items-center gap-2 font-mono text-sm">
                 {/\.zip/.test(phase.upload.label) ? (
                   <FileArchive className="size-4 text-stone" aria-hidden />
@@ -278,8 +352,8 @@ export function DeployView({
               <>
                 <p className="text-sm font-medium">Drop your project folder or a .zip here</p>
                 <p className="text-xs text-stone">
-                  The same pipeline as <code className="font-mono">donkey deploy</code>: donkey reads
-                  the code, builds the image and puts it live.
+                  Donkey reads the code first — the port, the folders that hold data, the services it
+                  needs — and shows you what it found before anything is built.
                 </p>
               </>
             )}
@@ -290,125 +364,76 @@ export function DeployView({
               className="hidden"
               onChange={(e) => {
                 const f = e.target.files?.[0]
-                if (f) {
-                  accept(async () => ({ blob: f, label: f.name, files: null, roots: [], skipped: [] }))
-                }
+                if (f) accept(async () => zipUpload(f))
                 e.target.value = ''
               }}
             />
           </div>
 
-          {phase.step === 'ready' && phase.upload.skipped.length > 0 && (
-            <p className="text-xs text-stone">
-              Left behind (secret-shaped or excluded):{' '}
-              {phase.upload.skipped.slice(0, 4).join(', ')}
-              {phase.upload.skipped.length > 4 && ` and ${phase.upload.skipped.length - 4} more`}
-            </p>
-          )}
-
-          {/* Which folder holds the app: automatic for a plain project,
-              a choice when the drop turns out to hold several. */}
-          {phase.step === 'ready' && phase.upload.roots.length > 1 && (
+          {phase.step === 'root' && (
             <Card className="p-4">
               <SectionTitle>Which app do you want to deploy?</SectionTitle>
               <p className="mt-1 text-xs text-stone">
-                This drop holds several. Only the chosen folder is uploaded.
+                This drop holds several. Only the chosen folder is uploaded and read.
               </p>
-              <div className="mt-2 space-y-1">
+              <div className="mt-3 space-y-1.5">
                 {phase.upload.roots.map((r) => (
-                  <label key={r.dir} className="flex items-center gap-2 text-sm">
-                    <input
-                      type="radio"
-                      name="approot"
-                      checked={root === r.dir}
-                      onChange={() => setRoot(r.dir)}
-                      className="accent-hay-deep"
-                    />
+                  <button
+                    key={r.dir}
+                    onClick={() => read(phase.upload, r.dir)}
+                    className="flex w-full items-center justify-between gap-2 rounded-md border border-line px-3 py-2 text-left text-sm hover:border-line-bright hover:bg-raised"
+                  >
                     <span className="font-mono">{r.dir === '' ? '/ (the whole drop)' : r.dir + '/'}</span>
                     {r.hasConfig && <span className="text-xs text-stone">has donkey.yaml</span>}
-                  </label>
+                  </button>
                 ))}
               </div>
             </Card>
           )}
-          {phase.step === 'ready' && phase.upload.roots.length === 1 && root !== '' && (
+
+          {phase.step === 'root' && phase.upload.skipped.length > 0 && (
             <p className="text-xs text-stone">
-              Found the app in <span className="font-mono">{root}/</span> — only that folder is uploaded.
+              Left behind (secret-shaped or excluded): {phase.upload.skipped.slice(0, 4).join(', ')}
+              {phase.upload.skipped.length > 4 && ` and ${phase.upload.skipped.length - 4} more`}
             </p>
           )}
 
-          <Card className="space-y-3 p-4">
-            <SectionTitle>What is this app?</SectionTitle>
-            {hasConfig === true ? (
-              <>
-                <p className="text-sm text-ink-soft">
-                  This folder carries its own <code className="font-mono text-xs">donkey.yaml</code> —
-                  its name, port and settings win. The space below still applies.
-                </p>
-                <label className="block max-w-xs text-sm">
-                  <span className="mb-1 block text-xs text-stone">Space (optional)</span>
-                  <input
-                    value={spaceName}
-                    onChange={(e) => setSpaceName(e.target.value)}
-                    placeholder="from donkey.yaml"
-                    className="w-full rounded-md border border-line bg-surface px-2 py-1.5 font-mono text-sm focus:outline-2 focus:outline-hay-deep"
-                  />
-                </label>
-              </>
-            ) : (
-              <>
-                <p className="text-xs text-stone">
-                  Ignored when the upload contains a <code className="font-mono">donkey.yaml</code>.
-                </p>
-                <div className="grid gap-3 sm:grid-cols-3">
-                  <label className="block text-sm">
-                    <span className="mb-1 block text-xs text-stone">App name</span>
-                    <input
-                      value={appName}
-                      onChange={(e) => setAppName(e.target.value)}
-                      placeholder="my-app"
-                      className="w-full rounded-md border border-line bg-surface px-2 py-1.5 font-mono text-sm focus:outline-2 focus:outline-hay-deep"
-                    />
-                  </label>
-                  <label className="block text-sm">
-                    <span className="mb-1 block text-xs text-stone">Port it listens on</span>
-                    <input
-                      value={port}
-                      onChange={(e) => setPort(e.target.value)}
-                      placeholder="3000"
-                      inputMode="numeric"
-                      className="w-full rounded-md border border-line bg-surface px-2 py-1.5 font-mono text-sm focus:outline-2 focus:outline-hay-deep"
-                    />
-                  </label>
-                  <label className="block text-sm">
-                    <span className="mb-1 block text-xs text-stone">Space (optional)</span>
-                    <input
-                      value={spaceName}
-                      onChange={(e) => setSpaceName(e.target.value)}
-                      placeholder="default"
-                      className="w-full rounded-md border border-line bg-surface px-2 py-1.5 font-mono text-sm focus:outline-2 focus:outline-hay-deep"
-                    />
-                  </label>
-                </div>
-              </>
-            )}
-          </Card>
-
           <ErrorNote message={error} />
-          <div className="flex justify-end">
-            <Button
-              onClick={() => phase.step === 'ready' && deploy(phase.upload)}
-              disabled={phase.step !== 'ready' || (needsIdentity && (appName.trim() === '' || port.trim() === ''))}
-            >
-              Deploy
-            </Button>
-          </div>
         </>
+      )}
+
+      {phase.step === 'reading' && (
+        <Card className="space-y-2 p-6">
+          <p className="flex items-center gap-2 text-sm">
+            <Loader2 className="size-4 animate-spin text-hay" aria-hidden />
+            Reading <span className="font-mono">{phase.upload.label}</span>…
+          </p>
+          <p className="text-xs text-stone">
+            Donkey is detecting how to build it and reading the source for the things no detector can
+            see — which port it listens on, which folders must survive a restart, which services it
+            expects. This takes a moment.
+          </p>
+        </Card>
+      )}
+
+      {phase.step === 'review' && (
+        <PlanReview
+          plan={phase.plan}
+          spaces={fleet.data?.spaces ?? []}
+          busy={busy}
+          error={error}
+          onRecheck={(edit) => recheck(phase, edit)}
+          onDeploy={(edit) => deploy(phase, edit)}
+          onStartOver={() => {
+            setError('')
+            setPhase({ step: 'pick' })
+          }}
+        />
       )}
 
       {phase.step === 'deploying' && (
         <Card className="space-y-2 p-4">
-          <SectionTitle>Deploying…</SectionTitle>
+          <SectionTitle>Deploying {phase.plan.app.name}…</SectionTitle>
           <ul className="space-y-1 text-sm">
             {lines.map((line, i) => (
               <li key={i}>{line}</li>

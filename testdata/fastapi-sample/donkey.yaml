@@ -1,0 +1,5 @@
+name: fastapi-sample
+port: 8080
+space: bpsamples
+storage:
+  paths: []

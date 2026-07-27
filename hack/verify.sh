@@ -35,8 +35,13 @@ case "${RUNTIME}" in
 kind)
   CTX="kind-${CLUSTER:-donkey}"
   export DONKEY_E2E_DOMAIN="${DONKEY_E2E_DOMAIN:-apps.test}"
-  export DONKEY_E2E_SESSION_KEY="$(kubectl --context "${CTX}" -n donkey-system get secret donkey-system-config \
+  # Assigned before export: `export X="$(cmd)"` is one command whose status is
+  # export's, so a failed kubectl would slip past `set -e` and hand the suite
+  # an empty key.
+  SESSION_KEY="$(kubectl --context "${CTX}" -n donkey-system get secret donkey-system-config \
     -o jsonpath='{.data.session-key}' | base64 -d)"
+  [ -n "${SESSION_KEY}" ] || { echo "FAIL: no session key in donkey-system-config — is donkey installed?" >&2; exit 1; }
+  export DONKEY_E2E_SESSION_KEY="${SESSION_KEY}"
 
   say "the gateway's certificate authority"
   CA="${ROOT}/.build/donkey-gateway-ca.crt"
@@ -56,8 +61,10 @@ kind)
 
 docker)
   export DONKEY_E2E_DOMAIN="${DONKEY_E2E_DOMAIN:-apps.localhost}"
-  export DONKEY_E2E_SESSION_KEY="$(docker inspect donkey-server \
+  SESSION_KEY="$(docker inspect donkey-server \
     --format '{{range .Config.Env}}{{println .}}{{end}}' | sed -n 's/^DONKEY_SESSION_KEY=//p')"
+  [ -n "${SESSION_KEY}" ] || { echo "FAIL: donkey-server is not running (no session key) — run task install:docker" >&2; exit 1; }
+  export DONKEY_E2E_SESSION_KEY="${SESSION_KEY}"
 
   say "the gateway's certificate authority"
   CA="${ROOT}/.build/donkey-gateway-ca-docker.crt"
@@ -71,6 +78,22 @@ docker)
   done
   [ -n "${ok}" ] || { echo "FAIL: the gateway never minted its CA — is it running with tls-mode ca?" >&2; exit 1; }
   export DONKEY_E2E_CA="${CA}"
+
+  # Every space network must have donkey's own containers on it. Installing
+  # recreates them, which drops the networks they were attached to — and
+  # Docker's embedded DNS only answers for networks the asking container is
+  # on, so a miss here means every app deployed before the last install is
+  # unreachable until it is redeployed. The suite itself cannot catch that:
+  # it deploys after installing, and deploying re-attaches.
+  say "donkey's own containers are on every space network"
+  for net in $(docker network ls --filter label=donkey.managed=true --format '{{.Name}}'); do
+    for own in donkey-gateway donkey-server; do
+      if ! docker network inspect "${net}" --format '{{range .Containers}}{{.Name}} {{end}}' | grep -qw "${own}"; then
+        echo "FAIL: ${own} is not attached to ${net} — apps in that space cannot be reached" >&2
+        exit 1
+      fi
+    done
+  done
 
   # The install publishes the API on the host loopback; the gateway on 443.
   export DONKEY_E2E_SERVER="http://127.0.0.1:8088"

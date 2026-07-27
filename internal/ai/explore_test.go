@@ -78,11 +78,86 @@ func TestExplorerHidesSecrets(t *testing.T) {
 	if got := ex.list(""); strings.Contains(got, ".env") || strings.Contains(got, "secret.key") {
 		t.Errorf("listing must not name secret files, got %q", got)
 	}
-	if got := ex.search("BEGIN PRIVATE KEY"); strings.Contains(got, "secret.key") {
+	if got := ex.search("BEGIN PRIVATE KEY", ""); strings.Contains(got, "secret.key") {
 		t.Errorf("search must not reach into secret files, got %q", got)
 	}
-	if got := ex.search("import os"); !strings.Contains(got, "app.py") {
+	if got := ex.search("import os", ""); !strings.Contains(got, "app.py") {
 		t.Errorf("search should still find ordinary source, got %q", got)
+	}
+}
+
+// find is what makes exploring a repository nobody has seen affordable:
+// "where is the vite config" has to be one call, not a walk the model reads.
+func TestExplorerFind(t *testing.T) {
+	app := write(t, map[string]string{
+		"src/vite.config.ts":          "export default {}",
+		"packages/ui/package.json":    "{}",
+		"package.json":                "{}",
+		"api/Service.csproj":          "<Project/>",
+		"node_modules/x/package.json": "{}",
+		"secret.key":                  "-----BEGIN PRIVATE KEY-----",
+	})
+	ex, err := newExplorer(app)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ex.Close()
+
+	if got := ex.find("*.csproj"); !strings.Contains(got, "api/Service.csproj") {
+		t.Errorf("find(*.csproj) = %q", got)
+	}
+	if got := ex.find("vite.config.*"); !strings.Contains(got, "src/vite.config.ts") {
+		t.Errorf("find(vite.config.*) = %q", got)
+	}
+	// Shallowest first: the root manifest is nearly always the relevant one.
+	got := ex.find("package.json")
+	if !strings.HasPrefix(got, "package.json\n") {
+		t.Errorf("the root package.json should come first, got %q", got)
+	}
+	// The same exclusions as everywhere else still apply.
+	if strings.Contains(got, "node_modules") {
+		t.Errorf("find must not walk into node_modules, got %q", got)
+	}
+	if out := ex.find("*.key"); strings.Contains(out, "secret.key") {
+		t.Errorf("find must not name secret files, got %q", out)
+	}
+	if out := ex.find("nothing-like-this-*"); !strings.Contains(out, "No file matches") {
+		t.Errorf("a miss should say so, got %q", out)
+	}
+	// A broken pattern is a wrong guess, not a reason to end the exploration.
+	if out := ex.find("["); !strings.Contains(out, "not a valid pattern") {
+		t.Errorf("a bad pattern should come back as text, got %q", out)
+	}
+}
+
+// Scoping matters on a monorepo, where the same import appears in a dozen
+// packages and only one of them is being deployed.
+func TestExplorerScopedSearch(t *testing.T) {
+	app := write(t, map[string]string{
+		"apps/web/main.py": "app.run(port=5000)\n",
+		"apps/api/main.py": "app.run(port=8000)\n",
+	})
+	ex, err := newExplorer(app)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ex.Close()
+
+	all := ex.search("app.run", "")
+	if !strings.Contains(all, "apps/web") || !strings.Contains(all, "apps/api") {
+		t.Errorf("an unscoped search should find both, got %q", all)
+	}
+	scoped := ex.search("app.run", "apps/api")
+	if strings.Contains(scoped, "apps/web") {
+		t.Errorf("a scoped search must not leave its folder, got %q", scoped)
+	}
+	if !strings.Contains(scoped, "port=8000") {
+		t.Errorf("a scoped search should still find its own match, got %q", scoped)
+	}
+	// A scope that is not a folder is a wrong guess; searching everything
+	// beats refusing to answer.
+	if fallback := ex.search("app.run", "does/not/exist"); !strings.Contains(fallback, "apps/api") {
+		t.Errorf("a bad scope should fall back to the whole app, got %q", fallback)
 	}
 }
 

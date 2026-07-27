@@ -27,7 +27,8 @@ say "installing the control plane (real install command, demo settings)"
   --oidc-client-id "donkey-demo" \
   --oidc-client-secret "donkey-demo-secret" \
   --openai-base-url "${AI_BASE}" \
-  --openai-api-key "${AI_KEY}"
+  --openai-api-key "${AI_KEY}" \
+  ${AI_MODEL:+--ai-model "${AI_MODEL}"}
 
 say "demo identity provider (fake, auto-login)"
 docker rm -f donkey-identity >/dev/null 2>&1 || true

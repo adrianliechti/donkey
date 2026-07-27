@@ -1,0 +1,5 @@
+name: sqlite-notes
+port: 8080
+space: g24
+storage:
+  paths: []

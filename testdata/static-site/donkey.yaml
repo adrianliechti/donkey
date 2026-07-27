@@ -1,0 +1,5 @@
+name: static-site
+port: 8080
+space: bpsamples
+storage:
+  paths: []

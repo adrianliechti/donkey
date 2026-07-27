@@ -5,12 +5,16 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"strings"
 
 	"github.com/urfave/cli/v3"
 
+	"github.com/adrianliechti/donkey/internal/ai"
 	"github.com/adrianliechti/donkey/internal/config"
+	"github.com/adrianliechti/donkey/internal/ui"
 	k8s "github.com/adrianliechti/donkey/pkg/runtime/kubernetes"
 	"github.com/adrianliechti/donkey/pkg/runtime/kubernetes/manifests"
 )
@@ -47,6 +51,9 @@ func serverInstallCommand() *cli.Command {
 			&cli.StringFlag{Name: "server-host", Usage: "hostname of the API and console (default: the domain itself)"},
 			&cli.StringFlag{Name: "gateway-service-type", Usage: "service type traffic enters through: LoadBalancer (default), ClusterIP or NodePort (clusters without a load-balancer controller, e.g. kind)"},
 			&cli.StringFlag{Name: "default-platform", Usage: "build platform of the cluster nodes (default linux/amd64)"},
+			&cli.BoolFlag{Name: "no-verify", Usage: "skip running a freshly built image to check it starts"},
+			&cli.StringFlag{Name: "https-proxy", Usage: "forward proxy for donkey-server and the build engine"},
+			&cli.StringFlag{Name: "no-proxy", Usage: "hosts that bypass the forward proxy, comma-separated"},
 			&cli.StringFlag{Name: "tls-mode", Usage: "how the gateway gets certificates: acme (default), ca (built-in CA for local/internal installs) or static (bring your own)"},
 			&cli.StringFlag{Name: "acme-email", Usage: "ACME account contact for expiry warnings (tls-mode acme)"},
 			&cli.StringFlag{Name: "acme-directory", Usage: "ACME endpoint override, e.g. Let's Encrypt staging (tls-mode acme)"},
@@ -87,6 +94,11 @@ func installSettings(cmd *cli.Command) (*config.InstallFile, error) {
 	strOver(&settings.ServerHost, "server-host")
 	strOver(&settings.Gateway.ServiceType, "gateway-service-type")
 	strOver(&settings.DefaultPlatform, "default-platform")
+	if cmd.Bool("no-verify") {
+		settings.Build.Verify = new(false)
+	}
+	strOver(&settings.Build.Proxy.HTTPS, "https-proxy")
+	strOver(&settings.Build.Proxy.NoProxy, "no-proxy")
 	strOver(&settings.Auth.Issuer, "oidc-issuer")
 	strOver(&settings.Auth.ClientID, "oidc-client-id")
 	strOver(&settings.Auth.ClientSecret, "oidc-client-secret")
@@ -158,6 +170,9 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 	if err := settings.Auth.Admins.Validate(); err != nil {
 		return fmt.Errorf("auth.admins: %w", err)
 	}
+	if err := settings.Build.Validate(); err != nil {
+		return err
+	}
 
 	kubeContext := s.Resolved.KubeContext
 	client, err := k8s.New(kubeContext)
@@ -168,11 +183,10 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 		return fmt.Errorf("the cluster (context %q) didn't answer — donkey installs into an existing cluster: %w", kubeContext, err)
 	}
 
-	// Keep existing secrets on re-installs so logins and data stay valid — a
-	// re-run without $DONKEY_REGISTRY_PASSWORD (or the other secret env vars)
-	// set must never blank what the running installation depends on. A read
-	// error is fatal for the same reason: treating it as "no secrets yet"
-	// would silently rotate the session key and sign everyone out.
+	// Keep existing secrets on re-installs: a re-run without the secret env
+	// vars must not blank what the installation depends on. A read error is
+	// fatal for the same reason — treating it as "none yet" would rotate the
+	// session key and sign everyone out.
 	existing, err := client.GetSecretData(ctx, manifests.SystemNamespace, "donkey-system-config")
 	if err != nil {
 		return fmt.Errorf("couldn't read the existing installation's secrets: %w", err)
@@ -201,6 +215,13 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 	// cluster already has.
 	if missing := missingSettings(settings, true); len(missing) > 0 {
 		return fmt.Errorf("these settings are required (via -f file or flags): %v", missing)
+	}
+	// Prove the assistant answers before installing anything. An install is a
+	// one-shot command with a person watching it, which makes it the cheapest
+	// possible place to find out the endpoint is wrong — far cheaper than a
+	// server that comes up and fails on its first deploy.
+	if err := checkAssistant(ctx, u, settings.AI); err != nil {
+		return err
 	}
 
 	// The session key seals the gateway's login cookies and the CLI tokens.
@@ -239,6 +260,7 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 		OpenAIBaseURL:        settings.AI.BaseURL,
 		OpenAIAPIKey:         settings.AI.APIKey,
 		AIModel:              settings.AI.Model,
+		Build:                settings.Build,
 		BuildkitImage:        settings.BuildkitImage,
 		NamespacePrefix:      "donkey-",
 	}
@@ -278,6 +300,7 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 	serverURL := in.Scheme() + "://" + in.ServerHost()
 	u.Printf("")
 	u.Printf("  API:        %s", u.Bold(serverURL))
+	u.Printf("  Builder:    %s", u.Faint(builderSummary(settings.Build)))
 	switch {
 	case in.Admins.Empty():
 		u.Printf("  Admins:     %s", u.Faint("everyone your identity provider signs in (narrow it with auth.admins)"))
@@ -315,9 +338,86 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 	return nil
 }
 
+// builderSummary says how apps that bring no Dockerfile will be built.
+func builderSummary(b config.InstallBuild) string {
+	s := "donkey writes a Dockerfile for each app"
+	if b.VerifyStartup() {
+		s += ", and checks the image starts before publishing it"
+	}
+	return s
+}
+
 // pendingOIDC marks an OIDC client that isn't registered yet — logins can't
 // complete until the admin re-runs the install with real client credentials.
 const pendingOIDC = "pending-setup"
+
+// checkAssistant proves the configured model endpoint answers before the
+// installation changes — an install is a one-shot command with a person
+// watching it, which makes it the cheapest place to find out the endpoint is
+// wrong.
+//
+// It sets the same two environment variables the server itself reads, because
+// the assistant's client takes its endpoint and key from the environment —
+// this is the one place a CLI has to stage them, and restoring them afterwards
+// keeps the rest of the command honest.
+//
+// The one thing it will not do is fail on a name it cannot resolve. The URL
+// being configured is the one the *server* will use, and the two are not
+// always the same place: `host.docker.internal` is how a container reaches
+// this machine and means nothing on it, and an in-cluster Service name means
+// nothing outside the cluster. A name that does not resolve here is therefore
+// no evidence at all, so it warns; anything that does resolve and then refuses,
+// rejects the key or does not serve the model is a real answer, and stops the
+// install.
+func checkAssistant(ctx context.Context, u *ui.UI, cfg config.InstallAI) error {
+	for k, v := range map[string]string{
+		"OPENAI_BASE_URL": cfg.BaseURL,
+		"OPENAI_API_KEY":  cfg.APIKey,
+	} {
+		if v == "" {
+			continue
+		}
+		if old, ok := os.LookupEnv(k); ok {
+			defer os.Setenv(k, old)
+		} else {
+			defer os.Unsetenv(k)
+		}
+		os.Setenv(k, v)
+	}
+	model := cfg.Model
+	if model == "" {
+		model = config.DefaultAIModel
+	}
+	if host := endpointHost(cfg.BaseURL); host != "" {
+		if _, err := net.DefaultResolver.LookupHost(ctx, host); err != nil {
+			u.Warn("Can't check the assistant from here: %q doesn't resolve on this machine. That is normal when the endpoint is addressed the way the server will reach it — donkey-server checks it again at startup and refuses to run without it.", host)
+			return nil
+		}
+	}
+	if err := ai.Reachable(ctx, model); err != nil {
+		return fmt.Errorf("%w\n\nThe installation was not changed", err)
+	}
+	u.Success("The assistant answered (%s).", model)
+	return nil
+}
+
+// endpointHost is the hostname of a configured endpoint, or "" when there is
+// nothing resolvable to check (no URL, or a bare IP the resolver would pass
+// through anyway).
+func endpointHost(baseURL string) string {
+	if baseURL == "" {
+		return ""
+	}
+	parsed, err := url.Parse(baseURL)
+	if err != nil {
+		return ""
+	}
+	host := parsed.Hostname()
+	if host == "" || net.ParseIP(host) != nil {
+		return ""
+	}
+	return host
+}
 
 // missingSettings lists required settings that are absent. The AI key is
 // only checked once the existing installation's secrets were merged in

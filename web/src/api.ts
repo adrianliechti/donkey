@@ -143,6 +143,93 @@ export interface DeployResult {
   proposals?: FixAction[]
 }
 
+/** info: worth knowing. warn: the app will run and still not work.
+ *  block: the deploy would refuse this. */
+export type FindingLevel = 'info' | 'warn' | 'block'
+
+/** One thing donkey noticed about an app. The server writes the words; the
+ *  code is stable, so a view can render a finding its own way instead. */
+export interface Finding {
+  level: FindingLevel
+  code: string
+  title: string
+  detail?: string
+  fix?: string
+  file?: string
+}
+
+/** Where the port came from — a review screen would rather explain a port
+ *  than ask for one. */
+export type PortSource = 'config' | 'code' | 'env' | 'guess'
+
+export interface PlanApp {
+  name: string
+  space: string
+  port: number
+  portSource: PortSource
+  portReason?: string
+  healthcheck?: string
+  storage: string[]
+  storageSize?: string
+  exposure: Exposure
+  url?: string
+}
+
+export interface PlanBuild {
+  summary: string
+  strategy: string
+}
+
+export interface PlanVolume {
+  path: string
+  reason?: string
+  selected: boolean
+}
+
+export interface PlanService {
+  type: string
+  name: string
+  reason?: string
+  /** The space already runs one under this name — deploying connects to it. */
+  exists: boolean
+  /** False for a type donkey has no recipe for: reported, never offered. */
+  known: boolean
+  selected: boolean
+}
+
+/** A plan is a deploy read out loud before it happens: what the app is, how
+ *  it will be built, what it needs, and what will break. */
+export interface Plan {
+  id: string
+  app: PlanApp
+  build: PlanBuild
+  findings: Finding[]
+  root?: string
+  hasConfig: boolean
+  appType?: string
+  notes?: string
+  volumes: PlanVolume[]
+  services: PlanService[]
+  skipped?: string[]
+  /** The donkey.yaml this plan amounts to — a browser deploy has no folder to
+   *  write it back to, so it is here to copy into the project. */
+  config: string
+  ready: boolean
+  expiresAt: string
+}
+
+/** What the review screen decided. Every field is authoritative: an empty
+ *  storage list means "no disk", not "you decide". */
+export interface PlanEdit {
+  name: string
+  space: string
+  port: number
+  healthcheck: string
+  storage: string[]
+  services: string[]
+  exposure: Exposure
+}
+
 export interface DoctorCheck {
   name: string
   ok: boolean
@@ -445,18 +532,49 @@ export const api = {
       method: 'POST',
     }),
 
+  // plan uploads the project and asks the server to read it: how it would be
+  // built, which port it listens on and why, what it needs, what will break.
+  // Nothing is built and nothing on the cluster changes. It takes as long as
+  // the assistant takes to read real code — tens of seconds is normal.
+  plan: async (blob: Blob, opts: { space?: string; name?: string; path?: string }): Promise<Plan> => {
+    const params = new URLSearchParams()
+    if (opts.space) params.set('space', opts.space)
+    if (opts.name) params.set('name', opts.name)
+    if (opts.path) params.set('path', opts.path)
+    const res = await fetch(`/v1/plans?${params}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/zip' },
+      body: blob,
+    })
+    if (res.status === 401) throw unauthorized()
+    if (!res.ok) throw new ApiError(res.status, await errorMessage(res))
+    return res.json() as Promise<Plan>
+  },
+  // updatePlan settles the review screen's answers into the plan and re-runs
+  // the checks against them — no upload, no second model call.
+  updatePlan: (id: string, edit: PlanEdit) =>
+    request<Plan>(`/v1/plans/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      body: JSON.stringify(edit),
+    }),
+
   // deployUpload sends a zip build context and follows the NDJSON progress
-  // stream — the same pipeline the CLI drives, fed from the browser.
+  // stream — the same pipeline the CLI drives, fed from the browser. With a
+  // plan id it carries the reading and the answers already reviewed, so the
+  // assistant is not asked the same question twice.
   deployUpload: async (
     blob: Blob,
-    opts: { space?: string; name?: string; port?: string },
+    opts: { space?: string; name?: string; port?: string; plan?: string },
     onLine: (line: string) => void,
     onProgress: (progress: string) => void,
   ): Promise<DeployResult> => {
     const params = new URLSearchParams()
-    if (opts.space) params.set('space', opts.space)
-    if (opts.name) params.set('name', opts.name)
-    if (opts.port) params.set('port', opts.port)
+    if (opts.plan) params.set('plan', opts.plan)
+    else {
+      if (opts.space) params.set('space', opts.space)
+      if (opts.name) params.set('name', opts.name)
+      if (opts.port) params.set('port', opts.port)
+    }
     const res = await fetch(`/v1/deploys?${params}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/zip' },

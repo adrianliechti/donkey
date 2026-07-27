@@ -1,15 +1,10 @@
-// Package gateway is donkey's edge — the proxy every app's and the
-// console's traffic enters through. It terminates TLS (issuing certificates
-// itself: ACME, a built-in CA, or a provided one), routes hostnames to
-// apps, runs the OIDC login itself (browsers get a cookie, `donkey login` a
-// sealed token), checks the route's access rules (users, groups, roles) and
-// forwards the request with identity headers.
+// Package gateway is donkey's edge: it terminates TLS (issuing the
+// certificates itself), routes hostnames to apps, runs the OIDC login, checks
+// each route's access rules and forwards with identity headers.
 //
-// Keeping login and TLS in donkey's own binary — instead of an ingress
-// vendor's CRDs — is a deliberate trade: no proxy stack has a standard auth
-// story, so this is the only auth donkey can promise everywhere, the only
-// one that can read the ID token's claims (email, groups) with every IdP —
-// and the same binary is the edge on every runtime donkey supports.
+// Login and TLS live here rather than in an ingress vendor's CRDs because no
+// proxy stack has a standard auth story — this is the only auth donkey can
+// promise on every runtime it supports.
 package gateway
 
 import (
@@ -78,11 +73,10 @@ type Config struct {
 	OIDCClientID     string
 	OIDCClientSecret string
 
-	// Domain turns logins central: every hostname under it shares one
-	// callback (https://<Domain>/oauth2/callback) and one domain-wide
-	// session cookie — a single redirect URI to register at the IdP, and
-	// signing in once covers every app. Hostnames outside the base domain
-	// (custom `domain:` apps) keep the per-host flow.
+	// Domain centralizes logins: every hostname under it shares one callback
+	// and one domain-wide cookie, so there is a single redirect URI to
+	// register and one sign-in covers every app. Hostnames outside it keep
+	// the per-host flow.
 	Domain string
 
 	// SessionKey seals the session cookie (32 bytes, hex). Sessions live in

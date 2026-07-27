@@ -88,13 +88,26 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 	s.deploying.Add(1)
 	defer s.deploying.Done()
 
+	// A reviewed plan carries answers somebody already gave. Asking the model
+	// again risks a different answer to a screen the user said yes to.
+	var planned *storedPlan
+	if id := r.URL.Query().Get("plan"); id != "" {
+		p, ok := s.plans.get(id)
+		if !ok {
+			writeErr(w, http.StatusGone,
+				fmt.Errorf("this deploy's plan has expired — upload the app again"))
+			return
+		}
+		planned = p
+	}
+
 	dir, err := os.MkdirTemp("", "donkey-ctx-*")
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
 	defer os.RemoveAll(dir)
-	if err := extractContext(r.Body, dir); err != nil {
+	if _, err := extractContext(r.Body, dir); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
@@ -110,7 +123,17 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	if app == nil {
+	switch {
+	case planned != nil:
+		// The reviewed plan is the config: it already carries what the
+		// upload's donkey.yaml said, plus every decision the person deploying
+		// confirmed on top of it.
+		app = planned.appCopy()
+		if err := app.Validate(); err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+	case app == nil:
 		// Browser uploads have no `donkey init` to lean on — name and port
 		// from the deploy form stand in for a donkey.yaml. One in the upload
 		// always wins (it is the app's own config, not the form's).
@@ -129,8 +152,16 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 	// changes can drain the very stream this response rides on. The CLI
 	// reconnects via status polling.
 	started := time.Now()
+	// A reviewed plan settles the space too — it is one of the things the
+	// review screen shows, so a query parameter left over from before the
+	// review must not quietly move the app somewhere else.
+	space := r.URL.Query().Get("space")
+	if planned != nil {
+		space = ""
+	}
 	res := s.deploy(context.WithoutCancel(r.Context()), out, dir, app, deployOpts{
-		Space:     r.URL.Query().Get("space"),
+		Analysis:  planned.reading(),
+		Space:     space,
 		Platform:  r.URL.Query().Get("platform"),
 		Tag:       r.URL.Query().Get("tag"),
 		DryRun:    r.URL.Query().Get("dryRun") == "true",
@@ -169,10 +200,8 @@ func appFromParams(name, portStr string) (*config.AppConfig, error) {
 	return app, nil
 }
 
-// analysisDeadline bounds how long a deploy waits for the assistant after the
-// build has finished. It must outlast the assistant's own budget (a 2-minute
-// request timeout with one retry) — a shorter deadline would fail deploys
-// whose model call is still legitimately in flight.
+// Must outlast the assistant's own budget (2-minute timeout, one retry), or
+// deploys fail while their model call is still legitimately in flight.
 const analysisDeadline = 5 * time.Minute
 
 type deployOpts struct {
@@ -184,13 +213,15 @@ type deployOpts struct {
 	BuildOnly bool
 	NoBuild   bool
 	SHA       string
+	// Analysis is the assistant's reading of this app, when a reviewed plan
+	// already has one. Nil means this deploy asks for itself.
+	Analysis *ai.Analysis
 }
 
 func (s *Server) deploy(ctx context.Context, out *lineStreamer, dir string, app *config.AppConfig, opts deployOpts) DeployResult {
-	// The space decides the namespace and the address, so it is settled
-	// before anything else happens. Validation failures return plainly —
-	// running the AI diagnosis over a self-explanatory message would only
-	// delay the answer.
+	// The space decides namespace and address, so it is settled first.
+	// Validation failures return plainly — diagnosing a self-explanatory
+	// message only delays the answer.
 	space := opts.Space
 	if space == "" {
 		space = app.Space
@@ -242,10 +273,9 @@ func (s *Server) deploy(ctx context.Context, out *lineStreamer, dir string, app 
 	if imageRef == "" {
 		imageRef = build.ImageTag(s.cfg.Registry.URL, app.Name, opts.SHA, time.Now(), s.cfg.Registry.Immutable)
 	}
-	// A caller-supplied image bypasses the build pipeline entirely, so it has
-	// to come from the registry donkey builds into — otherwise any image on
-	// the internet could be deployed under an app's name (and would inherit
-	// that app's env and addon secrets).
+	// A caller-supplied image bypasses the build, so it must come from
+	// donkey's own registry — otherwise any image on the internet could run
+	// under an app's name and inherit its env and addon secrets.
 	if opts.Tag != "" && !build.SameRegistry(s.cfg.Registry.URL, opts.Tag) {
 		return fail(fmt.Errorf("--tag must point at %s (donkey only deploys images it built)", s.cfg.Registry.Host()))
 	}
@@ -268,10 +298,8 @@ func (s *Server) deploy(ctx context.Context, out *lineStreamer, dir string, app 
 	out.Line("Looking at your app…")
 	det, detErr := detect.Detect(dir, app)
 
-	// The assistant reads every deploy: it confirms the detection and, more
-	// usefully, finds the folders whose contents have to survive a restart.
-	// When detection worked it runs alongside the build — a model call should
-	// not sit between the user and their deploy.
+	// Runs alongside the build: a model call should not sit between the user
+	// and their deploy.
 	type analysisResult struct {
 		analysis *ai.Analysis
 		err      error
@@ -281,26 +309,21 @@ func (s *Server) deploy(ctx context.Context, out *lineStreamer, dir string, app 
 		analysis, err := s.analyzeApp(ctx, dir, det, detErr)
 		analysisReady <- analysisResult{analysis, err}
 	}
-	if detErr != nil {
+	switch {
+	case opts.Analysis != nil:
+		// A reviewed plan already asked, and its answer is the one the user
+		// said yes to.
+		analysisReady <- analysisResult{opts.Analysis, nil}
+	case detErr != nil:
 		run() // nothing to build yet — the proposal has to come first
-	} else {
+	default:
 		go run()
 	}
 
+	// The only way detection fails is a donkey.yaml naming a Dockerfile that
+	// is not there — every other app gets one written for it.
 	if detErr != nil {
-		res := <-analysisReady
-		analysisReady <- res // the merge step still wants it
-		if res.err != nil {
-			return fail(fmt.Errorf("%w\n\n%s", detErr, res.err))
-		}
-		out.Line("Donkey couldn't recognize this app by itself — the assistant thinks it is %s.", res.analysis.AppType)
-		if err := rescueDetection(dir, res.analysis); err != nil {
-			return fail(fmt.Errorf("%w\n\nthe assistant couldn't propose a way to build it either", detErr))
-		}
-		var err error
-		if det, err = detect.Detect(dir, app); err != nil {
-			return fail(err)
-		}
+		return fail(detErr)
 	}
 	out.Line("✓ %s will be built with %s", app.Name, det.Summary)
 
@@ -318,8 +341,8 @@ func (s *Server) deploy(ctx context.Context, out *lineStreamer, dir string, app 
 		if res.err != nil {
 			return res.err
 		}
-		for _, line := range mergeAnalysis(app, res.analysis) {
-			out.Line("· %s", line)
+		for _, f := range mergeAnalysis(app, res.analysis) {
+			out.Line("· %s", f.Text())
 		}
 		// The merge changed the config after its load-time validation — a
 		// proposal that produces an invalid combination must not reach the
@@ -355,8 +378,8 @@ func (s *Server) deploy(ctx context.Context, out *lineStreamer, dir string, app 
 	defer os.Remove(logFile.Name())
 
 	out.Line("Building the image…")
-	builder := &build.BuildKitBuilder{Registry: s.cfg.Registry, BuildkitAddr: s.cfg.BuildkitAddr}
-	result, err := builder.Build(ctx, build.Request{
+	builder := &build.BuildKitBuilder{Registry: s.cfg.Registry, BuildkitAddr: s.cfg.BuildkitAddr, Settings: s.cfg.Build}
+	req := build.Request{
 		ContextDir:     dir,
 		ImageRef:       imageRef,
 		Platform:       platform,
@@ -364,9 +387,35 @@ func (s *Server) deploy(ctx context.Context, out *lineStreamer, dir string, app 
 		BuildEnv:       app.Build.Env,
 		Strategy:       det.Strategy,
 		DockerfilePath: det.DockerfilePath,
-		RailpackPlan:   det.Railpack,
 		Progress:       build.ProgressSink{LogPath: logFile.Name(), Writer: out},
-	})
+	}
+	var result *build.Result
+	if det.Strategy == config.BuildAI {
+		// donkey's own builder writes the Dockerfile, and gets more than one
+		// go at it — every failure is something the assistant can be shown.
+		req.Verify = s.verifySpec(app)
+		outcome, aerr := s.buildGenerated(ctx, out, builder, dir, app, req)
+		if aerr == nil {
+			result, err = outcome.Result, nil
+			if outcome.Attempts > 1 {
+				out.Line("· It took %d tries to get an image that starts.", outcome.Attempts)
+			}
+			if outcome.NeverListened {
+				out.Line("· Careful: the image starts, but it never listened on port %d while donkey watched it. If it listens somewhere else, set `port:` in donkey.yaml.", app.Port)
+			}
+			// The Dockerfile is the durable part of this: kept next to the
+			// app, the next deploy is a plain Dockerfile build with no model
+			// in the way.
+			out.Line("· Save this as %s to keep every later build identical:", detect.AIDockerfilePath)
+			for _, line := range strings.Split(strings.TrimRight(outcome.Dockerfile, "\n"), "\n") {
+				out.Line("    %s", line)
+			}
+		} else {
+			err = aerr
+		}
+	} else {
+		result, err = builder.Build(ctx, req)
+	}
 	if err != nil {
 		res := DeployResult{App: app.Name, Space: space, Error: err.Error()}
 		if logs, rerr := os.ReadFile(logFile.Name()); rerr == nil {
@@ -405,20 +454,16 @@ func (s *Server) renderDryRun(app *config.AppConfig, imageRef string) DeployResu
 	return res
 }
 
-// deployDecisions is what deploy-time analysis (or donkey.yaml) settled for
-// an app — persisted as a Deployment annotation so a no-build deploy keeps
-// the same shape instead of quietly unmounting the disk the last real deploy
-// set up.
+// deployDecisions persists what analysis settled, so a no-build deploy keeps
+// the same shape instead of quietly unmounting the last deploy's disk.
 type deployDecisions struct {
 	Storage         *config.StorageConfig `json:"storage,omitempty"`
 	HealthcheckPath string                `json:"healthcheckPath,omitempty"`
 }
 
-// consoleChoices are the network settings made in the admin console. They
-// live in their own annotation (donkey.dev/console, written by the console
-// endpoints only, via patch): a deploy re-renders the decisions annotation
-// from donkey.yaml, while a console choice must survive deploys — and it
-// does, because server-side apply only owns the keys it writes.
+// consoleChoices live in their own annotation, written by the console
+// endpoints only: a deploy re-renders decisions from donkey.yaml, while a
+// console choice survives because server-side apply owns only what it writes.
 type consoleChoices struct {
 	// Exposure is "public", "protected" or "internal"; empty means the
 	// donkeyfile (or the default) decides.
@@ -436,12 +481,11 @@ func (s *Server) readConsoleChoices(ctx context.Context, space, app string) cons
 	return c
 }
 
-// adoptConsoleChoices fills the network settings this donkey.yaml leaves
-// open from what the console configured — the file always wins where it
-// speaks (an omitted bool is indistinguishable from an explicit false, so
-// "speaks" means: sets public/internal/domain/access to something). Runs on
-// every deploy; adoption that would make the config invalid is dropped
-// again, and only the adopted values, never the user's own.
+// adoptConsoleChoices fills what donkey.yaml leaves open from the console's
+// settings. The file wins where it speaks — an omitted bool is
+// indistinguishable from an explicit false, so "speaks" means it sets
+// public/internal/domain/access. Adoption that would invalidate the config is
+// dropped, and only ever the adopted values.
 func (s *Server) adoptConsoleChoices(ctx context.Context, space string, app *config.AppConfig) []string {
 	c := s.readConsoleChoices(ctx, space, app.Name)
 	var lines []string
@@ -482,11 +526,9 @@ func (s *Server) adoptConsoleChoices(ctx context.Context, space string, app *con
 	return lines
 }
 
-// adoptStoredDecisions fills what this donkey.yaml leaves open from the
-// decisions recorded on the running Deployment, and says what it kept.
-// Adoption never makes the config invalid — an adopted value that no longer
-// fits (say, replicas went up since the disk was found) is dropped again,
-// and only the adopted values, never the user's own.
+// adoptStoredDecisions fills what donkey.yaml leaves open from the running
+// Deployment's record, and says what it kept. An adopted value that no longer
+// fits is dropped again, and only ever the adopted values.
 func (s *Server) adoptStoredDecisions(ctx context.Context, space string, app *config.AppConfig) []string {
 	raw, err := s.rt.AppMeta(ctx, space, app.Name, runtime.MetaDecisions)
 	if err != nil || raw == "" {
@@ -537,11 +579,6 @@ func (s *Server) applyAndWait(ctx context.Context, out *lineStreamer, app *confi
 	}, out)
 	if err != nil {
 		res := DeployResult{App: app.Name, Space: space, ImageRef: imageRef, Error: err.Error()}
-		var je *runtime.JobError
-		if errors.As(err, &je) && je.Logs != "" {
-			out.Line("Output of the pre-deploy step:\n%s", je.Logs)
-			s.diagnoseWith(ctx, &res, root, space, app.Name, "predeploy", je.Logs, nil)
-		}
 		var re *runtime.RolloutError
 		if errors.As(err, &re) {
 			for _, p := range re.Evidence.Summaries {
@@ -571,14 +608,9 @@ func decisionsJSON(app *config.AppConfig) string {
 	return string(b)
 }
 
-// diagnoseWith runs the AI failure analysis server-side (for build and
-// rollout failures — the stages with real evidence) and attaches it to the
-// result. Proposals are never applied here: the server computes the diff, and
-// the user decides.
-//
-// root is the uploaded copy of the app, which the assistant reads to ground
-// its answer in the actual code. It is a temp dir the server owns, never the
-// user's working tree.
+// diagnoseWith attaches AI failure analysis to the result. Proposals are
+// never applied: the server computes the diff, the user decides. root is the
+// server's own temp copy of the app, never the user's working tree.
 func (s *Server) diagnoseWith(ctx context.Context, res *DeployResult, root, space, app, stage, logs string, events []string) {
 	dctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
@@ -615,13 +647,9 @@ func withDiffs(dir string, actions []ai.FixAction) []ai.FixAction {
 			out = append(out, a)
 			continue
 		}
-		// os.Root already makes an escaping path unreadable and unwritable,
-		// so this is not the safety check — it is the honesty one. Without
-		// it a path like "a/../../x" fails the read with "not found" (it
-		// stops at the missing "a/" before it ever escapes), and would then
-		// be shown as a tidy new-file diff for a change that can never be
-		// applied. fs.ValidPath is the standard library's own definition of
-		// a legal path inside a tree, so there is no bespoke rule here.
+		// Not the safety check — os.Root already blocks escapes — but the
+		// honesty one: "a/../../x" would otherwise fail as "not found" and be
+		// shown as a tidy new-file diff for a change that can never apply.
 		rel := path.Clean(filepath.ToSlash(strings.TrimSpace(a.Path)))
 		if !fs.ValidPath(rel) || rel == "." {
 			continue
@@ -645,12 +673,10 @@ func withDiffs(dir string, actions []ai.FixAction) []ai.FixAction {
 	return out
 }
 
-// knownSecrets collects the values donkey itself handed to an app: env vars,
-// addon bindings, and the control plane's own credentials. Failure evidence
-// is full of them — an app that cannot reach its database prints the
-// connection string it tried — so the assistant gets them scrubbed out.
-// Best effort: a secret donkey cannot read is one it cannot redact, but that
-// must never cost the user their diagnosis.
+// knownSecrets is what donkey handed the app — env, addon bindings, its own
+// credentials — so the assistant sees them scrubbed. Best effort: a secret
+// donkey cannot read is one it cannot redact, and that must not cost the
+// user their diagnosis.
 func (s *Server) knownSecrets(ctx context.Context, space, app string) []string {
 	var out []string
 	add := func(m map[string]string) {

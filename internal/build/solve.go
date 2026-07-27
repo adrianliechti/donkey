@@ -2,24 +2,16 @@ package build
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"io"
-	"maps"
 	"os"
 	"path/filepath"
-	"slices"
 	"strconv"
 	"strings"
 
 	bkclient "github.com/moby/buildkit/client"
-	"github.com/moby/buildkit/client/llb"
 	"github.com/moby/buildkit/session"
-	"github.com/moby/buildkit/session/secrets/secretsprovider"
 	"github.com/moby/buildkit/util/progress/progressui"
-	rpbuildkit "github.com/railwayapp/railpack/buildkit"
 	"github.com/tonistiigi/fsutil"
 	"golang.org/x/sync/errgroup"
 
@@ -31,6 +23,9 @@ import (
 type BuildKitBuilder struct {
 	Registry     config.Registry
 	BuildkitAddr string
+	// Settings carries the environment every build is handed on top of the
+	// app's own.
+	Settings config.BuildSettings
 }
 
 func (b *BuildKitBuilder) Build(ctx context.Context, req Request) (*Result, error) {
@@ -43,14 +38,43 @@ func (b *BuildKitBuilder) Build(ctx context.Context, req Request) (*Result, erro
 	}
 	defer c.Close()
 
-	def, opt, err := b.solveOpt(ctx, req)
+	// A build that has to prove the image starts runs through the gateway
+	// instead: the frontend's result is solved first, the probe runs on it,
+	// and only then is the image exported. Nothing that cannot start is ever
+	// pushed under an app's name.
+	if req.Verify != nil {
+		return b.buildVerified(ctx, c, req)
+	}
+
+	opt, err := b.solveOpt(req)
 	if err != nil {
 		return nil, err
 	}
 
+	var resp *bkclient.SolveResponse
+	if err := b.withProgress(ctx, req, func(ctx context.Context, ch chan *bkclient.SolveStatus) error {
+		var err error
+		// No definition: every build donkey does now goes through the
+		// Dockerfile frontend, which produces its own.
+		resp, err = c.Solve(ctx, nil, *opt, ch)
+		return err
+	}); err != nil {
+		return nil, err
+	}
+	return &Result{
+		ImageRef: req.ImageRef,
+		Digest:   resp.ExporterResponse["containerimage.digest"],
+		LogPath:  req.Progress.LogPath,
+	}, nil
+}
+
+// withProgress runs one solve while its progress stream is rendered into the
+// build log (and, when someone is following, into their response). The solve
+// closes the status channel itself.
+func (b *BuildKitBuilder) withProgress(ctx context.Context, req Request, solve func(context.Context, chan *bkclient.SolveStatus) error) error {
 	logFile, err := os.Create(req.Progress.LogPath)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer logFile.Close()
 	var progressOut io.Writer = logFile
@@ -60,12 +84,7 @@ func (b *BuildKitBuilder) Build(ctx context.Context, req Request) (*Result, erro
 
 	ch := make(chan *bkclient.SolveStatus)
 	eg, ectx := errgroup.WithContext(ctx)
-	var resp *bkclient.SolveResponse
-	eg.Go(func() error {
-		var err error
-		resp, err = c.Solve(ectx, def, *opt, ch)
-		return err
-	})
+	eg.Go(func() error { return solve(ectx, ch) })
 	eg.Go(func() error {
 		display, err := progressui.NewDisplay(progressOut, progressui.PlainMode)
 		if err != nil {
@@ -75,19 +94,21 @@ func (b *BuildKitBuilder) Build(ctx context.Context, req Request) (*Result, erro
 		return err
 	})
 	if err := eg.Wait(); err != nil {
-		return nil, fmt.Errorf("the build failed: %w", err)
+		return fmt.Errorf("the build failed: %w", err)
 	}
-	return &Result{
-		ImageRef: req.ImageRef,
-		Digest:   resp.ExporterResponse["containerimage.digest"],
-		LogPath:  req.Progress.LogPath,
-	}, nil
+	return nil
 }
 
-func (b *BuildKitBuilder) solveOpt(ctx context.Context, req Request) (*llb.Definition, *bkclient.SolveOpt, error) {
+// solveOpt describes the build to BuildKit. Every build donkey does is a
+// Dockerfile build — an app either brings its own, or the assistant writes it
+// one — so the frontend is always dockerfile.v0.
+func (b *BuildKitBuilder) solveOpt(req Request) (*bkclient.SolveOpt, error) {
+	if req.Strategy != config.BuildDockerfile {
+		return nil, fmt.Errorf("build strategy %q is not supported", req.Strategy)
+	}
 	auth, err := registryAuth(b.Registry)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	opt := &bkclient.SolveOpt{
 		Exports: []bkclient.ExportEntry{{
@@ -105,83 +126,36 @@ func (b *BuildKitBuilder) solveOpt(ctx context.Context, req Request) (*llb.Defin
 
 	contextFS, err := fsutil.NewFS(req.ContextDir)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
-	switch req.Strategy {
-	case config.BuildDockerfile:
-		// The Dockerfile path comes from the uploaded donkey.yaml and must
-		// stay inside the uploaded context: its parent directory is exposed
-		// to the frontend, and a "../…" path would expose (and read as the
-		// Dockerfile) files of the server itself.
-		dockerfilePath := filepath.Join(req.ContextDir, req.DockerfilePath)
-		if rel, err := filepath.Rel(req.ContextDir, dockerfilePath); err != nil ||
-			rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-			return nil, nil, fmt.Errorf("build.dockerfile %q points outside the app folder", req.DockerfilePath)
-		}
-		dockerfileFS, err := fsutil.NewFS(filepath.Dir(dockerfilePath))
-		if err != nil {
-			return nil, nil, err
-		}
-		opt.Frontend = "dockerfile.v0"
-		opt.FrontendAttrs = map[string]string{
-			"filename": filepath.Base(dockerfilePath),
-			"platform": req.Platform,
-		}
-		for k, v := range req.BuildEnv {
-			opt.FrontendAttrs["build-arg:"+k] = v
-		}
-		opt.LocalMounts = map[string]fsutil.FS{
-			"context":    contextFS,
-			"dockerfile": dockerfileFS,
-		}
-		return nil, opt, nil
-
-	case config.BuildRailpack:
-		if req.RailpackPlan == nil || req.RailpackPlan.Result == nil {
-			return nil, nil, fmt.Errorf("railpack build requested without a plan")
-		}
-		platform, err := rpbuildkit.ParsePlatformWithDefaults(req.Platform)
-		if err != nil {
-			return nil, nil, fmt.Errorf("platform %q: %w", req.Platform, err)
-		}
-		state, image, err := rpbuildkit.ConvertPlanToLLB(req.RailpackPlan.Result.Plan, rpbuildkit.ConvertPlanOptions{
-			BuildPlatform: platform,
-			SecretsHash:   secretsHash(req.BuildEnv),
-		})
-		if err != nil {
-			return nil, nil, fmt.Errorf("preparing the build steps: %w", err)
-		}
-		imageBytes, err := json.Marshal(image)
-		if err != nil {
-			return nil, nil, err
-		}
-		def, err := state.Marshal(ctx, llb.Platform(platform))
-		if err != nil {
-			return nil, nil, fmt.Errorf("preparing the build steps: %w", err)
-		}
-		opt.Exports[0].Attrs["containerimage.config"] = string(imageBytes)
-		opt.LocalMounts = map[string]fsutil.FS{"context": contextFS}
-		secretsMap := map[string][]byte{}
-		for k, v := range req.BuildEnv {
-			secretsMap[k] = []byte(v)
-		}
-		opt.Session = append(opt.Session, secretsprovider.FromMap(secretsMap))
-		return def, opt, nil
-
-	default:
-		return nil, nil, fmt.Errorf("build strategy %q is not supported yet", req.Strategy)
+	// The Dockerfile path comes from the uploaded donkey.yaml and must stay
+	// inside the uploaded context: its parent directory is exposed to the
+	// frontend, and a "../…" path would expose (and read as the Dockerfile)
+	// files of the server itself.
+	dockerfilePath := filepath.Join(req.ContextDir, req.DockerfilePath)
+	if rel, err := filepath.Rel(req.ContextDir, dockerfilePath); err != nil ||
+		rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return nil, fmt.Errorf("build.dockerfile %q points outside the app folder", req.DockerfilePath)
 	}
-}
-
-// secretsHash invalidates cached layers when build env values change.
-func secretsHash(env map[string]string) string {
-	if len(env) == 0 {
-		return ""
+	dockerfileFS, err := fsutil.NewFS(filepath.Dir(dockerfilePath))
+	if err != nil {
+		return nil, err
 	}
-	h := sha256.New()
-	for _, k := range slices.Sorted(maps.Keys(env)) {
-		fmt.Fprintf(h, "%s=%s\n", k, env[k])
+	opt.Frontend = "dockerfile.v0"
+	opt.FrontendAttrs = map[string]string{
+		"filename": filepath.Base(dockerfilePath),
+		"platform": req.Platform,
 	}
-	return hex.EncodeToString(h.Sum(nil))
+	// The installation's build environment sits under the app's own, and
+	// BuildKit hands these to every RUN — so a mirrored package registry
+	// reaches build steps donkey never sees.
+	for k, v := range b.Settings.MergeEnv(req.BuildEnv) {
+		opt.FrontendAttrs["build-arg:"+k] = v
+	}
+	opt.LocalMounts = map[string]fsutil.FS{
+		"context":    contextFS,
+		"dockerfile": dockerfileFS,
+	}
+	return opt, nil
 }

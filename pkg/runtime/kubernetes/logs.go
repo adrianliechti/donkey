@@ -44,8 +44,12 @@ func (c *Client) StreamLogs(ctx context.Context, namespace, app string, opts rt.
 		rc, err := c.Clientset.CoreV1().Pods(namespace).GetLogs(pod.Name, plo).Stream(ctx)
 		if err != nil {
 			// A pod that is still starting has no logs yet — say so instead
-			// of silently printing nothing.
+			// of silently printing nothing. Under the same lock as the
+			// streaming goroutines: by this point an earlier pod may already
+			// be writing, and out is an http.ResponseWriter.
+			mu.Lock()
 			fmt.Fprintf(out, "[%s] no logs yet (%s)\n", pod.Name, podSummary(&pod))
+			mu.Unlock()
 			streamErr = err
 			continue
 		}

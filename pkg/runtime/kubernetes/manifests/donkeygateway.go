@@ -158,6 +158,11 @@ func donkeyGatewayDeployment(in SystemInput) *appsv1.Deployment {
 		secretEnv("DONKEY_OIDC_CLIENT_SECRET", "oidc-client-secret"),
 		secretEnv("DONKEY_SESSION_KEY", "session-key"),
 	}
+	// The gateway reaches the outside world too — the OIDC token exchange
+	// and, in acme mode, Let's Encrypt. On a network whose only way out is a
+	// forward proxy, builds would otherwise work while nobody could sign in
+	// and no certificate could be issued.
+	env = append(env, proxyEnv(in.Build.Proxy, registryHostOf(in.RegistryURL))...)
 	health := corev1.ProbeHandler{
 		HTTPGet: &corev1.HTTPGetAction{Path: "/healthz", Port: intstr.FromInt32(donkeyGatewayHealthPort)},
 	}

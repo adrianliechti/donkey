@@ -31,21 +31,17 @@ import (
 	"github.com/adrianliechti/donkey/pkg/runtime/kubernetes/manifests"
 )
 
-// The gateway is its own certificate authority story: no cert-manager, no
-// ingress vendor. Three ways to a certificate —
+// The gateway is its own certificate authority: no cert-manager, no ingress
+// vendor. Three ways to a certificate —
 //
-//   - acme:   one certificate per hostname, issued on demand (and pre-issued
-//     the moment a route appears). The routing table doubles as the
-//     issuance allowlist, so nobody can make the gateway request
-//     certificates for names donkey doesn't serve.
-//   - ca:     a self-signed CA the gateway mints once and keeps in a Secret,
-//     signing per-hostname certificates on the fly — for demo and
-//     internal installs ACME can't reach. Trust the one CA certificate
-//     and every app is covered.
+//   - acme:   one per hostname, issued on demand and pre-issued when a route
+//     appears. The routing table doubles as the issuance allowlist.
+//   - ca:     a self-signed CA kept in a Secret, signing per-hostname
+//     certificates on the fly — for installs ACME cannot reach.
 //   - static: a provided certificate (usually a wildcard) from a Secret.
 //
-// Issued certificates and the ACME account live in a Secret, so they
-// survive pod restarts and are shared by replicas.
+// Issued certificates and the ACME account live in a Secret, so they survive
+// restarts and are shared by replicas.
 
 // edgeTLS builds the https listener's TLS config and the plain listener's
 // handler (the https redirect — wrapped to also answer ACME HTTP-01
@@ -63,12 +59,11 @@ func (s *Server) edgeTLS(ctx context.Context) (*tls.Config, http.Handler, error)
 		if s.cfg.ACMEDirectory != "" {
 			m.Client = &acme.Client{DirectoryURL: s.cfg.ACMEDirectory}
 		}
-		// Deploys shouldn't leave the first visitor waiting on a handshake
-		// that triggers issuance — new hostnames get their certificate as
-		// soon as their route appears. The synthetic hello must advertise
-		// ECDSA: autocert keys its cache by certificate type, and a bare
-		// hello would pre-issue an RSA certificate no real browser asks
-		// for — every visitor would then wait through a second issuance.
+		// New hostnames get their certificate when the route appears, not on
+		// the first visitor's handshake. The synthetic hello must advertise
+		// ECDSA: autocert keys its cache by certificate type, so a bare hello
+		// pre-issues an RSA certificate no browser asks for, and every visitor
+		// waits through a second issuance anyway.
 		s.warm = func(host string) {
 			hello := &tls.ClientHelloInfo{
 				ServerName:       host,
@@ -208,11 +203,10 @@ func (c *secretCache) Delete(ctx context.Context, key string) error {
 	})
 }
 
-// update read-modify-writes the Secret, retrying (with a little air between
-// attempts) the races two replicas or a burst of first-install issuances run
-// into. One Secret caps out around 1 MiB — roughly 250 hostnames — which is
-// far beyond this PoC's reach; past it, certificates still serve from
-// memory but stop persisting.
+// update read-modify-writes the Secret, retrying the races two replicas or a
+// burst of first-install issuances run into. One Secret caps out near 1 MiB
+// (~250 hostnames); past that, certificates still serve from memory but stop
+// persisting.
 func (c *secretCache) update(ctx context.Context, mutate func(map[string][]byte)) error {
 	secrets := c.client.Clientset.CoreV1().Secrets(c.namespace)
 	var lastErr error

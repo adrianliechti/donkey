@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"maps"
 	"os"
 
 	"sigs.k8s.io/yaml"
@@ -34,8 +35,108 @@ type InstallFile struct {
 	// (default linux/amd64).
 	DefaultPlatform string `json:"defaultPlatform,omitempty"`
 
+	Build InstallBuild `json:"build,omitempty"`
+
 	Auth InstallAuth `json:"auth,omitempty"`
 	AI   InstallAI   `json:"ai,omitempty"`
+}
+
+// InstallBuild is how apps are built and how a build reaches the outside
+// world. BuildSettings travels to donkey-server as environment; the fields
+// below are consumed where the installation is written — mirrors into the
+// build engine's config, the proxy into both pods.
+type InstallBuild struct {
+	BuildSettings `json:",inline"`
+
+	// RegistryMirrors maps an upstream registry host to its mirror. Written
+	// into the build engine's config, so it covers every FROM a build pulls.
+	RegistryMirrors map[string]string `json:"registryMirrors,omitempty"`
+
+	// Proxy is a forward proxy for donkey-server and the build engine
+	// themselves — not for the app's build steps, which read Env.
+	Proxy InstallProxy `json:"proxy,omitempty"`
+}
+
+// BuildSettings is the build configuration donkey-server acts on. There is
+// one builder, so its settings sit directly under build:.
+type BuildSettings struct {
+	// Env is injected into every build, under the app's own build.env.
+	// BuildKit hands it to every RUN, which is what puts a package manager's
+	// mirror in reach of build steps donkey never sees.
+	Env map[string]string `json:"env,omitempty"`
+
+	// Verify is a pointer so unset ≠ off; unset means on.
+	Verify        *bool `json:"verify,omitempty"`
+	VerifySeconds int   `json:"verifySeconds,omitempty"`
+	// Attempts is the first Dockerfile plus one revision per failure shown.
+	Attempts int `json:"attempts,omitempty"`
+}
+
+// InstallProxy is the forward proxy donkey's own processes use.
+type InstallProxy struct {
+	HTTP    string `json:"http,omitempty"`
+	HTTPS   string `json:"https,omitempty"`
+	NoProxy string `json:"noProxy,omitempty"`
+}
+
+const (
+	// Long enough for a JVM or a cold interpreter, short enough that a broken
+	// image fails quickly.
+	DefaultVerifySeconds = 45
+	// The first Dockerfile plus two revisions. Beyond that a model that has
+	// seen the failure twice is not converging.
+	DefaultAttempts = 3
+)
+
+// Validate checks what can be wrong without consulting the runtime.
+func (b InstallBuild) Validate() error {
+	if b.Attempts < 0 {
+		return fmt.Errorf("build.attempts cannot be negative")
+	}
+	if b.VerifySeconds < 0 {
+		return fmt.Errorf("build.verifySeconds cannot be negative")
+	}
+	for host, mirror := range b.RegistryMirrors {
+		if host == "" {
+			return fmt.Errorf("build.registryMirrors has an entry with no registry host")
+		}
+		if mirror == "" {
+			return fmt.Errorf("build.registryMirrors[%q] has no mirror address", host)
+		}
+	}
+	return nil
+}
+
+// VerifyStartup is on unless an installation turns it off.
+func (b BuildSettings) VerifyStartup() bool {
+	return b.Verify == nil || *b.Verify
+}
+
+// VerifyWindow is how long the app is given to come up.
+func (b BuildSettings) VerifyWindow() int {
+	if b.VerifySeconds <= 0 {
+		return DefaultVerifySeconds
+	}
+	return b.VerifySeconds
+}
+
+// BuildAttempts is how many Dockerfiles the assistant may write.
+func (b BuildSettings) BuildAttempts() int {
+	if b.Attempts <= 0 {
+		return DefaultAttempts
+	}
+	return b.Attempts
+}
+
+// MergeEnv layers an app's build.env over the installation's; the app wins.
+func (b BuildSettings) MergeEnv(appEnv map[string]string) map[string]string {
+	if len(b.Env) == 0 {
+		return appEnv
+	}
+	merged := make(map[string]string, len(b.Env)+len(appEnv))
+	maps.Copy(merged, b.Env)
+	maps.Copy(merged, appEnv)
+	return merged
 }
 
 // InstallRegistry describes the registry app images are pushed to. CASecret

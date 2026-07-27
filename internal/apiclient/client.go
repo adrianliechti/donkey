@@ -19,7 +19,6 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"github.com/adrianliechti/donkey/internal/ai"
 	"github.com/adrianliechti/donkey/internal/server"
 )
 
@@ -190,6 +189,59 @@ type DeployOpts struct {
 	NoBuild   bool
 	// SHA is the app's git commit (if any) — becomes part of the image tag.
 	SHA string
+	// Plan is the id of a plan the user already reviewed. The deploy then
+	// uses its config and its reading of the app instead of asking the
+	// assistant a second time.
+	Plan string
+}
+
+// PlanOpts is what the caller knows that the upload doesn't say.
+type PlanOpts struct {
+	Space string
+	// Name is what the app should be called when the upload carries no
+	// donkey.yaml — the folder's name, as `donkey init` would use it.
+	Name string
+	// Path names the folder inside the upload that holds the app, for an
+	// upload that holds more than one.
+	Path string
+}
+
+// Plan asks the server to read an uploaded app: how it would be built, what
+// it needs, and what would go wrong — without building anything. The deploy
+// that follows carries the plan's id.
+func (c *Client) Plan(ctx context.Context, contextTar io.Reader, opts PlanOpts) (*server.Plan, error) {
+	q := url.Values{}
+	for k, v := range map[string]string{"space": opts.Space, "name": opts.Name, "path": opts.Path} {
+		if v != "" {
+			q.Set(k, v)
+		}
+	}
+	req, err := c.req(ctx, http.MethodPost, "/v1/plans", q, contextTar)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/gzip")
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("couldn't reach the donkey server at %s: %w", c.BaseURL, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return nil, apiError(resp)
+	}
+	var out server.Plan
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("the server at %s didn't answer like a donkey server — is the address right (and the server up to date)?", c.BaseURL)
+	}
+	return &out, nil
+}
+
+// UpdatePlan settles the answers the user gave into the plan and re-runs the
+// checks against them — no upload, no model call.
+func (c *Client) UpdatePlan(ctx context.Context, id string, edit server.PlanEdit) (*server.Plan, error) {
+	var out server.Plan
+	err := c.doJSON(ctx, http.MethodPut, "/v1/plans/"+url.PathEscape(id), nil, edit, &out)
+	return &out, err
 }
 
 // appPath builds the space-scoped API path of one app.
@@ -213,6 +265,9 @@ func (c *Client) Deploy(ctx context.Context, contextTar io.Reader, opts DeployOp
 	}
 	if opts.SHA != "" {
 		q.Set("sha", opts.SHA)
+	}
+	if opts.Plan != "" {
+		q.Set("plan", opts.Plan)
 	}
 	setBool := func(k string, v bool) {
 		if v {
@@ -427,12 +482,4 @@ func (c *Client) Doctor(ctx context.Context) ([]server.DoctorCheck, string, erro
 	}
 	err := c.doJSON(ctx, http.MethodGet, "/v1/doctor", nil, nil, &out)
 	return out.Checks, out.Domain, err
-}
-
-// Analyze asks the server's assistant to read a repository summary. The CLI
-// never talks to OpenAI itself — only the server holds the key.
-func (c *Client) Analyze(ctx context.Context, in *ai.AnalyzeInput) (*ai.Analysis, error) {
-	var out ai.Analysis
-	err := c.doJSON(ctx, http.MethodPost, "/v1/ai/analyze", nil, in, &out)
-	return &out, err
 }

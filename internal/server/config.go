@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 
 	"github.com/adrianliechti/donkey/internal/config"
 )
@@ -34,6 +35,9 @@ type Config struct {
 	// DefaultPlatform is the build platform when neither the deploy nor
 	// donkey.yaml names one — matches the cluster's nodes.
 	DefaultPlatform string
+
+	// Build is the builder's settings and the environment every build gets.
+	Build config.BuildSettings
 
 	// SessionKey is the installation's sealing key — the server verifies
 	// the CLI tokens the gateway mints with it (the direct, port-forwarded
@@ -64,6 +68,18 @@ func FromEnv() (*Config, error) {
 		DefaultPlatform:  envOr("DONKEY_DEFAULT_PLATFORM", "linux/amd64"),
 		AIModel:          envOr("DONKEY_AI_MODEL", config.DefaultAIModel),
 	}
+	// The build environment is a map, so it travels as JSON — the same way
+	// DONKEY_ADMINS does.
+	if raw := os.Getenv("DONKEY_BUILD_ENV"); raw != "" {
+		if err := json.Unmarshal([]byte(raw), &c.Build.Env); err != nil {
+			return nil, fmt.Errorf("DONKEY_BUILD_ENV is not a JSON object of build variables: %w", err)
+		}
+	}
+	c.Build.VerifySeconds = envInt("DONKEY_BUILDER_VERIFY_SECONDS")
+	c.Build.Attempts = envInt("DONKEY_BUILDER_ATTEMPTS")
+	if v := os.Getenv("DONKEY_BUILDER_VERIFY"); v != "" {
+		c.Build.Verify = new(v == "true")
+	}
 	key, err := hex.DecodeString(os.Getenv("DONKEY_SESSION_KEY"))
 	if err != nil || len(key) != 32 {
 		return nil, fmt.Errorf("DONKEY_SESSION_KEY must be 32 bytes of hex — `donkey server install` generates it")
@@ -93,6 +109,16 @@ func FromEnv() (*Config, error) {
 
 // The registry password flows through the same env var the Registry type
 // already reads (DONKEY_REGISTRY_PASSWORD), set from the system secret.
+
+// envInt reads an optional numeric setting; anything unreadable falls back to
+// the default the accessor applies.
+func envInt(key string) int {
+	n, err := strconv.Atoi(os.Getenv(key))
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
+}
 
 func envOr(key, def string) string {
 	if v := os.Getenv(key); v != "" {

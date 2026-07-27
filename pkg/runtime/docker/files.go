@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -214,13 +215,16 @@ func (r *Runtime) ListFiles(ctx context.Context, space, app, subPath string) ([]
 		return nil, err
 	}
 	dir := resolved[0]
-	var out bytes.Buffer
-	if err := r.execFiles(ctx, helper, []string{"find", dir, "-maxdepth", "1", "-exec", "stat", "-c", statFormat, "{}", ";"}, nil, &out); err != nil {
+	// Bounded, as on Kubernetes: a folder with a million files stops being
+	// listed once there is plainly enough, rather than buffering all of it.
+	out := &capWriter{limit: rt.MaxListEntries * 1024}
+	argv := []string{"find", dir, "-maxdepth", "1", "-exec", "stat", "-c", statFormat, "{}", ";"}
+	if err := r.execFiles(ctx, helper, argv, nil, out); err != nil && !out.full() {
 		return nil, err
 	}
 	entries := []rt.FileEntry{}
 	self := false
-	for _, line := range strings.Split(out.String(), "\n") {
+	for _, line := range strings.Split(out.buf.String(), "\n") {
 		e, full, ok := parseStatLine(line)
 		if !ok {
 			continue
@@ -341,14 +345,17 @@ func (r *Runtime) RemoveFile(ctx context.Context, space, app, subPath string) er
 	if err != nil {
 		return err
 	}
-	resolved, err := r.resolveAll(ctx, helper, volumePath(rel))
+	// Only the parent is resolved, as on Kubernetes: rm removes a shortcut
+	// itself and never follows it, so deleting a link cannot delete what it
+	// points at — and a dangling link stays deletable.
+	dir, err := r.resolveAll(ctx, helper, volumePath(parentRel(rel)))
 	if err != nil {
 		return err
 	}
-	if resolved[0] == filesMount {
+	if dir[0] == filesMount && path.Base(rel) == "" {
 		return fmt.Errorf("%w — the disk itself cannot be deleted here (use `donkey destroy`)", rt.ErrBadPath)
 	}
-	return r.execFiles(ctx, helper, []string{"rm", "-rf", resolved[0]}, nil, nil)
+	return r.execFiles(ctx, helper, []string{"rm", "-rf", dir[0] + "/" + path.Base(rel)}, nil, nil)
 }
 
 func (r *Runtime) MoveFile(ctx context.Context, space, app, from, to string) error {
@@ -367,11 +374,13 @@ func (r *Runtime) MoveFile(ctx context.Context, space, app, from, to string) err
 	if err != nil {
 		return err
 	}
-	paths, err := r.resolveAll(ctx, helper, volumePath(fromRel), volumePath(parentRel(toRel)), volumePath(toRel))
+	// The source's parent, not the source: mv must move a shortcut itself
+	// rather than what it points at.
+	paths, err := r.resolveAll(ctx, helper, volumePath(parentRel(fromRel)), volumePath(parentRel(toRel)), volumePath(toRel))
 	if err != nil {
 		return err
 	}
-	return r.execFiles(ctx, helper, []string{"mv", paths[0], paths[2]}, nil, nil)
+	return r.execFiles(ctx, helper, []string{"mv", paths[0] + "/" + path.Base(fromRel), paths[2]}, nil, nil)
 }
 
 func (r *Runtime) MakeDir(ctx context.Context, space, app, subPath string) error {
@@ -386,11 +395,16 @@ func (r *Runtime) MakeDir(ctx context.Context, space, app, subPath string) error
 	if err != nil {
 		return err
 	}
-	paths, err := r.resolveAll(ctx, helper, volumePath(parentRel(rel)), volumePath(rel))
+	dir, err := r.resolveAll(ctx, helper, volumePath(parentRel(rel)))
 	if err != nil {
 		return err
 	}
-	return r.execFiles(ctx, helper, []string{"mkdir", paths[1]}, nil, nil)
+	// -m 775 and -p, as on Kubernetes: a bare mkdir leaves the folder
+	// root-owned 0755 inside a group-writable disk, so a non-root app cannot
+	// write into what the browser just made — and without -p, creating a
+	// folder that exists is an error rather than a no-op.
+	return r.execFiles(ctx, helper,
+		[]string{"mkdir", "-m", "775", "-p", dir[0] + "/" + path.Base(rel)}, nil, nil)
 }
 
 func (r *Runtime) removeQuietly(ctx context.Context, helper, target string) {
@@ -504,3 +518,28 @@ func modeText(raw uint32) string {
 	}
 	return m.String()
 }
+
+// capWriter keeps a bounded amount of output and then asks to be stopped.
+type capWriter struct {
+	buf   bytes.Buffer
+	limit int
+}
+
+func (w *capWriter) Write(p []byte) (int, error) {
+	room := w.limit - w.buf.Len()
+	if room <= 0 {
+		return 0, errCapReached
+	}
+	if len(p) > room {
+		w.buf.Write(p[:room])
+		return len(p), errCapReached
+	}
+	w.buf.Write(p)
+	return len(p), nil
+}
+
+// full reports that the writer stopped the command rather than the command
+// stopping itself — the output is a beginning, not the whole answer.
+func (w *capWriter) full() bool { return w.buf.Len() >= w.limit }
+
+var errCapReached = errors.New("output limit reached")

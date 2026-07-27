@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log"
 	"sort"
 	"strconv"
 	"strings"
@@ -226,12 +227,18 @@ func (r *Runtime) DeleteSpace(ctx context.Context, space string) error {
 			return err
 		}
 	}
+	// Reported, not swallowed: a space whose volumes survived would be
+	// reported deleted, and the next space of the same name would reuse them
+	// with credentials that no longer match its bindings.
 	vols, err := r.cli.VolumeList(ctx, volume.ListOptions{
 		Filters: filters.NewArgs(filters.Arg("label", labelSpace+"="+space)),
 	})
-	if err == nil {
-		for _, v := range vols.Volumes {
-			_ = r.cli.VolumeRemove(ctx, v.Name, false)
+	if err != nil {
+		return fmt.Errorf("couldn't list the data volumes of space %s: %w", space, err)
+	}
+	for _, v := range vols.Volumes {
+		if err := r.cli.VolumeRemove(ctx, v.Name, false); err != nil && !cerrdefs.IsNotFound(err) {
+			return fmt.Errorf("couldn't remove the data volume %s: %w", v.Name, err)
 		}
 	}
 	if err := r.state.cleanupSpace(space); err != nil {
@@ -374,7 +381,15 @@ func (r *Runtime) Logs(ctx context.Context, space, app string, opts rt.LogOption
 	name := ctrName(space, app)
 	// A space's services belong to the pseudo-app "shared"; their container
 	// carries the service's own name.
+	//
+	// The name is checked here as well as at the handler because it ends up in
+	// the engine client's request URL, which path.Joins it — an unchecked
+	// "x/../.." would collapse out of the containers endpoint and read any
+	// container on the host.
 	if svc, ok := strings.CutPrefix(opts.Component, "addon-"); ok {
+		if !config.ValidName(svc) {
+			return fmt.Errorf("%q is not a service of this space", svc)
+		}
 		name = ctrName(space, svc)
 	}
 	lo := container.LogsOptions{
@@ -766,6 +781,68 @@ func (r *Runtime) waitRunning(ctx context.Context, name string, timeout time.Dur
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-time.After(time.Second):
+		}
+	}
+}
+
+// AttachOwnContainers connects donkey's own containers to every space network
+// that already exists.
+//
+// Recreating a container drops every network it was attached to, and an
+// install recreates both of donkey's. Docker's embedded DNS only answers for
+// networks the asking container is on, so without this a re-install leaves the
+// gateway unable to resolve any app deployed before it — every existing app
+// stops answering until it happens to be redeployed. ensureSpace does the same
+// thing for one new space; this covers the ones already there.
+func AttachOwnContainers(ctx context.Context, cli *client.Client, names ...string) error {
+	nets, err := cli.NetworkList(ctx, network.ListOptions{
+		Filters: filters.NewArgs(filters.Arg("label", labelManaged+"=true")),
+	})
+	if err != nil {
+		return err
+	}
+	for _, nw := range nets {
+		if nw.Labels[labelSpace] == "" {
+			continue
+		}
+		for _, name := range names {
+			err := cli.NetworkConnect(ctx, nw.Name, name, nil)
+			// Already attached is the normal case on a re-install that
+			// changed nothing; a missing container is not this code's problem.
+			if err != nil && !strings.Contains(err.Error(), "already exists") && !cerrdefs.IsNotFound(err) {
+				return fmt.Errorf("couldn't attach %s to the network of space %s: %w", name, nw.Labels[labelSpace], err)
+			}
+		}
+	}
+	return nil
+}
+
+// ReconcileOwnNetworks keeps donkey's own containers attached to every space
+// network for as long as ctx lives.
+//
+// Attaching once is not enough, because more than one thing detaches them.
+// Recreating a container drops all of its networks, and an install recreates
+// both — but so does anyone who removes and re-runs one by hand. A deploy that
+// lands while a container is briefly absent skips it silently: ensureSpace
+// treats "no such container" as fine, since donkey may be running outside
+// Docker in development. And a space network removed and recreated outside
+// donkey comes back with nobody on it.
+//
+// The gateway cannot repair this itself — it holds no Docker socket, only the
+// state volume — so the server, which is the runtime provider, does it for
+// both. The check costs one network list and a few no-op connects, and the
+// failure it prevents is silent and total: every app in a space stops
+// answering, with nothing in its own logs to say why.
+func (r *Runtime) ReconcileOwnNetworks(ctx context.Context, every time.Duration) {
+	own := []string{r.opts.ServerContainer, r.opts.GatewayContainer}
+	for {
+		if err := AttachOwnContainers(ctx, r.cli, own...); err != nil && ctx.Err() == nil {
+			log.Printf("couldn't attach donkey's containers to the space networks: %v", err)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(every):
 		}
 	}
 }

@@ -11,9 +11,9 @@ import (
 	"github.com/charmbracelet/huh"
 	"github.com/urfave/cli/v3"
 
-	"github.com/adrianliechti/donkey/internal/ai"
+	"github.com/adrianliechti/donkey/internal/apiclient"
 	"github.com/adrianliechti/donkey/internal/config"
-	"github.com/adrianliechti/donkey/internal/detect"
+	"github.com/adrianliechti/donkey/internal/server"
 	"github.com/adrianliechti/donkey/internal/ui"
 )
 
@@ -38,7 +38,7 @@ func initCommand() *cli.Command {
 					s.UI.Bold(s.Resolved.App.Name), s.UI.Bold(s.Space), s.UI.Bold("donkey deploy"))
 				return nil
 			}
-			_, err = initFlow(ctx, s, cmd)
+			_, _, err = initFlow(ctx, s, cmd)
 			return err
 		},
 	}
@@ -47,100 +47,83 @@ func initCommand() *cli.Command {
 // initFlow works out what this folder is, asks the few questions worth asking,
 // and writes donkey.yaml. Shared by `donkey init` and first-run `donkey deploy`.
 //
-// Donkey's own detector and the assistant both run: the detector knows how to
-// build the app, the assistant reads the source for the things no detector can
-// see — the real port, a health route, and which folders hold data that has to
-// survive a restart.
-func initFlow(ctx context.Context, s *session, cmd *cli.Command) (*config.AppConfig, error) {
+// The reading itself happens on the server, as one plan: donkey's detector
+// says how to build the app, the assistant reads the source for what no
+// detector can see (the real port, a health route, the folders holding data),
+// and the cluster answers the questions only it can — whether the name is
+// free, whether the space exists, what already runs there. The console shows
+// exactly this plan as its review screen, which is why both surfaces say the
+// same things about the same app.
+//
+// The returned plan id lets the deploy that follows reuse this reading instead
+// of paying for a second one.
+func initFlow(ctx context.Context, s *session, cmd *cli.Command) (*config.AppConfig, string, error) {
 	u := s.UI
 	dir := s.Resolved.Flags.AppDir
 
-	u.Printf("Looking at your app…")
-	det, detErr := detect.Detect(dir, nil)
-	analysis, err := aiAnalyze(ctx, s, dir, det, detErr)
+	api, err := s.api()
 	if err != nil {
-		return nil, err
+		return nil, "", err
+	}
+	name := cmd.String("name")
+	if name == "" {
+		name = filepath.Base(absDir(dir))
 	}
 
-	if detErr != nil {
-		if det, err = acceptBuildProposal(s, dir, analysis); err != nil {
-			return nil, err
-		}
-		if det == nil {
-			return nil, fmt.Errorf("setup stopped — nothing was written")
-		}
+	// The upload is the same build context a deploy sends (secret-shaped files
+	// excluded); only file names and manifest files go on to the assistant.
+	u.Printf("Packing this folder up and asking the server to read it…")
+	tarFile, skipped, err := apiclient.TarContextToTemp(dir)
+	if err != nil {
+		return nil, "", fmt.Errorf("couldn't pack the app folder: %w", err)
 	}
-	u.Success("Recognized: %s", det.Summary)
-	if analysis.AppType != "" {
-		u.Info("%s%s", analysis.AppType, notesSuffix(analysis.Notes))
+	defer func() {
+		tarFile.Close()
+		os.Remove(tarFile.Name())
+	}()
+	if len(skipped) > 0 {
+		u.Info("Not uploaded (secret-shaped or symlink): %s", strings.Join(shortList(skipped), ", "))
 	}
 
-	app := &config.AppConfig{
-		Name:  cmd.String("name"),
-		Space: s.Space,
-		Port:  defaultPort(det, analysis),
+	plan, err := api.Plan(ctx, tarFile, apiclient.PlanOpts{Space: s.Space, Name: name})
+	if err != nil {
+		return nil, "", fmt.Errorf("donkey couldn't read your app: %w", err)
 	}
-	if app.Name == "" {
-		app.Name = config.SanitizeName(filepath.Base(absDir(dir)))
+
+	u.Success("Recognized: %s", plan.Build.Summary)
+	if plan.AppType != "" {
+		u.Info("%s%s", plan.AppType, notesSuffix(plan.Notes))
 	}
-	{
-		if analysis.Port > 0 {
-			u.Success("The app listens on port %d — %s", analysis.Port, analysis.PortReason)
-		} else if analysis.PortReason != "" {
-			u.Success("The app follows the PORT convention — any port works.")
-		}
-		if analysis.HealthcheckPath != "" {
-			app.Healthcheck.Path = analysis.HealthcheckPath
-			u.Info("Found a health route: %s", analysis.HealthcheckPath)
-		}
-		app.Storage = confirmStorage(u, analysis)
-		for _, svc := range analysis.Services {
-			u.Info("Looks like it needs %s (%s) — add it later with %s",
-				svc.Type, svc.Reason, u.Bold("donkey addon add "+svc.Type))
-		}
-		if analysis.BindsLoopback {
-			u.Warn("This app listens on 127.0.0.1 — in a container that means itself and nobody else.")
-			u.Printf("  %s", u.Faint("Bind 0.0.0.0 instead, or it will start and never answer. "+analysis.BindReason))
-		}
-		// Better to hear this now than after the first deploy looks healthy
-		// and every call quietly goes nowhere.
-		for _, url := range analysis.LocalURLs {
-			if url.RunsIn == "browser" {
-				u.Warn("%s in %s runs in the visitor's browser — that address is their machine, not your backend.",
-					u.Bold(url.URL), url.File)
-				u.Printf("  %s", u.Faint("Call a relative path (/api) and proxy it to http://<other-app>, or set the real address in build.env."))
-				continue
-			}
-			u.Warn("%s in %s: in the cluster, localhost is this app's own container.", u.Bold(url.URL), url.File)
-			u.Printf("  %s", u.Faint("Another app in the space answers on http://<its-name> instead."))
-		}
-		// Migrations go into the file, so the first deploy runs them instead
-		// of starting an app whose tables do not exist yet.
-		for _, step := range analysis.PreDeploy {
-			app.PreDeploy = append(app.PreDeploy, step.Command)
-			u.Info("Runs before each deploy: %s — %s", u.Bold(step.Command), step.Reason)
-		}
-		// The app is up, the probe is green, and every visitor gets a 400.
-		// Nothing about that failure points at the setting causing it.
-		if h := analysis.HostRestriction; h != nil {
-			u.Warn("%s in %s does not include this app's address — the app will answer every request with an error.",
-				u.Bold(h.Setting), h.File)
-			hint := "Add the deployed hostname there, or allow any host."
-			if h.EnvVar != "" {
-				hint = "Set " + h.EnvVar + " once deployed, or allow any host in " + h.File + "."
-			}
-			u.Printf("  %s", u.Faint(hint+" "+h.Reason))
-		}
+	switch plan.App.PortSource {
+	case server.PortFromCode:
+		u.Success("The app listens on port %d — %s", plan.App.Port, plan.App.PortReason)
+	case server.PortFromEnv:
+		u.Success("The app follows the PORT convention — donkey will tell it to use %d.", plan.App.Port)
+	case server.PortGuessed:
+		u.Info("Nothing in the code pins a port — donkey suggests %d.", plan.App.Port)
+	}
+	if plan.App.Healthcheck != "" {
+		u.Info("Found a health route: %s", plan.App.Healthcheck)
+	}
+	showFindings(u, plan.Findings)
+
+	edit := server.PlanEdit{
+		Name:        plan.App.Name,
+		Space:       plan.App.Space,
+		Port:        plan.App.Port,
+		Healthcheck: plan.App.Healthcheck,
+		Exposure:    plan.App.Exposure,
+		Storage:     confirmStorage(u, plan),
+		Services:    confirmServices(u, plan),
 	}
 
 	if !u.AssumeYes && u.Interactive {
-		portStr := strconv.Itoa(app.Port)
-		health := app.Healthcheck.Path
+		portStr := strconv.Itoa(edit.Port)
 		form := huh.NewForm(huh.NewGroup(
 			huh.NewInput().
 				Title("What should this app be called?").
 				Description("Used for its web address and everything on the cluster.").
-				Value(&app.Name).
+				Value(&edit.Name).
 				Validate(func(v string) error {
 					c := config.AppConfig{Name: v, Port: 80}
 					c.ApplyDefaults()
@@ -149,7 +132,7 @@ func initFlow(ctx context.Context, s *session, cmd *cli.Command) (*config.AppCon
 			huh.NewInput().
 				Title("Which space does it belong to?").
 				Description("Apps in one space share a namespace, can talk to each other by name, and live under <app>.<space>.<domain>.").
-				Value(&app.Space).
+				Value(&edit.Space).
 				Validate(func(v string) error {
 					c := config.AppConfig{Name: "app", Space: v, Port: 80}
 					c.ApplyDefaults()
@@ -168,143 +151,126 @@ func initFlow(ctx context.Context, s *session, cmd *cli.Command) (*config.AppCon
 			huh.NewInput().
 				Title("Health check path (optional)").
 				Description("A path that answers OK when the app is fine, e.g. /healthz. Leave empty to just check the app's port.").
-				Value(&health),
+				Value(&edit.Healthcheck),
 		))
 		if err := form.Run(); err != nil {
-			return nil, fmt.Errorf("setup was cancelled")
+			return nil, "", fmt.Errorf("setup was cancelled")
 		}
-		app.Port, _ = strconv.Atoi(strings.TrimSpace(portStr))
-		app.Healthcheck.Path = health
+		edit.Port, _ = strconv.Atoi(strings.TrimSpace(portStr))
 	}
 
-	app.ApplyDefaults()
-	if err := app.Validate(); err != nil {
-		return nil, err
+	// The answers go back to the plan, which re-runs its checks against them:
+	// the name that was free before the form may belong to something now.
+	plan, err = api.UpdatePlan(ctx, plan.ID, edit)
+	if err != nil {
+		return nil, "", err
 	}
-	if err := app.Save(dir); err != nil {
-		return nil, fmt.Errorf("couldn't write donkey.yaml: %w", err)
+	if !plan.Ready {
+		showFindings(u, plan.Findings)
+		return nil, "", fmt.Errorf("this app can't be set up as it stands — see above")
 	}
-	u.Success("Created donkey.yaml for %s in the space %s (port %d).", u.Bold(app.Name), u.Bold(app.Space), app.Port)
-	return app, nil
+
+	// The server rendered the file; writing something else here is how the
+	// console and the CLI would start disagreeing about the same app.
+	if err := os.WriteFile(filepath.Join(dir, config.AppFileName), []byte(plan.Config), 0o644); err != nil {
+		return nil, "", fmt.Errorf("couldn't write donkey.yaml: %w", err)
+	}
+	app, err := config.LoadApp(dir)
+	if err != nil {
+		return nil, "", err
+	}
+	u.Success("Created donkey.yaml for %s in the space %s (port %d).",
+		u.Bold(plan.App.Name), u.Bold(plan.App.Space), plan.App.Port)
+	return app, plan.ID, nil
 }
 
-// confirmStorage turns the assistant's volume findings into a storage block.
+// showFindings prints what the server found, in the shape a terminal reads:
+// the claim on its own line, the evidence and the way out underneath it.
+func showFindings(u *ui.UI, findings []server.Finding) {
+	for _, f := range findings {
+		switch f.Level {
+		case server.LevelBlock:
+			u.Fail("%s", f.Title)
+		case server.LevelWarn:
+			u.Warn("%s", f.Title)
+		default:
+			u.Info("%s", f.Title)
+		}
+		if detail := strings.TrimSpace(f.Detail + " " + f.Fix); detail != "" {
+			u.Printf("  %s", u.Faint(detail))
+		}
+	}
+}
+
+// confirmStorage turns the plan's volume findings into the storage answer.
 // Data folders are worth one question: getting them wrong either loses data
 // (none mounted) or pins the app to a single copy for nothing.
-func confirmStorage(u *ui.UI, analysis *ai.Analysis) *config.StorageConfig {
-	if len(analysis.Volumes) == 0 {
-		return nil
+func confirmStorage(u *ui.UI, plan *server.Plan) []string {
+	if len(plan.Volumes) == 0 {
+		return []string{}
 	}
 	u.Printf("")
 	u.Printf("%s", u.Bold("These folders hold data that must survive a restart:"))
-	for _, v := range analysis.Volumes {
+	for _, v := range plan.Volumes {
 		u.Printf("  · %s — %s", u.Bold(v.Path), u.Faint(v.Reason))
 	}
+	size := plan.App.StorageSize
+	if size == "" {
+		size = config.DefaultStorage
+	}
 	u.Printf("  %s", u.Faint(fmt.Sprintf(
-		"They share one %s disk (a folder each) and the app then runs as a single copy.", config.DefaultStorage)))
+		"They share one %s disk (a folder each) and the app then runs as a single copy.", size)))
 	if !u.Confirm("Keep these folders on a disk?", true) {
 		// An empty list is a decision: deploys won't ask again.
-		return &config.StorageConfig{Paths: []string{}}
+		return []string{}
 	}
-	return &config.StorageConfig{Size: config.DefaultStorage, Paths: analysis.VolumePaths()}
+	paths := []string{}
+	for _, v := range plan.Volumes {
+		paths = append(paths, v.Path)
+	}
+	return paths
 }
 
-// acceptBuildProposal shows the assistant's build file and, once confirmed,
-// writes it next to the app so every later build uses it.
-func acceptBuildProposal(s *session, dir string, analysis *ai.Analysis) (*detect.Detection, error) {
-	u := s.UI
-	u.Info("Donkey couldn't recognize this app by itself.")
-	u.Success("The assistant thinks this is: %s", u.Bold(analysis.AppType))
-	if analysis.Notes != "" {
-		u.Printf("  %s", u.Faint(analysis.Notes))
+// confirmServices asks about the backing services the app expects. Creating
+// one is real — a database, a disk, a password — so each is its own question,
+// and the default is yes: an app that needs postgres and doesn't get it fails
+// on its first request.
+//
+// Unattended, nothing is created. `--yes` means "take the safe default", and
+// provisioning a database because nobody was there to say no is not one; the
+// plan's own warning says what to add instead.
+func confirmServices(u *ui.UI, plan *server.Plan) []string {
+	if u.AssumeYes || !u.Interactive {
+		return []string{}
 	}
-
-	var path, content string
-	switch {
-	case analysis.Strategy == "dockerfile" && strings.TrimSpace(analysis.Dockerfile) != "":
-		path, content = detect.AIDockerfilePath, analysis.Dockerfile
-	case strings.TrimSpace(analysis.RailpackConfig) != "":
-		path, content = detect.AIRailpackConfPath, analysis.RailpackConfig
-	default:
-		return nil, fmt.Errorf("the AI assistant couldn't propose a way to build this app")
-	}
-
-	u.Printf("")
-	u.Printf("Proposed %s:", u.Bold(path))
-	for _, line := range strings.Split(strings.TrimRight(content, "\n"), "\n") {
-		u.Printf("  %s", u.Faint(line))
-	}
-	if !u.Confirm(fmt.Sprintf("Save this as %s and use it to build?", path), true) {
-		return nil, nil
-	}
-	if err := writeAIFile(dir, path, content); err != nil {
-		return nil, err
-	}
-	det, err := detect.Detect(dir, nil)
-	if err != nil {
-		return nil, fmt.Errorf("the AI proposal didn't work out: %w", err)
-	}
-	return det, nil
-}
-
-// aiAnalyze asks the server's assistant to read this folder. Donkey needs it:
-// the assistant is what finds the real port, the health route and the folders
-// that hold data — so a failure here stops setup with the reason.
-func aiAnalyze(ctx context.Context, s *session, dir string, det *detect.Detection, detErr error) (*ai.Analysis, error) {
-	u := s.UI
-	api, err := s.api()
-	if err != nil {
-		return nil, err
-	}
-	u.Printf("Reading the code (file names and manifest files, never secrets, go to the assistant)…")
-	sum, err := ai.Summarize(dir)
-	if err != nil {
-		return nil, fmt.Errorf("couldn't read this folder: %w", err)
-	}
-	in := &ai.AnalyzeInput{Summary: sum, DetectionFailed: detErr != nil}
-	switch {
-	case detErr != nil:
-		in.Detected = detErr.Error()
-	case det != nil:
-		in.Detected = det.Summary
-	}
-	analysis, err := api.Analyze(ctx, in)
-	if err != nil {
-		return nil, fmt.Errorf("donkey couldn't read your app: %w", err)
-	}
-	return analysis, nil
-}
-
-// defaultPort guesses a sensible port from what was found.
-func defaultPort(det *detect.Detection, analysis *ai.Analysis) int {
-	if analysis.Port > 0 {
-		return analysis.Port
-	}
-	if det != nil && det.Railpack != nil {
-		for _, p := range det.Railpack.Providers {
-			switch p {
-			case "python":
-				return 8000
-			case "node", "ruby":
-				return 3000
-			case "golang", "go", "java", "php":
-				return 8080
-			case "staticfile":
-				return 80
-			}
+	out := []string{}
+	for _, svc := range plan.Services {
+		if !svc.Known {
+			continue
+		}
+		if !svc.Selected {
+			continue
+		}
+		question := fmt.Sprintf("Create %s in the space %s and connect this app to it?", svc.Type, plan.App.Space)
+		if svc.Exists {
+			question = fmt.Sprintf("Connect this app to the %s the space already runs?", svc.Name)
+		}
+		if svc.Reason != "" {
+			u.Info("This app looks like it needs %s — %s", u.Bold(svc.Type), u.Faint(svc.Reason))
+		}
+		if u.Confirm(question, true) {
+			out = append(out, svc.Name)
 		}
 	}
-	return 8080
+	return out
 }
 
-// writeAIFile stores a proposed build file under .donkey/ — donkey never
-// overwrites a file the user wrote.
-func writeAIFile(dir, relPath, content string) error {
-	full := filepath.Join(dir, relPath)
-	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-		return err
+// shortList keeps a list of file names to the few worth reading.
+func shortList(names []string) []string {
+	if len(names) <= 4 {
+		return names
 	}
-	return os.WriteFile(full, []byte(content), 0o644)
+	return append(append([]string{}, names[:4]...), fmt.Sprintf("and %d more", len(names)-4))
 }
 
 func notesSuffix(notes string) string {

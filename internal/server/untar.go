@@ -25,46 +25,79 @@ const (
 
 // extractContext unpacks an uploaded build context into dir. The CLI sends
 // tar.gz; the browser sends zip — the format is decided by the bytes, not by
-// a header a client could get wrong.
-func extractContext(r io.Reader, dir string) error {
+// a header a client could get wrong. It reports what it left out: a file the
+// build needed but never got is a mystery worth preventing.
+func extractContext(r io.Reader, dir string) ([]string, error) {
 	tmp, err := os.CreateTemp("", "donkey-upload-*")
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer os.Remove(tmp.Name())
 	defer tmp.Close()
 	size, err := io.Copy(tmp, io.LimitReader(r, maxContextBytes+1))
 	if err != nil {
-		return fmt.Errorf("reading the upload: %w", err)
+		return nil, fmt.Errorf("reading the upload: %w", err)
 	}
 	if size > maxContextBytes {
-		return fmt.Errorf("the upload is too large (over %d MB)", maxContextBytes>>20)
+		return nil, fmt.Errorf("the upload is too large (over %d MB)", maxContextBytes>>20)
 	}
 	var magic [4]byte
 	if _, err := tmp.ReadAt(magic[:], 0); err != nil {
-		return fmt.Errorf("the upload is not a valid build context")
+		return nil, fmt.Errorf("the upload is not a valid build context")
 	}
+	var skipped skipList
 	switch {
 	case magic[0] == 'P' && magic[1] == 'K':
-		if err := unzipContext(tmp, size, dir); err != nil {
-			return err
+		if err := unzipContext(tmp, size, dir, &skipped); err != nil {
+			return nil, err
 		}
 		// Zips usually wrap everything in one folder (GitHub downloads,
 		// macOS "Compress") — the app lives one level down then.
-		return stripSingleRoot(dir)
+		return skipped.list(), stripSingleRoot(dir)
 	case magic[0] == 0x1f && magic[1] == 0x8b:
 		if _, err := tmp.Seek(0, io.SeekStart); err != nil {
-			return err
+			return nil, err
 		}
-		return untarContext(tmp, dir)
+		return skipped.list(), untarContext(tmp, dir, &skipped)
 	default:
-		return fmt.Errorf("the upload is not a valid build context — expected tar.gz (CLI) or zip (console)")
+		return nil, fmt.Errorf("the upload is not a valid build context — expected tar.gz (CLI) or zip (console)")
 	}
+}
+
+// maxSkipReported bounds what the skip list hands back: it is there to be
+// read, and nobody reads the fortieth line of it.
+const maxSkipReported = 12
+
+// skipList collects what the upload lost on the way in, without letting a
+// node_modules of ten thousand files become ten thousand lines — a directory
+// rule reports the directory, once.
+type skipList struct {
+	seen map[string]bool
+	out  []string
+}
+
+func (s *skipList) add(path string) {
+	if s.seen == nil {
+		s.seen = map[string]bool{}
+	}
+	if s.seen[path] {
+		return
+	}
+	s.seen[path] = true
+	s.out = append(s.out, path)
+}
+
+func (s *skipList) list() []string {
+	if len(s.out) <= maxSkipReported {
+		return s.out
+	}
+	return append(append([]string{}, s.out[:maxSkipReported]...),
+		fmt.Sprintf("and %d more", len(s.out)-maxSkipReported))
 }
 
 // untarContext safely extracts a tar.gz build context into dir, rejecting
 // path traversal, absolute paths, and links.
-func untarContext(r io.Reader, dir string) error {
+func untarContext(r io.Reader, dir string, skipped *skipList) error {
 	gz, err := gzip.NewReader(r)
 	if err != nil {
 		return fmt.Errorf("the upload is not a valid build context: %w", err)
@@ -91,7 +124,8 @@ func untarContext(r io.Reader, dir string) error {
 		}
 		// The same exclusions the CLI applies while packing, enforced here so
 		// they hold for any client, not only donkey's own.
-		if skippedUploadPath(name) {
+		if left, ok := skippedUploadPath(name); ok {
+			skipped.add(left)
 			continue
 		}
 		target := filepath.Join(dir, name)
@@ -121,7 +155,7 @@ func untarContext(r io.Reader, dir string) error {
 // unzipContext safely extracts a zip build context into dir with the same
 // guards as the tar path, plus the CLI's pack-time skip rules — a browser
 // upload arrives as-is, so node_modules and key material are dropped here.
-func unzipContext(f *os.File, size int64, dir string) error {
+func unzipContext(f *os.File, size int64, dir string, skipped *skipList) error {
 	zr, err := zip.NewReader(f, size)
 	if err != nil {
 		return fmt.Errorf("the upload is not a valid zip: %w", err)
@@ -137,7 +171,8 @@ func unzipContext(f *os.File, size int64, dir string) error {
 		if !ok {
 			return fmt.Errorf("the build context contains an invalid path %q", entry.Name)
 		}
-		if skippedUploadPath(name) {
+		if left, ok := skippedUploadPath(name); ok {
+			skipped.add(left)
 			continue
 		}
 		target := filepath.Join(dir, name)
@@ -147,6 +182,7 @@ func unzipContext(f *os.File, size int64, dir string) error {
 			// .git/ can flip detection heuristics, and any extra top-level
 			// entry defeats the single-root unwrap below.
 			if config.SkippedUploadDir(filepath.Base(name)) {
+				skipped.add(filepath.ToSlash(name) + "/")
 				continue
 			}
 			if err := os.MkdirAll(target, 0o755); err != nil {
@@ -174,18 +210,20 @@ func unzipContext(f *os.File, size int64, dir string) error {
 	return nil
 }
 
-// skippedUploadPath applies the CLI's pack-time exclusions to an uploaded
-// path: VCS/artifact directories anywhere in the path, and secret-shaped
-// basenames. Enforced server-side so the guarantee holds for every client,
-// not only donkey's own.
-func skippedUploadPath(name string) bool {
+// skippedUploadPath applies the CLI's pack-time exclusions server-side, so
+// the guarantee holds for every client. Returns what to report as left
+// behind: the directory that did it, or the file itself.
+func skippedUploadPath(name string) (string, bool) {
 	parts := strings.Split(filepath.ToSlash(name), "/")
-	for _, p := range parts[:len(parts)-1] {
+	for i, p := range parts[:len(parts)-1] {
 		if config.SkippedUploadDir(p) {
-			return true
+			return strings.Join(parts[:i+1], "/") + "/", true
 		}
 	}
-	return config.SensitiveUploadFile(parts[len(parts)-1])
+	if config.SensitiveUploadFile(parts[len(parts)-1]) {
+		return filepath.ToSlash(name), true
+	}
+	return "", false
 }
 
 // stripSingleRoot moves a lone top-level folder's contents up one level, so
@@ -223,12 +261,10 @@ func stripSingleRoot(dir string) error {
 // inside an upload before giving up.
 const maxRootSearchDepth = 3
 
-// contextRoot picks the folder inside an upload that actually holds the app.
-// An upload is not always rooted at the app: a repo whose service lives in
-// backend/, a folder dragged from one level up, a monorepo zip. An explicit
-// path always wins; otherwise a single donkey.yaml decides, and several make
-// it the user's call rather than a guess. Returns the folder to build and the
-// path it took relative to the upload ("" when it is the upload itself).
+// contextRoot finds the folder that actually holds the app — an upload is not
+// always rooted at it. An explicit path wins; otherwise a single donkey.yaml
+// decides, and several make it the user's call. Returns the folder and its
+// path relative to the upload ("" when it is the upload itself).
 func contextRoot(dir, explicit string) (string, string, error) {
 	if explicit != "" {
 		sub, ok := safeRelPath(explicit)

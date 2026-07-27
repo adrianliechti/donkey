@@ -4,8 +4,8 @@ description: >
   Deploy apps to the donkey platform (a small PaaS on Kubernetes). Use this
   skill whenever you build, deploy, test or operate an app with the `donkey`
   CLI — including creating backing services (postgres, S3-compatible storage,
-  the platform's AI, pocketbase), connecting apps to them, running
-  migrations, seeding disks, reading logs and diagnosing failed deploys.
+  the platform's AI, pocketbase), connecting apps to them, seeding disks,
+  reading logs and diagnosing failed deploys.
 ---
 
 # Deploying on donkey
@@ -87,9 +87,13 @@ addons:
   - type: openai
 ```
 
-`donkey init` can write this file for you (it reads the source with the
-platform's assistant), but when you wrote the app yourself you already know
-the answers — writing the file directly is faster and exact.
+`donkey init` can write this file for you (the server reads the source with
+the platform's assistant), but when you wrote the app yourself you already
+know the answers — writing the file directly is faster and exact. It also
+matters unattended: a deploy in a folder with no `donkey.yaml` sets one up
+but connects **no services**, because creating a database is not a question
+`--yes` answers for you. Declare `addons:` yourself and the deploy provisions
+them.
 
 Full reference of the fields you'll actually use:
 
@@ -109,7 +113,6 @@ routes:                       # answer on ANOTHER app's address under a path
     path: /api
 
 command: ["node", "server.js"]          # override the image's start command
-preDeploy: ["python", "manage.py", "migrate"]   # runs before traffic switches
 
 healthcheck:
   path: /healthz
@@ -153,8 +156,8 @@ Rules the platform enforces:
   (`VITE_*`, `NEXT_PUBLIC_*`) need `build.env`.
 - A `storage.paths` folder is a fresh, empty volume mount: anything the
   image itself had at that path is shadowed and invisible. Seed data at
-  startup, in `preDeploy`, or with `donkey files put` — don't bake it into
-  the image at a stored path.
+  startup or with `donkey files put` — don't bake it into the image at a
+  stored path.
 
 ### 2. Write the code against the binding contracts
 
@@ -175,7 +178,10 @@ backups). Injected:
 
 Connect with `psycopg.connect(os.environ["DATABASE_URL"])`,
 `new pg.Pool()` (reads `PG*` on its own), Spring's
-`JDBC_DATABASE_URL`, etc. Create tables at startup or in `preDeploy`.
+`JDBC_DATABASE_URL`, etc. **Create the schema in the app's own start path**
+(`CREATE TABLE IF NOT EXISTS`, `Base.metadata.create_all`, `db.create_all`, a
+migrate call before the server starts) and make it safe to run again: it runs
+on every deploy and every restart.
 
 **rustfs** (S3-compatible object storage) — injected in the AWS SDK's own
 convention, so every S3 client works with zero configuration:
@@ -267,8 +273,6 @@ service takes a minute — image download), and — line by line — every
 decision the platform's assistant filled in (port confirmation, health
 route, data folders, warnings about localhost addresses or missing
 services). **Read those lines**; they are the review of your donkey.yaml.
-`preDeploy` (migrations) runs against the new image before traffic switches
-— if it fails, the old version keeps serving.
 
 The last line of a successful deploy is the app's address
 (`→ https://<app>.<space>.<domain>`); `donkey status` repeats it later as
@@ -356,8 +360,8 @@ applied — applying them is your job). Then:
 Common causes, in order of likelihood: health check path doesn't exist or
 requires auth (probes need a route that answers without credentials); the
 code binds a different port than `port:` says (read the injected `PORT`
-env var); a migration in `preDeploy` failed; the app writes to a path not
-listed in `storage.paths` and loses it on restart.
+env var); schema setup at startup crashed the app; the app writes to a path
+not listed in `storage.paths` and loses it on restart.
 
 ## Cleaning up
 
@@ -403,8 +407,9 @@ asked for the data to go too; prefer `--keep-data` when in doubt.
    reserved.
 4. Create your own S3 bucket at startup; tolerate "already exists".
 5. Secrets via `donkey env set`, never in `donkey.yaml`.
-6. Migrations in `preDeploy`; irreplaceable files in `storage.paths` — and
-   a stored path starts empty, whatever the image had there.
+6. Create the schema in the app's start path, safe to run again on every
+   deploy. Irreplaceable files go in `storage.paths`, and a stored path
+   starts empty, whatever the image had there.
 7. Give the app a `healthcheck.path` that answers without credentials, and
    read the injected `PORT` env var.
 8. A `401` from a private app's URL is the login gateway working as

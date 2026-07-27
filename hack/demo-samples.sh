@@ -1,19 +1,21 @@
 #!/usr/bin/env bash
-# Deploys every sample in testdata/ into one space and reports what happened.
+# Deploys every sample in testdata/ and requires every one of them to come up.
 #
-# This is the suite: the samples are deliberately awkward, so a red line here
-# is information, not necessarily a bug. Two groups are treated differently:
+# This is the suite. Each sample is a folder donkey has to work out on its own:
+# no donkey.yaml worth the name, no Dockerfile in most of them, and a few
+# written the way people actually write them rather than the way a builder
+# would like. One red line fails this script.
 #
-#   should work   apps donkey is expected to get right with no help at all.
-#                 One of these failing fails this script.
-#   challenges    apps written the way people actually write them — binding
-#                 loopback, missing dependencies, rejecting unknown hosts.
-#                 They are reported, never fatal. What matters is whether
-#                 donkey said something useful *before* the rollout timed out.
+# There used to be a second, non-fatal group for apps no detector recognized.
+# That distinction died with the detector: every sample now takes the same
+# path — donkey reads it and writes it a Dockerfile — so a Tcl app is not
+# categorically harder than a Flask one, and there is nothing left to excuse.
+# Apps that are MEANT to fail live in testdata/broken/ and belong to
+# demo-broken.sh, which checks that donkey explained each one.
 #
-# Assumes donkey is installed and you are logged in (task demo:setup, then
-# `devkube connect`). Expect this to take a while: it waits for each app to
-# become healthy, and the challenges wait out a full rollout timeout.
+# Assumes donkey is installed and you are logged in (task install:kind or
+# task install:docker). Expect this to take a while: every app is built, run
+# to prove it starts, and then waited on until it is healthy.
 set -euo pipefail
 # shellcheck source=hack/demo-lib.sh
 . "$(dirname "$0")/demo-lib.sh"
@@ -37,8 +39,9 @@ space_for() {
   esac
 }
 
-# Folders donkey should handle unaided.
-SHOULD_WORK=(
+# Every folder donkey has to handle unaided. The comments say what each one is
+# for — a sample nobody can explain is a sample nobody will maintain.
+SAMPLES=(
   "static-site"
   "fastapi-sample"
   "dockerfile-sample"
@@ -58,26 +61,21 @@ SHOULD_WORK=(
   "streamlit-report"
   "django-blog"
   # Three of kitchen-sink's five apps are ordinary apps that happen to share a
-  # repository: railpack recognizes each one and produces a start command. It
-  # is finding them separately that is the test, not building them.
+  # repository. Finding them separately is the test, not building them.
   "kitchen-sink-sample/api"
   "kitchen-sink-sample/web"
   "kitchen-sink-sample/worker"
-)
-
-# Folders that exist because they are hard. Failing is an acceptable outcome;
-# failing *silently* is not.
-CHALLENGES=(
   # Its Dockerfile hardcodes `httpd -p 8080` and cannot read $PORT, so this one
   # only works if the port is taken from EXPOSE rather than assumed.
   "kitchen-sink-sample/gateway"
-  # Tcl. No provider recognizes it, so detection fails by design and the
-  # assistant has to write the build itself.
+  # Tcl — nothing donkey knows anything about. The assistant has to work the
+  # whole build out by reading the source, which is the point: an app donkey
+  # has no opinion about is still an app it can deploy.
   "kitchen-sink-sample/legacy"
 )
 
 results=()
-failed_strict=0
+failed=0
 n=0
 
 # Deploying an app writes a donkey.yaml (and sometimes a .donkey/Dockerfile)
@@ -93,9 +91,9 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "${WORK}"' EXIT
 
 deploy_sample() {
-  local dir="$1" group="$2" start elapsed status work space
+  local dir="$1" start elapsed status work space
   space="$(space_for "${dir}")"
-  say "${dir}  →  space ${space}  (${group})"
+  say "${dir}  →  space ${space}"
 
   n=$(( n + 1 ))
   work="${WORK}/${n}/$(basename "${dir}")"
@@ -107,30 +105,24 @@ deploy_sample() {
     status="ok"
   else
     status="failed"
-    if [ "${group}" = "should work" ]; then
-      failed_strict=1
-    fi
+    failed=1
   fi
   elapsed=$(( SECONDS - start ))
-  results+=("${status}|${group}|${dir}|${elapsed}s")
+  results+=("${status}|${dir}|${elapsed}s")
 }
 
-for d in "${SHOULD_WORK[@]}"; do
-  deploy_sample "${d}" "should work"
-done
-
-for d in "${CHALLENGES[@]}"; do
-  deploy_sample "${d}" "challenge"
+for d in "${SAMPLES[@]}"; do
+  deploy_sample "${d}"
 done
 
 say "results"
 printf '\n'
 for r in "${results[@]}"; do
-  IFS='|' read -r status group dir elapsed <<< "${r}"
+  IFS='|' read -r status dir elapsed <<< "${r}"
   if [ "${status}" = "ok" ]; then
-    printf '  %s✓%s  %-28s %-12s %s\n' "${C_OK}" "${C_OFF}" "${dir}" "${group}" "${elapsed}"
+    printf '  %s✓%s  %-30s %s\n' "${C_OK}" "${C_OFF}" "${dir}" "${elapsed}"
   else
-    printf '  %s✗%s  %-28s %-12s %s\n' "${C_BAD}" "${C_OFF}" "${dir}" "${group}" "${elapsed}"
+    printf '  %s✗%s  %-30s %s\n' "${C_BAD}" "${C_OFF}" "${dir}" "${elapsed}"
   fi
 done
 
@@ -138,12 +130,13 @@ cat <<EOF
 
   Everything deployed:  donkey apps
   What one of them did: donkey --space ${SPACE} --app-dir testdata/<sample> logs
-  Clean up:             kubectl delete namespace donkey-${SPACE} donkey-${KITCHEN_SPACE}
+  Clean up (kind):      kubectl delete namespace donkey-${SPACE} donkey-${KITCHEN_SPACE}
+  Clean up (docker):    docker rm -f \$(docker ps -aq --filter "name=donkey.${SPACE}." --filter "name=donkey.${KITCHEN_SPACE}.")
 EOF
 
-if [ "${failed_strict}" -ne 0 ]; then
-  printf '\n%sA sample donkey should handle on its own did not deploy.%s\n' "${C_BAD}" "${C_OFF}" >&2
+if [ "${failed}" -ne 0 ]; then
+  printf '\n%sA sample did not deploy.%s\n' "${C_BAD}" "${C_OFF}" >&2
   exit 1
 fi
 
-printf '\nEvery sample donkey should handle on its own deployed.\n'
+printf '\nAll %d samples deployed.\n' "${#SAMPLES[@]}"

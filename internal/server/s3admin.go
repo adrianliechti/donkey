@@ -188,13 +188,27 @@ func s3EmptyBucket(ctx context.Context, client *minio.Client, bucket string) err
 				listErr = obj.Err
 				return
 			}
-			toRemove <- obj
+			// Selected on ctx: without it, a remover that stopped reading
+			// leaves this send blocked for the life of the process.
+			select {
+			case toRemove <- obj:
+			case <-ctx.Done():
+				listErr = ctx.Err()
+				return
+			}
 		}
 	}()
+	// Drained to the end even after a failure. Returning early would stop the
+	// remover reading toRemove, which blocks the lister above forever — and a
+	// single failed multi-delete reports one error per object in the batch.
+	var removeErr error
 	for rerr := range client.RemoveObjects(ctx, bucket, toRemove, minio.RemoveObjectsOptions{}) {
-		if rerr.Err != nil {
-			return rerr.Err
+		if rerr.Err != nil && removeErr == nil {
+			removeErr = rerr.Err
 		}
+	}
+	if removeErr != nil {
+		return removeErr
 	}
 	// The remover drains the channel, so the lister goroutine is done by the
 	// time its error is read.

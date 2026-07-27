@@ -32,8 +32,9 @@ type Request struct {
 	// DockerfilePath is set for the dockerfile strategy (absolute or relative
 	// to ContextDir).
 	DockerfilePath string
-	// RailpackPlan carries railpack's in-process plan for the railpack strategy.
-	RailpackPlan *PlanResult
+	// Verify, when set, runs the built image and requires it to start before
+	// the image is published. Nil skips the check entirely.
+	Verify *VerifySpec
 
 	// Progress receives the human-readable build progress stream (may be nil).
 	Progress ProgressSink

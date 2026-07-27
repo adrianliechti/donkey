@@ -20,27 +20,32 @@ type Server struct {
 	cfg       *Config
 	rt        runtime.Provider
 	assistant ai.Assistant
+	// plans holds what donkey read about an upload between review and deploy,
+	// so the assistant answers once per app rather than once per screen.
+	plans *planStore
 
-	// deploying counts the deploys currently in flight, so a terminating pod
-	// can finish them instead of killing builds halfway.
+	// deploying lets a terminating pod finish in-flight deploys.
 	deploying sync.WaitGroup
-	// draining flips on SIGTERM: readiness starts failing and new deploys are
-	// refused, while running ones are given time to finish.
+	// draining flips on SIGTERM: readiness fails and new deploys are refused.
 	draining atomic.Bool
-	// appLocks serializes deploys per app: two concurrent deploys of the same
-	// app would interleave their applies and race their rollout waits, and
-	// whichever image ended up live would be anybody's guess.
+	// appLocks serializes deploys per app — two at once would interleave their
+	// applies and race their rollout waits.
 	appLocks sync.Map
 }
 
 func New(cfg *Config, rt runtime.Provider) (*Server, error) {
-	// donkey reads every app with its assistant, so a control plane without
-	// one is misconfigured — better to say so at startup than to half-work.
+	// A control plane without an assistant cannot read apps.
 	assistant, err := ai.New(cfg.AIModel)
 	if err != nil {
 		return nil, err
 	}
-	return &Server{cfg: cfg, rt: rt, assistant: assistant}, nil
+	// Configured is not the same as answering. Refusing to start leaves the
+	// pod unready and out of rotation with the reason in its logs, which beats
+	// accepting deploys it cannot carry out.
+	if err := ai.Reachable(context.Background(), cfg.AIModel); err != nil {
+		return nil, err
+	}
+	return &Server{cfg: cfg, rt: rt, assistant: assistant, plans: newPlanStore()}, nil
 }
 
 // lockApp serializes work on one app. The returned function releases it.
@@ -73,6 +78,12 @@ func (s *Server) routes() http.Handler {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "version": Version})
 	}))
 	mux.Handle("POST /v1/deploys", s.auth(s.handleDeploy))
+	// A plan is a deploy read out loud before it happens: what the app is,
+	// how it will be built, what it needs and what will break. The console
+	// reviews one, `donkey init` prints one, and the deploy that follows
+	// carries its id so the assistant is asked once, not twice.
+	mux.Handle("POST /v1/plans", s.auth(s.handlePlan))
+	mux.Handle("PUT /v1/plans/{id}", s.auth(s.handlePlanUpdate))
 	// Apps live in a space, so their address does too.
 	mux.Handle("GET /v1/apps", s.auth(s.handleListApps))
 	mux.Handle("GET /v1/spaces/{space}/apps/{app}/status", s.auth(s.handleStatus))
@@ -135,7 +146,6 @@ func (s *Server) routes() http.Handler {
 	// token; the real upstream credential never travels past this handler.
 	mux.Handle(aiProxyPrefix, s.aiProxyHandler())
 	mux.Handle("GET /v1/doctor", s.auth(s.handleDoctor))
-	mux.Handle("POST /v1/ai/analyze", s.auth(s.handleAIAnalyze))
 	// Everything else is the admin console.
 	mux.Handle("/", uiHandler())
 
@@ -200,13 +210,11 @@ func (s *Server) Run(ctx context.Context) error {
 	return srv.Shutdown(shutdownCtx)
 }
 
-// auth is who may call the API. The usual path: the donkey gateway fronted
-// the request, ran the OIDC login (or verified a sealed CLI token), checked
-// the admin rules and forwarded the identity as headers — its presence is
-// the authorization. The direct path (a port-forward past the gateway):
-// a sealed CLI token this server verifies itself, against the same admin
-// rules. In-cluster callers who can reach the Service unprompted are
-// already inside the trust boundary this PoC draws — see the README.
+// auth is who may call the API. Usual path: the gateway ran the login and
+// forwarded the identity as headers, so their presence is the authorization.
+// Direct path (a port-forward past the gateway): a sealed CLI token verified
+// here against the same admin rules. In-cluster callers who can reach the
+// Service are inside the trust boundary this PoC draws — see SECURITY.md.
 func (s *Server) auth(next http.HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("X-Auth-Request-User") != "" {

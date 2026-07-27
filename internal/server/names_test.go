@@ -41,12 +41,38 @@ func TestAwkwardNamesSurvive(t *testing.T) {
 	gz.Close()
 
 	dir := t.TempDir()
-	if err := extractContext(&buf, dir); err != nil {
+	if _, err := extractContext(&buf, dir); err != nil {
 		t.Fatal(err)
 	}
 	for _, n := range names {
 		if _, err := os.Stat(filepath.Join(dir, filepath.FromSlash(n))); err != nil {
 			t.Errorf("%s did not survive packing and unpacking: %v", n, err)
+		}
+	}
+}
+
+// The component names a part of an app, and on the Docker runtime it becomes
+// a container name that the engine client path.Joins into its request URL —
+// so a traversal here reads any container on the host, not just another
+// space's. Validated centrally, for every runtime.
+func TestValidComponent(t *testing.T) {
+	for _, ok := range []string{"web", "addon-postgres", "addon-my-db-1"} {
+		if !validComponent(ok) {
+			t.Errorf("validComponent(%q) = false, want true", ok)
+		}
+	}
+	for _, bad := range []string{
+		"",
+		"addon-",
+		"addon-x/../../../v1.51/containers/donkey-server",
+		"addon-../donkey-server",
+		"addon-UPPER",
+		"addon-has space",
+		"web/../..",
+		"../etc",
+	} {
+		if validComponent(bad) {
+			t.Errorf("validComponent(%q) = true, want false", bad)
 		}
 	}
 }
