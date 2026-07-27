@@ -35,8 +35,6 @@ type Request struct {
 	// Verify, when set, runs the built image and requires it to start before
 	// the image is published. Nil skips the check entirely.
 	Verify *VerifySpec
-	// RailpackPlan carries railpack's in-process plan for the railpack strategy.
-	RailpackPlan *PlanResult
 
 	// Progress receives the human-readable build progress stream (may be nil).
 	Progress ProgressSink

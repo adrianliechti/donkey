@@ -101,6 +101,11 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 	if missing := missingSettings(settings, true); len(missing) > 0 {
 		return fmt.Errorf("these settings are required (via -f file or flags): %v", missing)
 	}
+	// Same as the cluster install: prove the assistant answers before the
+	// installation changes.
+	if err := checkAssistant(ctx, u, settings.AI); err != nil {
+		return err
+	}
 	if settings.Auth.ClientID == "" {
 		settings.Auth.ClientID = pendingOIDC
 		settings.Auth.ClientSecret = pendingOIDC
@@ -184,12 +189,8 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 		"DONKEY_AI_MODEL":           settings.AI.Model,
 		"OPENAI_BASE_URL":           settings.AI.BaseURL,
 		"OPENAI_API_KEY":            settings.AI.APIKey,
-
-		"DONKEY_BUILD_BUILDER":                string(settings.Build.Builder),
-		"DONKEY_BUILD_RAILPACK_BUILDER_IMAGE": settings.Build.Railpack.BuilderImage,
-		"DONKEY_BUILD_RAILPACK_RUNTIME_IMAGE": settings.Build.Railpack.RuntimeImage,
 	}
-	maps.Copy(serverEnv, aiBuilderEnvMap(settings.Build.AI))
+	maps.Copy(serverEnv, builderEnvMap(settings.Build.BuildSettings))
 	if len(settings.Build.Env) > 0 {
 		raw, err := json.Marshal(settings.Build.Env)
 		if err != nil {
@@ -291,18 +292,18 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 	return nil
 }
 
-// aiBuilderEnvMap is donkey's own builder's settings; only what was chosen
-// travels, so the server keeps its defaults for everything else.
-func aiBuilderEnvMap(ai config.InstallAIBuilder) map[string]string {
+// builderEnvMap is the builder's settings; only what was chosen travels, so
+// the server keeps its defaults for everything else.
+func builderEnvMap(b config.BuildSettings) map[string]string {
 	env := map[string]string{}
-	if ai.Verify != nil {
-		env["DONKEY_BUILD_AI_VERIFY"] = strconv.FormatBool(*ai.Verify)
+	if b.Verify != nil {
+		env["DONKEY_BUILDER_VERIFY"] = strconv.FormatBool(*b.Verify)
 	}
-	if ai.VerifySeconds > 0 {
-		env["DONKEY_BUILD_AI_VERIFY_SECONDS"] = strconv.Itoa(ai.VerifySeconds)
+	if b.VerifySeconds > 0 {
+		env["DONKEY_BUILDER_VERIFY_SECONDS"] = strconv.Itoa(b.VerifySeconds)
 	}
-	if ai.Attempts > 0 {
-		env["DONKEY_BUILD_AI_ATTEMPTS"] = strconv.Itoa(ai.Attempts)
+	if b.Attempts > 0 {
+		env["DONKEY_BUILDER_ATTEMPTS"] = strconv.Itoa(b.Attempts)
 	}
 	return env
 }

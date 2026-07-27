@@ -4,8 +4,11 @@
 //  1. donkey.yaml with an explicit build.type wins
 //  2. a Dockerfile in the folder (the user's Dockerfile always beats a builder)
 //  3. a Dockerfile donkey's assistant wrote earlier (.donkey/Dockerfile)
-//  4. the installation's builder — railpack's in-process detection, or
-//     donkey's own builder, which has the assistant write the Dockerfile
+//  4. donkey's own builder, which has the assistant write the Dockerfile
+//
+// Every path ends at a Dockerfile. That is the whole design: donkey builds one
+// kind of thing, so there is one code path to the build engine, and what an
+// app is built with is a file the user can read, edit and keep.
 package detect
 
 import (
@@ -13,23 +16,18 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/adrianliechti/donkey/internal/build"
 	"github.com/adrianliechti/donkey/internal/config"
 )
 
 type Detection struct {
 	Strategy       config.BuildStrategy
 	DockerfilePath string // for the dockerfile strategy
-	// Railpack carries the in-process plan for the railpack strategy.
-	Railpack *build.PlanResult
 	// Summary is a one-line plain-language description of what was found.
 	Summary string
 }
 
-// Detect works out how to build dir. settings is the installation's build
-// configuration: it decides which builder an app that brings no Dockerfile
-// gets, and it contributes the build environment railpack plans against.
-func Detect(dir string, app *config.AppConfig, settings config.BuildSettings) (*Detection, error) {
+// Detect works out how to build dir.
+func Detect(dir string, app *config.AppConfig) (*Detection, error) {
 	buildType := config.BuildAuto
 	dockerfile := config.DefaultDockerfile
 	if app != nil {
@@ -45,8 +43,6 @@ func Detect(dir string, app *config.AppConfig, settings config.BuildSettings) (*
 			return nil, fmt.Errorf("donkey.yaml says to build with %s, but that file doesn't exist in this folder", dockerfile)
 		}
 		return dockerfileDetection(dockerfile), nil
-	case config.BuildRailpack:
-		return detectRailpack(dir, app, settings)
 	case config.BuildAI:
 		return detectAI(dir), nil
 	}
@@ -56,8 +52,7 @@ func Detect(dir string, app *config.AppConfig, settings config.BuildSettings) (*
 		return dockerfileDetection(dockerfile), nil
 	}
 	// A Dockerfile the assistant wrote earlier is a decision already taken —
-	// for this app, by someone who saw it — so it outranks whatever the
-	// installation would pick now.
+	// for this app, by someone who saw it — so it is what gets built.
 	if _, err := os.Stat(filepath.Join(dir, AIDockerfilePath)); err == nil {
 		return &Detection{
 			Strategy:       config.BuildDockerfile,
@@ -65,23 +60,16 @@ func Detect(dir string, app *config.AppConfig, settings config.BuildSettings) (*
 			Summary:        "the Dockerfile donkey wrote for this app (" + AIDockerfilePath + ")",
 		}, nil
 	}
-	if settings.BuilderOrDefault() == config.BuildAI {
-		return detectAI(dir), nil
-	}
-	return detectRailpack(dir, app, settings)
+	return detectAI(dir), nil
 }
 
 func dockerfileDetection(path string) *Detection {
 	return &Detection{Strategy: config.BuildDockerfile, DockerfilePath: path, Summary: "your " + path}
 }
 
-// detectAI reports that donkey will write the Dockerfile itself. Like the
-// buildpacks path before it, it does no work here and cannot fail: what the
-// app is gets decided by the assistant during the build, and the Dockerfile
-// it produces is kept so every later deploy is an ordinary Dockerfile build.
-//
-// If one is already sitting in the context, that is what gets built — the
-// assistant is asked once per app, not once per deploy.
+// detectAI does no work and cannot fail: what the app is gets decided by the
+// assistant during the build. One already in the context is what gets built —
+// the assistant is asked once per app, not once per deploy.
 func detectAI(dir string) *Detection {
 	if _, err := os.Stat(filepath.Join(dir, AIDockerfilePath)); err == nil {
 		return &Detection{
@@ -96,8 +84,6 @@ func detectAI(dir string) *Detection {
 	}
 }
 
-// Paths where AI-proposed build files live — donkey never clobbers user files.
-const (
-	AIDockerfilePath   = ".donkey/Dockerfile"
-	AIRailpackConfPath = ".donkey/railpack.json"
-)
+// AIDockerfilePath is where a Dockerfile donkey wrote lives — under .donkey/,
+// so a user's own Dockerfile is never clobbered.
+const AIDockerfilePath = ".donkey/Dockerfile"

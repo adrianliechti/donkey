@@ -1,10 +1,9 @@
 package server
 
-// The AI proxy behind the openai addon. Apps call an OpenAI-compatible API
-// at donkey-server's own address with a per-space token; the proxy checks
-// the token against the bindings it issued and swaps in the platform's real
-// credential on the way upstream. The real key never leaves donkey-system,
-// and removing the service revokes the space's access.
+// The AI proxy behind the openai addon: apps call donkey-server with a
+// per-space token, which the proxy checks against the bindings it issued and
+// swaps for the platform's real credential. The key never leaves
+// donkey-system, and removing the service revokes the space's access.
 
 import (
 	"context"
@@ -21,11 +20,9 @@ import (
 
 const aiProxyPrefix = "/ai/v1/"
 
-// aiAllowedRoots is the OpenAI-compatible inference surface this addon
-// offers. The credential swapped in upstream is the platform's own, so the
-// proxy hands out inference and nothing else: files, fine_tuning, assistants,
-// batches, uploads and vector_stores would let any space's binding delete or
-// rewrite state belonging to whoever owns the account.
+// Inference and nothing else: the credential swapped in is the platform's
+// own, so files, fine_tuning, assistants, batches and vector_stores would let
+// any space's binding rewrite state belonging to the account owner.
 var aiAllowedRoots = map[string]bool{
 	"chat":        true,
 	"completions": true,
@@ -37,17 +34,14 @@ var aiAllowedRoots = map[string]bool{
 	"images":      true,
 }
 
-// aiUpstreamPath turns a request path into the path to join onto the upstream
-// base, or reports that it may not be proxied.
+// aiUpstreamPath yields the path to join onto the upstream base, or reports
+// that it may not be proxied.
 //
-// The containment check is the load-bearing part. ServeMux cleans the
-// *escaped* path, so "%2e%2e" and "..%2f" survive routing and only become
-// ".." once URL.Path is decoded here — at which point url.JoinPath's
-// path.Join would happily resolve them out of the base ("/ai/v1/%2e%2e/%2e%2e/
-// admin/keys" reaching the upstream as "/admin/keys"), attaching the
-// platform's key to any path on the upstream host. fs.ValidPath is the
-// standard library's definition of a clean relative path: no "..", no leading
-// slash, no empty elements.
+// The containment check is load-bearing: ServeMux cleans the *escaped* path,
+// so "%2e%2e" survives routing and only becomes ".." once decoded here — at
+// which point url.JoinPath would resolve it out of the base, attaching the
+// platform's key to any upstream path. fs.ValidPath is the standard library's
+// definition of a clean relative path.
 func aiUpstreamPath(p string) (string, bool) {
 	rest := strings.TrimPrefix(p, aiProxyPrefix)
 	if !fs.ValidPath(strings.TrimSuffix(rest, "/")) {

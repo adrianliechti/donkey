@@ -12,6 +12,7 @@ import (
 
 	"github.com/adrianliechti/donkey/internal/addons"
 	"github.com/adrianliechti/donkey/internal/ai"
+	"github.com/adrianliechti/donkey/internal/config"
 	"github.com/adrianliechti/donkey/pkg/runtime"
 )
 
@@ -29,8 +30,8 @@ func (a planAssistant) Analyze(context.Context, *ai.AnalyzeInput) (*ai.Analysis,
 	return a.analysis, nil
 }
 
-func (planAssistant) WriteDockerfile(context.Context, *ai.DockerfileInput) (string, error) {
-	return "FROM scratch\n", nil
+func (planAssistant) WriteDockerfile(context.Context, *ai.DockerfileInput) (*ai.DockerfileResult, error) {
+	return &ai.DockerfileResult{Dockerfile: "FROM scratch\n"}, nil
 }
 
 func (planAssistant) DiagnoseFailure(context.Context, *ai.FailureContext) (*ai.FixProposal, error) {
@@ -264,26 +265,27 @@ func TestPlanUpdateRechecks(t *testing.T) {
 	}
 }
 
-// donkey couldn't recognize the app: the plan carries the build file the
-// assistant wrote, so it can be shown before it is used.
-func TestPlanCarriesTheBuildProposal(t *testing.T) {
+// There is no such thing as an app donkey cannot build any more: whatever the
+// language, the answer is a Dockerfile the assistant writes during the build.
+// A plan for a stack nothing recognizes still comes back complete.
+func TestPlanForAnUnrecognizedStack(t *testing.T) {
 	s := planServer(planRuntime{spaces: []string{"default"}}, &ai.Analysis{
 		AppType:         "a Zig service",
-		Strategy:        "dockerfile",
-		Dockerfile:      "FROM alpine\nCMD [\"/app/server\"]\n",
 		Port:            8080,
 		HealthcheckPath: "/healthz",
 	})
-	// No Dockerfile and nothing railpack recognizes.
 	plan := callPlan(t, s, zipBytes(t, map[string]string{"main.zig": "pub fn main() void {}"}), "name=zigapp")
 
-	if plan.Build.Proposal == nil {
-		t.Fatal("the plan should carry the proposed build file")
+	if !plan.Ready {
+		t.Fatalf("a plan for an unknown stack should still be deployable: %+v", plan.Findings)
 	}
-	if !strings.Contains(plan.Build.Proposal.Content, "FROM alpine") {
-		t.Errorf("the proposal should be the assistant's file, got %q", plan.Build.Proposal.Content)
+	if plan.Build.Strategy != string(config.BuildAI) {
+		t.Errorf("the builder should write this app a Dockerfile, got strategy %q", plan.Build.Strategy)
 	}
-	if !strings.HasPrefix(plan.Build.Proposal.Path, ".donkey/") {
-		t.Errorf("a proposed file belongs under .donkey/, got %q", plan.Build.Proposal.Path)
+	if !strings.Contains(plan.Build.Summary, "Dockerfile") {
+		t.Errorf("the summary should say a Dockerfile gets written, got %q", plan.Build.Summary)
+	}
+	if plan.App.Port != 8080 {
+		t.Errorf("the assistant's port should be adopted, got %d", plan.App.Port)
 	}
 }

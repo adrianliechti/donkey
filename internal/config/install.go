@@ -41,21 +41,15 @@ type InstallFile struct {
 	AI   InstallAI   `json:"ai,omitempty"`
 }
 
-// InstallBuild covers how apps are built: which builder runs for an app that
-// brings no Dockerfile, and how every build reaches the outside world. An
-// installation whose only egress is a mirror configures all of it here.
-//
-// It splits in two. BuildSettings is what donkey-server needs at build time
-// and travels to it as environment; the fields below it are consumed where
-// the installation is written — mirrors into the build engine's config file,
-// the proxy into both pods' environment.
+// InstallBuild is how apps are built and how a build reaches the outside
+// world. BuildSettings travels to donkey-server as environment; the fields
+// below are consumed where the installation is written — mirrors into the
+// build engine's config, the proxy into both pods.
 type InstallBuild struct {
 	BuildSettings `json:",inline"`
 
-	// RegistryMirrors maps an upstream registry host to the mirror serving
-	// it ("docker.io": "https://jfrog.corp/docker-remote"). It is written
-	// into the build engine's config, so it covers every image a build pulls
-	// — the builder image, the run image and every FROM in a Dockerfile.
+	// RegistryMirrors maps an upstream registry host to its mirror. Written
+	// into the build engine's config, so it covers every FROM a build pulls.
 	RegistryMirrors map[string]string `json:"registryMirrors,omitempty"`
 
 	// Proxy is a forward proxy for donkey-server and the build engine
@@ -63,82 +57,44 @@ type InstallBuild struct {
 	Proxy InstallProxy `json:"proxy,omitempty"`
 }
 
-// BuildSettings is the part of the build configuration donkey-server itself
-// acts on: which builder to run, and with what.
+// BuildSettings is the build configuration donkey-server acts on. There is
+// one builder, so its settings sit directly under build:.
 type BuildSettings struct {
-	// Builder is the default for apps with no Dockerfile: "railpack" (the
-	// default) or "ai". A donkey.yaml with an explicit build.type still
-	// wins, and a Dockerfile always beats both.
-	Builder BuildStrategy `json:"builder,omitempty"`
-
-	// Env is injected into every app build, under the app's own build.env.
-	// BuildKit hands these to every RUN, which is what puts a package
-	// manager's mirror (NPM_CONFIG_REGISTRY, PIP_INDEX_URL, GOPROXY) in
-	// reach of build steps donkey never sees.
+	// Env is injected into every build, under the app's own build.env.
+	// BuildKit hands it to every RUN, which is what puts a package manager's
+	// mirror in reach of build steps donkey never sees.
 	Env map[string]string `json:"env,omitempty"`
 
-	AI       InstallAIBuilder `json:"ai,omitempty"`
-	Railpack InstallRailpack  `json:"railpack,omitempty"`
+	// Verify is a pointer so unset ≠ off; unset means on.
+	Verify        *bool `json:"verify,omitempty"`
+	VerifySeconds int   `json:"verifySeconds,omitempty"`
+	// Attempts is the first Dockerfile plus one revision per failure shown.
+	Attempts int `json:"attempts,omitempty"`
 }
 
-// InstallProxy is the forward proxy donkey's own processes use, in the
-// spelling every tool already understands.
+// InstallProxy is the forward proxy donkey's own processes use.
 type InstallProxy struct {
 	HTTP    string `json:"http,omitempty"`
 	HTTPS   string `json:"https,omitempty"`
 	NoProxy string `json:"noProxy,omitempty"`
 }
 
-// InstallAIBuilder tunes donkey's own builder: the assistant writes the
-// Dockerfile, donkey builds it and checks the result starts.
-type InstallAIBuilder struct {
-	// Verify runs the built image and waits for it to come up before the
-	// image is published. A pointer so "unset" is distinguishable from
-	// "off" — unset means on, because an image that cannot start is the one
-	// failure a build is in a position to catch.
-	Verify *bool `json:"verify,omitempty"`
-	// VerifySeconds is how long the app is given to start listening
-	// (default DefaultVerifySeconds).
-	VerifySeconds int `json:"verifySeconds,omitempty"`
-	// Attempts is how many Dockerfiles the assistant may write for one
-	// deploy: the first, plus one revision per failure it is shown
-	// (default DefaultAIAttempts).
-	Attempts int `json:"attempts,omitempty"`
-}
-
-// InstallRailpack overrides the two images railpack's plans reference. They
-// are ordinary registry references, so an installation behind a mirror points
-// them at it.
-type InstallRailpack struct {
-	BuilderImage string `json:"builderImage,omitempty"`
-	RuntimeImage string `json:"runtimeImage,omitempty"`
-}
-
 const (
-	// DefaultVerifySeconds is how long a freshly built image is given to
-	// start listening. Long enough for a JVM or a cold interpreter, short
-	// enough that a genuinely broken image fails the deploy quickly.
+	// Long enough for a JVM or a cold interpreter, short enough that a broken
+	// image fails quickly.
 	DefaultVerifySeconds = 45
-	// DefaultAIAttempts is the first Dockerfile plus two revisions. Beyond
-	// that a model that has seen the failure twice is not converging, and
-	// the honest answer is to show the person the error.
-	DefaultAIAttempts = 3
+	// The first Dockerfile plus two revisions. Beyond that a model that has
+	// seen the failure twice is not converging.
+	DefaultAttempts = 3
 )
 
-// Validate checks the parts of the build section that can be wrong on their
-// own. The builder is the fallback for apps that bring no Dockerfile, so
-// "dockerfile" and "auto" are not answers to it.
+// Validate checks what can be wrong without consulting the runtime.
 func (b InstallBuild) Validate() error {
-	switch b.Builder {
-	case "", BuildRailpack, BuildAI:
-	default:
-		return fmt.Errorf("build.builder must be railpack or ai, not %q", b.Builder)
+	if b.Attempts < 0 {
+		return fmt.Errorf("build.attempts cannot be negative")
 	}
-	if b.AI.Attempts < 0 {
-		return fmt.Errorf("build.ai.attempts cannot be negative")
-	}
-	if b.AI.VerifySeconds < 0 {
-		return fmt.Errorf("build.ai.verifySeconds cannot be negative")
+	if b.VerifySeconds < 0 {
+		return fmt.Errorf("build.verifySeconds cannot be negative")
 	}
 	for host, mirror := range b.RegistryMirrors {
 		if host == "" {
@@ -151,39 +107,28 @@ func (b InstallBuild) Validate() error {
 	return nil
 }
 
-// BuilderOrDefault is the builder an app without a Dockerfile gets.
-func (b BuildSettings) BuilderOrDefault() BuildStrategy {
-	if b.Builder == "" {
-		return BuildRailpack
-	}
-	return b.Builder
-}
-
-// VerifyStartup reports whether a freshly built image is run before it is
-// published. On unless an installation turns it off.
+// VerifyStartup is on unless an installation turns it off.
 func (b BuildSettings) VerifyStartup() bool {
-	return b.AI.Verify == nil || *b.AI.Verify
+	return b.Verify == nil || *b.Verify
 }
 
-// VerifySeconds is how long the app is given to come up, defaulted.
-func (b BuildSettings) VerifySeconds() int {
-	if b.AI.VerifySeconds <= 0 {
+// VerifyWindow is how long the app is given to come up.
+func (b BuildSettings) VerifyWindow() int {
+	if b.VerifySeconds <= 0 {
 		return DefaultVerifySeconds
 	}
-	return b.AI.VerifySeconds
+	return b.VerifySeconds
 }
 
-// AIAttempts is how many Dockerfiles the assistant may write, defaulted.
-func (b BuildSettings) AIAttempts() int {
-	if b.AI.Attempts <= 0 {
-		return DefaultAIAttempts
+// BuildAttempts is how many Dockerfiles the assistant may write.
+func (b BuildSettings) BuildAttempts() int {
+	if b.Attempts <= 0 {
+		return DefaultAttempts
 	}
-	return b.AI.Attempts
+	return b.Attempts
 }
 
-// MergeEnv layers an app's own build.env over the installation's. The app
-// wins: a project that pins its own package registry has a reason to, and
-// the installation's entry is the fallback for everyone who didn't.
+// MergeEnv layers an app's build.env over the installation's; the app wins.
 func (b BuildSettings) MergeEnv(appEnv map[string]string) map[string]string {
 	if len(b.Env) == 0 {
 		return appEnv

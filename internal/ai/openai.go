@@ -54,11 +54,7 @@ func (o *openAI) Check(ctx context.Context) error {
 func (o *openAI) Analyze(ctx context.Context, in *AnalyzeInput) (*Analysis, error) {
 	var b strings.Builder
 	if in.Detected != "" {
-		if in.DetectionFailed {
-			fmt.Fprintf(&b, "donkey could NOT build this app on its own: %s\nPropose a Dockerfile or a railpack config.\n\n", in.Detected)
-		} else {
-			fmt.Fprintf(&b, "donkey's detector says: %s\n\n", in.Detected)
-		}
+		fmt.Fprintf(&b, "donkey's detector says: %s\n\n", in.Detected)
 	}
 	if in.CurrentConfig != "" {
 		fmt.Fprintf(&b, "Existing donkey.yaml:\n%s\n\n", in.CurrentConfig)
@@ -68,48 +64,94 @@ func (o *openAI) Analyze(ctx context.Context, in *AnalyzeInput) (*Analysis, erro
 	}
 
 	var out Analysis
-	if err := o.structured(ctx, analyzeInstructions, b.String(), "app_analysis", analysisSchema, &out); err != nil {
-		return nil, err
+	// With the app's folder to hand, the port, the volumes and the health
+	// route come from reading the code rather than from recognizing the shape
+	// of the project.
+	if in.Root != "" {
+		history := o.investigate(ctx, in.Root, analyzeInstructions,
+			b.String()+"\n"+analyzeExploreInstruction, maxExploreTurns)
+		history = append(history, responses.ResponseInputItemParamOfMessage(
+			analyzeConcludeInstruction, responses.EasyInputMessageRoleUser))
+		if err := o.structuredWith(ctx, analyzeInstructions, history, "app_analysis", analysisSchema, &out); err != nil {
+			// Exploration or the answer call failed — the one-shot read below
+			// is weaker but still an answer.
+			out = Analysis{}
+		}
+	}
+	if out.AppType == "" {
+		if err := o.structured(ctx, analyzeInstructions, b.String(), "app_analysis", analysisSchema, &out); err != nil {
+			return nil, err
+		}
 	}
 	out.sanitize()
-	if in.DetectionFailed && out.Strategy != "railpack" && out.Strategy != "dockerfile" {
-		return nil, fmt.Errorf("the AI assistant couldn't propose a way to build this app")
-	}
 	return &out, nil
 }
 
-// WriteDockerfile asks for the Dockerfile donkey's own builder builds.
-func (o *openAI) WriteDockerfile(ctx context.Context, in *DockerfileInput) (string, error) {
+// WriteDockerfile explores before answering: a Dockerfile is a claim about a
+// dozen specific facts — install command, output directory, the app object's
+// module path — and each is written down somewhere in the repository.
+//
+// On a retry that exploration is where the work happens. "No module named X"
+// is not an abstract problem; it is an instruction to go and look at what
+// imports X.
+func (o *openAI) WriteDockerfile(ctx context.Context, in *DockerfileInput) (*DockerfileResult, error) {
 	var b strings.Builder
 	if in.Port > 0 {
 		fmt.Fprintf(&b, "donkey will set PORT=%d.\n\n", in.Port)
 	}
-	// The failure goes first: on a retry it is the only thing that matters,
-	// and burying it under a file tree is how a model misses it.
-	if in.Failure != "" {
-		fmt.Fprintf(&b, "Your previous Dockerfile did not work. What happened:\n%s\n\n", in.Failure)
-		if in.Previous != "" {
-			fmt.Fprintf(&b, "The Dockerfile that produced it:\n%s\n\n", in.Previous)
+	// The failures go first: on a retry they are the only thing that matters,
+	// and burying them under a file tree is how a model misses them.
+	if n := len(in.Attempts); n > 0 {
+		fmt.Fprintf(&b, "%d Dockerfile(s) have already been tried for this app and none produced a working image.\n"+
+			"Read every failure before you write anything: they are the app telling you what it needs.\n"+
+			"Do not repeat a fix that has already been tried, and do not undo one that worked.\n\n", n)
+		for i, at := range in.Attempts {
+			fmt.Fprintf(&b, "── Attempt %d of %d ──\n", i+1, n)
+			if at.Dockerfile != "" {
+				fmt.Fprintf(&b, "Dockerfile:\n%s\n", at.Dockerfile)
+			}
+			fmt.Fprintf(&b, "What happened:\n%s\n\n", at.Failure)
 		}
 	}
 	if in.Summary != nil {
 		b.WriteString(in.Summary.Render())
 	}
 
-	var out struct {
-		Dockerfile string `json:"dockerfile"`
-		Notes      string `json:"notes"`
+	var out DockerfileResult
+	var filesRead []string
+	if in.Root != "" {
+		history := o.investigate(ctx, in.Root, dockerfileInstructions,
+			b.String()+"\n"+dockerfileExploreInstruction, maxBuildExploreTurns)
+		filesRead = exploredFiles(history)
+		history = append(history, responses.ResponseInputItemParamOfMessage(
+			dockerfileConcludeInstruction, responses.EasyInputMessageRoleUser))
+		if err := o.structuredWith(ctx, dockerfileInstructions, history, "dockerfile", dockerfileSchema, &out); err != nil {
+			// Exploration or the answer call failed. A one-shot Dockerfile from
+			// the summary alone is worse, but it is not nothing, and this
+			// builder has a verification step and further attempts behind it.
+			out = DockerfileResult{}
+			filesRead = nil
+		}
 	}
-	if err := o.structured(ctx, dockerfileInstructions, b.String(), "dockerfile", dockerfileSchema, &out); err != nil {
-		return "", err
+	if out.Dockerfile == "" {
+		if err := o.structured(ctx, dockerfileInstructions, b.String(), "dockerfile", dockerfileSchema, &out); err != nil {
+			return nil, err
+		}
 	}
 	// Models reach for a fence even when told not to; stripping it is cheaper
 	// than a build that fails on line one.
 	df := strings.TrimSpace(stripCodeFence(out.Dockerfile))
 	if df == "" {
-		return "", fmt.Errorf("the assistant returned no Dockerfile")
+		return nil, fmt.Errorf("the assistant returned no Dockerfile")
 	}
-	return df + "\n", nil
+	out.Dockerfile = df + "\n"
+	if di := strings.TrimSpace(stripCodeFence(out.Dockerignore)); di != "" {
+		out.Dockerignore = di + "\n"
+	} else {
+		out.Dockerignore = ""
+	}
+	out.FilesRead = filesRead
+	return &out, nil
 }
 
 // stripCodeFence removes a ```dockerfile … ``` wrapper if one came back.
@@ -131,7 +173,6 @@ func stripCodeFence(s string) string {
 // what they get: a model that invents /tmp volumes or a bare health path
 // shouldn't be able to break a deploy.
 func (a *Analysis) sanitize() {
-	a.Strategy = strings.ToLower(strings.TrimSpace(a.Strategy))
 	if a.Port < 0 || a.Port > 65535 {
 		a.Port = 0
 	}
@@ -228,7 +269,7 @@ func (o *openAI) DiagnoseFailure(ctx context.Context, fc *FailureContext) (*FixP
 	// answers instead of proposing a fix for source it has never seen.
 	var out FixProposal
 	if fc.Root != "" {
-		history := o.investigate(ctx, fc.Root, diagnoseInstructions, b.String()+"\n"+exploreInstruction)
+		history := o.investigate(ctx, fc.Root, diagnoseInstructions, b.String()+"\n"+exploreInstruction, maxExploreTurns)
 		history = append(history, responses.ResponseInputItemParamOfMessage(concludeInstruction, responses.EasyInputMessageRoleUser))
 		if err := o.structuredWith(ctx, diagnoseInstructions, history, "fix_proposal", proposalSchema, &out); err == nil {
 			return &out, nil
@@ -249,12 +290,9 @@ func (o *openAI) structured(ctx context.Context, instructions, user, name string
 	}, name, schema, out)
 }
 
-// structuredWith is the same, over an exchange that already happened — the
-// tool-using investigation, whose findings the answer is drawn from.
-//
-// The schema is enforced by the provider (strict), so what comes back is
-// either valid against it or an error; donkey never parses prose into a
-// struct and hopes.
+// structuredWith answers over an exchange that already happened. The schema
+// is provider-enforced, so what comes back is valid or an error — donkey never
+// parses prose into a struct and hopes.
 func (o *openAI) structuredWith(ctx context.Context, instructions string, input []responses.ResponseInputItemUnionParam, name string, schema map[string]any, out any) error {
 	resp, err := o.client.Responses.New(ctx, responses.ResponseNewParams{
 		Model:        shared.ResponsesModel(o.model),

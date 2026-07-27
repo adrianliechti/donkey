@@ -33,11 +33,9 @@ const (
 	// AnnotationDecisions records deploy-time analysis decisions on the
 	// Deployment (JSON), so no-build deploys can keep them.
 	AnnotationDecisions = "donkey.dev/decisions"
-	// AnnotationConsole records network choices made in the admin console
-	// (exposure, domain, access). It is deliberately separate from decisions:
-	// a deploy rewrites the decisions annotation from donkey.yaml, while a
-	// console choice must survive deploys — until donkey.yaml itself settles
-	// the matter, which always wins.
+	// AnnotationConsole is separate from decisions: a deploy rewrites those
+	// from donkey.yaml, while a console choice survives deploys — until
+	// donkey.yaml settles the matter, which always wins.
 	AnnotationConsole = "donkey.dev/console"
 	// LabelApp / LabelComponent identify donkey-owned resources;
 	// LabelSpace groups the apps of one space (one namespace holds them all).
@@ -60,20 +58,15 @@ const (
 	storageFSGroup = int64(2000)
 )
 
-// Labels marks one object as donkey's. Callers that don't know the space
-// (older objects, cluster-wide lookups) pass "" and simply get no space label.
+// Labels marks one object as donkey's; callers that don't know the space pass
+// "" and get no space label.
 //
-// Two sets are written, saying the same things. donkey.dev/* is what donkey
-// selects on, so its meaning is fixed by this code and nothing else. The
-// app.kubernetes.io/* set is the Kubernetes-recommended vocabulary, and it is
-// there so donkey's grouping is legible to tools that never heard of donkey:
-// `part-of` is the standard spelling of "these belong to one application",
-// which is exactly what a space is, and it is what k9s, Lens, Backstage and
-// OpenShift's topology view group their displays by.
+// Two sets say the same things. donkey.dev/* is what donkey selects on. The
+// app.kubernetes.io/* set is the Kubernetes-recommended vocabulary, so the
+// grouping is legible to k9s, Lens and Backstage, which group by `part-of`.
 //
-// These are metadata labels only. The Deployment's own selector is written
-// separately from donkey.dev/* alone (see appDeployment) — a selector is
-// immutable once created, so adding a label here must never change one.
+// Metadata only: the Deployment's selector is written separately from
+// donkey.dev/* alone, because a selector is immutable once created.
 func Labels(space, app, component string) map[string]string {
 	l := map[string]string{
 		"app.kubernetes.io/name":       app,
@@ -94,12 +87,10 @@ func Labels(space, app, component string) map[string]string {
 // labelValue matches what Kubernetes accepts as a label value.
 var labelValue = regexp.MustCompile(`^[A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?$`)
 
-// withVersion adds the standard version label, taken from the image's tag.
-//
-// The tag is not donkey's to choose — `--tag` accepts whatever the user
-// passes — and a label value the API server rejects would fail the whole
-// apply. So a tag that cannot be a label is simply not published as one: a
-// missing label costs a line in `k9s`, a rejected one costs the deploy.
+// withVersion labels from the image tag. The tag is not donkey's to choose,
+// and a value the API server rejects would fail the whole apply — so a tag
+// that cannot be a label is dropped. A missing label costs a line in k9s; a
+// rejected one costs the deploy.
 func withVersion(l map[string]string, imageRef string) map[string]string {
 	tag := imageRef
 	if i := strings.LastIndex(tag, "@"); i >= 0 {
@@ -183,11 +174,9 @@ func AppObjects(in Input) ([]runtime.Object, error) {
 	return append(objs, NetworkObjects(in)...), nil
 }
 
-// NetworkObjects renders everything that decides how the app is reached —
-// the gateway's routing table entries. None of it depends on the image,
-// which is what lets the console change an app's exposure without a deploy.
-// Certificates need no objects at all: the gateway issues them itself, per
-// hostname, the first time one is needed.
+// NetworkObjects renders the gateway's routing entries. None of it depends on
+// the image, which is what lets the console change exposure without a deploy.
+// Certificates need no objects: the gateway issues them per hostname.
 func NetworkObjects(in Input) []runtime.Object {
 	var objs []runtime.Object
 	if in.Domain != "" {
@@ -316,8 +305,7 @@ func appEnvironment(in Input) ([]corev1.EnvVar, []corev1.EnvFromSource) {
 		})
 	}
 
-	// PORT is always provided (Heroku convention) — railpack-built apps and
-	// static servers listen on it. An explicit env entry wins.
+	// PORT is always provided (Heroku convention); an explicit env entry wins.
 	var env []corev1.EnvVar
 	if _, ok := app.Env["PORT"]; !ok {
 		env = append(env, corev1.EnvVar{Name: "PORT", Value: fmt.Sprintf("%d", app.Port)})
@@ -425,12 +413,10 @@ func deployment(in Input) (*appsv1.Deployment, error) {
 				},
 			},
 		}}
-		// A fresh volume belongs to root, while images commonly run as
-		// somebody else — the app would find its own data folder read-only.
-		// Kubernetes adds fsGroup as a supplementary group of every container
-		// process and gives the volume to that group, so the app can write
-		// whichever user it runs as. OnRootMismatch keeps restarts quick by
-		// not walking a large volume every time.
+		// A fresh volume belongs to root while images commonly run as somebody
+		// else, so the app would find its data folder read-only. fsGroup is
+		// added as a supplementary group and given the volume.
+		// OnRootMismatch avoids walking a large volume on every restart.
 		fsGroup := storageFSGroup
 		onMismatch := corev1.FSGroupChangeOnRootMismatch
 		spec.SecurityContext = &corev1.PodSecurityContext{

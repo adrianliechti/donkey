@@ -210,11 +210,9 @@ func unzipContext(f *os.File, size int64, dir string, skipped *skipList) error {
 	return nil
 }
 
-// skippedUploadPath applies the CLI's pack-time exclusions to an uploaded
-// path: VCS/artifact directories anywhere in the path, and secret-shaped
-// basenames. Enforced server-side so the guarantee holds for every client,
-// not only donkey's own. The first return value is what to report as left
-// behind — the directory that did it, or the file itself.
+// skippedUploadPath applies the CLI's pack-time exclusions server-side, so
+// the guarantee holds for every client. Returns what to report as left
+// behind: the directory that did it, or the file itself.
 func skippedUploadPath(name string) (string, bool) {
 	parts := strings.Split(filepath.ToSlash(name), "/")
 	for i, p := range parts[:len(parts)-1] {
@@ -263,12 +261,10 @@ func stripSingleRoot(dir string) error {
 // inside an upload before giving up.
 const maxRootSearchDepth = 3
 
-// contextRoot picks the folder inside an upload that actually holds the app.
-// An upload is not always rooted at the app: a repo whose service lives in
-// backend/, a folder dragged from one level up, a monorepo zip. An explicit
-// path always wins; otherwise a single donkey.yaml decides, and several make
-// it the user's call rather than a guess. Returns the folder to build and the
-// path it took relative to the upload ("" when it is the upload itself).
+// contextRoot finds the folder that actually holds the app — an upload is not
+// always rooted at it. An explicit path wins; otherwise a single donkey.yaml
+// decides, and several make it the user's call. Returns the folder and its
+// path relative to the upload ("" when it is the upload itself).
 func contextRoot(dir, explicit string) (string, string, error) {
 	if explicit != "" {
 		sub, ok := safeRelPath(explicit)

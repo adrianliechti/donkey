@@ -287,6 +287,14 @@ func (r *Runtime) ApplyNetwork(ctx context.Context, cfg *config.AppConfig) (stri
 	if err != nil {
 		return "", err
 	}
+	// The same guard a deploy applies: without it the console could hand this
+	// app an address another one already serves, and the gateway would answer
+	// with whichever it sorted first.
+	if in.Domain != "" {
+		if owner := r.hostOwner(ctx, space, in.Domain, app); owner != "" {
+			return "", rt.UserError{Err: fmt.Errorf("%s already answers on %s — two apps cannot share one address", owner, in.Domain)}
+		}
+	}
 
 	// Re-render: the app's own route unless internal, and every existing
 	// path route under its existing name.

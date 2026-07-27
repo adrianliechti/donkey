@@ -90,14 +90,6 @@ func initFlow(ctx context.Context, s *session, cmd *cli.Command) (*config.AppCon
 		return nil, "", fmt.Errorf("donkey couldn't read your app: %w", err)
 	}
 
-	// donkey couldn't recognize the app by itself. The server built its plan
-	// on the assistant's proposal, so the file has to land next to the app —
-	// otherwise the next deploy is back where this one started.
-	if p := plan.Build.Proposal; p != nil {
-		if !acceptBuildProposal(u, dir, plan, p) {
-			return nil, "", fmt.Errorf("setup stopped — nothing was written")
-		}
-	}
 	u.Success("Recognized: %s", plan.Build.Summary)
 	if plan.AppType != "" {
 		u.Info("%s%s", plan.AppType, notesSuffix(plan.Notes))
@@ -271,39 +263,6 @@ func confirmServices(u *ui.UI, plan *server.Plan) []string {
 		}
 	}
 	return out
-}
-
-// acceptBuildProposal shows the build file the assistant wrote and, once
-// confirmed, writes it next to the app so every later build uses it.
-func acceptBuildProposal(u *ui.UI, dir string, plan *server.Plan, p *server.BuildProposal) bool {
-	u.Info("Donkey couldn't recognize this app by itself.")
-	u.Success("The assistant thinks this is: %s", u.Bold(plan.AppType))
-	if plan.Notes != "" {
-		u.Printf("  %s", u.Faint(plan.Notes))
-	}
-	u.Printf("")
-	u.Printf("Proposed %s:", u.Bold(p.Path))
-	for _, line := range strings.Split(strings.TrimRight(p.Content, "\n"), "\n") {
-		u.Printf("  %s", u.Faint(line))
-	}
-	if !u.Confirm(fmt.Sprintf("Save this as %s and use it to build?", p.Path), true) {
-		return false
-	}
-	if err := writeAIFile(dir, p.Path, p.Content); err != nil {
-		u.Fail("couldn't write %s: %v", p.Path, err)
-		return false
-	}
-	return true
-}
-
-// writeAIFile stores a proposed build file under .donkey/ — donkey never
-// overwrites a file the user wrote.
-func writeAIFile(dir, relPath, content string) error {
-	full := filepath.Join(dir, relPath)
-	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-		return err
-	}
-	return os.WriteFile(full, []byte(content), 0o644)
 }
 
 // shortList keeps a list of file names to the few worth reading.

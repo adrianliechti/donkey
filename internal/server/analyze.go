@@ -24,7 +24,9 @@ func (s *Server) analyzeApp(ctx context.Context, dir string, det *detect.Detecti
 	if err != nil {
 		return nil, fmt.Errorf("couldn't read the uploaded folder: %w", err)
 	}
-	in := &ai.AnalyzeInput{Summary: sum, DetectionFailed: detErr != nil}
+	// The uploaded copy, not the user's working tree: the assistant reads the
+	// app itself rather than answering from a summary of it.
+	in := &ai.AnalyzeInput{Summary: sum, Root: dir}
 	switch {
 	case detErr != nil:
 		in.Detected = detErr.Error()
@@ -41,17 +43,6 @@ func (s *Server) analyzeApp(ctx context.Context, dir string, det *detect.Detecti
 	return analysis, nil
 }
 
-// rescueDetection writes the assistant's proposed build file into the (throw
-// away) build context so railpack or BuildKit can use it. The user's own
-// files are never touched — this folder only exists for this one build.
-func rescueDetection(dir string, analysis *ai.Analysis) error {
-	proposal := buildProposal(analysis)
-	if proposal == nil {
-		return fmt.Errorf("no proposal available")
-	}
-	return writeProposal(dir, proposal)
-}
-
 // proposedPort works out which port the app will be given, and where that
 // answer came from — the assistant's reading of the code first, then what the
 // detected stack conventionally listens on. An app that honors PORT takes
@@ -66,20 +57,11 @@ func proposedPort(det *detect.Detection, analysis *ai.Analysis) (int, string) {
 		// PORT convention, so donkey's choice is the app's port.
 		source = PortFromEnv
 	}
-	if det != nil && det.Railpack != nil {
-		for _, p := range det.Railpack.Providers {
-			switch p {
-			case "python":
-				return 8000, source
-			case "node", "ruby":
-				return 3000, source
-			case "golang", "go", "java", "php":
-				return 8080, source
-			case "staticfile":
-				return 80, source
-			}
-		}
-	}
+	// 8080 for everything else. There is no stack-by-stack table any more and
+	// none is wanted: donkey tells every app what port to listen on through
+	// PORT, and the Dockerfile its assistant writes is told to honor it. A
+	// framework's own default only matters for an app that ignores PORT, and
+	// that app needs an explicit `port:` in donkey.yaml whatever donkey guesses.
 	return 8080, source
 }
 

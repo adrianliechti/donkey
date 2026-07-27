@@ -1,9 +1,7 @@
 # Packaging for donkey-server. The Go binary is cross-compiled by
 # `task server-image`; this image wraps it.
-# Not distroless: railpack's version resolver (mise) execs git and
-# bash-based build scripts at plan time.
 FROM alpine:3.20
-RUN apk add --no-cache git bash curl ca-certificates
+RUN apk add --no-cache ca-certificates
 # No USER: the image states no opinion about who it runs as, because the
 # answer differs per runtime and only the runtime can enforce it anyway.
 # Kubernetes pins an unprivileged uid in the pod's security context (see
@@ -13,15 +11,11 @@ RUN apk add --no-cache git bash curl ca-certificates
 # inside its own container would buy nothing.
 #
 # Everything the server writes goes to /tmp — world-writable, so it works
-# under whichever uid a runtime picks: the build contexts it unpacks, and
-# the mise binary railpack downloads to /tmp/railpack at plan time. HOME
-# points there for the same reason; a numeric uid would otherwise be handed
-# /root, which it cannot write.
-#
-# mise is deliberately NOT baked in: it is 90 MB, it is railpack's dependency
-# alone, and railpack fetches it itself through HTTPS_PROXY like anything
-# else. An installation that cannot reach github.com at all mounts its own
-# copy and points DONKEY_MISE_BINARY at it — see internal/build/mise.go.
+# under whichever uid a runtime picks. That is the build contexts it unpacks,
+# and nothing else: the build itself happens in buildkitd, and the only thing
+# donkey-server needs to reach is the model endpoint. HOME points at /tmp for
+# the same reason; a numeric uid would otherwise be handed /root, which it
+# cannot write.
 ENV HOME=/tmp
 # TARGETARCH comes from BuildKit: the daemon's own arch for a plain build,
 # each platform in turn for a multi-arch `task publish`.

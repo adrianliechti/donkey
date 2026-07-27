@@ -208,22 +208,6 @@ export function PlanReview({
             The app is in <span className="font-mono">{plan.root}/</span> — only that folder was read.
           </p>
         )}
-        {plan.build.proposal && (
-          <details className="rounded-md border border-hay/30 bg-hay-wash/40 px-3 py-2">
-            <summary className="cursor-pointer text-sm text-hay">
-              Donkey couldn't recognize this app by itself — the assistant wrote a{' '}
-              <span className="font-mono">{plan.build.proposal.path}</span> for it
-            </summary>
-            <pre className="mt-2 max-h-64 overflow-auto rounded bg-ink-well p-2 font-mono text-xs whitespace-pre-wrap text-parchment">
-              {plan.build.proposal.content}
-            </pre>
-            <p className="mt-1.5 text-xs text-stone">
-              It is used for this deploy only. Save it in your project as{' '}
-              <span className="font-mono">{plan.build.proposal.path}</span> to keep builds
-              reproducible.
-            </p>
-          </details>
-        )}
       </Card>
 
       {/* How it runs. Answers, not blanks. */}

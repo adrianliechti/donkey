@@ -175,17 +175,9 @@ export interface PlanApp {
   url?: string
 }
 
-export interface BuildProposal {
-  path: string
-  content: string
-}
-
 export interface PlanBuild {
   summary: string
   strategy: string
-  /** The build file the assistant wrote because donkey couldn't recognize the
-   *  app by itself. Shown before it is used. */
-  proposal?: BuildProposal
 }
 
 export interface PlanVolume {

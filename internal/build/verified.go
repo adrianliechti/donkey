@@ -10,17 +10,12 @@ import (
 	gateway "github.com/moby/buildkit/frontend/gateway/client"
 )
 
-// buildVerified builds the image, proves it starts, and only then lets it be
-// exported.
-//
-// The ordering is the whole point, and it is why this runs through the
-// gateway rather than a plain solve: a plain solve exports whatever the
-// frontend produced, so a broken image would already be in the registry
-// under the app's name by the time anything could object. Here the frontend's
-// result is solved first, the probe is solved against it, and the result is
-// only handed back for export once the probe has passed.
+// buildVerified builds the image, proves it starts, and only then exports it.
+// The ordering is why this runs through the gateway rather than a plain solve:
+// a plain solve exports whatever the frontend produced, so a broken image
+// would already be in the registry before anything could object.
 func (b *BuildKitBuilder) buildVerified(ctx context.Context, c *bkclient.Client, req Request) (*Result, error) {
-	_, opt, err := b.solveOpt(ctx, req)
+	opt, err := b.solveOpt(req)
 	if err != nil {
 		return nil, err
 	}
@@ -28,8 +23,8 @@ func (b *BuildKitBuilder) buildVerified(ctx context.Context, c *bkclient.Client,
 	if err != nil {
 		return nil, fmt.Errorf("platform %q: %w", req.Platform, err)
 	}
-	// c.Build takes the frontend through the gateway, so the frontend's own
-	// name and options move off the SolveOpt and into the request below.
+	// c.Build drives the frontend through the gateway, so its name and options
+	// move off the SolveOpt and into the request below.
 	frontend, frontendAttrs := opt.Frontend, opt.FrontendAttrs
 	if frontend == "" {
 		return nil, fmt.Errorf("startup verification only applies to Dockerfile builds")
@@ -65,9 +60,8 @@ func (b *BuildKitBuilder) buildVerified(ctx context.Context, c *bkclient.Client,
 		if err != nil {
 			return nil, fmt.Errorf("preparing the startup check: %w", err)
 		}
-		// Evaluate, because nothing downstream consumes this: the result
-		// handed back for export is the image itself, so without asking for
-		// it the probe would never run.
+		// Evaluate: nothing downstream consumes this, so without asking the
+		// probe would never run.
 		if _, err := gw.Solve(ctx, gateway.SolveRequest{
 			Definition: def.ToPB(),
 			Evaluate:   true,

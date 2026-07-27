@@ -201,6 +201,18 @@ func (s *Server) handleDiagnose(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// validComponent bounds what may reach a provider as part of an identifier.
+// On Docker the component becomes a container name, which the engine client
+// path.Joins into its request URL — so an unchecked "addon-x/../../.." would
+// collapse out of the containers endpoint and read any container on the host.
+func validComponent(c string) bool {
+	if c == "web" {
+		return true
+	}
+	name, ok := strings.CutPrefix(c, "addon-")
+	return ok && config.ValidName(name)
+}
+
 func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 	space, app, err := s.spaceApp(r)
 	if err != nil {
@@ -221,6 +233,13 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 	component := q.Get("component")
 	if component == "" {
 		component = "web"
+	}
+	// The component reaches a provider as part of an identifier — a label
+	// selector on Kubernetes, a container name on Docker — so it is validated
+	// here, once, for every runtime. Only "web" and "addon-<name>" exist.
+	if !validComponent(component) {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("%q is not a part of this app — use web, or addon-<service>", component))
+		return
 	}
 	// A space's services belong to the pseudo-app "shared", whatever app the
 	// caller came through — their pods carry that owner label, not the app's.
@@ -280,11 +299,10 @@ func (s *Server) handlePutEnv(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	// PORT is donkey's own: it is rendered from donkey.yaml's `port` directly
-	// on the container, where it always beats the env secret — accepting a
-	// new value here would store something that never reaches the app. An
-	// unchanged PORT is tolerated: clients read-modify-write the whole map,
-	// and a leftover from before this rule must not brick every other edit.
+	// PORT comes from donkey.yaml's `port` directly on the container, where it
+	// beats the env secret — accepting one here would store what never reaches
+	// the app. An unchanged PORT is tolerated, since clients read-modify-write
+	// the whole map.
 	if v, ok := req.Env["PORT"]; ok {
 		stored, gerr := s.rt.GetEnv(r.Context(), space, app)
 		if gerr != nil || stored["PORT"] != v {
@@ -654,63 +672,24 @@ type DoctorCheck struct {
 	Detail string `json:"detail,omitempty"`
 }
 
-// aiBuilderDetail says what donkey's own builder will do, in one line.
-func aiBuilderDetail(b config.BuildSettings) string {
+// builderDetail says what donkey's own builder will do, in one line.
+func builderDetail(b config.BuildSettings) string {
 	if !b.VerifyStartup() {
 		return "the assistant writes each app's Dockerfile (startup verification off)"
 	}
 	return fmt.Sprintf("the assistant writes each app's Dockerfile; images are run and must start within %ds before they are published",
-		b.VerifySeconds())
+		b.VerifyWindow())
 }
 
-// builderChecks probes what this installation needs in order to build an app
-// that brings no Dockerfile. Every image is resolved through the build engine
-// rather than from here, so the answer accounts for the engine's mirrors —
-// the whole point on a network where donkey-server and the engine reach
-// different things.
-func (s *Server) builderChecks(ctx context.Context) []DoctorCheck {
-	builder := s.cfg.Build.BuilderOrDefault()
-	image := func(name, ref string) DoctorCheck {
-		c := DoctorCheck{Name: name, Detail: ref}
-		if err := build.CheckImage(ctx, s.cfg.BuildkitAddr, s.cfg.Registry, ref, s.cfg.DefaultPlatform); err != nil {
-			c.Detail = err.Error()
-			return c
-		}
-		c.OK = true
-		return c
-	}
-
-	var checks []DoctorCheck
-	if builder == config.BuildAI {
-		// There is no builder image to probe: the Dockerfile the assistant
-		// writes names its own base, and whether that resolves is a question
-		// only the finished Dockerfile can ask. What is checkable is that the
-		// assistant answers at all, which the assistant check below covers.
-		checks = append(checks, DoctorCheck{
-			Name: "Builder (donkey writes the Dockerfile)", OK: true,
-			Detail: aiBuilderDetail(s.cfg.Build),
-		})
-	} else {
-		builderImage, runtimeImage := build.RailpackImages()
-		checks = append(checks,
-			image("Railpack builder image", builderImage),
-			image("Railpack runtime image", runtimeImage),
-		)
-	}
-
-	// railpack resolves package versions by running mise, and downloads it
-	// from github.com if donkey hasn't staged one first. Checked whichever
-	// builder the installation chose: an app's own donkey.yaml can ask for
-	// railpack regardless, and this is the check that says whether that
-	// would work.
-	mise := DoctorCheck{Name: "Railpack version resolver (mise " + build.MiseVersion() + ")"}
-	if detail, err := build.CheckMise(ctx); err != nil {
-		mise.Detail = err.Error()
-	} else {
-		mise.OK = true
-		mise.Detail = detail
-	}
-	return append(checks, mise)
+// builderChecks has no builder image to probe, which is the design: the
+// assistant's Dockerfile names its own bases, and only the finished file can
+// ask whether they resolve. That the assistant answers at all is covered by
+// the assistant check.
+func (s *Server) builderChecks(context.Context) []DoctorCheck {
+	return []DoctorCheck{{
+		Name: "Builder (donkey writes the Dockerfile)", OK: true,
+		Detail: builderDetail(s.cfg.Build),
+	}}
 }
 
 func (s *Server) handleDoctor(w http.ResponseWriter, r *http.Request) {

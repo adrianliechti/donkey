@@ -1,12 +1,8 @@
-// Package addons implements donkey's attached-resource model: an addon is a
-// binding with a canonical env contract (e.g. DATABASE_URL), injected into
-// the app's environment. Whether donkey provisioned the service or the user
-// attached a remote one, the app sees the exact same contract — the two are
-// freely swappable.
-//
-// The package is runtime-neutral on purpose: an addon describes what a
-// provisioned instance is (image, port, env, data path — a Workload), and
-// each runtime provider materializes that its own way.
+// Package addons is donkey's attached-resource model: an addon is a canonical
+// env contract (DATABASE_URL and friends) injected into the app. Provisioned
+// or remote, the app sees the same contract, so the two are swappable.
+// Runtime-neutral: an addon describes a Workload, each provider materializes
+// it its own way.
 package addons
 
 import (
@@ -20,43 +16,30 @@ import (
 // Addon provisions an instance of a service type.
 type Addon interface {
 	Type() string
-	// Description is the catalog's one-liner: what a person gets, not how
-	// it is wired.
+	// Description is the catalog's one-liner: what a person gets.
 	Description() string
-	// Binding returns the env contract for a provisioned instance.
 	Binding(in Input) map[string]string
-	// ExternalBinding derives the same env contract from a user-supplied
-	// connection URL, so a service running elsewhere binds exactly like a
-	// provisioned one.
+	// ExternalBinding derives the same contract from a connection URL, so a
+	// remote service binds exactly like a provisioned one.
 	ExternalBinding(raw string) (map[string]string, error)
-	// Workload describes the provisioned instance for the runtime to
-	// materialize. Nil (with no error) means the addon is binding-only —
-	// nothing runs (e.g. openai, whose service is the platform itself).
+	// Workload is nil (no error) for a binding-only addon — nothing runs.
 	Workload(in Input) (*Workload, error)
-	// CredentialKey names the binding entry that holds the credential the
-	// provisioned instance was initialized with — re-adds reuse it, because
-	// rotating it would lock the service out of its own kept data.
+	// CredentialKey is the binding entry the instance was initialized with.
+	// Re-adds reuse it: rotating would lock the service out of its own data.
 	CredentialKey() string
-	// DefaultVersion and DefaultStorage document the defaults per type.
 	DefaultVersion() string
 	DefaultStorage() string
 }
 
-// Workload describes one provisioned service instance, free of any
-// runtime's vocabulary. Kubernetes materializes it as a PVC + Deployment +
-// Service, Docker as a container + volume; the security posture (an
-// unprivileged user, no escalation, the data volume group-owned) is the
-// materializer's job, the same for every addon.
+// Workload is one provisioned service instance, free of runtime vocabulary.
+// The security posture (unprivileged user, no escalation, group-owned data)
+// is the materializer's job, the same for every addon.
 type Workload struct {
-	// Image is the full reference including tag.
-	Image string
-	// Port is the one port the service speaks; PortName says what it is
-	// ("postgres", "http", "s3").
+	Image    string
 	Port     int32
 	PortName string
-	// Env is plain configuration. SecretEnv maps env var names onto keys of
-	// the instance's binding, for values that are credentials — a runtime
-	// may reference them (Kubernetes: secretKeyRef) instead of inlining.
+	// SecretEnv maps env var names onto binding keys, so a runtime may
+	// reference credentials (secretKeyRef) instead of inlining them.
 	Env       map[string]string
 	SecretEnv map[string]string
 	// DataPath is where the instance's data volume mounts; the size comes

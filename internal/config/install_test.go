@@ -18,7 +18,6 @@ domain: example.com
 registry:
   url: registry.example.com/donkey
 build:
-  builder: ai
   registryMirrors:
     docker.io: https://artifactory.example.com/docker-remote
   env:
@@ -26,13 +25,9 @@ build:
   proxy:
     https: http://proxy.example.com:3128
     noProxy: .example.com,10.0.0.0/8
-  ai:
-    verify: false
-    verifySeconds: 90
-    attempts: 2
-  railpack:
-    builderImage: artifactory.example.com/railwayapp/railpack-builder:mise-2026.7.11
-    runtimeImage: artifactory.example.com/railwayapp/railpack-runtime:mise-2026.7.11
+  verify: false
+  verifySeconds: 90
+  attempts: 2
 `
 	path := filepath.Join(t.TempDir(), "server.yaml")
 	if err := os.WriteFile(path, []byte(in), 0o644); err != nil {
@@ -44,9 +39,6 @@ build:
 	if err != nil {
 		t.Fatalf("LoadInstallFile: %v", err)
 	}
-	if f.Build.Builder != BuildAI {
-		t.Errorf("builder = %q, want ai", f.Build.Builder)
-	}
 	if got := f.Build.RegistryMirrors["docker.io"]; got != "https://artifactory.example.com/docker-remote" {
 		t.Errorf("registryMirrors[docker.io] = %q", got)
 	}
@@ -56,11 +48,8 @@ build:
 	if f.Build.Proxy.HTTPS != "http://proxy.example.com:3128" || f.Build.Proxy.NoProxy != ".example.com,10.0.0.0/8" {
 		t.Errorf("proxy = %+v", f.Build.Proxy)
 	}
-	if f.Build.VerifyStartup() || f.Build.VerifySeconds() != 90 || f.Build.AIAttempts() != 2 {
-		t.Errorf("ai builder settings did not survive: %+v", f.Build.AI)
-	}
-	if f.Build.Railpack.RuntimeImage == "" {
-		t.Errorf("railpack = %+v", f.Build.Railpack)
+	if f.Build.VerifyStartup() || f.Build.VerifyWindow() != 90 || f.Build.BuildAttempts() != 2 {
+		t.Errorf("builder settings did not survive: %+v", f.Build.BuildSettings)
 	}
 
 	// And back out again in the same shape.
@@ -72,7 +61,7 @@ build:
 	if err := yaml.UnmarshalStrict(out, &again); err != nil {
 		t.Fatalf("what donkey writes, donkey cannot read: %v\n%s", err, out)
 	}
-	if again.Build.Builder != f.Build.Builder || again.Build.VerifySeconds() != f.Build.VerifySeconds() {
+	if again.Build.VerifyWindow() != f.Build.VerifyWindow() {
 		t.Errorf("the build section did not survive the round trip:\n%s", out)
 	}
 }
@@ -84,12 +73,9 @@ func TestInstallBuildValidate(t *testing.T) {
 		wantErr bool
 	}{
 		{"empty", InstallBuild{}, false},
-		{"railpack", InstallBuild{BuildSettings: BuildSettings{Builder: BuildRailpack}}, false},
-		{"ai", InstallBuild{BuildSettings: BuildSettings{Builder: BuildAI}}, false},
-		// The builder is what an app with no Dockerfile gets, so these two
-		// are not answers to the question.
-		{"dockerfile", InstallBuild{BuildSettings: BuildSettings{Builder: BuildDockerfile}}, true},
-		{"auto", InstallBuild{BuildSettings: BuildSettings{Builder: BuildAuto}}, true},
+		{"negative attempts", InstallBuild{BuildSettings: BuildSettings{Attempts: -1}}, true},
+		{"negative verify seconds", InstallBuild{BuildSettings: BuildSettings{VerifySeconds: -1}}, true},
+		{"mirror with no host", InstallBuild{RegistryMirrors: map[string]string{"": "https://mirror"}}, true},
 		{"mirror with no address", InstallBuild{RegistryMirrors: map[string]string{"docker.io": ""}}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -132,18 +118,15 @@ func TestBuildSettingsMergeEnv(t *testing.T) {
 
 func TestBuildSettingsDefaults(t *testing.T) {
 	var s BuildSettings
-	if s.BuilderOrDefault() != BuildRailpack {
-		t.Errorf("the default builder changed to %q", s.BuilderOrDefault())
-	}
 	// Startup verification is on unless an installation says otherwise —
 	// an unset pointer must not read as "off".
 	if !s.VerifyStartup() {
 		t.Error("startup verification should default to on")
 	}
-	if s.VerifySeconds() != DefaultVerifySeconds || s.AIAttempts() != DefaultAIAttempts {
-		t.Errorf("defaults not applied: %ds, %d attempts", s.VerifySeconds(), s.AIAttempts())
+	if s.VerifyWindow() != DefaultVerifySeconds || s.BuildAttempts() != DefaultAttempts {
+		t.Errorf("defaults not applied: %ds, %d attempts", s.VerifyWindow(), s.BuildAttempts())
 	}
-	s.AI.Verify = new(false)
+	s.Verify = new(false)
 	if s.VerifyStartup() {
 		t.Error("an explicit verify: false was ignored")
 	}

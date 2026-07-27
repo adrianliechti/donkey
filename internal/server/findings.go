@@ -8,14 +8,9 @@ import (
 	"github.com/adrianliechti/donkey/internal/config"
 )
 
-// Finding is one thing donkey noticed about an app: a decision it made, a
-// fact worth knowing, or something that will break the app once it runs.
-//
-// Findings exist so that the three surfaces — the deploy stream, the CLI and
-// the console's review screen — say the same thing about the same app. The
-// text is written once, here; a caller that can do better than a sentence
-// (the console renders storage as a checkbox, not as prose) recognizes the
-// finding by its Code and renders it its own way.
+// Finding is one thing donkey noticed about an app. They exist so the deploy
+// stream, the CLI and the console say the same thing: the text is written once
+// here, and a caller that can do better than a sentence keys off Code.
 type Finding struct {
 	Level string `json:"level"`
 	// Code names the finding for callers that render it themselves. It is

@@ -36,9 +36,7 @@ type Config struct {
 	// donkey.yaml names one — matches the cluster's nodes.
 	DefaultPlatform string
 
-	// Build is how this installation builds apps: the builder an app with no
-	// Dockerfile gets, the images that builder runs, and the environment
-	// every build is handed.
+	// Build is the builder's settings and the environment every build gets.
 	Build config.BuildSettings
 
 	// SessionKey is the installation's sealing key — the server verifies
@@ -69,13 +67,6 @@ func FromEnv() (*Config, error) {
 		OIDCClientSecret: os.Getenv("DONKEY_OIDC_CLIENT_SECRET"),
 		DefaultPlatform:  envOr("DONKEY_DEFAULT_PLATFORM", "linux/amd64"),
 		AIModel:          envOr("DONKEY_AI_MODEL", config.DefaultAIModel),
-		Build: config.BuildSettings{
-			Builder: config.BuildStrategy(os.Getenv("DONKEY_BUILD_BUILDER")),
-			Railpack: config.InstallRailpack{
-				BuilderImage: os.Getenv("DONKEY_BUILD_RAILPACK_BUILDER_IMAGE"),
-				RuntimeImage: os.Getenv("DONKEY_BUILD_RAILPACK_RUNTIME_IMAGE"),
-			},
-		},
 	}
 	// The build environment is a map, so it travels as JSON — the same way
 	// DONKEY_ADMINS does.
@@ -84,17 +75,10 @@ func FromEnv() (*Config, error) {
 			return nil, fmt.Errorf("DONKEY_BUILD_ENV is not a JSON object of build variables: %w", err)
 		}
 	}
-	switch c.Build.Builder {
-	case "", config.BuildRailpack, config.BuildAI:
-	default:
-		return nil, fmt.Errorf("DONKEY_BUILD_BUILDER must be railpack or ai, not %q", c.Build.Builder)
-	}
-	c.Build.AI = config.InstallAIBuilder{
-		VerifySeconds: envInt("DONKEY_BUILD_AI_VERIFY_SECONDS"),
-		Attempts:      envInt("DONKEY_BUILD_AI_ATTEMPTS"),
-	}
-	if v := os.Getenv("DONKEY_BUILD_AI_VERIFY"); v != "" {
-		c.Build.AI.Verify = new(v == "true")
+	c.Build.VerifySeconds = envInt("DONKEY_BUILDER_VERIFY_SECONDS")
+	c.Build.Attempts = envInt("DONKEY_BUILDER_ATTEMPTS")
+	if v := os.Getenv("DONKEY_BUILDER_VERIFY"); v != "" {
+		c.Build.Verify = new(v == "true")
 	}
 	key, err := hex.DecodeString(os.Getenv("DONKEY_SESSION_KEY"))
 	if err != nil || len(key) != 32 {

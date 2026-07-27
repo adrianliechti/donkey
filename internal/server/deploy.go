@@ -88,10 +88,8 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 	s.deploying.Add(1)
 	defer s.deploying.Done()
 
-	// A reviewed plan carries the answers somebody already gave: the config
-	// they confirmed, and the assistant's reading that produced it. Asking
-	// the model the same question twice would risk a second, different answer
-	// to a screen the user already said yes to.
+	// A reviewed plan carries answers somebody already gave. Asking the model
+	// again risks a different answer to a screen the user said yes to.
 	var planned *storedPlan
 	if id := r.URL.Query().Get("plan"); id != "" {
 		p, ok := s.plans.get(id)
@@ -202,10 +200,8 @@ func appFromParams(name, portStr string) (*config.AppConfig, error) {
 	return app, nil
 }
 
-// analysisDeadline bounds how long a deploy waits for the assistant after the
-// build has finished. It must outlast the assistant's own budget (a 2-minute
-// request timeout with one retry) — a shorter deadline would fail deploys
-// whose model call is still legitimately in flight.
+// Must outlast the assistant's own budget (2-minute timeout, one retry), or
+// deploys fail while their model call is still legitimately in flight.
 const analysisDeadline = 5 * time.Minute
 
 type deployOpts struct {
@@ -223,10 +219,9 @@ type deployOpts struct {
 }
 
 func (s *Server) deploy(ctx context.Context, out *lineStreamer, dir string, app *config.AppConfig, opts deployOpts) DeployResult {
-	// The space decides the namespace and the address, so it is settled
-	// before anything else happens. Validation failures return plainly —
-	// running the AI diagnosis over a self-explanatory message would only
-	// delay the answer.
+	// The space decides namespace and address, so it is settled first.
+	// Validation failures return plainly — diagnosing a self-explanatory
+	// message only delays the answer.
 	space := opts.Space
 	if space == "" {
 		space = app.Space
@@ -278,10 +273,9 @@ func (s *Server) deploy(ctx context.Context, out *lineStreamer, dir string, app 
 	if imageRef == "" {
 		imageRef = build.ImageTag(s.cfg.Registry.URL, app.Name, opts.SHA, time.Now(), s.cfg.Registry.Immutable)
 	}
-	// A caller-supplied image bypasses the build pipeline entirely, so it has
-	// to come from the registry donkey builds into — otherwise any image on
-	// the internet could be deployed under an app's name (and would inherit
-	// that app's env and addon secrets).
+	// A caller-supplied image bypasses the build, so it must come from
+	// donkey's own registry — otherwise any image on the internet could run
+	// under an app's name and inherit its env and addon secrets.
 	if opts.Tag != "" && !build.SameRegistry(s.cfg.Registry.URL, opts.Tag) {
 		return fail(fmt.Errorf("--tag must point at %s (donkey only deploys images it built)", s.cfg.Registry.Host()))
 	}
@@ -302,12 +296,10 @@ func (s *Server) deploy(ctx context.Context, out *lineStreamer, dir string, app 
 	}
 
 	out.Line("Looking at your app…")
-	det, detErr := detect.Detect(dir, app, s.cfg.Build)
+	det, detErr := detect.Detect(dir, app)
 
-	// The assistant reads every deploy: it confirms the detection and, more
-	// usefully, finds the folders whose contents have to survive a restart.
-	// When detection worked it runs alongside the build — a model call should
-	// not sit between the user and their deploy.
+	// Runs alongside the build: a model call should not sit between the user
+	// and their deploy.
 	type analysisResult struct {
 		analysis *ai.Analysis
 		err      error
@@ -328,20 +320,10 @@ func (s *Server) deploy(ctx context.Context, out *lineStreamer, dir string, app 
 		go run()
 	}
 
+	// The only way detection fails is a donkey.yaml naming a Dockerfile that
+	// is not there — every other app gets one written for it.
 	if detErr != nil {
-		res := <-analysisReady
-		analysisReady <- res // the merge step still wants it
-		if res.err != nil {
-			return fail(fmt.Errorf("%w\n\n%s", detErr, res.err))
-		}
-		out.Line("Donkey couldn't recognize this app by itself — the assistant thinks it is %s.", res.analysis.AppType)
-		if err := rescueDetection(dir, res.analysis); err != nil {
-			return fail(fmt.Errorf("%w\n\nthe assistant couldn't propose a way to build it either", detErr))
-		}
-		var err error
-		if det, err = detect.Detect(dir, app, s.cfg.Build); err != nil {
-			return fail(err)
-		}
+		return fail(detErr)
 	}
 	out.Line("✓ %s will be built with %s", app.Name, det.Summary)
 
@@ -405,15 +387,14 @@ func (s *Server) deploy(ctx context.Context, out *lineStreamer, dir string, app 
 		BuildEnv:       app.Build.Env,
 		Strategy:       det.Strategy,
 		DockerfilePath: det.DockerfilePath,
-		RailpackPlan:   det.Railpack,
 		Progress:       build.ProgressSink{LogPath: logFile.Name(), Writer: out},
 	}
 	var result *build.Result
 	if det.Strategy == config.BuildAI {
 		// donkey's own builder writes the Dockerfile, and gets more than one
 		// go at it — every failure is something the assistant can be shown.
-		req.Verify = s.aiVerifySpec(app)
-		outcome, aerr := s.buildWithAI(ctx, out, builder, dir, app, req)
+		req.Verify = s.verifySpec(app)
+		outcome, aerr := s.buildGenerated(ctx, out, builder, dir, app, req)
 		if aerr == nil {
 			result, err = outcome.Result, nil
 			if outcome.Attempts > 1 {
@@ -473,20 +454,16 @@ func (s *Server) renderDryRun(app *config.AppConfig, imageRef string) DeployResu
 	return res
 }
 
-// deployDecisions is what deploy-time analysis (or donkey.yaml) settled for
-// an app — persisted as a Deployment annotation so a no-build deploy keeps
-// the same shape instead of quietly unmounting the disk the last real deploy
-// set up.
+// deployDecisions persists what analysis settled, so a no-build deploy keeps
+// the same shape instead of quietly unmounting the last deploy's disk.
 type deployDecisions struct {
 	Storage         *config.StorageConfig `json:"storage,omitempty"`
 	HealthcheckPath string                `json:"healthcheckPath,omitempty"`
 }
 
-// consoleChoices are the network settings made in the admin console. They
-// live in their own annotation (donkey.dev/console, written by the console
-// endpoints only, via patch): a deploy re-renders the decisions annotation
-// from donkey.yaml, while a console choice must survive deploys — and it
-// does, because server-side apply only owns the keys it writes.
+// consoleChoices live in their own annotation, written by the console
+// endpoints only: a deploy re-renders decisions from donkey.yaml, while a
+// console choice survives because server-side apply owns only what it writes.
 type consoleChoices struct {
 	// Exposure is "public", "protected" or "internal"; empty means the
 	// donkeyfile (or the default) decides.
@@ -504,12 +481,11 @@ func (s *Server) readConsoleChoices(ctx context.Context, space, app string) cons
 	return c
 }
 
-// adoptConsoleChoices fills the network settings this donkey.yaml leaves
-// open from what the console configured — the file always wins where it
-// speaks (an omitted bool is indistinguishable from an explicit false, so
-// "speaks" means: sets public/internal/domain/access to something). Runs on
-// every deploy; adoption that would make the config invalid is dropped
-// again, and only the adopted values, never the user's own.
+// adoptConsoleChoices fills what donkey.yaml leaves open from the console's
+// settings. The file wins where it speaks — an omitted bool is
+// indistinguishable from an explicit false, so "speaks" means it sets
+// public/internal/domain/access. Adoption that would invalidate the config is
+// dropped, and only ever the adopted values.
 func (s *Server) adoptConsoleChoices(ctx context.Context, space string, app *config.AppConfig) []string {
 	c := s.readConsoleChoices(ctx, space, app.Name)
 	var lines []string
@@ -550,11 +526,9 @@ func (s *Server) adoptConsoleChoices(ctx context.Context, space string, app *con
 	return lines
 }
 
-// adoptStoredDecisions fills what this donkey.yaml leaves open from the
-// decisions recorded on the running Deployment, and says what it kept.
-// Adoption never makes the config invalid — an adopted value that no longer
-// fits (say, replicas went up since the disk was found) is dropped again,
-// and only the adopted values, never the user's own.
+// adoptStoredDecisions fills what donkey.yaml leaves open from the running
+// Deployment's record, and says what it kept. An adopted value that no longer
+// fits is dropped again, and only ever the adopted values.
 func (s *Server) adoptStoredDecisions(ctx context.Context, space string, app *config.AppConfig) []string {
 	raw, err := s.rt.AppMeta(ctx, space, app.Name, runtime.MetaDecisions)
 	if err != nil || raw == "" {
@@ -634,14 +608,9 @@ func decisionsJSON(app *config.AppConfig) string {
 	return string(b)
 }
 
-// diagnoseWith runs the AI failure analysis server-side (for build and
-// rollout failures — the stages with real evidence) and attaches it to the
-// result. Proposals are never applied here: the server computes the diff, and
-// the user decides.
-//
-// root is the uploaded copy of the app, which the assistant reads to ground
-// its answer in the actual code. It is a temp dir the server owns, never the
-// user's working tree.
+// diagnoseWith attaches AI failure analysis to the result. Proposals are
+// never applied: the server computes the diff, the user decides. root is the
+// server's own temp copy of the app, never the user's working tree.
 func (s *Server) diagnoseWith(ctx context.Context, res *DeployResult, root, space, app, stage, logs string, events []string) {
 	dctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
@@ -678,13 +647,9 @@ func withDiffs(dir string, actions []ai.FixAction) []ai.FixAction {
 			out = append(out, a)
 			continue
 		}
-		// os.Root already makes an escaping path unreadable and unwritable,
-		// so this is not the safety check — it is the honesty one. Without
-		// it a path like "a/../../x" fails the read with "not found" (it
-		// stops at the missing "a/" before it ever escapes), and would then
-		// be shown as a tidy new-file diff for a change that can never be
-		// applied. fs.ValidPath is the standard library's own definition of
-		// a legal path inside a tree, so there is no bespoke rule here.
+		// Not the safety check — os.Root already blocks escapes — but the
+		// honesty one: "a/../../x" would otherwise fail as "not found" and be
+		// shown as a tidy new-file diff for a change that can never apply.
 		rel := path.Clean(filepath.ToSlash(strings.TrimSpace(a.Path)))
 		if !fs.ValidPath(rel) || rel == "." {
 			continue
@@ -708,12 +673,10 @@ func withDiffs(dir string, actions []ai.FixAction) []ai.FixAction {
 	return out
 }
 
-// knownSecrets collects the values donkey itself handed to an app: env vars,
-// addon bindings, and the control plane's own credentials. Failure evidence
-// is full of them — an app that cannot reach its database prints the
-// connection string it tried — so the assistant gets them scrubbed out.
-// Best effort: a secret donkey cannot read is one it cannot redact, but that
-// must never cost the user their diagnosis.
+// knownSecrets is what donkey handed the app — env, addon bindings, its own
+// credentials — so the assistant sees them scrubbed. Best effort: a secret
+// donkey cannot read is one it cannot redact, and that must not cost the
+// user their diagnosis.
 func (s *Server) knownSecrets(ctx context.Context, space, app string) []string {
 	var out []string
 	add := func(m map[string]string) {

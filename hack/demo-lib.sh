@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Settings and helpers shared by the demo phases (cluster, setup, app).
 # Sourced, never executed.
 
@@ -21,13 +22,15 @@ case "$(uname -m)" in
   *)             PLATFORM="linux/amd64" ;;
 esac
 
-# donkey reads every app with its assistant, so the demo needs a model: an
-# OpenAI-compatible proxy on host port 8080 (override with OPENAI_BASE_URL /
-# OPENAI_API_KEY). No real model to hand? `task fake-ai` answers every
-# question with "no findings", which is enough for the demos and the e2e
-# suite — donkey then keeps whatever it detected by itself.
+# donkey reads every app with its assistant, and the demos need a real one:
+# donkey's own builder has the model WRITE each app's Dockerfile, so there is
+# nothing a stub could stand in for. Point OPENAI_BASE_URL / OPENAI_API_KEY at
+# a model, or run an OpenAI-compatible proxy on host port 8080.
 AI_BASE="${OPENAI_BASE_URL:-http://host.docker.internal:8080/v1}"
 AI_KEY="${OPENAI_API_KEY:-local}"
+# Empty means "whatever the install defaults to". DONKEY_MODEL is the same
+# variable the live assistant tests read, so one export covers both.
+AI_MODEL="${DONKEY_MODEL:-}"
 
 # Colour, but only when someone is actually looking at a terminal. Piped into
 # a file or a CI log, escape codes are noise that also breaks grep — and these
@@ -48,11 +51,11 @@ require_ai() {
 No OpenAI-compatible endpoint on host port 8080.
 
 donkey reads every app with its assistant (ports, health routes, data folders),
-so the demo cannot deploy without one. Three ways out:
+and with build.builder: ai the assistant writes the app's Dockerfile — so the
+demo cannot deploy without a real model. Two ways out:
 
-  task fake-ai                                   # deterministic stand-in, no key
   OPENAI_BASE_URL=https://api.openai.com/v1 OPENAI_API_KEY=sk-… task demo
-  … or start your own proxy on port 8080
+  … or run your own OpenAI-compatible proxy on port 8080
 MSG
     exit 1
   fi

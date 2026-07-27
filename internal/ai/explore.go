@@ -16,32 +16,33 @@ import (
 	"github.com/openai/openai-go/v3/shared"
 )
 
-// Investigating a failure is a search, not a lookup: the trace names a file,
-// that file imports another, and the setting that actually broke the deploy
-// is a third one nobody mentioned. Handing over a fixed set of files guessed
-// up front gets the common case and misses exactly the cases worth having an
-// assistant for.
+// Investigating an app is a search, not a lookup: the trace names one file,
+// that file imports another, and the setting that broke the deploy is a third
+// nobody mentioned. So the assistant reads the app itself, within hard limits:
 //
-// So the assistant can read the app for itself, within hard limits:
-//
-//   - three tools, all read-only. There is no shell, no write, no network.
-//     The worst a confused model can do is read a file it did not need.
-//   - containment is the operating system's job, not this file's. Every path
-//     goes through an *os.Root opened on the upload, which refuses ".." and
-//     symlinks that leave the tree at the syscall level — no string check to
-//     get wrong, and no window between checking a path and using it. The
-//     upload is a copy in a temp dir, never the user's working tree.
-//   - the same exclusions as everywhere else (deniedFile, skipDirs), so .env
-//     files and keys stay invisible.
-//   - a turn budget. Exploration ends, then a separate call asks for the
-//     structured answer, so tool use and strict JSON never mix.
+//   - read-only tools. No shell, no write, no network.
+//   - containment is the OS's job: every path goes through an *os.Root on the
+//     upload, which refuses ".." and escaping symlinks at the syscall level —
+//     no string check to get wrong, no check-then-use window. The upload is a
+//     temp copy, never the user's working tree.
+//   - the same deniedFile/skipDirs exclusions as everywhere else.
+//   - a turn budget, and a separate call for the structured answer, so tool
+//     use and strict JSON never mix.
 const (
-	maxExploreTurns   = 6
-	maxToolOutput     = 8 * 1024
-	maxListEntries    = 200
-	maxSearchMatches  = 40
-	maxReadFileLines  = 400
-	maxSearchFileSize = 512 * 1024
+	// maxExploreTurns bounds a diagnosis, which starts from a stack trace and
+	// only has to follow it.
+	maxExploreTurns = 6
+	// maxBuildExploreTurns bounds writing a Dockerfile, which starts from
+	// nothing and has to establish the toolchain, the install, the build and
+	// the start command. It is the difference between a model that reads the
+	// vite config and one that guesses the output directory.
+	maxBuildExploreTurns = 14
+	maxToolOutput        = 12 * 1024
+	maxListEntries       = 300
+	maxSearchMatches     = 50
+	maxFindMatches       = 100
+	maxReadFileLines     = 500
+	maxSearchFileSize    = 512 * 1024
 )
 
 // explorer answers tool calls against one folder.
@@ -81,26 +82,40 @@ func (e *explorer) tools() []responses.ToolUnionParam {
 	str := func(desc string) map[string]any {
 		return map[string]any{"type": "string", "description": desc}
 	}
-	object := func(prop string, desc string) map[string]any {
+	// Strict function schemas require every property to be listed in
+	// `required`, so optional arguments are declared nullable instead and an
+	// empty value means "not given".
+	schema := func(props map[string]any, required []string) map[string]any {
 		return map[string]any{
 			"type":                 "object",
-			"properties":           map[string]any{prop: str(desc)},
-			"required":             []string{prop},
+			"properties":           props,
+			"required":             required,
 			"additionalProperties": false,
 		}
 	}
 	tools := []responses.ToolUnionParam{
-		responses.ToolParamOfFunction("list_files",
-			object("path", "Folder to list, relative to the app root. Empty for the root."), true),
-		responses.ToolParamOfFunction("read_file",
-			object("path", "File to read, relative to the app root."), true),
-		responses.ToolParamOfFunction("search_files",
-			object("query", "Literal text to look for (not a regular expression)."), true),
+		responses.ToolParamOfFunction("list_files", schema(map[string]any{
+			"path": str("Folder to list, relative to the app root. Empty string for the root."),
+		}, []string{"path"}), true),
+
+		responses.ToolParamOfFunction("read_file", schema(map[string]any{
+			"path": str("File to read, relative to the app root."),
+		}, []string{"path"}), true),
+
+		responses.ToolParamOfFunction("search_files", schema(map[string]any{
+			"query": str("Literal text to look for (not a regular expression)."),
+			"path":  str("Optional subfolder to search in. Empty string searches the whole app."),
+		}, []string{"query", "path"}), true),
+
+		responses.ToolParamOfFunction("find_files", schema(map[string]any{
+			"pattern": str("Filename glob, matched against the file name only: '*.csproj', 'vite.config.*', 'Dockerfile*', '*.tsx'."),
+		}, []string{"pattern"}), true),
 	}
 	for i, desc := range []string{
 		"List files in the app, optionally under a subfolder. Start here when you don't know the layout.",
-		"Read one file from the app, with line numbers. Read a file before proposing any change to it.",
-		"Find a literal string across the app's files. Use it to locate a setting, a port, a route or a symbol when you don't know which file holds it.",
+		"Read one file from the app, with line numbers.",
+		"Find a literal string across the app's files. Use it to locate a listen port, a route, a setting or a symbol when you don't know which file holds it.",
+		"Find files by name pattern anywhere in the app, shallowest first. Use it to locate a framework config, a project file or an entry point without listing the whole tree.",
 	} {
 		tools[i].OfFunction.Description = openai.String(desc)
 	}
@@ -112,8 +127,9 @@ func (e *explorer) tools() []responses.ToolUnionParam {
 // hard failure would end an investigation over a wrong guess.
 func (e *explorer) call(name, args string) string {
 	var a struct {
-		Path  string `json:"path"`
-		Query string `json:"query"`
+		Path    string `json:"path"`
+		Query   string `json:"query"`
+		Pattern string `json:"pattern"`
 	}
 	if args != "" {
 		if err := json.Unmarshal([]byte(args), &a); err != nil {
@@ -126,10 +142,71 @@ func (e *explorer) call(name, args string) string {
 	case "read_file":
 		return e.read(a.Path)
 	case "search_files":
-		return e.search(a.Query)
+		return e.search(a.Query, a.Path)
+	case "find_files":
+		return e.find(a.Pattern)
 	default:
 		return "There is no tool called " + name + "."
 	}
+}
+
+// find locates files by name pattern. It is the tool that makes exploration
+// cheap on a repository nobody has seen: "where is the vite config" is one
+// call instead of a walk the model has to read.
+func (e *explorer) find(pattern string) string {
+	pattern = strings.TrimSpace(pattern)
+	if pattern == "" {
+		return "Give a filename pattern, for example '*.csproj'."
+	}
+	// A pattern with a slash is a path pattern; match it against the whole
+	// relative path rather than the base name.
+	full := strings.Contains(pattern, "/")
+	if _, err := path.Match(pattern, "probe"); err != nil {
+		return "That is not a valid pattern: " + err.Error()
+	}
+	var hits []string
+	fs.WalkDir(e.fsys, ".", func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			if skipDirs[d.Name()] {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if len(hits) >= maxFindMatches {
+			return fs.SkipAll
+		}
+		if deniedFile(d.Name()) {
+			return nil
+		}
+		target := d.Name()
+		if full {
+			target = p
+		}
+		if ok, _ := path.Match(pattern, target); ok {
+			hits = append(hits, p)
+		}
+		return nil
+	})
+	if len(hits) == 0 {
+		return "No file matches " + pattern + "."
+	}
+	// Shallowest first: a manifest at the root almost always outranks the same
+	// name buried in a fixture or an example folder.
+	sort.SliceStable(hits, func(i, j int) bool {
+		di, dj := strings.Count(hits[i], "/"), strings.Count(hits[j], "/")
+		if di != dj {
+			return di < dj
+		}
+		return hits[i] < hits[j]
+	})
+	out := strings.Join(hits, "\n")
+	if len(hits) >= maxFindMatches {
+		out += "\n…(more matches not shown — narrow the pattern)"
+	}
+	return out
 }
 
 func (e *explorer) list(rel string) string {
@@ -208,12 +285,21 @@ func (e *explorer) read(rel string) string {
 	return sb.String()
 }
 
-func (e *explorer) search(query string) string {
+// search finds a literal string, optionally under one subfolder. Scoping
+// matters on a monorepo: the same import appears in a dozen packages and only
+// the one being built is the answer.
+func (e *explorer) search(query, scope string) string {
 	if query == "" {
 		return "Give something to search for."
 	}
+	root := fsPath(scope)
+	if info, err := e.root.Stat(root); err != nil || !info.IsDir() {
+		// A scope that is not a folder is a wrong guess, not a reason to give
+		// up: search the whole app and say so.
+		root = "."
+	}
 	var hits []string
-	fs.WalkDir(e.fsys, ".", func(p string, d fs.DirEntry, err error) error {
+	fs.WalkDir(e.fsys, root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil
 		}
@@ -255,14 +341,18 @@ func (e *explorer) search(query string) string {
 	if len(hits) == 0 {
 		return "No file contains that."
 	}
-	return strings.Join(hits, "\n")
+	out := strings.Join(hits, "\n")
+	if len(hits) >= maxSearchMatches {
+		out += "\n…(more matches not shown — narrow the search or scope it to a folder)"
+	}
+	return out
 }
 
 // investigate lets the model read the app before it answers. It returns the
 // transcript of what was looked at, which then goes into the call that asks
 // for the structured proposal — so the conclusion is drawn from files that
 // were actually read, and donkey can show which ones those were.
-func (o *openAI) investigate(ctx context.Context, root, instructions, task string) []responses.ResponseInputItemUnionParam {
+func (o *openAI) investigate(ctx context.Context, root, instructions, task string, maxTurns int) []responses.ResponseInputItemUnionParam {
 	input := []responses.ResponseInputItemUnionParam{
 		responses.ResponseInputItemParamOfMessage(task, responses.EasyInputMessageRoleUser),
 	}
@@ -273,7 +363,7 @@ func (o *openAI) investigate(ctx context.Context, root, instructions, task strin
 	defer ex.Close()
 	tools := ex.tools()
 
-	for turn := 0; turn < maxExploreTurns; turn++ {
+	for turn := 0; turn < maxTurns; turn++ {
 		resp, rerr := o.client.Responses.New(ctx, responses.ResponseNewParams{
 			Model:        shared.ResponsesModel(o.model),
 			Instructions: openai.String(instructions),
@@ -317,4 +407,30 @@ func (o *openAI) investigate(ctx context.Context, root, instructions, task strin
 		}
 	}
 	return input
+}
+
+// exploredFiles lists the files an investigation actually opened, so donkey
+// can say what it looked at. A build log that names the four files behind a
+// Dockerfile is reviewable; one that just presents the Dockerfile is not.
+func exploredFiles(history []responses.ResponseInputItemUnionParam) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, item := range history {
+		fc := item.OfFunctionCall
+		if fc == nil || fc.Name != "read_file" {
+			continue
+		}
+		var a struct {
+			Path string `json:"path"`
+		}
+		if json.Unmarshal([]byte(fc.Arguments), &a) != nil || a.Path == "" {
+			continue
+		}
+		p := fsPath(a.Path)
+		if !seen[p] {
+			seen[p] = true
+			out = append(out, p)
+		}
+	}
+	return out
 }

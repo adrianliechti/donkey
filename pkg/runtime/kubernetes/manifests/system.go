@@ -95,9 +95,8 @@ type SystemInput struct {
 	// DefaultPlatform is the build platform of the cluster's nodes.
 	DefaultPlatform string
 
-	// Build is how this installation builds apps: which builder an app with
-	// no Dockerfile gets, the mirrors every build pulls through, and the
-	// proxy donkey's own processes use.
+	// Build is the builder's settings, the mirrors every build pulls through,
+	// and the proxy donkey's own processes use.
 	Build config.InstallBuild
 
 	BuildkitImage string
@@ -114,17 +113,14 @@ const (
 	serverPort   = 8088
 	buildkitPort = 1234
 
-	// systemRunAsUser is the unprivileged identity donkey's own pods run as.
-	// The image says nothing about a user (see hack/Dockerfile.server) —
-	// this is where that is decided, because only the runtime can enforce
-	// it. Everything the server writes goes to /tmp, so any uid works.
+	// The image names no user (hack/Dockerfile.server) because only the
+	// runtime can enforce one. Everything the server writes goes to /tmp, so
+	// any uid works.
 	systemRunAsUser = int64(1000)
 
-	// systemPriorityClass keeps the control plane ahead of the apps it runs:
-	// when a node runs short, the kubelet evicts the lowest priority first,
-	// and donkey-server going down takes every deploy and log stream with it.
-	// Kubernetes ships this class in every cluster (and allows it outside
-	// kube-system since 1.17), so donkey installs no PriorityClass of its own.
+	// Keeps the control plane ahead of the apps it runs — donkey-server going
+	// down takes every deploy and log stream with it. Shipped in every
+	// cluster, so donkey installs no PriorityClass of its own.
 	systemPriorityClass = "system-cluster-critical"
 )
 
@@ -164,11 +160,9 @@ func SystemObjects(in SystemInput) []runtime.Object {
 	return append(objs, donkeyGatewayObjects(in)...)
 }
 
-// configHash changes whenever the given configuration values change, so pods
-// that read them only at startup get rolled on re-install. Each deployment
-// hashes just what it consumes: rotating the session key must not kill in-flight
-// builds, and a new registry host must roll buildkitd (which reads its config
-// file once, at startup).
+// configHash rolls pods that read config only at startup. Each deployment
+// hashes just what it consumes: rotating the session key must not kill
+// in-flight builds, and a new registry host must roll buildkitd.
 func configHash(values ...string) string {
 	h := sha256.New()
 	for _, v := range values {
@@ -210,10 +204,8 @@ func systemPodSecurityContext() *corev1.PodSecurityContext {
 	}
 }
 
-// systemSecurityContext is what makes that uid mean something: no way to
-// gain more than it started with. donkey-server holds cluster-admin, so a
-// foothold inside it is the worst one donkey has to offer. The uid itself
-// is set once, on the pod, so it covers every container in it.
+// No way to gain more than it started with. donkey-server holds
+// cluster-admin, so a foothold inside it is the worst donkey has to offer.
 func systemSecurityContext() *corev1.SecurityContext {
 	return &corev1.SecurityContext{
 		RunAsNonRoot:             new(true),
@@ -272,11 +264,9 @@ func systemSecret(in SystemInput) *corev1.Secret {
 			"oidc-client-id":     in.OIDCClientID,
 			"oidc-client-secret": in.OIDCClientSecret,
 			"session-key":        in.SessionKey,
-			// The build environment and the proxy routinely carry the
-			// credentials of a package registry or the proxy itself
-			// ("https://ci:token@jfrog.corp/..."), so they belong here with
-			// the other secrets rather than in a Deployment anyone with read
-			// access can print.
+			// Both routinely carry credentials ("https://ci:token@jfrog.corp"),
+			// so they belong with the secrets rather than in a Deployment
+			// anyone with read access can print.
 			"build-env":   buildEnvJSON(in.Build),
 			"http-proxy":  in.Build.Proxy.HTTP,
 			"https-proxy": in.Build.Proxy.HTTPS,
@@ -296,18 +286,14 @@ const (
 	// gets a volume of its own, bounded by buildkitCacheSize.
 	buildkitCachePath = "/var/lib/buildkit"
 	buildkitCacheSize = "10Gi"
-	// buildkitCacheKeep is what the engine's collector never reclaims;
-	// above buildkitCacheMax it collects. Both stay below the volume's size:
-	// collection is asynchronous, so the cache must be able to overshoot its
-	// target without the kubelet evicting the pod that holds it.
+	// Both stay below the volume size: collection is asynchronous, so the
+	// cache must overshoot without the kubelet evicting the pod holding it.
 	buildkitCacheKeep = "5GB"
 	buildkitCacheMax  = "8GB"
 )
 
-// BuildkitConfig is everything donkey expresses in the build engine's config
-// file. Both runtimes render it from here: an installation behind a mirror
-// must reach the same registries whether its apps run on Kubernetes or on a
-// Docker engine.
+// BuildkitConfig is the build engine's config file. Both runtimes render it
+// from here, so a mirrored installation behaves the same on either.
 type BuildkitConfig struct {
 	// RegistryHost is donkey's own registry (host[:port], no path).
 	RegistryHost string
@@ -320,22 +306,18 @@ type BuildkitConfig struct {
 	Mirrors map[string]string
 }
 
-// registrySection is one [registry."host"] table. Hosts are collected before
-// anything is rendered because a host may pick up settings from two places —
-// donkey's registry and a mirror can be the same JFrog — and TOML rejects a
-// table declared twice.
+// registrySection is one [registry."host"] table. Hosts are collected first
+// because donkey's registry and a mirror can be the same JFrog, and TOML
+// rejects a table declared twice.
 type registrySection struct {
 	mirrors   []string
 	caFile    string
 	plainHTTP bool
 }
 
-// BuildkitTOML renders the build engine's config file. Every installation
-// gets one, for the cache bound alone: with no garbage collection the build
-// cache grows until the node's disk is full. A registry whose certificate is
-// signed by a private CA is named here too — otherwise every push would fail
-// verification — and so is every mirror, which is what makes builds work on a
-// network whose only egress is one.
+// BuildkitTOML renders the config file. Every installation gets one for the
+// cache bound alone: without garbage collection the cache grows until the
+// node's disk is full. Private-CA registries and mirrors are named here too.
 func BuildkitTOML(c BuildkitConfig) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "[worker.oci]\n  gc = true\n  reservedSpace = %q\n  maxUsedSpace = %q\n",
@@ -357,10 +339,9 @@ func BuildkitTOML(c BuildkitConfig) string {
 	}
 	for upstream, mirror := range c.Mirrors {
 		host, plainHTTP := mirrorHost(mirror)
-		// The key is a registry host and nothing else: BuildKit looks it up
-		// by bare hostname, so a key written as a URL would match nothing and
-		// every pull would quietly go to the real registry — the one thing a
-		// mirrored installation has no route to.
+		// A bare hostname, never a URL: BuildKit looks it up by host, so a URL
+		// key matches nothing and every pull quietly goes to the real
+		// registry — the one thing a mirrored installation cannot reach.
 		upstream, _ = mirrorHost(upstream)
 		upstream = mirrorHostOnly(upstream)
 		if upstream == "" || host == "" {
@@ -402,11 +383,9 @@ func BuildkitTOML(c BuildkitConfig) string {
 	return b.String()
 }
 
-// mirrorHost turns a configured mirror into what BuildKit's `mirrors` list
-// wants: a host, optionally followed by a path prefix — never a URL. A
-// scheme is accepted (an admin who writes one is not wrong, and JFrog's own
-// UI hands out URLs) and answers the other question instead, whether the
-// mirror is reached over plain http.
+// mirrorHost yields what BuildKit's `mirrors` list wants: a host with an
+// optional path prefix, never a URL. A scheme is accepted (JFrog's UI hands
+// out URLs) and answers a different question — whether to use plain http.
 func mirrorHost(mirror string) (host string, plainHTTP bool) {
 	rest := strings.TrimSpace(mirror)
 	if s, after, ok := strings.Cut(rest, "://"); ok {
@@ -432,10 +411,8 @@ func registryHostOf(registryURL string) string {
 
 func buildkitTOML(in SystemInput) string {
 	host, _, _ := strings.Cut(in.RegistryURL, "/")
-	// A registry declared insecure is named as such here, not only on the
-	// export: the buildpacks builder makes the engine *pull* from donkey's
-	// own registry too (a mirrored builder image lives there), and a pull
-	// carries no per-solve attribute to fall back on.
+	// Declared here and not only on the export: the engine also *pulls* from
+	// donkey's own registry, and a pull carries no per-solve attribute.
 	c := BuildkitConfig{
 		RegistryHost:      host,
 		RegistryPlainHTTP: in.RegistryInsecure,
@@ -574,12 +551,9 @@ func buildEnv(b config.InstallBuild) []corev1.EnvVar {
 	// Only what was configured: an installation that says nothing about
 	// builds renders the deployment it always did.
 	for _, e := range []corev1.EnvVar{
-		{Name: "DONKEY_BUILD_BUILDER", Value: string(b.Builder)},
-		{Name: "DONKEY_BUILD_RAILPACK_BUILDER_IMAGE", Value: b.Railpack.BuilderImage},
-		{Name: "DONKEY_BUILD_RAILPACK_RUNTIME_IMAGE", Value: b.Railpack.RuntimeImage},
-		{Name: "DONKEY_BUILD_AI_VERIFY", Value: aiVerifyValue(b.AI)},
-		{Name: "DONKEY_BUILD_AI_VERIFY_SECONDS", Value: positiveOrEmpty(b.AI.VerifySeconds)},
-		{Name: "DONKEY_BUILD_AI_ATTEMPTS", Value: positiveOrEmpty(b.AI.Attempts)},
+		{Name: "DONKEY_BUILDER_VERIFY", Value: verifyValue(b.BuildSettings)},
+		{Name: "DONKEY_BUILDER_VERIFY_SECONDS", Value: positiveOrEmpty(b.VerifySeconds)},
+		{Name: "DONKEY_BUILDER_ATTEMPTS", Value: positiveOrEmpty(b.Attempts)},
 	} {
 		if e.Value != "" {
 			env = append(env, e)
@@ -593,14 +567,14 @@ func buildEnv(b config.InstallBuild) []corev1.EnvVar {
 	return env
 }
 
-// aiVerifyValue renders the tri-state startup-verification setting: empty
+// verifyValue renders the tri-state startup-verification setting: empty
 // leaves the server on its own default (on), so only an explicit choice
 // travels.
-func aiVerifyValue(ai config.InstallAIBuilder) string {
-	if ai.Verify == nil {
+func verifyValue(b config.BuildSettings) string {
+	if b.Verify == nil {
 		return ""
 	}
-	return strconv.FormatBool(*ai.Verify)
+	return strconv.FormatBool(*b.Verify)
 }
 
 // positiveOrEmpty renders an optional numeric setting; zero means "unset",
@@ -645,8 +619,8 @@ func secretEnvVar(name, key string) corev1.EnvVar {
 // handled where it belongs, on the client (see kubernetes.NewInCluster).
 const inClusterNoProxy = "localhost,127.0.0.1,.svc,.svc.cluster.local,.cluster.local"
 
-// proxyEnv is the forward proxy in the spelling Go's HTTP client, curl, git
-// and mise all already read — donkey configures no tool for it individually.
+// proxyEnv is the forward proxy in the spelling Go's HTTP client, curl and
+// git already read — donkey configures no tool for it individually.
 //
 // registryHost is donkey's own registry, excluded by name: it is routinely a
 // bare service name or an address inside the cluster that no domain suffix
@@ -660,10 +634,9 @@ func proxyEnv(p config.InstallProxy, registryHost string) []corev1.EnvVar {
 		}
 		p.NoProxy = strings.Trim(strings.TrimSpace(p.NoProxy)+","+exclude, ",")
 	}
-	// Both spellings: some tools read only the lowercase form, and HTTP_PROXY
-	// in particular is ignored by Go's own client for CGI-safety reasons.
-	// A proxy address can carry its own credentials, so the two that can
-	// come out of the Secret do. NO_PROXY is a host list and stays plain.
+	// Both spellings: some tools read only lowercase, and Go's client ignores
+	// HTTP_PROXY for CGI-safety. The two that can carry credentials come out
+	// of the Secret; NO_PROXY is a host list and stays plain.
 	secret := func(name, key, value string) {
 		if value == "" {
 			return
@@ -695,9 +668,8 @@ func imagePullPolicy(image string) corev1.PullPolicy {
 	if i := strings.LastIndex(name, "/"); i >= 0 {
 		name = name[i+1:]
 	}
-	// "latest" and "dev" are the tags everybody moves; a pod that reused a
-	// cached layer for those would run code nobody pushed — and a dev loop
-	// (or an e2e run) would silently test a stale server.
+	// Everybody moves "latest" and "dev": a pod reusing a cached layer for
+	// those runs code nobody pushed, and an e2e run tests a stale server.
 	_, tag, ok := strings.Cut(name, ":")
 	if !ok || tag == "" || tag == "latest" || tag == "dev" {
 		return corev1.PullAlways

@@ -16,18 +16,14 @@ const AppFileName = "donkey.yaml"
 
 type AppConfig struct {
 	Name string `json:"name"`
-	// Space groups apps that belong together — typically everything in one
-	// repository. A space is one Kubernetes namespace (apps inside reach each
-	// other by plain name) and one level of the address: <app>.<space>.<domain>.
-	// Empty means "work it out from the folder" (see ResolveSpace).
+	// Space is one namespace (siblings reach each other by plain name) and one
+	// level of the address. Empty means "work it out" — see ResolveSpace.
 	Space string `json:"space,omitempty"`
 	Port  int    `json:"port"`
 	// Public opts the app out of the login gateway: anyone can reach it.
 	Public bool `json:"public,omitempty"`
-	// Internal keeps the app off the gateway altogether: no hostname, no
-	// certificate, no login — only the apps of its own space reach it, by
-	// name. This is what a backend behind a frontend wants: one address for
-	// the whole thing, and nothing else on the internet.
+	// Internal keeps the app off the gateway entirely — no hostname, no
+	// certificate, no login. What a backend behind a frontend wants.
 	Internal bool        `json:"internal,omitempty"`
 	Replicas *int32      `json:"replicas,omitempty"`
 	Build    BuildConfig `json:"build,omitempty"`
@@ -48,10 +44,9 @@ type AppConfig struct {
 	Resources *Resources    `json:"resources,omitempty"`
 }
 
-// RootHost is what `host` says to claim the space's own address. It
-// borrows the DNS zone-file convention for "the root of this zone", and it
-// is legal as neither an app name nor a hostname — so it can never be
-// mistaken for either of the other two shapes.
+// RootHost claims the space's own address, borrowing the zone-file
+// convention. Legal as neither an app name nor a hostname, so it can never be
+// mistaken for either.
 const RootHost = "@"
 
 // AppHost is the address an app is served at, and the one place the rule
@@ -64,13 +59,8 @@ const RootHost = "@"
 //	host: shop            shop.<space>.<domain> — a label of its own
 //	otherwise             <app>.<space>.<domain>
 //
-// A dot is what tells a hostname from a label, and that is exact rather
-// than a guess: dots are illegal in app and space names, and a hostname
-// always has at least two labels.
-//
-// The space in the middle of the default shape is what lets two teams both
-// have a "web"; a label of its own is what lets an app's address outlive
-// its name.
+// The dot is exact, not a guess: dots are illegal in app and space names, and
+// a hostname always has at least two labels.
 func AppHost(app *AppConfig, space, domain string) string {
 	switch {
 	case app.Internal:
@@ -103,10 +93,9 @@ func validateHost(host string) error {
 	return nil
 }
 
-// AccessConfig says who may open a login-protected app. It refines the login
-// gateway, so it means nothing on a `public` app — and it is enforced with
-// the claims of the IdP's ID token, which is where emails, groups and roles
-// live. A visitor passes by matching ANY of the lists.
+// AccessConfig refines the login gateway, so it means nothing on a `public`
+// app. Enforced against the ID token's claims; a visitor passes by matching
+// ANY list.
 type AccessConfig struct {
 	// Users are exact email addresses (the IdP's `email` claim).
 	Users []string `json:"users,omitempty"`
@@ -123,10 +112,8 @@ func (a *AccessConfig) Empty() bool {
 	return a == nil || (len(a.Users) == 0 && len(a.Groups) == 0 && len(a.Roles) == 0)
 }
 
-// Allows reports whether an identity satisfies the rules — by matching any
-// of them; empty rules allow every signed-in identity. Emails compare
-// case-insensitively (IdPs disagree on casing); groups and roles compare
-// exactly (they are identifiers, often GUIDs).
+// Allows: empty rules admit every signed-in identity. Emails compare
+// case-insensitively (IdPs disagree on casing), groups and roles exactly.
 func (a *AccessConfig) Allows(email string, groups, roles []string) bool {
 	if a.Empty() {
 		return true
@@ -183,14 +170,9 @@ func (a *AccessConfig) Validate() error {
 	return nil
 }
 
-// StorageConfig asks for disk that survives restarts and redeploys. donkey
-// creates exactly ONE volume per app and gives every path its own folder on
-// it (a subPath mount), so an app can keep several data directories without
-// anyone having to think about several disks.
-//
-// A nil Storage means "nobody decided yet" — the assistant may then propose
-// paths. An empty (but present) paths list means "this app needs no disk"
-// and is left alone.
+// StorageConfig asks for disk that survives restarts. donkey creates exactly
+// ONE volume per app, each path a subPath on it. Nil means "nobody decided
+// yet" (the assistant may propose); an empty list means "no disk".
 type StorageConfig struct {
 	// Size of the single volume, e.g. "5Gi" (default 1Gi).
 	Size string `json:"size,omitempty"`
@@ -204,15 +186,10 @@ type BuildStrategy string
 
 const (
 	BuildAuto       BuildStrategy = "auto"
-	BuildRailpack   BuildStrategy = "railpack"
 	BuildDockerfile BuildStrategy = "dockerfile"
-	// BuildAI is donkey's own builder: the assistant writes a Dockerfile for
-	// the app, donkey builds it, and then checks that what came out actually
-	// starts. The Dockerfile is kept (.donkey/Dockerfile), so the app is read
-	// once and every later deploy is an ordinary, repeatable Dockerfile build.
-	//
-	// It needs nothing but the base images the Dockerfile names, which are
-	// ordinary registry pulls — so it works wherever the registry mirrors do.
+	// BuildAI has the assistant write the Dockerfile, builds it, and checks it
+	// starts. The file is kept at .donkey/Dockerfile, so every later deploy is
+	// an ordinary repeatable build.
 	BuildAI BuildStrategy = "ai"
 )
 
@@ -279,10 +256,9 @@ var nameRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$`)
 // hostname and object names, so they follow donkey.yaml's rules.
 func ValidName(s string) bool { return nameRE.MatchString(s) }
 
-// domainRE is a plain DNS hostname of at least two labels. The value becomes
-// a route hostname, a name on a certificate and part of the login callback
-// URL — none of which accept a wildcard, a scheme, a port or a path, and all
-// of which are lowercase.
+// A plain lowercase DNS hostname of at least two labels: it becomes a route
+// host, a certificate name and part of the callback URL, none of which accept
+// a wildcard, scheme, port or path.
 var domainRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$`)
 
 // sizeRE accepts the Kubernetes quantity spellings people actually use for
@@ -391,9 +367,9 @@ func (c *AppConfig) Validate() error {
 		return fmt.Errorf("an app with storage runs as a single copy — its disk can only be attached to one machine at a time (set replicas: 1, or drop storage.paths)")
 	}
 	switch c.Build.Type {
-	case BuildAuto, BuildRailpack, BuildDockerfile, BuildAI:
+	case BuildAuto, BuildDockerfile, BuildAI:
 	default:
-		return fmt.Errorf("build.type %q is not one of auto, railpack, ai, dockerfile", c.Build.Type)
+		return fmt.Errorf("build.type %q is not one of auto, ai, dockerfile", c.Build.Type)
 	}
 	if c.Replicas != nil && *c.Replicas < 0 {
 		return fmt.Errorf("replicas cannot be negative")
@@ -473,11 +449,9 @@ func (c *AppConfig) Save(dir string) error {
 	return os.WriteFile(filepath.Join(dir, AppFileName), b, 0o644)
 }
 
-// Render is the donkey.yaml this config amounts to, with values that equal
-// the defaults stripped so the file stays as small as the user would have
-// written it. The console shows it for copying into the project: a browser
-// deploy has no folder to write back to, and an app whose repo doesn't know
-// what the console decided is an app that deploys differently next time.
+// Render is the donkey.yaml this config amounts to, defaults stripped. The
+// console shows it for copying into the project — a browser deploy has no
+// folder to write back to.
 func (c *AppConfig) Render() ([]byte, error) {
 	out := *c
 	if out.Build.Type == BuildAuto {

@@ -1,7 +1,10 @@
 package docker
 
 import (
+	"cmp"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"sort"
@@ -257,8 +260,29 @@ func (r *Runtime) pullImage(ctx context.Context, ref string) error {
 		return fmt.Errorf("couldn't pull %s: %w", ref, err)
 	}
 	defer rc.Close()
-	_, err = io.Copy(io.Discard, rc)
-	return err
+	// The body has to be read, not discarded: the engine reports a pull that
+	// failed partway (a rate limit, a layer that would not download) as a JSON
+	// object inside the stream, with no transport error. Discarding it made a
+	// failed pull look successful — and the caller removes the running
+	// container before creating the new one.
+	dec := json.NewDecoder(rc)
+	for {
+		var msg struct {
+			Error       string `json:"error"`
+			ErrorDetail struct {
+				Message string `json:"message"`
+			} `json:"errorDetail"`
+		}
+		if derr := dec.Decode(&msg); derr != nil {
+			if errors.Is(derr, io.EOF) {
+				return nil
+			}
+			return fmt.Errorf("couldn't pull %s: %w", ref, derr)
+		}
+		if detail := cmp.Or(msg.ErrorDetail.Message, msg.Error); detail != "" {
+			return fmt.Errorf("couldn't pull %s: %s", ref, detail)
+		}
+	}
 }
 
 // appEnv composes the container's environment: stored env, the addon
@@ -557,6 +581,12 @@ func (r *Runtime) ApplyNetwork(ctx context.Context, cfg *config.AppConfig) (stri
 			return "", err
 		}
 	} else {
+		// The same guard a deploy applies: without it the console could hand
+		// this app an address another one already serves, and the gateway
+		// would answer with whichever it sorted first.
+		if owner := r.hostOwner(space, host, app); owner != "" {
+			return "", rt.UserError{Err: fmt.Errorf("%s already answers on %s — two apps cannot share one address", owner, host)}
+		}
 		route := Route{
 			Host:    host,
 			Path:    "/",

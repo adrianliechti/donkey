@@ -92,9 +92,3 @@ func (c *Client) MoveFile(ctx context.Context, space, app, from, to string) erro
 	q.Set("to", to)
 	return c.doJSON(ctx, http.MethodPost, appPath(space, app, "/files/move"), q, nil, nil)
 }
-
-func (c *Client) MakeFolder(ctx context.Context, space, app, path string) error {
-	q := url.Values{}
-	q.Set("path", path)
-	return c.doJSON(ctx, http.MethodPost, appPath(space, app, "/files/folder"), q, nil, nil)
-}

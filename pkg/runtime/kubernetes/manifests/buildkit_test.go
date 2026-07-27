@@ -163,14 +163,14 @@ func TestMirrorHost(t *testing.T) {
 }
 
 // The build configuration has to land on both pods, in the shape each one
-// reads it: donkey-server decides which builder to run, the build engine
-// pulls the images — and only the proxy is common to both.
+// reads it: donkey-server hands the build environment to every RUN, the build
+// engine resolves images through the mirrors — and only the proxy is common
+// to both.
 func TestBuildConfigReachesBothPods(t *testing.T) {
 	in := systemInput()
 	in.Build = config.InstallBuild{
 		BuildSettings: config.BuildSettings{
-			Builder: config.BuildAI,
-			Env:     map[string]string{"NPM_CONFIG_REGISTRY": "https://mirror.example.com/npm"},
+			Env: map[string]string{"NPM_CONFIG_REGISTRY": "https://mirror.example.com/npm"},
 		},
 		RegistryMirrors: map[string]string{"docker.io": "https://mirror.example.com/docker"},
 		Proxy:           config.InstallProxy{HTTPS: "http://proxy.example.com:3128", NoProxy: ".example.com"},
@@ -180,8 +180,6 @@ func TestBuildConfigReachesBothPods(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		"DONKEY_BUILD_BUILDER",
-		"ai",
 		// The build variables travel as JSON, the way DONKEY_ADMINS does.
 		"DONKEY_BUILD_ENV",
 		"NPM_CONFIG_REGISTRY",

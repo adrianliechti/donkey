@@ -35,8 +35,13 @@ case "${RUNTIME}" in
 kind)
   CTX="kind-${CLUSTER:-donkey}"
   export DONKEY_E2E_DOMAIN="${DONKEY_E2E_DOMAIN:-apps.test}"
-  export DONKEY_E2E_SESSION_KEY="$(kubectl --context "${CTX}" -n donkey-system get secret donkey-system-config \
+  # Assigned before export: `export X="$(cmd)"` is one command whose status is
+  # export's, so a failed kubectl would slip past `set -e` and hand the suite
+  # an empty key.
+  SESSION_KEY="$(kubectl --context "${CTX}" -n donkey-system get secret donkey-system-config \
     -o jsonpath='{.data.session-key}' | base64 -d)"
+  [ -n "${SESSION_KEY}" ] || { echo "FAIL: no session key in donkey-system-config — is donkey installed?" >&2; exit 1; }
+  export DONKEY_E2E_SESSION_KEY="${SESSION_KEY}"
 
   say "the gateway's certificate authority"
   CA="${ROOT}/.build/donkey-gateway-ca.crt"
@@ -56,8 +61,10 @@ kind)
 
 docker)
   export DONKEY_E2E_DOMAIN="${DONKEY_E2E_DOMAIN:-apps.localhost}"
-  export DONKEY_E2E_SESSION_KEY="$(docker inspect donkey-server \
+  SESSION_KEY="$(docker inspect donkey-server \
     --format '{{range .Config.Env}}{{println .}}{{end}}' | sed -n 's/^DONKEY_SESSION_KEY=//p')"
+  [ -n "${SESSION_KEY}" ] || { echo "FAIL: donkey-server is not running (no session key) — run task install:docker" >&2; exit 1; }
+  export DONKEY_E2E_SESSION_KEY="${SESSION_KEY}"
 
   say "the gateway's certificate authority"
   CA="${ROOT}/.build/donkey-gateway-ca-docker.crt"

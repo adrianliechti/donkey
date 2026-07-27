@@ -23,12 +23,15 @@ five ideas:
    images, pushing to your registry, applying Kubernetes objects, watching
    rollouts. The `donkey` CLI is a thin client that signs in through your
    browser — no Docker, no kubectl, no build tools on laptops.
-2. **Two readers, one answer.** Every look at an app combines embedded
-   [Railpack](https://railpack.com) — which knows how to *build* Python,
-   Node, Go, Ruby, PHP, Java and static apps — with an **assistant that
-   reads the source** for everything a detector cannot see: the port the
-   code really binds, a health route that exists, the folders holding data
-   that must survive a restart. The assistant is a required part of the
+2. **Two readers, one answer.** Every look at an app combines a **scanner**
+   that establishes what the files prove — which lockfile decides the
+   package manager, which version files pin the toolchain, whether the
+   front end builds to static files and where — with an **assistant that
+   reads the source** for everything no scanner can see: the port the code
+   really binds, a health route that exists, the folders holding data that
+   must survive a restart. The scanner hands the assistant evidence, never
+   conclusions, so every fact carries the file it came from. The assistant
+   is a required part of the
    pipeline, not a nice-to-have: donkey without a model configured refuses
    to start rather than half-read your app. It only fills in what
    `donkey.yaml` leaves open, and reports every decision line by line.
@@ -101,8 +104,8 @@ five ideas:
   Views are linkable (`#/app/<space>/<name>`) and follow your light/dark
   preference.
 - **donkey-buildkitd** — a plain BuildKit deployment; the server drives it
-  over gRPC with Railpack-generated LLB or a Dockerfile (the app's own, or one
-  donkey's assistant wrote), and pushes straight to the registry. It is also
+  over gRPC with a Dockerfile (the app's own, or one donkey's assistant
+  wrote), and pushes straight to the registry. It is also
   where a freshly built image is run to check it starts. Registry mirrors for
   restricted networks are configured here (`build.registryMirrors`).
 - **donkey-gateway** — donkey's own edge (same binary as the server,
@@ -151,11 +154,11 @@ five ideas:
 Everything below happens on `donkey init` and again on every `donkey deploy`.
 Two readers run over the folder and their answers are combined:
 
-| | **Railpack detector** (in-process) | **Assistant** (your OpenAI-compatible model) |
+| | **Scanner** (in-process, deterministic) | **Assistant** (your OpenAI-compatible model) |
 |---|---|---|
-| Question | how do I *build* this? | what is true about this app? |
-| Sees | files, manifests, lockfiles | file tree + manifests, Dockerfile/compose, entry points, current donkey.yaml |
-| Answers | provider, build & start commands | app type, port, health route, data folders, backing services |
+| Question | what do the files prove? | what is true about this app? |
+| Sees | manifests, lockfiles, version files, framework configs | everything the scanner found, plus the source — it reads the app with `list_files`, `read_file`, `search_files`, `find_files` |
+| Answers | runtime, package manager, pinned versions, static output directory, start-command candidates, OS packages the dependencies need — each with the file it came from | app type, port, health route, data folders, backing services, and the app's Dockerfile |
 | Fails when | the app is unusual | the endpoint is unreachable → donkey stops and says so |
 
 The detector's verdict is handed to the assistant as evidence, so the model
@@ -190,7 +193,7 @@ Plans expire after two hours; losing one costs a re-upload, never a build.
 
 | Finding | How it is used | Overridable by |
 |---|---|---|
-| **Build strategy** — `Dockerfile`, Railpack provider, or an assistant-written `Dockerfile`/`railpack.json` when nothing recognizes the app (stored under `.donkey/`, shown before it is saved) | drives the BuildKit build | `build.type`, `build.dockerfile` |
+| **Build strategy** — the app's own `Dockerfile`, one donkey wrote earlier (`.donkey/Dockerfile`), or one the assistant writes during this build | drives the BuildKit build | `build.type`, `build.dockerfile` |
 | **Port** — read from the source (`app.listen(4000)`, `uvicorn --port`, …); "0" means the app honors `PORT` and any port works | container port, Service target, probes | `port` (required in donkey.yaml, never overwritten — a mismatch is reported as a warning) |
 | **Health route** — a real unauthenticated route such as `/healthz`; when none exists donkey probes the TCP port instead of guessing a path | readiness + liveness probes | `healthcheck.path` |
 | **Data folders** — folders the code writes to and cannot regenerate: uploads, an SQLite file's folder, generated documents, search indexes. Caches, logs, `/tmp` and build output are refused by construction | one PVC per app, each folder mounted as its own `subPath` | `storage.paths` (an empty list means "no disk", and is respected) |
@@ -277,11 +280,12 @@ addons:                       # space services this app uses; the deploy
                               # apps naming the same service share it
 
 build:
-  type: auto                  # auto | railpack | ai | dockerfile
+  type: auto                  # auto | ai | dockerfile
                               # auto: your Dockerfile if there is one, then
                               # one donkey wrote earlier (.donkey/Dockerfile),
-                              # else whatever the installation's
-                              # `build.builder` says (railpack by default)
+                              # else donkey writes one for this app
+                              # ai: write a fresh one even if a Dockerfile
+                              # is sitting in the folder
   dockerfile: Dockerfile
   platform: linux/arm64
   env:                        # build-time values (VITE_*, build args)
@@ -407,44 +411,43 @@ RBAC: donkey-server currently binds `cluster-admin` (it creates namespaces and
 everything inside them). Scoping that down is on the list — see
 [Security notes](#security-notes-poc-status).
 
-### Choosing a builder
+### The builder
 
-An app that brings a Dockerfile is built with it, always. For everything
-else, the installation picks the builder in `build.builder`:
+An app that brings a Dockerfile is built with it, always. Every other app
+gets one written for it, and that is the whole of the build system: there is
+one path to the build engine, and what an app is built with is a file you can
+read, edit and keep.
 
-| | **railpack** (default) | **ai** — donkey's own |
-|---|---|---|
-| How the build is worked out | railpack's detector, in `donkey-server` | the assistant writes a Dockerfile |
-| What it pulls | the railpack builder + runtime images from ghcr.io | whatever base images the Dockerfile names |
-| Other egress | resolves every package version through mise, which it downloads from github.com and which then asks the GitHub API — even for exactly pinned versions | none |
-| Works behind a registry mirror alone | no | **yes** |
-| Repeatable | yes | yes, once the Dockerfile is saved — see below |
+Writing it is an investigation, not a guess. donkey's scanner establishes what
+the files prove — the lockfile that decides the package manager, the version
+files that pin the toolchain, the framework config that names the build output
+directory, the dependencies that need OS packages — and hands the assistant
+that evidence with the file behind each fact. The assistant then reads the app
+for itself, with read-only tools confined to the upload, before it writes
+anything: which directory is really the app in a monorepo, the module path of
+a Django project, whether the code honors `PORT`. A few well-chosen reads
+settle what a file tree can only hint at.
 
-The difference that decides it: railpack's version resolution is not
-mirrorable. It reaches GitHub over HTTPS, and no registry mirror can serve
-that. With a forward proxy (`build.proxy`) railpack works; on a network whose
-only egress is a mirror, it does not — and that is what `build.builder: ai`
-is for, because a Dockerfile's `FROM python:3.12-slim` is an ordinary
-registry pull that `registryMirrors` covers like any other.
-
-```yaml
-build:
-  builder: ai
-```
+Because the output is an ordinary Dockerfile, everything it names — `FROM
+python:3.12-slim`, `apt-get`, `npm ci` — is an ordinary registry or package
+pull that `registryMirrors` and `build.env` already cover. There is nothing
+else to reach.
 
 **The Dockerfile is the deliverable, not the model.** donkey prints what it
 wrote and tells you to save it as `.donkey/Dockerfile`. Once it is there,
-detection prefers it over any builder, so every later deploy is a plain,
-repeatable Dockerfile build with no model in the path at all. The assistant
-is how the file gets written the first time — not a step in every build.
+detection prefers it, so every later deploy is a plain, repeatable Dockerfile
+build with no model in the path at all. The assistant is how the file gets
+written the first time — not a step in every build.
 
 **Built images are run before they are published.** A generated Dockerfile
 fails in ways a build log cannot show, because the build succeeded: an
 interpreter that is not on `PATH`, a dependency that was never installed, an
 entrypoint that exits at once. So donkey starts the image, waits for it to
 listen on the port it will be deployed with, and only exports it once it
-does. When it does not, the failure goes back to the assistant with the log
-and it writes another one — `build.ai.attempts` times, three by default.
+does. When it does not, the failure goes back to the assistant with the log —
+and with every earlier attempt, so it cannot oscillate between two broken
+variants — and it writes another one, `build.attempts` times, three by
+default.
 
 The check is deliberately narrow: it fails an image whose process *exits*,
 and passes one that is still running but not yet listening. An app whose
@@ -453,25 +456,22 @@ no database, and be "fixed" by a model with nothing to fix.
 
 ```yaml
 build:
-  builder: ai
-  ai:
-    verify: true          # default; false skips running the image
-    verifySeconds: 45     # how long the app gets to come up
-    attempts: 3           # the first Dockerfile plus two revisions
+  verify: true          # default; false skips running the image
+  verifySeconds: 45     # how long the app gets to come up
+  attempts: 3           # the first Dockerfile plus two revisions
 ```
 
 ### Restricted networks
 
 `build.registryMirrors` is written into the build engine's own configuration,
-so it covers every image a build pulls — the builder images and every `FROM`
-in a Dockerfile, generated or not. `build.env` reaches every build *step*,
+so it covers every image a build pulls — every `FROM` in a Dockerfile,
+generated or not. `build.env` reaches every build *step*,
 which is where package managers are pointed at their mirrors; donkey layers
 it under each app's own `build.env`, so a project that pins its own registry
 still wins.
 
 ```yaml
 build:
-  builder: ai
   registryMirrors:
     docker.io: https://artifactory.example.com/docker-remote
     ghcr.io: https://artifactory.example.com/ghcr-remote
@@ -485,9 +485,10 @@ One image is **not** covered by those mirrors: `buildkitImage`, which the
 cluster pulls itself. Mirror it by setting it directly.
 
 Mirror hosts inherit `registry.caSecret`, so an in-house Artifactory behind a
-private CA needs nothing further. `donkey doctor` resolves the railpack
-images through the build engine — the same path a build takes — so a mirror
-that is wrong is a failed check rather than a failed deploy.
+private CA needs nothing further. There is no builder image for `donkey
+doctor` to resolve — a generated Dockerfile names its own bases, and whether
+those resolve is a question only the finished file can ask, which the build
+engine asks through exactly these mirrors.
 
 ## Deployment model
 
@@ -659,6 +660,15 @@ half-service". Two properties make an outage survivable:
 `donkey doctor` reports the endpoint like every other dependency, so an
 outage is visible before someone hits it mid-deploy.
 
+Both places that commit to a configuration prove the endpoint answers first.
+`donkey server install` reaches it before changing anything and stops with the
+installation untouched — an install is a one-shot command with a person
+watching, which makes it the cheapest place to find out the endpoint is wrong.
+`donkey-server` does the same at startup and refuses to come up: under
+Kubernetes the pod then stays unready and out of rotation with the reason in
+its logs, which beats a control plane that looks healthy and fails on its
+first deploy.
+
 ## Repository structure
 
 ```
@@ -669,7 +679,7 @@ internal/
   apiclient/          CLI↔server transport: tar upload, NDJSON stream, typed calls
   server/             REST handlers, deploy pipeline, env-based config
   detect/             build strategy decision (donkey.yaml > Dockerfile > the installation's builder > AI)
-  build/              BuildKit gRPC builder (railpack LLB / dockerfile.v0), startup verification, registry auth, tags
+  build/              BuildKit gRPC builder (dockerfile.v0), startup verification, registry auth, tags
   k8s/                client-go wrapper: server-side apply, rollout wait, logs, env secrets
   k8s/manifests/      pure config→object rendering (app + control plane) — golden-tested
   addons/             service catalog: postgres, pocketbase, rustfs, openai (provisioned & external bindings)
@@ -705,7 +715,7 @@ is instantly demo@example.com).
 task demo            # kind cluster + control plane + the demo app (dashboard, MCP backend, three services)
 task test            # unit tests (no cluster needed)
 task e2e             # from nothing to verified: setup:kind + install:kind + the Go e2e suite
-task demo:samples    # deploy every testdata sample and report what donkey got right alone
+task demo:samples    # deploy every testdata sample; all of them must come up
 task demo:broken     # deploy apps that MUST fail, and check each was explained and patched
 ```
 
@@ -713,7 +723,6 @@ The phases are tasks of their own — and the docker runtime has its own
 install:
 
 ```sh
-task fake-ai         # a deterministic AI endpoint on :8080 — demos and e2e without a model or a key
 task setup:kind      # the local kind cluster and donkey's prerequisites
 task install:kind    # the identity provider, the CA, and donkey itself
 task install:docker  # donkey straight on the local Docker engine (apps.localhost, no cluster)
@@ -721,6 +730,39 @@ task demo:app        # log in and deploy the demo app (kind; needs devkube conne
 task verify          # the Go e2e suite against the running kind installation
 task verify:docker   # the same suite against the running docker installation
 ```
+
+### Scoring the builder
+
+donkey's builder writes each app's Dockerfile, so the thing to measure is how
+often it gets an app right. Three rungs, each costlier and more convincing
+than the last:
+
+```sh
+task builder:detect  # 122 apps · no model · no builds · seconds
+task builder:write   #  10 apps · a model  · no builds · minutes
+task demo:samples    #  19 apps · a model  · real builds and deploys · ~20 min
+```
+
+**`builder:detect`** is the deterministic rung. The hard part of measuring a
+builder is a corpus of real projects with known-correct answers, and Railpack
+has one: 122 example apps, each built and HTTP-checked in its CI, each with
+the build plan railpack commits for it (`task builder:corpus` fetches them).
+This compares what donkey works out by reading files — runtime, package
+manager, static site and its output directory, start command — with what
+railpack concluded for the same app, and prints a percentage per question.
+That is the number to watch when a detection rule changes; the gate fails
+under 95%.
+
+**`builder:write`** needs an OpenAI-compatible endpoint (`OPENAI_BASE_URL`,
+`OPENAI_API_KEY`, and `DONKEY_MODEL` to choose the model). It has a real model
+write Dockerfiles for the apps in `testdata/` and checks the failures that are
+cheap to catch and expensive to ship: a missing CMD, a `:latest` base image, a
+development server in production, a static site that did not end up on a web
+server.
+
+**`demo:samples`** is the one that actually proves it: every app in `testdata/`
+built, run to check it starts, pushed and deployed against a running
+installation. Slow, and the only rung that can tell you the image works.
 
 The e2e suite (`./e2e`, Go, `-tags e2e`) tests a RUNNING installation end to
 end through the same doors users take — the server API and the gateway's

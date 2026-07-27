@@ -283,7 +283,9 @@ func cleanList(in []string) []string {
 // deploys untouched.
 func (s *Server) writeConsoleChoices(ctx context.Context, space, app string, c consoleChoices) error {
 	var value *string
-	if c != (consoleChoices{}) || c.Access != nil {
+	// Access is a pointer field of a comparable struct, so a non-nil one
+	// already makes c differ from the zero value.
+	if c != (consoleChoices{}) {
 		b, err := json.Marshal(c)
 		if err != nil {
 			return err

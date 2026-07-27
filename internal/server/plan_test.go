@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/adrianliechti/donkey/internal/ai"
-	"github.com/adrianliechti/donkey/internal/build"
 	"github.com/adrianliechti/donkey/internal/config"
 	"github.com/adrianliechti/donkey/internal/detect"
 )
@@ -140,16 +139,18 @@ func TestPlanVolumesIncludeConfiguredPaths(t *testing.T) {
 // The port is explained, not asked for: where the answer came from decides
 // what the review screen says about it.
 func TestProposedPortSource(t *testing.T) {
-	node := &detect.Detection{Railpack: &build.PlanResult{Providers: []string{"node"}}}
+	det := &detect.Detection{Strategy: config.BuildAI}
 
-	if port, source := proposedPort(node, &ai.Analysis{Port: 5000, PortReason: "app.run(port=5000)"}); port != 5000 || source != PortFromCode {
+	if port, source := proposedPort(det, &ai.Analysis{Port: 5000, PortReason: "app.run(port=5000)"}); port != 5000 || source != PortFromCode {
 		t.Errorf("a port read out of the code wins: got %d/%s", port, source)
 	}
-	if port, source := proposedPort(node, &ai.Analysis{PortReason: "honors PORT"}); port != 3000 || source != PortFromEnv {
+	// No stack-by-stack table any more: donkey tells every app its port
+	// through PORT, so an app that honors it takes donkey's choice.
+	if port, source := proposedPort(det, &ai.Analysis{PortReason: "honors PORT"}); port != 8080 || source != PortFromEnv {
 		t.Errorf("an app that honors PORT takes donkey's choice: got %d/%s", port, source)
 	}
-	if port, source := proposedPort(node, &ai.Analysis{}); port != 3000 || source != PortGuessed {
-		t.Errorf("otherwise the stack decides, as a guess: got %d/%s", port, source)
+	if port, source := proposedPort(det, &ai.Analysis{}); port != 8080 || source != PortGuessed {
+		t.Errorf("otherwise the default, as a guess: got %d/%s", port, source)
 	}
 	if port, _ := proposedPort(nil, &ai.Analysis{}); port != 8080 {
 		t.Errorf("with nothing to go on, one sane default: got %d", port)

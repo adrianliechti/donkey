@@ -226,12 +226,18 @@ func (r *Runtime) DeleteSpace(ctx context.Context, space string) error {
 			return err
 		}
 	}
+	// Reported, not swallowed: a space whose volumes survived would be
+	// reported deleted, and the next space of the same name would reuse them
+	// with credentials that no longer match its bindings.
 	vols, err := r.cli.VolumeList(ctx, volume.ListOptions{
 		Filters: filters.NewArgs(filters.Arg("label", labelSpace+"="+space)),
 	})
-	if err == nil {
-		for _, v := range vols.Volumes {
-			_ = r.cli.VolumeRemove(ctx, v.Name, false)
+	if err != nil {
+		return fmt.Errorf("couldn't list the data volumes of space %s: %w", space, err)
+	}
+	for _, v := range vols.Volumes {
+		if err := r.cli.VolumeRemove(ctx, v.Name, false); err != nil && !cerrdefs.IsNotFound(err) {
+			return fmt.Errorf("couldn't remove the data volume %s: %w", v.Name, err)
 		}
 	}
 	if err := r.state.cleanupSpace(space); err != nil {
@@ -374,7 +380,15 @@ func (r *Runtime) Logs(ctx context.Context, space, app string, opts rt.LogOption
 	name := ctrName(space, app)
 	// A space's services belong to the pseudo-app "shared"; their container
 	// carries the service's own name.
+	//
+	// The name is checked here as well as at the handler because it ends up in
+	// the engine client's request URL, which path.Joins it — an unchecked
+	// "x/../.." would collapse out of the containers endpoint and read any
+	// container on the host.
 	if svc, ok := strings.CutPrefix(opts.Component, "addon-"); ok {
+		if !config.ValidName(svc) {
+			return fmt.Errorf("%q is not a service of this space", svc)
+		}
 		name = ctrName(space, svc)
 	}
 	lo := container.LogsOptions{

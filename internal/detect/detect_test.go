@@ -19,33 +19,29 @@ func writeFile(t *testing.T, dir, name, content string) {
 	}
 }
 
-// An app that brings no Dockerfile gets the installation's builder. This is
-// the whole of the setting: everything else about the choice is downstream.
-func TestDetectAutoUsesConfiguredBuilder(t *testing.T) {
+// An app that brings no Dockerfile gets one written for it. That is now the
+// only fallback there is, which is the point: every build donkey runs is a
+// Dockerfile build.
+func TestDetectAutoWritesADockerfile(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "main.go", "package main\n")
 
-	got, err := Detect(dir, nil, config.BuildSettings{Builder: config.BuildAI})
+	got, err := Detect(dir, nil)
 	if err != nil {
 		t.Fatalf("Detect: %v", err)
 	}
 	if got.Strategy != config.BuildAI {
 		t.Errorf("strategy = %q, want ai", got.Strategy)
 	}
-	// donkey's own builder decides nothing here: the Dockerfile is written
-	// during the build, so there is no provider list to guess a port from.
-	if got.Railpack != nil {
-		t.Error("donkey's own builder produced a railpack plan")
-	}
 }
 
-// A Dockerfile in the folder always wins: the installation's builder is the
-// fallback for apps that don't say how to build themselves.
-func TestDetectDockerfileBeatsConfiguredBuilder(t *testing.T) {
+// A Dockerfile in the folder always wins: donkey writes one only for apps
+// that don't say how to build themselves.
+func TestDetectDockerfileWins(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "Dockerfile", "FROM scratch\n")
 
-	got, err := Detect(dir, nil, config.BuildSettings{Builder: config.BuildAI})
+	got, err := Detect(dir, nil)
 	if err != nil {
 		t.Fatalf("Detect: %v", err)
 	}
@@ -54,14 +50,14 @@ func TestDetectDockerfileBeatsConfiguredBuilder(t *testing.T) {
 	}
 }
 
-// And so does an app that names its builder itself — even against an
-// installation that defaults to the other one.
+// build.type: ai overrides a Dockerfile sitting in the folder — the app is
+// asking to be read rather than built as written.
 func TestDetectAppBuildTypeWins(t *testing.T) {
 	dir := t.TempDir()
-	writeFile(t, dir, "main.go", "package main\n")
+	writeFile(t, dir, "Dockerfile", "FROM scratch\n")
 	app := &config.AppConfig{Build: config.BuildConfig{Type: config.BuildAI}}
 
-	got, err := Detect(dir, app, config.BuildSettings{Builder: config.BuildRailpack})
+	got, err := Detect(dir, app)
 	if err != nil {
 		t.Fatalf("Detect: %v", err)
 	}
@@ -70,13 +66,31 @@ func TestDetectAppBuildTypeWins(t *testing.T) {
 	}
 }
 
-// A Dockerfile donkey wrote earlier is preferred over the configured builder:
-// it only exists because someone accepted it for this app.
-func TestDetectAIDockerfileBeatsConfiguredBuilder(t *testing.T) {
+// A Dockerfile donkey wrote earlier is built as an ordinary Dockerfile: it
+// only exists because someone accepted it for this app, and every later
+// deploy should be the same build with no model in the way.
+func TestDetectAIDockerfileIsReused(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, AIDockerfilePath, "FROM scratch\n")
 
-	got, err := Detect(dir, nil, config.BuildSettings{Builder: config.BuildAI})
+	got, err := Detect(dir, nil)
+	if err != nil {
+		t.Fatalf("Detect: %v", err)
+	}
+	if got.Strategy != config.BuildDockerfile || got.DockerfilePath != AIDockerfilePath {
+		t.Errorf("strategy = %q, dockerfile = %q", got.Strategy, got.DockerfilePath)
+	}
+}
+
+// Even when the app asks for build.type: ai, a Dockerfile donkey already
+// wrote is what gets built — the assistant is asked once per app, not once
+// per deploy.
+func TestDetectAIReusesItsOwnDockerfile(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, AIDockerfilePath, "FROM scratch\n")
+	app := &config.AppConfig{Build: config.BuildConfig{Type: config.BuildAI}}
+
+	got, err := Detect(dir, app)
 	if err != nil {
 		t.Fatalf("Detect: %v", err)
 	}
@@ -89,7 +103,7 @@ func TestDetectAIDockerfileBeatsConfiguredBuilder(t *testing.T) {
 func TestDetectMissingDockerfile(t *testing.T) {
 	dir := t.TempDir()
 	app := &config.AppConfig{Build: config.BuildConfig{Type: config.BuildDockerfile}}
-	if _, err := Detect(dir, app, config.BuildSettings{}); err == nil {
+	if _, err := Detect(dir, app); err == nil {
 		t.Fatal("a missing Dockerfile was not reported")
 	}
 }

@@ -33,7 +33,8 @@ say "installing the control plane (real install command, demo settings)"
   --oidc-client-id "donkey-demo" \
   --oidc-client-secret "donkey-demo-secret" \
   --openai-base-url "${AI_BASE}" \
-  --openai-api-key "${AI_KEY}"
+  --openai-api-key "${AI_KEY}" \
+  ${AI_MODEL:+--ai-model "${AI_MODEL}"}
 
 # The install applies the same :dev tag every time, so an already-running
 # server never rolls on its own — without this, a re-run keeps serving the

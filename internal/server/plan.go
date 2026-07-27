@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -20,16 +19,10 @@ import (
 	"github.com/adrianliechti/donkey/internal/detect"
 )
 
-// A plan is everything donkey works out about an app before it builds
-// anything: how it will be built, which port it listens on and why, which
-// folders have to survive a restart, which services it expects, what will go
-// wrong once it runs, and what it will be called when it is live.
-//
-// It exists so that "deploy this folder" can be a decision somebody reviews
-// instead of a form somebody fills in. The console shows a plan as its review
-// screen; `donkey init` prints one. Both get their answers from here, so the
-// two surfaces cannot drift apart — and the deploy that follows reuses the
-// plan's analysis rather than asking the assistant the same question twice.
+// A plan is everything donkey works out about an app before building it, so
+// that "deploy this folder" is a decision somebody reviews rather than a form
+// somebody fills in. The console and `donkey init` both render one from here,
+// so they cannot drift, and the deploy reuses its analysis.
 
 // Plan is what a review screen (or `donkey init`) shows.
 type Plan struct {
@@ -52,15 +45,11 @@ type Plan struct {
 	// AppType and Notes are the assistant's own words about the app.
 	AppType string `json:"appType,omitempty"`
 	Notes   string `json:"notes,omitempty"`
-	// Volumes and Services are the assistant's findings as choices, each with
-	// the reason it was proposed — the console renders them as controls
-	// rather than as sentences. They are the full set every time: a choice
-	// turned down stays visible and unticked, because a control that vanishes
-	// when you clear it can never be set again.
-	//
-	// Both are things donkey *creates*. It deliberately never proposes a
-	// command to run: donkey has no hook for one, and a model-written command
-	// executed because nobody unticked it is not a feature worth having.
+	// The full set every time: a choice turned down stays visible and
+	// unticked, because a control that vanishes when cleared can never be set
+	// again. Both are things donkey *creates* — it never proposes a command to
+	// run, because a model-written command executed by default is not a
+	// feature worth having.
 	Volumes  []PlanVolume  `json:"volumes"`
 	Services []PlanService `json:"services"`
 	// Skipped is what the upload lost on the way in (secret-shaped files,
@@ -79,10 +68,8 @@ type PlanApp struct {
 	Name  string `json:"name"`
 	Space string `json:"space"`
 	Port  int    `json:"port"`
-	// PortSource says where the port came from: donkey.yaml, the code the
-	// assistant read, the PORT convention (donkey picks and tells the app),
-	// or a guess from the stack. A review screen would rather explain a port
-	// than ask for one.
+	// PortSource is donkey.yaml, the code, the PORT convention, or a guess —
+	// a review screen would rather explain a port than ask for one.
 	PortSource  string   `json:"portSource"`
 	PortReason  string   `json:"portReason,omitempty"`
 	Healthcheck string   `json:"healthcheck,omitempty"`
@@ -98,16 +85,6 @@ type PlanBuild struct {
 	// Summary is the one-line description of how the app gets built.
 	Summary  string `json:"summary"`
 	Strategy string `json:"strategy"`
-	// Proposal is the build file the assistant wrote because donkey couldn't
-	// recognize the app by itself. It is shown before it is used.
-	Proposal *BuildProposal `json:"proposal,omitempty"`
-}
-
-// BuildProposal is a build file the assistant wrote. donkey never overwrites
-// a file the user wrote, so it lives under .donkey/.
-type BuildProposal struct {
-	Path    string `json:"path"`
-	Content string `json:"content"`
 }
 
 // PlanVolume is one folder whose contents have to survive a restart.
@@ -307,10 +284,9 @@ func (s *Server) handlePlan(w http.ResponseWriter, r *http.Request) {
 }
 
 // handlePlanUpdate: PUT /v1/plans/{id}
-// The review screen's answers come back here, so the checks that matter (does
-// this name collide, does the space exist, does the config still hold
-// together) run against what the user actually chose — before the upload
-// happens a second time. No model call: this is the same reading, re-decided.
+// The review screen's answers come back here so the checks run against what
+// the user actually chose, before a second upload. No model call — this is
+// the same reading, re-decided.
 func (s *Server) handlePlanUpdate(w http.ResponseWriter, r *http.Request) {
 	sp, ok := s.plans.get(r.PathValue("id"))
 	if !ok {
@@ -342,12 +318,11 @@ type planInput struct {
 	Skipped  []string
 }
 
-// readApp reads an uploaded app the way a deploy would — donkey's detector
-// first, then the assistant on top of its verdict — and settles everything
-// donkey.yaml left open. A failure here is a failure to read the app at all,
-// which is a reason to stop rather than to deploy something half-understood.
+// readApp reads an upload the way a deploy would and settles what donkey.yaml
+// left open. Failing here means the app was not understood, which is a reason
+// to stop rather than deploy.
 func (s *Server) readApp(ctx context.Context, dir string, app *config.AppConfig, in planInput) (*storedPlan, error) {
-	det, detErr := detect.Detect(dir, app, s.cfg.Build)
+	det, detErr := detect.Detect(dir, app)
 	analysis, err := s.analyzeApp(ctx, dir, det, detErr)
 	if err != nil {
 		if detErr != nil {
@@ -366,22 +341,10 @@ func (s *Server) readApp(ctx context.Context, dir string, app *config.AppConfig,
 		created:   time.Now(),
 	}
 
-	// donkey couldn't recognize the app by itself: the assistant's build file
-	// goes into this (throwaway) copy so detection can run again on top of it.
-	// The user's own folder is never touched — the proposal travels back in
-	// the plan, and only the CLI, only on confirmation, writes it down.
+	// The only way detection fails is a donkey.yaml naming a Dockerfile that
+	// is not there — every other app gets one written for it.
 	if detErr != nil {
-		proposal := buildProposal(analysis)
-		if proposal == nil {
-			return nil, fmt.Errorf("%w\n\nthe assistant couldn't propose a way to build it either", detErr)
-		}
-		if err := writeProposal(dir, proposal); err != nil {
-			return nil, err
-		}
-		if det, err = detect.Detect(dir, app, s.cfg.Build); err != nil {
-			return nil, err
-		}
-		sp.build.Proposal = proposal
+		return nil, detErr
 	}
 	sp.build.Summary = det.Summary
 	sp.build.Strategy = string(det.Strategy)
@@ -419,10 +382,8 @@ func (s *Server) readApp(ctx context.Context, dir string, app *config.AppConfig,
 	return sp, nil
 }
 
-// planVolumes lists the folders the assistant found, ticked when the config
-// actually keeps them. An app whose donkey.yaml says `paths: []` has decided
-// against every one of them, and that decision shows up here unticked rather
-// than disappearing.
+// planVolumes ticks the folders the config actually keeps. `paths: []` is a
+// decision against all of them, shown unticked rather than disappearing.
 func planVolumes(app *config.AppConfig, analysis *ai.Analysis) []PlanVolume {
 	out := []PlanVolume{}
 	kept := map[string]bool{}
@@ -448,10 +409,9 @@ func planVolumes(app *config.AppConfig, analysis *ai.Analysis) []PlanVolume {
 	return out
 }
 
-// planServices turns "this app looks like it needs postgres" into a choice,
-// and puts the chosen ones into the config so the deploy creates and connects
-// them. Only types donkey has a recipe for are offered; the rest are reported
-// by analysisWarnings, which is all donkey can honestly do with them.
+// planServices turns "looks like it needs postgres" into a choice the deploy
+// acts on. Only types donkey has a recipe for are offered; the rest are
+// reported by analysisWarnings.
 func (s *Server) planServices(ctx context.Context, app *config.AppConfig, analysis *ai.Analysis) []PlanService {
 	out := []PlanService{}
 	for _, a := range app.Addons {
@@ -538,10 +498,8 @@ func applyPlanEdit(sp *storedPlan, edit PlanEdit) {
 	app.ApplyDefaults()
 }
 
-// renderPlan turns the stored reading into the answer a caller sees. The
-// findings are computed fresh every time: an edit changes what is true (a
-// name that was free a minute ago may not be), and a plan that reports
-// yesterday's checks is worse than no checks.
+// renderPlan recomputes findings every time: a name free a minute ago may not
+// be, and a plan reporting yesterday's checks is worse than no checks.
 func (s *Server) renderPlan(ctx context.Context, id string, sp *storedPlan) *Plan {
 	app := sp.app
 	p := &Plan{
@@ -698,29 +656,4 @@ func exposureOfConfig(app *config.AppConfig) string {
 	default:
 		return "protected"
 	}
-}
-
-// buildProposal is the build file the assistant wrote, whichever kind it is.
-func buildProposal(analysis *ai.Analysis) *BuildProposal {
-	if analysis == nil {
-		return nil
-	}
-	switch {
-	case analysis.Strategy == "dockerfile" && strings.TrimSpace(analysis.Dockerfile) != "":
-		return &BuildProposal{Path: detect.AIDockerfilePath, Content: analysis.Dockerfile}
-	case strings.TrimSpace(analysis.RailpackConfig) != "":
-		return &BuildProposal{Path: detect.AIRailpackConfPath, Content: analysis.RailpackConfig}
-	}
-	return nil
-}
-
-// writeProposal drops a proposed build file into a folder. Callers pass a
-// build context the server owns, or (in the CLI) the user's folder after they
-// said yes — never the user's folder without asking.
-func writeProposal(dir string, p *BuildProposal) error {
-	full := filepath.Join(dir, p.Path)
-	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-		return err
-	}
-	return os.WriteFile(full, []byte(p.Content), 0o644)
 }
