@@ -213,6 +213,15 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 	if len(existing) == 0 && nsPlan.SkipSystemNamespace {
 		u.Warn("No existing donkey installation in %s. This creates a new one — a new session key, so any installation elsewhere keeps its own and everyone signed in here would have to sign in again.", systemNamespace)
 	}
+	// Only an upgrade may claim what the previous version left unstamped. A
+	// new installation standing up beside an old one shares nothing with it,
+	// even when both map spaces onto the same names — the control plane it
+	// finds here is what makes the old resources this installation's.
+	if len(existing) > 0 {
+		if err := claimPrevious(ctx, u, client, settings.Kubernetes); err != nil {
+			return err
+		}
+	}
 	registryPassword, err := settings.Registry.Password() // env, then registry.passwordFile
 	if err != nil {
 		return err

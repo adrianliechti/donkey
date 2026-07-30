@@ -211,7 +211,7 @@ never reaches the app. Injected:
 
 | Variable | Content |
 |---|---|
-| `OPENAI_BASE_URL` | in-cluster proxy address, `…/ai/v1` (OpenAI-compatible) |
+| `OPENAI_BASE_URL` | the in-cluster endpoint's address, `…/v1` (OpenAI-compatible) |
 | `OPENAI_API_KEY` | the per-space stand-in key — send it as the bearer token exactly like a real key |
 | `OPENAI_MODEL` | the model the platform actually serves — **use this**, never hardcode `gpt-4o` or similar; the upstream may not have it |
 

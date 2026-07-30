@@ -105,6 +105,11 @@ func TestInstallTouchesOnlyItsOwnObjects(t *testing.T) {
 		"ClusterRoleBinding:" + ServerName:     true,
 		"ClusterRole:" + GatewayAppName:        true,
 		"ClusterRoleBinding:" + GatewayAppName: true,
+		// donkey-ai reads the binding Secrets to know which per-space tokens
+		// are valid; with a namespace per space those are spread across all
+		// of them, so this one is read-only and cluster-scoped.
+		"ClusterRole:" + AIAppName:        true,
+		"ClusterRoleBinding:" + AIAppName: true,
 	}
 	for _, obj := range objs {
 		m, err := meta.Accessor(obj)
@@ -181,7 +186,7 @@ func TestConsoleBehindGateway(t *testing.T) {
 	in := systemInput()
 	out := componentNames(in)
 	for _, want := range []string{
-		"donkey.dev/backend: http://donkey-server.donkey-system.svc.cluster.local:80",
+		"donkey.dev/backend: http://donkey-server.donkey-system.svc:80",
 		"donkey.dev/login: required",
 		"DONKEY_SESSION_KEY", // the server verifies CLI tokens itself
 	} {
@@ -223,5 +228,42 @@ func TestImagePullPolicy(t *testing.T) {
 		if got := imagePullPolicy(image); got != want {
 			t.Errorf("imagePullPolicy(%q) = %v, want %v", image, got, want)
 		}
+	}
+}
+
+// The console route is the one backend that verifies identity itself, so it
+// is the one route that receives a credential. Every app route must not:
+// an app handed a token could replay its visitors against the API.
+func TestOnlyTheAPIRouteCarriesAToken(t *testing.T) {
+	out := componentNames(systemInput())
+	if !strings.Contains(out, "donkey.dev/token: forward") {
+		t.Error("the console route should be marked for token forwarding")
+	}
+	if n := strings.Count(out, "donkey.dev/token"); n != 1 {
+		t.Errorf("exactly one route may carry a credential, found %d", n)
+	}
+
+	in := testInput(t)
+	for _, obj := range NetworkObjects(in) {
+		cm, ok := obj.(*corev1.ConfigMap)
+		if !ok {
+			continue
+		}
+		if _, marked := cm.Annotations[AnnotationToken]; marked {
+			t.Errorf("app route %s must never be marked for token forwarding", cm.Name)
+		}
+	}
+}
+
+// Defence in depth behind the token check: app pods should not be able to
+// reach the admin API at all, but the AI proxy shares its listener — so the
+// policy admits apps and the credential check stops them.
+func TestServerNetworkPolicy(t *testing.T) {
+	out := componentNames(systemInput())
+	if !strings.Contains(out, "name: donkey-server\n") || !strings.Contains(out, "kind: NetworkPolicy") {
+		t.Error("donkey-server should be guarded by a NetworkPolicy")
+	}
+	if !strings.Contains(out, "port: 8088") {
+		t.Error("the policy should name the API port")
 	}
 }

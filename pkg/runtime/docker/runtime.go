@@ -50,6 +50,9 @@ type Options struct {
 	// (e.g. 127.0.0.1:5000). Image references are rewritten from the push
 	// host to this one before running. Empty means refs run as pushed.
 	PullRegistry string
+	// AIContainer is the openai addon's endpoint — the one donkey container
+	// apps are meant to reach, which is why it is not the server.
+	AIContainer string
 	// ServerContainer/GatewayContainer name donkey's own containers, so the
 	// provider can attach them to every space network (the server must
 	// reach apps for tunnels and probes, the gateway to proxy).
@@ -77,6 +80,9 @@ func New(opts Options) (*Runtime, error) {
 	}
 	if opts.GatewayContainer == "" {
 		opts.GatewayContainer = "donkey-gateway"
+	}
+	if opts.AIContainer == "" {
+		opts.AIContainer = "donkey-ai"
 	}
 	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	if err != nil {
@@ -170,7 +176,7 @@ func (r *Runtime) ensureSpace(ctx context.Context, space string) error {
 	if err != nil {
 		return err
 	}
-	for _, own := range []string{r.opts.ServerContainer, r.opts.GatewayContainer} {
+	for _, own := range []string{r.opts.ServerContainer, r.opts.GatewayContainer, r.opts.AIContainer} {
 		err := r.cli.NetworkConnect(ctx, name, own, nil)
 		// Already attached is fine; a missing own container (local
 		// development outside containers) must not fail the space.
@@ -246,7 +252,7 @@ func (r *Runtime) DeleteSpace(ctx context.Context, space string) error {
 	}
 	// donkey's own containers were attached to the network (to proxy and to
 	// probe) — it only goes once they let it.
-	for _, own := range []string{r.opts.ServerContainer, r.opts.GatewayContainer} {
+	for _, own := range []string{r.opts.ServerContainer, r.opts.GatewayContainer, r.opts.AIContainer} {
 		_ = r.cli.NetworkDisconnect(ctx, netName(space), own, true)
 	}
 	err = r.cli.NetworkRemove(ctx, netName(space))
@@ -483,7 +489,7 @@ func (r *Runtime) ServiceBinding(ctx context.Context, space, owner, name string)
 }
 
 func (r *Runtime) aiProxyURL() string {
-	return fmt.Sprintf("http://%s:8088/ai/v1", r.opts.ServerContainer)
+	return fmt.Sprintf("http://%s:8089/v1", r.opts.AIContainer)
 }
 
 func (r *Runtime) EnsureService(ctx context.Context, space string, spec rt.ServiceSpec) (map[string]string, string, string, error) {

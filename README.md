@@ -62,6 +62,7 @@ five ideas:
 │  (thin client)│   HTTP   │  ├─ donkey-server   REST API, detection,│
 └───────────────┘          │  │      manifests, AI, rollout watching │
                            │  ├─ donkey-buildkitd  image builds      │──▶ registry
+                           │  ├─ donkey-ai      openai addon endpoint│──▶ model API
  browser ────80/443───────▶│  └─ donkey-gateway  TLS (ACME/CA/none)  │──OIDC──▶ Entra ID /
                            │       · routing by hostname and path    │        any IdP
      <app>.<space>.<domain>│       · OIDC login                      │
@@ -103,6 +104,15 @@ five ideas:
   folder is packed client-side with the CLI's exclusion rules.
   Views are linkable (`#/app/<space>/<name>`) and follow your light/dark
   preference.
+- **donkey-ai** — the openai addon's endpoint (same image, `ai`
+  entrypoint). It is the one donkey workload apps are *meant* to reach, so it
+  runs apart from the admin API: it holds the platform's AI credential and
+  read-only access to the binding Secrets, and nothing else. Apps call it with
+  the per-space token their binding carries; it swaps that for the real
+  credential, which never leaves this process. Removing the service revokes
+  the space's access. The console's own AI chat is browser code, so it calls
+  its own origin — `donkey-server` forwards `/ai/v1` here without inspecting
+  it, because on that origin `/v1` is already the admin API.
 - **donkey-buildkitd** — a plain BuildKit deployment; the server drives it
   over gRPC with a Dockerfile (the app's own, or one donkey's assistant
   wrote), and pushes straight to the registry. It is also
@@ -117,7 +127,10 @@ five ideas:
   code flow itself where a route demands a login, seals what it learned
   into an AES-GCM cookie (stateless — replicas just scale), checks the
   app's access rules (users, groups, roles from the ID token's claims) and
-  forwards with `X-Auth-Request-*` identity headers. TLS and auth live here
+  forwards with `X-Auth-Request-*` identity headers. Those headers are
+  information for the app, never authorization: donkey's own API is handed a
+  short-lived sealed token instead (`X-Access-Token`) and verifies it itself,
+  so nothing in the cluster can reach it by typing a header. TLS and auth live here
   because no ingress vendor has a standard for the latter — donkey needs no
   ingress controller, no Gateway API, no cert-manager.
 - **Per space** — one namespace (`donkey-<space>`) shared by the apps of
@@ -364,11 +377,11 @@ Ways in and out, all equivalent:
   CLI deploys.
 
 **The `openai` service hides the real credential.** Its binding points apps
-at a proxy inside donkey-server with a generated per-space token; the proxy
-checks that token against the bindings it issued, swaps in the platform's
-actual key upstream, and streams the answer back (SSE included). The real
-key never leaves `donkey-system`, and removing the service from the space
-*is* the revocation.
+at `donkey-ai` with a generated per-space token; that endpoint checks the
+token against the bindings donkey issued, swaps in the platform's actual key
+upstream, and streams the answer back (SSE included). The real key never
+leaves `donkey-system` — and never sits in the process that writes to the
+cluster — and removing the service from the space *is* the revocation.
 
 **Getting at a service yourself.** Services rightly have no public address,
 so donkey provides the ways in: `donkey addon tunnel NAME` opens a private
@@ -708,6 +721,15 @@ as they are while donkey-server restarts. A re-install also keeps every secret
 it isn't given again (registry password, OIDC client secret, AI key), so the
 same settings file is enough — rotating one thing must never blank the rest.
 
+Upgrading from a version that predates instance labelling (v0.3.1 and older,
+which stamped no installation on what they applied) adds one step the install
+does itself: it claims the space namespaces carrying this installation's
+prefix, and everything donkey put in them, so the apps stay visible to the
+console and served by the gateway. It reports what it claimed, finds nothing
+on the second run, and never touches a namespace another installation has
+stamped — if the `namespacePrefix` changed with the upgrade, the old
+namespaces are left alone and named in a warning.
+
 **What to back up.** All donkey state lives in Kubernetes objects, and nearly
 all of it is reproducible: images rebuild from the repositories, manifests
 re-render from `donkey.yaml`, namespaces and routes are re-created by the next
@@ -952,8 +974,7 @@ company with an internal PKI uses. Tear down with `devkube --cluster donkey dele
   failure logs when something breaks. Point it at a model you control (the
   install takes any OpenAI-compatible base URL).
 - The `openai` service never hands out the platform's real AI key: bindings
-  carry a generated per-space stand-in, donkey-server's proxy swaps it for
-  the real one on the way upstream, and the swap only happens for tokens
-  the server itself issued — so removing the service revokes the space's
-  access, and the upstream credential exists nowhere outside
-  `donkey-system`.
+  carry a generated per-space stand-in, `donkey-ai` swaps it for the real
+  one on the way upstream, and the swap only happens for tokens donkey
+  itself issued — so removing the service revokes the space's access, and
+  the upstream credential exists nowhere outside `donkey-system`.

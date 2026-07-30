@@ -270,7 +270,7 @@ func (r *Runtime) Checks(ctx context.Context) []rt.Check {
 	// is down, so is every app, which is exactly what doctor exists to say
 	// plainly.
 	dg := rt.Check{Name: "App gateway (donkey-gateway)"}
-	gwURL := fmt.Sprintf("http://%s.%s.svc.cluster.local:%d/healthz",
+	gwURL := fmt.Sprintf("http://%s.%s.svc:%d/healthz",
 		manifests.GatewayHealthServiceName, r.opts.SystemNamespace, manifests.GatewayHealthServicePort)
 	if req, err := http.NewRequestWithContext(ctx, http.MethodGet, gwURL, nil); err != nil {
 		dg.Detail = err.Error()

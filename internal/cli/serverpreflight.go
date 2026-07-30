@@ -3,10 +3,12 @@ package cli
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/adrianliechti/donkey/internal/config"
 	"github.com/adrianliechti/donkey/internal/ui"
 	k8s "github.com/adrianliechti/donkey/pkg/runtime/kubernetes"
+	"github.com/adrianliechti/donkey/pkg/runtime/kubernetes/manifests"
 )
 
 // This file is everything the installer has to settle about namespaces before
@@ -20,6 +22,29 @@ import (
 // why.
 
 const psaEnforce = "pod-security.kubernetes.io/enforce"
+
+// claimPrevious takes over the resources of an installation made before
+// donkey stamped its own name on them, so an upgrade keeps sight of its
+// spaces. It runs before anything is applied: from here on the cluster is
+// read through the instance label, and what carries none is invisible.
+func claimPrevious(ctx context.Context, u *ui.UI, client *k8s.Client, k config.InstallKubernetes) error {
+	res, err := client.ClaimUnstamped(ctx, manifests.Placement{
+		SharedNamespace: k.Workload.Namespace,
+		NamespacePrefix: k.NamespacePrefix(),
+	})
+	if err != nil {
+		return fmt.Errorf("couldn't take over the previous installation's resources: %w", err)
+	}
+	if len(res.Namespaces) > 0 {
+		u.Info("Adopted %d space namespace(s) and %d objects from an installation that predates instance labelling: %s.",
+			len(res.Namespaces), res.Objects, strings.Join(res.Namespaces, ", "))
+	}
+	for _, ns := range res.Outside {
+		u.Warn("The namespace %s is a donkey space from before instance labelling, but it does not carry this installation's prefix %q — so it was left alone, and the apps in it stay invisible here. If it is this installation's (a namespacePrefix that changed with the upgrade), claim it: kubectl label namespace %s %s=%s",
+			ns, k.NamespacePrefix(), ns, manifests.LabelInstance, k.SystemNamespace())
+	}
+	return nil
+}
 
 // namespacePlan is what the installer decided about the two namespaces.
 type namespacePlan struct {

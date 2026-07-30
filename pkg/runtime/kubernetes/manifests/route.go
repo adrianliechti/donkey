@@ -31,6 +31,15 @@ const (
 
 	// LoginRequired is AnnotationLogin's one meaningful value.
 	LoginRequired = "required"
+
+	// AnnotationToken marks the one route whose backend verifies identity
+	// itself: the gateway forwards a short-lived sealed token
+	// (X-Access-Token) minted from the login. Only donkey's own console/API
+	// route carries it — an app must never receive a credential its code
+	// could replay against the API.
+	AnnotationToken = "donkey.dev/token"
+	// TokenForward is AnnotationToken's one meaningful value.
+	TokenForward = "forward"
 )
 
 // protected says visitors of this app's routes must sign in. Every
@@ -42,8 +51,13 @@ func protected(in Input) bool {
 
 // backendURL is where the gateway forwards this app's traffic: the app's
 // Service, on the stable in-cluster port.
+//
+// ".svc" and no further: the cluster domain is a per-cluster setting
+// ("cluster.local" is only the default) and every pod's resolv.conf carries
+// "svc.<domain>" in its search list, so the short form resolves on clusters
+// where a hardcoded fully-qualified name would not.
 func backendURL(in Input) string {
-	return fmt.Sprintf("http://%s.%s.svc.cluster.local:80", in.Name(), in.Namespace)
+	return fmt.Sprintf("http://%s.%s.svc:80", in.Name(), in.Namespace)
 }
 
 // routeAnnotations is the gateway's routing table entry: where the app

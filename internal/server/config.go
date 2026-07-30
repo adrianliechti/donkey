@@ -36,6 +36,10 @@ type Config struct {
 	// WorkloadNamespace, when set, is the single namespace every app lives
 	// in; donkey neither creates nor deletes it.
 	WorkloadNamespace string
+	// AIURL is donkey-ai's address — the console's /ai/v1 calls are
+	// forwarded there. The address only, no path: what the console asks for
+	// is what gets proxied.
+	AIURL string
 
 	OIDCIssuer       string
 	OIDCClientID     string
@@ -73,6 +77,7 @@ func FromEnv() (*Config, error) {
 		NamespacePrefix:   envOr("DONKEY_NAMESPACE_PREFIX", config.DefaultNamespacePrefix),
 		SystemNamespace:   envOr("DONKEY_SYSTEM_NAMESPACE", config.DefaultSystemNamespace),
 		WorkloadNamespace: os.Getenv("DONKEY_WORKLOAD_NAMESPACE"),
+		AIURL:             os.Getenv("DONKEY_AI_URL"),
 		OIDCIssuer:        os.Getenv("DONKEY_OIDC_ISSUER"),
 		OIDCClientID:      os.Getenv("DONKEY_OIDC_CLIENT_ID"),
 		OIDCClientSecret:  os.Getenv("DONKEY_OIDC_CLIENT_SECRET"),

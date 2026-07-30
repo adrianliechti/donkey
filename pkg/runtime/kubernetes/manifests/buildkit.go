@@ -9,7 +9,6 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -268,31 +267,4 @@ func buildkitPodSpec(in SystemInput, privileged bool) corev1.PodSpec {
 		},
 	})
 	return spec
-}
-
-// buildkitNetworkPolicy is the one policy donkey cannot do without: the build
-// engine speaks unauthenticated gRPC and runs privileged, so anything that
-// can reach port 1234 can run code on a node. Only donkey-server may.
-func buildkitNetworkPolicy(in SystemInput) *networkingv1.NetworkPolicy {
-	port := intstr.FromInt32(buildkitPort)
-	tcp := corev1.ProtocolTCP
-	return &networkingv1.NetworkPolicy{
-		TypeMeta: metav1.TypeMeta{APIVersion: "networking.k8s.io/v1", Kind: "NetworkPolicy"},
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      buildkitName,
-			Namespace: in.Namespace,
-			Labels:    systemLabels(buildkitName),
-		},
-		Spec: networkingv1.NetworkPolicySpec{
-			PodSelector: metav1.LabelSelector{MatchLabels: systemLabels(buildkitName)},
-			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
-			Ingress: []networkingv1.NetworkPolicyIngressRule{{
-				From: []networkingv1.NetworkPolicyPeer{{
-					PodSelector:       &metav1.LabelSelector{MatchLabels: systemLabels(ServerName)},
-					NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": in.Namespace}},
-				}},
-				Ports: []networkingv1.NetworkPolicyPort{{Protocol: &tcp, Port: &port}},
-			}},
-		},
-	}
 }

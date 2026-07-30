@@ -63,19 +63,32 @@ export function AiDialog({
       .serviceBinding(space, service)
       .then(async (res) => {
         const bound = res.binding.OPENAI_BASE_URL ?? ''
-        // Only the platform proxy is reachable from the browser (and from
-        // this origin's CSP). A service pointing elsewhere is for apps.
-        if (!bound.endsWith('/ai/v1')) {
+        // Only the platform's own endpoint is reachable from the browser
+        // (and from this origin's CSP). A service pointing elsewhere is for
+        // apps.
+        //
+        // The key is the tell, not the address. donkey mints a per-space
+        // token for its own endpoint alone, and that endpoint accepts no
+        // other credential — so a binding carrying one is donkey's, whatever
+        // the address says (a Service on Kubernetes, a container name on
+        // Docker: both unresolvable here, and both have moved before). A
+        // service attached with --url carries an address and nothing else;
+        // that one is the apps', and they bring their own key.
+        const key = res.binding.OPENAI_API_KEY ?? ''
+        if (!key) {
           setExternal(bound)
           return
         }
+        // donkey's endpoint answers on this origin under /ai/v1, which the
+        // server forwards to it — on this origin /v1 is already the admin
+        // API.
         const sameOrigin = `${location.origin}/ai/v1`
         setBase(sameOrigin)
-        setToken(res.binding.OPENAI_API_KEY ?? '')
+        setToken(key)
         const preferred = res.binding.OPENAI_MODEL
         try {
           const answer = await fetch(`${sameOrigin}/models`, {
-            headers: { Authorization: `Bearer ${res.binding.OPENAI_API_KEY}` },
+            headers: { Authorization: `Bearer ${key}` },
           })
           const listed = ((await answer.json()).data ?? []).map((m: { id: string }) => m.id)
           // The binding's model leads: it is the one the platform vouches

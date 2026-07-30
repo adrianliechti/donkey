@@ -115,7 +115,7 @@ func TestSystemNamespaceReachesEveryComponent(t *testing.T) {
 	if n := strings.Count(rendered, "value: bank-donkey-system"); n < 2 {
 		t.Errorf("both donkey-server and donkey-gateway need DONKEY_SYSTEM_NAMESPACE, found %d", n)
 	}
-	if !strings.Contains(rendered, "tcp://donkey-buildkitd.bank-donkey-system.svc.cluster.local:1234") {
+	if !strings.Contains(rendered, "tcp://donkey-buildkitd.bank-donkey-system.svc:1234") {
 		t.Error("the server must reach the build engine in its own namespace")
 	}
 }
@@ -221,7 +221,7 @@ func TestSharedNamespaceQualifiesSelectors(t *testing.T) {
 func TestSharedNamespaceBackendFollows(t *testing.T) {
 	in := sharedInput(t)
 	cm := appRoute(in)
-	want := "http://acme--shop.donkey-apps.svc.cluster.local:80"
+	want := "http://acme--shop.donkey-apps.svc:80"
 	if got := cm.Annotations[AnnotationBackend]; got != want {
 		t.Errorf("backend = %q, want %q", got, want)
 	}

@@ -29,6 +29,9 @@ type Route struct {
 	Backend string               `json:"backend"`
 	Login   bool                 `json:"login,omitempty"`
 	Access  *config.AccessConfig `json:"access,omitempty"`
+	// Token forwards a sealed credential to the backend — set only on the
+	// console route, whose backend verifies identity itself.
+	Token bool `json:"token,omitempty"`
 }
 
 // state reads and writes the provider's file records. Every method takes

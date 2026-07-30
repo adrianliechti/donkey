@@ -6,6 +6,8 @@ import (
 	"net/http/httputil"
 	"strings"
 	"time"
+
+	"github.com/adrianliechti/donkey/internal/identity"
 )
 
 // handler is the gateway's request path: route lookup, session, access
@@ -72,6 +74,16 @@ func wantsHTML(r *http.Request) bool {
 // are always dropped first — identity must be unforgeable.
 var identityHeaders = []string{"X-Auth-Request-User", "X-Auth-Request-Email", "X-Auth-Request-Groups", "X-Auth-Request-Roles"}
 
+// accessTokenHeader carries a sealed credential to the one backend that
+// verifies identity itself (donkey's own API). Inbound copies are dropped on
+// every route, exactly like the identity headers.
+const accessTokenHeader = "X-Access-Token"
+
+// forwardTokenTTL bounds the token the gateway mints per request. Short: it
+// exists for the hop to the backend, not for keeping — a leaked one expires
+// before it is worth stealing. Never longer than the session it came from.
+const forwardTokenTTL = 10 * time.Minute
+
 // transport is shared across requests: connection reuse is what keeps the
 // extra hop cheap. No response-header timeout — apps stream.
 var transport = &http.Transport{
@@ -104,6 +116,7 @@ func (s *Server) proxy(rt route, sess *session, fromToken bool) *httputil.Revers
 			for _, h := range identityHeaders {
 				pr.Out.Header.Del(h)
 			}
+			pr.Out.Header.Del(accessTokenHeader)
 			// The session cookie is the gateway's, not the app's — don't leak
 			// sealed identity material into app code.
 			stripCookie(pr.Out, sessionCookie, stateCookie)
@@ -117,6 +130,24 @@ func (s *Server) proxy(rt route, sess *session, fromToken bool) *httputil.Revers
 				}
 				if len(sess.Roles) > 0 {
 					pr.Out.Header.Set("X-Auth-Request-Roles", strings.Join(sess.Roles, ","))
+				}
+				// The API route gets a verifiable credential, not bare
+				// headers: the server checks the seal, so an in-cluster
+				// caller typing headers gets nothing. Only this route — an
+				// app handed a token could replay its visitors against the
+				// API.
+				if rt.Token {
+					exp := time.Now().Add(forwardTokenTTL).Unix()
+					if sess.Expires > 0 && sess.Expires < exp {
+						exp = sess.Expires
+					}
+					tok, err := identity.SealToken(s.cfg.SessionKey, identity.Identity{
+						Subject: sess.Subject, Email: sess.Email, Name: sess.Name,
+						Groups: sess.Groups, Roles: sess.Roles, Expires: exp,
+					})
+					if err == nil {
+						pr.Out.Header.Set(accessTokenHeader, tok)
+					}
 				}
 			}
 		},

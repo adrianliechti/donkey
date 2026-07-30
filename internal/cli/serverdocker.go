@@ -49,13 +49,14 @@ const (
 
 	dockerServerName  = "donkey-server"
 	dockerGatewayName = "donkey-gateway"
+	dockerAIName      = "donkey-ai"
 )
 
 // dockerNoProxy is what must never be sent to a forward proxy: donkey's own
 // containers, the Docker engine's socket and the loopback registry all live
 // on this machine, and no corporate proxy can route them.
 const dockerNoProxy = "localhost,127.0.0.1," +
-	dockerRegistryName + "," + dockerBuildkitName + "," + dockerServerName + "," + dockerGatewayName
+	dockerRegistryName + "," + dockerBuildkitName + "," + dockerServerName + "," + dockerGatewayName + "," + dockerAIName
 
 // dockerInstallAction stands the whole control plane up on the local Docker
 // engine (or DOCKER_HOST).
@@ -177,6 +178,7 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 		"DONKEY_REGISTRY_IMMUTABLE": strconv.FormatBool(settings.Registry.Immutable),
 		"DONKEY_PULL_REGISTRY":      "127.0.0.1:" + dockerRegistryHostPort,
 		"DONKEY_BUILDKIT_ADDR":      "tcp://" + dockerBuildkitName + ":1234",
+		"DONKEY_AI_URL":             "http://" + dockerAIName + ":8089",
 		"DONKEY_DEFAULT_PLATFORM":   settings.DefaultPlatform,
 		"DONKEY_OIDC_ISSUER":        settings.Auth.Issuer,
 		"DONKEY_OIDC_CLIENT_ID":     settings.Auth.ClientID,
@@ -253,6 +255,34 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 		return err
 	}
 
+	// The openai addon's endpoint, apart from the server: it is the one
+	// container apps are meant to reach, and it holds only the upstream
+	// credential — no session key, no registry login, no docker socket.
+	aiEnv := map[string]string{
+		"DONKEY_RUNTIME":   "docker",
+		"DONKEY_STATE_DIR": dockerDataDir,
+		"DONKEY_LISTEN":    ":8089",
+		"OPENAI_BASE_URL":  settings.AI.BaseURL,
+		"OPENAI_API_KEY":   settings.AI.APIKey,
+	}
+	// The model API is the one thing this container talks to, and it is
+	// outside — so of all of them, this is the one that needs the proxy.
+	maps.Copy(aiEnv, proxyEnvMap(settings.Build.Proxy))
+	if err := replaceInfraContainer(ctx, cli, infraContainer{
+		Name:  dockerAIName,
+		Image: settings.Image,
+		Cmd:   []string{"ai"},
+		Env:   aiEnv,
+		Mounts: []mount.Mount{
+			// Read-only: the bindings it validates tokens against are the
+			// server's records, and it never writes any of them.
+			{Type: mount.TypeVolume, Source: dockerDataVolume, Target: dockerDataDir, ReadOnly: true},
+		},
+		PullAlways: true,
+	}); err != nil {
+		return err
+	}
+
 	u.Info("Waiting for the server to come up…")
 	if err := waitDockerRunning(ctx, cli, dockerServerName, 90*time.Second); err != nil {
 		return err
@@ -260,10 +290,13 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 	if err := waitDockerRunning(ctx, cli, dockerGatewayName, 90*time.Second); err != nil {
 		return err
 	}
+	if err := waitDockerRunning(ctx, cli, dockerAIName, 90*time.Second); err != nil {
+		return err
+	}
 	// Both containers were just recreated, which dropped the space networks
 	// they were on. Re-attach them, or every app deployed before this install
 	// stays unreachable until it is redeployed.
-	if err := docker.AttachOwnContainers(ctx, cli, dockerServerName, dockerGatewayName); err != nil {
+	if err := docker.AttachOwnContainers(ctx, cli, dockerServerName, dockerGatewayName, dockerAIName); err != nil {
 		return err
 	}
 	u.Success("Control plane is running.")

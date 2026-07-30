@@ -212,8 +212,14 @@ func (r *Runtime) SharedServiceValues(ctx context.Context, key string) ([]string
 	return r.c.SharedBindingValues(ctx, addons.SharedOwner, key)
 }
 
-// aiProxyURL is where apps reach donkey-server's AI proxy on this
-// installation — its own control plane, not whichever one answers first.
+// aiProxyURL is where apps reach this installation's AI endpoint — its own,
+// not whichever one answers first. donkey-ai rather than donkey-server: the
+// address apps are handed must not be the process that writes to the cluster.
+//
+// ".svc" and no further, deliberately. The cluster domain is a per-cluster
+// setting ("cluster.local" is only the default), and every pod's resolv.conf
+// carries "svc.<domain>" in its search list — so the short form resolves
+// where a hardcoded fully-qualified one would not.
 func (r *Runtime) aiProxyURL() string {
-	return fmt.Sprintf("http://%s.%s.svc/ai/v1", manifests.ServerName, r.opts.SystemNamespace)
+	return fmt.Sprintf("http://%s.%s.svc/v1", manifests.AIAppName, r.opts.SystemNamespace)
 }

@@ -12,13 +12,12 @@
 
 The old review opened with "the control plane has exactly one credential — a static bearer token." That is no longer true, and the replacement changes where the risk sits.
 
-Authorization is now: the gateway performs an OIDC login, checks the admin rules, and forwards the identity to `donkey-server` as `X-Auth-Request-*` headers. The server treats **the presence of that header as the authorization** (`internal/server/server.go:212`). A sealed CLI token is the alternative path for direct access.
+Authorization is: the gateway performs an OIDC login and checks the admin rules, then **mints a short-lived sealed token** from the session and forwards it as `X-Access-Token`. The server verifies that seal under `SessionKey` and applies the admin rules itself. A sealed CLI token in `Authorization: Bearer` is the same credential by another route. Identity headers are still forwarded to *apps*, but they are metadata only — no donkey component authorizes on them.
 
-This is sound for traffic that arrives *through the gateway*, which strips inbound copies of those headers (`internal/gateway/proxy.go:104-106`). It is entirely unsound for traffic that does not, and donkey now actively arranges for tenant workloads to be able to reach the server directly. That is finding 1, and it is the most serious item in this report.
+This holds for traffic that never touched the gateway, which is what matters: tenant workloads can reach the server directly by design (the AI proxy), so the credential must be verifiable on its own. That was finding 1, and it is now resolved.
 
-Two consequences worth stating plainly:
+One consequence worth stating plainly:
 
-- Under the old model, a compromised tenant app held no credential. Under the new one, the credential is a header string any process can set. The bar moved from "steal a secret" to "type a header."
 - `Admins` empty means *everyone the IdP admits* (`internal/server/config.go:42-44`, via `AccessConfig.Empty()` at `internal/config/app.go:70-72`). An installation that does not set `DONKEY_ADMINS` grants full operator rights to every account the IdP will issue a token for.
 
 Per-space authorization still does not exist, so "an authenticated operator can reach another space" remains by design and is not reported as a vulnerability. Several findings below become privilege-boundary violations the moment that changes; they are marked.
@@ -29,7 +28,7 @@ Per-space authorization still does not exist, so "an authenticated operator can 
 
 | # | Severity | Finding | Status |
 |---|---|---|---|
-| 1 | **Critical** | Any tenant workload forges operator identity to `donkey-server` with one header | Open |
+| 1 | **Critical** | Any tenant workload forges operator identity to `donkey-server` with one header | **Resolved** — sealed token verified server-side |
 | 2 | High | Model-proposed `preDeploy` commands are auto-applied and run as a shell with every secret | **Resolved** — feature removed |
 | 3 | High | `donkey-server` runs as `cluster-admin` | Open (carried) |
 | 4 | High | Privileged BuildKit with an unauthenticated TCP listener | Open (carried) |
@@ -59,7 +58,42 @@ These were fixed after the last review and are **not** regressions — each was 
 
 ## 1. Critical — any tenant workload forges operator identity to `donkey-server` with one header
 
-**Location:** `internal/server/server.go:210-225`, with `pkg/runtime/kubernetes/addonservice.go:52-54`, `pkg/runtime/docker/runtime.go:175-182`, and the absence of any NetworkPolicy in front of `donkey-server`.
+> **Resolved.** Both controls this finding asked for are in place.
+>
+> `s.auth` no longer looks at identity headers at all. It accepts one thing:
+> a sealed token, verified under `SessionKey` and checked against
+> `s.cfg.Admins` — whether it arrives as `X-Access-Token` (minted per request
+> by the gateway from the login session, ≤10 minutes, never outliving the
+> session) or as `Authorization: Bearer` (the CLI's). Typing
+> `X-Auth-Request-User` now yields 401, pinned by a regression test in
+> `internal/server/server_test.go`.
+>
+> The credential goes to exactly one backend. Routes carry
+> `donkey.dev/token: forward`, set only on the console/API route; the proxy
+> strips inbound `X-Access-Token` on every route and mints an outbound one
+> only where the annotation says so — an app handed a token could replay its
+> visitors against the API. `internal/gateway/gateway_test.go` pins both
+> halves.
+>
+> Segmentation followed too: `serverNetworkPolicy` now guards
+> `donkey-server`'s ingress, and admits the gateway alone. The token check
+> remains the control that matters; the policy is defence in depth behind it.
+>
+> The listener sharing that made this finding reachable is gone too. The
+> openai addon's endpoint runs as its own workload, **donkey-ai** (same
+> image, `ai` entrypoint), holding the upstream credential and read-only
+> access to the binding Secrets — no session key, no registry login, no
+> write verb, and on Docker no socket mount. Apps are pointed at it instead
+> of the server, which let `serverNetworkPolicy` narrow to the gateway
+> alone: nothing a tenant workload needs lives on the admin API any more.
+>
+> Still open from this finding's tail: `Admins` empty still means every
+> account the IdP admits (below). On Docker the server remains attached to
+> every space network — it needs them to probe and tunnel — so the
+> credential check is still the only control there; the split buys
+> separation of what the reachable process *holds*, not reachability.
+
+**Location (fixed):** `internal/server/server.go` (`auth`), `internal/gateway/proxy.go` (mint/strip), `pkg/runtime/kubernetes/manifests/route.go` (`AnnotationToken`), `pkg/runtime/kubernetes/manifests/system.go` (`serverNetworkPolicy`).
 
 Five of the six independent reviewers reached this finding separately. Verified directly.
 

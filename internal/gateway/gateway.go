@@ -156,6 +156,10 @@ type route struct {
 	// Login says visitors must sign in before this route forwards.
 	Login  bool
 	Access *config.AccessConfig
+	// Token forwards a short-lived sealed credential (X-Access-Token) to the
+	// backend. Only donkey's own API route carries it: an app given one
+	// could replay its visitors' credentials against the API.
+	Token bool
 }
 
 // routeSource is where the routing table comes from — the one seam between
@@ -242,7 +246,7 @@ func (f fileRoutes) list(ctx context.Context) ([]route, error) {
 		if err != nil || target.Scheme != "http" || target.Host == "" || rec.Host == "" {
 			continue
 		}
-		r := route{Host: rec.Host, Path: rec.Path, Backend: target, Login: rec.Login, Access: rec.Access}
+		r := route{Host: rec.Host, Path: rec.Path, Backend: target, Login: rec.Login, Access: rec.Access, Token: rec.Token}
 		if r.Path == "" {
 			r.Path = "/"
 		}
@@ -434,6 +438,7 @@ func routeFromConfigMap(cm corev1.ConfigMap) (route, bool) {
 		Path:    "/",
 		Backend: target,
 		Login:   ann[manifests.AnnotationLogin] == manifests.LoginRequired,
+		Token:   ann[manifests.AnnotationToken] == manifests.TokenForward,
 	}
 	if p := ann[manifests.AnnotationPath]; p != "" {
 		r.Path = p

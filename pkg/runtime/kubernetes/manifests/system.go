@@ -174,12 +174,16 @@ func SystemObjects(in SystemInput) []runtime.Object {
 		buildkitDeployment(in),
 		systemService(in, buildkitName, buildkitPort, buildkitPort),
 		buildkitNetworkPolicy(in),
+		serverNetworkPolicy(in),
 		serverDeployment(in),
 		systemService(in, ServerName, 80, serverPort),
 		consoleRoute(in),
 	)
-	// The donkey gateway is the app edge — always there, login or not.
+	// The donkey gateway is the app edge — always there, login or not; the
+	// AI endpoint is the one workload apps reach, and runs apart from the
+	// admin API for exactly that reason.
 	objs = append(objs, donkeyGatewayObjects(in)...)
+	objs = append(objs, aiObjects(in)...)
 	// The one optional attachment to machinery the cluster already runs —
 	// rendered only when named, so a plain installation stays CRD-free.
 	if in.HTTPRouteGateway.Attached() {
@@ -305,10 +309,13 @@ func serverDeployment(in SystemInput) *appsv1.Deployment {
 		{Name: "DONKEY_REGISTRY_IMMUTABLE", Value: strconv.FormatBool(in.RegistryImmutable)},
 		{Name: "DONKEY_REGISTRY_CA_FILE", Value: registryCAFile(in)},
 		{Name: "DONKEY_DOMAIN", Value: in.Domain},
-		{Name: "DONKEY_BUILDKIT_ADDR", Value: fmt.Sprintf("tcp://%s.%s.svc.cluster.local:%d", buildkitName, in.Namespace, buildkitPort)},
+		{Name: "DONKEY_BUILDKIT_ADDR", Value: fmt.Sprintf("tcp://%s.%s.svc:%d", buildkitName, in.Namespace, buildkitPort)},
 		{Name: "DONKEY_NAMESPACE_PREFIX", Value: in.NamespacePrefix},
 		{Name: "DONKEY_SYSTEM_NAMESPACE", Value: in.Namespace},
 		{Name: "DONKEY_WORKLOAD_NAMESPACE", Value: in.WorkloadNamespace},
+		// Where the console's /ai/v1 requests are forwarded. The address
+		// only — the path the console asks for is what gets proxied.
+		{Name: "DONKEY_AI_URL", Value: fmt.Sprintf("http://%s.%s.svc:80", AIAppName, in.Namespace)},
 		{Name: "DONKEY_DEFAULT_PLATFORM", Value: in.DefaultPlatform},
 		{Name: "DONKEY_OIDC_ISSUER", Value: in.OIDCIssuer},
 		secretEnv("DONKEY_OIDC_CLIENT_ID", "oidc-client-id"),
@@ -462,10 +469,13 @@ func adminsJSON(in SystemInput) string {
 // in. It is one more entry in the gateway's routing table.
 func consoleRoute(in SystemInput) *corev1.ConfigMap {
 	ann := map[string]string{
-		AnnotationBackend: fmt.Sprintf("http://%s.%s.svc.cluster.local:80", ServerName, in.Namespace),
+		AnnotationBackend: fmt.Sprintf("http://%s.%s.svc:80", ServerName, in.Namespace),
 		AnnotationHost:    in.ServerHost(),
 		AnnotationPath:    "/",
 		AnnotationLogin:   LoginRequired,
+		// The server verifies identity itself — it gets the sealed token,
+		// not bare headers anything in the cluster could type.
+		AnnotationToken: TokenForward,
 	}
 	if a := adminsJSON(in); a != "" {
 		ann[AnnotationAccess] = a

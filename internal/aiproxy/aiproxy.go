@@ -1,24 +1,30 @@
-package server
-
-// The AI proxy behind the openai addon: apps call donkey-server with a
-// per-space token, which the proxy checks against the bindings it issued and
+// Package aiproxy is the openai addon's endpoint: apps call it with a
+// per-space token, which it checks against the bindings donkey issued and
 // swaps for the platform's real credential. The key never leaves
 // donkey-system, and removing the service revokes the space's access.
+//
+// It runs as its own workload (donkey-ai) rather than inside donkey-server,
+// because this is the one donkey endpoint tenant code is *meant* to reach.
+// Keeping it out of the admin API's process means a flaw in the part apps can
+// talk to does not sit in the process that can write to the cluster.
+package aiproxy
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
-	"os"
 	"strings"
 	"sync"
 	"time"
 )
 
-const aiProxyPrefix = "/ai/v1/"
+// Prefix is where the proxy is mounted. donkey-ai serves it at the root of
+// its own listener, so an app's OPENAI_BASE_URL is an ordinary /v1 endpoint.
+const Prefix = "/v1/"
 
 // Inference and nothing else: the credential swapped in is the platform's
 // own, so files, fine_tuning, assistants, batches and vector_stores would let
@@ -36,15 +42,9 @@ var aiAllowedRoots = map[string]bool{
 
 // aiUpstreamPath yields the path to join onto the upstream base, or reports
 // that it may not be proxied.
-//
-// The containment check is load-bearing: ServeMux cleans the *escaped* path,
-// so "%2e%2e" survives routing and only becomes ".." once decoded here — at
-// which point url.JoinPath would resolve it out of the base, attaching the
-// platform's key to any upstream path. fs.ValidPath is the standard library's
-// definition of a clean relative path.
 func aiUpstreamPath(p string) (string, bool) {
-	rest := strings.TrimPrefix(p, aiProxyPrefix)
-	if !fs.ValidPath(strings.TrimSuffix(rest, "/")) {
+	rest := strings.TrimPrefix(p, Prefix)
+	if !staysClean(rest) {
 		return "", false
 	}
 	root, _, _ := strings.Cut(rest, "/")
@@ -52,6 +52,40 @@ func aiUpstreamPath(p string) (string, bool) {
 		return "", false
 	}
 	return rest, true
+}
+
+// staysClean reports whether p is a clean relative path and remains one
+// however many times it is decoded. It is what keeps the proxied path inside
+// the upstream's base, which is load-bearing here: the platform's own key is
+// attached to whatever goes out.
+//
+// ServeMux cleans the *escaped* path, so "%2e%2e" survives routing and only
+// becomes ".." once decoded — at which point url.JoinPath would resolve it out
+// of the base. And one decoding is not enough: what goes on the wire is the
+// escaped path, and each hop may decode again, so "%252e%252e" arrives here as
+// the harmless-looking "%2e%2e", is forwarded as written, and becomes ".." at
+// an upstream (or a gateway in front of one) that normalizes before it
+// dispatches.
+//
+// Each round strictly shortens the string, so this ends: at the form that
+// decodes into itself. fs.ValidPath is the standard library's definition of a
+// clean relative path.
+func staysClean(p string) bool {
+	for {
+		if !fs.ValidPath(strings.TrimSuffix(p, "/")) {
+			return false
+		}
+		// A malformed escape is refused rather than guessed at — what it
+		// means is up to whoever decodes it next.
+		decoded, err := url.PathUnescape(p)
+		if err != nil {
+			return false
+		}
+		if decoded == p {
+			return true
+		}
+		p = decoded
+	}
 }
 
 // aiPathKey carries the validated path to the Rewrite hook, so the path that
@@ -81,17 +115,22 @@ func (t *aiTokens) valid(token string) (bool, error) {
 	return t.tokens[token], nil
 }
 
-func (s *Server) aiProxyHandler() http.Handler {
-	upstreamBase := strings.TrimRight(os.Getenv("OPENAI_BASE_URL"), "/")
+// Tokens answers what per-space tokens are currently valid. It is the one
+// thing the proxy needs from the cluster — deliberately narrow, so donkey-ai
+// runs with read-only access and nothing more.
+type Tokens func(ctx context.Context) ([]string, error)
+
+// Handler is the proxy. upstream/key are the platform's own endpoint and
+// credential; valid answers which per-space tokens the bindings currently
+// hold.
+func Handler(upstreamBase, upstreamKey string, valid Tokens) (http.Handler, error) {
+	upstreamBase = strings.TrimRight(upstreamBase, "/")
 	if upstreamBase == "" {
 		upstreamBase = "https://api.openai.com/v1"
 	}
-	upstreamKey := os.Getenv("OPENAI_API_KEY")
 	upstream, err := url.Parse(upstreamBase)
 	if err != nil {
-		// The assistant already validated this config at startup; a broken
-		// URL here is unreachable in practice.
-		panic(fmt.Sprintf("OPENAI_BASE_URL is not a URL: %v", err))
+		return nil, fmt.Errorf("the AI endpoint %q is not a URL: %w", upstreamBase, err)
 	}
 
 	tokens := &aiTokens{refresh: func() (map[string]bool, error) {
@@ -100,7 +139,7 @@ func (s *Server) aiProxyHandler() http.Handler {
 		// removing the service is the revocation.
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		values, err := s.rt.SharedServiceValues(ctx, "OPENAI_API_KEY")
+		values, err := valid(ctx)
 		if err != nil {
 			return nil, err
 		}
@@ -153,5 +192,12 @@ func (s *Server) aiProxyHandler() http.Handler {
 			return
 		}
 		proxy.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), aiPathKey{}, rest)))
-	})
+	}), nil
+}
+
+// writeErr answers in the shape an OpenAI client expects to parse.
+func writeErr(w http.ResponseWriter, status int, err error) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 }
