@@ -31,6 +31,9 @@ type InstallFile struct {
 	ServerHost string         `json:"serverHost,omitempty"`
 	Gateway    InstallGateway `json:"gateway,omitempty"`
 	TLS        InstallTLS     `json:"tls,omitempty"`
+	// Kubernetes is where donkey's objects go. Only meaningful for the
+	// kubernetes runtime.
+	Kubernetes InstallKubernetes `json:"kubernetes,omitempty"`
 	// DefaultPlatform is the build platform of the cluster's nodes
 	// (default linux/amd64).
 	DefaultPlatform string `json:"defaultPlatform,omitempty"`
@@ -160,6 +163,86 @@ type InstallAuth struct {
 	Admins *AccessConfig `json:"admins,omitempty"`
 }
 
+// InstallKubernetes says which namespaces donkey may use, and by omission
+// which ones it may create.
+//
+// Both fields follow one rule: name a namespace and it is yours — donkey
+// expects it to exist, applies its objects into it, and never creates or
+// deletes it. Leave a field empty and donkey makes and manages the namespace
+// itself, which is what a cluster you own wants.
+type InstallKubernetes struct {
+	System   InstallNamespace `json:"system,omitempty"`
+	Workload InstallNamespace `json:"workload,omitempty"`
+}
+
+// InstallNamespace names a namespace donkey was given.
+type InstallNamespace struct {
+	// Namespace is the one to use.
+	//
+	// Under system: where the control plane lives. It is also the
+	// installation's identity, so two installations on one cluster must not
+	// share it — and a second one has to set this.
+	//
+	// Under workload: the single namespace every app of every space lives in.
+	// Setting it is what turns a cluster where donkey may not create
+	// namespaces into one it can run on, and it is the only arrangement that
+	// needs no cluster-scoped permission at all. Apps are then named
+	// <space>--<app> on the cluster, which is what lets one namespace hold two
+	// spaces that both have an "api".
+	//
+	// Leaving workload empty gives every space a namespace of its own,
+	// <namespacePrefix><space>, created and deleted by donkey.
+	Namespace string `json:"namespace,omitempty"`
+	// NamespacePrefix maps a space onto its namespace; only read under
+	// workload, and only when Namespace is empty (default "donkey-"). Two
+	// installations that both give every space a namespace need different
+	// prefixes, or they would fight over donkey-<space>.
+	NamespacePrefix string `json:"namespacePrefix,omitempty"`
+}
+
+// SystemNamespace is where the control plane goes.
+func (k InstallKubernetes) SystemNamespace() string {
+	if k.System.Namespace != "" {
+		return k.System.Namespace
+	}
+	return DefaultSystemNamespace
+}
+
+// NamespacePrefix maps a space onto its own namespace.
+func (k InstallKubernetes) NamespacePrefix() string {
+	if k.Workload.NamespacePrefix != "" {
+		return k.Workload.NamespacePrefix
+	}
+	return DefaultNamespacePrefix
+}
+
+// Validate checks what can be wrong without consulting the cluster.
+func (k InstallKubernetes) Validate() error {
+	for field, ns := range map[string]string{
+		"kubernetes.system.namespace":   k.System.Namespace,
+		"kubernetes.workload.namespace": k.Workload.Namespace,
+	} {
+		if ns != "" && !ValidNamespace(ns) {
+			return fmt.Errorf("%s %q is not a valid namespace name — lowercase letters, digits and dashes (max 63 chars)", field, ns)
+		}
+	}
+	// Apps next to the control plane would share a namespace with a
+	// privileged build engine and the policy that guards it, and donkey's own
+	// objects would be inside the blast radius of every `donkey destroy`.
+	if k.Workload.Namespace != "" && k.Workload.Namespace == k.SystemNamespace() {
+		return fmt.Errorf("kubernetes.workload.namespace must differ from kubernetes.system.namespace (%s) — apps do not belong next to the control plane", k.SystemNamespace())
+	}
+	if k.Workload.Namespace != "" && k.Workload.NamespacePrefix != "" {
+		return fmt.Errorf("kubernetes.workload.namespacePrefix has no meaning together with kubernetes.workload.namespace — with one namespace for every app there is no per-space namespace to prefix")
+	}
+	// The two blocks share a shape, but the prefix only means something for
+	// app namespaces — accepting it under system: would quietly do nothing.
+	if k.System.NamespacePrefix != "" {
+		return fmt.Errorf("kubernetes.system.namespacePrefix is not a setting — the prefix belongs under kubernetes.workload")
+	}
+	return nil
+}
+
 // InstallGateway tunes the traffic entry point.
 type InstallGateway struct {
 	// ServiceType is the type of the service traffic enters the cluster
@@ -172,6 +255,35 @@ type InstallGateway struct {
 	// so port mappings (kind) or firewall rules can rely on them.
 	HTTPNodePort  int32 `json:"httpNodePort,omitempty"`
 	HTTPSNodePort int32 `json:"httpsNodePort,omitempty"`
+	// HTTPRoute attaches donkey's edge to a Gateway API gateway the cluster
+	// already runs (one HTTPRoute for the domain and everything under it),
+	// instead of exposing the edge Service directly. That gateway terminates
+	// TLS before routes match, so this pairs with tls.mode "none".
+	HTTPRoute InstallHTTPRoute `json:"httpRoute,omitempty"`
+}
+
+// InstallHTTPRoute names the Gateway API gateway to attach to.
+type InstallHTTPRoute struct {
+	Name string `json:"name,omitempty"`
+	// Namespace is where that gateway lives; empty means donkey's own system
+	// namespace (the Gateway API reading of an unqualified parentRef).
+	Namespace string `json:"namespace,omitempty"`
+	// SectionName narrows the attachment to one listener of the gateway.
+	SectionName string `json:"sectionName,omitempty"`
+}
+
+// Enabled reports whether the installation attaches to a cluster gateway.
+func (r InstallHTTPRoute) Enabled() bool { return r.Name != "" }
+
+// Validate checks what can be wrong without consulting the cluster.
+func (r InstallHTTPRoute) Validate() error {
+	if r.Name == "" && (r.Namespace != "" || r.SectionName != "") {
+		return fmt.Errorf("gateway.httpRoute needs `name` — the Gateway API gateway to attach to")
+	}
+	if r.Namespace != "" && !ValidNamespace(r.Namespace) {
+		return fmt.Errorf("gateway.httpRoute.namespace %q is not a valid namespace name", r.Namespace)
+	}
+	return nil
 }
 
 // InstallTLS is how the gateway gets its certificates. donkey always serves
@@ -182,23 +294,30 @@ type InstallTLS struct {
 	// Mode is "acme" (one certificate per hostname from Let's Encrypt, the
 	// default — the gateway must be reachable on ports 80/443), "ca" (a
 	// self-signed CA minting per-hostname certificates — local and internal
-	// installs; trust its one CA certificate and every app is covered), or
-	// "static" (a provided certificate, usually a wildcard, in the Secret
-	// named by Secret).
+	// installs; trust its one CA certificate and every app is covered),
+	// or "none" (no TLS at donkey's edge — only sensible behind
+	// gateway.httpRoute, where the cluster's gateway terminates TLS with
+	// certificates the platform provides).
 	Mode string `json:"mode,omitempty"`
 	// Email is the ACME account contact (expiry warnings); optional.
 	Email string `json:"email,omitempty"`
 	// Directory overrides the ACME endpoint — Let's Encrypt staging, or an
 	// internal CA speaking ACME.
 	Directory string `json:"directory,omitempty"`
-	// Secret names a kubernetes.io/tls Secret in donkey-system holding the
-	// certificate for static mode (default donkey-gateway-tls).
-	Secret string `json:"secret,omitempty"`
+}
 
-	// Issuer and Kind configured cert-manager in earlier donkey versions.
-	// They are ignored now — kept so old install files still parse.
-	Issuer string `json:"issuer,omitempty"`
-	Kind   string `json:"kind,omitempty"`
+// Validate checks the TLS block without consulting the cluster.
+func (t InstallTLS) Validate() error {
+	switch t.Mode {
+	case "", "acme", "ca", "none":
+	// "off" is what people try first — and bare, YAML 1.1 reads it as a
+	// boolean and hands us "false". Both spellings deserve the real name.
+	case "off", "false":
+		return fmt.Errorf(`tls.mode %q is not a mode — "none" turns TLS off at donkey's edge`, t.Mode)
+	default:
+		return fmt.Errorf("tls.mode must be acme, ca or none, not %q", t.Mode)
+	}
+	return nil
 }
 
 // DefaultBuildkitImage is the build engine donkey installs. It is pinned to a

@@ -31,6 +31,15 @@ const (
 
 	// LoginRequired is AnnotationLogin's one meaningful value.
 	LoginRequired = "required"
+
+	// AnnotationToken marks the one route whose backend verifies identity
+	// itself: the gateway forwards a short-lived sealed token
+	// (X-Access-Token) minted from the login. Only donkey's own console/API
+	// route carries it — an app must never receive a credential its code
+	// could replay against the API.
+	AnnotationToken = "donkey.dev/token"
+	// TokenForward is AnnotationToken's one meaningful value.
+	TokenForward = "forward"
 )
 
 // protected says visitors of this app's routes must sign in. Every
@@ -42,8 +51,13 @@ func protected(in Input) bool {
 
 // backendURL is where the gateway forwards this app's traffic: the app's
 // Service, on the stable in-cluster port.
+//
+// ".svc" and no further: the cluster domain is a per-cluster setting
+// ("cluster.local" is only the default) and every pod's resolv.conf carries
+// "svc.<domain>" in its search list, so the short form resolves on clusters
+// where a hardcoded fully-qualified name would not.
 func backendURL(in Input) string {
-	return fmt.Sprintf("http://%s.%s.svc.cluster.local:80", in.App.Name, in.Namespace)
+	return fmt.Sprintf("http://%s.%s.svc:80", in.Name(), in.Namespace)
 }
 
 // routeAnnotations is the gateway's routing table entry: where the app
@@ -83,8 +97,8 @@ func routeConfigMap(name, namespace string, labels, annotations map[string]strin
 // gateway serves https only — the login cookies are Secure-only, so serving
 // apps over plain http was never right; its http listener redirects.
 func appRoute(in Input) *corev1.ConfigMap {
-	return routeConfigMap(in.App.Name, in.Namespace,
-		Labels(in.Space, in.App.Name, ComponentWeb),
+	return routeConfigMap(in.Name(), in.Namespace,
+		Labels(in.Space, in.Name(), ComponentWeb),
 		routeAnnotations(in, in.Domain, "/"))
 }
 

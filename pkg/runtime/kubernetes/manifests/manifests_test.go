@@ -59,7 +59,7 @@ func TestProtectionRendering(t *testing.T) {
 	for _, want := range []string{
 		AnnotationHost + ": shop.acme.apps.example.com",
 		AnnotationLogin + ": " + LoginRequired,
-		AnnotationBackend + ": http://shop.donkey-acme.svc.cluster.local:80",
+		AnnotationBackend + ": http://shop.donkey-acme.svc:80",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("protected app should render %s", want)
@@ -330,9 +330,9 @@ func TestPathRoutesShareAnAddress(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		AnnotationHost + ": dashboard.acme.apps.example.com",                 // the other app's hostname
-		AnnotationPath + ": /api",                                            // …under this prefix
-		AnnotationBackend + ": http://shop.donkey-acme.svc.cluster.local:80", // …reaching this app
+		AnnotationHost + ": dashboard.acme.apps.example.com",   // the other app's hostname
+		AnnotationPath + ": /api",                              // …under this prefix
+		AnnotationBackend + ": http://shop.donkey-acme.svc:80", // …reaching this app
 	} {
 		if !strings.Contains(rendered, want) {
 			t.Errorf("a shared-address route should contain %q", want)

@@ -256,6 +256,15 @@ var nameRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$`)
 // hostname and object names, so they follow donkey.yaml's rules.
 func ValidName(s string) bool { return nameRE.MatchString(s) }
 
+// namespaceRE is an RFC 1123 DNS label — what Kubernetes accepts as a
+// namespace name. Longer than donkey's own names allow, because the
+// namespaces donkey is *given* are named by somebody else.
+var namespaceRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
+
+// ValidNamespace reports whether s is a name Kubernetes accepts for a
+// namespace.
+func ValidNamespace(s string) bool { return namespaceRE.MatchString(s) }
+
 // A plain lowercase DNS hostname of at least two labels: it becomes a route
 // host, a certificate name and part of the callback URL, none of which accept
 // a wildcard, scheme, port or path.

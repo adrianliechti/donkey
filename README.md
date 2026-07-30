@@ -62,7 +62,8 @@ five ideas:
 │  (thin client)│   HTTP   │  ├─ donkey-server   REST API, detection,│
 └───────────────┘          │  │      manifests, AI, rollout watching │
                            │  ├─ donkey-buildkitd  image builds      │──▶ registry
- browser ────80/443───────▶│  └─ donkey-gateway  TLS (ACME/CA/static)│──OIDC──▶ Entra ID /
+                           │  ├─ donkey-ai      openai addon endpoint│──▶ model API
+ browser ────80/443───────▶│  └─ donkey-gateway  TLS (ACME/CA/none)  │──OIDC──▶ Entra ID /
                            │       · routing by hostname and path    │        any IdP
      <app>.<space>.<domain>│       · OIDC login                      │
                            │       · access (users/groups/roles) ──▶ app
@@ -103,6 +104,15 @@ five ideas:
   folder is packed client-side with the CLI's exclusion rules.
   Views are linkable (`#/app/<space>/<name>`) and follow your light/dark
   preference.
+- **donkey-ai** — the openai addon's endpoint (same image, `ai`
+  entrypoint). It is the one donkey workload apps are *meant* to reach, so it
+  runs apart from the admin API: it holds the platform's AI credential and
+  read-only access to the binding Secrets, and nothing else. Apps call it with
+  the per-space token their binding carries; it swaps that for the real
+  credential, which never leaves this process. Removing the service revokes
+  the space's access. The console's own AI chat is browser code, so it calls
+  its own origin — `donkey-server` forwards `/ai/v1` here without inspecting
+  it, because on that origin `/v1` is already the admin API.
 - **donkey-buildkitd** — a plain BuildKit deployment; the server drives it
   over gRPC with a Dockerfile (the app's own, or one donkey's assistant
   wrote), and pushes straight to the registry. It is also
@@ -111,13 +121,16 @@ five ideas:
 - **donkey-gateway** — donkey's own edge (same binary as the server,
   started with `gateway`): traffic enters the cluster here, on ports 80 and
   443. It terminates TLS and issues the certificates itself — one per
-  hostname via ACME (Let's Encrypt) on demand, or minted by its own CA for
-  internal installs, or a provided wildcard (`tls.mode`) — routes by
+  hostname via ACME (Let's Encrypt or an internal ACME CA) on demand, or
+  minted by its own CA for internal installs (`tls.mode`) — routes by
   hostname and path (from the route ConfigMaps it watches), runs the OIDC
   code flow itself where a route demands a login, seals what it learned
   into an AES-GCM cookie (stateless — replicas just scale), checks the
   app's access rules (users, groups, roles from the ID token's claims) and
-  forwards with `X-Auth-Request-*` identity headers. TLS and auth live here
+  forwards with `X-Auth-Request-*` identity headers. Those headers are
+  information for the app, never authorization: donkey's own API is handed a
+  short-lived sealed token instead (`X-Access-Token`) and verifies it itself,
+  so nothing in the cluster can reach it by typing a header. TLS and auth live here
   because no ingress vendor has a standard for the latter — donkey needs no
   ingress controller, no Gateway API, no cert-manager.
 - **Per space** — one namespace (`donkey-<space>`) shared by the apps of
@@ -364,11 +377,11 @@ Ways in and out, all equivalent:
   CLI deploys.
 
 **The `openai` service hides the real credential.** Its binding points apps
-at a proxy inside donkey-server with a generated per-space token; the proxy
-checks that token against the bindings it issued, swaps in the platform's
-actual key upstream, and streams the answer back (SSE included). The real
-key never leaves `donkey-system`, and removing the service from the space
-*is* the revocation.
+at `donkey-ai` with a generated per-space token; that endpoint checks the
+token against the bindings donkey issued, swaps in the platform's actual key
+upstream, and streams the answer back (SSE included). The real key never
+leaves `donkey-system` — and never sits in the process that writes to the
+cluster — and removing the service from the space *is* the revocation.
 
 **Getting at a service yourself.** Services rightly have no public address,
 so donkey provides the ways in: `donkey addon tunnel NAME` opens a private
@@ -383,18 +396,19 @@ using the very token and proxy an app would.
 
 donkey installs into a cluster you already run, and stays inside its own
 namespaces. It **never modifies cluster-wide settings**: no CoreDNS edits, no
-files on nodes, no admission webhooks, no StorageClasses — everything it
-applies is in `donkey-system`, in a `donkey-<space>` namespace, or is one of
-two cluster-scoped objects it names after itself (the `donkey` GatewayClass
-and the `donkey-server` ClusterRoleBinding). A test asserts exactly that
-(`TestInstallTouchesOnlyItsOwnObjects`).
+files on nodes, no admission webhooks, no StorageClasses, no required CRDs — everything
+it applies is in `donkey-system`, in a `donkey-<space>` namespace, or is one of
+the few cluster-scoped RBAC objects it names after itself. A test asserts
+exactly that (`TestInstallTouchesOnlyItsOwnObjects`). Configured with a
+[workload namespace](#namespaces-and-restricted-clusters) it applies nothing
+cluster-scoped at all.
 
 What has to be there first (`donkey server install` checks these before it
 applies anything, and `donkey doctor` keeps checking them after):
 
 | Requirement | Why | Notes |
 |---|---|---|
-| **Kubernetes cluster** with a default StorageClass | apps with `storage.paths` and provisioned services claim volumes | any conformant cluster; nothing donkey-specific. No ingress controller, no Gateway API, no cert-manager — donkey brings its own edge. Traffic enters through the donkey-gateway `LoadBalancer` service; on clusters where nothing assigns those an address (kind), set `gateway.serviceType: NodePort` or `ClusterIP` |
+| **Kubernetes cluster** with a default StorageClass | apps with `storage.paths` and provisioned services claim volumes | any conformant cluster; nothing donkey-specific. No ingress controller, no Gateway API, no cert-manager — donkey brings its own edge, and optionally attaches to a Gateway API gateway the cluster already runs (below). Traffic enters through the donkey-gateway `LoadBalancer` service; on clusters where nothing assigns those an address (kind), set `gateway.serviceType: NodePort` or `ClusterIP` |
 | **Container registry** the cluster can pull from | donkey pushes every build there | `registry.url` + credentials; `registry.caSecret` when its certificate comes from a private CA |
 | **DNS** for `*.<domain>` and `<domain>` → the gateway address | apps are served at `<app>.<space>.<domain>`, the API and login callback at `<domain>` | one wildcard covers every depth; the apex needs its own record |
 | **OIDC provider** (Pocket ID, Entra ID, Keycloak, …) | the one way in: console, CLI and protected apps all sign in against it | required — `auth.issuer` (+ client id/secret); `auth.admins` optionally narrows who may administer |
@@ -407,9 +421,128 @@ registry container, an OIDC provider) and
 [examples/INSTALL_DOCKER.md](examples/INSTALL_DOCKER.md) (no Kubernetes at
 all — `runtime: docker` runs apps straight on the Docker engine).
 
-RBAC: donkey-server currently binds `cluster-admin` (it creates namespaces and
-everything inside them). Scoping that down is on the list — see
-[Security notes](#security-notes-poc-status).
+RBAC: by default donkey-server binds `cluster-admin`, because it creates and
+deletes namespaces and no Role can express that. Giving it a workload
+namespace instead drops it to two namespaced Roles — see below.
+
+### Namespaces and restricted clusters
+
+By default every space gets a namespace of its own (`donkey-<space>`), created
+and deleted by donkey. That is the right shape on a cluster you own, and it is
+what makes an app's Service reachable as plain `api` from its siblings.
+
+Plenty of clusters don't work that way. Namespaces are handed out by a
+platform team, through a CRD or a GitOps pipeline, and `cluster-admin` is not
+something a review will approve. For those, name the namespaces donkey should
+use:
+
+```yaml
+kubernetes:
+  system:
+    namespace: bank-donkey-system   # where the control plane lives
+  workload:
+    namespace: bank-donkey-apps     # where every app of every space lives
+```
+
+One rule covers both fields: **name a namespace and it is yours.** donkey
+expects it to exist, applies its objects into it, and never creates, deletes
+or relabels it. Leave a field empty and donkey makes and manages that
+namespace itself.
+
+Setting `workload.namespace` changes three things:
+
+- **Every app lives in one namespace**, so object names carry their space:
+  the app `api` in space `shop` becomes `shop--api` on the cluster. The
+  separator is `--`, and neither a space nor an app name may contain it.
+- **Siblings are addressed by that name too.** Where an app in a namespace of
+  its own reaches a sibling at `http://api`, here it is `http://shop--api`.
+  Addon bindings (`DATABASE_URL` and friends) are generated, so they follow
+  automatically — only a hostname you hardcoded needs changing.
+- **donkey needs nothing above a namespace.** No ClusterRole, no
+  ClusterRoleBinding, no namespace permissions: namespaced Roles in the two
+  namespaces — the server's, spelled out in `serverRoleRules`, and the
+  gateway's read-only route access. This is the only arrangement that runs
+  with no cluster-scoped grant at all.
+
+Two limits to check before you commit to a name:
+
+- A Service name is a DNS label, so `<space>--<app>` must be **63 characters
+  or fewer**. donkey refuses the pair at deploy time rather than letting the
+  cluster reject it.
+- Both namespaces must **already exist**, and their Pod Security Standard has
+  to admit the pods that go in them. The install refuses up front rather than
+  letting admission fail silently later:
+  `donkey-system` runs a **privileged** BuildKit, so it needs
+  `pod-security.kubernetes.io/enforce=privileged` (or no enforcement); the
+  workload namespace must not be `restricted`, because most real application
+  images run as root. donkey sets `baseline` on namespaces it creates itself.
+
+### Using the cluster's edge
+
+donkey needs no Gateway API — but a cluster that standardizes on one can put
+its edge in front of donkey with one setting, checked at install: naming a
+gateway on a cluster that doesn't serve HTTPRoute is refused up front
+instead of failing mid-apply.
+
+**Enter through the cluster's Gateway API gateway** instead of exposing
+donkey's edge Service:
+
+```yaml
+gateway:
+  serviceType: ClusterIP
+  httpRoute:
+    name: shared-gateway      # the Gateway to attach to
+    namespace: infra
+tls:
+  mode: none                  # that gateway terminates TLS before routes match
+```
+
+donkey renders one HTTPRoute sending `<domain>` and `*.<domain>` (a Gateway
+API wildcard matches any depth) to the donkey gateway, which keeps doing what
+it always does — routing, login, access — one hop further in. Custom app
+hostnames outside the domain are not covered by this route.
+
+TLS in this arrangement is the platform's prerequisite, not donkey's job:
+the cluster gateway's listeners terminate it with certificates provisioned
+however the platform likes — cert-manager, a PKI process, a ReferenceGrant
+when the certificate Secrets live outside the gateway's namespace. Remember
+that a TLS certificate wildcard covers one label while apps live at
+`<app>.<space>.<domain>`, so the gateway wants a listener per
+`*.<space>.<domain>`. [examples/install_prod.yaml](examples/install_prod.yaml)
+spells out the whole arrangement.
+
+### Several donkeys on one cluster
+
+Supported, with one requirement: **every installation needs its own
+`kubernetes.system.namespace`.** That namespace is the installation's
+identity — it is stamped on every object as `donkey.dev/instance`, every sweep
+donkey makes requires it, and every cluster-scoped object it applies is named
+after it. Without a distinct one the second install would apply the first's
+`ClusterRoleBinding`, and because server-side apply forces the subject list,
+the first installation would silently lose every permission it has.
+
+`kubectl get all -A -l donkey.dev/instance=bank-donkey-system` shows one
+installation's objects.
+
+The rest is not enforceable from inside a single installation — donkey can
+only see its own configuration — so these are yours to get right:
+
+| Must differ per installation | Why |
+|---|---|
+| `kubernetes.system.namespace` | the installation's identity — every object is stamped and swept by it; the install warns when it finds no existing installation there |
+| `domain` | two gateways cannot divide one wildcard, and DNS resolves to one of them |
+| `kubernetes.workload.namespace`, or `kubernetes.workload.namespacePrefix` | otherwise both installations write into the same namespaces |
+| `gateway.httpNodePort` / `httpsNodePort` | node ports are cluster-wide |
+| `registry.url` | see below |
+
+The registry one is the subtlest. An image is pushed to
+`<registry.url>/<app>:<tag>`, and the repository path carries neither the
+space nor the installation. Two installations sharing a `registry.url`
+therefore share the repository for every app of the same name — and
+`--no-build --tag` only checks that an image sits under the configured
+registry prefix, which is what stops one app from being deployed with
+another's image. Sharing the prefix defeats that check across installations.
+Give each one its own.
 
 ### The builder
 
@@ -520,10 +653,13 @@ individually.
 **Certificates and DNS.** The gateway issues one certificate per app
 hostname — a TLS wildcard covers only one level, so no single certificate
 could. `tls.mode: acme` requests them from Let's Encrypt on demand (the
-gateway answers its own HTTP-01 challenges); `tls.mode: ca` mints them from
-the gateway's own CA for installs the internet can't reach (trust that one
-CA certificate and every app is covered); `tls.mode: static` serves a
-provided certificate. DNS is simpler than TLS here: one `*.<domain>` record
+gateway answers its own HTTP-01 challenges), or from any internal CA that
+speaks ACME (`tls.directory`); `tls.mode: ca` mints them from the gateway's
+own CA for installs with no issuing infrastructure at all (trust that one
+CA certificate and every app is covered); `tls.mode: none` hands TLS to a
+cluster gateway in front (`gateway.httpRoute`), where certificates are the
+platform's concern. There is no bring-your-own-file mode: a hand-provided
+wildcard covers one label while apps live two deep, which made it a trap. DNS is simpler than TLS here: one `*.<domain>` record
 covers every depth, because DNS wildcards match multiple labels (as long as
 no explicit record sits at an intermediate name). Only the apex is never
 covered by the wildcard — and the API, console and login callback live
@@ -584,6 +720,15 @@ Running apps are not touched: their pods, disks, routes and certificates stay
 as they are while donkey-server restarts. A re-install also keeps every secret
 it isn't given again (registry password, OIDC client secret, AI key), so the
 same settings file is enough — rotating one thing must never blank the rest.
+
+Upgrading from a version that predates instance labelling (v0.3.1 and older,
+which stamped no installation on what they applied) adds one step the install
+does itself: it claims the space namespaces carrying this installation's
+prefix, and everything donkey put in them, so the apps stay visible to the
+console and served by the gateway. It reports what it claimed, finds nothing
+on the second run, and never touches a namespace another installation has
+stamped — if the `namespacePrefix` changed with the upgrade, the old
+namespaces are left alone and named in a warning.
 
 **What to back up.** All donkey state lives in Kubernetes objects, and nearly
 all of it is reproducible: images rebuild from the repositories, manifests
@@ -829,8 +974,7 @@ company with an internal PKI uses. Tear down with `devkube --cluster donkey dele
   failure logs when something breaks. Point it at a model you control (the
   install takes any OpenAI-compatible base URL).
 - The `openai` service never hands out the platform's real AI key: bindings
-  carry a generated per-space stand-in, donkey-server's proxy swaps it for
-  the real one on the way upstream, and the swap only happens for tokens
-  the server itself issued — so removing the service revokes the space's
-  access, and the upstream credential exists nowhere outside
-  `donkey-system`.
+  carry a generated per-space stand-in, `donkey-ai` swaps it for the real
+  one on the way upstream, and the swap only happens for tokens donkey
+  itself issued — so removing the service revokes the space's access, and
+  the upstream credential exists nowhere outside `donkey-system`.

@@ -142,10 +142,10 @@ func (s *Server) routes() http.Handler {
 	mux.Handle("POST /v1/spaces/{space}/apps/{app}/files/move", s.auth(s.handleMoveFile))
 	mux.Handle("POST /v1/spaces/{space}/apps/{app}/files/folder", s.auth(s.handleMakeFolder))
 	mux.Handle("DELETE /v1/spaces/{space}/apps/{app}", s.auth(s.handleDestroy))
-	// The openai addon's proxy — its own per-space tokens, not the admin
-	// token; the real upstream credential never travels past this handler.
-	mux.Handle(aiProxyPrefix, s.aiProxyHandler())
 	mux.Handle("GET /v1/doctor", s.auth(s.handleDoctor))
+	// The console's AI chat, forwarded to donkey-ai — see aiforward.go for
+	// why it lands on this origin and why nothing is verified here.
+	mux.Handle(aiForwardPrefix, aiForwardHandler(s.cfg.AIURL))
 	// Everything else is the admin console.
 	mux.Handle("/", uiHandler())
 
@@ -210,19 +210,21 @@ func (s *Server) Run(ctx context.Context) error {
 	return srv.Shutdown(shutdownCtx)
 }
 
-// auth is who may call the API. Usual path: the gateway ran the login and
-// forwarded the identity as headers, so their presence is the authorization.
-// Direct path (a port-forward past the gateway): a sealed CLI token verified
-// here against the same admin rules. In-cluster callers who can reach the
-// Service are inside the trust boundary this PoC draws — see SECURITY.md.
+// auth is who may call the API: a sealed token, verified here, checked
+// against the admin rules — nothing else. The browser console's rides in
+// X-Access-Token, minted per request by the gateway from the login session;
+// the CLI's rides as Authorization: Bearer, through the gateway or a
+// port-forward alike. An identity header is just a header: anything in the
+// cluster can type one, and app pods legitimately reach this Service (the
+// AI proxy), so presence must never be authorization.
 func (s *Server) auth(next http.HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("X-Auth-Request-User") != "" {
-			next(w, r)
-			return
+		token := r.Header.Get("X-Access-Token")
+		if token == "" {
+			token, _ = strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 		}
-		if tok, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer "); ok && tok != "" {
-			if id, err := identity.VerifyToken(s.cfg.SessionKey, tok); err == nil &&
+		if token != "" {
+			if id, err := identity.VerifyToken(s.cfg.SessionKey, token); err == nil &&
 				s.cfg.Admins.Allows(id.Email, id.Groups, id.Roles) {
 				next(w, r)
 				return

@@ -33,7 +33,7 @@ func (pocketbase) DefaultStorage() string { return "1Gi" }
 func (pocketbase) Binding(in Input) map[string]string {
 	// The service is named plainly after itself, so siblings in the space
 	// reach it as "pocketbase" — the same way they reach each other.
-	host := fmt.Sprintf("%s.%s.svc", in.Name, in.Namespace)
+	host := fmt.Sprintf("%s.%s.svc", in.HostName(), in.Namespace)
 	return map[string]string{
 		"POCKETBASE_URL":            fmt.Sprintf("http://%s:%d", host, pbPort),
 		"POCKETBASE_ADMIN_EMAIL":    pbAdminEmail,

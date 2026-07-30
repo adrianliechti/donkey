@@ -9,9 +9,7 @@ import (
 	"fmt"
 	"maps"
 	"path"
-	"regexp"
 	"slices"
-	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -24,31 +22,6 @@ import (
 )
 
 const (
-	// ManagedByValue marks every object donkey owns.
-	ManagedByValue = "donkey"
-	// AnnotationManaged marks namespaces donkey created (and may delete).
-	AnnotationManaged = "donkey.dev/managed"
-	// AnnotationImage records the deployed image on the Deployment.
-	AnnotationImage = "donkey.dev/image"
-	// AnnotationDecisions records deploy-time analysis decisions on the
-	// Deployment (JSON), so no-build deploys can keep them.
-	AnnotationDecisions = "donkey.dev/decisions"
-	// AnnotationConsole is separate from decisions: a deploy rewrites those
-	// from donkey.yaml, while a console choice survives deploys — until
-	// donkey.yaml settles the matter, which always wins.
-	AnnotationConsole = "donkey.dev/console"
-	// LabelApp / LabelComponent identify donkey-owned resources;
-	// LabelSpace groups the apps of one space (one namespace holds them all).
-	LabelApp       = "donkey.dev/app"
-	LabelComponent = "donkey.dev/component"
-	LabelSpace     = "donkey.dev/space"
-	// LabelShared marks an app's binding Secret as a copy of a space-shared
-	// addon's — removing the shared addon has to find (only) these copies.
-	LabelShared = "donkey.dev/shared"
-
-	ComponentWeb          = "web"
-	ComponentRegistryAuth = "registry-auth"
-
 	webContainerName = "web"
 
 	// storageVolumeName is the app's single volume; every configured path
@@ -58,64 +31,21 @@ const (
 	storageFSGroup = int64(2000)
 )
 
-// Labels marks one object as donkey's; callers that don't know the space pass
-// "" and get no space label.
-//
-// Two sets say the same things. donkey.dev/* is what donkey selects on. The
-// app.kubernetes.io/* set is the Kubernetes-recommended vocabulary, so the
-// grouping is legible to k9s, Lens and Backstage, which group by `part-of`.
-//
-// Metadata only: the Deployment's selector is written separately from
-// donkey.dev/* alone, because a selector is immutable once created.
-func Labels(space, app, component string) map[string]string {
-	l := map[string]string{
-		"app.kubernetes.io/name":       app,
-		"app.kubernetes.io/managed-by": ManagedByValue,
-		LabelApp:                       app,
-		LabelComponent:                 component,
-	}
-	if component != "" {
-		l["app.kubernetes.io/component"] = component
-	}
-	if space != "" {
-		l[LabelSpace] = space
-		l["app.kubernetes.io/part-of"] = space
-	}
-	return l
-}
-
-// labelValue matches what Kubernetes accepts as a label value.
-var labelValue = regexp.MustCompile(`^[A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?$`)
-
-// withVersion labels from the image tag. The tag is not donkey's to choose,
-// and a value the API server rejects would fail the whole apply — so a tag
-// that cannot be a label is dropped. A missing label costs a line in k9s; a
-// rejected one costs the deploy.
-func withVersion(l map[string]string, imageRef string) map[string]string {
-	tag := imageRef
-	if i := strings.LastIndex(tag, "@"); i >= 0 {
-		tag = tag[:i] // a digest is not a version
-	}
-	slash := strings.LastIndex(tag, "/")
-	if i := strings.LastIndex(tag, ":"); i > slash {
-		tag = tag[i+1:]
-	} else {
-		return l
-	}
-	if len(tag) > 63 || !labelValue.MatchString(tag) {
-		return l
-	}
-	l["app.kubernetes.io/version"] = tag
-	return l
-}
-
 // Input is everything needed to render an app's core objects.
 type Input struct {
 	App *config.AppConfig
 	// Space is the app's space; Namespace is the namespace that space maps to.
 	Space     string
 	Namespace string
-	ImageRef  string
+	// SharedNamespace marks an installation whose apps all live in one
+	// namespace donkey doesn't own: there is no namespace to render, and the
+	// space is recorded by a marker object instead.
+	SharedNamespace bool
+	// ObjectName is what this app's objects are called. It is App.Name unless
+	// the installation shares one namespace, where every name carries its
+	// space. Empty means the two are the same.
+	ObjectName string
+	ImageRef   string
 	// RegistryHost/Username/Password feed the image pull secret; empty
 	// username or password skips it (anonymous registry).
 	RegistryHost     string
@@ -142,15 +72,28 @@ type RouteTarget struct {
 	Path string
 }
 
+// Name is what this app's objects are called, and the value its labels carry.
+// Object names and labels are qualified together on purpose: every selector
+// donkey writes then addresses one space's objects, without any call site
+// having to remember to narrow it.
+func (in Input) Name() string {
+	if in.ObjectName != "" {
+		return in.ObjectName
+	}
+	return in.App.Name
+}
+
 func PullSecretName(app string) string { return app + "-registry" }
-func EnvSecretName(app string) string  { return app + "-env" }
-func DataClaimName(app string) string  { return app + "-data" }
+
+func EnvSecretName(app string) string { return app + "-env" }
+
+func DataClaimName(app string) string { return app + "-data" }
 
 // AppObjects renders the namespace, optional pull secret, data volume,
 // deployment and service for an app, in apply order.
 func AppObjects(in Input) ([]runtime.Object, error) {
 	app := in.App
-	objs := []runtime.Object{Namespace(in.Space, in.Namespace)}
+	objs := []runtime.Object{SpaceHome(in.Space, in.Namespace, in.SharedNamespace)}
 
 	if in.RegistryUsername != "" && in.RegistryPassword != "" {
 		sec, err := pullSecret(in)
@@ -191,6 +134,16 @@ func NetworkObjects(in Input) []runtime.Object {
 	return objs
 }
 
+// SpaceHome is the object that has to exist before anything of the space
+// does: the namespace donkey owns, or — where the whole installation shares a
+// namespace it was given — the marker that records the space instead.
+func SpaceHome(space, namespace string, shared bool) runtime.Object {
+	if shared {
+		return SpaceMarker(space, namespace)
+	}
+	return Namespace(space, namespace)
+}
+
 // Namespace is the home of one space: every app of the space lives in it and
 // they reach each other by plain service name. Pod Security Standards are
 // enforced at "baseline" — enough to keep app pods from going privileged,
@@ -227,9 +180,9 @@ func dataClaim(in Input) (*corev1.PersistentVolumeClaim, error) {
 	pvc := &corev1.PersistentVolumeClaim{
 		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "PersistentVolumeClaim"},
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      DataClaimName(in.App.Name),
+			Name:      DataClaimName(in.Name()),
 			Namespace: in.Namespace,
-			Labels:    Labels(in.Space, in.App.Name, ComponentWeb),
+			Labels:    Labels(in.Space, in.Name(), ComponentWeb),
 		},
 		Spec: corev1.PersistentVolumeClaimSpec{
 			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
@@ -277,9 +230,9 @@ func pullSecret(in Input) (*corev1.Secret, error) {
 	return &corev1.Secret{
 		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Secret"},
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      PullSecretName(in.App.Name),
+			Name:      PullSecretName(in.Name()),
 			Namespace: in.Namespace,
-			Labels:    Labels(in.Space, in.App.Name, ComponentRegistryAuth),
+			Labels:    Labels(in.Space, in.Name(), ComponentRegistryAuth),
 		},
 		Type: corev1.SecretTypeDockerConfigJson,
 		Data: map[string][]byte{corev1.DockerConfigJsonKey: b},
@@ -293,7 +246,7 @@ func appEnvironment(in Input) ([]corev1.EnvVar, []corev1.EnvFromSource) {
 	optional := true
 	envFrom := []corev1.EnvFromSource{{
 		SecretRef: &corev1.SecretEnvSource{
-			LocalObjectReference: corev1.LocalObjectReference{Name: EnvSecretName(app.Name)},
+			LocalObjectReference: corev1.LocalObjectReference{Name: EnvSecretName(in.Name())},
 			Optional:             &optional,
 		},
 	}}
@@ -377,7 +330,7 @@ func deployment(in Input) (*appsv1.Deployment, error) {
 		AutomountServiceAccountToken: &automount,
 	}
 	if in.RegistryUsername != "" && in.RegistryPassword != "" {
-		spec.ImagePullSecrets = []corev1.LocalObjectReference{{Name: PullSecretName(app.Name)}}
+		spec.ImagePullSecrets = []corev1.LocalObjectReference{{Name: PullSecretName(in.Name())}}
 	}
 
 	annotations := map[string]string{AnnotationImage: in.ImageRef}
@@ -387,18 +340,18 @@ func deployment(in Input) (*appsv1.Deployment, error) {
 	dep := &appsv1.Deployment{
 		TypeMeta: metav1.TypeMeta{APIVersion: "apps/v1", Kind: "Deployment"},
 		ObjectMeta: metav1.ObjectMeta{
-			Name:        app.Name,
+			Name:        in.Name(),
 			Namespace:   in.Namespace,
-			Labels:      withVersion(Labels(in.Space, app.Name, ComponentWeb), in.ImageRef),
+			Labels:      withVersion(Labels(in.Space, in.Name(), ComponentWeb), in.ImageRef),
 			Annotations: annotations,
 		},
 		Spec: appsv1.DeploymentSpec{
 			Replicas: app.Replicas,
 			Selector: &metav1.LabelSelector{
-				MatchLabels: map[string]string{LabelApp: app.Name, LabelComponent: ComponentWeb},
+				MatchLabels: map[string]string{LabelApp: in.Name(), LabelComponent: ComponentWeb},
 			},
 			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{Labels: withVersion(Labels(in.Space, app.Name, ComponentWeb), in.ImageRef)},
+				ObjectMeta: metav1.ObjectMeta{Labels: withVersion(Labels(in.Space, in.Name(), ComponentWeb), in.ImageRef)},
 			},
 		},
 	}
@@ -409,7 +362,7 @@ func deployment(in Input) (*appsv1.Deployment, error) {
 			Name: storageVolumeName,
 			VolumeSource: corev1.VolumeSource{
 				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
-					ClaimName: DataClaimName(app.Name),
+					ClaimName: DataClaimName(in.Name()),
 				},
 			},
 		}}
@@ -438,13 +391,13 @@ func service(in Input) *corev1.Service {
 	return &corev1.Service{
 		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Service"},
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      app.Name,
+			Name:      in.Name(),
 			Namespace: in.Namespace,
-			Labels:    Labels(in.Space, app.Name, ComponentWeb),
+			Labels:    Labels(in.Space, in.Name(), ComponentWeb),
 		},
 		Spec: corev1.ServiceSpec{
 			Type:     corev1.ServiceTypeClusterIP,
-			Selector: map[string]string{LabelApp: app.Name, LabelComponent: ComponentWeb},
+			Selector: map[string]string{LabelApp: in.Name(), LabelComponent: ComponentWeb},
 			Ports: []corev1.ServicePort{{
 				Name:       "http",
 				Port:       80,

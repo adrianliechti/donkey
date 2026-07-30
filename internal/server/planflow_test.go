@@ -70,7 +70,7 @@ func (r planRuntime) Status(context.Context, string, string) (*runtime.AppStatus
 // keeps detection in-process and offline.
 func planServer(rt runtime.Provider, analysis *ai.Analysis) *Server {
 	return &Server{
-		cfg:       &Config{Domain: "example.com"},
+		cfg:       &Config{Domain: "example.com", SessionKey: testSessionKey},
 		rt:        rt,
 		assistant: planAssistant{analysis: analysis},
 		plans:     newPlanStore(),
@@ -92,7 +92,7 @@ func appUpload(t *testing.T, extra map[string]string) []byte {
 func callPlan(t *testing.T, s *Server, body []byte, query string) *Plan {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, "https://donkey.example.com/v1/plans?"+query, bytes.NewReader(body))
-	req.Header.Set("X-Auth-Request-User", "u1")
+	asAdmin(t, req)
 	rec := httptest.NewRecorder()
 	s.routes().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -109,7 +109,7 @@ func callUpdate(t *testing.T, s *Server, id string, edit PlanEdit) *Plan {
 	t.Helper()
 	body, _ := json.Marshal(edit)
 	req := httptest.NewRequest(http.MethodPut, "https://donkey.example.com/v1/plans/"+id, bytes.NewReader(body))
-	req.Header.Set("X-Auth-Request-User", "u1")
+	asAdmin(t, req)
 	rec := httptest.NewRecorder()
 	s.routes().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {

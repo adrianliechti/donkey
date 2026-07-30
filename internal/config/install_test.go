@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"sigs.k8s.io/yaml"
@@ -129,5 +130,127 @@ func TestBuildSettingsDefaults(t *testing.T) {
 	s.Verify = new(false)
 	if s.VerifyStartup() {
 		t.Error("an explicit verify: false was ignored")
+	}
+}
+
+// Both namespace settings mean the same thing: name it and it is yours,
+// leave it empty and donkey makes its own.
+func TestInstallKubernetesDefaults(t *testing.T) {
+	var k InstallKubernetes
+	if k.SystemNamespace() != DefaultSystemNamespace {
+		t.Errorf("an unset system namespace should be %s, got %s", DefaultSystemNamespace, k.SystemNamespace())
+	}
+	if k.NamespacePrefix() != DefaultNamespacePrefix {
+		t.Errorf("an unset prefix should be %s, got %s", DefaultNamespacePrefix, k.NamespacePrefix())
+	}
+	if err := k.Validate(); err != nil {
+		t.Errorf("an empty block is the default installation: %v", err)
+	}
+
+	k.System.Namespace = "bank-donkey-system"
+	k.Workload.Namespace = "bank-donkey-apps"
+	if err := k.Validate(); err != nil {
+		t.Errorf("two distinct namespaces are the intended setup: %v", err)
+	}
+	if k.SystemNamespace() != "bank-donkey-system" {
+		t.Error("a configured system namespace should win")
+	}
+}
+
+func TestInstallKubernetesRejectsUnworkableCombinations(t *testing.T) {
+	// Apps next to a privileged build engine, inside the blast radius of
+	// every destroy.
+	same := InstallKubernetes{}
+	same.System.Namespace = "donkey-x"
+	same.Workload.Namespace = "donkey-x"
+	if err := same.Validate(); err == nil {
+		t.Error("one namespace for the control plane and the apps must be refused")
+	}
+
+	// A prefix maps a space onto a namespace; with one namespace for
+	// everything there is nothing left to prefix.
+	both := InstallKubernetes{}
+	both.Workload.Namespace = "donkey-apps"
+	both.Workload.NamespacePrefix = "donkey-"
+	if err := both.Validate(); err == nil {
+		t.Error("a prefix together with a shared namespace is a contradiction")
+	}
+
+	bad := InstallKubernetes{}
+	bad.Workload.Namespace = "Donkey_Apps"
+	if err := bad.Validate(); err == nil {
+		t.Error("a name the cluster would reject must be caught before the install runs")
+	}
+}
+
+// The optional attachment and the TLS block: naming half a gateway or an
+// unknown mode are configurations that could only fail later and worse.
+func TestInstallAttachmentValidation(t *testing.T) {
+	var tls InstallTLS
+	if err := tls.Validate(); err != nil {
+		t.Errorf("an empty TLS block is the default installation: %v", err)
+	}
+	tls.Mode = "none"
+	if err := tls.Validate(); err != nil {
+		t.Errorf("none is the mode behind a TLS-terminating cluster gateway: %v", err)
+	}
+	// YAML 1.1 reads a bare `off` as a boolean, arriving here as "false" —
+	// both spellings get pointed at the real name.
+	for _, mode := range []string{"off", "false"} {
+		tls.Mode = mode
+		if err := tls.Validate(); err == nil || !strings.Contains(err.Error(), "none") {
+			t.Errorf("mode %q should point at none, got %v", mode, err)
+		}
+	}
+	tls = InstallTLS{Mode: "letsencrypt"}
+	if err := tls.Validate(); err == nil {
+		t.Error("an unknown tls.mode must be refused")
+	}
+
+	var route InstallHTTPRoute
+	if err := route.Validate(); err != nil {
+		t.Errorf("no httpRoute block is the default: %v", err)
+	}
+	route.Namespace = "infra"
+	if err := route.Validate(); err == nil {
+		t.Error("a namespace without a gateway name points at nothing")
+	}
+	route.Name = "shared-gateway"
+	if err := route.Validate(); err != nil {
+		t.Errorf("name and namespace are the intended setup: %v", err)
+	}
+	if !route.Enabled() {
+		t.Error("a named gateway means the attachment is on")
+	}
+}
+
+// The example install files are the first thing a person copies — they have
+// to parse (strictly) and validate, or the copy fails before donkey runs.
+func TestExampleInstallFilesLoad(t *testing.T) {
+	matches, err := filepath.Glob("../../examples/*install*.yaml")
+	if err != nil || len(matches) == 0 {
+		t.Fatalf("no example install files found (%v)", err)
+	}
+	for _, m := range matches {
+		f, err := LoadInstallFile(m)
+		if err != nil {
+			t.Errorf("%s: %v", m, err)
+			continue
+		}
+		if err := f.TLS.Validate(); err != nil {
+			t.Errorf("%s: %v", m, err)
+		}
+		if err := f.Kubernetes.Validate(); err != nil {
+			t.Errorf("%s: %v", m, err)
+		}
+		if err := f.Gateway.HTTPRoute.Validate(); err != nil {
+			t.Errorf("%s: %v", m, err)
+		}
+		if err := f.Build.Validate(); err != nil {
+			t.Errorf("%s: %v", m, err)
+		}
+		t.Logf("%s: tls=%q httpRoute=%v system=%q workload=%q",
+			filepath.Base(m), f.TLS.Mode, f.Gateway.HTTPRoute.Enabled(),
+			f.Kubernetes.System.Namespace, f.Kubernetes.Workload.Namespace)
 	}
 }

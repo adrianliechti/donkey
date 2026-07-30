@@ -38,7 +38,6 @@ import (
 //     appears. The routing table doubles as the issuance allowlist.
 //   - ca:     a self-signed CA kept in a Secret, signing per-hostname
 //     certificates on the fly — for installs ACME cannot reach.
-//   - static: a provided certificate (usually a wildcard) from a Secret.
 //
 // Issued certificates and the ACME account live in a Secret, so they survive
 // restarts and are shared by replicas.
@@ -86,17 +85,6 @@ func (s *Server) edgeTLS(ctx context.Context) (*tls.Config, http.Handler, error)
 			MinVersion:     tls.VersionTLS12,
 			NextProtos:     []string{"h2", "http/1.1"},
 			GetCertificate: issuer.getCertificate,
-		}, redirect, nil
-
-	case "static":
-		cert, err := s.loadStaticCert(ctx)
-		if err != nil {
-			return nil, nil, err
-		}
-		return &tls.Config{
-			MinVersion:   tls.VersionTLS12,
-			NextProtos:   []string{"h2", "http/1.1"},
-			Certificates: []tls.Certificate{cert},
 		}, redirect, nil
 	}
 	return nil, nil, fmt.Errorf("unknown TLS mode %q", s.cfg.TLSMode)
@@ -453,26 +441,3 @@ func (i *caIssuer) mint(host string) (*tls.Certificate, error) {
 }
 
 // --- Static certificate ---------------------------------------------------
-
-// loadStaticCert reads the provided certificate (usually a wildcard): from
-// its Secret on Kubernetes, from <state>/tls/tls.crt+tls.key on Docker.
-// Rotating it means updating the source and restarting the gateway.
-func (s *Server) loadStaticCert(ctx context.Context) (tls.Certificate, error) {
-	if s.cfg.Runtime == "docker" {
-		dir := filepath.Join(s.cfg.StateDir, "tls")
-		cert, err := tls.LoadX509KeyPair(filepath.Join(dir, "tls.crt"), filepath.Join(dir, "tls.key"))
-		if err != nil {
-			return tls.Certificate{}, fmt.Errorf("reading the TLS certificate from %s: %w", dir, err)
-		}
-		return cert, nil
-	}
-	sec, err := s.k8s.Clientset.CoreV1().Secrets(s.cfg.SystemNamespace).Get(ctx, s.cfg.TLSSecret, metav1.GetOptions{})
-	if err != nil {
-		return tls.Certificate{}, fmt.Errorf("reading the TLS certificate from Secret %s/%s: %w", s.cfg.SystemNamespace, s.cfg.TLSSecret, err)
-	}
-	cert, err := tls.X509KeyPair(sec.Data["tls.crt"], sec.Data["tls.key"])
-	if err != nil {
-		return tls.Certificate{}, fmt.Errorf("the Secret %s/%s doesn't hold a valid tls.crt/tls.key pair: %w", s.cfg.SystemNamespace, s.cfg.TLSSecret, err)
-	}
-	return cert, nil
-}

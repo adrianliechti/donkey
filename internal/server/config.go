@@ -23,10 +23,23 @@ var Version = "dev"
 type Config struct {
 	Listen string
 
-	Registry        config.Registry
-	Domain          string
-	BuildkitAddr    string
+	Registry     config.Registry
+	Domain       string
+	BuildkitAddr string
+	// NamespacePrefix maps a space onto its own namespace; ignored when
+	// WorkloadNamespace names one namespace for the whole installation.
 	NamespacePrefix string
+	// SystemNamespace is where the control plane lives — and the identity of
+	// this installation, which is what keeps several donkeys on one cluster
+	// out of each other's objects.
+	SystemNamespace string
+	// WorkloadNamespace, when set, is the single namespace every app lives
+	// in; donkey neither creates nor deletes it.
+	WorkloadNamespace string
+	// AIURL is donkey-ai's address — the console's /ai/v1 calls are
+	// forwarded there. The address only, no path: what the console asks for
+	// is what gets proxied.
+	AIURL string
 
 	OIDCIssuer       string
 	OIDCClientID     string
@@ -59,14 +72,17 @@ func FromEnv() (*Config, error) {
 			Immutable: os.Getenv("DONKEY_REGISTRY_IMMUTABLE") == "true",
 			CAFile:    os.Getenv("DONKEY_REGISTRY_CA_FILE"),
 		},
-		Domain:           os.Getenv("DONKEY_DOMAIN"),
-		BuildkitAddr:     os.Getenv("DONKEY_BUILDKIT_ADDR"),
-		NamespacePrefix:  envOr("DONKEY_NAMESPACE_PREFIX", config.DefaultNamespacePrefix),
-		OIDCIssuer:       os.Getenv("DONKEY_OIDC_ISSUER"),
-		OIDCClientID:     os.Getenv("DONKEY_OIDC_CLIENT_ID"),
-		OIDCClientSecret: os.Getenv("DONKEY_OIDC_CLIENT_SECRET"),
-		DefaultPlatform:  envOr("DONKEY_DEFAULT_PLATFORM", "linux/amd64"),
-		AIModel:          envOr("DONKEY_AI_MODEL", config.DefaultAIModel),
+		Domain:            os.Getenv("DONKEY_DOMAIN"),
+		BuildkitAddr:      os.Getenv("DONKEY_BUILDKIT_ADDR"),
+		NamespacePrefix:   envOr("DONKEY_NAMESPACE_PREFIX", config.DefaultNamespacePrefix),
+		SystemNamespace:   envOr("DONKEY_SYSTEM_NAMESPACE", config.DefaultSystemNamespace),
+		WorkloadNamespace: os.Getenv("DONKEY_WORKLOAD_NAMESPACE"),
+		AIURL:             os.Getenv("DONKEY_AI_URL"),
+		OIDCIssuer:        os.Getenv("DONKEY_OIDC_ISSUER"),
+		OIDCClientID:      os.Getenv("DONKEY_OIDC_CLIENT_ID"),
+		OIDCClientSecret:  os.Getenv("DONKEY_OIDC_CLIENT_SECRET"),
+		DefaultPlatform:   envOr("DONKEY_DEFAULT_PLATFORM", "linux/amd64"),
+		AIModel:           envOr("DONKEY_AI_MODEL", config.DefaultAIModel),
 	}
 	// The build environment is a map, so it travels as JSON — the same way
 	// DONKEY_ADMINS does.

@@ -3,6 +3,7 @@ package gateway
 import (
 	"bytes"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"testing"
 	"time"
@@ -250,5 +251,60 @@ func TestRouteFromConfigMap(t *testing.T) {
 	bad.Annotations["donkey.dev/backend"] = "https://evil.example.com"
 	if _, ok := routeFromConfigMap(*bad); ok {
 		t.Error("only in-cluster plain-http backends are proxied")
+	}
+}
+
+// The proxy's identity contract: forged inbound identity is dropped on every
+// route, and the sealed credential goes only to the route marked for it —
+// an app handed one could replay its visitors against the API.
+func TestProxyIdentityAndToken(t *testing.T) {
+	var got http.Header
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Clone()
+	}))
+	defer backend.Close()
+	target, err := url.Parse(backend.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := testServer()
+	sess := &session{Subject: "u1", Email: "u1@example.com", Groups: []string{"dev"},
+		Expires: time.Now().Add(time.Hour).Unix()}
+
+	send := func(rt route, sess *session) {
+		req := httptest.NewRequest(http.MethodGet, "https://app.example.com/x", nil)
+		// A hostile client types identity — all of it must vanish.
+		req.Header.Set("X-Auth-Request-User", "forged")
+		req.Header.Set("X-Access-Token", "forged")
+		s.proxy(rt, sess, false).ServeHTTP(httptest.NewRecorder(), req)
+	}
+
+	send(route{Backend: target}, sess)
+	if got.Get("X-Auth-Request-User") != "u1" {
+		t.Errorf("an app should see the real visitor, got %q", got.Get("X-Auth-Request-User"))
+	}
+	if got.Get("X-Access-Token") != "" {
+		t.Error("an app must never receive a credential — forged or minted")
+	}
+
+	send(route{Backend: target, Token: true}, sess)
+	tok := got.Get("X-Access-Token")
+	if tok == "" || tok == "forged" {
+		t.Fatalf("the API route should carry a minted token, got %q", tok)
+	}
+	id, err := identity.VerifyToken(testKey, tok)
+	if err != nil {
+		t.Fatalf("the minted token must verify under the session key: %v", err)
+	}
+	if id.Subject != "u1" || id.Email != "u1@example.com" {
+		t.Errorf("the token must carry the session's identity, got %+v", id)
+	}
+	if remaining := time.Until(time.Unix(id.Expires, 0)); remaining > forwardTokenTTL+time.Minute {
+		t.Errorf("a forwarded token must be short-lived, got %s", remaining)
+	}
+
+	send(route{Backend: target, Token: true}, nil)
+	if got.Get("X-Access-Token") != "" || got.Get("X-Auth-Request-User") != "" {
+		t.Error("no session, no identity — nothing may reach the backend")
 	}
 }

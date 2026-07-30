@@ -5,15 +5,11 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"maps"
-	"slices"
 	"strconv"
 	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	networkingv1 "k8s.io/api/networking/v1"
-	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -39,16 +35,20 @@ type SystemInput struct {
 	// TLSMode is how the gateway gets its certificates: "acme" (Let's
 	// Encrypt, the default), "ca" (a self-signed CA the gateway mints and
 	// signs per-hostname certificates with — local and internal installs),
-	// or "static" (a wildcard certificate provided in TLSSecret).
+	// or "none" (no TLS at donkey's edge — behind a TLS-terminating cluster
+	// gateway, whose certificates are the platform's prerequisite).
 	TLSMode string
 	// ACMEEmail is the ACME account's contact (expiry warnings); optional.
 	ACMEEmail string
 	// ACMEDirectory overrides the ACME endpoint (default: Let's Encrypt
 	// production) — staging, or an internal ACME CA.
 	ACMEDirectory string
-	// TLSSecret names a kubernetes.io/tls Secret in donkey-system holding
-	// the certificate for static mode (default "donkey-gateway-tls").
-	TLSSecret string
+	// HTTPRouteGateway, when named, attaches the donkey gateway to a Gateway
+	// API gateway the cluster already runs instead of relying on the edge
+	// Service being reachable — the arrangement for clusters whose traffic
+	// must enter through a standard edge. Pairs with TLS mode "none": the
+	// cluster gateway terminates TLS before an HTTPRoute matches.
+	HTTPRouteGateway GatewayRef
 
 	// GatewayServiceType is the type of the service traffic enters the
 	// cluster through: LoadBalancer (the default), NodePort or ClusterIP.
@@ -101,11 +101,25 @@ type SystemInput struct {
 
 	BuildkitImage string
 
+	// NamespacePrefix maps a space onto its own namespace; ignored when
+	// WorkloadNamespace names one namespace for the whole installation.
 	NamespacePrefix string
+	// WorkloadNamespace, when set, is the single namespace every app lives
+	// in. It belongs to whoever created it: donkey neither creates nor
+	// deletes it, and needs no cluster-scoped rights at all — see
+	// serverAccessObjects.
+	WorkloadNamespace string
+	// SkipNamespace leaves the control plane's own namespace out of the
+	// render, because it already exists. donkey never adopts a namespace it
+	// didn't create: applying one would take ownership of its labels and mark
+	// it deletable.
+	SkipNamespace bool
 }
 
 const (
-	SystemNamespace = "donkey-system"
+	// DefaultSystemNamespace is where the control plane lives unless an
+	// installation says otherwise.
+	DefaultSystemNamespace = config.DefaultSystemNamespace
 	// ServerName is donkey-server's Service — the openai addon points app
 	// bindings at its AI proxy path.
 	ServerName   = "donkey-server"
@@ -137,27 +151,45 @@ func (in SystemInput) ServerHost() string {
 	return in.Domain
 }
 
+// Shared reports whether the whole installation shares one app namespace.
+func (in SystemInput) Shared() bool { return in.WorkloadNamespace != "" }
+
 // SystemObjects renders the whole control plane, in apply order.
 func SystemObjects(in SystemInput) []runtime.Object {
-	objs := []runtime.Object{
-		systemNamespace(in),
+	var objs []runtime.Object
+	if !in.SkipNamespace {
+		objs = append(objs, systemNamespace(in))
+	}
+	objs = append(objs,
 		serverServiceAccount(in),
-		serverClusterRoleBinding(in),
+	)
+	objs = append(objs, serverAccessObjects(in)...)
+	objs = append(objs,
 		systemSecret(in),
 		// The build engine's config file has to exist before the deployment
 		// that mounts it.
 		buildkitConfig(in),
-	}
+	)
 	objs = append(objs,
 		buildkitDeployment(in),
 		systemService(in, buildkitName, buildkitPort, buildkitPort),
 		buildkitNetworkPolicy(in),
+		serverNetworkPolicy(in),
 		serverDeployment(in),
 		systemService(in, ServerName, 80, serverPort),
 		consoleRoute(in),
 	)
-	// The donkey gateway is the app edge — always there, login or not.
-	return append(objs, donkeyGatewayObjects(in)...)
+	// The donkey gateway is the app edge — always there, login or not; the
+	// AI endpoint is the one workload apps reach, and runs apart from the
+	// admin API for exactly that reason.
+	objs = append(objs, donkeyGatewayObjects(in)...)
+	objs = append(objs, aiObjects(in)...)
+	// The one optional attachment to machinery the cluster already runs —
+	// rendered only when named, so a plain installation stays CRD-free.
+	if in.HTTPRouteGateway.Attached() {
+		objs = append(objs, httpRoute(in))
+	}
+	return objs
 }
 
 // configHash rolls pods that read config only at startup. Each deployment
@@ -176,14 +208,6 @@ func configHash(values ...string) string {
 func (in SystemInput) serverConfigHash() string {
 	return configHash(in.SessionKey, in.OIDCClientID, in.OIDCClientSecret, in.RegistryPassword, in.OpenAIAPIKey,
 		buildEnvJSON(in.Build), in.Build.Proxy.HTTP, in.Build.Proxy.HTTPS)
-}
-
-// buildkitConfigHash covers what buildkitd reads at startup: the config file
-// itself, which it reads once and never again.
-func (in SystemInput) buildkitConfigHash() string {
-	// The proxy is secret-backed env, which a pod also only reads at
-	// creation — so it belongs in the same hash as the config file.
-	return configHash(buildkitTOML(in), in.Build.Proxy.HTTP, in.Build.Proxy.HTTPS, in.Build.Proxy.NoProxy)
 }
 
 func (in SystemInput) hashedTemplateMeta(name, hash string) metav1.ObjectMeta {
@@ -242,18 +266,6 @@ func serverServiceAccount(in SystemInput) *corev1.ServiceAccount {
 	}
 }
 
-// serverClusterRoleBinding grants cluster-admin for the PoC: donkey-server
-// creates namespaces and everything inside them. A scoped ClusterRole is the
-// production follow-up.
-func serverClusterRoleBinding(in SystemInput) *rbacv1.ClusterRoleBinding {
-	return &rbacv1.ClusterRoleBinding{
-		TypeMeta:   metav1.TypeMeta{APIVersion: "rbac.authorization.k8s.io/v1", Kind: "ClusterRoleBinding"},
-		ObjectMeta: metav1.ObjectMeta{Name: ServerName, Labels: systemLabels(ServerName)},
-		RoleRef:    rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "ClusterRole", Name: "cluster-admin"},
-		Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: ServerName, Namespace: in.Namespace}},
-	}
-}
-
 func systemSecret(in SystemInput) *corev1.Secret {
 	return &corev1.Secret{
 		TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "Secret"},
@@ -278,179 +290,6 @@ func systemSecret(in SystemInput) *corev1.Secret {
 // certificate authority.
 const registryCAPath = "/etc/donkey/registry-ca"
 
-const (
-	// buildkitConfigPath is where buildkitd finds its config file.
-	buildkitConfigPath = "/etc/buildkit"
-
-	// buildkitCachePath is buildkitd's state directory — the build cache. It
-	// gets a volume of its own, bounded by buildkitCacheSize.
-	buildkitCachePath = "/var/lib/buildkit"
-	buildkitCacheSize = "10Gi"
-	// Both stay below the volume size: collection is asynchronous, so the
-	// cache must overshoot without the kubelet evicting the pod holding it.
-	buildkitCacheKeep = "5GB"
-	buildkitCacheMax  = "8GB"
-)
-
-// BuildkitConfig is the build engine's config file. Both runtimes render it
-// from here, so a mirrored installation behaves the same on either.
-type BuildkitConfig struct {
-	// RegistryHost is donkey's own registry (host[:port], no path).
-	RegistryHost string
-	// RegistryCAFile is the certificate authority the registry's own
-	// certificate comes from; empty when it is publicly trusted.
-	RegistryCAFile string
-	// RegistryPlainHTTP marks a registry donkey talks to over http.
-	RegistryPlainHTTP bool
-	// Mirrors maps an upstream registry host to the mirror serving it.
-	Mirrors map[string]string
-}
-
-// registrySection is one [registry."host"] table. Hosts are collected first
-// because donkey's registry and a mirror can be the same JFrog, and TOML
-// rejects a table declared twice.
-type registrySection struct {
-	mirrors   []string
-	caFile    string
-	plainHTTP bool
-}
-
-// BuildkitTOML renders the config file. Every installation gets one for the
-// cache bound alone: without garbage collection the cache grows until the
-// node's disk is full. Private-CA registries and mirrors are named here too.
-func BuildkitTOML(c BuildkitConfig) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "[worker.oci]\n  gc = true\n  reservedSpace = %q\n  maxUsedSpace = %q\n",
-		buildkitCacheKeep, buildkitCacheMax)
-
-	sections := map[string]*registrySection{}
-	at := func(host string) *registrySection {
-		if s, ok := sections[host]; ok {
-			return s
-		}
-		s := &registrySection{}
-		sections[host] = s
-		return s
-	}
-	if c.RegistryHost != "" && (c.RegistryCAFile != "" || c.RegistryPlainHTTP) {
-		s := at(c.RegistryHost)
-		s.caFile = c.RegistryCAFile
-		s.plainHTTP = c.RegistryPlainHTTP
-	}
-	for upstream, mirror := range c.Mirrors {
-		host, plainHTTP := mirrorHost(mirror)
-		// A bare hostname, never a URL: BuildKit looks it up by host, so a URL
-		// key matches nothing and every pull quietly goes to the real
-		// registry — the one thing a mirrored installation cannot reach.
-		upstream, _ = mirrorHost(upstream)
-		upstream = mirrorHostOnly(upstream)
-		if upstream == "" || host == "" {
-			continue
-		}
-		up := at(upstream)
-		up.mirrors = append(up.mirrors, host)
-		// The mirror is a registry in its own right: donkey reaches it over
-		// the scheme it was given, and an in-house one usually sits behind
-		// the same private CA as donkey's registry.
-		m := at(mirrorHostOnly(host))
-		m.plainHTTP = m.plainHTTP || plainHTTP
-		if c.RegistryCAFile != "" && !plainHTTP {
-			m.caFile = c.RegistryCAFile
-		}
-	}
-
-	for _, host := range slices.Sorted(maps.Keys(sections)) {
-		s := sections[host]
-		if len(s.mirrors) == 0 && s.caFile == "" && !s.plainHTTP {
-			continue
-		}
-		fmt.Fprintf(&b, "\n[registry.%q]\n", host)
-		if len(s.mirrors) > 0 {
-			slices.Sort(s.mirrors)
-			quoted := make([]string, len(s.mirrors))
-			for i, m := range s.mirrors {
-				quoted[i] = strconv.Quote(m)
-			}
-			fmt.Fprintf(&b, "  mirrors = [%s]\n", strings.Join(quoted, ", "))
-		}
-		if s.caFile != "" {
-			fmt.Fprintf(&b, "  ca = [%q]\n", s.caFile)
-		}
-		if s.plainHTTP {
-			fmt.Fprintf(&b, "  http = true\n")
-		}
-	}
-	return b.String()
-}
-
-// mirrorHost yields what BuildKit's `mirrors` list wants: a host with an
-// optional path prefix, never a URL. A scheme is accepted (JFrog's UI hands
-// out URLs) and answers a different question — whether to use plain http.
-func mirrorHost(mirror string) (host string, plainHTTP bool) {
-	rest := strings.TrimSpace(mirror)
-	if s, after, ok := strings.Cut(rest, "://"); ok {
-		plainHTTP = strings.EqualFold(s, "http")
-		rest = after
-	}
-	return strings.Trim(rest, "/"), plainHTTP
-}
-
-// mirrorHostOnly drops the path prefix: TLS and CA settings belong to the
-// host, not to the repository path under it.
-func mirrorHostOnly(hostAndPath string) string {
-	host, _, _ := strings.Cut(hostAndPath, "/")
-	return host
-}
-
-// registryHostOf is the host part of donkey's registry setting, which is a
-// prefix ("registry.example.com/donkey") rather than a bare host.
-func registryHostOf(registryURL string) string {
-	host, _ := mirrorHost(registryURL)
-	return mirrorHostOnly(host)
-}
-
-func buildkitTOML(in SystemInput) string {
-	host, _, _ := strings.Cut(in.RegistryURL, "/")
-	// Declared here and not only on the export: the engine also *pulls* from
-	// donkey's own registry, and a pull carries no per-solve attribute.
-	c := BuildkitConfig{
-		RegistryHost:      host,
-		RegistryPlainHTTP: in.RegistryInsecure,
-		Mirrors:           in.Build.RegistryMirrors,
-	}
-	if in.RegistryCASecret != "" {
-		c.RegistryCAFile = registryCAPath + "/ca.crt"
-	}
-	return BuildkitTOML(c)
-}
-
-func buildkitConfig(in SystemInput) *corev1.ConfigMap {
-	return &corev1.ConfigMap{
-		TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "ConfigMap"},
-		ObjectMeta: metav1.ObjectMeta{Name: buildkitName, Namespace: in.Namespace, Labels: systemLabels(buildkitName)},
-		Data:       map[string]string{"buildkitd.toml": buildkitTOML(in)},
-	}
-}
-
-func buildkitDeployment(in SystemInput) *appsv1.Deployment {
-	labels := systemLabels(buildkitName)
-	replicas := int32(1)
-	privileged := true
-	return &appsv1.Deployment{
-		TypeMeta:   metav1.TypeMeta{APIVersion: "apps/v1", Kind: "Deployment"},
-		ObjectMeta: metav1.ObjectMeta{Name: buildkitName, Namespace: in.Namespace, Labels: labels},
-		Spec: appsv1.DeploymentSpec{
-			Replicas: &replicas,
-			Selector: &metav1.LabelSelector{MatchLabels: labels},
-			Template: corev1.PodTemplateSpec{
-				// The config hash rolls buildkitd when the registry setup changes.
-				ObjectMeta: in.hashedTemplateMeta(buildkitName, in.buildkitConfigHash()),
-				Spec:       buildkitPodSpec(in, privileged),
-			},
-		},
-	}
-}
-
 func serverDeployment(in SystemInput) *appsv1.Deployment {
 	labels := systemLabels(ServerName)
 	replicas := int32(1)
@@ -470,8 +309,13 @@ func serverDeployment(in SystemInput) *appsv1.Deployment {
 		{Name: "DONKEY_REGISTRY_IMMUTABLE", Value: strconv.FormatBool(in.RegistryImmutable)},
 		{Name: "DONKEY_REGISTRY_CA_FILE", Value: registryCAFile(in)},
 		{Name: "DONKEY_DOMAIN", Value: in.Domain},
-		{Name: "DONKEY_BUILDKIT_ADDR", Value: fmt.Sprintf("tcp://%s.%s.svc.cluster.local:%d", buildkitName, in.Namespace, buildkitPort)},
+		{Name: "DONKEY_BUILDKIT_ADDR", Value: fmt.Sprintf("tcp://%s.%s.svc:%d", buildkitName, in.Namespace, buildkitPort)},
 		{Name: "DONKEY_NAMESPACE_PREFIX", Value: in.NamespacePrefix},
+		{Name: "DONKEY_SYSTEM_NAMESPACE", Value: in.Namespace},
+		{Name: "DONKEY_WORKLOAD_NAMESPACE", Value: in.WorkloadNamespace},
+		// Where the console's /ai/v1 requests are forwarded. The address
+		// only — the path the console asks for is what gets proxied.
+		{Name: "DONKEY_AI_URL", Value: fmt.Sprintf("http://%s.%s.svc:80", AIAppName, in.Namespace)},
 		{Name: "DONKEY_DEFAULT_PLATFORM", Value: in.DefaultPlatform},
 		{Name: "DONKEY_OIDC_ISSUER", Value: in.OIDCIssuer},
 		secretEnv("DONKEY_OIDC_CLIENT_ID", "oidc-client-id"),
@@ -542,118 +386,6 @@ func serverDeployment(in SystemInput) *appsv1.Deployment {
 	}
 }
 
-// buildEnv is the installation's build configuration as donkey-server reads
-// it. Only the settings the server acts on travel here: the mirrors are the
-// build engine's business, and the proxy is spelled the way every tool
-// already expects (see proxyEnv).
-func buildEnv(b config.InstallBuild) []corev1.EnvVar {
-	var env []corev1.EnvVar
-	// Only what was configured: an installation that says nothing about
-	// builds renders the deployment it always did.
-	for _, e := range []corev1.EnvVar{
-		{Name: "DONKEY_BUILDER_VERIFY", Value: verifyValue(b.BuildSettings)},
-		{Name: "DONKEY_BUILDER_VERIFY_SECONDS", Value: positiveOrEmpty(b.VerifySeconds)},
-		{Name: "DONKEY_BUILDER_ATTEMPTS", Value: positiveOrEmpty(b.Attempts)},
-	} {
-		if e.Value != "" {
-			env = append(env, e)
-		}
-	}
-	if len(b.Env) > 0 {
-		// A map travels as JSON, the way DONKEY_ADMINS does — but out of the
-		// Secret, because these values are routinely credentialed URLs.
-		env = append(env, secretEnvVar("DONKEY_BUILD_ENV", "build-env"))
-	}
-	return env
-}
-
-// verifyValue renders the tri-state startup-verification setting: empty
-// leaves the server on its own default (on), so only an explicit choice
-// travels.
-func verifyValue(b config.BuildSettings) string {
-	if b.Verify == nil {
-		return ""
-	}
-	return strconv.FormatBool(*b.Verify)
-}
-
-// positiveOrEmpty renders an optional numeric setting; zero means "unset",
-// which the server's accessor turns into the default.
-func positiveOrEmpty(n int) string {
-	if n <= 0 {
-		return ""
-	}
-	return strconv.Itoa(n)
-}
-
-// buildEnvJSON is the build environment as donkey-server reads it.
-func buildEnvJSON(b config.InstallBuild) string {
-	if len(b.Env) == 0 {
-		return ""
-	}
-	raw, err := json.Marshal(b.Env)
-	if err != nil {
-		return ""
-	}
-	return string(raw)
-}
-
-// secretEnvVar reads one value out of the installation's system Secret.
-func secretEnvVar(name, key string) corev1.EnvVar {
-	return corev1.EnvVar{Name: name, ValueFrom: &corev1.EnvVarSource{
-		SecretKeyRef: &corev1.SecretKeySelector{
-			LocalObjectReference: corev1.LocalObjectReference{Name: "donkey-system-config"},
-			Key:                  key,
-		},
-	}}
-}
-
-// inClusterNoProxy is what must never be sent to a forward proxy: donkey's
-// own components reach each other over cluster addresses, and no corporate
-// proxy can route those. It is appended to whatever the installation
-// configured, because forgetting it does not degrade anything — it takes the
-// control plane off the air.
-//
-// The Kubernetes API is not in this list because it cannot be: a pod reaches
-// it at a bare service IP whose range differs per cluster. That one is
-// handled where it belongs, on the client (see kubernetes.NewInCluster).
-const inClusterNoProxy = "localhost,127.0.0.1,.svc,.svc.cluster.local,.cluster.local"
-
-// proxyEnv is the forward proxy in the spelling Go's HTTP client, curl and
-// git already read — donkey configures no tool for it individually.
-//
-// registryHost is donkey's own registry, excluded by name: it is routinely a
-// bare service name or an address inside the cluster that no domain suffix
-// covers, and sending pushes to a corporate proxy would break every build.
-func proxyEnv(p config.InstallProxy, registryHost string) []corev1.EnvVar {
-	var env []corev1.EnvVar
-	if p.HTTP != "" || p.HTTPS != "" {
-		exclude := inClusterNoProxy
-		if registryHost != "" {
-			exclude += "," + registryHost
-		}
-		p.NoProxy = strings.Trim(strings.TrimSpace(p.NoProxy)+","+exclude, ",")
-	}
-	// Both spellings: some tools read only lowercase, and Go's client ignores
-	// HTTP_PROXY for CGI-safety. The two that can carry credentials come out
-	// of the Secret; NO_PROXY is a host list and stays plain.
-	secret := func(name, key, value string) {
-		if value == "" {
-			return
-		}
-		env = append(env, secretEnvVar(name, key), secretEnvVar(strings.ToLower(name), key))
-	}
-	secret("HTTP_PROXY", "http-proxy", p.HTTP)
-	secret("HTTPS_PROXY", "https-proxy", p.HTTPS)
-	if p.NoProxy != "" {
-		env = append(env,
-			corev1.EnvVar{Name: "NO_PROXY", Value: p.NoProxy},
-			corev1.EnvVar{Name: "no_proxy", Value: p.NoProxy},
-		)
-	}
-	return env
-}
-
 // imagePullPolicy pulls again only when the reference can point somewhere
 // else tomorrow. A version tag or a digest is a promise; ":latest" and a bare
 // name are not, and a dev install that reuses one would otherwise keep running
@@ -697,25 +429,6 @@ func serverResources() corev1.ResourceRequirements {
 	}
 }
 
-// buildkitResources sizes the build engine, which needs more of everything: a
-// build is the heaviest thing the cluster does, and its cache volume counts
-// against the pod's ephemeral storage. The storage limit stays above what the
-// cache volume can hold, so the engine's own collector — not an eviction —
-// is what keeps the cache in check.
-func buildkitResources() corev1.ResourceRequirements {
-	return corev1.ResourceRequirements{
-		Requests: corev1.ResourceList{
-			corev1.ResourceCPU:              resource.MustParse("500m"),
-			corev1.ResourceMemory:           resource.MustParse("1Gi"),
-			corev1.ResourceEphemeralStorage: resource.MustParse("4Gi"),
-		},
-		Limits: corev1.ResourceList{
-			corev1.ResourceMemory:           resource.MustParse("8Gi"),
-			corev1.ResourceEphemeralStorage: resource.MustParse("12Gi"),
-		},
-	}
-}
-
 // registryCAFile is where the server reads the registry's certificate
 // authority ("" when the registry's certificate is publicly trusted).
 func registryCAFile(in SystemInput) string {
@@ -723,88 +436,6 @@ func registryCAFile(in SystemInput) string {
 		return ""
 	}
 	return registryCAPath + "/ca.crt"
-}
-
-// buildkitPodSpec runs the build engine, with the registry's certificate
-// authority mounted when the installation named one.
-func buildkitPodSpec(in SystemInput, privileged bool) corev1.PodSpec {
-	container := corev1.Container{
-		Name:  "buildkitd",
-		Image: in.BuildkitImage,
-		Args:  []string{"--addr", fmt.Sprintf("tcp://0.0.0.0:%d", buildkitPort), "--config", buildkitConfigPath + "/buildkitd.toml"},
-		// The proxy is what the engine pulls images through where there is no
-		// route to a registry otherwise. Build steps get their own copy from
-		// the plan's secrets, not from here.
-		Env:             proxyEnv(in.Build.Proxy, registryHostOf(in.RegistryURL)),
-		Ports:           []corev1.ContainerPort{{ContainerPort: buildkitPort}},
-		SecurityContext: &corev1.SecurityContext{Privileged: &privileged},
-		Resources:       buildkitResources(),
-		ReadinessProbe: &corev1.Probe{
-			ProbeHandler: corev1.ProbeHandler{
-				TCPSocket: &corev1.TCPSocketAction{Port: intstr.FromInt32(buildkitPort)},
-			},
-		},
-		VolumeMounts: []corev1.VolumeMount{
-			{Name: "buildkit-config", MountPath: buildkitConfigPath, ReadOnly: true},
-			{Name: "buildkit-cache", MountPath: buildkitCachePath},
-		},
-	}
-	spec := corev1.PodSpec{
-		Containers:        []corev1.Container{container},
-		PriorityClassName: systemPriorityClass,
-		Volumes: []corev1.Volume{
-			{Name: "buildkit-config", VolumeSource: corev1.VolumeSource{
-				ConfigMap: &corev1.ConfigMapVolumeSource{
-					LocalObjectReference: corev1.LocalObjectReference{Name: buildkitName},
-				},
-			}},
-			// The cache gets a volume of its own so its size is something the
-			// cluster enforces, not something a runaway build discovers. It
-			// also keeps the snapshotter off the container's own overlay
-			// filesystem, where it would fall back to its slow copy mode.
-			{Name: "buildkit-cache", VolumeSource: corev1.VolumeSource{
-				EmptyDir: &corev1.EmptyDirVolumeSource{SizeLimit: new(resource.MustParse(buildkitCacheSize))},
-			}},
-		},
-	}
-	if in.RegistryCASecret == "" {
-		return spec
-	}
-	spec.Containers[0].VolumeMounts = append(spec.Containers[0].VolumeMounts,
-		corev1.VolumeMount{Name: "registry-ca", MountPath: registryCAPath, ReadOnly: true})
-	spec.Volumes = append(spec.Volumes, corev1.Volume{
-		Name: "registry-ca", VolumeSource: corev1.VolumeSource{
-			Secret: &corev1.SecretVolumeSource{SecretName: in.RegistryCASecret},
-		},
-	})
-	return spec
-}
-
-// buildkitNetworkPolicy is the one policy donkey cannot do without: the build
-// engine speaks unauthenticated gRPC and runs privileged, so anything that
-// can reach port 1234 can run code on a node. Only donkey-server may.
-func buildkitNetworkPolicy(in SystemInput) *networkingv1.NetworkPolicy {
-	port := intstr.FromInt32(buildkitPort)
-	tcp := corev1.ProtocolTCP
-	return &networkingv1.NetworkPolicy{
-		TypeMeta: metav1.TypeMeta{APIVersion: "networking.k8s.io/v1", Kind: "NetworkPolicy"},
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      buildkitName,
-			Namespace: in.Namespace,
-			Labels:    systemLabels(buildkitName),
-		},
-		Spec: networkingv1.NetworkPolicySpec{
-			PodSelector: metav1.LabelSelector{MatchLabels: systemLabels(buildkitName)},
-			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
-			Ingress: []networkingv1.NetworkPolicyIngressRule{{
-				From: []networkingv1.NetworkPolicyPeer{{
-					PodSelector:       &metav1.LabelSelector{MatchLabels: systemLabels(ServerName)},
-					NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": in.Namespace}},
-				}},
-				Ports: []networkingv1.NetworkPolicyPort{{Protocol: &tcp, Port: &port}},
-			}},
-		},
-	}
 }
 
 func systemService(in SystemInput, name string, port, targetPort int32) *corev1.Service {
@@ -838,10 +469,13 @@ func adminsJSON(in SystemInput) string {
 // in. It is one more entry in the gateway's routing table.
 func consoleRoute(in SystemInput) *corev1.ConfigMap {
 	ann := map[string]string{
-		AnnotationBackend: fmt.Sprintf("http://%s.%s.svc.cluster.local:80", ServerName, in.Namespace),
+		AnnotationBackend: fmt.Sprintf("http://%s.%s.svc:80", ServerName, in.Namespace),
 		AnnotationHost:    in.ServerHost(),
 		AnnotationPath:    "/",
 		AnnotationLogin:   LoginRequired,
+		// The server verifies identity itself — it gets the sealed token,
+		// not bare headers anything in the cluster could type.
+		AnnotationToken: TokenForward,
 	}
 	if a := adminsJSON(in); a != "" {
 		ann[AnnotationAccess] = a

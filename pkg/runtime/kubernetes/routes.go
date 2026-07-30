@@ -20,16 +20,21 @@ import (
 // Only ConfigMaps carrying the backend annotation are routes; the label
 // narrows the sweep, the annotation decides.
 func (c *Client) ListManagedRoutes(ctx context.Context) ([]corev1.ConfigMap, error) {
-	list, err := c.Clientset.CoreV1().ConfigMaps(metav1.NamespaceAll).List(ctx, metav1.ListOptions{
-		LabelSelector: "app.kubernetes.io/managed-by=" + manifests.ManagedByValue,
-	})
-	if err != nil {
-		return nil, err
-	}
 	var out []corev1.ConfigMap
-	for _, cm := range list.Items {
-		if cm.Annotations[manifests.AnnotationBackend] != "" {
-			out = append(out, cm)
+	for _, ns := range c.sweep() {
+		list, err := c.Clientset.CoreV1().ConfigMaps(ns).List(ctx, metav1.ListOptions{
+			LabelSelector: "app.kubernetes.io/managed-by=" + manifests.ManagedByValue,
+		})
+		if err != nil {
+			return nil, err
+		}
+		for _, cm := range list.Items {
+			// managed-by says a donkey wrote it, not that this one did — and a
+			// route another installation owns would put its apps behind this
+			// gateway's TLS, login and access rules.
+			if cm.Annotations[manifests.AnnotationBackend] != "" && c.ours(cm.Labels) {
+				out = append(out, cm)
+			}
 		}
 	}
 	return out, nil

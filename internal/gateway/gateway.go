@@ -52,19 +52,21 @@ type Config struct {
 
 	// TLSMode is how the gateway gets certificates: "acme" (on-demand per
 	// hostname, Let's Encrypt by default), "ca" (a self-signed CA minting
-	// per-hostname certificates — local and internal installs), "static" (a
-	// provided certificate, usually a wildcard), or "" — no TLS, plain http
-	// on Listen (local development).
+	// per-hostname certificates — local and internal installs), or "none"
+	// (plain http only — behind a TLS-terminating edge, or local development).
 	TLSMode string
 	// ACMEEmail is the ACME account contact; ACMEDirectory overrides the
 	// ACME endpoint (staging, or an internal CA speaking ACME).
 	ACMEEmail     string
 	ACMEDirectory string
-	// TLSSecret names the kubernetes.io/tls Secret of "static" mode.
-	TLSSecret string
 	// SystemNamespace is where the gateway keeps its certificates (the
 	// issued-certs cache, the ACME account, the built-in CA).
 	SystemNamespace string
+	// WorkloadNamespace, when set, is the single namespace apps live in.
+	// Together with SystemNamespace it is the whole of what this gateway may
+	// read — and what stops it from picking up a second installation's routes
+	// and serving that installation's apps under this one's TLS and login.
+	WorkloadNamespace string
 	// ServerHost is the console's hostname — always entitled to a
 	// certificate, whatever the routing table says.
 	ServerHost string
@@ -86,28 +88,28 @@ type Config struct {
 
 func FromEnv() (*Config, error) {
 	c := &Config{
-		Runtime:          envOr("DONKEY_RUNTIME", "kubernetes"),
-		StateDir:         envOr("DONKEY_STATE_DIR", "/var/lib/donkey"),
-		Listen:           envOr("DONKEY_LISTEN", ":8090"),
-		TLSListen:        envOr("DONKEY_TLS_LISTEN", ":8443"),
-		HealthListen:     envOr("DONKEY_HEALTH_LISTEN", ":8091"),
-		TLSMode:          os.Getenv("DONKEY_TLS_MODE"),
-		ACMEEmail:        os.Getenv("DONKEY_ACME_EMAIL"),
-		ACMEDirectory:    os.Getenv("DONKEY_ACME_DIRECTORY"),
-		TLSSecret:        envOr("DONKEY_TLS_SECRET", manifests.GatewayStaticTLSSecret),
-		SystemNamespace:  envOr("DONKEY_SYSTEM_NAMESPACE", manifests.SystemNamespace),
-		ServerHost:       os.Getenv("DONKEY_SERVER_HOST"),
-		OIDCIssuer:       os.Getenv("DONKEY_OIDC_ISSUER"),
-		OIDCClientID:     os.Getenv("DONKEY_OIDC_CLIENT_ID"),
-		OIDCClientSecret: os.Getenv("DONKEY_OIDC_CLIENT_SECRET"),
-		Domain:           os.Getenv("DONKEY_DOMAIN"),
+		Runtime:           envOr("DONKEY_RUNTIME", "kubernetes"),
+		StateDir:          envOr("DONKEY_STATE_DIR", "/var/lib/donkey"),
+		Listen:            envOr("DONKEY_LISTEN", ":8090"),
+		TLSListen:         envOr("DONKEY_TLS_LISTEN", ":8443"),
+		HealthListen:      envOr("DONKEY_HEALTH_LISTEN", ":8091"),
+		TLSMode:           os.Getenv("DONKEY_TLS_MODE"),
+		ACMEEmail:         os.Getenv("DONKEY_ACME_EMAIL"),
+		ACMEDirectory:     os.Getenv("DONKEY_ACME_DIRECTORY"),
+		SystemNamespace:   envOr("DONKEY_SYSTEM_NAMESPACE", manifests.DefaultSystemNamespace),
+		WorkloadNamespace: os.Getenv("DONKEY_WORKLOAD_NAMESPACE"),
+		ServerHost:        os.Getenv("DONKEY_SERVER_HOST"),
+		OIDCIssuer:        os.Getenv("DONKEY_OIDC_ISSUER"),
+		OIDCClientID:      os.Getenv("DONKEY_OIDC_CLIENT_ID"),
+		OIDCClientSecret:  os.Getenv("DONKEY_OIDC_CLIENT_SECRET"),
+		Domain:            os.Getenv("DONKEY_DOMAIN"),
 	}
 	switch c.TLSMode {
-	case "", "off", "acme", "ca", "static":
+	case "", "none", "acme", "ca":
 	default:
-		return nil, fmt.Errorf("DONKEY_TLS_MODE must be acme, ca, static or off, not %q", c.TLSMode)
+		return nil, fmt.Errorf("DONKEY_TLS_MODE must be acme, ca or none, not %q", c.TLSMode)
 	}
-	if c.TLSMode == "off" {
+	if c.TLSMode == "none" {
 		c.TLSMode = ""
 	}
 	// No issuer is a legal installation: the gateway still routes every
@@ -154,6 +156,10 @@ type route struct {
 	// Login says visitors must sign in before this route forwards.
 	Login  bool
 	Access *config.AccessConfig
+	// Token forwards a short-lived sealed credential (X-Access-Token) to the
+	// backend. Only donkey's own API route carries it: an app given one
+	// could replay its visitors' credentials against the API.
+	Token bool
 }
 
 // routeSource is where the routing table comes from — the one seam between
@@ -199,13 +205,17 @@ func New(cfg *Config) (*Server, error) {
 		if err != nil {
 			return nil, err
 		}
+		// The gateway speaks for one installation: its own namespace is its
+		// identity, and a workload namespace confines it to the two it was
+		// given.
+		client = client.ForInstallation(cfg.SystemNamespace, cfg.WorkloadNamespace)
 		s.k8s = client
 		s.source = k8sRoutes{client: client}
 	}
 	return s, nil
 }
 
-// k8sRoutes reads the route ConfigMaps donkey rendered, cluster-wide.
+// k8sRoutes reads the route ConfigMaps this installation rendered.
 type k8sRoutes struct{ client *k8s.Client }
 
 func (k k8sRoutes) list(ctx context.Context) ([]route, error) {
@@ -236,7 +246,7 @@ func (f fileRoutes) list(ctx context.Context) ([]route, error) {
 		if err != nil || target.Scheme != "http" || target.Host == "" || rec.Host == "" {
 			continue
 		}
-		r := route{Host: rec.Host, Path: rec.Path, Backend: target, Login: rec.Login, Access: rec.Access}
+		r := route{Host: rec.Host, Path: rec.Path, Backend: target, Login: rec.Login, Access: rec.Access, Token: rec.Token}
 		if r.Path == "" {
 			r.Path = "/"
 		}
@@ -428,6 +438,7 @@ func routeFromConfigMap(cm corev1.ConfigMap) (route, bool) {
 		Path:    "/",
 		Backend: target,
 		Login:   ann[manifests.AnnotationLogin] == manifests.LoginRequired,
+		Token:   ann[manifests.AnnotationToken] == manifests.TokenForward,
 	}
 	if p := ann[manifests.AnnotationPath]; p != "" {
 		r.Path = p

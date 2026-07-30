@@ -8,15 +8,21 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/adrianliechti/donkey/internal/aiproxy"
+	"github.com/adrianliechti/donkey/internal/config"
 	"github.com/adrianliechti/donkey/internal/gateway"
 	"github.com/adrianliechti/donkey/internal/server"
 	"github.com/adrianliechti/donkey/pkg/runtime"
 	"github.com/adrianliechti/donkey/pkg/runtime/docker"
 	"github.com/adrianliechti/donkey/pkg/runtime/kubernetes"
+	"github.com/adrianliechti/donkey/pkg/runtime/kubernetes/manifests"
 )
 
-// One binary, two roles: the control plane by default, the login gateway
-// with `gateway` as the first argument. Same image, second Deployment.
+// One binary, three roles: the control plane by default, the login gateway
+// with `gateway`, the openai addon's endpoint with `ai`. Same image, three
+// Deployments — donkey-ai is separate because it is the one endpoint tenant
+// code is meant to reach, and it must not be the process that can write to
+// the cluster.
 func main() {
 	// SIGTERM starts a drain rather than killing in-flight work: a
 	// control-plane upgrade must not abandon somebody's half-finished build,
@@ -36,6 +42,24 @@ func main() {
 			os.Exit(1)
 		}
 		if err := gw.Run(ctx); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	if len(os.Args) > 1 && os.Args[1] == "ai" {
+		cfg, err := aiproxy.ConfigFromEnv()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "configuration error:", err)
+			os.Exit(1)
+		}
+		provider, err := aiRuntime()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "startup error:", err)
+			os.Exit(1)
+		}
+		if err := aiproxy.Run(ctx, cfg, provider); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
@@ -81,7 +105,7 @@ func main() {
 		}
 		if err := docker.WriteSystemRoute(stateDir, "console", docker.Route{
 			Host: serverHost, Path: "/", Backend: "http://donkey-server:8088",
-			Login: true, Access: cfg.Admins,
+			Login: true, Access: cfg.Admins, Token: true,
 		}); err != nil {
 			fmt.Fprintln(os.Stderr, "startup error:", err)
 			os.Exit(1)
@@ -93,7 +117,11 @@ func main() {
 			os.Exit(1)
 		}
 		rt = kubernetes.NewRuntime(client, kubernetes.Options{
-			NamespacePrefix: cfg.NamespacePrefix,
+			Placement: manifests.Placement{
+				SharedNamespace: cfg.WorkloadNamespace,
+				NamespacePrefix: cfg.NamespacePrefix,
+			},
+			SystemNamespace: cfg.SystemNamespace,
 			Domain:          cfg.Domain,
 			Registry:        cfg.Registry,
 		})
@@ -107,4 +135,33 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+}
+
+// aiRuntime is the provider donkey-ai reads the per-space tokens through —
+// the same runtimes the server supports, with none of its configuration: the
+// AI endpoint needs a way to list binding secrets and nothing else.
+func aiRuntime() (runtime.Provider, error) {
+	switch os.Getenv("DONKEY_RUNTIME") {
+	case "docker":
+		return docker.New(docker.Options{StateDir: os.Getenv("DONKEY_STATE_DIR")})
+	default:
+		client, err := kubernetes.NewInCluster()
+		if err != nil {
+			return nil, err
+		}
+		// Only the two namespaces matter here: they are what the binding
+		// sweep reads. donkey-ai never maps a space onto a namespace, so the
+		// prefix is none of its business.
+		return kubernetes.NewRuntime(client, kubernetes.Options{
+			Placement:       manifests.Placement{SharedNamespace: os.Getenv("DONKEY_WORKLOAD_NAMESPACE")},
+			SystemNamespace: envOr("DONKEY_SYSTEM_NAMESPACE", config.DefaultSystemNamespace),
+		}), nil
+	}
+}
+
+func envOr(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
 }

@@ -31,6 +31,47 @@ domain: example.com            # apps become <app>.<space>.example.com; the
                                # the domain or a name under it. The OAuth
                                # callback stays on the domain either way.
 
+# kubernetes:
+#   # Which namespaces donkey uses — and, by leaving these empty, which ones
+#   # it creates. One rule for both: name a namespace and it is yours. donkey
+#   # expects it to exist, applies into it, and never creates, deletes or
+#   # relabels it. Leave it empty and donkey makes and manages its own.
+#   system:
+#     namespace: bank-donkey-system
+#                               # where the control plane lives. It is also
+#                               # the installation's identity, so a second
+#                               # donkey on the same cluster MUST set this to
+#                               # something else — otherwise the two would
+#                               # apply the same cluster-scoped RBAC and the
+#                               # first would lose its permissions.
+#                               # Must allow privileged pods: the build engine
+#                               # is one (pod-security.kubernetes.io/enforce=
+#                               # privileged, or no enforcement at all).
+#   workload:
+#     namespace: bank-donkey-apps
+#                               # ONE namespace for every app of every space.
+#                               # This is the answer for a cluster where you
+#                               # cannot create namespaces: donkey then needs
+#                               # no cluster-scoped permission at all — two
+#                               # namespaced Roles and nothing else, no
+#                               # cluster-admin.
+#                               #
+#                               # Apps are named <space>--<app> on the cluster
+#                               # (one namespace holds one Service called
+#                               # "api"), so siblings reach each other at
+#                               # http://<space>--<app> rather than http://<app>
+#                               # — addon bindings follow automatically.
+#                               # Space and app names may not contain "--",
+#                               # and together must stay within 63 characters.
+#                               # Must not enforce the "restricted" policy:
+#                               # most real images run as root.
+#     # namespacePrefix: donkey-
+#                               # Only when `namespace` above is NOT set: each
+#                               # space gets <prefix><space> of its own, made
+#                               # and deleted by donkey. Two installations
+#                               # that both work this way need different
+#                               # prefixes.
+
 # gateway:
 #   serviceType: ClusterIP     # how traffic enters the cluster. The default,
                                # LoadBalancer, is right wherever something
@@ -41,6 +82,16 @@ domain: example.com            # apps become <app>.<space>.example.com; the
                                # unroutable.
 #   httpNodePort: 30080        # NodePort only: pin the node ports so port
 #   httpsNodePort: 30443       # mappings and firewall rules can rely on them.
+#
+#   httpRoute:                 # OR: enter through a Gateway API gateway the
+#     name: shared-gateway     # cluster already runs — donkey renders one
+#     namespace: infra         # HTTPRoute for <domain> and *.<domain> whose
+#     # sectionName: https     # backend is the donkey gateway. Its edge
+#                              # Service then stays ClusterIP, and because
+#                              # the cluster gateway terminates TLS before
+#                              # routes match, pair this with `tls.mode: none`.
+#                              # Custom app hostnames outside the domain are
+#                              # not covered by this route.
 
 tls:
   # How the gateway gets its certificates. Apps are always served over https
@@ -56,8 +107,11 @@ tls:
                               # export & trust its one certificate:
                               # kubectl -n donkey-system get secret \
                               #   donkey-gateway-ca -o jsonpath='{.data.ca\.crt}' | base64 -d
-  # mode: static              # or: bring your own (wildcard) certificate
-  # secret: donkey-gateway-tls  # kubernetes.io/tls Secret in donkey-system
+  # mode: none                # or: no TLS at donkey's edge — only sensible
+  #                           # behind gateway.httpRoute, where the cluster's
+  #                           # gateway terminates TLS with certificates the
+  #                           # platform provides (cert-manager, a PKI
+  #                           # process — its concern, not donkey's).
 
 # build:
 #   # How an app with no Dockerfile gets built. A Dockerfile in the app folder

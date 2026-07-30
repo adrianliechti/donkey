@@ -130,30 +130,57 @@ func (c *Client) ListAddonBindings(ctx context.Context, namespace, app string) (
 // SharedBindingValues collects one key's values across every space's shared
 // binding Secrets — the AI proxy's token list. owner is the pseudo-app the
 // shared bindings belong to.
+// The owner is matched by suffix rather than equality: where the whole
+// installation shares a namespace, object names and their labels carry the
+// space, so the shared owner reads "<space>--shared" and not "shared".
 func (c *Client) SharedBindingValues(ctx context.Context, owner, key string) ([]string, error) {
-	secrets, err := c.Clientset.CoreV1().Secrets("").List(ctx, metav1.ListOptions{
-		LabelSelector: manifests.LabelApp + "=" + owner,
-	})
-	if err != nil {
-		return nil, err
+	// Cluster-wide (a namespace per space) the owner label is the plain name
+	// and an equality selector keeps the sweep cheap. Confined to a shared
+	// namespace the labels carry each space, no one value matches them all —
+	// but the sweep is two namespaces, so listing donkey's secrets is fine.
+	selector := manifests.LabelApp + "=" + owner
+	if c.Confined() {
+		selector = manifests.LabelApp
 	}
 	var out []string
-	for _, sec := range secrets.Items {
-		if !strings.HasPrefix(sec.Labels[manifests.LabelComponent], "addon-") {
-			continue
+	for _, ns := range c.sweep() {
+		secrets, err := c.Clientset.CoreV1().Secrets(ns).List(ctx, metav1.ListOptions{
+			LabelSelector: selector,
+		})
+		if err != nil {
+			return nil, err
 		}
-		if v, ok := sec.Data[key]; ok && len(v) > 0 {
-			out = append(out, string(v))
+		for _, sec := range secrets.Items {
+			if !strings.HasPrefix(sec.Labels[manifests.LabelComponent], "addon-") || !c.ours(sec.Labels) {
+				continue
+			}
+			if !isOwner(sec.Labels[manifests.LabelApp], owner) {
+				continue
+			}
+			if v, ok := sec.Data[key]; ok && len(v) > 0 {
+				out = append(out, string(v))
+			}
 		}
 	}
 	return out, nil
 }
 
+// isOwner matches an object's owner label against a plain owner name, with or
+// without the space qualification a shared namespace adds.
+func isOwner(label, owner string) bool {
+	return label == owner || strings.HasSuffix(label, manifests.NameSeparator+owner)
+}
+
 // ListAddonAttachments names the apps holding a copy of the shared addon's
 // binding (the component carries the addon- prefix already).
-func (c *Client) ListAddonAttachments(ctx context.Context, namespace, component string) ([]string, error) {
+//
+// The space is part of the selector, not a nicety: where every space shares
+// one namespace, "addon-postgres" is a component several spaces have, and
+// without it removing one space's database would detach another's apps.
+func (c *Client) ListAddonAttachments(ctx context.Context, namespace, space, component string) ([]string, error) {
 	secrets, err := c.Clientset.CoreV1().Secrets(namespace).List(ctx, metav1.ListOptions{
-		LabelSelector: manifests.LabelComponent + "=" + component + "," + manifests.LabelShared + "=true",
+		LabelSelector: fmt.Sprintf("%s=%s,%s=%s,%s=true",
+			manifests.LabelSpace, space, manifests.LabelComponent, component, manifests.LabelShared),
 	})
 	if err != nil {
 		return nil, err

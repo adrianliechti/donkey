@@ -1,0 +1,140 @@
+# donkey on a restricted production cluster:
+#
+#   · namespaces are created upfront by a platform process — donkey may not
+#     create (or delete) any
+#   · traffic between namespaces is default-denied — NetworkPolicies open
+#     exactly the donkey flows
+#   · traffic enters through a pre-defined Gateway API gateway in its own
+#     namespace — donkey attaches to it and exposes nothing itself
+#   · TLS terminates at that gateway; its certificates live with the PKI
+#     process and reach the gateway via ReferenceGrant
+#
+# Install: donkey server install -f install_prod.yaml
+# Secrets via env: DONKEY_REGISTRY_PASSWORD, DONKEY_OIDC_CLIENT_SECRET,
+# OPENAI_API_KEY.
+#
+# In this arrangement donkey applies NOTHING cluster-scoped — no
+# cluster-admin, no ClusterRole: four namespaced Roles, and one HTTPRoute.
+# The install refuses up front if a namespace is missing, its Pod Security
+# level is wrong, or the cluster doesn't serve HTTPRoute.
+
+image: registry.bank.example/donkey/donkey-server:0.9.0
+
+registry:
+  url: registry.bank.example/donkey
+  username: ci
+
+domain: apps.bank.example        # apps become <app>.<space>.apps.bank.example
+
+kubernetes:
+  system:
+    namespace: bank-donkey-system
+    # Pre-created. Must allow privileged pods (the build engine is one):
+    #   pod-security.kubernetes.io/enforce=privileged, or no enforcement.
+  workload:
+    namespace: bank-donkey-apps
+    # Pre-created. One namespace for every app of every space; apps are
+    # named <space>--<app>, siblings dial http://<space>--<app>. Must not
+    # enforce the "restricted" policy — most real images run as root.
+
+gateway:
+  serviceType: ClusterIP         # nothing exposes donkey's edge directly
+  httpRoute:
+    name: shared-gateway         # the pre-defined Gateway API gateway
+    namespace: infra
+    # sectionName: https         # pin one listener, if you want
+
+tls:
+  mode: none                     # the infra gateway terminates TLS before
+                                 # routes match. donkey renders one HTTPRoute for
+                                 # apps.bank.example + *.apps.bank.example
+                                 # whose backend is the donkey gateway, which
+                                 # still does all routing, login and access.
+
+# Builds on a restricted network: mirrors cover every image a build pulls,
+# build.env points package managers at theirs.
+build:
+  registryMirrors:
+    docker.io: https://artifactory.bank.example/docker-remote
+    ghcr.io: https://artifactory.bank.example/ghcr-remote
+  env:
+    NPM_CONFIG_REGISTRY: https://artifactory.bank.example/api/npm/npm
+    PIP_INDEX_URL: https://artifactory.bank.example/api/pypi/pypi/simple
+    GOPROXY: https://artifactory.bank.example/api/go/go
+
+auth:
+  issuer: https://id.bank.example
+  clientId: donkey
+  admins:
+    groups: [platform-team]
+
+ai:
+  baseUrl: https://ai.bank.example/v1
+  model: internal-model
+
+# ---------------------------------------------------------------------------
+# What the platform process pre-creates (not donkey settings — kubectl these):
+#
+# 1. The two namespaces, with the Pod Security labels noted above.
+#
+# 2. NetworkPolicies. donkey ships only the policy guarding its build engine;
+#    with default-deny between namespaces, these flows must be opened:
+#
+#      infra (gateway pods)  → bank-donkey-system : 8090   the HTTPRoute's
+#                                                          backend traffic
+#      bank-donkey-system    → bank-donkey-apps   : any    proxying, tunnels
+#      bank-donkey-apps      → bank-donkey-system : 8088   only if apps use
+#                                                          the openai addon
+#
+#    apiVersion: networking.k8s.io/v1
+#    kind: NetworkPolicy
+#    metadata: { name: allow-donkey, namespace: bank-donkey-apps }
+#    spec:
+#      podSelector: {}
+#      policyTypes: [Ingress]
+#      ingress:
+#        - from:
+#            - namespaceSelector:
+#                matchLabels: { kubernetes.io/metadata.name: bank-donkey-system }
+#    ---
+#    apiVersion: networking.k8s.io/v1
+#    kind: NetworkPolicy
+#    metadata: { name: allow-edge-and-aiproxy, namespace: bank-donkey-system }
+#    spec:
+#      podSelector: {}
+#      policyTypes: [Ingress]
+#      ingress:
+#        - from:
+#            - namespaceSelector:
+#                matchLabels: { kubernetes.io/metadata.name: infra }
+#          ports: [{ port: 8090 }]
+#        - from:
+#            - namespaceSelector:
+#                matchLabels: { kubernetes.io/metadata.name: bank-donkey-apps }
+#          ports: [{ port: 8088 }]
+#
+#    Egress-denied clusters additionally need: DNS from both namespaces, and
+#    from bank-donkey-system: the OIDC issuer, the AI endpoint, the registry
+#    and its mirrors (the build engine pulls base images itself).
+#
+# 3. The Gateway's listeners and TLS. donkey's HTTPRoute only attaches if a
+#    listener's allowedRoutes admits bank-donkey-system — the most common
+#    silent failure in this setup. A TLS *certificate* wildcard covers one
+#    label while apps live two deep, so the gateway needs a listener (with
+#    its own certificate) per *.<space>.apps.bank.example — spaces arrive
+#    through the same process as namespaces, so this list is just as static.
+#    When a listener's certificate Secret lives outside the gateway's
+#    namespace, a ReferenceGrant in the Secret's namespace permits it:
+#
+#    apiVersion: gateway.networking.k8s.io/v1beta1
+#    kind: ReferenceGrant
+#    metadata: { name: gateway-may-read-certs, namespace: certs }
+#    spec:
+#      from:
+#        - group: gateway.networking.k8s.io
+#          kind: Gateway
+#          namespace: infra
+#      to:
+#        - group: ""
+#          kind: Secret
+# ---------------------------------------------------------------------------

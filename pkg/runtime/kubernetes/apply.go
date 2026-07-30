@@ -11,7 +11,6 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
 
 	"github.com/adrianliechti/donkey/pkg/runtime/kubernetes/manifests"
@@ -36,9 +35,22 @@ var gvrFor = map[string]schema.GroupVersionResource{
 	"RoleBinding":           {Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "rolebindings"},
 	"ClusterRole":           {Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "clusterroles"},
 	"ClusterRoleBinding":    {Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "clusterrolebindings"},
+	// The optional attachment to a Gateway API edge the cluster already
+	// runs. Its CRD is not donkey's to install: the pre-flight refuses a
+	// configuration that names it on a cluster that doesn't serve it.
+	"HTTPRoute": {Group: "gateway.networking.k8s.io", Version: "v1", Resource: "httproutes"},
 }
 
 var clusterScoped = map[string]bool{"Namespace": true, "ClusterRole": true, "ClusterRoleBinding": true}
+
+// appKinds is everything an app or a space service is ever made of. The
+// delete sweeps use it rather than the whole apply table: the other kinds
+// there exist for the installation, an app never has one — and an
+// installation confined to namespaces it was given holds no permission over
+// them, so asking would turn `donkey destroy` into a permission error.
+var appKinds = []string{
+	"Secret", "ConfigMap", "Service", "PersistentVolumeClaim", "Deployment",
+}
 
 // Apply server-side-applies every object with donkey as field manager.
 // It is idempotent: create and update are the same operation.
@@ -49,6 +61,7 @@ func (c *Client) Apply(ctx context.Context, objs []runtime.Object) error {
 			return err
 		}
 		u := &unstructured.Unstructured{Object: m}
+		c.stampInstance(u)
 		kind := u.GetKind()
 		gvr, ok := gvrFor[kind]
 		if !ok {
@@ -65,12 +78,24 @@ func (c *Client) Apply(ctx context.Context, objs []runtime.Object) error {
 	return nil
 }
 
+// stampInstance marks the object as this installation's, on its way out. It
+// happens here rather than in the manifests package so no renderer can forget
+// it: an unstamped object is one a second installation would adopt as its own.
+func (c *Client) stampInstance(u *unstructured.Unstructured) {
+	labels := u.GetLabels()
+	if labels == nil {
+		labels = map[string]string{}
+	}
+	labels[manifests.LabelInstance] = c.instance()
+	u.SetLabels(labels)
+}
+
 // applyWithRetry rides out transient control-plane hiccups — most commonly
 // an admission webhook (ingress controller) that is briefly unreachable
 // while restarting. Permanent errors return immediately.
 func applyWithRetry(ctx context.Context, ri dynamic.ResourceInterface, u *unstructured.Unstructured) error {
 	var lastErr error
-	for attempt := 0; attempt < 10; attempt++ {
+	for range 10 {
 		_, err := ri.Apply(ctx, u.GetName(), u, metav1.ApplyOptions{FieldManager: fieldManager, Force: true})
 		if err == nil {
 			return nil
@@ -116,14 +141,11 @@ func (c *Client) DeleteObject(ctx context.Context, kind, namespace, name string)
 // worthless without the credentials that open it (the addon binding Secret
 // holds the password the initialized data was created with).
 func (c *Client) deleteBySelector(ctx context.Context, namespace, selector string, keepData bool) error {
-	for kind, gvr := range gvrFor {
-		if clusterScoped[kind] {
-			continue
-		}
+	for _, kind := range appKinds {
 		if keepData && (kind == "PersistentVolumeClaim" || kind == "Secret") {
 			continue
 		}
-		err := c.Dynamic.Resource(gvr).Namespace(namespace).DeleteCollection(ctx,
+		err := c.Dynamic.Resource(gvrFor[kind]).Namespace(namespace).DeleteCollection(ctx,
 			metav1.DeleteOptions{}, metav1.ListOptions{LabelSelector: selector})
 		if err != nil && !apierrors.IsNotFound(err) {
 			return fmt.Errorf("removing %s objects: %w", kind, err)
@@ -144,202 +166,4 @@ func (c *Client) DeleteComponent(ctx context.Context, namespace, app, component 
 func (c *Client) DetachAddon(ctx context.Context, namespace, app, component string) error {
 	return c.deleteBySelector(ctx, namespace,
 		fmt.Sprintf("%s=%s,%s=%s,%s=true", manifests.LabelApp, app, manifests.LabelComponent, component, manifests.LabelShared), false)
-}
-
-// DeleteAppResources deletes every donkey-owned object of the app across the
-// fixed kind list. The namespace belongs to the whole space, so it only goes
-// away with the space's last app.
-func (c *Client) DeleteAppResources(ctx context.Context, namespace, app string, keepData bool) error {
-	selector := fmt.Sprintf("%s=%s", manifests.LabelApp, app)
-	if err := c.deleteBySelector(ctx, namespace, selector, keepData); err != nil {
-		return err
-	}
-	if keepData {
-		return nil
-	}
-	ns, err := c.Clientset.CoreV1().Namespaces().Get(ctx, namespace, metav1.GetOptions{})
-	if apierrors.IsNotFound(err) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	if ns.Annotations[manifests.AnnotationManaged] != "true" {
-		return nil // not ours to delete
-	}
-	// Other apps of the space still live here — leave their home standing.
-	remaining, err := c.Clientset.AppsV1().Deployments(namespace).List(ctx, metav1.ListOptions{
-		LabelSelector: fmt.Sprintf("%s=%s", manifests.LabelComponent, manifests.ComponentWeb),
-	})
-	if err != nil {
-		return err
-	}
-	for _, d := range remaining.Items {
-		if d.Name != app {
-			return nil
-		}
-	}
-	// Data someone chose to keep (an earlier `destroy --keep-data`, an addon
-	// removed with its disk kept) must survive the last app leaving too —
-	// deleting the namespace would take the PVCs with it. The app's own
-	// just-deleted claims still linger in Terminating (pvc-protection
-	// finalizer), so only claims that are not already on their way out count.
-	kept, err := c.Clientset.CoreV1().PersistentVolumeClaims(namespace).List(ctx, metav1.ListOptions{
-		LabelSelector: "app.kubernetes.io/managed-by=" + manifests.ManagedByValue,
-	})
-	if err != nil {
-		return err
-	}
-	for _, pvc := range kept.Items {
-		if pvc.DeletionTimestamp == nil {
-			return nil
-		}
-	}
-	err = c.Clientset.CoreV1().Namespaces().Delete(ctx, namespace, metav1.DeleteOptions{})
-	if err != nil && !apierrors.IsNotFound(err) {
-		return err
-	}
-	return nil
-}
-
-// HasDataClaim reports whether the app's data volume exists — used to tell
-// the user about a disk left over from an earlier configuration.
-func (c *Client) HasDataClaim(ctx context.Context, namespace, app string) bool {
-	_, err := c.Clientset.CoreV1().PersistentVolumeClaims(namespace).Get(ctx, manifests.DataClaimName(app), metav1.GetOptions{})
-	return err == nil
-}
-
-// SwitchToRecreate clears a Deployment's rolling-update settings so its
-// strategy can become Recreate. Kubernetes defaults spec.strategy.rollingUpdate
-// for rolling deployments and then refuses that field together with
-// type: Recreate — so an app that gains storage (and must stop before its
-// replacement starts, since a disk attaches to one machine at a time) would
-// otherwise be stuck on its old strategy. A missing Deployment is fine: the
-// first deploy renders Recreate directly.
-func (c *Client) SwitchToRecreate(ctx context.Context, namespace, name string) error {
-	patch := []byte(`{"spec":{"strategy":{"type":"Recreate","rollingUpdate":null}}}`)
-	_, err := c.Clientset.AppsV1().Deployments(namespace).Patch(ctx, name,
-		types.StrategicMergePatchType, patch, metav1.PatchOptions{})
-	if apierrors.IsNotFound(err) {
-		return nil
-	}
-	return err
-}
-
-// AppRef identifies one deployed app.
-type AppRef struct {
-	Space     string
-	App       string
-	Namespace string
-}
-
-// ListApps finds every deployed donkey app in the cluster, grouped later by
-// space. Apps are their Deployments — a namespace alone says nothing now that
-// a space holds many apps.
-func (c *Client) ListApps(ctx context.Context) ([]AppRef, error) {
-	deps, err := c.Clientset.AppsV1().Deployments("").List(ctx, metav1.ListOptions{
-		LabelSelector: fmt.Sprintf("app.kubernetes.io/managed-by=%s,%s=%s,%s",
-			manifests.ManagedByValue, manifests.LabelComponent, manifests.ComponentWeb, manifests.LabelApp),
-	})
-	if err != nil {
-		return nil, err
-	}
-	var out []AppRef
-	for _, d := range deps.Items {
-		name := d.Labels[manifests.LabelApp]
-		if name == "" {
-			continue
-		}
-		out = append(out, AppRef{
-			Space:     d.Labels[manifests.LabelSpace],
-			App:       name,
-			Namespace: d.Namespace,
-		})
-	}
-	return out, nil
-}
-
-// DeleteSpace removes an app-less space: its namespace, and with it any
-// services and their data. Spaces that still hold apps keep their own
-// removal flow (with its own warnings) — this refuses them.
-func (c *Client) DeleteSpace(ctx context.Context, namespace string) error {
-	ns, err := c.Clientset.CoreV1().Namespaces().Get(ctx, namespace, metav1.GetOptions{})
-	if apierrors.IsNotFound(err) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	if ns.Annotations[manifests.AnnotationManaged] != "true" {
-		return fmt.Errorf("that namespace isn't donkey's to delete")
-	}
-	apps, err := c.Clientset.AppsV1().Deployments(namespace).List(ctx, metav1.ListOptions{
-		LabelSelector: fmt.Sprintf("%s=%s", manifests.LabelComponent, manifests.ComponentWeb),
-	})
-	if err != nil {
-		return err
-	}
-	if n := len(apps.Items); n > 0 {
-		return fmt.Errorf("the space still holds %d %s — remove them first", n, plural(n, "app"))
-	}
-	err = c.Clientset.CoreV1().Namespaces().Delete(ctx, namespace, metav1.DeleteOptions{})
-	if apierrors.IsNotFound(err) {
-		return nil
-	}
-	return err
-}
-
-func plural(n int, word string) string {
-	if n == 1 {
-		return word
-	}
-	return word + "s"
-}
-
-// ListSpaces finds every donkey space namespace, including ones holding no
-// app — a space can carry only services now, and it must not vanish from
-// view for that.
-func (c *Client) ListSpaces(ctx context.Context) ([]AppRef, error) {
-	namespaces, err := c.Clientset.CoreV1().Namespaces().List(ctx, metav1.ListOptions{
-		LabelSelector: manifests.LabelSpace,
-	})
-	if err != nil {
-		return nil, err
-	}
-	var out []AppRef
-	for _, ns := range namespaces.Items {
-		if ns.Name == manifests.SystemNamespace || ns.DeletionTimestamp != nil {
-			continue
-		}
-		if ns.Annotations[manifests.AnnotationManaged] != "true" {
-			continue
-		}
-		out = append(out, AppRef{Space: ns.Labels[manifests.LabelSpace], Namespace: ns.Name})
-	}
-	return out, nil
-}
-
-// CheckNamespaceFree refuses to move into a namespace that exists but isn't
-// donkey's — a space name must never let donkey take over (or later delete)
-// somebody else's namespace. Only the managed annotation counts: a label
-// somebody put on their own namespace must not turn it into one donkey may
-// delete.
-func (c *Client) CheckNamespaceFree(ctx context.Context, namespace string) error {
-	// The control plane's namespace carries the managed annotation too — the
-	// space "system" must not adopt it (and must never be deletable as a
-	// space).
-	if namespace == manifests.SystemNamespace {
-		return fmt.Errorf("the space name maps to donkey's own namespace %s — pick a different space name (space: <name> in donkey.yaml)", namespace)
-	}
-	ns, err := c.Clientset.CoreV1().Namespaces().Get(ctx, namespace, metav1.GetOptions{})
-	if apierrors.IsNotFound(err) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	if ns.Annotations[manifests.AnnotationManaged] == "true" {
-		return nil
-	}
-	return fmt.Errorf("the namespace %s already exists and wasn't created by donkey — pick a different space name (space: <name> in donkey.yaml)", namespace)
 }

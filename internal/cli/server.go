@@ -54,10 +54,9 @@ func serverInstallCommand() *cli.Command {
 			&cli.BoolFlag{Name: "no-verify", Usage: "skip running a freshly built image to check it starts"},
 			&cli.StringFlag{Name: "https-proxy", Usage: "forward proxy for donkey-server and the build engine"},
 			&cli.StringFlag{Name: "no-proxy", Usage: "hosts that bypass the forward proxy, comma-separated"},
-			&cli.StringFlag{Name: "tls-mode", Usage: "how the gateway gets certificates: acme (default), ca (built-in CA for local/internal installs) or static (bring your own)"},
+			&cli.StringFlag{Name: "tls-mode", Usage: "how the gateway gets certificates: acme (default), ca (built-in CA for local/internal installs) or none (behind a TLS-terminating cluster gateway)"},
 			&cli.StringFlag{Name: "acme-email", Usage: "ACME account contact for expiry warnings (tls-mode acme)"},
 			&cli.StringFlag{Name: "acme-directory", Usage: "ACME endpoint override, e.g. Let's Encrypt staging (tls-mode acme)"},
-			&cli.StringFlag{Name: "tls-secret", Usage: "kubernetes.io/tls Secret in donkey-system with the certificate (tls-mode static)"},
 			&cli.StringFlag{Name: "oidc-issuer", Usage: "OIDC issuer for the login gateway (e.g. Entra ID); empty = no gateway"},
 			&cli.StringFlag{Name: "oidc-client-id", Usage: "OIDC client id for the gateway"},
 			&cli.StringFlag{Name: "oidc-client-secret", Usage: "OIDC client secret (or $DONKEY_OIDC_CLIENT_SECRET)"},
@@ -108,7 +107,6 @@ func installSettings(cmd *cli.Command) (*config.InstallFile, error) {
 	strOver(&settings.TLS.Mode, "tls-mode")
 	strOver(&settings.TLS.Email, "acme-email")
 	strOver(&settings.TLS.Directory, "acme-directory")
-	strOver(&settings.TLS.Secret, "tls-secret")
 	if cmd.Bool("registry-insecure") {
 		settings.Registry.Insecure = true
 	}
@@ -156,10 +154,11 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 	default:
 		return fmt.Errorf("gateway.serviceType must be LoadBalancer, ClusterIP or NodePort, not %q", settings.Gateway.ServiceType)
 	}
-	switch settings.TLS.Mode {
-	case "", "acme", "ca", "static":
-	default:
-		return fmt.Errorf("tls.mode must be acme, ca or static, not %q", settings.TLS.Mode)
+	if err := settings.TLS.Validate(); err != nil {
+		return err
+	}
+	if err := settings.Gateway.HTTPRoute.Validate(); err != nil {
+		return err
 	}
 	// The central login callback lives on the server host, and its session
 	// cookie's domain is the base domain — a server host outside it could
@@ -173,6 +172,9 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 	if err := settings.Build.Validate(); err != nil {
 		return err
 	}
+	if err := settings.Kubernetes.Validate(); err != nil {
+		return err
+	}
 
 	kubeContext := s.Resolved.KubeContext
 	client, err := k8s.New(kubeContext)
@@ -182,14 +184,43 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 	if _, err := k8s.Ping(ctx, kubeContext); err != nil {
 		return fmt.Errorf("the cluster (context %q) didn't answer — donkey installs into an existing cluster: %w", kubeContext, err)
 	}
+	// Everything applied from here carries this installation's identity. An
+	// unbound client would stamp the default instance — and the objects of a
+	// second installation would then belong, as far as every sweep is
+	// concerned, to the first.
+	client = client.ForInstance(settings.Kubernetes.SystemNamespace())
 
 	// Keep existing secrets on re-installs: a re-run without the secret env
 	// vars must not blank what the installation depends on. A read error is
 	// fatal for the same reason — treating it as "none yet" would rotate the
 	// session key and sign everyone out.
-	existing, err := client.GetSecretData(ctx, manifests.SystemNamespace, "donkey-system-config")
+	systemNamespace := settings.Kubernetes.SystemNamespace()
+	nsPlan, err := planNamespaces(ctx, u, client, settings.Kubernetes)
+	if err != nil {
+		return err
+	}
+	if err := checkOptionalCRDs(ctx, client, settings); err != nil {
+		return err
+	}
+	existing, err := client.GetSecretData(ctx, systemNamespace, "donkey-system-config")
 	if err != nil {
 		return fmt.Errorf("couldn't read the existing installation's secrets: %w", err)
+	}
+	// Nothing there means a new installation — including when the intent was
+	// to update an existing one that lives somewhere else. Saying so is the
+	// whole warning: the session key below would be a fresh one, which signs
+	// every user out of every app and revokes every `donkey login`.
+	if len(existing) == 0 && nsPlan.SkipSystemNamespace {
+		u.Warn("No existing donkey installation in %s. This creates a new one — a new session key, so any installation elsewhere keeps its own and everyone signed in here would have to sign in again.", systemNamespace)
+	}
+	// Only an upgrade may claim what the previous version left unstamped. A
+	// new installation standing up beside an old one shares nothing with it,
+	// even when both map spaces onto the same names — the control plane it
+	// finds here is what makes the old resources this installation's.
+	if len(existing) > 0 {
+		if err := claimPrevious(ctx, u, client, settings.Kubernetes); err != nil {
+			return err
+		}
 	}
 	registryPassword, err := settings.Registry.Password() // env, then registry.passwordFile
 	if err != nil {
@@ -234,7 +265,10 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 		}
 	}
 	in := manifests.SystemInput{
-		Namespace:            manifests.SystemNamespace,
+		Namespace:            systemNamespace,
+		SkipNamespace:        nsPlan.SkipSystemNamespace,
+		WorkloadNamespace:    settings.Kubernetes.Workload.Namespace,
+		NamespacePrefix:      settings.Kubernetes.NamespacePrefix(),
 		ServerImage:          settings.Image,
 		Domain:               settings.Domain,
 		ServerHostname:       settings.ServerHost,
@@ -244,25 +278,28 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 		TLSMode:              settings.TLS.Mode,
 		ACMEEmail:            settings.TLS.Email,
 		ACMEDirectory:        settings.TLS.Directory,
-		TLSSecret:            settings.TLS.Secret,
-		RegistryURL:          settings.Registry.URL,
-		RegistryUsername:     settings.Registry.Username,
-		RegistryCASecret:     settings.Registry.CASecret,
-		RegistryPassword:     registryPassword,
-		RegistryInsecure:     settings.Registry.Insecure,
-		RegistryImmutable:    settings.Registry.Immutable,
-		Admins:               settings.Auth.Admins,
-		OIDCIssuer:           settings.Auth.Issuer,
-		OIDCClientID:         settings.Auth.ClientID,
-		OIDCClientSecret:     settings.Auth.ClientSecret,
-		SessionKey:           sessionKey,
-		DefaultPlatform:      settings.DefaultPlatform,
-		OpenAIBaseURL:        settings.AI.BaseURL,
-		OpenAIAPIKey:         settings.AI.APIKey,
-		AIModel:              settings.AI.Model,
-		Build:                settings.Build,
-		BuildkitImage:        settings.BuildkitImage,
-		NamespacePrefix:      "donkey-",
+		HTTPRouteGateway: manifests.GatewayRef{
+			Name:        settings.Gateway.HTTPRoute.Name,
+			Namespace:   settings.Gateway.HTTPRoute.Namespace,
+			SectionName: settings.Gateway.HTTPRoute.SectionName,
+		},
+		RegistryURL:       settings.Registry.URL,
+		RegistryUsername:  settings.Registry.Username,
+		RegistryCASecret:  settings.Registry.CASecret,
+		RegistryPassword:  registryPassword,
+		RegistryInsecure:  settings.Registry.Insecure,
+		RegistryImmutable: settings.Registry.Immutable,
+		Admins:            settings.Auth.Admins,
+		OIDCIssuer:        settings.Auth.Issuer,
+		OIDCClientID:      settings.Auth.ClientID,
+		OIDCClientSecret:  settings.Auth.ClientSecret,
+		SessionKey:        sessionKey,
+		DefaultPlatform:   settings.DefaultPlatform,
+		OpenAIBaseURL:     settings.AI.BaseURL,
+		OpenAIAPIKey:      settings.AI.APIKey,
+		AIModel:           settings.AI.Model,
+		Build:             settings.Build,
+		BuildkitImage:     settings.BuildkitImage,
 	}
 	if in.BuildkitImage == "" {
 		in.BuildkitImage = config.DefaultBuildkitImage
@@ -323,9 +360,9 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 	case "ca":
 		u.Printf("  %s", u.Faint(fmt.Sprintf(
 			"TLS: the gateway signs certificates with its own CA. Export it once and trust it: kubectl -n %s get secret %s -o jsonpath='{.data.ca\\.crt}' | base64 -d",
-			manifests.SystemNamespace, manifests.GatewayCASecret)))
-	case "static":
-		u.Printf("  %s", u.Faint(fmt.Sprintf("TLS: served from the certificate in Secret %s/%s.", manifests.SystemNamespace, in.TLSSecret)))
+			in.Namespace, manifests.GatewayCASecret)))
+	case "none":
+		u.Printf("  %s", u.Faint("TLS: none at donkey's edge — the cluster gateway in front of it terminates TLS."))
 	}
 
 	callback := fmt.Sprintf("%s://%s/oauth2/callback", in.Scheme(), in.Domain)

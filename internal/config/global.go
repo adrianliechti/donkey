@@ -119,6 +119,10 @@ func (r Registry) Password() (string, error) {
 
 const (
 	DefaultNamespacePrefix = "donkey-"
+	// DefaultSystemNamespace is where the control plane lives unless an
+	// installation says otherwise. It doubles as the installation's identity,
+	// so two donkeys on one cluster cannot both keep it.
+	DefaultSystemNamespace = "donkey-system"
 	DefaultAIModel         = "gpt-5.5"
 )
 

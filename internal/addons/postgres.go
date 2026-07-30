@@ -25,7 +25,7 @@ func (postgres) DefaultStorage() string { return "1Gi" }
 func (postgres) Binding(in Input) map[string]string {
 	// The service is named plainly after itself, so siblings in the space
 	// reach it as "postgres" — the same way they reach each other.
-	host := fmt.Sprintf("%s.%s.svc", in.Name, in.Namespace)
+	host := fmt.Sprintf("%s.%s.svc", in.HostName(), in.Namespace)
 	return map[string]string{
 		"DATABASE_URL": fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=disable",
 			pgUser, in.Password, host, pgPort, pgDB),
