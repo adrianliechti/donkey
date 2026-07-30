@@ -103,3 +103,19 @@ donkey enforces "baseline" on namespaces it creates itself. To match it:
 	}
 	return nil
 }
+
+// checkOptionalCRDs refuses a configuration that names machinery the cluster
+// doesn't serve — without this, the apply fails with a bare "no matches for
+// kind".
+func checkOptionalCRDs(ctx context.Context, client *k8s.Client, settings *config.InstallFile) error {
+	if settings.Gateway.HTTPRoute.Enabled() {
+		ok, err := client.HasResource("gateway.networking.k8s.io/v1", "HTTPRoute")
+		if err != nil {
+			return fmt.Errorf("couldn't ask the cluster about Gateway API support: %w", err)
+		}
+		if !ok {
+			return fmt.Errorf("gateway.httpRoute is set, but the cluster doesn't serve HTTPRoute (gateway.networking.k8s.io/v1) — install a Gateway API implementation first, or drop the setting")
+		}
+	}
+	return nil
+}

@@ -255,6 +255,35 @@ type InstallGateway struct {
 	// so port mappings (kind) or firewall rules can rely on them.
 	HTTPNodePort  int32 `json:"httpNodePort,omitempty"`
 	HTTPSNodePort int32 `json:"httpsNodePort,omitempty"`
+	// HTTPRoute attaches donkey's edge to a Gateway API gateway the cluster
+	// already runs (one HTTPRoute for the domain and everything under it),
+	// instead of exposing the edge Service directly. That gateway terminates
+	// TLS before routes match, so this pairs with tls.mode "none".
+	HTTPRoute InstallHTTPRoute `json:"httpRoute,omitempty"`
+}
+
+// InstallHTTPRoute names the Gateway API gateway to attach to.
+type InstallHTTPRoute struct {
+	Name string `json:"name,omitempty"`
+	// Namespace is where that gateway lives; empty means donkey's own system
+	// namespace (the Gateway API reading of an unqualified parentRef).
+	Namespace string `json:"namespace,omitempty"`
+	// SectionName narrows the attachment to one listener of the gateway.
+	SectionName string `json:"sectionName,omitempty"`
+}
+
+// Enabled reports whether the installation attaches to a cluster gateway.
+func (r InstallHTTPRoute) Enabled() bool { return r.Name != "" }
+
+// Validate checks what can be wrong without consulting the cluster.
+func (r InstallHTTPRoute) Validate() error {
+	if r.Name == "" && (r.Namespace != "" || r.SectionName != "") {
+		return fmt.Errorf("gateway.httpRoute needs `name` — the Gateway API gateway to attach to")
+	}
+	if r.Namespace != "" && !ValidNamespace(r.Namespace) {
+		return fmt.Errorf("gateway.httpRoute.namespace %q is not a valid namespace name", r.Namespace)
+	}
+	return nil
 }
 
 // InstallTLS is how the gateway gets its certificates. donkey always serves
@@ -265,23 +294,30 @@ type InstallTLS struct {
 	// Mode is "acme" (one certificate per hostname from Let's Encrypt, the
 	// default — the gateway must be reachable on ports 80/443), "ca" (a
 	// self-signed CA minting per-hostname certificates — local and internal
-	// installs; trust its one CA certificate and every app is covered), or
-	// "static" (a provided certificate, usually a wildcard, in the Secret
-	// named by Secret).
+	// installs; trust its one CA certificate and every app is covered),
+	// or "none" (no TLS at donkey's edge — only sensible behind
+	// gateway.httpRoute, where the cluster's gateway terminates TLS with
+	// certificates the platform provides).
 	Mode string `json:"mode,omitempty"`
 	// Email is the ACME account contact (expiry warnings); optional.
 	Email string `json:"email,omitempty"`
 	// Directory overrides the ACME endpoint — Let's Encrypt staging, or an
 	// internal CA speaking ACME.
 	Directory string `json:"directory,omitempty"`
-	// Secret names a kubernetes.io/tls Secret in donkey-system holding the
-	// certificate for static mode (default donkey-gateway-tls).
-	Secret string `json:"secret,omitempty"`
+}
 
-	// Issuer and Kind configured cert-manager in earlier donkey versions.
-	// They are ignored now — kept so old install files still parse.
-	Issuer string `json:"issuer,omitempty"`
-	Kind   string `json:"kind,omitempty"`
+// Validate checks the TLS block without consulting the cluster.
+func (t InstallTLS) Validate() error {
+	switch t.Mode {
+	case "", "acme", "ca", "none":
+	// "off" is what people try first — and bare, YAML 1.1 reads it as a
+	// boolean and hands us "false". Both spellings deserve the real name.
+	case "off", "false":
+		return fmt.Errorf(`tls.mode %q is not a mode — "none" turns TLS off at donkey's edge`, t.Mode)
+	default:
+		return fmt.Errorf("tls.mode must be acme, ca or none, not %q", t.Mode)
+	}
+	return nil
 }
 
 // DefaultBuildkitImage is the build engine donkey installs. It is pinned to a

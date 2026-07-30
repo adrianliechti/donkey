@@ -62,7 +62,7 @@ five ideas:
 │  (thin client)│   HTTP   │  ├─ donkey-server   REST API, detection,│
 └───────────────┘          │  │      manifests, AI, rollout watching │
                            │  ├─ donkey-buildkitd  image builds      │──▶ registry
- browser ────80/443───────▶│  └─ donkey-gateway  TLS (ACME/CA/static)│──OIDC──▶ Entra ID /
+ browser ────80/443───────▶│  └─ donkey-gateway  TLS (ACME/CA/none)  │──OIDC──▶ Entra ID /
                            │       · routing by hostname and path    │        any IdP
      <app>.<space>.<domain>│       · OIDC login                      │
                            │       · access (users/groups/roles) ──▶ app
@@ -111,8 +111,8 @@ five ideas:
 - **donkey-gateway** — donkey's own edge (same binary as the server,
   started with `gateway`): traffic enters the cluster here, on ports 80 and
   443. It terminates TLS and issues the certificates itself — one per
-  hostname via ACME (Let's Encrypt) on demand, or minted by its own CA for
-  internal installs, or a provided wildcard (`tls.mode`) — routes by
+  hostname via ACME (Let's Encrypt or an internal ACME CA) on demand, or
+  minted by its own CA for internal installs (`tls.mode`) — routes by
   hostname and path (from the route ConfigMaps it watches), runs the OIDC
   code flow itself where a route demands a login, seals what it learned
   into an AES-GCM cookie (stateless — replicas just scale), checks the
@@ -383,7 +383,7 @@ using the very token and proxy an app would.
 
 donkey installs into a cluster you already run, and stays inside its own
 namespaces. It **never modifies cluster-wide settings**: no CoreDNS edits, no
-files on nodes, no admission webhooks, no StorageClasses, no CRDs — everything
+files on nodes, no admission webhooks, no StorageClasses, no required CRDs — everything
 it applies is in `donkey-system`, in a `donkey-<space>` namespace, or is one of
 the few cluster-scoped RBAC objects it names after itself. A test asserts
 exactly that (`TestInstallTouchesOnlyItsOwnObjects`). Configured with a
@@ -395,7 +395,7 @@ applies anything, and `donkey doctor` keeps checking them after):
 
 | Requirement | Why | Notes |
 |---|---|---|
-| **Kubernetes cluster** with a default StorageClass | apps with `storage.paths` and provisioned services claim volumes | any conformant cluster; nothing donkey-specific. No ingress controller, no Gateway API, no cert-manager — donkey brings its own edge. Traffic enters through the donkey-gateway `LoadBalancer` service; on clusters where nothing assigns those an address (kind), set `gateway.serviceType: NodePort` or `ClusterIP` |
+| **Kubernetes cluster** with a default StorageClass | apps with `storage.paths` and provisioned services claim volumes | any conformant cluster; nothing donkey-specific. No ingress controller, no Gateway API, no cert-manager — donkey brings its own edge, and optionally attaches to a Gateway API gateway the cluster already runs (below). Traffic enters through the donkey-gateway `LoadBalancer` service; on clusters where nothing assigns those an address (kind), set `gateway.serviceType: NodePort` or `ClusterIP` |
 | **Container registry** the cluster can pull from | donkey pushes every build there | `registry.url` + credentials; `registry.caSecret` when its certificate comes from a private CA |
 | **DNS** for `*.<domain>` and `<domain>` → the gateway address | apps are served at `<app>.<space>.<domain>`, the API and login callback at `<domain>` | one wildcard covers every depth; the apex needs its own record |
 | **OIDC provider** (Pocket ID, Entra ID, Keycloak, …) | the one way in: console, CLI and protected apps all sign in against it | required — `auth.issuer` (+ client id/secret); `auth.admins` optionally narrows who may administer |
@@ -463,6 +463,40 @@ Two limits to check before you commit to a name:
   `pod-security.kubernetes.io/enforce=privileged` (or no enforcement); the
   workload namespace must not be `restricted`, because most real application
   images run as root. donkey sets `baseline` on namespaces it creates itself.
+
+### Using the cluster's edge
+
+donkey needs no Gateway API — but a cluster that standardizes on one can put
+its edge in front of donkey with one setting, checked at install: naming a
+gateway on a cluster that doesn't serve HTTPRoute is refused up front
+instead of failing mid-apply.
+
+**Enter through the cluster's Gateway API gateway** instead of exposing
+donkey's edge Service:
+
+```yaml
+gateway:
+  serviceType: ClusterIP
+  httpRoute:
+    name: shared-gateway      # the Gateway to attach to
+    namespace: infra
+tls:
+  mode: none                  # that gateway terminates TLS before routes match
+```
+
+donkey renders one HTTPRoute sending `<domain>` and `*.<domain>` (a Gateway
+API wildcard matches any depth) to the donkey gateway, which keeps doing what
+it always does — routing, login, access — one hop further in. Custom app
+hostnames outside the domain are not covered by this route.
+
+TLS in this arrangement is the platform's prerequisite, not donkey's job:
+the cluster gateway's listeners terminate it with certificates provisioned
+however the platform likes — cert-manager, a PKI process, a ReferenceGrant
+when the certificate Secrets live outside the gateway's namespace. Remember
+that a TLS certificate wildcard covers one label while apps live at
+`<app>.<space>.<domain>`, so the gateway wants a listener per
+`*.<space>.<domain>`. [examples/install_prod.yaml](examples/install_prod.yaml)
+spells out the whole arrangement.
 
 ### Several donkeys on one cluster
 
@@ -606,10 +640,13 @@ individually.
 **Certificates and DNS.** The gateway issues one certificate per app
 hostname — a TLS wildcard covers only one level, so no single certificate
 could. `tls.mode: acme` requests them from Let's Encrypt on demand (the
-gateway answers its own HTTP-01 challenges); `tls.mode: ca` mints them from
-the gateway's own CA for installs the internet can't reach (trust that one
-CA certificate and every app is covered); `tls.mode: static` serves a
-provided certificate. DNS is simpler than TLS here: one `*.<domain>` record
+gateway answers its own HTTP-01 challenges), or from any internal CA that
+speaks ACME (`tls.directory`); `tls.mode: ca` mints them from the gateway's
+own CA for installs with no issuing infrastructure at all (trust that one
+CA certificate and every app is covered); `tls.mode: none` hands TLS to a
+cluster gateway in front (`gateway.httpRoute`), where certificates are the
+platform's concern. There is no bring-your-own-file mode: a hand-provided
+wildcard covers one label while apps live two deep, which made it a trap. DNS is simpler than TLS here: one `*.<domain>` record
 covers every depth, because DNS wildcards match multiple labels (as long as
 no explicit record sits at an intermediate name). Only the apex is never
 covered by the wildcard — and the API, console and login callback live

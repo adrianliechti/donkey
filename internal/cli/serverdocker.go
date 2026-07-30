@@ -70,9 +70,9 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 		return fmt.Errorf("these settings are required (via -f file or flags): %v", missing)
 	}
 	switch settings.TLS.Mode {
-	case "", "acme", "ca", "static":
+	case "", "acme", "ca":
 	default:
-		return fmt.Errorf("tls.mode must be acme, ca or static, not %q", settings.TLS.Mode)
+		return fmt.Errorf("tls.mode must be acme or ca on the docker runtime, not %q", settings.TLS.Mode)
 	}
 	if err := settings.Build.Validate(); err != nil {
 		return err
@@ -164,10 +164,6 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 	if tlsMode == "" {
 		tlsMode = "acme"
 	}
-	tlsSecret := settings.TLS.Secret
-	if tlsSecret == "" {
-		tlsSecret = "donkey-gateway-tls"
-	}
 
 	serverEnv := map[string]string{
 		"DONKEY_RUNTIME":            "docker",
@@ -236,7 +232,6 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 		"DONKEY_TLS_MODE":           tlsMode,
 		"DONKEY_ACME_EMAIL":         settings.TLS.Email,
 		"DONKEY_ACME_DIRECTORY":     settings.TLS.Directory,
-		"DONKEY_TLS_SECRET":         tlsSecret,
 		"DONKEY_OIDC_ISSUER":        settings.Auth.Issuer,
 		"DONKEY_OIDC_CLIENT_ID":     settings.Auth.ClientID,
 		"DONKEY_OIDC_CLIENT_SECRET": settings.Auth.ClientSecret,
@@ -290,8 +285,6 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 	case "ca":
 		u.Printf("  %s", u.Faint(fmt.Sprintf(
 			"TLS: the gateway signs certificates with its own CA. Export it once and trust it: docker run --rm -v %s:/state busybox cat /state/ca/ca.crt", dockerDataVolume)))
-	case "static":
-		u.Printf("  %s", u.Faint(fmt.Sprintf("TLS: served from tls.crt/tls.key under tls/ in the %s volume.", dockerDataVolume)))
 	}
 	if settings.Auth.ClientID == pendingOIDC {
 		u.Warn("No OIDC client configured yet — nobody can sign in until you register one at the issuer and re-run this install with the client id and secret.")

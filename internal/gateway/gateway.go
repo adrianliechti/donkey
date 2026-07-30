@@ -52,16 +52,13 @@ type Config struct {
 
 	// TLSMode is how the gateway gets certificates: "acme" (on-demand per
 	// hostname, Let's Encrypt by default), "ca" (a self-signed CA minting
-	// per-hostname certificates — local and internal installs), "static" (a
-	// provided certificate, usually a wildcard), or "" — no TLS, plain http
-	// on Listen (local development).
+	// per-hostname certificates — local and internal installs), or "none"
+	// (plain http only — behind a TLS-terminating edge, or local development).
 	TLSMode string
 	// ACMEEmail is the ACME account contact; ACMEDirectory overrides the
 	// ACME endpoint (staging, or an internal CA speaking ACME).
 	ACMEEmail     string
 	ACMEDirectory string
-	// TLSSecret names the kubernetes.io/tls Secret of "static" mode.
-	TLSSecret string
 	// SystemNamespace is where the gateway keeps its certificates (the
 	// issued-certs cache, the ACME account, the built-in CA).
 	SystemNamespace string
@@ -99,7 +96,6 @@ func FromEnv() (*Config, error) {
 		TLSMode:           os.Getenv("DONKEY_TLS_MODE"),
 		ACMEEmail:         os.Getenv("DONKEY_ACME_EMAIL"),
 		ACMEDirectory:     os.Getenv("DONKEY_ACME_DIRECTORY"),
-		TLSSecret:         envOr("DONKEY_TLS_SECRET", manifests.GatewayStaticTLSSecret),
 		SystemNamespace:   envOr("DONKEY_SYSTEM_NAMESPACE", manifests.DefaultSystemNamespace),
 		WorkloadNamespace: os.Getenv("DONKEY_WORKLOAD_NAMESPACE"),
 		ServerHost:        os.Getenv("DONKEY_SERVER_HOST"),
@@ -109,11 +105,11 @@ func FromEnv() (*Config, error) {
 		Domain:            os.Getenv("DONKEY_DOMAIN"),
 	}
 	switch c.TLSMode {
-	case "", "off", "acme", "ca", "static":
+	case "", "none", "acme", "ca":
 	default:
-		return nil, fmt.Errorf("DONKEY_TLS_MODE must be acme, ca, static or off, not %q", c.TLSMode)
+		return nil, fmt.Errorf("DONKEY_TLS_MODE must be acme, ca or none, not %q", c.TLSMode)
 	}
-	if c.TLSMode == "off" {
+	if c.TLSMode == "none" {
 		c.TLSMode = ""
 	}
 	// No issuer is a legal installation: the gateway still routes every

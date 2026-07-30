@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/dynamic"
@@ -110,6 +111,30 @@ func (c *Client) sweep() []string {
 // a namespace — and must not read one either, since its rights stop at the
 // namespace boundary and the attempt would simply be refused.
 func (c *Client) Confined() bool { return len(c.Namespaces) > 0 }
+
+// HasResource reports whether the cluster serves a kind — how the installer
+// finds out, before applying anything, that a configuration names a CRD
+// (HTTPRoute, Certificate) whose operator isn't installed. An absent group
+// is an answer, not an error.
+func (c *Client) HasResource(groupVersion, kind string) (bool, error) {
+	disco, err := discovery.NewDiscoveryClientForConfig(c.Config)
+	if err != nil {
+		return false, err
+	}
+	list, err := disco.ServerResourcesForGroupVersion(groupVersion)
+	if apierrors.IsNotFound(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	for _, r := range list.APIResources {
+		if r.Kind == kind {
+			return true, nil
+		}
+	}
+	return false, nil
+}
 
 // instance is this client's installation, with the default filled in.
 func (c *Client) instance() string {
