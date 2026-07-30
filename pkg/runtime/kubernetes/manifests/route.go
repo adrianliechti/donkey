@@ -43,7 +43,7 @@ func protected(in Input) bool {
 // backendURL is where the gateway forwards this app's traffic: the app's
 // Service, on the stable in-cluster port.
 func backendURL(in Input) string {
-	return fmt.Sprintf("http://%s.%s.svc.cluster.local:80", in.App.Name, in.Namespace)
+	return fmt.Sprintf("http://%s.%s.svc.cluster.local:80", in.Name(), in.Namespace)
 }
 
 // routeAnnotations is the gateway's routing table entry: where the app
@@ -83,8 +83,8 @@ func routeConfigMap(name, namespace string, labels, annotations map[string]strin
 // gateway serves https only — the login cookies are Secure-only, so serving
 // apps over plain http was never right; its http listener redirects.
 func appRoute(in Input) *corev1.ConfigMap {
-	return routeConfigMap(in.App.Name, in.Namespace,
-		Labels(in.Space, in.App.Name, ComponentWeb),
+	return routeConfigMap(in.Name(), in.Namespace,
+		Labels(in.Space, in.Name(), ComponentWeb),
 		routeAnnotations(in, in.Domain, "/"))
 }
 

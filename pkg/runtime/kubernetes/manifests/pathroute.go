@@ -30,7 +30,7 @@ func PathRouteName(app, targetApp, path string) string {
 // each route carries its own login setting, the two can differ: a
 // machine-facing API can stay open under a path of a private frontend.
 func PathRoute(in Input, r RouteTarget) *corev1.ConfigMap {
-	return PathRouteNamed(in, PathRouteName(in.App.Name, r.App, r.Path), r)
+	return PathRouteNamed(in, PathRouteName(in.Name(), r.App, r.Path), r)
 }
 
 // PathRouteNamed renders a shared-address route under an explicit object
@@ -39,6 +39,6 @@ func PathRoute(in Input, r RouteTarget) *corev1.ConfigMap {
 // out).
 func PathRouteNamed(in Input, name string, r RouteTarget) *corev1.ConfigMap {
 	return routeConfigMap(name, in.Namespace,
-		Labels(in.Space, in.App.Name, ComponentRoute),
+		Labels(in.Space, in.Name(), ComponentRoute),
 		routeAnnotations(in, r.Host, r.Path))
 }

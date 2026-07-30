@@ -65,6 +65,11 @@ type Config struct {
 	// SystemNamespace is where the gateway keeps its certificates (the
 	// issued-certs cache, the ACME account, the built-in CA).
 	SystemNamespace string
+	// WorkloadNamespace, when set, is the single namespace apps live in.
+	// Together with SystemNamespace it is the whole of what this gateway may
+	// read — and what stops it from picking up a second installation's routes
+	// and serving that installation's apps under this one's TLS and login.
+	WorkloadNamespace string
 	// ServerHost is the console's hostname — always entitled to a
 	// certificate, whatever the routing table says.
 	ServerHost string
@@ -86,21 +91,22 @@ type Config struct {
 
 func FromEnv() (*Config, error) {
 	c := &Config{
-		Runtime:          envOr("DONKEY_RUNTIME", "kubernetes"),
-		StateDir:         envOr("DONKEY_STATE_DIR", "/var/lib/donkey"),
-		Listen:           envOr("DONKEY_LISTEN", ":8090"),
-		TLSListen:        envOr("DONKEY_TLS_LISTEN", ":8443"),
-		HealthListen:     envOr("DONKEY_HEALTH_LISTEN", ":8091"),
-		TLSMode:          os.Getenv("DONKEY_TLS_MODE"),
-		ACMEEmail:        os.Getenv("DONKEY_ACME_EMAIL"),
-		ACMEDirectory:    os.Getenv("DONKEY_ACME_DIRECTORY"),
-		TLSSecret:        envOr("DONKEY_TLS_SECRET", manifests.GatewayStaticTLSSecret),
-		SystemNamespace:  envOr("DONKEY_SYSTEM_NAMESPACE", manifests.SystemNamespace),
-		ServerHost:       os.Getenv("DONKEY_SERVER_HOST"),
-		OIDCIssuer:       os.Getenv("DONKEY_OIDC_ISSUER"),
-		OIDCClientID:     os.Getenv("DONKEY_OIDC_CLIENT_ID"),
-		OIDCClientSecret: os.Getenv("DONKEY_OIDC_CLIENT_SECRET"),
-		Domain:           os.Getenv("DONKEY_DOMAIN"),
+		Runtime:           envOr("DONKEY_RUNTIME", "kubernetes"),
+		StateDir:          envOr("DONKEY_STATE_DIR", "/var/lib/donkey"),
+		Listen:            envOr("DONKEY_LISTEN", ":8090"),
+		TLSListen:         envOr("DONKEY_TLS_LISTEN", ":8443"),
+		HealthListen:      envOr("DONKEY_HEALTH_LISTEN", ":8091"),
+		TLSMode:           os.Getenv("DONKEY_TLS_MODE"),
+		ACMEEmail:         os.Getenv("DONKEY_ACME_EMAIL"),
+		ACMEDirectory:     os.Getenv("DONKEY_ACME_DIRECTORY"),
+		TLSSecret:         envOr("DONKEY_TLS_SECRET", manifests.GatewayStaticTLSSecret),
+		SystemNamespace:   envOr("DONKEY_SYSTEM_NAMESPACE", manifests.DefaultSystemNamespace),
+		WorkloadNamespace: os.Getenv("DONKEY_WORKLOAD_NAMESPACE"),
+		ServerHost:        os.Getenv("DONKEY_SERVER_HOST"),
+		OIDCIssuer:        os.Getenv("DONKEY_OIDC_ISSUER"),
+		OIDCClientID:      os.Getenv("DONKEY_OIDC_CLIENT_ID"),
+		OIDCClientSecret:  os.Getenv("DONKEY_OIDC_CLIENT_SECRET"),
+		Domain:            os.Getenv("DONKEY_DOMAIN"),
 	}
 	switch c.TLSMode {
 	case "", "off", "acme", "ca", "static":
@@ -199,13 +205,17 @@ func New(cfg *Config) (*Server, error) {
 		if err != nil {
 			return nil, err
 		}
+		// The gateway speaks for one installation: its own namespace is its
+		// identity, and a workload namespace confines it to the two it was
+		// given.
+		client = client.ForInstallation(cfg.SystemNamespace, cfg.WorkloadNamespace)
 		s.k8s = client
 		s.source = k8sRoutes{client: client}
 	}
 	return s, nil
 }
 
-// k8sRoutes reads the route ConfigMaps donkey rendered, cluster-wide.
+// k8sRoutes reads the route ConfigMaps this installation rendered.
 type k8sRoutes struct{ client *k8s.Client }
 
 func (k k8sRoutes) list(ctx context.Context) ([]route, error) {

@@ -12,7 +12,7 @@ import (
 
 func systemInput() SystemInput {
 	return SystemInput{
-		Namespace:   SystemNamespace,
+		Namespace:   DefaultSystemNamespace,
 		ServerImage: "reg.example.com/donkey-server:test",
 		Domain:      "apps.example.com",
 		RegistryURL: "reg.example.com/donkey",
@@ -113,13 +113,13 @@ func TestInstallTouchesOnlyItsOwnObjects(t *testing.T) {
 		}
 		kind := obj.GetObjectKind().GroupVersionKind().Kind
 		switch ns := m.GetNamespace(); ns {
-		case SystemNamespace:
+		case DefaultSystemNamespace:
 		case "":
-			if !ownCluster[kind+":"+m.GetName()] && !(kind == "Namespace" && m.GetName() == SystemNamespace) {
+			if !ownCluster[kind+":"+m.GetName()] && !(kind == "Namespace" && m.GetName() == DefaultSystemNamespace) {
 				t.Errorf("%s %s is cluster-wide and not donkey's own", kind, m.GetName())
 			}
 		default:
-			t.Errorf("%s %s belongs to namespace %q — donkey installs into %s only", kind, m.GetName(), ns, SystemNamespace)
+			t.Errorf("%s %s belongs to namespace %q — donkey installs into %s only", kind, m.GetName(), ns, DefaultSystemNamespace)
 		}
 	}
 

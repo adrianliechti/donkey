@@ -131,3 +131,53 @@ func TestBuildSettingsDefaults(t *testing.T) {
 		t.Error("an explicit verify: false was ignored")
 	}
 }
+
+// Both namespace settings mean the same thing: name it and it is yours,
+// leave it empty and donkey makes its own.
+func TestInstallKubernetesDefaults(t *testing.T) {
+	var k InstallKubernetes
+	if k.SystemNamespace() != DefaultSystemNamespace {
+		t.Errorf("an unset system namespace should be %s, got %s", DefaultSystemNamespace, k.SystemNamespace())
+	}
+	if k.NamespacePrefix() != DefaultNamespacePrefix {
+		t.Errorf("an unset prefix should be %s, got %s", DefaultNamespacePrefix, k.NamespacePrefix())
+	}
+	if err := k.Validate(); err != nil {
+		t.Errorf("an empty block is the default installation: %v", err)
+	}
+
+	k.System.Namespace = "bank-donkey-system"
+	k.Workload.Namespace = "bank-donkey-apps"
+	if err := k.Validate(); err != nil {
+		t.Errorf("two distinct namespaces are the intended setup: %v", err)
+	}
+	if k.SystemNamespace() != "bank-donkey-system" {
+		t.Error("a configured system namespace should win")
+	}
+}
+
+func TestInstallKubernetesRejectsUnworkableCombinations(t *testing.T) {
+	// Apps next to a privileged build engine, inside the blast radius of
+	// every destroy.
+	same := InstallKubernetes{}
+	same.System.Namespace = "donkey-x"
+	same.Workload.Namespace = "donkey-x"
+	if err := same.Validate(); err == nil {
+		t.Error("one namespace for the control plane and the apps must be refused")
+	}
+
+	// A prefix maps a space onto a namespace; with one namespace for
+	// everything there is nothing left to prefix.
+	both := InstallKubernetes{}
+	both.Workload.Namespace = "donkey-apps"
+	both.Workload.NamespacePrefix = "donkey-"
+	if err := both.Validate(); err == nil {
+		t.Error("a prefix together with a shared namespace is a contradiction")
+	}
+
+	bad := InstallKubernetes{}
+	bad.Workload.Namespace = "Donkey_Apps"
+	if err := bad.Validate(); err == nil {
+		t.Error("a name the cluster would reject must be caught before the install runs")
+	}
+}

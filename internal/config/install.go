@@ -31,6 +31,9 @@ type InstallFile struct {
 	ServerHost string         `json:"serverHost,omitempty"`
 	Gateway    InstallGateway `json:"gateway,omitempty"`
 	TLS        InstallTLS     `json:"tls,omitempty"`
+	// Kubernetes is where donkey's objects go. Only meaningful for the
+	// kubernetes runtime.
+	Kubernetes InstallKubernetes `json:"kubernetes,omitempty"`
 	// DefaultPlatform is the build platform of the cluster's nodes
 	// (default linux/amd64).
 	DefaultPlatform string `json:"defaultPlatform,omitempty"`
@@ -158,6 +161,86 @@ type InstallAuth struct {
 	// matched like an app's `access` rules). Empty means everyone the IdP
 	// admits may administer.
 	Admins *AccessConfig `json:"admins,omitempty"`
+}
+
+// InstallKubernetes says which namespaces donkey may use, and by omission
+// which ones it may create.
+//
+// Both fields follow one rule: name a namespace and it is yours — donkey
+// expects it to exist, applies its objects into it, and never creates or
+// deletes it. Leave a field empty and donkey makes and manages the namespace
+// itself, which is what a cluster you own wants.
+type InstallKubernetes struct {
+	System   InstallNamespace `json:"system,omitempty"`
+	Workload InstallNamespace `json:"workload,omitempty"`
+}
+
+// InstallNamespace names a namespace donkey was given.
+type InstallNamespace struct {
+	// Namespace is the one to use.
+	//
+	// Under system: where the control plane lives. It is also the
+	// installation's identity, so two installations on one cluster must not
+	// share it — and a second one has to set this.
+	//
+	// Under workload: the single namespace every app of every space lives in.
+	// Setting it is what turns a cluster where donkey may not create
+	// namespaces into one it can run on, and it is the only arrangement that
+	// needs no cluster-scoped permission at all. Apps are then named
+	// <space>--<app> on the cluster, which is what lets one namespace hold two
+	// spaces that both have an "api".
+	//
+	// Leaving workload empty gives every space a namespace of its own,
+	// <namespacePrefix><space>, created and deleted by donkey.
+	Namespace string `json:"namespace,omitempty"`
+	// NamespacePrefix maps a space onto its namespace; only read under
+	// workload, and only when Namespace is empty (default "donkey-"). Two
+	// installations that both give every space a namespace need different
+	// prefixes, or they would fight over donkey-<space>.
+	NamespacePrefix string `json:"namespacePrefix,omitempty"`
+}
+
+// SystemNamespace is where the control plane goes.
+func (k InstallKubernetes) SystemNamespace() string {
+	if k.System.Namespace != "" {
+		return k.System.Namespace
+	}
+	return DefaultSystemNamespace
+}
+
+// NamespacePrefix maps a space onto its own namespace.
+func (k InstallKubernetes) NamespacePrefix() string {
+	if k.Workload.NamespacePrefix != "" {
+		return k.Workload.NamespacePrefix
+	}
+	return DefaultNamespacePrefix
+}
+
+// Validate checks what can be wrong without consulting the cluster.
+func (k InstallKubernetes) Validate() error {
+	for field, ns := range map[string]string{
+		"kubernetes.system.namespace":   k.System.Namespace,
+		"kubernetes.workload.namespace": k.Workload.Namespace,
+	} {
+		if ns != "" && !ValidNamespace(ns) {
+			return fmt.Errorf("%s %q is not a valid namespace name — lowercase letters, digits and dashes (max 63 chars)", field, ns)
+		}
+	}
+	// Apps next to the control plane would share a namespace with a
+	// privileged build engine and the policy that guards it, and donkey's own
+	// objects would be inside the blast radius of every `donkey destroy`.
+	if k.Workload.Namespace != "" && k.Workload.Namespace == k.SystemNamespace() {
+		return fmt.Errorf("kubernetes.workload.namespace must differ from kubernetes.system.namespace (%s) — apps do not belong next to the control plane", k.SystemNamespace())
+	}
+	if k.Workload.Namespace != "" && k.Workload.NamespacePrefix != "" {
+		return fmt.Errorf("kubernetes.workload.namespacePrefix has no meaning together with kubernetes.workload.namespace — with one namespace for every app there is no per-space namespace to prefix")
+	}
+	// The two blocks share a shape, but the prefix only means something for
+	// app namespaces — accepting it under system: would quietly do nothing.
+	if k.System.NamespacePrefix != "" {
+		return fmt.Errorf("kubernetes.system.namespacePrefix is not a setting — the prefix belongs under kubernetes.workload")
+	}
+	return nil
 }
 
 // InstallGateway tunes the traffic entry point.

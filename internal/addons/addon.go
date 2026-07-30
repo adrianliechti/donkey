@@ -58,13 +58,27 @@ type Input struct {
 	Space     string
 	Namespace string
 	// Name distinguishes multiple addons of one type (defaults to the type).
-	Name     string
-	Version  string
-	Storage  string
-	Password string
+	Name string
+	// ObjectName is what the instance's own objects are called, and the name
+	// apps dial it by. It differs from Name only where a whole installation
+	// shares one namespace and every object carries its space — "shop--
+	// postgres" rather than "postgres". Empty means the two are the same.
+	ObjectName string
+	Version    string
+	Storage    string
+	Password   string
 	// AIProxyURL is where donkey-server's AI proxy is reachable from apps —
 	// the runtime provider fills it in (its address is runtime vocabulary).
 	AIProxyURL string
+}
+
+// HostName is what the instance is called on the network — its object name
+// where that differs from the name the user gave it.
+func (in Input) HostName() string {
+	if in.ObjectName != "" {
+		return in.ObjectName
+	}
+	return in.Name
 }
 
 // Registry holds the addon types donkey knows.

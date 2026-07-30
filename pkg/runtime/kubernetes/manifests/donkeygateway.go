@@ -46,46 +46,76 @@ const (
 // donkeyGatewayObjects renders the edge proxy. Every installation gets one;
 // without an OIDC issuer it simply routes and never asks for a login.
 func donkeyGatewayObjects(in SystemInput) []runtime.Object {
-	return []runtime.Object{
-		donkeyGatewayServiceAccount(in),
-		donkeyGatewayClusterRole(in),
-		donkeyGatewayClusterRoleBinding(in),
+	objs := []runtime.Object{donkeyGatewayServiceAccount(in)}
+	objs = append(objs, donkeyGatewayRouteAccess(in)...)
+	return append(objs,
 		donkeyGatewaySecretsRole(in),
 		donkeyGatewaySecretsRoleBinding(in),
 		donkeyGatewayDeployment(in),
 		donkeyGatewayService(in),
 		donkeyGatewayHealthService(in),
+	)
+}
+
+// donkeyGatewayRouteAccess lets the gateway read the route ConfigMaps its
+// routing table is built from — cluster-wide when spaces have namespaces of
+// their own, and otherwise only in the two namespaces this installation was
+// given, which is what keeps a second installation's routes out of this
+// gateway's table.
+func donkeyGatewayRouteAccess(in SystemInput) []runtime.Object {
+	rules := []rbacv1.PolicyRule{{
+		APIGroups: []string{""},
+		Resources: []string{"configmaps"},
+		Verbs:     []string{"get", "list", "watch"},
+	}}
+	if !in.Shared() {
+		return []runtime.Object{
+			&rbacv1.ClusterRole{
+				TypeMeta: metav1.TypeMeta{APIVersion: "rbac.authorization.k8s.io/v1", Kind: "ClusterRole"},
+				ObjectMeta: metav1.ObjectMeta{
+					Name:   clusterScopedName(GatewayAppName, in.Namespace),
+					Labels: systemLabels(GatewayAppName),
+				},
+				Rules: rules,
+			},
+			&rbacv1.ClusterRoleBinding{
+				TypeMeta: metav1.TypeMeta{APIVersion: "rbac.authorization.k8s.io/v1", Kind: "ClusterRoleBinding"},
+				ObjectMeta: metav1.ObjectMeta{
+					Name:   clusterScopedName(GatewayAppName, in.Namespace),
+					Labels: systemLabels(GatewayAppName),
+				},
+				RoleRef: rbacv1.RoleRef{
+					APIGroup: "rbac.authorization.k8s.io", Kind: "ClusterRole",
+					Name: clusterScopedName(GatewayAppName, in.Namespace),
+				},
+				Subjects: []rbacv1.Subject{{Kind: "ServiceAccount", Name: GatewayAppName, Namespace: in.Namespace}},
+			},
+		}
 	}
+	var objs []runtime.Object
+	for _, ns := range []string{in.Namespace, in.WorkloadNamespace} {
+		name := GatewayAppName + "-routes"
+		objs = append(objs,
+			&rbacv1.Role{
+				TypeMeta:   metav1.TypeMeta{APIVersion: "rbac.authorization.k8s.io/v1", Kind: "Role"},
+				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns, Labels: systemLabels(GatewayAppName)},
+				Rules:      rules,
+			},
+			&rbacv1.RoleBinding{
+				TypeMeta:   metav1.TypeMeta{APIVersion: "rbac.authorization.k8s.io/v1", Kind: "RoleBinding"},
+				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns, Labels: systemLabels(GatewayAppName)},
+				RoleRef:    rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "Role", Name: name},
+				Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: GatewayAppName, Namespace: in.Namespace}},
+			},
+		)
+	}
+	return objs
 }
 
 func donkeyGatewayServiceAccount(in SystemInput) *corev1.ServiceAccount {
 	return &corev1.ServiceAccount{
 		TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "ServiceAccount"},
 		ObjectMeta: metav1.ObjectMeta{Name: GatewayAppName, Namespace: in.Namespace, Labels: systemLabels(GatewayAppName)},
-	}
-}
-
-// donkeyGatewayClusterRole is read-only and narrow: the gateway builds its
-// routing table from donkey's route ConfigMaps and touches nothing else
-// cluster-wide.
-func donkeyGatewayClusterRole(in SystemInput) *rbacv1.ClusterRole {
-	return &rbacv1.ClusterRole{
-		TypeMeta:   metav1.TypeMeta{APIVersion: "rbac.authorization.k8s.io/v1", Kind: "ClusterRole"},
-		ObjectMeta: metav1.ObjectMeta{Name: GatewayAppName, Labels: systemLabels(GatewayAppName)},
-		Rules: []rbacv1.PolicyRule{{
-			APIGroups: []string{""},
-			Resources: []string{"configmaps"},
-			Verbs:     []string{"get", "list", "watch"},
-		}},
-	}
-}
-
-func donkeyGatewayClusterRoleBinding(in SystemInput) *rbacv1.ClusterRoleBinding {
-	return &rbacv1.ClusterRoleBinding{
-		TypeMeta:   metav1.TypeMeta{APIVersion: "rbac.authorization.k8s.io/v1", Kind: "ClusterRoleBinding"},
-		ObjectMeta: metav1.ObjectMeta{Name: GatewayAppName, Labels: systemLabels(GatewayAppName)},
-		RoleRef:    rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "ClusterRole", Name: GatewayAppName},
-		Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: GatewayAppName, Namespace: in.Namespace}},
 	}
 }
 
@@ -154,6 +184,11 @@ func donkeyGatewayDeployment(in SystemInput) *appsv1.Deployment {
 		{Name: "DONKEY_ACME_DIRECTORY", Value: in.ACMEDirectory},
 		{Name: "DONKEY_TLS_SECRET", Value: tlsSecret},
 		{Name: "DONKEY_SYSTEM_NAMESPACE", Value: in.Namespace},
+		// Which namespaces hold routes. Empty means "every namespace", the
+		// arrangement where each space has one of its own; a value here is
+		// also what stops this gateway from serving another installation's
+		// apps, since both would otherwise match on managed-by=donkey.
+		{Name: "DONKEY_WORKLOAD_NAMESPACE", Value: in.WorkloadNamespace},
 		secretEnv("DONKEY_OIDC_CLIENT_ID", "oidc-client-id"),
 		secretEnv("DONKEY_OIDC_CLIENT_SECRET", "oidc-client-secret"),
 		secretEnv("DONKEY_SESSION_KEY", "session-key"),

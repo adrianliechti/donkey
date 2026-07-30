@@ -383,11 +383,12 @@ using the very token and proxy an app would.
 
 donkey installs into a cluster you already run, and stays inside its own
 namespaces. It **never modifies cluster-wide settings**: no CoreDNS edits, no
-files on nodes, no admission webhooks, no StorageClasses — everything it
-applies is in `donkey-system`, in a `donkey-<space>` namespace, or is one of
-two cluster-scoped objects it names after itself (the `donkey` GatewayClass
-and the `donkey-server` ClusterRoleBinding). A test asserts exactly that
-(`TestInstallTouchesOnlyItsOwnObjects`).
+files on nodes, no admission webhooks, no StorageClasses, no CRDs — everything
+it applies is in `donkey-system`, in a `donkey-<space>` namespace, or is one of
+the few cluster-scoped RBAC objects it names after itself. A test asserts
+exactly that (`TestInstallTouchesOnlyItsOwnObjects`). Configured with a
+[workload namespace](#namespaces-and-restricted-clusters) it applies nothing
+cluster-scoped at all.
 
 What has to be there first (`donkey server install` checks these before it
 applies anything, and `donkey doctor` keeps checking them after):
@@ -407,9 +408,94 @@ registry container, an OIDC provider) and
 [examples/INSTALL_DOCKER.md](examples/INSTALL_DOCKER.md) (no Kubernetes at
 all — `runtime: docker` runs apps straight on the Docker engine).
 
-RBAC: donkey-server currently binds `cluster-admin` (it creates namespaces and
-everything inside them). Scoping that down is on the list — see
-[Security notes](#security-notes-poc-status).
+RBAC: by default donkey-server binds `cluster-admin`, because it creates and
+deletes namespaces and no Role can express that. Giving it a workload
+namespace instead drops it to two namespaced Roles — see below.
+
+### Namespaces and restricted clusters
+
+By default every space gets a namespace of its own (`donkey-<space>`), created
+and deleted by donkey. That is the right shape on a cluster you own, and it is
+what makes an app's Service reachable as plain `api` from its siblings.
+
+Plenty of clusters don't work that way. Namespaces are handed out by a
+platform team, through a CRD or a GitOps pipeline, and `cluster-admin` is not
+something a review will approve. For those, name the namespaces donkey should
+use:
+
+```yaml
+kubernetes:
+  system:
+    namespace: bank-donkey-system   # where the control plane lives
+  workload:
+    namespace: bank-donkey-apps     # where every app of every space lives
+```
+
+One rule covers both fields: **name a namespace and it is yours.** donkey
+expects it to exist, applies its objects into it, and never creates, deletes
+or relabels it. Leave a field empty and donkey makes and manages that
+namespace itself.
+
+Setting `workload.namespace` changes three things:
+
+- **Every app lives in one namespace**, so object names carry their space:
+  the app `api` in space `shop` becomes `shop--api` on the cluster. The
+  separator is `--`, and neither a space nor an app name may contain it.
+- **Siblings are addressed by that name too.** Where an app in a namespace of
+  its own reaches a sibling at `http://api`, here it is `http://shop--api`.
+  Addon bindings (`DATABASE_URL` and friends) are generated, so they follow
+  automatically — only a hostname you hardcoded needs changing.
+- **donkey needs nothing above a namespace.** No ClusterRole, no
+  ClusterRoleBinding, no namespace permissions: namespaced Roles in the two
+  namespaces — the server's, spelled out in `serverRoleRules`, and the
+  gateway's read-only route access. This is the only arrangement that runs
+  with no cluster-scoped grant at all.
+
+Two limits to check before you commit to a name:
+
+- A Service name is a DNS label, so `<space>--<app>` must be **63 characters
+  or fewer**. donkey refuses the pair at deploy time rather than letting the
+  cluster reject it.
+- Both namespaces must **already exist**, and their Pod Security Standard has
+  to admit the pods that go in them. The install refuses up front rather than
+  letting admission fail silently later:
+  `donkey-system` runs a **privileged** BuildKit, so it needs
+  `pod-security.kubernetes.io/enforce=privileged` (or no enforcement); the
+  workload namespace must not be `restricted`, because most real application
+  images run as root. donkey sets `baseline` on namespaces it creates itself.
+
+### Several donkeys on one cluster
+
+Supported, with one requirement: **every installation needs its own
+`kubernetes.system.namespace`.** That namespace is the installation's
+identity — it is stamped on every object as `donkey.dev/instance`, every sweep
+donkey makes requires it, and every cluster-scoped object it applies is named
+after it. Without a distinct one the second install would apply the first's
+`ClusterRoleBinding`, and because server-side apply forces the subject list,
+the first installation would silently lose every permission it has.
+
+`kubectl get all -A -l donkey.dev/instance=bank-donkey-system` shows one
+installation's objects.
+
+The rest is not enforceable from inside a single installation — donkey can
+only see its own configuration — so these are yours to get right:
+
+| Must differ per installation | Why |
+|---|---|
+| `kubernetes.system.namespace` | the installation's identity — every object is stamped and swept by it; the install warns when it finds no existing installation there |
+| `domain` | two gateways cannot divide one wildcard, and DNS resolves to one of them |
+| `kubernetes.workload.namespace`, or `kubernetes.workload.namespacePrefix` | otherwise both installations write into the same namespaces |
+| `gateway.httpNodePort` / `httpsNodePort` | node ports are cluster-wide |
+| `registry.url` | see below |
+
+The registry one is the subtlest. An image is pushed to
+`<registry.url>/<app>:<tag>`, and the repository path carries neither the
+space nor the installation. Two installations sharing a `registry.url`
+therefore share the repository for every app of the same name — and
+`--no-build --tag` only checks that an image sits under the configured
+registry prefix, which is what stops one app from being deployed with
+another's image. Sharing the prefix defeats that check across installations.
+Give each one its own.
 
 ### The builder
 

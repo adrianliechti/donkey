@@ -173,6 +173,9 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 	if err := settings.Build.Validate(); err != nil {
 		return err
 	}
+	if err := settings.Kubernetes.Validate(); err != nil {
+		return err
+	}
 
 	kubeContext := s.Resolved.KubeContext
 	client, err := k8s.New(kubeContext)
@@ -182,14 +185,31 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 	if _, err := k8s.Ping(ctx, kubeContext); err != nil {
 		return fmt.Errorf("the cluster (context %q) didn't answer — donkey installs into an existing cluster: %w", kubeContext, err)
 	}
+	// Everything applied from here carries this installation's identity. An
+	// unbound client would stamp the default instance — and the objects of a
+	// second installation would then belong, as far as every sweep is
+	// concerned, to the first.
+	client = client.ForInstance(settings.Kubernetes.SystemNamespace())
 
 	// Keep existing secrets on re-installs: a re-run without the secret env
 	// vars must not blank what the installation depends on. A read error is
 	// fatal for the same reason — treating it as "none yet" would rotate the
 	// session key and sign everyone out.
-	existing, err := client.GetSecretData(ctx, manifests.SystemNamespace, "donkey-system-config")
+	systemNamespace := settings.Kubernetes.SystemNamespace()
+	nsPlan, err := planNamespaces(ctx, u, client, settings.Kubernetes)
+	if err != nil {
+		return err
+	}
+	existing, err := client.GetSecretData(ctx, systemNamespace, "donkey-system-config")
 	if err != nil {
 		return fmt.Errorf("couldn't read the existing installation's secrets: %w", err)
+	}
+	// Nothing there means a new installation — including when the intent was
+	// to update an existing one that lives somewhere else. Saying so is the
+	// whole warning: the session key below would be a fresh one, which signs
+	// every user out of every app and revokes every `donkey login`.
+	if len(existing) == 0 && nsPlan.SkipSystemNamespace {
+		u.Warn("No existing donkey installation in %s. This creates a new one — a new session key, so any installation elsewhere keeps its own and everyone signed in here would have to sign in again.", systemNamespace)
 	}
 	registryPassword, err := settings.Registry.Password() // env, then registry.passwordFile
 	if err != nil {
@@ -234,7 +254,10 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 		}
 	}
 	in := manifests.SystemInput{
-		Namespace:            manifests.SystemNamespace,
+		Namespace:            systemNamespace,
+		SkipNamespace:        nsPlan.SkipSystemNamespace,
+		WorkloadNamespace:    settings.Kubernetes.Workload.Namespace,
+		NamespacePrefix:      settings.Kubernetes.NamespacePrefix(),
 		ServerImage:          settings.Image,
 		Domain:               settings.Domain,
 		ServerHostname:       settings.ServerHost,
@@ -262,7 +285,6 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 		AIModel:              settings.AI.Model,
 		Build:                settings.Build,
 		BuildkitImage:        settings.BuildkitImage,
-		NamespacePrefix:      "donkey-",
 	}
 	if in.BuildkitImage == "" {
 		in.BuildkitImage = config.DefaultBuildkitImage
@@ -323,9 +345,9 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 	case "ca":
 		u.Printf("  %s", u.Faint(fmt.Sprintf(
 			"TLS: the gateway signs certificates with its own CA. Export it once and trust it: kubectl -n %s get secret %s -o jsonpath='{.data.ca\\.crt}' | base64 -d",
-			manifests.SystemNamespace, manifests.GatewayCASecret)))
+			in.Namespace, manifests.GatewayCASecret)))
 	case "static":
-		u.Printf("  %s", u.Faint(fmt.Sprintf("TLS: served from the certificate in Secret %s/%s.", manifests.SystemNamespace, in.TLSSecret)))
+		u.Printf("  %s", u.Faint(fmt.Sprintf("TLS: served from the certificate in Secret %s/%s.", in.Namespace, in.TLSSecret)))
 	}
 
 	callback := fmt.Sprintf("%s://%s/oauth2/callback", in.Scheme(), in.Domain)

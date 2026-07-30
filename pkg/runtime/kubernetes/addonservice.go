@@ -48,16 +48,14 @@ func attachmentSecret(space, app, namespace, name string, data map[string]string
 	return sec
 }
 
-// aiProxyURL is where apps reach donkey-server's AI proxy on this runtime.
-func aiProxyURL() string {
-	return fmt.Sprintf("http://%s.%s.svc/ai/v1", manifests.ServerName, manifests.SystemNamespace)
-}
-
 // addonObjects renders one provisioned instance: its data volume, its
 // Deployment and its Service — named plainly after itself, so siblings in
 // the space reach it as e.g. "postgres" the same way they reach each other.
 func addonObjects(in addons.Input, w *addons.Workload) ([]k8sruntime.Object, error) {
-	name := in.Name
+	// The objects carry the instance's own name; the component label keeps the
+	// plain one, so "addon-postgres" means the same thing in every space and
+	// the space label is what tells two of them apart.
+	name := in.HostName()
 	labels := manifests.Labels(in.Space, in.App, addons.Component(in.Name))
 	selector := map[string]string{
 		manifests.LabelApp:       in.App,

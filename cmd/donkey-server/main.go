@@ -13,6 +13,7 @@ import (
 	"github.com/adrianliechti/donkey/pkg/runtime"
 	"github.com/adrianliechti/donkey/pkg/runtime/docker"
 	"github.com/adrianliechti/donkey/pkg/runtime/kubernetes"
+	"github.com/adrianliechti/donkey/pkg/runtime/kubernetes/manifests"
 )
 
 // One binary, two roles: the control plane by default, the login gateway
@@ -93,7 +94,11 @@ func main() {
 			os.Exit(1)
 		}
 		rt = kubernetes.NewRuntime(client, kubernetes.Options{
-			NamespacePrefix: cfg.NamespacePrefix,
+			Placement: manifests.Placement{
+				SharedNamespace: cfg.WorkloadNamespace,
+				NamespacePrefix: cfg.NamespacePrefix,
+			},
+			SystemNamespace: cfg.SystemNamespace,
 			Domain:          cfg.Domain,
 			Registry:        cfg.Registry,
 		})

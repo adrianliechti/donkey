@@ -22,23 +22,27 @@ func (r *Runtime) Deploy(ctx context.Context, spec rt.DeploySpec, out rt.Progres
 	app := spec.App
 	space := spec.Space
 	ns := r.ns(space)
+	obj := r.name(space, app.Name)
 
+	if err := r.ValidateApp(space, app.Name); err != nil {
+		return rt.UserError{Err: err}
+	}
 	out.Line("Setting up on the cluster…")
 	// A file-browser helper holds the app's disk, and an RWO volume attaches
 	// to one node at a time — leaving it running would strand the new pod on
 	// another node with a multi-attach error until the rollout times out.
 	if app.HasStorage() {
-		if err := r.c.RemoveFilesHelper(ctx, ns, app.Name); err != nil {
+		if err := r.c.RemoveFilesHelper(ctx, ns, obj); err != nil {
 			return err
 		}
 	}
-	if !app.HasStorage() && r.c.HasDataClaim(ctx, ns, app.Name) {
+	if !app.HasStorage() && r.c.HasDataClaim(ctx, ns, obj) {
 		out.Line("· A disk from an earlier setup still exists (with its data). This deploy doesn't mount it — add its paths back under `storage:` in donkey.yaml to use it, or `donkey destroy` removes it.")
 	}
 	if app.HasStorage() {
 		out.Line("· One disk (%s) for %s", app.Storage.Size, strings.Join(app.Storage.Paths, ", "))
 		// An app that just gained a disk has to leave rolling updates behind.
-		if err := r.c.SwitchToRecreate(ctx, ns, app.Name); err != nil {
+		if err := r.c.SwitchToRecreate(ctx, ns, obj); err != nil {
 			return fmt.Errorf("couldn't switch %s to single-copy rollouts: %w", app.Name, err)
 		}
 	}
@@ -48,7 +52,7 @@ func (r *Runtime) Deploy(ctx context.Context, spec rt.DeploySpec, out rt.Progres
 	// the binding. An existing service is left alone: a second app naming it
 	// simply joins it.
 	for _, a := range app.Addons {
-		shared, err := r.c.GetSecretData(ctx, ns, addons.SecretName(addons.SharedOwner, a.Name))
+		shared, err := r.c.GetSecretData(ctx, ns, addons.SecretName(r.sharedOwner(space), a.Name))
 		if err != nil {
 			return err
 		}
@@ -64,7 +68,7 @@ func (r *Runtime) Deploy(ctx context.Context, spec rt.DeploySpec, out rt.Progres
 		}
 		// The attachment copy is re-applied every deploy, so it stays current
 		// with the space's service.
-		if err := r.c.Apply(ctx, []k8sruntime.Object{attachmentSecret(space, app.Name, ns, a.Name, shared)}); err != nil {
+		if err := r.c.Apply(ctx, []k8sruntime.Object{attachmentSecret(space, obj, ns, a.Name, shared)}); err != nil {
 			return err
 		}
 	}
@@ -73,7 +77,7 @@ func (r *Runtime) Deploy(ctx context.Context, spec rt.DeploySpec, out rt.Progres
 		return err
 	}
 	if in.Domain != "" {
-		if owner := r.hostOwner(ctx, space, in.Domain, app.Name); owner != "" {
+		if owner := r.hostOwner(ctx, space, in.Domain, obj); owner != "" {
 			return fmt.Errorf("%s already answers on %s — two apps cannot share one address (give one of them a different `host`)", owner, in.Domain)
 		}
 	}
@@ -81,13 +85,13 @@ func (r *Runtime) Deploy(ctx context.Context, spec rt.DeploySpec, out rt.Progres
 	// Addons added in the console aren't in this donkey.yaml; the cluster
 	// knows them by their binding secrets, and they keep working across
 	// deploys instead of silently losing their env.
-	if bindings, err := r.c.ListAddonBindings(ctx, ns, app.Name); err == nil {
+	if bindings, err := r.c.ListAddonBindings(ctx, ns, obj); err == nil {
 		known := map[string]bool{}
 		for _, n := range in.AddonSecretNames {
 			known[n] = true
 		}
 		for _, b := range bindings {
-			if n := addons.SecretName(app.Name, b.Name); !known[n] {
+			if n := addons.SecretName(obj, b.Name); !known[n] {
 				in.AddonSecretNames = append(in.AddonSecretNames, n)
 				out.Line("· Keeping %s, attached in the console", b.Name)
 			}
@@ -129,10 +133,12 @@ func (r *Runtime) Deploy(ctx context.Context, spec rt.DeploySpec, out rt.Progres
 		// Internal: no hostname, so the route goes — including when the app
 		// used to have one. The gateway stops serving the hostname within
 		// seconds; its cached certificate simply expires unused.
-		if err := r.c.DeleteObject(ctx, "ConfigMap", ns, app.Name); err != nil {
+		if err := r.c.DeleteObject(ctx, "ConfigMap", ns, obj); err != nil {
 			return err
 		}
-		out.Line("· Internal only — the apps of this space reach it at http://%s", app.Name)
+		// The name siblings dial, which carries the space when the whole
+		// installation shares a namespace.
+		out.Line("· Internal only — the apps of this space reach it at http://%s", obj)
 	} else if !app.Public {
 		out.Line("· Login protection is in force.")
 	}
@@ -141,7 +147,7 @@ func (r *Runtime) Deploy(ctx context.Context, spec rt.DeploySpec, out rt.Progres
 	}
 
 	out.Line("Waiting for the app to become healthy…")
-	return r.c.WaitForRollout(ctx, ns, app.Name)
+	return r.c.WaitForRollout(ctx, ns, obj)
 }
 
 // Render renders the app's objects without touching the cluster.
@@ -161,13 +167,13 @@ func (r *Runtime) Render(spec rt.DeploySpec) (string, error) {
 }
 
 func (r *Runtime) Destroy(ctx context.Context, space, app string, keepData bool) error {
-	ns := r.ns(space)
+	ns, obj := r.ns(space), r.name(space, app)
 	// A file-browser helper still holding the disk would keep the volume in
 	// Terminating — and it is a Pod, which the app's own delete never covers.
-	if err := r.c.RemoveFilesHelper(ctx, ns, app); err != nil {
+	if err := r.c.RemoveFilesHelper(ctx, ns, obj); err != nil {
 		return err
 	}
-	return r.c.DeleteAppResources(ctx, ns, app, keepData)
+	return r.c.DeleteAppResources(ctx, ns, obj, keepData)
 }
 
 // appHost is the address of an app — see config.AppHost for the rule.
@@ -178,13 +184,15 @@ func (r *Runtime) appHost(space string, app *config.AppConfig) string {
 func (r *Runtime) manifestInput(spec rt.DeploySpec, includeCreds bool) (manifests.Input, error) {
 	app, space := spec.App, spec.Space
 	in := manifests.Input{
-		App:          app,
-		Space:        space,
-		Namespace:    r.ns(space),
-		ImageRef:     spec.ImageRef,
-		Decisions:    spec.Decisions,
-		RegistryHost: r.opts.Registry.Host(),
-		Domain:       r.appHost(space, app),
+		App:             app,
+		Space:           space,
+		Namespace:       r.ns(space),
+		SharedNamespace: r.opts.Placement.Shared(),
+		ObjectName:      r.name(space, app.Name),
+		ImageRef:        spec.ImageRef,
+		Decisions:       spec.Decisions,
+		RegistryHost:    r.opts.Registry.Host(),
+		Domain:          r.appHost(space, app),
 	}
 	if includeCreds {
 		password, err := r.opts.Registry.Password()
@@ -195,7 +203,7 @@ func (r *Runtime) manifestInput(spec rt.DeploySpec, includeCreds bool) (manifest
 		in.RegistryPassword = password
 	}
 	for _, a := range app.Addons {
-		in.AddonSecretNames = append(in.AddonSecretNames, addons.SecretName(app.Name, a.Name))
+		in.AddonSecretNames = append(in.AddonSecretNames, addons.SecretName(in.Name(), a.Name))
 	}
 	// Each route joins another app's address. The default shape is the
 	// assumption; resolveRouteTargets corrects it against what that app
@@ -216,7 +224,7 @@ func (r *Runtime) manifestInput(spec rt.DeploySpec, includeCreds bool) (manifest
 // yet keeps the assumption, which is what it will get when it is.
 func (r *Runtime) resolveRouteTargets(ctx context.Context, space string, in *manifests.Input) {
 	for i, target := range in.RouteTargets {
-		net, err := r.c.AppNetwork(ctx, r.ns(space), target.App)
+		net, err := r.c.AppNetwork(ctx, r.ns(space), r.name(space, target.App))
 		if err == nil && net.RouteFound && net.Host != "" {
 			in.RouteTargets[i].Host = net.Host
 		}
@@ -238,7 +246,9 @@ func (r *Runtime) hostOwner(ctx context.Context, space, host, self string) strin
 			continue
 		}
 		if owner := cm.Labels[manifests.LabelApp]; owner != "" && owner != self {
-			return owner
+			// The label carries the object name; the answer goes into an
+			// error a person reads, so it carries the name they know.
+			return r.unname(space, owner)
 		}
 	}
 	return ""
@@ -251,9 +261,9 @@ func (r *Runtime) hostOwner(ctx context.Context, space, host, self string) strin
 func (r *Runtime) retractRemovedRoutes(ctx context.Context, ns string, in manifests.Input) error {
 	keep := map[string]bool{}
 	for _, route := range in.RouteTargets {
-		keep[manifests.PathRouteName(in.App.Name, route.App, route.Path)] = true
+		keep[manifests.PathRouteName(in.Name(), route.App, route.Path)] = true
 	}
-	names, err := r.c.ListRouteNames(ctx, ns, in.App.Name)
+	names, err := r.c.ListRouteNames(ctx, ns, in.Name())
 	if err != nil {
 		return err
 	}
@@ -274,12 +284,12 @@ func (r *Runtime) retractRemovedRoutes(ctx context.Context, ns string, in manife
 // exposure follows the app's).
 func (r *Runtime) ApplyNetwork(ctx context.Context, cfg *config.AppConfig) (string, error) {
 	space, app := cfg.Space, cfg.Name
-	ns := r.ns(space)
-	st, err := r.c.AppStatus(ctx, ns, app)
+	ns, obj := r.ns(space), r.name(space, app)
+	st, err := r.c.AppStatus(ctx, ns, obj)
 	if err != nil {
 		return "", err
 	}
-	net, err := r.c.AppNetwork(ctx, ns, app)
+	net, err := r.c.AppNetwork(ctx, ns, obj)
 	if err != nil {
 		return "", err
 	}
@@ -291,7 +301,7 @@ func (r *Runtime) ApplyNetwork(ctx context.Context, cfg *config.AppConfig) (stri
 	// app an address another one already serves, and the gateway would answer
 	// with whichever it sorted first.
 	if in.Domain != "" {
-		if owner := r.hostOwner(ctx, space, in.Domain, app); owner != "" {
+		if owner := r.hostOwner(ctx, space, in.Domain, obj); owner != "" {
 			return "", rt.UserError{Err: fmt.Errorf("%s already answers on %s — two apps cannot share one address", owner, in.Domain)}
 		}
 	}
@@ -310,7 +320,7 @@ func (r *Runtime) ApplyNetwork(ctx context.Context, cfg *config.AppConfig) (stri
 	}
 
 	if in.Domain == "" {
-		if err := r.c.DeleteObject(ctx, "ConfigMap", ns, app); err != nil {
+		if err := r.c.DeleteObject(ctx, "ConfigMap", ns, obj); err != nil {
 			return "", err
 		}
 	}
@@ -318,15 +328,15 @@ func (r *Runtime) ApplyNetwork(ctx context.Context, cfg *config.AppConfig) (stri
 }
 
 func (r *Runtime) Network(ctx context.Context, space, app string) (*rt.NetworkState, error) {
-	return r.c.AppNetwork(ctx, r.ns(space), app)
+	return r.c.AppNetwork(ctx, r.ns(space), r.name(space, app))
 }
 
 // SetAccess narrows (or reopens) who may open a login-protected app. It is
 // an annotation change on the app's routes — the gateway picks it up within
 // seconds, no deploy, no restart.
 func (r *Runtime) SetAccess(ctx context.Context, space, app string, access *config.AccessConfig) error {
-	ns := r.ns(space)
-	net, err := r.c.AppNetwork(ctx, ns, app)
+	ns, obj := r.ns(space), r.name(space, app)
+	net, err := r.c.AppNetwork(ctx, ns, obj)
 	if err != nil {
 		return err
 	}
@@ -341,7 +351,7 @@ func (r *Runtime) SetAccess(ctx context.Context, space, app string, access *conf
 	}
 	patch := map[string]*string{manifests.AnnotationAccess: value}
 	if net.Protected {
-		if err := r.c.SetAnnotations(ctx, "ConfigMap", ns, app, patch); err != nil {
+		if err := r.c.SetAnnotations(ctx, "ConfigMap", ns, obj, patch); err != nil {
 			return err
 		}
 	}

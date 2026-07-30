@@ -101,11 +101,25 @@ type SystemInput struct {
 
 	BuildkitImage string
 
+	// NamespacePrefix maps a space onto its own namespace; ignored when
+	// WorkloadNamespace names one namespace for the whole installation.
 	NamespacePrefix string
+	// WorkloadNamespace, when set, is the single namespace every app lives
+	// in. It belongs to whoever created it: donkey neither creates nor
+	// deletes it, and needs no cluster-scoped rights at all — see
+	// serverAccessObjects.
+	WorkloadNamespace string
+	// SkipNamespace leaves the control plane's own namespace out of the
+	// render, because it already exists. donkey never adopts a namespace it
+	// didn't create: applying one would take ownership of its labels and mark
+	// it deletable.
+	SkipNamespace bool
 }
 
 const (
-	SystemNamespace = "donkey-system"
+	// DefaultSystemNamespace is where the control plane lives unless an
+	// installation says otherwise.
+	DefaultSystemNamespace = config.DefaultSystemNamespace
 	// ServerName is donkey-server's Service — the openai addon points app
 	// bindings at its AI proxy path.
 	ServerName   = "donkey-server"
@@ -137,17 +151,38 @@ func (in SystemInput) ServerHost() string {
 	return in.Domain
 }
 
+// Shared reports whether the whole installation shares one app namespace.
+func (in SystemInput) Shared() bool { return in.WorkloadNamespace != "" }
+
+// clusterScopedName qualifies a cluster-scoped object with the installation
+// that owns it. Two installations on one cluster would otherwise apply the
+// same ClusterRoleBinding: server-side apply forces the subject list, so the
+// second install would quietly strip the first one's ServiceAccount and take
+// its permissions away. Only additional installations need the qualification
+// — the default keeps the plain names a single-donkey cluster expects.
+func clusterScopedName(base, namespace string) string {
+	if namespace == DefaultSystemNamespace {
+		return base
+	}
+	return base + "-" + namespace
+}
+
 // SystemObjects renders the whole control plane, in apply order.
 func SystemObjects(in SystemInput) []runtime.Object {
-	objs := []runtime.Object{
-		systemNamespace(in),
+	var objs []runtime.Object
+	if !in.SkipNamespace {
+		objs = append(objs, systemNamespace(in))
+	}
+	objs = append(objs,
 		serverServiceAccount(in),
-		serverClusterRoleBinding(in),
+	)
+	objs = append(objs, serverAccessObjects(in)...)
+	objs = append(objs,
 		systemSecret(in),
 		// The build engine's config file has to exist before the deployment
 		// that mounts it.
 		buildkitConfig(in),
-	}
+	)
 	objs = append(objs,
 		buildkitDeployment(in),
 		systemService(in, buildkitName, buildkitPort, buildkitPort),
@@ -242,15 +277,86 @@ func serverServiceAccount(in SystemInput) *corev1.ServiceAccount {
 	}
 }
 
-// serverClusterRoleBinding grants cluster-admin for the PoC: donkey-server
-// creates namespaces and everything inside them. A scoped ClusterRole is the
-// production follow-up.
-func serverClusterRoleBinding(in SystemInput) *rbacv1.ClusterRoleBinding {
-	return &rbacv1.ClusterRoleBinding{
-		TypeMeta:   metav1.TypeMeta{APIVersion: "rbac.authorization.k8s.io/v1", Kind: "ClusterRoleBinding"},
-		ObjectMeta: metav1.ObjectMeta{Name: ServerName, Labels: systemLabels(ServerName)},
-		RoleRef:    rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "ClusterRole", Name: "cluster-admin"},
-		Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: ServerName, Namespace: in.Namespace}},
+// serverAccessObjects is what donkey-server is allowed to do.
+//
+// With one namespace for every app (WorkloadNamespace), everything donkey
+// touches is inside two namespaces it was given — so the whole installation
+// needs no cluster-scoped object at all: two Roles, two RoleBindings, and a
+// cluster that never had to grant donkey anything above a namespace. That is
+// also what makes several installations on one cluster safe, since there is
+// nothing cluster-wide left for them to collide on.
+//
+// With a namespace per space, donkey creates and deletes namespaces, which no
+// Role can express — so it still binds cluster-admin. Scoping that down is
+// only possible by giving up per-space namespaces.
+func serverAccessObjects(in SystemInput) []runtime.Object {
+	if !in.Shared() {
+		return []runtime.Object{&rbacv1.ClusterRoleBinding{
+			TypeMeta: metav1.TypeMeta{APIVersion: "rbac.authorization.k8s.io/v1", Kind: "ClusterRoleBinding"},
+			ObjectMeta: metav1.ObjectMeta{
+				Name:   clusterScopedName(ServerName, in.Namespace),
+				Labels: systemLabels(ServerName),
+			},
+			RoleRef:  rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "ClusterRole", Name: "cluster-admin"},
+			Subjects: []rbacv1.Subject{{Kind: "ServiceAccount", Name: ServerName, Namespace: in.Namespace}},
+		}}
+	}
+	var objs []runtime.Object
+	for _, ns := range []string{in.Namespace, in.WorkloadNamespace} {
+		objs = append(objs,
+			&rbacv1.Role{
+				TypeMeta:   metav1.TypeMeta{APIVersion: "rbac.authorization.k8s.io/v1", Kind: "Role"},
+				ObjectMeta: metav1.ObjectMeta{Name: ServerName, Namespace: ns, Labels: systemLabels(ServerName)},
+				Rules:      serverRoleRules(),
+			},
+			&rbacv1.RoleBinding{
+				TypeMeta:   metav1.TypeMeta{APIVersion: "rbac.authorization.k8s.io/v1", Kind: "RoleBinding"},
+				ObjectMeta: metav1.ObjectMeta{Name: ServerName, Namespace: ns, Labels: systemLabels(ServerName)},
+				RoleRef:    rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "Role", Name: ServerName},
+				Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: ServerName, Namespace: in.Namespace}},
+			},
+		)
+	}
+	return objs
+}
+
+// serverRoleRules is everything donkey-server does inside a namespace. It is
+// deliberately spelled out rather than wildcarded: the point of this mode is
+// that an administrator can read the Role and see the whole blast radius.
+//
+// pods/exec is the one that looks alarming and isn't optional — it is how the
+// file browser reads and writes an app's disk, through a short-lived helper
+// pod that mounts the volume.
+func serverRoleRules() []rbacv1.PolicyRule {
+	write := []string{"get", "list", "watch", "create", "update", "patch", "delete", "deletecollection"}
+	return []rbacv1.PolicyRule{
+		{
+			APIGroups: []string{""},
+			Resources: []string{"configmaps", "secrets", "services", "persistentvolumeclaims", "pods"},
+			Verbs:     write,
+		},
+		{
+			APIGroups: []string{""},
+			Resources: []string{"pods/log"},
+			Verbs:     []string{"get", "list"},
+		},
+		{
+			APIGroups: []string{""},
+			Resources: []string{"pods/exec"},
+			Verbs:     []string{"get", "create"},
+		},
+		{
+			// Rollout diagnosis: what the kubelet and the scheduler said about
+			// a pod that will not start.
+			APIGroups: []string{""},
+			Resources: []string{"events"},
+			Verbs:     []string{"get", "list", "watch"},
+		},
+		{
+			APIGroups: []string{"apps"},
+			Resources: []string{"deployments", "replicasets"},
+			Verbs:     write,
+		},
 	}
 }
 
@@ -472,6 +578,8 @@ func serverDeployment(in SystemInput) *appsv1.Deployment {
 		{Name: "DONKEY_DOMAIN", Value: in.Domain},
 		{Name: "DONKEY_BUILDKIT_ADDR", Value: fmt.Sprintf("tcp://%s.%s.svc.cluster.local:%d", buildkitName, in.Namespace, buildkitPort)},
 		{Name: "DONKEY_NAMESPACE_PREFIX", Value: in.NamespacePrefix},
+		{Name: "DONKEY_SYSTEM_NAMESPACE", Value: in.Namespace},
+		{Name: "DONKEY_WORKLOAD_NAMESPACE", Value: in.WorkloadNamespace},
 		{Name: "DONKEY_DEFAULT_PLATFORM", Value: in.DefaultPlatform},
 		{Name: "DONKEY_OIDC_ISSUER", Value: in.OIDCIssuer},
 		secretEnv("DONKEY_OIDC_CLIENT_ID", "oidc-client-id"),

@@ -38,7 +38,7 @@ func (rustfs) DefaultStorage() string { return "1Gi" }
 func (rustfs) Binding(in Input) map[string]string {
 	// The service is named plainly after itself, so siblings in the space
 	// reach it as "rustfs" — the same way they reach each other.
-	endpoint := fmt.Sprintf("http://%s.%s.svc:%d", in.Name, in.Namespace, rfPort)
+	endpoint := fmt.Sprintf("http://%s.%s.svc:%d", in.HostName(), in.Namespace, rfPort)
 	return map[string]string{
 		// The AWS SDK convention: every S3 client picks these up without a
 		// line of configuration.
