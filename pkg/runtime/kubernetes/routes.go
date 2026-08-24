@@ -15,23 +15,28 @@ import (
 	"github.com/adrianliechti/donkey/pkg/runtime/kubernetes/manifests"
 )
 
-// ListManagedRoutes returns every route ConfigMap donkey rendered,
-// cluster-wide — the donkey-gateway's routing table is built from them.
-// Only ConfigMaps carrying the backend annotation are routes; the label
-// narrows the sweep, the annotation decides.
+// ListManagedRoutes returns every route ConfigMap registered for this
+// installation, cluster-wide — the donkey-gateway's routing table is built
+// from them.
+//
+// The installation label is the ownership boundary. Do not select on
+// app.kubernetes.io/managed-by here: a route may be managed by Helm or GitOps
+// even though donkey-gateway serves it. The backend annotation decides whether
+// an installation-labelled ConfigMap is actually a route.
 func (c *Client) ListManagedRoutes(ctx context.Context) ([]corev1.ConfigMap, error) {
 	var out []corev1.ConfigMap
 	for _, ns := range c.sweep() {
 		list, err := c.Clientset.CoreV1().ConfigMaps(ns).List(ctx, metav1.ListOptions{
-			LabelSelector: "app.kubernetes.io/managed-by=" + manifests.ManagedByValue,
+			LabelSelector: fmt.Sprintf("%s=%s", manifests.LabelInstance, c.instance()),
 		})
 		if err != nil {
 			return nil, err
 		}
 		for _, cm := range list.Items {
-			// managed-by says a donkey wrote it, not that this one did — and a
-			// route another installation owns would put its apps behind this
-			// gateway's TLS, login and access rules.
+			// A route another installation owns would put its apps behind this
+			// gateway's TLS, login and access rules. Keep this check even though
+			// the API-side selector already narrows the list: fake clients and
+			// unusual API implementations need not enforce selectors perfectly.
 			if cm.Annotations[manifests.AnnotationBackend] != "" && c.ours(cm.Labels) {
 				out = append(out, cm)
 			}
