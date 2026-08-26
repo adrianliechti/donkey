@@ -95,6 +95,7 @@ func (o *openAI) Analyze(ctx context.Context, in *AnalyzeInput) (*Analysis, erro
 // is not an abstract problem; it is an instruction to go and look at what
 // imports X.
 func (o *openAI) WriteDockerfile(ctx context.Context, in *DockerfileInput) (*DockerfileResult, error) {
+	instructions := extendedDockerfileInstructions(in.Instructions)
 	var b strings.Builder
 	if in.Port > 0 {
 		fmt.Fprintf(&b, "donkey will set PORT=%d.\n\n", in.Port)
@@ -120,12 +121,12 @@ func (o *openAI) WriteDockerfile(ctx context.Context, in *DockerfileInput) (*Doc
 	var out DockerfileResult
 	var filesRead []string
 	if in.Root != "" {
-		history := o.investigate(ctx, in.Root, dockerfileInstructions,
+		history := o.investigate(ctx, in.Root, instructions,
 			b.String()+"\n"+dockerfileExploreInstruction, maxBuildExploreTurns)
 		filesRead = exploredFiles(history)
 		history = append(history, responses.ResponseInputItemParamOfMessage(
 			dockerfileConcludeInstruction, responses.EasyInputMessageRoleUser))
-		if err := o.structuredWith(ctx, dockerfileInstructions, history, "dockerfile", dockerfileSchema, &out); err != nil {
+		if err := o.structuredWith(ctx, instructions, history, "dockerfile", dockerfileSchema, &out); err != nil {
 			// Exploration or the answer call failed. A one-shot Dockerfile from
 			// the summary alone is worse, but it is not nothing, and this
 			// builder has a verification step and further attempts behind it.
@@ -134,7 +135,7 @@ func (o *openAI) WriteDockerfile(ctx context.Context, in *DockerfileInput) (*Doc
 		}
 	}
 	if out.Dockerfile == "" {
-		if err := o.structured(ctx, dockerfileInstructions, b.String(), "dockerfile", dockerfileSchema, &out); err != nil {
+		if err := o.structured(ctx, instructions, b.String(), "dockerfile", dockerfileSchema, &out); err != nil {
 			return nil, err
 		}
 	}

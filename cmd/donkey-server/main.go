@@ -80,6 +80,7 @@ func main() {
 			Domain:       cfg.Domain,
 			StateDir:     os.Getenv("DONKEY_STATE_DIR"),
 			Registry:     cfg.Registry,
+			AddonImages:  cfg.AddonImages,
 			PullRegistry: os.Getenv("DONKEY_PULL_REGISTRY"),
 		})
 		if err != nil {
@@ -121,9 +122,11 @@ func main() {
 				SharedNamespace: cfg.WorkloadNamespace,
 				NamespacePrefix: cfg.NamespacePrefix,
 			},
-			SystemNamespace: cfg.SystemNamespace,
-			Domain:          cfg.Domain,
-			Registry:        cfg.Registry,
+			SystemNamespace:       cfg.SystemNamespace,
+			Domain:                cfg.Domain,
+			Registry:              cfg.Registry,
+			AddonImages:           cfg.AddonImages,
+			AddonImagePullSecrets: cfg.AddonImagePullSecrets,
 		})
 	}
 	srv, err := server.New(cfg, rt)

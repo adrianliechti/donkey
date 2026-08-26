@@ -172,6 +172,12 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 	if err := settings.Build.Validate(); err != nil {
 		return err
 	}
+	if err := settings.AddonImages.Validate(); err != nil {
+		return err
+	}
+	if err := config.ValidateAddonImagePullSecrets(settings.AddonImagePullSecrets); err != nil {
+		return err
+	}
 	if err := settings.Kubernetes.Validate(); err != nil {
 		return err
 	}
@@ -222,12 +228,13 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 			return err
 		}
 	}
-	registryPassword, err := settings.Registry.Password() // env, then registry.passwordFile
+	registryUsername, registryPassword, err := settings.Registry.Credentials()
 	if err != nil {
 		return err
 	}
 	if registryPassword == "" {
 		registryPassword = existing["registry-password"]
+		registryUsername = settings.Registry.Username
 	}
 	if settings.AI.APIKey == "" {
 		settings.AI.APIKey = existing["openai-api-key"]
@@ -283,23 +290,25 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 			Namespace:   settings.Gateway.HTTPRoute.Namespace,
 			SectionName: settings.Gateway.HTTPRoute.SectionName,
 		},
-		RegistryURL:       settings.Registry.URL,
-		RegistryUsername:  settings.Registry.Username,
-		RegistryCASecret:  settings.Registry.CASecret,
-		RegistryPassword:  registryPassword,
-		RegistryInsecure:  settings.Registry.Insecure,
-		RegistryImmutable: settings.Registry.Immutable,
-		Admins:            settings.Auth.Admins,
-		OIDCIssuer:        settings.Auth.Issuer,
-		OIDCClientID:      settings.Auth.ClientID,
-		OIDCClientSecret:  settings.Auth.ClientSecret,
-		SessionKey:        sessionKey,
-		DefaultPlatform:   settings.DefaultPlatform,
-		OpenAIBaseURL:     settings.AI.BaseURL,
-		OpenAIAPIKey:      settings.AI.APIKey,
-		AIModel:           settings.AI.Model,
-		Build:             settings.Build,
-		BuildkitImage:     settings.BuildkitImage,
+		RegistryURL:           settings.Registry.URL,
+		RegistryUsername:      registryUsername,
+		RegistryCASecret:      settings.Registry.CASecret,
+		RegistryPassword:      registryPassword,
+		RegistryInsecure:      settings.Registry.Insecure,
+		RegistryImmutable:     settings.Registry.Immutable,
+		Admins:                settings.Auth.Admins,
+		OIDCIssuer:            settings.Auth.Issuer,
+		OIDCClientID:          settings.Auth.ClientID,
+		OIDCClientSecret:      settings.Auth.ClientSecret,
+		SessionKey:            sessionKey,
+		DefaultPlatform:       settings.DefaultPlatform,
+		OpenAIBaseURL:         settings.AI.BaseURL,
+		OpenAIAPIKey:          settings.AI.APIKey,
+		AIModel:               settings.AI.Model,
+		Build:                 settings.Build,
+		AddonImages:           settings.AddonImages,
+		AddonImagePullSecrets: settings.AddonImagePullSecrets,
+		BuildkitImage:         settings.BuildkitImage,
 	}
 	if in.BuildkitImage == "" {
 		in.BuildkitImage = config.DefaultBuildkitImage

@@ -378,7 +378,11 @@ func (s *Server) deploy(ctx context.Context, out *lineStreamer, dir string, app 
 	defer os.Remove(logFile.Name())
 
 	out.Line("Building the image…")
-	builder := &build.BuildKitBuilder{Registry: s.cfg.Registry, BuildkitAddr: s.cfg.BuildkitAddr, Settings: s.cfg.Build}
+	builder := &build.BuildKitBuilder{
+		Registry:     s.cfg.Registry,
+		BuildkitAddr: s.cfg.BuildkitAddr,
+		Settings:     s.cfg.Build,
+	}
 	req := build.Request{
 		ContextDir:     dir,
 		ImageRef:       imageRef,
@@ -695,7 +699,7 @@ func (s *Server) knownSecrets(ctx context.Context, space, app string) []string {
 		}
 	}
 	// Registry and OIDC credentials surface in build and startup logs.
-	if pw, err := s.cfg.Registry.Password(); err == nil {
+	if _, pw, err := s.cfg.Registry.Credentials(); err == nil {
 		out = append(out, pw)
 	}
 	return append(out, s.cfg.OIDCClientSecret, hex.EncodeToString(s.cfg.SessionKey))

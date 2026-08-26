@@ -45,6 +45,17 @@ func TestRegistryDefaultsProvision(t *testing.T) {
 	}
 }
 
+func TestManagedAddonDefaultVersions(t *testing.T) {
+	for typ, want := range map[string]string{
+		"postgres": "18.6",
+		"rustfs":   "1.0.0-rc.3",
+	} {
+		if got := Registry[typ].DefaultVersion(); got != want {
+			t.Errorf("%s default version = %q, want %q", typ, got, want)
+		}
+	}
+}
+
 func TestPostgresBindingContract(t *testing.T) {
 	a := Registry["postgres"]
 	got := a.Binding(input)
@@ -59,6 +70,25 @@ func TestPostgresBindingContract(t *testing.T) {
 	for _, k := range []string{"PGHOST", "PGPORT", "PGUSER", "PGPASSWORD", "PGDATABASE", "JDBC_DATABASE_USERNAME", "JDBC_DATABASE_PASSWORD"} {
 		if got[k] == "" {
 			t.Fatalf("%s missing from binding", k)
+		}
+	}
+}
+
+func TestManagedAddonImageRepositoryOverride(t *testing.T) {
+	for typ, repository := range map[string]string{
+		"postgres": "registry.example.com/mirror/library/postgres",
+		"rustfs":   "registry.example.com/mirror/rustfs/rustfs",
+	} {
+		a := Registry[typ]
+		in := input
+		in.Version = a.DefaultVersion()
+		in.ImageRepository = repository
+		w, err := a.Workload(in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := repository + ":" + in.Version; w.Image != want {
+			t.Errorf("%s image = %q, want %q", typ, w.Image, want)
 		}
 	}
 }
@@ -89,36 +119,6 @@ func TestPostgresExternalMatchesProvisioned(t *testing.T) {
 	for _, bad := range []string{"mysql://u:p@h/db", "postgres://u:p@/db", "postgres://u:p@host:5432/"} {
 		if _, err := a.ExternalBinding(bad); err == nil {
 			t.Fatalf("%q should not pass as a postgres URL", bad)
-		}
-	}
-}
-
-func TestPocketbaseBinding(t *testing.T) {
-	a := Registry["pocketbase"]
-	in := input
-	in.Name = "pocketbase"
-	got := a.Binding(in)
-	if want := "http://pocketbase.donkey-prod.svc:8090"; got["POCKETBASE_URL"] != want {
-		t.Fatalf("POCKETBASE_URL = %q, want %q", got["POCKETBASE_URL"], want)
-	}
-	if got["POCKETBASE_ADMIN_EMAIL"] == "" || got["POCKETBASE_ADMIN_PASSWORD"] != "s3cret" {
-		t.Fatalf("admin credentials wrong: %v", got)
-	}
-}
-
-func TestPocketbaseExternalBinding(t *testing.T) {
-	a := Registry["pocketbase"]
-	got, err := a.ExternalBinding("https://pb.example.com/")
-	if err != nil {
-		t.Fatal(err)
-	}
-	// The trailing slash has to go: apps join paths like /api/health onto it.
-	if got["POCKETBASE_URL"] != "https://pb.example.com" {
-		t.Fatalf("POCKETBASE_URL = %q", got["POCKETBASE_URL"])
-	}
-	for _, bad := range []string{"pb.example.com", "postgres://u:p@h/db"} {
-		if _, err := a.ExternalBinding(bad); err == nil {
-			t.Fatalf("%q should not pass as a PocketBase address", bad)
 		}
 	}
 }
@@ -158,7 +158,7 @@ func TestGetUnknownListsTypes(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected an error")
 	}
-	for _, want := range []string{"pocketbase", "postgres"} {
+	for _, want := range []string{"rustfs", "postgres"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("error should offer %s: %v", want, err)
 		}

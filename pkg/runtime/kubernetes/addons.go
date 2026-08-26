@@ -21,6 +21,12 @@ import (
 // same for every addon — an unprivileged user, no escalation, the data
 // volume group-owned — so it lives here, not in each addon.
 
+type imagePullCredentials struct {
+	Host     string
+	Username string
+	Password string
+}
+
 // bindingSecret wraps the env contract in the Secret the app's envFrom picks
 // up. Identical shape for provisioned and external addons.
 func bindingSecret(space, app, namespace, name string, data map[string]string) *corev1.Secret {
@@ -51,7 +57,7 @@ func attachmentSecret(space, app, namespace, name string, data map[string]string
 // addonObjects renders one provisioned instance: its data volume, its
 // Deployment and its Service — named plainly after itself, so siblings in
 // the space reach it as e.g. "postgres" the same way they reach each other.
-func addonObjects(in addons.Input, w *addons.Workload) ([]k8sruntime.Object, error) {
+func addonObjects(in addons.Input, w *addons.Workload, pull *imagePullCredentials, pullSecretNames []string) ([]k8sruntime.Object, error) {
 	// The objects carry the instance's own name; the component label keeps the
 	// plain one, so "addon-postgres" means the same thing in every space and
 	// the space label is what tells two of them apart.
@@ -158,6 +164,19 @@ func addonObjects(in addons.Input, w *addons.Workload) ([]k8sruntime.Object, err
 			},
 		},
 	}
+	seenPullSecrets := make(map[string]bool, len(pullSecretNames))
+	for _, secretName := range pullSecretNames {
+		if secretName == "" || seenPullSecrets[secretName] {
+			continue
+		}
+		seenPullSecrets[secretName] = true
+		dep.Spec.Template.Spec.ImagePullSecrets = append(dep.Spec.Template.Spec.ImagePullSecrets,
+			corev1.LocalObjectReference{Name: secretName})
+	}
+	if pull != nil {
+		dep.Spec.Template.Spec.ImagePullSecrets = append(dep.Spec.Template.Spec.ImagePullSecrets,
+			corev1.LocalObjectReference{Name: manifests.PullSecretName(name)})
+	}
 
 	svc := &corev1.Service{
 		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Service"},
@@ -177,7 +196,15 @@ func addonObjects(in addons.Input, w *addons.Workload) ([]k8sruntime.Object, err
 		},
 	}
 
-	return []k8sruntime.Object{pvc, dep, svc}, nil
+	objs := []k8sruntime.Object{pvc}
+	if pull != nil {
+		objs = append(objs, manifests.RegistryPullSecret(
+			manifests.PullSecretName(name), in.Namespace,
+			manifests.Labels(in.Space, in.App, manifests.ComponentRegistryAuth),
+			pull.Host, pull.Username, pull.Password,
+		))
+	}
+	return append(objs, dep, svc), nil
 }
 
 func sortedKeys(m map[string]string) []string {

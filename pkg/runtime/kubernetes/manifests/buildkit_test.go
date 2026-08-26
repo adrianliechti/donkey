@@ -170,7 +170,8 @@ func TestBuildConfigReachesBothPods(t *testing.T) {
 	in := systemInput()
 	in.Build = config.InstallBuild{
 		BuildSettings: config.BuildSettings{
-			Env: map[string]string{"NPM_CONFIG_REGISTRY": "https://mirror.example.com/npm"},
+			Env:          map[string]string{"NPM_CONFIG_REGISTRY": "https://mirror.example.com/npm"},
+			Instructions: "Use FROM registry.example.com/mirror/<image>:<tag>.",
 		},
 		RegistryMirrors: map[string]string{"docker.io": "https://mirror.example.com/docker"},
 		Proxy:           config.InstallProxy{HTTPS: "http://proxy.example.com:3128", NoProxy: ".example.com"},
@@ -183,6 +184,8 @@ func TestBuildConfigReachesBothPods(t *testing.T) {
 		// The build variables travel as JSON, the way DONKEY_ADMINS does.
 		"DONKEY_BUILD_ENV",
 		"NPM_CONFIG_REGISTRY",
+		"DONKEY_BUILDER_INSTRUCTIONS",
+		"registry.example.com/mirror/<image>",
 		// The mirrors are the build engine's business, and live in its config.
 		`mirrors = ["mirror.example.com/docker"]`,
 		// Both pods get the proxy, in both spellings.
@@ -203,7 +206,7 @@ func TestBuildConfigReachesBothPods(t *testing.T) {
 		for _, c := range dep.Spec.Template.Spec.Containers {
 			for _, e := range c.Env {
 				switch e.Name {
-				case "DONKEY_BUILD_ENV", "HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy":
+				case "DONKEY_BUILD_ENV", "DONKEY_BUILDER_INSTRUCTIONS", "HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy":
 					if e.Value != "" || e.ValueFrom == nil || e.ValueFrom.SecretKeyRef == nil {
 						t.Errorf("%s/%s: %s is a plain value, not a secret reference", dep.Name, c.Name, e.Name)
 					}

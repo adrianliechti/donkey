@@ -29,10 +29,10 @@ func (rustfs) Description() string {
 }
 func (rustfs) CredentialKey() string { return "AWS_SECRET_ACCESS_KEY" }
 
-// DefaultVersion pins an exact release: upstream is still in its beta line,
+// DefaultVersion pins an exact release: upstream is still in its prerelease line,
 // where patch jumps can carry breaking changes a data store must not pick
 // up on a restart.
-func (rustfs) DefaultVersion() string { return "1.0.0-beta.11" }
+func (rustfs) DefaultVersion() string { return "1.0.0-rc.3" }
 func (rustfs) DefaultStorage() string { return "1Gi" }
 
 func (rustfs) Binding(in Input) map[string]string {
@@ -53,7 +53,7 @@ func (rustfs) Binding(in Input) map[string]string {
 
 func (r rustfs) Workload(in Input) (*Workload, error) {
 	return &Workload{
-		Image:    rfImage + ":" + in.Version,
+		Image:    in.ImageRef(rfImage),
 		Port:     rfPort,
 		PortName: "s3",
 		Env: map[string]string{
@@ -78,7 +78,7 @@ func (r rustfs) Workload(in Input) (*Workload, error) {
 
 // ExternalBinding derives the endpoint half of the contract from an S3
 // address. Credentials don't travel in a bare URL — the app keeps whatever
-// keys it already has, same as an external PocketBase keeps its login.
+// keys it already has.
 func (rustfs) ExternalBinding(raw string) (map[string]string, error) {
 	u, err := url.Parse(raw)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") {

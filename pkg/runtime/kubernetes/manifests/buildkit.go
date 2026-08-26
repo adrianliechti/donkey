@@ -241,6 +241,7 @@ func buildkitPodSpec(in SystemInput, privileged bool) corev1.PodSpec {
 	spec := corev1.PodSpec{
 		Containers:        []corev1.Container{container},
 		PriorityClassName: systemPriorityClass,
+		ImagePullSecrets:  systemImagePullSecrets(in),
 		Volumes: []corev1.Volume{
 			{Name: "buildkit-config", VolumeSource: corev1.VolumeSource{
 				ConfigMap: &corev1.ConfigMapVolumeSource{

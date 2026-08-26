@@ -13,21 +13,35 @@ import (
 // registryAuth builds an in-process BuildKit auth provider from donkey's own
 // registry settings — no `docker login`, no ~/.docker/config.json.
 func registryAuth(reg config.Registry) (session.Attachable, error) {
-	password, err := reg.Password()
-	if err != nil {
-		return nil, err
-	}
-	host := reg.Host()
 	return authprovider.NewDockerAuthProvider(authprovider.DockerAuthProviderConfig{
 		AuthConfigProvider: func(ctx context.Context, h string, scope []string, _ authprovider.ExpireCachedAuthCheck) (clitypes.AuthConfig, error) {
-			if reg.Username == "" || password == "" {
-				return clitypes.AuthConfig{}, nil
-			}
-			// Docker Hub asks with its canonical hosts.
-			if h == host || (host == "docker.io" && (h == "registry-1.docker.io" || h == "https://index.docker.io/v1/")) {
-				return clitypes.AuthConfig{Username: reg.Username, Password: password, ServerAddress: h}, nil
-			}
-			return clitypes.AuthConfig{}, nil
+			return registryAuthConfig(reg, h)
 		},
 	}), nil
+}
+
+func registryAuthConfig(reg config.Registry, host string) (clitypes.AuthConfig, error) {
+	if sameRegistryHost(host, reg.Host()) {
+		username, password, err := reg.Credentials()
+		if err != nil {
+			return clitypes.AuthConfig{}, err
+		}
+		if username != "" && password != "" {
+			return clitypes.AuthConfig{Username: username, Password: password, ServerAddress: host}, nil
+		}
+	}
+	if reg.DockerConfigDir != "" {
+		username, password, found, err := config.DockerConfigDirCredentials(reg.DockerConfigDir, host)
+		if err != nil {
+			return clitypes.AuthConfig{}, err
+		}
+		if found {
+			return clitypes.AuthConfig{Username: username, Password: password, ServerAddress: host}, nil
+		}
+	}
+	return clitypes.AuthConfig{}, nil
+}
+
+func sameRegistryHost(a, b string) bool {
+	return a == b || (b == "docker.io" && (a == "registry-1.docker.io" || a == "https://index.docker.io/v1/"))
 }

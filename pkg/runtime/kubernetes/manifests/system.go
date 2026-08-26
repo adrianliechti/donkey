@@ -98,6 +98,11 @@ type SystemInput struct {
 	// Build is the builder's settings, the mirrors every build pulls through,
 	// and the proxy donkey's own processes use.
 	Build config.InstallBuild
+	// AddonImages are pulled by the runtime, outside BuildKit.
+	AddonImages config.InstallAddonImages
+	// AddonImagePullSecrets are existing credentials in every workload
+	// namespace, referenced by managed service pods without copying them.
+	AddonImagePullSecrets []string
 
 	BuildkitImage string
 
@@ -124,8 +129,11 @@ const (
 	// bindings at its AI proxy path.
 	ServerName   = "donkey-server"
 	buildkitName = "donkey-buildkitd"
-	serverPort   = 8088
-	buildkitPort = 1234
+	// systemRegistrySecretName lets the kubelet pull mirrored control-plane
+	// images from the same credentialed registry app builds are pushed to.
+	systemRegistrySecretName = "donkey-system-registry"
+	serverPort               = 8088
+	buildkitPort             = 1234
 
 	// The image names no user (hack/Dockerfile.server) because only the
 	// runtime can enforce one. Everything the server writes goes to /tmp, so
@@ -164,12 +172,13 @@ func SystemObjects(in SystemInput) []runtime.Object {
 		serverServiceAccount(in),
 	)
 	objs = append(objs, serverAccessObjects(in)...)
-	objs = append(objs,
-		systemSecret(in),
-		// The build engine's config file has to exist before the deployment
-		// that mounts it.
-		buildkitConfig(in),
-	)
+	objs = append(objs, systemSecret(in))
+	if hasSystemRegistryCredentials(in) {
+		objs = append(objs, systemRegistryPullSecret(in))
+	}
+	// The build engine's config file has to exist before the deployment that
+	// mounts it.
+	objs = append(objs, buildkitConfig(in))
 	objs = append(objs,
 		buildkitDeployment(in),
 		systemService(in, buildkitName, buildkitPort, buildkitPort),
@@ -207,7 +216,7 @@ func configHash(values ...string) string {
 // (secretKeyRef values are only read at pod creation).
 func (in SystemInput) serverConfigHash() string {
 	return configHash(in.SessionKey, in.OIDCClientID, in.OIDCClientSecret, in.RegistryPassword, in.OpenAIAPIKey,
-		buildEnvJSON(in.Build), in.Build.Proxy.HTTP, in.Build.Proxy.HTTPS)
+		buildEnvJSON(in.Build), in.Build.Instructions, in.Build.Proxy.HTTP, in.Build.Proxy.HTTPS)
 }
 
 func (in SystemInput) hashedTemplateMeta(name, hash string) metav1.ObjectMeta {
@@ -276,14 +285,34 @@ func systemSecret(in SystemInput) *corev1.Secret {
 			"oidc-client-id":     in.OIDCClientID,
 			"oidc-client-secret": in.OIDCClientSecret,
 			"session-key":        in.SessionKey,
-			// Both routinely carry credentials ("https://ci:token@jfrog.corp"),
-			// so they belong with the secrets rather than in a Deployment
-			// anyone with read access can print.
-			"build-env":   buildEnvJSON(in.Build),
-			"http-proxy":  in.Build.Proxy.HTTP,
-			"https-proxy": in.Build.Proxy.HTTPS,
+			// Build environment and proxy settings routinely carry credentials
+			// ("https://ci:token@jfrog.corp"); builder instructions can expose
+			// internal registry topology. Keep all three out of the Deployment.
+			"build-env":            buildEnvJSON(in.Build),
+			"builder-instructions": in.Build.Instructions,
+			"http-proxy":           in.Build.Proxy.HTTP,
+			"https-proxy":          in.Build.Proxy.HTTPS,
 		},
 	}
+}
+
+func systemRegistryPullSecret(in SystemInput) *corev1.Secret {
+	return RegistryPullSecret(
+		systemRegistrySecretName, in.Namespace,
+		systemLabels(ComponentRegistryAuth),
+		registryHostOf(in.RegistryURL), in.RegistryUsername, in.RegistryPassword,
+	)
+}
+
+func systemImagePullSecrets(in SystemInput) []corev1.LocalObjectReference {
+	if !hasSystemRegistryCredentials(in) {
+		return nil
+	}
+	return []corev1.LocalObjectReference{{Name: systemRegistrySecretName}}
+}
+
+func hasSystemRegistryCredentials(in SystemInput) bool {
+	return registryHostOf(in.RegistryURL) != "" && in.RegistryUsername != "" && in.RegistryPassword != ""
 }
 
 // registryCAPath is where both the server and buildkitd find the registry's
@@ -317,11 +346,15 @@ func serverDeployment(in SystemInput) *appsv1.Deployment {
 		// only — the path the console asks for is what gets proxied.
 		{Name: "DONKEY_AI_URL", Value: fmt.Sprintf("http://%s.%s.svc:80", AIAppName, in.Namespace)},
 		{Name: "DONKEY_DEFAULT_PLATFORM", Value: in.DefaultPlatform},
+		{Name: "DONKEY_POSTGRES_IMAGE", Value: in.AddonImages.Postgres},
+		{Name: "DONKEY_RUSTFS_IMAGE", Value: in.AddonImages.RustFS},
+		{Name: "DONKEY_ADDON_IMAGE_PULL_SECRETS", Value: strings.Join(in.AddonImagePullSecrets, ",")},
 		{Name: "DONKEY_OIDC_ISSUER", Value: in.OIDCIssuer},
 		secretEnv("DONKEY_OIDC_CLIENT_ID", "oidc-client-id"),
 		secretEnv("DONKEY_OIDC_CLIENT_SECRET", "oidc-client-secret"),
 		{Name: "DONKEY_AI_MODEL", Value: in.AIModel},
 		{Name: "OPENAI_BASE_URL", Value: in.OpenAIBaseURL},
+		secretEnv("DONKEY_BUILDER_INSTRUCTIONS", "builder-instructions"),
 		// The session key lets the server verify sealed CLI tokens itself —
 		// the direct (port-forwarded) path next to the gateway's headers.
 		secretEnv("DONKEY_SESSION_KEY", "session-key"),
@@ -340,6 +373,7 @@ func serverDeployment(in SystemInput) *appsv1.Deployment {
 		ServiceAccountName: ServerName,
 		PriorityClassName:  systemPriorityClass,
 		SecurityContext:    systemPodSecurityContext(),
+		ImagePullSecrets:   systemImagePullSecrets(in),
 		Containers: []corev1.Container{{
 			Name:            "server",
 			ImagePullPolicy: imagePullPolicy(in.ServerImage),

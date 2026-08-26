@@ -4,7 +4,7 @@ description: >
   Deploy apps to the donkey platform (a small PaaS on Kubernetes). Use this
   skill whenever you build, deploy, test or operate an app with the `donkey`
   CLI — including creating backing services (postgres, S3-compatible storage,
-  the platform's AI, pocketbase), connecting apps to them, seeding disks,
+  the platform's AI), connecting apps to them, seeding disks,
   reading logs and diagnosing failed deploys.
 ---
 
@@ -57,7 +57,7 @@ Practical CLI facts for scripted use:
   characters (`^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$`). The app name
   `shared` is reserved for a space's services. Pick valid names up front —
   the server rejects the rest.
-- **Addons (services)** — postgres, rustfs (S3), openai, pocketbase.
+- **Addons (services)** — postgres, rustfs (S3), openai.
   They belong to the *space*, and apps *connect* to them. Two apps naming
   the same service share it (a monorepo's database is the project's
   database). Connecting injects a canonical set of env vars; the app never
@@ -125,7 +125,7 @@ storage:                      # one disk; each path a folder on it
   paths: [/app/data]          # paths: [] means "no disk" and is respected
 
 addons:
-  - type: postgres            # postgres | pocketbase | rustfs | openai
+  - type: postgres            # postgres | rustfs | openai
     name: db                  # optional; defaults to the type. Apps naming
                               # the same service share it.
 
@@ -220,9 +220,6 @@ The official OpenAI SDKs (Python and Node) read `OPENAI_BASE_URL` and
 `client = OpenAI()` plus `model=os.environ["OPENAI_MODEL"]` is the whole
 integration. Any plain HTTP client works the same way — POST to
 `$OPENAI_BASE_URL/chat/completions` with the key as `Authorization: Bearer`.
-
-**pocketbase** — injected: `POCKETBASE_URL`, `POCKETBASE_ADMIN_EMAIL`,
-`POCKETBASE_ADMIN_PASSWORD`.
 
 **Persistent files** — anything the app writes and cannot regenerate
 (uploads, an SQLite file, indexes) needs `storage.paths`; each listed path

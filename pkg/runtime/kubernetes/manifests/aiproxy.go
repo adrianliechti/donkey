@@ -125,6 +125,7 @@ func aiDeployment(in SystemInput) *appsv1.Deployment {
 					ServiceAccountName: AIAppName,
 					PriorityClassName:  systemPriorityClass,
 					SecurityContext:    systemPodSecurityContext(),
+					ImagePullSecrets:   systemImagePullSecrets(in),
 					Containers: []corev1.Container{{
 						Name:            "ai",
 						Image:           in.ServerImage,

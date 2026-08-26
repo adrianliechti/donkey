@@ -3,8 +3,7 @@ port: 3000
 healthcheck:
   path: /healthz
 # The reason this file exists: addons are the one thing donkey never invents
-# on its own. Listing them here makes `donkey deploy` provision both services
-# and inject their bindings before the app starts.
+# on its own. Listing one here makes `donkey deploy` provision the service
+# and inject its binding before the app starts.
 addons:
   - type: postgres
-  - type: pocketbase

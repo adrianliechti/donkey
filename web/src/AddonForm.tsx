@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from 'react'
 import { Dialog, DialogBackdrop, DialogPanel, DialogTitle, Radio, RadioGroup } from '@headlessui/react'
-import { Archive, ArrowLeft, Backpack, Database, Server, Sparkles } from 'lucide-react'
+import { Archive, ArrowLeft, Database, Server, Sparkles } from 'lucide-react'
 import { type AddAddonRequest } from './api'
 import { useCatalog } from './queries'
 import { Button, ErrorNote, Select, Spinner } from './ui'
@@ -16,7 +16,6 @@ const diskSizes = ['1Gi', '2Gi', '5Gi', '10Gi', '20Gi', '50Gi']
 // plain server glyph.
 const typeIcons: Record<string, typeof Database> = {
   postgres: Database,
-  pocketbase: Backpack,
   rustfs: Archive,
   openai: Sparkles,
 }

@@ -46,6 +46,8 @@ type Options struct {
 	StateDir string
 	// Registry is where builds are pushed (as the build engine reaches it).
 	Registry config.Registry
+	// AddonImages are direct repository overrides for managed services.
+	AddonImages config.InstallAddonImages
 	// PullRegistry is the same registry as the Docker daemon reaches it
 	// (e.g. 127.0.0.1:5000). Image references are rewritten from the push
 	// host to this one before running. Empty means refs run as pushed.
@@ -525,7 +527,8 @@ func (r *Runtime) EnsureService(ctx context.Context, space string, spec rt.Servi
 		in := addons.Input{
 			App: sharedOwner, Space: space, Namespace: netName(space),
 			Name: spec.Name, Version: spec.Version, Storage: spec.Storage,
-			AIProxyURL: r.aiProxyURL(),
+			ImageRepository: r.opts.AddonImages.Repository(spec.Type),
+			AIProxyURL:      r.aiProxyURL(),
 		}
 		if in.Version == "" {
 			in.Version = addon.DefaultVersion()

@@ -39,7 +39,7 @@ Everything else is bare. When you add a sample, add it bare.
 
 | Sample | Stack | The challenge |
 |---|---|---|
-| `addons-sample/` | An Express guestbook on Postgres + PocketBase | The `donkey.yaml` lists two `addons:` — the deploy has to provision both for the space (each a Deployment with its own disk), wait for them, and only then start the app with `DATABASE_URL` and `POCKETBASE_URL` injected. Notes land in Postgres, each signing is logged to a PocketBase collection via the admin binding. Nothing in the folder holds an address or a credential. |
+| `addons-sample/` | An Express guestbook on Postgres | The `donkey.yaml` lists an addon — the deploy has to provision it for the space with its own disk, wait for it, and only then start the app with `DATABASE_URL` injected. Notes land in Postgres. Nothing in the folder holds an address or a credential. |
 
 ## The way apps are actually generated
 
@@ -102,8 +102,8 @@ health route, which folder holds data, and sometimes what to install.
 - `local-habits/` deploys **and warns** about `App.jsx`, while staying silent
   about `vite.config.js`.
 - `sqlite-notes/` proposes a disk for `./data` before the first deploy.
-- `addons-sample/` provisions its postgres and pocketbase first; signing the
-  guestbook writes to both, and the notes survive a redeploy.
+- `addons-sample/` provisions its postgres first; signing the guestbook writes
+  to it, and the notes survive a redeploy.
 - `monorepo-root/` builds `services/api` and says that it did.
 - `kitchen-sink-sample/{api,web,worker}` each deploy on their own — railpack
   recognizes all three, and finding them separately is the actual test.

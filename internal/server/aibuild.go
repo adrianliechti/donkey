@@ -61,9 +61,10 @@ func (s *Server) buildGenerated(ctx context.Context, out *lineStreamer, builder 
 			// The uploaded copy, never the user's working tree: the assistant
 			// reads it directly, so what it writes is based on the app rather
 			// than on a summary of it.
-			Root:     dir,
-			Port:     int(app.Port),
-			Attempts: history,
+			Root:         dir,
+			Port:         int(app.Port),
+			Instructions: s.cfg.Build.Instructions,
+			Attempts:     history,
 		})
 		if err != nil {
 			// The assistant not answering is a different problem from a

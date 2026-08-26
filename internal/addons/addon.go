@@ -67,9 +67,22 @@ type Input struct {
 	Version    string
 	Storage    string
 	Password   string
+	// ImageRepository overrides the addon's public image repository. The
+	// selected service version is still appended by ImageRef.
+	ImageRepository string
 	// AIProxyURL is where donkey-server's AI proxy is reachable from apps —
 	// the runtime provider fills it in (its address is runtime vocabulary).
 	AIProxyURL string
+}
+
+// ImageRef combines the installation's optional mirror path with the
+// addon's selected version.
+func (in Input) ImageRef(defaultRepository string) string {
+	repository := in.ImageRepository
+	if repository == "" {
+		repository = defaultRepository
+	}
+	return repository + ":" + in.Version
 }
 
 // HostName is what the instance is called on the network — its object name
@@ -83,10 +96,9 @@ func (in Input) HostName() string {
 
 // Registry holds the addon types donkey knows.
 var Registry = map[string]Addon{
-	"postgres":   postgres{},
-	"pocketbase": pocketbase{},
-	"rustfs":     rustfs{},
-	"openai":     openai{},
+	"postgres": postgres{},
+	"rustfs":   rustfs{},
+	"openai":   openai{},
 }
 
 // Types lists the registered addon types, sorted.

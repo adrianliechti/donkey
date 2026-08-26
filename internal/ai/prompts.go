@@ -1,5 +1,7 @@
 package ai
 
+import "strings"
+
 const analyzeInstructions = `You help a deployment tool called donkey run an application on Kubernetes.
 You get a file tree, key file contents, and what donkey's own detector already
 worked out. Confirm or correct that detection — never contradict it without
@@ -400,6 +402,21 @@ option rather than inventing a script that does not exist.
 
 The dockerfile field is the file itself: no explanation, no markdown fences.
 Keep notes to one sentence — what you built and anything the user should know.`
+
+func extendedDockerfileInstructions(extra string) string {
+	extra = strings.TrimSpace(extra)
+	if extra == "" {
+		return dockerfileInstructions
+	}
+	return dockerfileInstructions + `
+
+# Installation-specific builder instructions
+
+The platform operator supplied the following constraints and hints for this
+installation. Apply them together with donkey's build and runtime contract:
+
+` + extra
+}
 
 // dockerfileExploreInstruction turns writing a Dockerfile into an
 // investigation. The gain is not that the model reads more; it is that it

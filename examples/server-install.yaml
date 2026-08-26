@@ -8,7 +8,22 @@ image: ghcr.io/example/donkey-server:latest
 
 # The build engine. Defaults to a digest-pinned moby/buildkit; set it to your
 # own mirror when the cluster can't reach Docker Hub.
-# buildkitImage: registry.example.com/mirror/buildkit:v0.31.2
+# buildkitImage: registry.example.com/dockerhub/moby/buildkit:v0.31.2
+
+# Managed addons are pulled by the cluster/runtime, not during an app build,
+# so build.registryMirrors cannot redirect them. Values are repositories only;
+# donkey appends the configured addon version. When these paths share the host
+# of registry.url, the same registry credentials are used for their pulls.
+# addonImages:
+#   postgres: registry.example.com/dockerhub/library/postgres
+#   rustfs: registry.example.com/dockerhub/rustfs/rustfs
+
+# Kubernetes only: existing image-pull Secrets for managed addon pods. Each
+# name must exist in every workload namespace where an addon can run. When
+# configured, these replace the pull secret derived from registry credentials;
+# donkey references them without reading or copying their contents.
+# addonImagePullSecrets:
+#   - registry-example-com
 
 registry:
   url: registry.example.com/donkey
@@ -158,18 +173,26 @@ tls:
 #
 #   ### Restricted networks ###
 #   #
+#   # Extra instructions for the Dockerfile-writing assistant. Use this for
+#   # installation-specific constraints the source tree cannot reveal, such
+#   # as the base-image prefixes published by your enterprise registry. This
+#   # text is sent to the configured model; never put credentials in it.
+#   instructions: |
+#     Use base images only from registry.example.com/dockerhub or /ghcr.
+#     Docker Hub official images are under registry.example.com/dockerhub/library/.
+#
 #   # registryMirrors is written into the build engine's configuration, so it
 #   # covers every image a build pulls: the railpack images above, and every
 #   # FROM in a Dockerfile — the app's own or one donkey wrote. Keys are
 #   # upstream registry hosts; a scheme is optional. Mirror hosts inherit
-#   # registry.caSecret, which is the usual shape when the mirror is an
-#   # in-house Artifactory behind a private CA.
+#   # registry.caSecret. A mirror on the registry.url host also reuses its
+#   # credentials; an unrelated host must allow anonymous pulls.
 #   #
 #   # Note that buildkitImage (above) is pulled by the cluster itself, not by
 #   # the build engine — mirror that one by setting it directly.
 #   registryMirrors:
-#     docker.io: https://artifactory.example.com/docker-remote
-#     ghcr.io: https://artifactory.example.com/ghcr-remote
+#     docker.io: https://registry.example.com/dockerhub
+#     ghcr.io: https://registry.example.com/ghcr
 #
 #   # env reaches every build step of every app — donkey layers it under the
 #   # app's own build.env, so a project that pins its own registry still wins.

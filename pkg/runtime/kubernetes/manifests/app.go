@@ -96,11 +96,7 @@ func AppObjects(in Input) ([]runtime.Object, error) {
 	objs := []runtime.Object{SpaceHome(in.Space, in.Namespace, in.SharedNamespace)}
 
 	if in.RegistryUsername != "" && in.RegistryPassword != "" {
-		sec, err := pullSecret(in)
-		if err != nil {
-			return nil, err
-		}
-		objs = append(objs, sec)
+		objs = append(objs, pullSecret(in))
 	}
 	if app.HasStorage() {
 		pvc, err := dataClaim(in)
@@ -212,31 +208,40 @@ func storageMounts(app *config.AppConfig) []corev1.VolumeMount {
 	return mounts
 }
 
-func pullSecret(in Input) (*corev1.Secret, error) {
-	auth := base64.StdEncoding.EncodeToString([]byte(in.RegistryUsername + ":" + in.RegistryPassword))
+func pullSecret(in Input) *corev1.Secret {
+	return RegistryPullSecret(
+		PullSecretName(in.Name()), in.Namespace,
+		Labels(in.Space, in.Name(), ComponentRegistryAuth),
+		in.RegistryHost, in.RegistryUsername, in.RegistryPassword,
+	)
+}
+
+// RegistryPullSecret creates the docker config used by app and addon pods.
+// Keeping this shape in one place matters: both pull images from the same
+// enterprise registry and must encode its host and credentials identically.
+func RegistryPullSecret(name, namespace string, labels map[string]string, host, username, password string) *corev1.Secret {
+	auth := base64.StdEncoding.EncodeToString([]byte(username + ":" + password))
 	cfg := map[string]any{
 		"auths": map[string]any{
-			in.RegistryHost: map[string]string{
-				"username": in.RegistryUsername,
-				"password": in.RegistryPassword,
+			host: map[string]string{
+				"username": username,
+				"password": password,
 				"auth":     auth,
 			},
 		},
 	}
-	b, err := json.Marshal(cfg)
-	if err != nil {
-		return nil, err
-	}
+	// json.Marshal cannot fail for this fixed tree of string maps.
+	b, _ := json.Marshal(cfg)
 	return &corev1.Secret{
 		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Secret"},
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      PullSecretName(in.Name()),
-			Namespace: in.Namespace,
-			Labels:    Labels(in.Space, in.Name(), ComponentRegistryAuth),
+			Name:      name,
+			Namespace: namespace,
+			Labels:    labels,
 		},
 		Type: corev1.SecretTypeDockerConfigJson,
 		Data: map[string][]byte{corev1.DockerConfigJsonKey: b},
-	}, nil
+	}
 }
 
 // appEnvironment is everything the app is handed at runtime: its own env

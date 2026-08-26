@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/adrianliechti/donkey/internal/config"
 )
@@ -51,6 +52,12 @@ type Config struct {
 
 	// Build is the builder's settings and the environment every build gets.
 	Build config.BuildSettings
+	// AddonImages are repositories pulled directly by the runtime for managed
+	// services; BuildKit's registry mirrors do not participate in those pulls.
+	AddonImages config.InstallAddonImages
+	// AddonImagePullSecrets names existing secrets in each workload namespace
+	// that Kubernetes should use when pulling managed service images.
+	AddonImagePullSecrets []string
 
 	// SessionKey is the installation's sealing key — the server verifies
 	// the CLI tokens the gateway mints with it (the direct, port-forwarded
@@ -66,11 +73,12 @@ func FromEnv() (*Config, error) {
 	c := &Config{
 		Listen: envOr("DONKEY_LISTEN", ":8088"),
 		Registry: config.Registry{
-			URL:       os.Getenv("DONKEY_REGISTRY_URL"),
-			Username:  os.Getenv("DONKEY_REGISTRY_USERNAME"),
-			Insecure:  os.Getenv("DONKEY_REGISTRY_INSECURE") == "true",
-			Immutable: os.Getenv("DONKEY_REGISTRY_IMMUTABLE") == "true",
-			CAFile:    os.Getenv("DONKEY_REGISTRY_CA_FILE"),
+			URL:             os.Getenv("DONKEY_REGISTRY_URL"),
+			Username:        os.Getenv("DONKEY_REGISTRY_USERNAME"),
+			DockerConfigDir: os.Getenv("DONKEY_REGISTRY_CONFIG_DIR"),
+			Insecure:        os.Getenv("DONKEY_REGISTRY_INSECURE") == "true",
+			Immutable:       os.Getenv("DONKEY_REGISTRY_IMMUTABLE") == "true",
+			CAFile:          os.Getenv("DONKEY_REGISTRY_CA_FILE"),
 		},
 		Domain:            os.Getenv("DONKEY_DOMAIN"),
 		BuildkitAddr:      os.Getenv("DONKEY_BUILDKIT_ADDR"),
@@ -82,7 +90,12 @@ func FromEnv() (*Config, error) {
 		OIDCClientID:      os.Getenv("DONKEY_OIDC_CLIENT_ID"),
 		OIDCClientSecret:  os.Getenv("DONKEY_OIDC_CLIENT_SECRET"),
 		DefaultPlatform:   envOr("DONKEY_DEFAULT_PLATFORM", "linux/amd64"),
-		AIModel:           envOr("DONKEY_AI_MODEL", config.DefaultAIModel),
+		AddonImages: config.InstallAddonImages{
+			Postgres: os.Getenv("DONKEY_POSTGRES_IMAGE"),
+			RustFS:   os.Getenv("DONKEY_RUSTFS_IMAGE"),
+		},
+		AddonImagePullSecrets: splitCommaSeparated(os.Getenv("DONKEY_ADDON_IMAGE_PULL_SECRETS")),
+		AIModel:               envOr("DONKEY_AI_MODEL", config.DefaultAIModel),
 	}
 	// The build environment is a map, so it travels as JSON — the same way
 	// DONKEY_ADMINS does.
@@ -93,6 +106,7 @@ func FromEnv() (*Config, error) {
 	}
 	c.Build.VerifySeconds = envInt("DONKEY_BUILDER_VERIFY_SECONDS")
 	c.Build.Attempts = envInt("DONKEY_BUILDER_ATTEMPTS")
+	c.Build.Instructions = os.Getenv("DONKEY_BUILDER_INSTRUCTIONS")
 	if v := os.Getenv("DONKEY_BUILDER_VERIFY"); v != "" {
 		c.Build.Verify = new(v == "true")
 	}
@@ -112,6 +126,15 @@ func FromEnv() (*Config, error) {
 		return nil, fmt.Errorf("DONKEY_REGISTRY_URL is required")
 	}
 	if err := c.Registry.Validate(); err != nil {
+		return nil, err
+	}
+	if err := c.AddonImages.Validate(); err != nil {
+		return nil, err
+	}
+	if err := config.ValidateAddonImagePullSecrets(c.AddonImagePullSecrets); err != nil {
+		return nil, err
+	}
+	if err := (config.InstallBuild{BuildSettings: c.Build}).Validate(); err != nil {
 		return nil, err
 	}
 	if c.Domain == "" {
@@ -134,6 +157,18 @@ func envInt(key string) int {
 		return 0
 	}
 	return n
+}
+
+func splitCommaSeparated(raw string) []string {
+	var values []string
+	seen := make(map[string]bool)
+	for value := range strings.SplitSeq(raw, ",") {
+		if value = strings.TrimSpace(value); value != "" && !seen[value] {
+			values = append(values, value)
+			seen[value] = true
+		}
+	}
+	return values
 }
 
 func envOr(key, def string) string {

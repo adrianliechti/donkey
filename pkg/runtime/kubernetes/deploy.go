@@ -195,11 +195,11 @@ func (r *Runtime) manifestInput(spec rt.DeploySpec, includeCreds bool) (manifest
 		Domain:          r.appHost(space, app),
 	}
 	if includeCreds {
-		password, err := r.opts.Registry.Password()
+		username, password, err := r.opts.Registry.Credentials()
 		if err != nil {
 			return in, err
 		}
-		in.RegistryUsername = r.opts.Registry.Username
+		in.RegistryUsername = username
 		in.RegistryPassword = password
 	}
 	for _, a := range app.Addons {

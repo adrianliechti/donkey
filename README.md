@@ -288,8 +288,8 @@ storage:                      # one disk, each path its own folder on it
     - /app/data
 
 addons:                       # space services this app uses; the deploy
-  - type: postgres            # creates missing ones. postgres | pocketbase
-    name: db                  # | rustfs (S3) | openai (the platform's AI).
+  - type: postgres            # creates missing ones. postgres | rustfs (S3)
+    name: db                  # | openai (the platform's AI).
                               # apps naming the same service share it
 
 build:
@@ -357,7 +357,6 @@ anything, and that is where the confirmation lives.
 | Type | What it is | Connected apps see |
 |---|---|---|
 | `postgres` | the relational database (its own Deployment + disk) | `DATABASE_URL`, the `PG*` family, Heroku's `JDBC_*` convention for the Java world |
-| `pocketbase` | accounts, file uploads and a records API in one small server | `POCKETBASE_URL` + admin credentials |
 | `rustfs` | S3-compatible object storage | the AWS SDK convention (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_ENDPOINT_URL_S3`, `AWS_REGION`) + `S3_URL` |
 | `openai` | the platform's AI — nothing runs in the space | `OPENAI_BASE_URL`, `OPENAI_API_KEY`, `OPENAI_MODEL` |
 
@@ -605,17 +604,63 @@ still wins.
 
 ```yaml
 build:
+  instructions: |
+    Use base images only from registry.example.com/dockerhub or /ghcr.
+    Docker Hub official images are under registry.example.com/dockerhub/library/.
   registryMirrors:
-    docker.io: https://artifactory.example.com/docker-remote
-    ghcr.io: https://artifactory.example.com/ghcr-remote
+    docker.io: https://registry.example.com/dockerhub
+    ghcr.io: https://registry.example.com/ghcr
   env:
     NPM_CONFIG_REGISTRY: https://artifactory.example.com/api/npm/npm
     PIP_INDEX_URL: https://artifactory.example.com/api/pypi/pypi/simple
     GOPROXY: https://artifactory.example.com/api/go/go
 ```
 
+`build.instructions` extends the Dockerfile-writing assistant's built-in
+instructions with installation-specific constraints or hints—the available
+image prefixes, required base-image families, or internal build conventions.
+It is sent to the configured model, so keep credentials out of it. BuildKit
+still enforces the actual network path through `registryMirrors`; the text is
+guidance for choosing references in generated Dockerfiles.
+
 One image is **not** covered by those mirrors: `buildkitImage`, which the
-cluster pulls itself. Mirror it by setting it directly.
+cluster pulls itself. Mirror it by setting it directly. Managed PostgreSQL
+and RustFS instances are runtime pulls too, so point those at
+mirrored repositories explicitly (donkey appends the service version):
+
+```yaml
+buildkitImage: registry.example.com/dockerhub/moby/buildkit:v0.31.2
+addonImages:
+  postgres: registry.example.com/dockerhub/library/postgres
+  rustfs: registry.example.com/dockerhub/rustfs/rustfs
+```
+
+When a direct image override uses the same host as `registry.url`, donkey
+reuses that registry's username and password for the Kubernetes or Docker
+pull. Credentials are scoped to that host and are not sent to public or
+unrelated registries. On Kubernetes, an enterprise registry operator can
+instead manage the credentials and their rotation:
+
+```yaml
+addonImagePullSecrets:
+  - registry-example-com
+```
+
+These must be existing `kubernetes.io/dockerconfigjson` Secrets in every
+workload namespace where a managed addon can run. Donkey references them
+without reading or copying their contents; when the list is set, it replaces
+the pull secret donkey would generate from `registry.url` credentials.
+
+The same-host rule also authenticates BuildKit mirrors. A separately hosted
+authenticated mirror can provide build credentials via Docker config files:
+mount their directory into `donkey-server` and set
+`DONKEY_REGISTRY_CONFIG_DIR` to that path. Donkey selects credentials by
+requested host and rereads the files for each build, so projected Secret
+rotation does not require a server restart. The registry URL remains an image
+prefix: builds are pushed as
+`<registry.url>/<app>:<tag>`, so a setting such as
+`registry.example.com/platform/donkey` keeps every pushed app image below that
+enterprise folder.
 
 Mirror hosts inherit `registry.caSecret`, so an in-house Artifactory behind a
 private CA needs nothing further. There is no builder image for `donkey
@@ -827,7 +872,7 @@ internal/
   build/              BuildKit gRPC builder (dockerfile.v0), startup verification, registry auth, tags
   k8s/                client-go wrapper: server-side apply, rollout wait, logs, env secrets
   k8s/manifests/      pure config→object rendering (app + control plane) — golden-tested
-  addons/             service catalog: postgres, pocketbase, rustfs, openai (provisioned & external bindings)
+  addons/             service catalog: postgres, rustfs, openai (provisioned & external bindings)
   ai/                 Assistant interface (analysis + failure diagnosis), OpenAI impl, secret-safe summarizer, log redaction
   config/             donkey.yaml, client config, install settings file
   doctor/             client-side check engine behind `donkey doctor`

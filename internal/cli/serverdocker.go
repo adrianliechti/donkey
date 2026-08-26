@@ -4,10 +4,12 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"maps"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -43,6 +45,7 @@ const (
 	// can pull what the build engine pushed — localhost registries are
 	// insecure-allowed by default, no daemon configuration needed.
 	dockerRegistryHostPort = "5000"
+	dockerRegistryCAPath   = "/tmp/donkey-registry-ca.crt"
 
 	dockerBuildkitName   = "donkey-buildkitd"
 	dockerBuildkitVolume = "donkey-buildkit"
@@ -63,12 +66,16 @@ const dockerNoProxy = "localhost,127.0.0.1," +
 func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.InstallFile) error {
 	// The local registry is part of the installation here — no external one
 	// to point at (though an explicit registry.url still wins).
-	if settings.Registry.URL == "" {
+	bundledRegistry := settings.Registry.URL == ""
+	if bundledRegistry {
 		settings.Registry.URL = dockerRegistryName + ":5000/donkey"
 		settings.Registry.Insecure = true
 	}
 	if missing := missingSettings(settings, false); len(missing) > 0 {
 		return fmt.Errorf("these settings are required (via -f file or flags): %v", missing)
+	}
+	if err := settings.Registry.Validate(); err != nil {
+		return err
 	}
 	switch settings.TLS.Mode {
 	case "", "acme", "ca":
@@ -76,6 +83,9 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 		return fmt.Errorf("tls.mode must be acme or ca on the docker runtime, not %q", settings.TLS.Mode)
 	}
 	if err := settings.Build.Validate(); err != nil {
+		return err
+	}
+	if err := settings.AddonImages.Validate(); err != nil {
 		return err
 	}
 
@@ -116,43 +126,69 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 	if buildkitImage == "" {
 		buildkitImage = config.DefaultBuildkitImage
 	}
+	registryUsername, registryPassword, err := settings.Registry.Credentials()
+	if err != nil {
+		return err
+	}
+	buildkitPullAuth, err := registryPullAuth(settings.Registry.Registry, registryUsername, registryPassword, buildkitImage)
+	if err != nil {
+		return err
+	}
+	serverPullAuth, err := registryPullAuth(settings.Registry.Registry, registryUsername, registryPassword, settings.Image)
+	if err != nil {
+		return err
+	}
 
 	u.Printf("Installing the donkey control plane onto the Docker engine…")
 
 	if err := ensureDockerNetwork(ctx, cli); err != nil {
 		return err
 	}
-	// The registry: no host port beyond the loopback, no credentials — it
-	// only exists on donkey's networks and the host's own daemon.
-	if err := replaceInfraContainer(ctx, cli, infraContainer{
-		Name:  dockerRegistryName,
-		Image: dockerRegistryImage,
-		Mounts: []mount.Mount{
-			{Type: mount.TypeVolume, Source: dockerRegistryVolume, Target: "/var/lib/registry"},
-		},
-		Ports: map[string]string{"127.0.0.1:" + dockerRegistryHostPort: "5000"},
-	}); err != nil {
-		return err
+	if bundledRegistry {
+		// The registry: no host port beyond the loopback, no credentials — it
+		// only exists on donkey's networks and the host's own daemon.
+		if err := replaceInfraContainer(ctx, cli, infraContainer{
+			Name:  dockerRegistryName,
+			Image: dockerRegistryImage,
+			Mounts: []mount.Mount{
+				{Type: mount.TypeVolume, Source: dockerRegistryVolume, Target: "/var/lib/registry"},
+			},
+			Ports: map[string]string{"127.0.0.1:" + dockerRegistryHostPort: "5000"},
+		}); err != nil {
+			return err
+		}
 	}
 
-	// The build engine, told that the bundled registry speaks plain http —
-	// and about the mirrors, if this installation only reaches registries
-	// through one.
-	buildkitToml := manifests.BuildkitTOML(manifests.BuildkitConfig{
-		RegistryHost:      dockerRegistryName + ":5000",
-		RegistryPlainHTTP: true,
+	// The build engine gets the push registry's transport settings and the
+	// mirrors used when this installation cannot reach public registries.
+	buildkitConfig := manifests.BuildkitConfig{
+		RegistryHost:      settings.Registry.Host(),
+		RegistryPlainHTTP: settings.Registry.Insecure,
 		Mirrors:           settings.Build.RegistryMirrors,
-	})
+	}
+	buildkitFiles := map[string][]byte{}
+	serverFiles := map[string][]byte{}
+	if settings.Registry.CAFile != "" {
+		ca, err := os.ReadFile(settings.Registry.CAFile)
+		if err != nil {
+			return fmt.Errorf("reading the registry's certificate authority: %w", err)
+		}
+		buildkitConfig.RegistryCAFile = dockerRegistryCAPath
+		buildkitFiles[dockerRegistryCAPath] = ca
+		serverFiles[dockerRegistryCAPath] = ca
+	}
+	buildkitFiles["/etc/buildkit/buildkitd.toml"] = []byte(manifests.BuildkitTOML(buildkitConfig))
 	if err := replaceInfraContainer(ctx, cli, infraContainer{
-		Name:       dockerBuildkitName,
-		Image:      buildkitImage,
-		Cmd:        []string{"--addr", "tcp://0.0.0.0:1234", "--config", "/etc/buildkit/buildkitd.toml"},
-		Privileged: true,
-		Env:        proxyEnvMap(settings.Build.Proxy),
+		Name:         dockerBuildkitName,
+		Image:        buildkitImage,
+		RegistryAuth: buildkitPullAuth,
+		Cmd:          []string{"--addr", "tcp://0.0.0.0:1234", "--config", "/etc/buildkit/buildkitd.toml"},
+		Privileged:   true,
+		Env:          proxyEnvMap(settings.Build.Proxy),
 		Mounts: []mount.Mount{
 			{Type: mount.TypeVolume, Source: dockerBuildkitVolume, Target: "/var/lib/buildkit"},
 		},
-		Files: map[string][]byte{"/etc/buildkit/buildkitd.toml": []byte(buildkitToml)},
+		Files: buildkitFiles,
 	}); err != nil {
 		return err
 	}
@@ -173,13 +209,14 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 		"DONKEY_DOMAIN":             settings.Domain,
 		"DONKEY_SERVER_HOST":        serverHost,
 		"DONKEY_REGISTRY_URL":       settings.Registry.URL,
-		"DONKEY_REGISTRY_USERNAME":  settings.Registry.Username,
+		"DONKEY_REGISTRY_USERNAME":  registryUsername,
 		"DONKEY_REGISTRY_INSECURE":  strconv.FormatBool(settings.Registry.Insecure),
 		"DONKEY_REGISTRY_IMMUTABLE": strconv.FormatBool(settings.Registry.Immutable),
-		"DONKEY_PULL_REGISTRY":      "127.0.0.1:" + dockerRegistryHostPort,
 		"DONKEY_BUILDKIT_ADDR":      "tcp://" + dockerBuildkitName + ":1234",
 		"DONKEY_AI_URL":             "http://" + dockerAIName + ":8089",
 		"DONKEY_DEFAULT_PLATFORM":   settings.DefaultPlatform,
+		"DONKEY_POSTGRES_IMAGE":     settings.AddonImages.Postgres,
+		"DONKEY_RUSTFS_IMAGE":       settings.AddonImages.RustFS,
 		"DONKEY_OIDC_ISSUER":        settings.Auth.Issuer,
 		"DONKEY_OIDC_CLIENT_ID":     settings.Auth.ClientID,
 		"DONKEY_OIDC_CLIENT_SECRET": settings.Auth.ClientSecret,
@@ -188,6 +225,12 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 		"DONKEY_AI_MODEL":           settings.AI.Model,
 		"OPENAI_BASE_URL":           settings.AI.BaseURL,
 		"OPENAI_API_KEY":            settings.AI.APIKey,
+	}
+	if bundledRegistry {
+		serverEnv["DONKEY_PULL_REGISTRY"] = "127.0.0.1:" + dockerRegistryHostPort
+	}
+	if settings.Registry.CAFile != "" {
+		serverEnv["DONKEY_REGISTRY_CA_FILE"] = dockerRegistryCAPath
 	}
 	maps.Copy(serverEnv, builderEnvMap(settings.Build.BuildSettings))
 	if len(settings.Build.Env) > 0 {
@@ -202,15 +245,14 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 	maps.Copy(serverEnv, proxyEnvMap(settings.Build.Proxy))
 	// A password only exists for an external registry — the bundled one is
 	// loopback-only and credential-less.
-	if pw, err := settings.Registry.Password(); err != nil {
-		return err
-	} else if pw != "" {
-		serverEnv["DONKEY_REGISTRY_PASSWORD"] = pw
+	if registryPassword != "" {
+		serverEnv["DONKEY_REGISTRY_PASSWORD"] = registryPassword
 	}
 	if err := replaceInfraContainer(ctx, cli, infraContainer{
-		Name:  dockerServerName,
-		Image: settings.Image,
-		Env:   serverEnv,
+		Name:         dockerServerName,
+		Image:        settings.Image,
+		RegistryAuth: serverPullAuth,
+		Env:          serverEnv,
 		Mounts: []mount.Mount{
 			{Type: mount.TypeBind, Source: "/var/run/docker.sock", Target: "/var/run/docker.sock"},
 			{Type: mount.TypeVolume, Source: dockerDataVolume, Target: dockerDataDir},
@@ -218,6 +260,7 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 		// The API on the host's loopback is the direct, token-verified path
 		// past the gateway — what `kubectl port-forward` is on Kubernetes.
 		Ports:      map[string]string{"127.0.0.1:8088": "8088"},
+		Files:      serverFiles,
 		PullAlways: true,
 	}); err != nil {
 		return err
@@ -240,10 +283,11 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 		"DONKEY_SESSION_KEY":        sessionKey,
 	}
 	if err := replaceInfraContainer(ctx, cli, infraContainer{
-		Name:  dockerGatewayName,
-		Image: settings.Image,
-		Cmd:   []string{"gateway"},
-		Env:   gatewayEnv,
+		Name:         dockerGatewayName,
+		Image:        settings.Image,
+		RegistryAuth: serverPullAuth,
+		Cmd:          []string{"gateway"},
+		Env:          gatewayEnv,
 		Mounts: []mount.Mount{
 			// The state volume is shared: the server writes routes and env,
 			// the gateway reads routes and keeps its certificates there.
@@ -269,10 +313,11 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 	// outside — so of all of them, this is the one that needs the proxy.
 	maps.Copy(aiEnv, proxyEnvMap(settings.Build.Proxy))
 	if err := replaceInfraContainer(ctx, cli, infraContainer{
-		Name:  dockerAIName,
-		Image: settings.Image,
-		Cmd:   []string{"ai"},
-		Env:   aiEnv,
+		Name:         dockerAIName,
+		Image:        settings.Image,
+		RegistryAuth: serverPullAuth,
+		Cmd:          []string{"ai"},
+		Env:          aiEnv,
 		Mounts: []mount.Mount{
 			// Read-only: the bindings it validates tokens against are the
 			// server's records, and it never writes any of them.
@@ -329,6 +374,9 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 // the server keeps its defaults for everything else.
 func builderEnvMap(b config.BuildSettings) map[string]string {
 	env := map[string]string{}
+	if b.Instructions != "" {
+		env["DONKEY_BUILDER_INSTRUCTIONS"] = b.Instructions
+	}
 	if b.Verify != nil {
 		env["DONKEY_BUILDER_VERIFY"] = strconv.FormatBool(*b.Verify)
 	}
@@ -385,21 +433,22 @@ func ensureDockerNetwork(ctx context.Context, cli *dockerclient.Client) error {
 }
 
 type infraContainer struct {
-	Name       string
-	Image      string
-	Cmd        []string
-	Env        map[string]string
-	Mounts     []mount.Mount
-	Ports      map[string]string // "host" or "ip:port" -> container port
-	Files      map[string][]byte // written into the container before start
-	Privileged bool
-	PullAlways bool
+	Name         string
+	Image        string
+	RegistryAuth string
+	Cmd          []string
+	Env          map[string]string
+	Mounts       []mount.Mount
+	Ports        map[string]string // "host" or "ip:port" -> container port
+	Files        map[string][]byte // written into the container before start
+	Privileged   bool
+	PullAlways   bool
 }
 
 // replaceInfraContainer recreates one of donkey's own containers — the
 // Docker spelling of an idempotent install: same name, fresh config.
 func replaceInfraContainer(ctx context.Context, cli *dockerclient.Client, spec infraContainer) error {
-	if err := pullInfraImage(ctx, cli, spec.Image, spec.PullAlways); err != nil {
+	if err := pullInfraImage(ctx, cli, spec.Image, spec.RegistryAuth, spec.PullAlways); err != nil {
 		return err
 	}
 	if err := cli.ContainerRemove(ctx, spec.Name, container.RemoveOptions{Force: true}); err != nil && !cerrdefs.IsNotFound(err) {
@@ -447,13 +496,13 @@ func replaceInfraContainer(ctx context.Context, cli *dockerclient.Client, spec i
 	return cli.ContainerStart(ctx, spec.Name, container.StartOptions{})
 }
 
-func pullInfraImage(ctx context.Context, cli *dockerclient.Client, ref string, always bool) error {
+func pullInfraImage(ctx context.Context, cli *dockerclient.Client, ref, registryAuth string, always bool) error {
 	if !always {
 		if _, err := cli.ImageInspect(ctx, ref); err == nil {
 			return nil
 		}
 	}
-	rc, err := cli.ImagePull(ctx, ref, image.PullOptions{})
+	rc, err := cli.ImagePull(ctx, ref, image.PullOptions{RegistryAuth: registryAuth})
 	if err != nil {
 		// The image may only exist locally (a dev build never pushed).
 		if _, ierr := cli.ImageInspect(ctx, ref); ierr == nil {
@@ -464,6 +513,25 @@ func pullInfraImage(ctx context.Context, cli *dockerclient.Client, ref string, a
 	defer rc.Close()
 	_, _ = io.Copy(io.Discard, rc)
 	return nil
+}
+
+// registryPullAuth authenticates Docker-daemon pulls from the configured
+// enterprise registry. The URL may include a repository prefix; Docker auth
+// is intentionally keyed to the host only.
+func registryPullAuth(reg config.Registry, username, password, ref string) (string, error) {
+	host := reg.Host()
+	if host == "" || username == "" || password == "" || !strings.HasPrefix(ref, host+"/") {
+		return "", nil
+	}
+	raw, err := json.Marshal(map[string]string{
+		"username":      username,
+		"password":      password,
+		"serveraddress": host,
+	})
+	if err != nil {
+		return "", err
+	}
+	return base64.URLEncoding.EncodeToString(raw), nil
 }
 
 // copyFileIntoContainer writes one file into a created (not yet started)

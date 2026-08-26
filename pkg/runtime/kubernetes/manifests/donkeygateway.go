@@ -119,6 +119,7 @@ func donkeyGatewayDeployment(in SystemInput) *appsv1.Deployment {
 		// the apps themselves.
 		PriorityClassName: systemPriorityClass,
 		SecurityContext:   systemPodSecurityContext(),
+		ImagePullSecrets:  systemImagePullSecrets(in),
 		Containers: []corev1.Container{{
 			Name:            "gateway",
 			Image:           in.ServerImage,

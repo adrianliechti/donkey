@@ -28,6 +28,11 @@ type Options struct {
 	Domain string
 	// Registry feeds the per-app image pull secret.
 	Registry config.Registry
+	// AddonImages are direct repository overrides for managed services.
+	AddonImages config.InstallAddonImages
+	// AddonImagePullSecrets are existing secrets referenced by managed service
+	// pods when Kubernetes pulls their images.
+	AddonImagePullSecrets []string
 }
 
 // Runtime runs donkey's apps on a Kubernetes cluster. It deliberately does

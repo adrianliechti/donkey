@@ -3,6 +3,8 @@ package config
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -46,6 +48,10 @@ type Registry struct {
 	URL          string `json:"url"`
 	Username     string `json:"username,omitempty"`
 	PasswordFile string `json:"passwordFile,omitempty"`
+	// DockerConfigDir contains one or more dockerconfigjson files. It is read
+	// for the push registry and for distinct BuildKit mirror hosts; projected
+	// Kubernetes Secret updates are picked up without restarting the server.
+	DockerConfigDir string `json:"dockerConfigDir,omitempty"`
 	// Insecure marks a plain-HTTP registry (local/testing setups only).
 	Insecure bool `json:"insecure,omitempty"`
 	// Immutable marks a registry that refuses to overwrite an existing tag
@@ -101,20 +107,122 @@ func (r Registry) Validate() error {
 	return nil
 }
 
-// Password resolves the registry credential: $DONKEY_REGISTRY_PASSWORD wins,
-// then PasswordFile. Empty result means anonymous / pre-authenticated registry.
+// Password preserves the password-only interface used by callers that do not
+// need a username derived from a Docker config file.
 func (r Registry) Password() (string, error) {
+	_, password, err := r.Credentials()
+	return password, err
+}
+
+// Credentials resolves the registry credential on demand, so a mounted Secret
+// can rotate without restarting donkey-server. Explicit env/file credentials
+// retain precedence over a Docker config file.
+func (r Registry) Credentials() (string, string, error) {
 	if p := os.Getenv("DONKEY_REGISTRY_PASSWORD"); p != "" {
-		return p, nil
+		return r.Username, p, nil
 	}
-	if r.PasswordFile == "" {
-		return "", nil
+	if r.PasswordFile != "" {
+		b, err := os.ReadFile(r.PasswordFile)
+		if err != nil {
+			return "", "", fmt.Errorf("reading registry password file: %w", err)
+		}
+		return r.Username, strings.TrimSpace(string(b)), nil
 	}
-	b, err := os.ReadFile(r.PasswordFile)
+	if r.DockerConfigDir == "" {
+		return r.Username, "", nil
+	}
+	username, password, found, err := DockerConfigDirCredentials(r.DockerConfigDir, r.Host())
 	if err != nil {
-		return "", fmt.Errorf("reading registry password file: %w", err)
+		return "", "", err
 	}
-	return strings.TrimSpace(string(b)), nil
+	if !found {
+		return "", "", fmt.Errorf("docker config directory %s has no credentials for %s", r.DockerConfigDir, r.Host())
+	}
+	return username, password, nil
+}
+
+// DockerConfigDirCredentials scans mounted Docker config files and returns the
+// entry matching host. Kubernetes updates projected Secret files in place, so
+// callers see rotated credentials without a pod restart.
+func DockerConfigDirCredentials(dir, host string) (string, string, bool, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return "", "", false, fmt.Errorf("reading docker config directory %s: %w", dir, err)
+	}
+	for _, entry := range entries {
+		// Kubernetes projected volumes contain implementation symlinks such as
+		// ..data. The visible Secret keys are symlinks too, so use os.Stat to
+		// follow them and accept only regular files.
+		if strings.HasPrefix(entry.Name(), "..") {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		info, err := os.Stat(path)
+		if err != nil {
+			return "", "", false, fmt.Errorf("reading docker config %s: %w", path, err)
+		}
+		if !info.Mode().IsRegular() {
+			continue
+		}
+		username, password, found, err := DockerConfigCredentials(path, host)
+		if err != nil {
+			return "", "", false, err
+		}
+		if found {
+			return username, password, true, nil
+		}
+	}
+	return "", "", false, nil
+}
+
+// DockerConfigCredentials reads one registry's credentials from a standard
+// kubernetes.io/dockerconfigjson file.
+func DockerConfigCredentials(path, host string) (string, string, bool, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return "", "", false, fmt.Errorf("reading docker config %s: %w", path, err)
+	}
+	var cfg struct {
+		Auths map[string]struct {
+			Username string `json:"username"`
+			Password string `json:"password"`
+			Auth     string `json:"auth"`
+		} `json:"auths"`
+	}
+	if err := json.Unmarshal(b, &cfg); err != nil {
+		return "", "", false, fmt.Errorf("reading docker config %s: %w", path, err)
+	}
+	want := registryConfigHost(host)
+	for address, auth := range cfg.Auths {
+		if registryConfigHost(address) != want {
+			continue
+		}
+		if auth.Username != "" || auth.Password != "" {
+			return auth.Username, auth.Password, true, nil
+		}
+		decoded, err := base64.StdEncoding.DecodeString(auth.Auth)
+		if err != nil {
+			return "", "", false, fmt.Errorf("decoding credentials for %s in %s: %w", host, path, err)
+		}
+		username, password, ok := strings.Cut(string(decoded), ":")
+		if !ok {
+			return "", "", false, fmt.Errorf("credentials for %s in %s are not username:password", host, path)
+		}
+		return username, password, true, nil
+	}
+	return "", "", false, nil
+}
+
+func registryConfigHost(address string) string {
+	address = strings.TrimSpace(address)
+	if _, rest, ok := strings.Cut(address, "://"); ok {
+		address = rest
+	}
+	host, _, _ := strings.Cut(strings.Trim(address, "/"), "/")
+	if host == "registry-1.docker.io" || host == "index.docker.io" {
+		return "docker.io"
+	}
+	return host
 }
 
 const (

@@ -15,7 +15,7 @@ import (
 // Bearer token flow (WWW-Authenticate: Bearer realm=...) that most
 // registries use.
 func CheckRegistryAuth(ctx context.Context, reg config.Registry) error {
-	password, err := reg.Password()
+	username, password, err := reg.Credentials()
 	if err != nil {
 		return err
 	}
@@ -48,10 +48,10 @@ func CheckRegistryAuth(ctx context.Context, reg config.Registry) error {
 
 	challenge := resp.Header.Get("WWW-Authenticate")
 	if strings.HasPrefix(strings.ToLower(challenge), "basic") {
-		return checkBasic(ctx, client, base, reg.Username, password)
+		return checkBasic(ctx, client, base, username, password)
 	}
 	if strings.HasPrefix(strings.ToLower(challenge), "bearer") {
-		return checkBearer(ctx, client, reg, challenge, password)
+		return checkBearer(ctx, client, reg, challenge, username, password)
 	}
 	return fmt.Errorf("the registry %s uses an authentication scheme donkey doesn't recognize (%q)", reg.Host(), challenge)
 }
@@ -93,13 +93,13 @@ func checkBasic(ctx context.Context, client *http.Client, endpoint, user, passwo
 // registry's password — so it is only followed when the answer cannot be
 // read on the way: https, and never from a registry donkey talks to in plain
 // HTTP (where anyone on the path could have written the challenge).
-func checkBearer(ctx context.Context, client *http.Client, reg config.Registry, challenge, password string) error {
+func checkBearer(ctx context.Context, client *http.Client, reg config.Registry, challenge, username, password string) error {
 	params := parseChallenge(challenge)
 	realm := params["realm"]
 	if realm == "" {
 		return fmt.Errorf("the registry sent an incomplete authentication challenge")
 	}
-	credentials := reg.Username != "" || password != ""
+	credentials := username != "" || password != ""
 	realmURL, err := url.Parse(realm)
 	if err != nil || realmURL.Host == "" {
 		return fmt.Errorf("the registry %s pointed donkey at %q for its login, which is not a usable address", reg.Host(), realm)
@@ -119,7 +119,7 @@ func checkBearer(ctx context.Context, client *http.Client, reg config.Registry, 
 		return err
 	}
 	if credentials {
-		req.SetBasicAuth(reg.Username, password)
+		req.SetBasicAuth(username, password)
 	}
 	resp, err := client.Do(req)
 	if err != nil {

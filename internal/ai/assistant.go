@@ -30,6 +30,9 @@ type DockerfileInput struct {
 	Root string `json:"root"`
 	// Port is what donkey will tell the app to listen on, through PORT.
 	Port int `json:"port"`
+	// Instructions are installation-specific operator guidance appended to
+	// donkey's built-in builder instructions.
+	Instructions string `json:"instructions,omitempty"`
 	// Attempts is every Dockerfile already tried, oldest first. The whole
 	// history goes back, not just the last: with only one attempt to look at,
 	// a model oscillates between two broken variants.

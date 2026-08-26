@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/base64"
 	"os"
 	"path/filepath"
 	"strings"
@@ -53,6 +54,74 @@ func TestRegistryPasswordPrecedence(t *testing.T) {
 	t.Setenv("DONKEY_REGISTRY_PASSWORD", "")
 	if p, _ := r.Password(); p != "from-file" {
 		t.Fatalf("file should be used (trimmed), got %q", p)
+	}
+}
+
+func TestRegistryCredentialsFromDockerConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "mirror.json")
+	auth := base64.StdEncoding.EncodeToString([]byte("mirror-user:mirror-password"))
+	contents := `{"auths":{"https://oci.mirror.registry.lgt.com/v1/":{"auth":"` + auth + `"}}}`
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	registry := Registry{URL: "oci.mirror.registry.lgt.com/docker", DockerConfigDir: dir}
+	username, password, err := registry.Credentials()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if username != "mirror-user" || password != "mirror-password" {
+		t.Fatalf("got %q/%q", username, password)
+	}
+}
+
+func TestDockerConfigDirCredentialsSelectsHost(t *testing.T) {
+	dir := t.TempDir()
+	for name, contents := range map[string]string{
+		"dev.json":    `{"auths":{"oci.dev.registry.lgt.com":{"username":"dev","password":"dev-pass"}}}`,
+		"mirror.json": `{"auths":{"oci.mirror.registry.lgt.com":{"username":"mirror","password":"mirror-pass"}}}`,
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(contents), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	username, password, found, err := DockerConfigDirCredentials(dir, "oci.dev.registry.lgt.com")
+	if err != nil || !found || username != "dev" || password != "dev-pass" {
+		t.Fatalf("got %q/%q found=%v err=%v", username, password, found, err)
+	}
+}
+
+func TestDockerConfigDirCredentialsSkipsProjectedSecretLinks(t *testing.T) {
+	dir := t.TempDir()
+	dataDir := filepath.Join(dir, "..2026_08_26")
+	if err := os.Mkdir(dataDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	contents := `{"auths":{"registry.example.com":{"username":"u","password":"p"}}}`
+	if err := os.WriteFile(filepath.Join(dataDir, ".dockerconfigjson"), []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Base(dataDir), filepath.Join(dir, "..data")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join("..data", ".dockerconfigjson"), filepath.Join(dir, ".dockerconfigjson")); err != nil {
+		t.Fatal(err)
+	}
+
+	username, password, found, err := DockerConfigDirCredentials(dir, "registry.example.com")
+	if err != nil || !found || username != "u" || password != "p" {
+		t.Fatalf("got %q/%q found=%v err=%v", username, password, found, err)
+	}
+}
+
+func TestDockerConfigCredentialsMissingHost(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{"auths":{"other.example.com":{"username":"u","password":"p"}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, found, err := DockerConfigCredentials(path, "registry.example.com"); err != nil || found {
+		t.Fatalf("got found=%v err=%v", found, err)
 	}
 }
 

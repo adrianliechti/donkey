@@ -18,7 +18,15 @@ image: ghcr.io/example/donkey-server:latest
 domain: example.com
 registry:
   url: registry.example.com/donkey
+addonImages:
+  postgres: registry.example.com/mirror/library/postgres
+  rustfs: registry.example.com/mirror/rustfs/rustfs
+addonImagePullSecrets:
+  - registry-example-com
 build:
+  instructions: |
+    Use base images under registry.example.com/mirror only.
+    The library prefix contains Docker Hub official images.
   registryMirrors:
     docker.io: https://artifactory.example.com/docker-remote
   env:
@@ -43,8 +51,18 @@ build:
 	if got := f.Build.RegistryMirrors["docker.io"]; got != "https://artifactory.example.com/docker-remote" {
 		t.Errorf("registryMirrors[docker.io] = %q", got)
 	}
+	if f.AddonImages.Postgres != "registry.example.com/mirror/library/postgres" ||
+		f.AddonImages.RustFS != "registry.example.com/mirror/rustfs/rustfs" {
+		t.Errorf("addonImages = %+v", f.AddonImages)
+	}
+	if len(f.AddonImagePullSecrets) != 1 || f.AddonImagePullSecrets[0] != "registry-example-com" {
+		t.Errorf("addonImagePullSecrets = %v", f.AddonImagePullSecrets)
+	}
 	if got := f.Build.Env["NPM_CONFIG_REGISTRY"]; got != "https://artifactory.example.com/api/npm/npm" {
 		t.Errorf("env[NPM_CONFIG_REGISTRY] = %q", got)
+	}
+	if !strings.Contains(f.Build.Instructions, "registry.example.com/mirror") {
+		t.Errorf("build instructions did not survive: %q", f.Build.Instructions)
 	}
 	if f.Build.Proxy.HTTPS != "http://proxy.example.com:3128" || f.Build.Proxy.NoProxy != ".example.com,10.0.0.0/8" {
 		t.Errorf("proxy = %+v", f.Build.Proxy)
@@ -76,12 +94,55 @@ func TestInstallBuildValidate(t *testing.T) {
 		{"empty", InstallBuild{}, false},
 		{"negative attempts", InstallBuild{BuildSettings: BuildSettings{Attempts: -1}}, true},
 		{"negative verify seconds", InstallBuild{BuildSettings: BuildSettings{VerifySeconds: -1}}, true},
+		{"instructions too long", InstallBuild{BuildSettings: BuildSettings{Instructions: strings.Repeat("x", MaxBuilderInstructionsBytes+1)}}, true},
 		{"mirror with no host", InstallBuild{RegistryMirrors: map[string]string{"": "https://mirror"}}, true},
 		{"mirror with no address", InstallBuild{RegistryMirrors: map[string]string{"docker.io": ""}}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if err := tc.build.Validate(); (err != nil) != tc.wantErr {
 				t.Errorf("Validate() err=%v, wantErr=%v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestInstallAddonImagesValidate(t *testing.T) {
+	valid := InstallAddonImages{
+		Postgres: "registry.example.com:5000/mirror/library/postgres",
+		RustFS:   "registry.example.com/mirror/rustfs/rustfs",
+	}
+	if err := valid.Validate(); err != nil {
+		t.Fatalf("valid repository overrides were refused: %v", err)
+	}
+	if got := valid.Repository("postgres"); got != valid.Postgres {
+		t.Fatalf("postgres repository = %q", got)
+	}
+	for _, bad := range []InstallAddonImages{
+		{Postgres: "https://registry.example.com/postgres"},
+		{Postgres: "registry.example.com/postgres:16"},
+		{RustFS: "registry.example.com/rustfs@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+	} {
+		if err := bad.Validate(); err == nil {
+			t.Errorf("invalid addon image override passed: %+v", bad)
+		}
+	}
+}
+
+func TestValidateAddonImagePullSecrets(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		secrets []string
+		wantErr bool
+	}{
+		{name: "empty list"},
+		{name: "dns labels", secrets: []string{"registry-example-com", "platform.registry-auth"}},
+		{name: "empty name", secrets: []string{""}, wantErr: true},
+		{name: "uppercase", secrets: []string{"Registry-Auth"}, wantErr: true},
+		{name: "underscore", secrets: []string{"registry_auth"}, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := ValidateAddonImagePullSecrets(tc.secrets); (err != nil) != tc.wantErr {
+				t.Fatalf("ValidateAddonImagePullSecrets(%v) err = %v, wantErr %v", tc.secrets, err, tc.wantErr)
 			}
 		})
 	}
@@ -247,6 +308,9 @@ func TestExampleInstallFilesLoad(t *testing.T) {
 			t.Errorf("%s: %v", m, err)
 		}
 		if err := f.Build.Validate(); err != nil {
+			t.Errorf("%s: %v", m, err)
+		}
+		if err := f.AddonImages.Validate(); err != nil {
 			t.Errorf("%s: %v", m, err)
 		}
 		t.Logf("%s: tls=%q httpRoute=%v system=%q workload=%q",

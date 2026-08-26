@@ -3,6 +3,7 @@ package docker
 import (
 	"cmp"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -251,7 +252,11 @@ func (r *Runtime) hostOwner(space, host, self string) string {
 
 // pullImage fetches the image unless the daemon already has it.
 func (r *Runtime) pullImage(ctx context.Context, ref string) error {
-	rc, err := r.cli.ImagePull(ctx, ref, image.PullOptions{})
+	opts, err := r.imagePullOptions(ref)
+	if err != nil {
+		return err
+	}
+	rc, err := r.cli.ImagePull(ctx, ref, opts)
 	if err != nil {
 		// The image may only exist locally (built and loaded, never pushed).
 		if _, ierr := r.cli.ImageInspect(ctx, ref); ierr == nil {
@@ -283,6 +288,33 @@ func (r *Runtime) pullImage(ctx context.Context, ref string) error {
 			return fmt.Errorf("couldn't pull %s: %s", ref, detail)
 		}
 	}
+}
+
+// imagePullOptions authenticates pulls from the enterprise registry donkey
+// pushes to. Public images and unrelated registries never receive its login.
+func (r *Runtime) imagePullOptions(ref string) (image.PullOptions, error) {
+	var opts image.PullOptions
+	host := r.opts.Registry.Host()
+	if host == "" || !strings.HasPrefix(ref, host+"/") {
+		return opts, nil
+	}
+	username, password, err := r.opts.Registry.Credentials()
+	if err != nil {
+		return opts, err
+	}
+	if username == "" || password == "" {
+		return opts, nil
+	}
+	raw, err := json.Marshal(map[string]string{
+		"username":      username,
+		"password":      password,
+		"serveraddress": host,
+	})
+	if err != nil {
+		return opts, err
+	}
+	opts.RegistryAuth = base64.URLEncoding.EncodeToString(raw)
+	return opts, nil
 }
 
 // appEnv composes the container's environment: stored env, the addon

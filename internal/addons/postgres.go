@@ -19,7 +19,7 @@ func (postgres) Description() string {
 	return "The relational database — most frameworks speak to it out of the box."
 }
 func (postgres) CredentialKey() string  { return "PGPASSWORD" }
-func (postgres) DefaultVersion() string { return "16" }
+func (postgres) DefaultVersion() string { return "18.6" }
 func (postgres) DefaultStorage() string { return "1Gi" }
 
 func (postgres) Binding(in Input) map[string]string {
@@ -45,7 +45,7 @@ func (postgres) Binding(in Input) map[string]string {
 
 func (p postgres) Workload(in Input) (*Workload, error) {
 	return &Workload{
-		Image:    "postgres:" + in.Version,
+		Image:    in.ImageRef("postgres"),
 		Port:     pgPort,
 		PortName: "postgres",
 		Env: map[string]string{

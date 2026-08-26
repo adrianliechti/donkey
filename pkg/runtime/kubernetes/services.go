@@ -3,6 +3,7 @@ package kubernetes
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"
 
@@ -95,7 +96,8 @@ func (r *Runtime) provisionService(ctx context.Context, space, ns string, spec r
 		App: r.sharedOwner(space), Space: space, Namespace: ns,
 		Name: spec.Name, ObjectName: r.name(space, spec.Name),
 		Version: spec.Version, Storage: spec.Storage,
-		AIProxyURL: r.aiProxyURL(),
+		ImageRepository: r.opts.AddonImages.Repository(spec.Type),
+		AIProxyURL:      r.aiProxyURL(),
 	}
 	if in.Version == "" {
 		in.Version = addon.DefaultVersion()
@@ -123,7 +125,14 @@ func (r *Runtime) provisionService(ctx context.Context, space, ns string, spec r
 		return in, err
 	}
 	if workload != nil {
-		addonObjs, err := addonObjects(in, workload)
+		var pull *imagePullCredentials
+		if len(r.opts.AddonImagePullSecrets) == 0 {
+			pull, err = r.addonImagePullCredentials(workload.Image)
+			if err != nil {
+				return in, err
+			}
+		}
+		addonObjs, err := addonObjects(in, workload, pull, r.opts.AddonImagePullSecrets)
 		if err != nil {
 			return in, err
 		}
@@ -138,6 +147,24 @@ func (r *Runtime) provisionService(ctx context.Context, space, ns string, spec r
 		return in, nil
 	}
 	return in, r.c.WaitForRollout(ctx, ns, in.HostName())
+}
+
+// addonImagePullCredentials reuses the configured registry login when an
+// addon mirror lives on the same enterprise registry host. Credentials are
+// never attached to a public image or to an unrelated mirror host.
+func (r *Runtime) addonImagePullCredentials(image string) (*imagePullCredentials, error) {
+	host := r.opts.Registry.Host()
+	if host == "" || !strings.HasPrefix(image, host+"/") {
+		return nil, nil
+	}
+	username, password, err := r.opts.Registry.Credentials()
+	if err != nil {
+		return nil, err
+	}
+	if username == "" || password == "" {
+		return nil, nil
+	}
+	return &imagePullCredentials{Host: host, Username: username, Password: password}, nil
 }
 
 func (r *Runtime) AttachService(ctx context.Context, space, app, name string, binding map[string]string) (bool, error) {

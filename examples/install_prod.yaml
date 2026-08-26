@@ -19,10 +19,22 @@
 # level is wrong, or the cluster doesn't serve HTTPRoute.
 
 image: registry.bank.example/donkey/donkey-server:0.9.0
+buildkitImage: registry.bank.example/dockerhub/moby/buildkit:v0.31.2
 
 registry:
   url: registry.bank.example/donkey
   username: ci
+
+# These images are runtime pulls, outside BuildKit. Repositories live on the
+# same registry host so the registry login above also authenticates the pods.
+addonImages:
+  postgres: registry.bank.example/dockerhub/library/postgres
+  rustfs: registry.bank.example/dockerhub/rustfs/rustfs
+
+# Existing kubernetes.io/dockerconfigjson Secret in bank-donkey-apps. The
+# platform process owns and rotates it; donkey only references the name.
+addonImagePullSecrets:
+  - registry-bank-example
 
 domain: apps.bank.example        # apps become <app>.<space>.apps.bank.example
 
@@ -54,9 +66,12 @@ tls:
 # Builds on a restricted network: mirrors cover every image a build pulls,
 # build.env points package managers at theirs.
 build:
+  instructions: |
+    Use base images only from registry.bank.example/dockerhub or /ghcr.
+    Docker Hub official images are under registry.bank.example/dockerhub/library/.
   registryMirrors:
-    docker.io: https://artifactory.bank.example/docker-remote
-    ghcr.io: https://artifactory.bank.example/ghcr-remote
+    docker.io: https://registry.bank.example/dockerhub
+    ghcr.io: https://registry.bank.example/ghcr
   env:
     NPM_CONFIG_REGISTRY: https://artifactory.bank.example/api/npm/npm
     PIP_INDEX_URL: https://artifactory.bank.example/api/pypi/pypi/simple

@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"maps"
 	"os"
+	"strings"
 
+	"github.com/distribution/reference"
 	"sigs.k8s.io/yaml"
 )
 
@@ -22,6 +24,14 @@ type InstallFile struct {
 	// DefaultBuildkitImage) — an air-gapped installation mirrors it.
 	BuildkitImage string          `json:"buildkitImage,omitempty"`
 	Registry      InstallRegistry `json:"registry,omitempty"`
+	// AddonImages names mirrored repositories for the managed services the
+	// runtime pulls itself. Build registry mirrors do not cover these images:
+	// they are not part of an app build.
+	AddonImages InstallAddonImages `json:"addonImages,omitempty"`
+	// AddonImagePullSecrets names pre-existing kubernetes.io/dockerconfigjson
+	// secrets used for managed addon images. Each secret must exist in every
+	// workload namespace where an addon can run.
+	AddonImagePullSecrets []string `json:"addonImagePullSecrets,omitempty"`
 	// Domain: apps become <app>.<space>.<domain>.
 	Domain string `json:"domain,omitempty"`
 	// ServerHost is where the API and console live (default: the domain
@@ -42,6 +52,70 @@ type InstallFile struct {
 
 	Auth InstallAuth `json:"auth,omitempty"`
 	AI   InstallAI   `json:"ai,omitempty"`
+}
+
+// InstallAddonImages overrides the image repository of each managed addon.
+// Versions remain part of the service configuration and are appended by
+// donkey, so these values deliberately contain no tag or digest.
+type InstallAddonImages struct {
+	Postgres string `json:"postgres,omitempty"`
+	RustFS   string `json:"rustfs,omitempty"`
+}
+
+// Repository returns the configured repository for one addon type.
+func (i InstallAddonImages) Repository(typ string) string {
+	switch typ {
+	case "postgres":
+		return i.Postgres
+	case "rustfs":
+		return i.RustFS
+	default:
+		return ""
+	}
+}
+
+// Validate catches values that cannot have an addon version appended to
+// them. A registry port is fine; an image tag or digest is not.
+func (i InstallAddonImages) Validate() error {
+	for _, image := range []struct {
+		name       string
+		repository string
+	}{
+		{name: "postgres", repository: i.Postgres},
+		{name: "rustfs", repository: i.RustFS},
+	} {
+		name, repository := image.name, image.repository
+		if repository == "" {
+			continue
+		}
+		named, err := reference.ParseNormalizedNamed(repository)
+		if err != nil {
+			return fmt.Errorf("addonImages.%s %q is not an image repository: %w", name, repository, err)
+		}
+		if _, tagged := named.(reference.Tagged); tagged {
+			return fmt.Errorf("addonImages.%s %q must not include a tag — configure the addon version separately", name, repository)
+		}
+		if _, digested := named.(reference.Canonical); digested {
+			return fmt.Errorf("addonImages.%s %q must not include a digest — configure the addon version separately", name, repository)
+		}
+	}
+	return nil
+}
+
+// ValidateAddonImagePullSecrets checks names before the installer writes
+// them into pod specs. Secret references are Kubernetes DNS subdomains.
+func ValidateAddonImagePullSecrets(names []string) error {
+	for _, name := range names {
+		if name == "" || len(name) > 253 {
+			return fmt.Errorf("addonImagePullSecrets contains invalid secret name %q", name)
+		}
+		for _, label := range strings.Split(name, ".") {
+			if !namespaceRE.MatchString(label) {
+				return fmt.Errorf("addonImagePullSecrets contains invalid secret name %q — use lowercase letters, digits, dashes and dots", name)
+			}
+		}
+	}
+	return nil
 }
 
 // InstallBuild is how apps are built and how a build reaches the outside
@@ -67,6 +141,11 @@ type BuildSettings struct {
 	// BuildKit hands it to every RUN, which is what puts a package manager's
 	// mirror in reach of build steps donkey never sees.
 	Env map[string]string `json:"env,omitempty"`
+	// Instructions extend the Dockerfile-writing assistant's built-in
+	// instructions with installation-specific constraints and hints, such as
+	// the image prefixes available on an enterprise registry. They are sent
+	// to the configured model, so credentials do not belong here.
+	Instructions string `json:"instructions,omitempty"`
 
 	// Verify is a pointer so unset ≠ off; unset means on.
 	Verify        *bool `json:"verify,omitempty"`
@@ -89,6 +168,9 @@ const (
 	// The first Dockerfile plus two revisions. Beyond that a model that has
 	// seen the failure twice is not converging.
 	DefaultAttempts = 3
+	// Enough for detailed registry and toolchain guidance without allowing an
+	// install setting to dominate every builder prompt accidentally.
+	MaxBuilderInstructionsBytes = 16 * 1024
 )
 
 // Validate checks what can be wrong without consulting the runtime.
@@ -98,6 +180,9 @@ func (b InstallBuild) Validate() error {
 	}
 	if b.VerifySeconds < 0 {
 		return fmt.Errorf("build.verifySeconds cannot be negative")
+	}
+	if len(b.Instructions) > MaxBuilderInstructionsBytes {
+		return fmt.Errorf("build.instructions is too long (maximum %d bytes)", MaxBuilderInstructionsBytes)
 	}
 	for host, mirror := range b.RegistryMirrors {
 		if host == "" {

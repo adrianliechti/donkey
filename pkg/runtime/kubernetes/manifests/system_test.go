@@ -93,6 +93,44 @@ func TestRegistryCAReachesBuildEngineAndServer(t *testing.T) {
 	}
 }
 
+func TestRegistryCredentialsPullMirroredSystemImages(t *testing.T) {
+	in := systemInput()
+	in.RegistryUsername = "builder"
+	in.RegistryPassword = "s3cret"
+	in.BuildkitImage = "reg.example.com/mirror/moby/buildkit:v0.31.2"
+	out := componentNames(in)
+	if !strings.Contains(out, "name: "+systemRegistrySecretName) || !strings.Contains(out, "imagePullSecrets") {
+		t.Fatalf("credentialed registry should render and reference a system pull secret:\n%s", out)
+	}
+	if n := strings.Count(out, "name: "+systemRegistrySecretName); n != 5 {
+		t.Errorf("pull secret should be created once and referenced by four system deployments, found %d mentions", n)
+	}
+
+	plain := componentNames(systemInput())
+	if strings.Contains(plain, systemRegistrySecretName) || strings.Contains(plain, "imagePullSecrets") {
+		t.Error("an anonymous installation should not render system image pull credentials")
+	}
+}
+
+func TestAddonImageOverridesReachServer(t *testing.T) {
+	in := systemInput()
+	in.AddonImages = config.InstallAddonImages{
+		Postgres: "reg.example.com/mirror/library/postgres",
+		RustFS:   "reg.example.com/mirror/rustfs/rustfs",
+	}
+	in.AddonImagePullSecrets = []string{"registry-example-com", "shared-auth"}
+	out := componentNames(in)
+	for _, want := range []string{
+		"DONKEY_POSTGRES_IMAGE", in.AddonImages.Postgres,
+		"DONKEY_RUSTFS_IMAGE", in.AddonImages.RustFS,
+		"DONKEY_ADDON_IMAGE_PULL_SECRETS", "registry-example-com,shared-auth",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("addon image override did not reach donkey-server: missing %q", want)
+		}
+	}
+}
+
 // Installing donkey must stay inside donkey's own house: no edits to cluster
 // services (CoreDNS and friends), no node-level changes, no webhooks that
 // could affect other workloads. Everything donkey applies is either in
