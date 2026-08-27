@@ -395,7 +395,9 @@ func (o *openAI) investigate(ctx context.Context, root, instructions, task strin
 			if len(out) > maxToolOutput {
 				out = out[:maxToolOutput] + "\n…(truncated)"
 			}
-			input = append(input, responses.ResponseInputItemParamOfFunctionCallOutput(fc.CallID, out))
+			toolOutput := responses.ResponseInputItemParamOfFunctionCallOutput(out)
+			toolOutput.OfFunctionCallOutput.CallID = openai.String(fc.CallID)
+			input = append(input, toolOutput)
 		}
 		if calls == 0 {
 			// Nothing more to look at — whatever it said, the answer call is
