@@ -1,6 +1,7 @@
 # Example settings for `donkey server install -f server-install.yaml`.
 # The cluster must already exist; donkey brings its own edge (TLS, routing,
-# login) — no ingress controller, no cert-manager.
+# login) — no ingress controller or cert-manager required. appGateway below
+# can opt into a platform's Gateway API and cert-manager installation.
 # Secrets can come from env instead: DONKEY_REGISTRY_PASSWORD,
 # DONKEY_OIDC_CLIENT_SECRET, OPENAI_API_KEY.
 
@@ -107,11 +108,22 @@ domain: example.com            # apps become <app>.<space>.example.com; the
 #                              # routes match, pair this with `tls.mode: none`.
 #                              # Custom app hostnames outside the domain are
 #                              # not covered by this route.
+#
+#   appGateway:                # OR/ALSO: one Gateway, HTTPRoute and
+#     className: private-edge  # cert-manager Certificate per exposed app.
+#     issuerName: company-pki  # Objects live in kubernetes.system.namespace;
+#     # issuerKind: ClusterIssuer
+#     # issuerGroup: cert-manager.io
+#     # routeNamespace: infra  # Only for a platform that mirrors each Gateway
+#                              # (and makes its TLS Secret available) in infra.
+#                              # The donkey-server ServiceAccount receives
+#                              # namespaced rights in the system namespace,
+#                              # never rights in infra.
 
 tls:
-  # How the gateway gets its certificates. Apps are always served over https
+  # How donkey's own gateway gets its certificates. Apps are always served over https
   # (the login gateway's cookies are Secure-only); the gateway issues the
-  # certificates itself — no cert-manager.
+  # certificates itself; appGateway has separate cert-manager issuer settings.
   mode: acme                  # one certificate per hostname from
                               # Let's Encrypt, requested on demand; the
                               # gateway must be reachable on ports 80/443.

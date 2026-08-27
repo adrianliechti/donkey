@@ -55,6 +55,37 @@ func TestSharedNamespaceNeedsNothingClusterScoped(t *testing.T) {
 	}
 }
 
+func TestAppGatewayPermissionsStayInSystemNamespace(t *testing.T) {
+	in := systemInput()
+	in.WorkloadNamespace = "donkey-apps"
+	in.SkipNamespace = true
+
+	foundSystemEdge := false
+	for _, obj := range SystemObjects(in) {
+		role, ok := obj.(*rbacv1.Role)
+		if !ok || role.Name != ServerName {
+			continue
+		}
+		hasEdge := false
+		for _, rule := range role.Rules {
+			if slices.Contains(rule.Resources, "gateways") || slices.Contains(rule.Resources, "certificates") {
+				hasEdge = true
+			}
+		}
+		switch role.Namespace {
+		case in.Namespace:
+			foundSystemEdge = hasEdge
+		case in.WorkloadNamespace:
+			if hasEdge {
+				t.Error("the workload Role must not grant Gateway or Certificate writes")
+			}
+		}
+	}
+	if !foundSystemEdge {
+		t.Error("the system Role must let donkey-server manage per-app Gateways and Certificates")
+	}
+}
+
 // A namespace per space means creating and deleting namespaces, which no Role
 // can express — so that arrangement keeps its cluster binding, and says so.
 func TestPerSpaceStillBindsClusterAdmin(t *testing.T) {

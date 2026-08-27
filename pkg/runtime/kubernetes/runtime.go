@@ -33,6 +33,9 @@ type Options struct {
 	// AddonImagePullSecrets are existing secrets referenced by managed service
 	// pods when Kubernetes pulls their images.
 	AddonImagePullSecrets []string
+	// AppGateway enables namespaced Gateway API and cert-manager objects for
+	// every exposed app.
+	AppGateway config.InstallAppGateway
 }
 
 // Runtime runs donkey's apps on a Kubernetes cluster. It deliberately does

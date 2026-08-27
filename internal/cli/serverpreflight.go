@@ -142,5 +142,24 @@ func checkOptionalCRDs(ctx context.Context, client *k8s.Client, settings *config
 			return fmt.Errorf("gateway.httpRoute is set, but the cluster doesn't serve HTTPRoute (gateway.networking.k8s.io/v1) — install a Gateway API implementation first, or drop the setting")
 		}
 	}
+	if settings.Gateway.AppGateway.Enabled() {
+		for _, required := range []struct {
+			groupVersion string
+			kind         string
+			setting      string
+		}{
+			{groupVersion: "gateway.networking.k8s.io/v1", kind: "Gateway", setting: "a Gateway API implementation"},
+			{groupVersion: "gateway.networking.k8s.io/v1", kind: "HTTPRoute", setting: "a Gateway API implementation"},
+			{groupVersion: "cert-manager.io/v1", kind: "Certificate", setting: "cert-manager"},
+		} {
+			ok, err := client.HasResource(required.groupVersion, required.kind)
+			if err != nil {
+				return fmt.Errorf("couldn't ask the cluster about %s support: %w", required.kind, err)
+			}
+			if !ok {
+				return fmt.Errorf("gateway.appGateway is set, but the cluster doesn't serve %s (%s) — install %s first, or drop the setting", required.kind, required.groupVersion, required.setting)
+			}
+		}
+	}
 	return nil
 }

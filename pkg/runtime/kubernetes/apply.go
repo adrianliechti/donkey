@@ -35,10 +35,12 @@ var gvrFor = map[string]schema.GroupVersionResource{
 	"RoleBinding":           {Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "rolebindings"},
 	"ClusterRole":           {Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "clusterroles"},
 	"ClusterRoleBinding":    {Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "clusterrolebindings"},
-	// The optional attachment to a Gateway API edge the cluster already
-	// runs. Its CRD is not donkey's to install: the pre-flight refuses a
-	// configuration that names it on a cluster that doesn't serve it.
-	"HTTPRoute": {Group: "gateway.networking.k8s.io", Version: "v1", Resource: "httproutes"},
+	// Optional managed edges. Their CRDs are not donkey's to install: the
+	// installer preflight refuses a configuration that names them on a
+	// cluster that doesn't serve them.
+	"HTTPRoute":   {Group: "gateway.networking.k8s.io", Version: "v1", Resource: "httproutes"},
+	"Gateway":     {Group: "gateway.networking.k8s.io", Version: "v1", Resource: "gateways"},
+	"Certificate": {Group: "cert-manager.io", Version: "v1", Resource: "certificates"},
 }
 
 var clusterScoped = map[string]bool{"Namespace": true, "ClusterRole": true, "ClusterRoleBinding": true}

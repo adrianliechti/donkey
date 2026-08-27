@@ -345,6 +345,66 @@ type InstallGateway struct {
 	// instead of exposing the edge Service directly. That gateway terminates
 	// TLS before routes match, so this pairs with tls.mode "none".
 	HTTPRoute InstallHTTPRoute `json:"httpRoute,omitempty"`
+	// AppGateway provisions one Gateway API Gateway, HTTPRoute and
+	// cert-manager Certificate for every exposed app. This is the managed
+	// platform arrangement where tenants may create namespaced edge objects,
+	// but cannot configure a shared cluster edge themselves.
+	AppGateway InstallAppGateway `json:"appGateway,omitempty"`
+}
+
+// InstallAppGateway describes the namespaced edge objects provisioned for
+// every exposed app. The objects live in donkey's system namespace: the
+// HTTPRoute can therefore reach donkey-gateway without a cross-namespace
+// backend grant, and the server needs no permission in an infrastructure
+// namespace.
+//
+// RouteNamespace is intentionally independent. Some managed platforms mirror
+// a tenant-owned Gateway into the namespace where the data-plane controller
+// runs; in that arrangement the HTTPRoute attaches to the mirrored object.
+type InstallAppGateway struct {
+	ClassName      string `json:"className,omitempty"`
+	RouteNamespace string `json:"routeNamespace,omitempty"`
+	IssuerName     string `json:"issuerName,omitempty"`
+	IssuerKind     string `json:"issuerKind,omitempty"`
+	IssuerGroup    string `json:"issuerGroup,omitempty"`
+}
+
+// Enabled reports whether per-app edge provisioning is configured.
+func (g InstallAppGateway) Enabled() bool { return g.ClassName != "" }
+
+// CertificateIssuerKind applies cert-manager's cluster-wide default.
+func (g InstallAppGateway) CertificateIssuerKind() string {
+	if g.IssuerKind != "" {
+		return g.IssuerKind
+	}
+	return "ClusterIssuer"
+}
+
+// CertificateIssuerGroup applies cert-manager's built-in issuer default.
+func (g InstallAppGateway) CertificateIssuerGroup() string {
+	if g.IssuerGroup != "" {
+		return g.IssuerGroup
+	}
+	return "cert-manager.io"
+}
+
+// Validate catches incomplete dynamic-edge settings before the server is
+// installed. Issuer kinds and groups remain open strings because external
+// cert-manager issuers deliberately use their own values.
+func (g InstallAppGateway) Validate() error {
+	if g.ClassName == "" {
+		if g.RouteNamespace != "" || g.IssuerName != "" || g.IssuerKind != "" || g.IssuerGroup != "" {
+			return fmt.Errorf("gateway.appGateway needs `className` — the GatewayClass used for each app")
+		}
+		return nil
+	}
+	if g.IssuerName == "" {
+		return fmt.Errorf("gateway.appGateway needs `issuerName` — the cert-manager issuer used for each app")
+	}
+	if g.RouteNamespace != "" && !ValidNamespace(g.RouteNamespace) {
+		return fmt.Errorf("gateway.appGateway.routeNamespace %q is not a valid namespace name", g.RouteNamespace)
+	}
+	return nil
 }
 
 // InstallHTTPRoute names the Gateway API gateway to attach to.
@@ -371,10 +431,9 @@ func (r InstallHTTPRoute) Validate() error {
 	return nil
 }
 
-// InstallTLS is how the gateway gets its certificates. donkey always serves
-// apps over https — the login gateway's cookies require it — and the
-// gateway issues the certificates itself: no cert-manager, no ingress
-// vendor.
+// InstallTLS is how donkey's own gateway gets its certificates. donkey always
+// serves apps over https — the login gateway's cookies require it. The
+// optional appGateway has its own cert-manager issuer settings.
 type InstallTLS struct {
 	// Mode is "acme" (one certificate per hostname from Let's Encrypt, the
 	// default — the gateway must be reachable on ports 80/443), "ca" (a

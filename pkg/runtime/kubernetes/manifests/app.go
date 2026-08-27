@@ -55,6 +55,9 @@ type Input struct {
 	AddonSecretNames []string
 	// Domain is the hostname the app is served on; empty skips the route.
 	Domain string
+	// AppGateway provisions an external Gateway API entrypoint for Domain.
+	// Empty leaves edge provisioning to the installation.
+	AppGateway AppGatewayConfig
 	// Decisions records what deploy-time analysis filled in (storage,
 	// healthcheck) as an annotation on the Deployment, so later no-build
 	// deploys can keep those decisions instead of silently dropping them.
@@ -115,11 +118,13 @@ func AppObjects(in Input) ([]runtime.Object, error) {
 
 // NetworkObjects renders the gateway's routing entries. None of it depends on
 // the image, which is what lets the console change exposure without a deploy.
-// Certificates need no objects: the gateway issues them per hostname.
+// donkey's own edge issues certificates itself; an optional managed edge adds
+// its namespaced Gateway API and cert-manager objects here.
 func NetworkObjects(in Input) []runtime.Object {
 	var objs []runtime.Object
 	if in.Domain != "" {
 		objs = append(objs, appRoute(in))
+		objs = append(objs, AppGatewayObjects(in)...)
 	}
 	// Paths this app answers on somebody else's address. The hostname
 	// belongs to the app that owns it, but each route carries its own login

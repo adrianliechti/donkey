@@ -120,7 +120,7 @@ five ideas:
   restricted networks are configured here (`build.registryMirrors`).
 - **donkey-gateway** — donkey's own edge (same binary as the server,
   started with `gateway`): traffic enters the cluster here, on ports 80 and
-  443. It terminates TLS and issues the certificates itself — one per
+  443. By default it terminates TLS and issues the certificates itself — one per
   hostname via ACME (Let's Encrypt or an internal ACME CA) on demand, or
   minted by its own CA for internal installs (`tls.mode`) — routes by
   hostname and path (from the route ConfigMaps it watches), runs the OIDC
@@ -131,8 +131,9 @@ five ideas:
   information for the app, never authorization: donkey's own API is handed a
   short-lived sealed token instead (`X-Access-Token`) and verifies it itself,
   so nothing in the cluster can reach it by typing a header. TLS and auth live here
-  because no ingress vendor has a standard for the latter — donkey needs no
-  ingress controller, no Gateway API, no cert-manager.
+  because no ingress vendor has a standard for the latter — donkey requires no
+  ingress controller, Gateway API, or cert-manager, but can use the latter two
+  for per-app managed edges.
 - **Per space** — one namespace (`donkey-<space>`) shared by the apps of
   that space, so they reach each other by plain service name — and that
   includes its services: a space's postgres is simply `postgres` to its
@@ -507,8 +508,38 @@ however the platform likes — cert-manager, a PKI process, a ReferenceGrant
 when the certificate Secrets live outside the gateway's namespace. Remember
 that a TLS certificate wildcard covers one label while apps live at
 `<app>.<space>.<domain>`, so the gateway wants a listener per
-`*.<space>.<domain>`. [examples/install_prod.yaml](examples/install_prod.yaml)
-spells out the whole arrangement.
+`*.<space>.<domain>`.
+
+Managed platforms can also let donkey request a dedicated edge and
+certificate for every exposed app:
+
+```yaml
+gateway:
+  serviceType: ClusterIP
+  appGateway:
+    className: private-app-edge
+    issuerName: corporate-pki
+    # issuerKind: ClusterIssuer       # default
+    # issuerGroup: cert-manager.io    # default
+    # routeNamespace: gateway-infra   # only when the platform mirrors Gateways
+```
+
+This renders a cert-manager `Certificate`, Gateway API `Gateway`, and
+`HTTPRoute` per hostname. All three tenant-owned objects live in donkey's
+system namespace, where the route can reach the `donkey-gateway` Service
+without a cross-namespace backend grant. In the confined two-namespace setup,
+the server Role can manage those three resource kinds only in the system
+namespace; it receives no permission in `gateway-infra`.
+
+Leave `routeNamespace` empty when the configured GatewayClass watches tenant
+Gateways directly. Set it only for a platform that mirrors a tenant Gateway
+into its controller namespace. That platform must also make the generated TLS
+Secret available to the mirrored Gateway (by mirroring it, or by rewriting the
+certificate reference and arranging the appropriate `ReferenceGrant`). The
+mirrored listener must allow routes from donkey's system namespace. donkey
+puts that namespace selector on the source Gateway, but whether it is preserved
+is part of the platform's mirroring contract. Installation checks for Gateway,
+HTTPRoute and Certificate CRDs before changing the cluster.
 
 ### Several donkeys on one cluster
 
@@ -695,15 +726,17 @@ with a `host:` outside the installation's domain keep a per-host
 callback (`https://<their-domain>/oauth2/callback`) — register those
 individually.
 
-**Certificates and DNS.** The gateway issues one certificate per app
-hostname — a TLS wildcard covers only one level, so no single certificate
+**Certificates and DNS.** By default the gateway issues one certificate per
+app hostname — a TLS wildcard covers only one level, so no single certificate
 could. `tls.mode: acme` requests them from Let's Encrypt on demand (the
 gateway answers its own HTTP-01 challenges), or from any internal CA that
 speaks ACME (`tls.directory`); `tls.mode: ca` mints them from the gateway's
 own CA for installs with no issuing infrastructure at all (trust that one
 CA certificate and every app is covered); `tls.mode: none` hands TLS to a
 cluster gateway in front (`gateway.httpRoute`), where certificates are the
-platform's concern. There is no bring-your-own-file mode: a hand-provided
+platform's concern. `gateway.appGateway` instead asks cert-manager for each
+app's certificate and creates its dedicated Gateway API edge. There is no
+bring-your-own-file mode: a hand-provided
 wildcard covers one label while apps live two deep, which made it a trap. DNS is simpler than TLS here: one `*.<domain>` record
 covers every depth, because DNS wildcards match multiple labels (as long as
 no explicit record sits at an intermediate name). Only the apex is never

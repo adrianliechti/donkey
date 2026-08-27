@@ -160,6 +160,9 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 	if err := settings.Gateway.HTTPRoute.Validate(); err != nil {
 		return err
 	}
+	if err := settings.Gateway.AppGateway.Validate(); err != nil {
+		return err
+	}
 	// The central login callback lives on the server host, and its session
 	// cookie's domain is the base domain — a server host outside it could
 	// never complete a login.
@@ -290,6 +293,7 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 			Namespace:   settings.Gateway.HTTPRoute.Namespace,
 			SectionName: settings.Gateway.HTTPRoute.SectionName,
 		},
+		AppGateway:            settings.Gateway.AppGateway,
 		RegistryURL:           settings.Registry.URL,
 		RegistryUsername:      registryUsername,
 		RegistryCASecret:      settings.Registry.CASecret,
@@ -318,8 +322,8 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 		in.OIDCClientSecret = pendingOIDC
 	}
 
-	// The one preflight left: disks. TLS and routing are donkey's own now —
-	// no Envoy Gateway, no cert-manager to check for.
+	// The one advisory preflight left: disks. Optional Gateway API and
+	// cert-manager machinery was checked above before any object was applied.
 	if hasDefault, err := client.HasDefaultStorageClass(ctx); err == nil && !hasDefault {
 		u.Warn("The cluster has no default StorageClass — apps with storage and provisioned addons won't get disks until one exists (or storage.class is set).")
 	}

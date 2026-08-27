@@ -45,11 +45,19 @@ func serverAccessObjects(in SystemInput) []runtime.Object {
 	}
 	var objs []runtime.Object
 	for _, ns := range []string{in.Namespace, in.WorkloadNamespace} {
+		rules := serverRoleRules()
+		if ns == in.Namespace {
+			// Per-app edge objects live beside the control plane even when apps
+			// share a separate workload namespace. Keep these permissions out of
+			// the workload Role; they are retained when the feature is off so a
+			// later deploy can clean up objects from an earlier configuration.
+			rules = append(rules, serverAppGatewayRoleRules()...)
+		}
 		objs = append(objs,
 			&rbacv1.Role{
 				TypeMeta:   metav1.TypeMeta{APIVersion: "rbac.authorization.k8s.io/v1", Kind: "Role"},
 				ObjectMeta: metav1.ObjectMeta{Name: ServerName, Namespace: ns, Labels: systemLabels(ServerName)},
-				Rules:      serverRoleRules(),
+				Rules:      rules,
 			},
 			&rbacv1.RoleBinding{
 				TypeMeta:   metav1.TypeMeta{APIVersion: "rbac.authorization.k8s.io/v1", Kind: "RoleBinding"},
@@ -60,6 +68,26 @@ func serverAccessObjects(in SystemInput) []runtime.Object {
 		)
 	}
 	return objs
+}
+
+// serverAppGatewayRoleRules is the small additional surface needed to
+// server-side apply and retract per-app managed edge objects. The server does
+// not read GatewayClasses or issuers, and it never receives rights in the
+// infrastructure namespace named by routeNamespace.
+func serverAppGatewayRoleRules() []rbacv1.PolicyRule {
+	writeNamed := []string{"get", "create", "update", "patch", "delete"}
+	return []rbacv1.PolicyRule{
+		{
+			APIGroups: []string{"gateway.networking.k8s.io"},
+			Resources: []string{"gateways", "httproutes"},
+			Verbs:     writeNamed,
+		},
+		{
+			APIGroups: []string{"cert-manager.io"},
+			Resources: []string{"certificates"},
+			Verbs:     writeNamed,
+		},
+	}
 }
 
 // serverRoleRules is everything donkey-server does inside a namespace. It is

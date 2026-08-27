@@ -127,6 +127,7 @@ func main() {
 			Registry:              cfg.Registry,
 			AddonImages:           cfg.AddonImages,
 			AddonImagePullSecrets: cfg.AddonImagePullSecrets,
+			AppGateway:            cfg.AppGateway,
 		})
 	}
 	srv, err := server.New(cfg, rt)

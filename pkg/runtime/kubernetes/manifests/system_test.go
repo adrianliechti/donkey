@@ -131,6 +131,29 @@ func TestAddonImageOverridesReachServer(t *testing.T) {
 	}
 }
 
+func TestAppGatewaySettingsReachServer(t *testing.T) {
+	in := systemInput()
+	in.AppGateway = config.InstallAppGateway{
+		ClassName:      "lgt-lb-standard",
+		RouteNamespace: "projectcontour",
+		IssuerName:     "lgt",
+		IssuerKind:     "ClusterIssuer",
+		IssuerGroup:    "cert-manager.io",
+	}
+	out := componentNames(in)
+	for _, want := range []string{
+		"DONKEY_APP_GATEWAY_CLASS_NAME", "lgt-lb-standard",
+		"DONKEY_APP_GATEWAY_ROUTE_NAMESPACE", "projectcontour",
+		"DONKEY_APP_GATEWAY_ISSUER_NAME", "lgt",
+		"DONKEY_APP_GATEWAY_ISSUER_KIND", "ClusterIssuer",
+		"DONKEY_APP_GATEWAY_ISSUER_GROUP", "cert-manager.io",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("per-app gateway setting did not reach donkey-server: missing %q", want)
+		}
+	}
+}
+
 // Installing donkey must stay inside donkey's own house: no edits to cluster
 // services (CoreDNS and friends), no node-level changes, no webhooks that
 // could affect other workloads. Everything donkey applies is either in

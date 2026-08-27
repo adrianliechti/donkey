@@ -49,6 +49,9 @@ type SystemInput struct {
 	// must enter through a standard edge. Pairs with TLS mode "none": the
 	// cluster gateway terminates TLS before an HTTPRoute matches.
 	HTTPRouteGateway GatewayRef
+	// AppGateway asks donkey-server to create one namespaced Gateway,
+	// HTTPRoute and Certificate for every externally reachable app.
+	AppGateway config.InstallAppGateway
 
 	// GatewayServiceType is the type of the service traffic enters the
 	// cluster through: LoadBalancer (the default), NodePort or ClusterIP.
@@ -349,6 +352,11 @@ func serverDeployment(in SystemInput) *appsv1.Deployment {
 		{Name: "DONKEY_POSTGRES_IMAGE", Value: in.AddonImages.Postgres},
 		{Name: "DONKEY_RUSTFS_IMAGE", Value: in.AddonImages.RustFS},
 		{Name: "DONKEY_ADDON_IMAGE_PULL_SECRETS", Value: strings.Join(in.AddonImagePullSecrets, ",")},
+		{Name: "DONKEY_APP_GATEWAY_CLASS_NAME", Value: in.AppGateway.ClassName},
+		{Name: "DONKEY_APP_GATEWAY_ROUTE_NAMESPACE", Value: in.AppGateway.RouteNamespace},
+		{Name: "DONKEY_APP_GATEWAY_ISSUER_NAME", Value: in.AppGateway.IssuerName},
+		{Name: "DONKEY_APP_GATEWAY_ISSUER_KIND", Value: in.AppGateway.IssuerKind},
+		{Name: "DONKEY_APP_GATEWAY_ISSUER_GROUP", Value: in.AppGateway.IssuerGroup},
 		{Name: "DONKEY_OIDC_ISSUER", Value: in.OIDCIssuer},
 		secretEnv("DONKEY_OIDC_CLIENT_ID", "oidc-client-id"),
 		secretEnv("DONKEY_OIDC_CLIENT_SECRET", "oidc-client-secret"),

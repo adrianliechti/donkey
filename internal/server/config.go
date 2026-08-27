@@ -58,6 +58,9 @@ type Config struct {
 	// AddonImagePullSecrets names existing secrets in each workload namespace
 	// that Kubernetes should use when pulling managed service images.
 	AddonImagePullSecrets []string
+	// AppGateway enables the optional per-app Gateway API and cert-manager
+	// edge in Kubernetes installations. Docker ignores it.
+	AppGateway config.InstallAppGateway
 
 	// SessionKey is the installation's sealing key — the server verifies
 	// the CLI tokens the gateway mints with it (the direct, port-forwarded
@@ -95,7 +98,14 @@ func FromEnv() (*Config, error) {
 			RustFS:   os.Getenv("DONKEY_RUSTFS_IMAGE"),
 		},
 		AddonImagePullSecrets: splitCommaSeparated(os.Getenv("DONKEY_ADDON_IMAGE_PULL_SECRETS")),
-		AIModel:               envOr("DONKEY_AI_MODEL", config.DefaultAIModel),
+		AppGateway: config.InstallAppGateway{
+			ClassName:      os.Getenv("DONKEY_APP_GATEWAY_CLASS_NAME"),
+			RouteNamespace: os.Getenv("DONKEY_APP_GATEWAY_ROUTE_NAMESPACE"),
+			IssuerName:     os.Getenv("DONKEY_APP_GATEWAY_ISSUER_NAME"),
+			IssuerKind:     os.Getenv("DONKEY_APP_GATEWAY_ISSUER_KIND"),
+			IssuerGroup:    os.Getenv("DONKEY_APP_GATEWAY_ISSUER_GROUP"),
+		},
+		AIModel: envOr("DONKEY_AI_MODEL", config.DefaultAIModel),
 	}
 	// The build environment is a map, so it travels as JSON — the same way
 	// DONKEY_ADMINS does.
@@ -132,6 +142,9 @@ func FromEnv() (*Config, error) {
 		return nil, err
 	}
 	if err := config.ValidateAddonImagePullSecrets(c.AddonImagePullSecrets); err != nil {
+		return nil, err
+	}
+	if err := c.AppGateway.Validate(); err != nil {
 		return nil, err
 	}
 	if err := (config.InstallBuild{BuildSettings: c.Build}).Validate(); err != nil {

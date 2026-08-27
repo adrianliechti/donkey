@@ -23,6 +23,11 @@ addonImages:
   rustfs: registry.example.com/mirror/rustfs/rustfs
 addonImagePullSecrets:
   - registry-example-com
+gateway:
+  appGateway:
+    className: private-edge
+    routeNamespace: gateway-infra
+    issuerName: company-pki
 build:
   instructions: |
     Use base images under registry.example.com/mirror only.
@@ -57,6 +62,11 @@ build:
 	}
 	if len(f.AddonImagePullSecrets) != 1 || f.AddonImagePullSecrets[0] != "registry-example-com" {
 		t.Errorf("addonImagePullSecrets = %v", f.AddonImagePullSecrets)
+	}
+	if f.Gateway.AppGateway.ClassName != "private-edge" ||
+		f.Gateway.AppGateway.RouteNamespace != "gateway-infra" ||
+		f.Gateway.AppGateway.IssuerName != "company-pki" {
+		t.Errorf("gateway.appGateway = %+v", f.Gateway.AppGateway)
 	}
 	if got := f.Build.Env["NPM_CONFIG_REGISTRY"]; got != "https://artifactory.example.com/api/npm/npm" {
 		t.Errorf("env[NPM_CONFIG_REGISTRY] = %q", got)
@@ -283,6 +293,26 @@ func TestInstallAttachmentValidation(t *testing.T) {
 	if !route.Enabled() {
 		t.Error("a named gateway means the attachment is on")
 	}
+
+	var appGateway InstallAppGateway
+	if err := appGateway.Validate(); err != nil {
+		t.Errorf("no appGateway block is the default: %v", err)
+	}
+	appGateway.RouteNamespace = "projectcontour"
+	if err := appGateway.Validate(); err == nil {
+		t.Error("a route namespace without a GatewayClass points at nothing")
+	}
+	appGateway.ClassName = "lgt-lb-standard"
+	if err := appGateway.Validate(); err == nil {
+		t.Error("a GatewayClass without an issuer cannot provision TLS")
+	}
+	appGateway.IssuerName = "lgt"
+	if err := appGateway.Validate(); err != nil {
+		t.Errorf("class, parent namespace and issuer are the intended setup: %v", err)
+	}
+	if !appGateway.Enabled() || appGateway.CertificateIssuerKind() != "ClusterIssuer" || appGateway.CertificateIssuerGroup() != "cert-manager.io" {
+		t.Errorf("appGateway defaults not applied: %+v", appGateway)
+	}
 }
 
 // The example install files are the first thing a person copies — they have
@@ -305,6 +335,9 @@ func TestExampleInstallFilesLoad(t *testing.T) {
 			t.Errorf("%s: %v", m, err)
 		}
 		if err := f.Gateway.HTTPRoute.Validate(); err != nil {
+			t.Errorf("%s: %v", m, err)
+		}
+		if err := f.Gateway.AppGateway.Validate(); err != nil {
 			t.Errorf("%s: %v", m, err)
 		}
 		if err := f.Build.Validate(); err != nil {

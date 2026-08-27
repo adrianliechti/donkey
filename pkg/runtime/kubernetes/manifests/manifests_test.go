@@ -288,8 +288,8 @@ func TestSpaceLabels(t *testing.T) {
 	}
 }
 
-// Certificates need no objects at all: the gateway issues one per hostname
-// itself the moment the route appears.
+// By default certificates need no objects at all: donkey's own gateway issues
+// one per hostname itself the moment the route appears.
 func TestNoCertificateObjects(t *testing.T) {
 	objs, err := AppObjects(testInput(t))
 	if err != nil {

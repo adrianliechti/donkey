@@ -142,6 +142,11 @@ func (r *Runtime) Deploy(ctx context.Context, spec rt.DeploySpec, out rt.Progres
 	} else if !app.Public {
 		out.Line("· Login protection is in force.")
 	}
+	if in.Domain == "" || !in.AppGateway.Enabled() {
+		if err := r.deleteAppGatewayObjects(ctx, obj); err != nil {
+			return err
+		}
+	}
 	if spec.NoWait {
 		return nil
 	}
@@ -173,7 +178,31 @@ func (r *Runtime) Destroy(ctx context.Context, space, app string, keepData bool)
 	if err := r.c.RemoveFilesHelper(ctx, ns, obj); err != nil {
 		return err
 	}
+	if err := r.deleteAppGatewayObjects(ctx, obj); err != nil {
+		return err
+	}
 	return r.c.DeleteAppResources(ctx, ns, obj, keepData)
+}
+
+// deleteAppGatewayObjects retracts the namespaced external edge independently
+// of the workload objects: the app may live in another namespace, while its
+// Certificate, TLS Secret, Gateway and HTTPRoute deliberately live with the
+// control plane. It is safe on clusters without either optional CRD.
+func (r *Runtime) deleteAppGatewayObjects(ctx context.Context, app string) error {
+	for _, object := range []struct {
+		kind string
+		name string
+	}{
+		{kind: "HTTPRoute", name: manifests.AppEdgeName(app)},
+		{kind: "Gateway", name: manifests.AppGatewayName(r.opts.SystemNamespace, app)},
+		{kind: "Certificate", name: manifests.AppEdgeName(app)},
+		{kind: "Secret", name: manifests.AppCertificateSecretName(app)},
+	} {
+		if err := r.c.DeleteObject(ctx, object.kind, r.opts.SystemNamespace, object.name); err != nil {
+			return fmt.Errorf("removing the app's %s: %w", object.kind, err)
+		}
+	}
+	return nil
 }
 
 // appHost is the address of an app — see config.AppHost for the rule.
@@ -193,6 +222,14 @@ func (r *Runtime) manifestInput(spec rt.DeploySpec, includeCreds bool) (manifest
 		Decisions:       spec.Decisions,
 		RegistryHost:    r.opts.Registry.Host(),
 		Domain:          r.appHost(space, app),
+		AppGateway: manifests.AppGatewayConfig{
+			Namespace:      r.opts.SystemNamespace,
+			ClassName:      r.opts.AppGateway.ClassName,
+			RouteNamespace: r.opts.AppGateway.RouteNamespace,
+			IssuerName:     r.opts.AppGateway.IssuerName,
+			IssuerKind:     r.opts.AppGateway.CertificateIssuerKind(),
+			IssuerGroup:    r.opts.AppGateway.CertificateIssuerGroup(),
+		},
 	}
 	if includeCreds {
 		username, password, err := r.opts.Registry.Credentials()
@@ -278,10 +315,10 @@ func (r *Runtime) retractRemovedRoutes(ctx context.Context, ns string, in manife
 	return nil
 }
 
-// ApplyNetwork changes how the app is reached — without a deploy. The route,
-// certificate and gateway grant are re-rendered from cluster state; existing
-// shared-address routes keep serving under their existing names (their
-// exposure follows the app's).
+// ApplyNetwork changes how the app is reached — without a deploy. The route
+// and optional managed Gateway/Certificate edge are re-rendered from cluster
+// state; existing shared-address routes keep serving under their existing
+// names (their exposure follows the app's).
 func (r *Runtime) ApplyNetwork(ctx context.Context, cfg *config.AppConfig) (string, error) {
 	space, app := cfg.Space, cfg.Name
 	ns, obj := r.ns(space), r.name(space, app)
@@ -306,11 +343,12 @@ func (r *Runtime) ApplyNetwork(ctx context.Context, cfg *config.AppConfig) (stri
 		}
 	}
 
-	// Re-render: the app's own route unless internal, and every existing
-	// path route under its existing name.
+	// Re-render: the app's own route and optional external edge unless
+	// internal, and every existing path route under its existing name.
 	var objs []k8sruntime.Object
 	if in.Domain != "" {
 		objs = append(objs, manifests.AppRoute(in))
+		objs = append(objs, manifests.AppGatewayObjects(in)...)
 	}
 	for _, pr := range net.Routes {
 		objs = append(objs, manifests.PathRouteNamed(in, pr.Name, manifests.RouteTarget{Host: pr.Host, Path: pr.Path}))
@@ -321,6 +359,11 @@ func (r *Runtime) ApplyNetwork(ctx context.Context, cfg *config.AppConfig) (stri
 
 	if in.Domain == "" {
 		if err := r.c.DeleteObject(ctx, "ConfigMap", ns, obj); err != nil {
+			return "", err
+		}
+	}
+	if in.Domain == "" || !in.AppGateway.Enabled() {
+		if err := r.deleteAppGatewayObjects(ctx, obj); err != nil {
 			return "", err
 		}
 	}
