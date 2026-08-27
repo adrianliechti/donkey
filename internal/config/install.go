@@ -3,7 +3,9 @@ package config
 import (
 	"fmt"
 	"maps"
+	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/distribution/reference"
@@ -13,7 +15,8 @@ import (
 // InstallFile is the values file for `donkey server install -f server.yaml`:
 // everything an admin configures about a donkey installation. Flags override
 // individual fields; secrets can come from env instead
-// (DONKEY_REGISTRY_PASSWORD, DONKEY_OIDC_CLIENT_SECRET, OPENAI_API_KEY).
+// (DONKEY_REGISTRY_PASSWORD, DONKEY_PACKAGES_PASSWORD,
+// DONKEY_OIDC_CLIENT_SECRET, OPENAI_API_KEY).
 type InstallFile struct {
 	// Runtime is where donkey runs apps: "kubernetes" (the default) or
 	// "docker" — straight on a Docker engine, no cluster.
@@ -132,6 +135,219 @@ type InstallBuild struct {
 	// Proxy is a forward proxy for donkey-server and the build engine
 	// themselves — not for the app's build steps, which read Env.
 	Proxy InstallProxy `json:"proxy,omitempty"`
+
+	// Packages is the upstream side of donkey's always-on, build-only package
+	// proxy. Builds only see the internal endpoint; credentials stay here in
+	// the control plane.
+	Packages InstallPackages `json:"packages,omitempty"`
+}
+
+const (
+	DefaultNPMUpstream   = "https://registry.npmjs.org"
+	DefaultPyPIUpstream  = "https://pypi.org/simple"
+	DefaultGoUpstream    = "https://proxy.golang.org"
+	DefaultMavenUpstream = "https://repo.maven.apache.org/maven2"
+	DefaultNuGetUpstream = "https://api.nuget.org/v3/index.json"
+)
+
+// InstallPackages configures the upstreams behind donkey-packages. One
+// read-only credential may cover several explicitly named Artifactory/Nexus
+// hosts; the proxy never sends it anywhere else.
+type InstallPackages struct {
+	NPM   string `json:"npm,omitempty"`
+	PyPI  string `json:"pypi,omitempty"`
+	Go    string `json:"go,omitempty"`
+	Maven string `json:"maven,omitempty"`
+	NuGet string `json:"nuget,omitempty"`
+
+	// ResourceHosts are additional HTTPS hosts an index may send clients to
+	// for package metadata or artifacts. They are routed back through
+	// donkey-packages but receive no credential unless also named in
+	// CredentialHosts.
+	ResourceHosts   []string `json:"resourceHosts,omitempty"`
+	CredentialHosts []string `json:"credentialHosts,omitempty"`
+	Username        string   `json:"username,omitempty"`
+	Password        string   `json:"password,omitempty"`
+
+	// DockerConfigSecret is an existing Kubernetes Secret mounted into the
+	// package proxy. DockerConfigDir is the equivalent bind-mounted host
+	// directory for the Docker runtime. DockerConfigHost selects the auths
+	// entry whose credential is reused for the explicitly allowed target hosts
+	// in CredentialHosts.
+	DockerConfigSecret string `json:"dockerConfigSecret,omitempty"`
+	DockerConfigDir    string `json:"dockerConfigDir,omitempty"`
+	DockerConfigHost   string `json:"dockerConfigHost,omitempty"`
+}
+
+func (p InstallPackages) NPMUpstream() string {
+	if p.NPM != "" {
+		return p.NPM
+	}
+	return DefaultNPMUpstream
+}
+
+func (p InstallPackages) PyPIUpstream() string {
+	if p.PyPI != "" {
+		return p.PyPI
+	}
+	return DefaultPyPIUpstream
+}
+
+func (p InstallPackages) GoUpstream() string {
+	if p.Go != "" {
+		return p.Go
+	}
+	return DefaultGoUpstream
+}
+
+func (p InstallPackages) MavenUpstream() string {
+	if p.Maven != "" {
+		return p.Maven
+	}
+	return DefaultMavenUpstream
+}
+
+func (p InstallPackages) NuGetUpstream() string {
+	if p.NuGet != "" {
+		return p.NuGet
+	}
+	return DefaultNuGetUpstream
+}
+
+// Validate checks the public/default or enterprise package endpoints. A
+// password may be absent here because an installer re-run can recover it from
+// the existing installation Secret; ValidateCredentials performs that final
+// check after recovery.
+func (p InstallPackages) Validate() error {
+	hosts := map[string]map[string]bool{}
+	for name, raw := range map[string]string{
+		"npm": p.NPMUpstream(), "pypi": p.PyPIUpstream(), "go": p.GoUpstream(),
+		"maven": p.MavenUpstream(), "nuget": p.NuGetUpstream(),
+	} {
+		u, err := url.Parse(raw)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+			return fmt.Errorf("build.packages.%s %q must be an http or https URL without embedded credentials", name, raw)
+		}
+		host := strings.ToLower(u.Host)
+		if hosts[host] == nil {
+			hosts[host] = map[string]bool{}
+		}
+		hosts[host][u.Scheme] = true
+	}
+	resourceHosts := map[string]bool{}
+	for _, configured := range p.ResourceHosts {
+		host, err := packageHost(configured)
+		if err != nil {
+			return fmt.Errorf("build.packages.resourceHosts contains %q; entries must be host[:port], not URLs", configured)
+		}
+		if resourceHosts[host] {
+			return fmt.Errorf("build.packages.resourceHosts contains duplicate host %q", configured)
+		}
+		resourceHosts[host] = true
+	}
+	credentialHosts := map[string]bool{}
+	for _, configured := range p.CredentialHosts {
+		host, err := packageHost(configured)
+		if err != nil {
+			return fmt.Errorf("build.packages.credentialHosts contains %q; entries must be host[:port], not URLs", configured)
+		}
+		if credentialHosts[host] {
+			return fmt.Errorf("build.packages.credentialHosts contains duplicate host %q", configured)
+		}
+		credentialHosts[host] = true
+		if hosts[host] == nil && !resourceHosts[host] {
+			return fmt.Errorf("build.packages credential host %q does not match a package upstream or resourceHosts entry", configured)
+		}
+		if hosts[host] != nil && hosts[host]["http"] {
+			return fmt.Errorf("build.packages credential host %q uses plaintext http; credentials require https", configured)
+		}
+	}
+	if p.DockerConfigSecret != "" && p.DockerConfigDir != "" {
+		return fmt.Errorf("build.packages must use dockerConfigSecret or dockerConfigDir, not both")
+	}
+	dockerConfig := p.DockerConfigSecret != "" || p.DockerConfigDir != ""
+	if p.DockerConfigHost != "" {
+		if _, err := packageHost(p.DockerConfigHost); err != nil {
+			return fmt.Errorf("build.packages.dockerConfigHost %q must be host[:port], not a URL", p.DockerConfigHost)
+		}
+	}
+	if dockerConfig && p.DockerConfigHost == "" {
+		return fmt.Errorf("build.packages Docker config credentials need dockerConfigHost to select their auths entry")
+	}
+	if !dockerConfig && p.DockerConfigHost != "" {
+		return fmt.Errorf("build.packages.dockerConfigHost needs dockerConfigSecret or dockerConfigDir")
+	}
+	if dockerConfig && (p.Username != "" || p.Password != "") {
+		return fmt.Errorf("build.packages Docker config credentials cannot be combined with username or password")
+	}
+	if p.Username != "" && len(p.CredentialHosts) == 0 {
+		return fmt.Errorf("build.packages.username needs build.packages.credentialHosts to scope the credential")
+	}
+	if dockerConfig && len(p.CredentialHosts) == 0 {
+		return fmt.Errorf("build.packages Docker config credentials need credentialHosts to scope the credential")
+	}
+	return nil
+}
+
+func (p InstallPackages) ValidateCredentials() error {
+	if err := p.Validate(); err != nil {
+		return err
+	}
+	dockerConfig := p.DockerConfigSecret != "" || p.DockerConfigDir != ""
+	configured := len(p.CredentialHosts) > 0 || p.Username != "" || p.Password != "" || dockerConfig
+	if configured && !dockerConfig && (len(p.CredentialHosts) == 0 || p.Username == "" || p.Password == "") {
+		return fmt.Errorf("build.packages credentials need credentialHosts, username and password")
+	}
+	return nil
+}
+
+// NeedsPassword reports whether an installer should recover an omitted
+// explicit password from the previous installation. Docker config sources
+// are mounted and resolved independently.
+func (p InstallPackages) NeedsPassword() bool {
+	return p.DockerConfigSecret == "" && p.DockerConfigDir == "" &&
+		(len(p.CredentialHosts) > 0 || p.Username != "")
+}
+
+// ValidateRuntime keeps host paths out of Kubernetes pod specs and
+// Kubernetes Secret names out of Docker bind mounts.
+func (p InstallPackages) ValidateRuntime(runtime string) error {
+	if runtime == "docker" {
+		if p.DockerConfigSecret != "" {
+			return fmt.Errorf("build.packages.dockerConfigSecret is for Kubernetes; use dockerConfigDir with the Docker runtime")
+		}
+		if p.DockerConfigDir != "" && !filepath.IsAbs(p.DockerConfigDir) {
+			return fmt.Errorf("build.packages.dockerConfigDir must be an absolute host path")
+		}
+		return nil
+	}
+	if p.DockerConfigDir != "" {
+		return fmt.Errorf("build.packages.dockerConfigDir is for the Docker runtime; use dockerConfigSecret with Kubernetes")
+	}
+	if p.DockerConfigSecret != "" {
+		if err := ValidateAddonImagePullSecrets([]string{p.DockerConfigSecret}); err != nil {
+			return fmt.Errorf("build.packages.dockerConfigSecret: %w", err)
+		}
+	}
+	return nil
+}
+
+func packageHost(value string) (string, error) {
+	if value == "" || strings.TrimSpace(value) != value || strings.Contains(value, "://") || strings.Contains(value, "/") {
+		return "", fmt.Errorf("invalid host")
+	}
+	u, err := url.Parse("https://" + value)
+	if err != nil || u.Host != value || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return "", fmt.Errorf("invalid host")
+	}
+	if port := u.Port(); port != "" {
+		for _, r := range port {
+			if r < '0' || r > '9' {
+				return "", fmt.Errorf("invalid port")
+			}
+		}
+	}
+	return strings.ToLower(value), nil
 }
 
 // BuildSettings is the build configuration donkey-server acts on. There is
@@ -192,7 +408,7 @@ func (b InstallBuild) Validate() error {
 			return fmt.Errorf("build.registryMirrors[%q] has no mirror address", host)
 		}
 	}
-	return nil
+	return b.Packages.Validate()
 }
 
 // VerifyStartup is on unless an installation turns it off.
@@ -234,6 +450,31 @@ type InstallRegistry struct {
 	Registry
 	// CASecret is a secret in donkey-system holding ca.crt.
 	CASecret string `json:"caSecret,omitempty"`
+	// DockerConfigSecret is an existing Secret whose Docker config entries
+	// authenticate separately hosted BuildKit mirrors. The push registry's
+	// own credential remains Username plus password/passwordFile.
+	DockerConfigSecret string `json:"dockerConfigSecret,omitempty"`
+}
+
+func (r InstallRegistry) ValidateRuntime(runtime string) error {
+	if runtime == "docker" {
+		if r.DockerConfigSecret != "" {
+			return fmt.Errorf("registry.dockerConfigSecret is for Kubernetes; use dockerConfigDir with the Docker runtime")
+		}
+		if r.DockerConfigDir != "" && !filepath.IsAbs(r.DockerConfigDir) {
+			return fmt.Errorf("registry.dockerConfigDir must be an absolute host path")
+		}
+		return nil
+	}
+	if r.DockerConfigDir != "" {
+		return fmt.Errorf("registry.dockerConfigDir is for the Docker runtime; use dockerConfigSecret with Kubernetes")
+	}
+	if r.DockerConfigSecret != "" {
+		if err := ValidateAddonImagePullSecrets([]string{r.DockerConfigSecret}); err != nil {
+			return fmt.Errorf("registry.dockerConfigSecret: %w", err)
+		}
+	}
+	return nil
 }
 
 // InstallAuth configures the login gateway — the one way in: apps, console

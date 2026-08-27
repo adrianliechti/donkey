@@ -66,9 +66,13 @@ type SystemInput struct {
 	GatewayHTTPSNodePort int32
 
 	// RegistryCASecret names a secret in donkey-system holding ca.crt — the
-	// certificate authority the registry's own certificate comes from. Both
-	// the server and the build engine trust it.
+	// certificate authority the enterprise registry and package upstreams
+	// come from. The server, build engine and package proxy trust it.
 	RegistryCASecret string
+	// RegistryDockerConfigSecret contains per-host auths entries for
+	// separately hosted BuildKit mirrors and is read dynamically by the
+	// server's BuildKit session auth provider.
+	RegistryDockerConfigSecret string
 
 	RegistryURL      string
 	RegistryUsername string
@@ -135,6 +139,7 @@ const (
 	// systemRegistrySecretName lets the kubelet pull mirrored control-plane
 	// images from the same credentialed registry app builds are pushed to.
 	systemRegistrySecretName = "donkey-system-registry"
+	registryDockerConfigPath = "/etc/donkey/registry-auth"
 	serverPort               = 8088
 	buildkitPort             = 1234
 
@@ -182,6 +187,9 @@ func SystemObjects(in SystemInput) []runtime.Object {
 	// The build engine's config file has to exist before the deployment that
 	// mounts it.
 	objs = append(objs, buildkitConfig(in))
+	// Package traffic has its own unprivileged process and credentials. It is
+	// ready before builds are accepted by donkey-server.
+	objs = append(objs, packagesObjects(in)...)
 	objs = append(objs,
 		buildkitDeployment(in),
 		systemService(in, buildkitName, buildkitPort, buildkitPort),
@@ -295,6 +303,7 @@ func systemSecret(in SystemInput) *corev1.Secret {
 			"builder-instructions": in.Build.Instructions,
 			"http-proxy":           in.Build.Proxy.HTTP,
 			"https-proxy":          in.Build.Proxy.HTTPS,
+			"packages-password":    in.Build.Packages.Password,
 		},
 	}
 }
@@ -370,6 +379,9 @@ func serverDeployment(in SystemInput) *appsv1.Deployment {
 		secretEnv("DONKEY_REGISTRY_PASSWORD", "registry-password"),
 		secretEnv("OPENAI_API_KEY", "openai-api-key"),
 	}
+	if in.RegistryDockerConfigSecret != "" {
+		env = append(env, corev1.EnvVar{Name: "DONKEY_REGISTRY_CONFIG_DIR", Value: registryDockerConfigPath})
+	}
 	env = append(env, buildEnv(in.Build)...)
 	// The server resolves versions and image configuration itself, so it
 	// needs the proxy as much as the build engine does.
@@ -404,15 +416,24 @@ func serverDeployment(in SystemInput) *appsv1.Deployment {
 		}},
 	}
 	if in.RegistryCASecret != "" {
-		spec.Containers[0].VolumeMounts = []corev1.VolumeMount{
-			{Name: "registry-ca", MountPath: registryCAPath, ReadOnly: true},
-		}
-		spec.Volumes = []corev1.Volume{{
+		spec.Containers[0].VolumeMounts = append(spec.Containers[0].VolumeMounts,
+			corev1.VolumeMount{Name: "registry-ca", MountPath: registryCAPath, ReadOnly: true})
+		spec.Volumes = append(spec.Volumes, corev1.Volume{
 			Name: "registry-ca",
 			VolumeSource: corev1.VolumeSource{
 				Secret: &corev1.SecretVolumeSource{SecretName: in.RegistryCASecret},
 			},
-		}}
+		})
+	}
+	if in.RegistryDockerConfigSecret != "" {
+		spec.Containers[0].VolumeMounts = append(spec.Containers[0].VolumeMounts,
+			corev1.VolumeMount{Name: "registry-auth", MountPath: registryDockerConfigPath, ReadOnly: true})
+		spec.Volumes = append(spec.Volumes, corev1.Volume{
+			Name: "registry-auth",
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{SecretName: in.RegistryDockerConfigSecret},
+			},
+		})
 	}
 	return &appsv1.Deployment{
 		TypeMeta:   metav1.TypeMeta{APIVersion: "apps/v1", Kind: "Deployment"},

@@ -57,9 +57,9 @@ tasks:
       - npm run dev
 
   # image cross-compiles one command, wraps it in its Dockerfile and builds
-  # it into the local Docker daemon. Both images donkey builds go through
+  # it into the local Docker daemon. The development images go through
   # here; the kind flow additionally loads them into the cluster registry
-  # (server-image:kind, demo-idp-image:kind).
+  # (server-image:kind, demo-idp-image:kind, private-packages-image:kind).
   image:
     internal: true
     requires:
@@ -125,6 +125,23 @@ tasks:
     cmds:
       - task: demo-idp-image
       - devkube --cluster {{.CLUSTER}} load donkey/fake-idp:dev
+
+  private-packages-image:
+    desc: Build the authenticated package mirror used by live E2E installs
+    cmds:
+      - task: image
+        vars:
+          CMD: ./hack/private-packages
+          BIN: private-packages
+          IMAGE: '{{.IMAGE | default "donkey/private-packages:dev"}}'
+          DOCKERFILE: hack/private-packages/Dockerfile
+          CONTEXT: .build/private-packages
+
+  private-packages-image:kind:
+    desc: Build and load the authenticated E2E package mirror into kind
+    cmds:
+      - task: private-packages-image
+      - devkube --cluster {{.CLUSTER}} load donkey/private-packages:dev
 
   test:
     desc: Run unit tests (no cluster or docker needed)

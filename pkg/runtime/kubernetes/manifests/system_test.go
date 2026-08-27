@@ -36,7 +36,7 @@ func TestSystemObjectsSelfContainedEdge(t *testing.T) {
 	in := systemInput()
 	in.OIDCIssuer = "https://login.microsoftonline.com/x/v2.0"
 	out := componentNames(in)
-	for _, want := range []string{"donkey-server", "donkey-buildkitd", "donkey-gateway", "DONKEY_TLS_MODE", "type: LoadBalancer"} {
+	for _, want := range []string{"donkey-server", "donkey-buildkitd", "donkey-packages", "donkey-gateway", "DONKEY_TLS_MODE", "type: LoadBalancer"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("system objects should contain %s", want)
 		}
@@ -62,7 +62,7 @@ func TestSystemObjectsSelfContainedEdge(t *testing.T) {
 }
 
 // A registry whose certificate comes from a private CA is common in-house;
-// both the server and the build engine have to trust it, or every push fails.
+// the server, build engine and package proxy have to trust it.
 func TestRegistryCAReachesBuildEngineAndServer(t *testing.T) {
 	in := systemInput()
 	in.RegistryCASecret = "donkey-registry-ca"
@@ -76,6 +76,7 @@ func TestRegistryCAReachesBuildEngineAndServer(t *testing.T) {
 		"--config",                       // buildkitd is told to read it
 		"secretName: donkey-registry-ca", // …and the CA is mounted
 		"DONKEY_REGISTRY_CA_FILE",        // the server trusts it too
+		"DONKEY_PACKAGES_CA_FILE",        // package upstreams use the same enterprise CA
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("an installation with a registry CA should render %s", want)
@@ -102,14 +103,44 @@ func TestRegistryCredentialsPullMirroredSystemImages(t *testing.T) {
 	if !strings.Contains(out, "name: "+systemRegistrySecretName) || !strings.Contains(out, "imagePullSecrets") {
 		t.Fatalf("credentialed registry should render and reference a system pull secret:\n%s", out)
 	}
-	if n := strings.Count(out, "name: "+systemRegistrySecretName); n != 5 {
-		t.Errorf("pull secret should be created once and referenced by four system deployments, found %d mentions", n)
+	if n := strings.Count(out, "name: "+systemRegistrySecretName); n != 6 {
+		t.Errorf("pull secret should be created once and referenced by five system deployments, found %d mentions", n)
 	}
 
 	plain := componentNames(systemInput())
 	if strings.Contains(plain, systemRegistrySecretName) || strings.Contains(plain, "imagePullSecrets") {
 		t.Error("an anonymous installation should not render system image pull credentials")
 	}
+}
+
+func TestRegistryDockerConfigSecretReachesServer(t *testing.T) {
+	in := systemInput()
+	in.RegistryDockerConfigSecret = "registry-mirror-auth"
+	dep := serverDeployment(in)
+	container := dep.Spec.Template.Spec.Containers[0]
+	foundEnv, foundMount := false, false
+	for _, env := range container.Env {
+		if env.Name == "DONKEY_REGISTRY_CONFIG_DIR" && env.Value == registryDockerConfigPath {
+			foundEnv = true
+		}
+	}
+	for _, mounted := range container.VolumeMounts {
+		if mounted.Name == "registry-auth" && mounted.MountPath == registryDockerConfigPath && mounted.ReadOnly {
+			foundMount = true
+		}
+	}
+	if !foundEnv || !foundMount {
+		t.Fatalf("registry Docker config wiring: env=%v mount=%v", foundEnv, foundMount)
+	}
+	for _, volume := range dep.Spec.Template.Spec.Volumes {
+		if volume.Name == "registry-auth" {
+			if volume.Secret == nil || volume.Secret.SecretName != "registry-mirror-auth" {
+				t.Fatalf("registry-auth volume = %+v", volume)
+			}
+			return
+		}
+	}
+	t.Fatal("registry Docker config Secret has no volume")
 }
 
 func TestAddonImageOverridesReachServer(t *testing.T) {

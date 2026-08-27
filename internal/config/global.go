@@ -182,6 +182,12 @@ func DockerConfigCredentials(path, host string) (string, string, bool, error) {
 	if err != nil {
 		return "", "", false, fmt.Errorf("reading docker config %s: %w", path, err)
 	}
+	return DockerConfigDataCredentials(b, path, host)
+}
+
+// DockerConfigDataCredentials resolves one auths entry from Docker config
+// JSON already supplied by a Kubernetes Secret or another trusted source.
+func DockerConfigDataCredentials(b []byte, source, host string) (string, string, bool, error) {
 	var cfg struct {
 		Auths map[string]struct {
 			Username string `json:"username"`
@@ -190,7 +196,7 @@ func DockerConfigCredentials(path, host string) (string, string, bool, error) {
 		} `json:"auths"`
 	}
 	if err := json.Unmarshal(b, &cfg); err != nil {
-		return "", "", false, fmt.Errorf("reading docker config %s: %w", path, err)
+		return "", "", false, fmt.Errorf("reading docker config %s: %w", source, err)
 	}
 	want := registryConfigHost(host)
 	for address, auth := range cfg.Auths {
@@ -198,15 +204,18 @@ func DockerConfigCredentials(path, host string) (string, string, bool, error) {
 			continue
 		}
 		if auth.Username != "" || auth.Password != "" {
+			if auth.Username == "" || auth.Password == "" {
+				return "", "", false, fmt.Errorf("credentials for %s in %s need both username and password", host, source)
+			}
 			return auth.Username, auth.Password, true, nil
 		}
 		decoded, err := base64.StdEncoding.DecodeString(auth.Auth)
 		if err != nil {
-			return "", "", false, fmt.Errorf("decoding credentials for %s in %s: %w", host, path, err)
+			return "", "", false, fmt.Errorf("decoding credentials for %s in %s: %w", host, source, err)
 		}
 		username, password, ok := strings.Cut(string(decoded), ":")
 		if !ok {
-			return "", "", false, fmt.Errorf("credentials for %s in %s are not username:password", host, path)
+			return "", "", false, fmt.Errorf("credentials for %s in %s are not username:password", host, source)
 		}
 		return username, password, true, nil
 	}
@@ -222,7 +231,7 @@ func registryConfigHost(address string) string {
 	if host == "registry-1.docker.io" || host == "index.docker.io" {
 		return "docker.io"
 	}
-	return host
+	return strings.ToLower(host)
 }
 
 const (

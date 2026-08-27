@@ -14,10 +14,14 @@ require_ai
 DOMAIN="${DONKEY_DOMAIN:-apps.localhost}"
 
 say "building donkey + images"
-(cd "${ROOT}" && task build && task server-image && task demo-idp-image)
+(cd "${ROOT}" && task build && task server-image && task demo-idp-image && task private-packages-image)
+
+say "authenticated package mirror"
+"${ROOT}/hack/install-private-packages-docker.sh"
 
 say "installing the control plane (real install command, demo settings)"
 "${DONKEY}" --yes server install \
+  --file "${ROOT}/.build/private-packages-docker-install.yaml" \
   --runtime docker \
   --image "donkey/donkey-server:dev" \
   --domain "${DOMAIN}" \

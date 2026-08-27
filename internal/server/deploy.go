@@ -381,6 +381,7 @@ func (s *Server) deploy(ctx context.Context, out *lineStreamer, dir string, app 
 	builder := &build.BuildKitBuilder{
 		Registry:     s.cfg.Registry,
 		BuildkitAddr: s.cfg.BuildkitAddr,
+		PackagesURL:  s.cfg.PackagesURL,
 		Settings:     s.cfg.Build,
 	}
 	req := build.Request{

@@ -25,7 +25,7 @@ func TestListManagedRoutesAcceptsExternalManagers(t *testing.T) {
 			Name:      name,
 			Namespace: namespace,
 			Labels: map[string]string{
-				manifests.LabelInstance:          owner,
+				manifests.LabelInstance:        owner,
 				"app.kubernetes.io/managed-by": manager,
 			},
 			Annotations: map[string]string{manifests.AnnotationBackend: backend},

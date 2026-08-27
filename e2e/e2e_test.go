@@ -42,8 +42,9 @@ import (
 )
 
 const (
-	space = "e2e"
-	app   = "e2e-web"
+	space       = "e2e"
+	app         = "e2e-web"
+	packagesApp = "e2e-packages"
 )
 
 type suite struct {
@@ -259,8 +260,83 @@ func TestEndToEnd(t *testing.T) {
 	// then be testing yesterday's settings.
 	t.Run("clean-slate", func(t *testing.T) {
 		_ = s.api.Destroy(ctx, space, app, false)
+		_ = s.api.Destroy(ctx, space, packagesApp, false)
 		_ = s.api.RemoveSpaceAddon(ctx, space, "postgres", false)
 		s.rawTry(http.MethodDelete, "/v1/spaces/"+space)
+	})
+
+	t.Run("package-proxy-build", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFile(t, filepath.Join(dir, "Dockerfile"), `FROM node:22-alpine AS npm-probe
+RUN mkdir -p /tmp/npm-probe \
+  && cd /tmp/npm-probe \
+  && npm init -y \
+  && npm install --ignore-scripts --no-audit --no-fund is-number@7.0.0 \
+  && test -f node_modules/is-number/index.js \
+  && touch /npm-ok
+
+FROM python:3.12-slim AS pypi-probe
+RUN pip install --no-cache-dir --no-deps idna==3.10 \
+  && python -c 'import idna; assert idna.__version__ == "3.10"' \
+  && touch /pypi-ok
+
+FROM golang:1.25-alpine AS go-probe
+RUN mkdir -p /tmp/go-probe \
+  && cd /tmp/go-probe \
+  && go mod init example.invalid/probe \
+  && go mod download golang.org/x/text@v0.28.0 \
+  && touch /go-ok
+
+FROM maven:3.9.16-eclipse-temurin-21-alpine AS maven-probe
+RUN printf '%s\n' \
+  '<settings><mirrors><mirror><id>donkey</id>' \
+  '<url>${env.DONKEY_MAVEN_MIRROR}</url><mirrorOf>*</mirrorOf>' \
+  '</mirror></mirrors></settings>' > /tmp/settings.xml \
+  && mvn --batch-mode --settings /tmp/settings.xml dependency:get -Dartifact=org.apache.maven:maven-model:3.9.6 \
+  && touch /maven-ok
+
+FROM mcr.microsoft.com/dotnet/sdk:10.0-alpine AS nuget-probe
+RUN printf '%s\n' \
+  '<?xml version="1.0" encoding="utf-8"?>' \
+  '<configuration><packageSources><clear />' \
+  '<add key="donkey" value="%DONKEY_NUGET_SOURCE%" protocolVersion="3" allowInsecureConnections="true" />' \
+  '</packageSources></configuration>' > /tmp/NuGet.Config \
+  && mkdir -p /tmp/nuget-probe \
+  && printf '%s\n' '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup><ItemGroup><PackageReference Include="Newtonsoft.Json" Version="13.0.3" /></ItemGroup></Project>' > /tmp/nuget-probe/probe.csproj \
+  && dotnet restore /tmp/nuget-probe/probe.csproj --configfile /tmp/NuGet.Config \
+  && touch /nuget-ok
+
+FROM busybox:1.37
+RUN test -n "$NPM_CONFIG_REGISTRY" && test -n "$PIP_INDEX_URL" && test -n "$GOPROXY"
+RUN test -n "$DONKEY_MAVEN_MIRROR" && test -n "$MAVEN_REPO_CENTRAL" && test -n "$MVNW_REPOURL" && test -n "$DONKEY_NUGET_SOURCE"
+COPY --from=npm-probe /npm-ok /npm-ok
+COPY --from=pypi-probe /pypi-ok /pypi-ok
+COPY --from=go-probe /go-ok /go-ok
+COPY --from=maven-probe /maven-ok /maven-ok
+COPY --from=nuget-probe /nuget-ok /nuget-ok
+RUN mkdir -p /site && echo packages-ok > /site/index.html
+CMD ["httpd", "-f", "-p", "8080", "-h", "/site"]
+`)
+		writeFile(t, filepath.Join(dir, "donkey.yaml"), fmt.Sprintf(
+			"name: %s\nspace: %s\nport: 8080\n", packagesApp, space))
+
+		var tarBuf bytes.Buffer
+		if _, err := apiclient.TarContext(dir, &tarBuf); err != nil {
+			t.Fatal(err)
+		}
+		deadline, cancel := context.WithTimeout(ctx, 10*time.Minute)
+		defer cancel()
+		res, err := s.api.Deploy(deadline, &tarBuf, apiclient.DeployOpts{Space: space},
+			func(line string) { t.Log(line) }, func(string) {})
+		if err != nil {
+			t.Fatalf("package proxy probe deploy failed: %v", err)
+		}
+		if !res.OK {
+			t.Fatalf("package proxy probe deploy failed: %s\n%s", res.Error, res.Diagnosis)
+		}
+		if err := s.api.Destroy(ctx, space, packagesApp, false); err != nil {
+			t.Fatalf("destroying package proxy probe: %v", err)
+		}
 	})
 
 	t.Run("doctor", func(t *testing.T) {

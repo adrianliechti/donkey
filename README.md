@@ -62,6 +62,7 @@ five ideas:
 │  (thin client)│   HTTP   │  ├─ donkey-server   REST API, detection,│
 └───────────────┘          │  │      manifests, AI, rollout watching │
                            │  ├─ donkey-buildkitd  image builds      │──▶ registry
+                           │  ├─ donkey-packages  build package proxy│─▶ package registries
                            │  ├─ donkey-ai      openai addon endpoint│──▶ model API
  browser ────80/443───────▶│  └─ donkey-gateway  TLS (ACME/CA/none)  │──OIDC──▶ Entra ID /
                            │       · routing by hostname and path    │        any IdP
@@ -118,6 +119,11 @@ five ideas:
   wrote), and pushes straight to the registry. It is also
   where a freshly built image is run to check it starts. Registry mirrors for
   restricted networks are configured here (`build.registryMirrors`).
+- **donkey-packages** — an always-on, read-only endpoint used only by
+  Dockerfile build steps. It proxies npm, PyPI, Go module, Maven and NuGet v3
+  requests to public registries by default or installation-wide enterprise upstreams.
+  BuildKit is the only pod admitted by its NetworkPolicy, and upstream
+  credentials stay in this process rather than becoming Docker build args.
 - **donkey-gateway** — donkey's own edge (same binary as the server,
   started with `gateway`): traffic enters the cluster here, on ports 80 and
   443. By default it terminates TLS and issues the certificates itself — one per
@@ -593,8 +599,8 @@ settle what a file tree can only hint at.
 
 Because the output is an ordinary Dockerfile, everything it names — `FROM
 python:3.12-slim`, `apt-get`, `npm ci` — is an ordinary registry or package
-pull that `registryMirrors` and `build.env` already cover. There is nothing
-else to reach.
+pull that `registryMirrors` and the internal package proxy cover. There is
+nothing else to reach.
 
 **The Dockerfile is the deliverable, not the model.** donkey prints what it
 wrote and tells you to save it as `.donkey/Dockerfile`. Once it is there,
@@ -628,10 +634,16 @@ build:
 
 `build.registryMirrors` is written into the build engine's own configuration,
 so it covers every image a build pulls — every `FROM` in a Dockerfile,
-generated or not. `build.env` reaches every build *step*,
-which is where package managers are pointed at their mirrors; donkey layers
-it under each app's own `build.env`, so a project that pins its own registry
-still wins.
+generated or not.
+
+Every installation also runs `donkey-packages`. donkey declares its internal
+npm, pip, Go, Maven and NuGet settings after every `FROM` in an in-memory
+Dockerfile overlay, so they reach every `RUN` in every stage without changing
+the app's file. The public defaults are npmjs, PyPI, `proxy.golang.org`, Maven
+Central and the NuGet v3 service index; only the proxy process sees configured
+upstream URLs or credentials. The package-variable names are platform-owned,
+so `build.env` cannot accidentally bypass the proxy or expose an upstream
+credential as a build arg.
 
 ```yaml
 build:
@@ -641,11 +653,73 @@ build:
   registryMirrors:
     docker.io: https://registry.example.com/dockerhub
     ghcr.io: https://registry.example.com/ghcr
-  env:
-    NPM_CONFIG_REGISTRY: https://artifactory.example.com/api/npm/npm
-    PIP_INDEX_URL: https://artifactory.example.com/api/pypi/pypi/simple
-    GOPROXY: https://artifactory.example.com/api/go/go
+  packages:
+    npm: https://artifactory.example.com/api/npm/npm
+    pypi: https://artifactory.example.com/api/pypi/pypi/simple
+    go: https://artifactory.example.com/api/go/go
+    maven: https://artifactory.example.com/maven-remote
+    nuget: https://artifactory.example.com/api/nuget/v3/nuget/index.json
+    # resourceHosts: [artifacts.example.com]
+    credentialHosts:
+      - artifactory.example.com
+    username: package-reader
+    # password: … # or DONKEY_PACKAGES_PASSWORD
 ```
+
+NuGet builds receive the internal v3 service index as `DONKEY_NUGET_SOURCE`.
+Modern NuGet requires a `NuGet.Config` entry with
+`allowInsecureConnections="true"` for the cluster-local HTTP hop; the
+Dockerfile assistant creates it using `%DONKEY_NUGET_SOURCE%` and passes
+`--configfile`. Maven 4 receives
+`MAVEN_REPO_CENTRAL`, and Maven Wrapper bootstrap receives `MVNW_REPOURL`.
+Maven 3 requires a mirror in `settings.xml`; the assistant creates one from
+`DONKEY_MAVEN_MIRROR`. Existing hand-written Maven 3 or modern NuGet
+Dockerfiles must consume these variables in the same way.
+
+Package credentials use Basic authentication, which covers the usual
+Artifactory/Nexus username-and-token setup. The same explicit read-only
+credential is sent only to `credentialHosts`. When a PyPI or NuGet index names
+metadata or artifacts on another HTTPS host, add that host to `resourceHosts`;
+also add it to `credentialHosts` only when it needs authentication. An omitted
+`packages` block needs no credentials and uses the public defaults.
+
+Credentials can instead come from standard Docker config JSON. On Kubernetes,
+name an existing Secret in the control-plane namespace:
+
+```yaml
+build:
+  packages:
+    npm: https://npm.mirror.example.com/npm
+    pypi: https://pypi.mirror.example.com/simple
+    go: https://go.mirror.example.com
+    maven: https://maven.mirror.example.com/maven2
+    nuget: https://nuget.mirror.example.com/v3/index.json
+    credentialHosts:
+      - npm.mirror.example.com
+      - pypi.mirror.example.com
+      - go.mirror.example.com
+      - maven.mirror.example.com
+      - nuget.mirror.example.com
+    dockerConfigSecret: oci-mirror-example-com
+    dockerConfigHost: oci.mirror.example.com
+```
+
+The Secret may be `kubernetes.io/dockerconfigjson` or a generic Secret holding
+one or more Docker config files. On the Docker runtime use an absolute host
+path as `dockerConfigDir` instead. `dockerConfigHost` selects the one `auths`
+entry that holds the shared read-only credential; it need not be a package
+hostname. `credentialHosts` remains the exact allowlist of HTTPS destinations
+that may receive that credential. Naming a Docker config source does not by
+itself authorize credentials to be sent there. The files are reread per
+request, so projected Secret or file rotation needs no restart. A missing
+source entry, an incomplete credential, or an upstream `401/403` makes
+`donkey-packages` unready instead of silently sending anonymous build traffic.
+Explicit passwords are preserved across reinstalls. `registry.caSecret`/
+`registry.caFile` is also trusted by the package proxy for an in-house upstream.
+
+`build.env` still reaches every build step for settings not owned by the
+package proxy; donkey layers it under each app's own `build.env`, so app values
+win for those names.
 
 `build.instructions` extends the Dockerfile-writing assistant's built-in
 instructions with installation-specific constraints or hints—the available
@@ -683,12 +757,14 @@ without reading or copying their contents; when the list is set, it replaces
 the pull secret donkey would generate from `registry.url` credentials.
 
 The same-host rule also authenticates BuildKit mirrors. A separately hosted
-authenticated mirror can provide build credentials via Docker config files:
-mount their directory into `donkey-server` and set
-`DONKEY_REGISTRY_CONFIG_DIR` to that path. Donkey selects credentials by
-requested host and rereads the files for each build, so projected Secret
-rotation does not require a server restart. The registry URL remains an image
-prefix: builds are pushed as
+authenticated mirror can provide build credentials through an existing
+Docker-config Secret (`registry.dockerConfigSecret`) on Kubernetes or an
+absolute host directory (`registry.dockerConfigDir`) on Docker. Donkey mounts
+the source into `donkey-server`, selects credentials by requested host and
+rereads the files for every build, so rotation does not require a restart.
+The push registry itself still uses `registry.username` plus its password; the
+Docker config is for separately hosted mirrors. The registry URL remains an
+image prefix: builds are pushed as
 `<registry.url>/<app>:<tag>`, so a setting such as
 `registry.example.com/platform/donkey` keeps every pushed app image below that
 enterprise folder.
@@ -992,6 +1068,11 @@ end through the same doors users take — the server API and the gateway's
 https edge: deploy, status, logs, login redirect, token access, env, addon,
 network flips, files, destroy. Because it never talks to Kubernetes or
 Docker directly, one suite verifies both runtimes.
+
+Both live E2E installs put an authenticated TLS mirror in front of npm, PyPI,
+Go, Maven and NuGet. The package build therefore also verifies Docker-config
+credential lookup, private-CA trust, readiness authentication, cross-host
+artifact routing and the real clients for all five ecosystems.
 
 Hostnames resolve through `sudo devkube connect`, which keeps donkey's
 hostnames in `/etc/hosts` while it runs. That is why this repo no longer

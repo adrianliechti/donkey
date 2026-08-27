@@ -29,10 +29,9 @@ import (
 )
 
 // The Docker installation: donkey straight on a Docker engine, no cluster.
-// Four containers on one network — the registry (builds land there), the
-// build engine, donkey-server (with the Docker socket, it is the runtime
-// provider) and donkey-gateway (ports 80/443, TLS and login) — plus one
-// state volume the server writes and the gateway reads.
+// The registry, build engine, package proxy, server, gateway and AI endpoint
+// share one infrastructure network. Only the server gets the Docker socket;
+// only the package proxy gets package credentials.
 const (
 	dockerNetwork    = "donkey"
 	dockerDataVolume = "donkey-data"
@@ -46,20 +45,23 @@ const (
 	// insecure-allowed by default, no daemon configuration needed.
 	dockerRegistryHostPort = "5000"
 	dockerRegistryCAPath   = "/tmp/donkey-registry-ca.crt"
+	dockerRegistryAuthPath = "/etc/donkey/registry-auth"
 
 	dockerBuildkitName   = "donkey-buildkitd"
 	dockerBuildkitVolume = "donkey-buildkit"
 
-	dockerServerName  = "donkey-server"
-	dockerGatewayName = "donkey-gateway"
-	dockerAIName      = "donkey-ai"
+	dockerServerName   = "donkey-server"
+	dockerGatewayName  = "donkey-gateway"
+	dockerAIName       = "donkey-ai"
+	dockerPackagesName = "donkey-packages"
+	dockerPackagesAuth = "/etc/donkey/package-auth"
 )
 
 // dockerNoProxy is what must never be sent to a forward proxy: donkey's own
 // containers, the Docker engine's socket and the loopback registry all live
 // on this machine, and no corporate proxy can route them.
 const dockerNoProxy = "localhost,127.0.0.1," +
-	dockerRegistryName + "," + dockerBuildkitName + "," + dockerServerName + "," + dockerGatewayName + "," + dockerAIName
+	dockerRegistryName + "," + dockerBuildkitName + "," + dockerServerName + "," + dockerGatewayName + "," + dockerAIName + "," + dockerPackagesName
 
 // dockerInstallAction stands the whole control plane up on the local Docker
 // engine (or DOCKER_HOST).
@@ -77,12 +79,18 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 	if err := settings.Registry.Validate(); err != nil {
 		return err
 	}
+	if err := settings.Registry.ValidateRuntime("docker"); err != nil {
+		return err
+	}
 	switch settings.TLS.Mode {
 	case "", "acme", "ca":
 	default:
 		return fmt.Errorf("tls.mode must be acme or ca on the docker runtime, not %q", settings.TLS.Mode)
 	}
 	if err := settings.Build.Validate(); err != nil {
+		return err
+	}
+	if err := settings.Build.Packages.ValidateRuntime("docker"); err != nil {
 		return err
 	}
 	if err := settings.AddonImages.Validate(); err != nil {
@@ -138,6 +146,12 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 	if err != nil {
 		return err
 	}
+	if settings.Build.Packages.Password == "" && settings.Build.Packages.NeedsPassword() {
+		settings.Build.Packages.Password = existingContainerEnv(ctx, cli, dockerPackagesName, "DONKEY_PACKAGES_PASSWORD")
+	}
+	if err := settings.Build.Packages.ValidateCredentials(); err != nil {
+		return err
+	}
 
 	u.Printf("Installing the donkey control plane onto the Docker engine…")
 
@@ -168,6 +182,7 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 	}
 	buildkitFiles := map[string][]byte{}
 	serverFiles := map[string][]byte{}
+	packagesFiles := map[string][]byte{}
 	if settings.Registry.CAFile != "" {
 		ca, err := os.ReadFile(settings.Registry.CAFile)
 		if err != nil {
@@ -176,8 +191,52 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 		buildkitConfig.RegistryCAFile = dockerRegistryCAPath
 		buildkitFiles[dockerRegistryCAPath] = ca
 		serverFiles[dockerRegistryCAPath] = ca
+		packagesFiles[dockerRegistryCAPath] = ca
 	}
 	buildkitFiles["/etc/buildkit/buildkitd.toml"] = []byte(manifests.BuildkitTOML(buildkitConfig))
+
+	packagesEnv := map[string]string{
+		"DONKEY_LISTEN":                    ":8090",
+		"DONKEY_PACKAGES_NPM_URL":          settings.Build.Packages.NPMUpstream(),
+		"DONKEY_PACKAGES_PYPI_URL":         settings.Build.Packages.PyPIUpstream(),
+		"DONKEY_PACKAGES_GO_URL":           settings.Build.Packages.GoUpstream(),
+		"DONKEY_PACKAGES_MAVEN_URL":        settings.Build.Packages.MavenUpstream(),
+		"DONKEY_PACKAGES_NUGET_URL":        settings.Build.Packages.NuGetUpstream(),
+		"DONKEY_PACKAGES_RESOURCE_HOSTS":   strings.Join(settings.Build.Packages.ResourceHosts, ","),
+		"DONKEY_PACKAGES_CREDENTIAL_HOSTS": strings.Join(settings.Build.Packages.CredentialHosts, ","),
+		"DONKEY_PACKAGES_USERNAME":         settings.Build.Packages.Username,
+		"DONKEY_PACKAGES_PASSWORD":         settings.Build.Packages.Password,
+	}
+	if settings.Registry.CAFile != "" {
+		packagesEnv["DONKEY_PACKAGES_CA_FILE"] = dockerRegistryCAPath
+	}
+	packagesMounts := []mount.Mount{}
+	if settings.Build.Packages.DockerConfigDir != "" {
+		packagesEnv["DONKEY_PACKAGES_DOCKER_CONFIG_DIR"] = dockerPackagesAuth
+		packagesEnv["DONKEY_PACKAGES_DOCKER_CONFIG_HOST"] = settings.Build.Packages.DockerConfigHost
+		packagesMounts = append(packagesMounts, mount.Mount{
+			Type: mount.TypeBind, Source: settings.Build.Packages.DockerConfigDir,
+			Target: dockerPackagesAuth, ReadOnly: true,
+		})
+	}
+	maps.Copy(packagesEnv, proxyEnvMap(settings.Build.Proxy))
+	if err := replaceInfraContainer(ctx, cli, infraContainer{
+		Name:         dockerPackagesName,
+		Image:        settings.Image,
+		RegistryAuth: serverPullAuth,
+		Cmd:          []string{"packages"},
+		Env:          packagesEnv,
+		Mounts:       packagesMounts,
+		Files:        packagesFiles,
+		Healthcheck: &container.HealthConfig{
+			Test:     []string{"CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8090/readyz"},
+			Interval: 2 * time.Second, Timeout: 6 * time.Second, Retries: 3,
+		},
+		PullAlways: true,
+	}); err != nil {
+		return err
+	}
+
 	if err := replaceInfraContainer(ctx, cli, infraContainer{
 		Name:         dockerBuildkitName,
 		Image:        buildkitImage,
@@ -213,6 +272,7 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 		"DONKEY_REGISTRY_INSECURE":  strconv.FormatBool(settings.Registry.Insecure),
 		"DONKEY_REGISTRY_IMMUTABLE": strconv.FormatBool(settings.Registry.Immutable),
 		"DONKEY_BUILDKIT_ADDR":      "tcp://" + dockerBuildkitName + ":1234",
+		"DONKEY_PACKAGES_URL":       "http://" + dockerPackagesName + ":8090",
 		"DONKEY_AI_URL":             "http://" + dockerAIName + ":8089",
 		"DONKEY_DEFAULT_PLATFORM":   settings.DefaultPlatform,
 		"DONKEY_POSTGRES_IMAGE":     settings.AddonImages.Postgres,
@@ -231,6 +291,17 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 	}
 	if settings.Registry.CAFile != "" {
 		serverEnv["DONKEY_REGISTRY_CA_FILE"] = dockerRegistryCAPath
+	}
+	serverMounts := []mount.Mount{
+		{Type: mount.TypeBind, Source: "/var/run/docker.sock", Target: "/var/run/docker.sock"},
+		{Type: mount.TypeVolume, Source: dockerDataVolume, Target: dockerDataDir},
+	}
+	if settings.Registry.DockerConfigDir != "" {
+		serverEnv["DONKEY_REGISTRY_CONFIG_DIR"] = dockerRegistryAuthPath
+		serverMounts = append(serverMounts, mount.Mount{
+			Type: mount.TypeBind, Source: settings.Registry.DockerConfigDir,
+			Target: dockerRegistryAuthPath, ReadOnly: true,
+		})
 	}
 	maps.Copy(serverEnv, builderEnvMap(settings.Build.BuildSettings))
 	if len(settings.Build.Env) > 0 {
@@ -253,10 +324,7 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 		Image:        settings.Image,
 		RegistryAuth: serverPullAuth,
 		Env:          serverEnv,
-		Mounts: []mount.Mount{
-			{Type: mount.TypeBind, Source: "/var/run/docker.sock", Target: "/var/run/docker.sock"},
-			{Type: mount.TypeVolume, Source: dockerDataVolume, Target: dockerDataDir},
-		},
+		Mounts:       serverMounts,
 		// The API on the host's loopback is the direct, token-verified path
 		// past the gateway — what `kubectl port-forward` is on Kubernetes.
 		Ports:      map[string]string{"127.0.0.1:8088": "8088"},
@@ -329,6 +397,9 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 	}
 
 	u.Info("Waiting for the server to come up…")
+	if err := waitDockerHealthy(ctx, cli, dockerPackagesName, 90*time.Second); err != nil {
+		return err
+	}
 	if err := waitDockerRunning(ctx, cli, dockerServerName, 90*time.Second); err != nil {
 		return err
 	}
@@ -441,6 +512,7 @@ type infraContainer struct {
 	Mounts       []mount.Mount
 	Ports        map[string]string // "host" or "ip:port" -> container port
 	Files        map[string][]byte // written into the container before start
+	Healthcheck  *container.HealthConfig
 	Privileged   bool
 	PullAlways   bool
 }
@@ -475,6 +547,7 @@ func replaceInfraContainer(ctx context.Context, cli *dockerclient.Client, spec i
 		Cmd:          spec.Cmd,
 		Env:          env,
 		ExposedPorts: exposed,
+		Healthcheck:  spec.Healthcheck,
 	}
 	hostCfg := &container.HostConfig{
 		Mounts:        spec.Mounts,
@@ -579,6 +652,27 @@ func waitDockerRunning(ctx context.Context, cli *dockerclient.Client, name strin
 		}
 		if time.Now().After(deadline) {
 			return fmt.Errorf("%s didn't come up — check its logs: docker logs %s", name, name)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Second):
+		}
+	}
+}
+
+func waitDockerHealthy(ctx context.Context, cli *dockerclient.Client, name string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for {
+		info, err := cli.ContainerInspect(ctx, name)
+		if err == nil && info.State != nil && info.State.Health != nil {
+			switch info.State.Health.Status {
+			case "healthy":
+				return nil
+			}
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("%s didn't become ready — check its logs: docker logs %s", name, name)
 		}
 		select {
 		case <-ctx.Done():

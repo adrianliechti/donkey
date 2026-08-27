@@ -44,3 +44,26 @@ func TestBuilderEnvMapIncludesInstallationInstructions(t *testing.T) {
 		t.Fatalf("builder instructions missing from Docker server env: %v", got)
 	}
 }
+
+func TestValidateDockerConfigSecretDataUsesConfiguredSourceHost(t *testing.T) {
+	auth := base64.StdEncoding.EncodeToString([]byte("reader:token"))
+	data := map[string]string{
+		".dockerconfigjson": `{"auths":{"oci.mirror.example.com":{"auth":"` + auth + `"}}}`,
+	}
+	if err := validateDockerConfigSecretData("build.packages.dockerConfigSecret", "package-auth", data, "oci.mirror.example.com"); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateDockerConfigSecretData("build.packages.dockerConfigSecret", "package-auth", data, "packages.example.com"); err == nil {
+		t.Fatal("a Secret missing the configured Docker source host was accepted")
+	}
+	emptyUsername := base64.StdEncoding.EncodeToString([]byte(":token"))
+	incomplete := map[string]string{
+		".dockerconfigjson": `{"auths":{"oci.mirror.example.com":{"auth":"` + emptyUsername + `"}}}`,
+	}
+	if err := validateDockerConfigSecretData("build.packages.dockerConfigSecret", "package-auth", incomplete, "oci.mirror.example.com"); err == nil {
+		t.Fatal("an incomplete Docker config credential was accepted")
+	}
+	if err := validateDockerConfigSecretData("registry.dockerConfigSecret", "missing", nil, ""); err == nil {
+		t.Fatal("a missing Docker config Secret was accepted")
+	}
+}

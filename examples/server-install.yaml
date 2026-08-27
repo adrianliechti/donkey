@@ -29,6 +29,13 @@ image: ghcr.io/example/donkey-server:latest
 registry:
   url: registry.example.com/donkey
   username: ci
+  # caSecret: enterprise-registry-ca
+                              # Kubernetes Secret in the control-plane
+                              # namespace with ca.crt; Docker uses caFile.
+  # dockerConfigSecret: registry-mirror-auth
+                              # Kubernetes: Docker config auths for separately
+                              # hosted build.registryMirrors. Docker uses an
+                              # absolute dockerConfigDir host path instead.
   # insecure: true            # plain-HTTP registries (testing only)
   # immutable: true           # the registry refuses to overwrite a tag (ECR
                               # tag immutability, GHCR immutable tags, a Harbor
@@ -197,8 +204,9 @@ tls:
 #   # covers every image a build pulls: the railpack images above, and every
 #   # FROM in a Dockerfile — the app's own or one donkey wrote. Keys are
 #   # upstream registry hosts; a scheme is optional. Mirror hosts inherit
-#   # registry.caSecret. A mirror on the registry.url host also reuses its
-#   # credentials; an unrelated host must allow anonymous pulls.
+#   # registry.caSecret. A mirror on the registry.url host reuses its
+#   # credentials; separately hosted authenticated mirrors use
+#   # registry.dockerConfigSecret/dockerConfigDir.
 #   #
 #   # Note that buildkitImage (above) is pulled by the cluster itself, not by
 #   # the build engine — mirror that one by setting it directly.
@@ -206,18 +214,39 @@ tls:
 #     docker.io: https://registry.example.com/dockerhub
 #     ghcr.io: https://registry.example.com/ghcr
 #
-#   # env reaches every build step of every app — donkey layers it under the
-#   # app's own build.env, so a project that pins its own registry still wins.
-#   # This is where package managers are pointed at their mirrors.
+#   # Every install has a read-only donkey-packages endpoint for build steps.
+#   # These are its upstreams; omit the whole block for the public npmjs,
+#   # PyPI, proxy.golang.org, Maven Central and NuGet v3 defaults. Dockerfiles
+#   # only receive the internal endpoint, never these URLs or their credential.
+#   # The shared read-only credential is sent only to credentialHosts. Add an
+#   # HTTPS host to resourceHosts when an index serves metadata or artifacts
+#   # from a second host. Prefer DONKEY_PACKAGES_PASSWORD over this file.
+#   packages:
+#     npm: https://artifactory.example.com/api/npm/npm
+#     pypi: https://artifactory.example.com/api/pypi/pypi/simple
+#     go: https://artifactory.example.com/api/go/go
+#     maven: https://artifactory.example.com/maven-remote
+#     nuget: https://artifactory.example.com/api/nuget/v3/nuget/index.json
+#     # resourceHosts: [artifacts.example.com]
+#     credentialHosts:
+#       - artifactory.example.com
+#     username: package-reader
+#     # password: …
+#     # Or, instead of username/password, mount an existing Docker config.
+#     # dockerConfigHost selects its shared auths entry; credentialHosts still
+#     # strictly limits the package targets that may receive the credential.
+#     # dockerConfigSecret: oci-mirror-registry-example-com
+#     # dockerConfigHost: oci.mirror.registry.example.com
+#
+#   # Other installation-wide build variables still reach every RUN, under
+#   # each app's own build.env. Package proxy variables are platform-owned.
 #   env:
-#     NPM_CONFIG_REGISTRY: https://artifactory.example.com/api/npm/npm
-#     PIP_INDEX_URL: https://artifactory.example.com/api/pypi/pypi/simple
-#     GOPROXY: https://artifactory.example.com/api/go/go
+#     CGO_ENABLED: "0"
 #
 #   # A forward proxy for donkey's own components — the server, the build
-#   # engine, and the gateway (which needs it for the OIDC token exchange and
-#   # for ACME). The app's build steps read env, above. donkey adds its own
-#   # cluster addresses and its registry to noProxy on top of what you write.
+#   # engine, package proxy, and gateway (which needs it for the OIDC token
+#   # exchange and for ACME). donkey adds its own cluster addresses and its
+#   # registry to noProxy on top of what you write.
 #   # With a proxy, railpack's version resolution works too; without one,
 #   # choose builder: ai.
 #   proxy:

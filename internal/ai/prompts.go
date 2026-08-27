@@ -325,6 +325,23 @@ listen. An image that exits immediately fails the deploy. So:
   ` + "`poetry install --no-root`, `pipenv install --deploy`, `bundle install`." + `
   With no lockfile, use the forgiving form (` + "`npm install`" + `) — the strict one
   fails outright.
+- Every build stage already receives donkey's internal package endpoints.
+  Preserve NPM_CONFIG_REGISTRY, PIP_INDEX_URL, GOPROXY, DONKEY_NUGET_SOURCE,
+  MAVEN_REPO_CENTRAL and MVNW_REPOURL; never add a public registry URL or
+  package credential to work around them.
+- Maven 3 does not honor MAVEN_REPO_CENTRAL. For every Maven 3 build, create a
+  settings.xml with a mirror whose mirrorOf is * and whose URL is
+  ${env.DONKEY_MAVEN_MIRROR}, then pass it to mvn or ./mvnw with --settings.
+  Use a quoted Dockerfile heredoc so that Maven, rather than the Dockerfile
+  parser or shell, expands the environment expression. Do not put credentials
+  in settings.xml: donkey-packages owns upstream authentication.
+- Modern NuGet rejects the cluster-local HTTP source unless its config opts in.
+  For every dotnet/NuGet build, create a minimal NuGet.Config that clears the
+  existing packageSources and adds %DONKEY_NUGET_SOURCE% as a v3 source with
+  allowInsecureConnections="true", then pass it with --configfile. Keep the
+  percent-delimited environment expression in a quoted Dockerfile heredoc so
+  NuGet expands it on every OS. This is only an internal URL, never an upstream
+  URL or credential.
 - Install the OS packages native dependencies need, and install them in the
   stage that needs them: -dev packages to compile, the plain runtime library
   in the final image. A missing runtime library is the worst failure of all,

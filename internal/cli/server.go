@@ -120,6 +120,9 @@ func installSettings(cmd *cli.Command) (*config.InstallFile, error) {
 	if settings.AI.APIKey == "" {
 		settings.AI.APIKey = os.Getenv("OPENAI_API_KEY")
 	}
+	if settings.Build.Packages.Password == "" {
+		settings.Build.Packages.Password = os.Getenv("DONKEY_PACKAGES_PASSWORD")
+	}
 	return settings, nil
 }
 
@@ -149,6 +152,9 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 	if err := settings.Registry.Validate(); err != nil {
 		return err
 	}
+	if err := settings.Registry.ValidateRuntime("kubernetes"); err != nil {
+		return err
+	}
 	switch settings.Gateway.ServiceType {
 	case "", "LoadBalancer", "ClusterIP", "NodePort":
 	default:
@@ -173,6 +179,9 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 		return fmt.Errorf("auth.admins: %w", err)
 	}
 	if err := settings.Build.Validate(); err != nil {
+		return err
+	}
+	if err := settings.Build.Packages.ValidateRuntime("kubernetes"); err != nil {
 		return err
 	}
 	if err := settings.AddonImages.Validate(); err != nil {
@@ -215,6 +224,25 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 	if err != nil {
 		return fmt.Errorf("couldn't read the existing installation's secrets: %w", err)
 	}
+	for _, source := range []struct {
+		name  string
+		host  string
+		field string
+	}{
+		{settings.Registry.DockerConfigSecret, "", "registry.dockerConfigSecret"},
+		{settings.Build.Packages.DockerConfigSecret, settings.Build.Packages.DockerConfigHost, "build.packages.dockerConfigSecret"},
+	} {
+		if source.name == "" {
+			continue
+		}
+		data, err := client.GetSecretData(ctx, systemNamespace, source.name)
+		if err != nil {
+			return fmt.Errorf("couldn't read %s %q: %w", source.field, source.name, err)
+		}
+		if err := validateDockerConfigSecretData(source.field, source.name, data, source.host); err != nil {
+			return err
+		}
+	}
 	// Nothing there means a new installation — including when the intent was
 	// to update an existing one that lives somewhere else. Saying so is the
 	// whole warning: the session key below would be a fresh one, which signs
@@ -249,6 +277,12 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 	}
 	if v := existing["oidc-client-id"]; settings.Auth.ClientID == "" && v != pendingOIDC {
 		settings.Auth.ClientID = v
+	}
+	if settings.Build.Packages.Password == "" && settings.Build.Packages.NeedsPassword() {
+		settings.Build.Packages.Password = existing["packages-password"]
+	}
+	if err := settings.Build.Packages.ValidateCredentials(); err != nil {
+		return err
 	}
 
 	// The AI key may live only in the existing installation — checked here,
@@ -293,26 +327,27 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 			Namespace:   settings.Gateway.HTTPRoute.Namespace,
 			SectionName: settings.Gateway.HTTPRoute.SectionName,
 		},
-		AppGateway:            settings.Gateway.AppGateway,
-		RegistryURL:           settings.Registry.URL,
-		RegistryUsername:      registryUsername,
-		RegistryCASecret:      settings.Registry.CASecret,
-		RegistryPassword:      registryPassword,
-		RegistryInsecure:      settings.Registry.Insecure,
-		RegistryImmutable:     settings.Registry.Immutable,
-		Admins:                settings.Auth.Admins,
-		OIDCIssuer:            settings.Auth.Issuer,
-		OIDCClientID:          settings.Auth.ClientID,
-		OIDCClientSecret:      settings.Auth.ClientSecret,
-		SessionKey:            sessionKey,
-		DefaultPlatform:       settings.DefaultPlatform,
-		OpenAIBaseURL:         settings.AI.BaseURL,
-		OpenAIAPIKey:          settings.AI.APIKey,
-		AIModel:               settings.AI.Model,
-		Build:                 settings.Build,
-		AddonImages:           settings.AddonImages,
-		AddonImagePullSecrets: settings.AddonImagePullSecrets,
-		BuildkitImage:         settings.BuildkitImage,
+		AppGateway:                 settings.Gateway.AppGateway,
+		RegistryURL:                settings.Registry.URL,
+		RegistryUsername:           registryUsername,
+		RegistryCASecret:           settings.Registry.CASecret,
+		RegistryDockerConfigSecret: settings.Registry.DockerConfigSecret,
+		RegistryPassword:           registryPassword,
+		RegistryInsecure:           settings.Registry.Insecure,
+		RegistryImmutable:          settings.Registry.Immutable,
+		Admins:                     settings.Auth.Admins,
+		OIDCIssuer:                 settings.Auth.Issuer,
+		OIDCClientID:               settings.Auth.ClientID,
+		OIDCClientSecret:           settings.Auth.ClientSecret,
+		SessionKey:                 sessionKey,
+		DefaultPlatform:            settings.DefaultPlatform,
+		OpenAIBaseURL:              settings.AI.BaseURL,
+		OpenAIAPIKey:               settings.AI.APIKey,
+		AIModel:                    settings.AI.Model,
+		Build:                      settings.Build,
+		AddonImages:                settings.AddonImages,
+		AddonImagePullSecrets:      settings.AddonImagePullSecrets,
+		BuildkitImage:              settings.BuildkitImage,
 	}
 	if in.BuildkitImage == "" {
 		in.BuildkitImage = config.DefaultBuildkitImage
@@ -337,6 +372,9 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 		return fmt.Errorf("the cluster refused the installation: %w", err)
 	}
 	u.Info("Waiting for the server to come up…")
+	if err := client.WaitForRollout(ctx, in.Namespace, "donkey-packages"); err != nil {
+		return err
+	}
 	if err := client.WaitForRollout(ctx, in.Namespace, "donkey-server"); err != nil {
 		return err
 	}
@@ -472,6 +510,33 @@ func endpointHost(baseURL string) string {
 // missingSettings lists required settings that are absent. The AI key is
 // only checked once the existing installation's secrets were merged in
 // (withSecrets) — everything else is checkable before touching the cluster.
+func validateDockerConfigSecretData(field, name string, data map[string]string, host string) error {
+	if len(data) == 0 {
+		return fmt.Errorf("%s %q does not exist or contains no Docker config files", field, name)
+	}
+	for key, value := range data {
+		if _, _, _, err := config.DockerConfigDataCredentials([]byte(value), name+"/"+key, "invalid.invalid"); err != nil {
+			return fmt.Errorf("%s: %w", field, err)
+		}
+	}
+	if host == "" {
+		return nil
+	}
+	for key, value := range data {
+		username, password, ok, err := config.DockerConfigDataCredentials([]byte(value), name+"/"+key, host)
+		if err != nil {
+			return fmt.Errorf("%s: %w", field, err)
+		}
+		if ok {
+			if username == "" || password == "" {
+				return fmt.Errorf("%s: credentials for %s in %s/%s need a non-empty username and password", field, host, name, key)
+			}
+			return nil
+		}
+	}
+	return fmt.Errorf("%s %q has no credentials for %s", field, name, host)
+}
+
 func missingSettings(settings *config.InstallFile, withSecrets bool) []string {
 	var missing []string
 	if settings.Image == "" {

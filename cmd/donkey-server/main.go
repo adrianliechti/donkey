@@ -11,6 +11,7 @@ import (
 	"github.com/adrianliechti/donkey/internal/aiproxy"
 	"github.com/adrianliechti/donkey/internal/config"
 	"github.com/adrianliechti/donkey/internal/gateway"
+	"github.com/adrianliechti/donkey/internal/packages"
 	"github.com/adrianliechti/donkey/internal/server"
 	"github.com/adrianliechti/donkey/pkg/runtime"
 	"github.com/adrianliechti/donkey/pkg/runtime/docker"
@@ -18,11 +19,9 @@ import (
 	"github.com/adrianliechti/donkey/pkg/runtime/kubernetes/manifests"
 )
 
-// One binary, three roles: the control plane by default, the login gateway
-// with `gateway`, the openai addon's endpoint with `ai`. Same image, three
-// Deployments — donkey-ai is separate because it is the one endpoint tenant
-// code is meant to reach, and it must not be the process that can write to
-// the cluster.
+// One binary, four roles: the control plane by default, the login gateway,
+// the openai addon's endpoint, and the build-only package proxy. Separate
+// processes keep each role down to the credentials and permissions it needs.
 func main() {
 	// SIGTERM starts a drain rather than killing in-flight work: a
 	// control-plane upgrade must not abandon somebody's half-finished build,
@@ -60,6 +59,19 @@ func main() {
 			os.Exit(1)
 		}
 		if err := aiproxy.Run(ctx, cfg, provider); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	if len(os.Args) > 1 && os.Args[1] == "packages" {
+		cfg, err := packages.ConfigFromEnv()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "configuration error:", err)
+			os.Exit(1)
+		}
+		if err := packages.Run(ctx, cfg); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}

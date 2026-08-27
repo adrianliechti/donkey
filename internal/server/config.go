@@ -27,6 +27,7 @@ type Config struct {
 	Registry     config.Registry
 	Domain       string
 	BuildkitAddr string
+	PackagesURL  string
 	// NamespacePrefix maps a space onto its own namespace; ignored when
 	// WorkloadNamespace names one namespace for the whole installation.
 	NamespacePrefix string
@@ -85,6 +86,7 @@ func FromEnv() (*Config, error) {
 		},
 		Domain:            os.Getenv("DONKEY_DOMAIN"),
 		BuildkitAddr:      os.Getenv("DONKEY_BUILDKIT_ADDR"),
+		PackagesURL:       envOr("DONKEY_PACKAGES_URL", "http://donkey-packages"),
 		NamespacePrefix:   envOr("DONKEY_NAMESPACE_PREFIX", config.DefaultNamespacePrefix),
 		SystemNamespace:   envOr("DONKEY_SYSTEM_NAMESPACE", config.DefaultSystemNamespace),
 		WorkloadNamespace: os.Getenv("DONKEY_WORKLOAD_NAMESPACE"),

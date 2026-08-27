@@ -125,6 +125,25 @@ func TestDockerConfigCredentialsMissingHost(t *testing.T) {
 	}
 }
 
+func TestDockerConfigCredentialsRejectsIncompleteAndMatchesHostCase(t *testing.T) {
+	dir := t.TempDir()
+	partial := filepath.Join(dir, "partial.json")
+	if err := os.WriteFile(partial, []byte(`{"auths":{"registry.example.com":{"username":"reader"}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := DockerConfigCredentials(partial, "registry.example.com"); err == nil {
+		t.Fatal("an incomplete Docker credential was accepted")
+	}
+	complete := filepath.Join(dir, "complete.json")
+	if err := os.WriteFile(complete, []byte(`{"auths":{"REGISTRY.EXAMPLE.COM":{"username":"reader","password":"token"}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	username, password, found, err := DockerConfigCredentials(complete, "registry.example.com")
+	if err != nil || !found || username != "reader" || password != "token" {
+		t.Fatalf("case-insensitive Docker credential = %q/%q found=%v err=%v", username, password, found, err)
+	}
+}
+
 func TestLoadGlobalMissingIsNil(t *testing.T) {
 	c, err := LoadGlobal(filepath.Join(t.TempDir(), "nope.yaml"))
 	if err != nil || c != nil {

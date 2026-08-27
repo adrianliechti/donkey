@@ -35,10 +35,22 @@ build:
   registryMirrors:
     docker.io: https://artifactory.example.com/docker-remote
   env:
-    NPM_CONFIG_REGISTRY: https://artifactory.example.com/api/npm/npm
+    CGO_ENABLED: "0"
   proxy:
     https: http://proxy.example.com:3128
     noProxy: .example.com,10.0.0.0/8
+  packages:
+    npm: https://artifactory.example.com/api/npm/npm
+    pypi: https://artifactory.example.com/api/pypi/pypi/simple
+    go: https://artifactory.example.com/api/go/go
+    maven: https://artifactory.example.com/maven-remote
+    nuget: https://artifactory.example.com/api/nuget/v3/nuget/index.json
+    resourceHosts:
+      - artifacts.example.com
+    credentialHosts:
+      - artifactory.example.com
+    dockerConfigSecret: oci-mirror-registry-example-com
+    dockerConfigHost: oci.mirror.registry.example.com
   verify: false
   verifySeconds: 90
   attempts: 2
@@ -68,14 +80,23 @@ build:
 		f.Gateway.AppGateway.IssuerName != "company-pki" {
 		t.Errorf("gateway.appGateway = %+v", f.Gateway.AppGateway)
 	}
-	if got := f.Build.Env["NPM_CONFIG_REGISTRY"]; got != "https://artifactory.example.com/api/npm/npm" {
-		t.Errorf("env[NPM_CONFIG_REGISTRY] = %q", got)
+	if got := f.Build.Env["CGO_ENABLED"]; got != "0" {
+		t.Errorf("env[CGO_ENABLED] = %q", got)
 	}
 	if !strings.Contains(f.Build.Instructions, "registry.example.com/mirror") {
 		t.Errorf("build instructions did not survive: %q", f.Build.Instructions)
 	}
 	if f.Build.Proxy.HTTPS != "http://proxy.example.com:3128" || f.Build.Proxy.NoProxy != ".example.com,10.0.0.0/8" {
 		t.Errorf("proxy = %+v", f.Build.Proxy)
+	}
+	if f.Build.Packages.Go != "https://artifactory.example.com/api/go/go" ||
+		f.Build.Packages.Maven != "https://artifactory.example.com/maven-remote" ||
+		f.Build.Packages.NuGet != "https://artifactory.example.com/api/nuget/v3/nuget/index.json" ||
+		len(f.Build.Packages.ResourceHosts) != 1 || f.Build.Packages.ResourceHosts[0] != "artifacts.example.com" ||
+		len(f.Build.Packages.CredentialHosts) != 1 || f.Build.Packages.CredentialHosts[0] != "artifactory.example.com" ||
+		f.Build.Packages.DockerConfigSecret != "oci-mirror-registry-example-com" ||
+		f.Build.Packages.DockerConfigHost != "oci.mirror.registry.example.com" {
+		t.Errorf("packages = %+v", f.Build.Packages)
 	}
 	if f.Build.VerifyStartup() || f.Build.VerifyWindow() != 90 || f.Build.BuildAttempts() != 2 {
 		t.Errorf("builder settings did not survive: %+v", f.Build.BuildSettings)
@@ -113,6 +134,88 @@ func TestInstallBuildValidate(t *testing.T) {
 				t.Errorf("Validate() err=%v, wantErr=%v", err, tc.wantErr)
 			}
 		})
+	}
+}
+
+func TestInstallPackagesDefaultsAndCredentialValidation(t *testing.T) {
+	plain := InstallPackages{}
+	if plain.NPMUpstream() != DefaultNPMUpstream || plain.PyPIUpstream() != DefaultPyPIUpstream || plain.GoUpstream() != DefaultGoUpstream || plain.MavenUpstream() != DefaultMavenUpstream || plain.NuGetUpstream() != DefaultNuGetUpstream {
+		t.Fatalf("public defaults = %+v", plain)
+	}
+	if err := plain.ValidateCredentials(); err != nil {
+		t.Fatalf("public defaults should need no credentials: %v", err)
+	}
+
+	valid := InstallPackages{
+		NPM: "https://artifactory.example.com/npm", PyPI: "https://artifactory.example.com/pypi", Go: "https://artifactory.example.com/go",
+		Maven: "https://artifactory.example.com/maven", NuGet: "https://artifactory.example.com/nuget/v3/index.json",
+		CredentialHosts: []string{"artifactory.example.com"}, Username: "reader", Password: "token",
+	}
+	if err := valid.ValidateCredentials(); err != nil {
+		t.Fatalf("valid enterprise package settings: %v", err)
+	}
+	multiHost := InstallPackages{
+		NPM: "https://npm.mirror.example.com/npm", PyPI: "https://pypi.mirror.example.com/index/simple",
+		CredentialHosts: []string{"npm.mirror.example.com", "pypi.mirror.example.com"},
+		Username:        "reader", Password: "token",
+	}
+	if err := multiHost.ValidateCredentials(); err != nil {
+		t.Fatalf("shared credentials across explicit mirror hosts: %v", err)
+	}
+	dockerConfig := InstallPackages{
+		NPM: "https://packages.example.com/npm", ResourceHosts: []string{"artifacts.example.com"},
+		CredentialHosts:    []string{"packages.example.com", "artifacts.example.com"},
+		DockerConfigSecret: "package-registry-auth",
+		DockerConfigHost:   "oci.mirror.example.com",
+	}
+	if err := dockerConfig.ValidateCredentials(); err != nil {
+		t.Fatalf("Docker config package credentials: %v", err)
+	}
+	if dockerConfig.NeedsPassword() {
+		t.Fatal("Docker config credentials should not recover an explicit password")
+	}
+	for _, bad := range []InstallPackages{
+		{NPM: "registry.npmjs.org"},
+		{NPM: "https://user:token@registry.npmjs.org"},
+		{CredentialHosts: []string{"unrelated.example.com"}, Username: "reader", Password: "token"},
+		{CredentialHosts: []string{"registry.npmjs.org"}, Username: "reader"},
+		{CredentialHosts: []string{"registry.npmjs.org", "REGISTRY.NPMJS.ORG"}, Username: "reader", Password: "token"},
+		{NPM: "http://registry.npmjs.org", CredentialHosts: []string{"registry.npmjs.org"}, Username: "reader", Password: "token"},
+		{ResourceHosts: []string{"artifacts.example.com"}, CredentialHosts: []string{"artifacts.example.com"}},
+		{CredentialHosts: []string{"registry.npmjs.org"}, DockerConfigSecret: "auth", DockerConfigDir: "/auth", DockerConfigHost: "oci.example.com"},
+		{CredentialHosts: []string{"registry.npmjs.org"}, Username: "reader", Password: "token", DockerConfigSecret: "auth", DockerConfigHost: "oci.example.com"},
+		{DockerConfigSecret: "auth"},
+		{CredentialHosts: []string{"registry.npmjs.org"}, DockerConfigSecret: "auth"},
+		{CredentialHosts: []string{"registry.npmjs.org"}, DockerConfigHost: "oci.example.com"},
+		{CredentialHosts: []string{"registry.npmjs.org"}, DockerConfigSecret: "auth", DockerConfigHost: "https://oci.example.com"},
+		{ResourceHosts: []string{"bad host"}},
+		{ResourceHosts: []string{"artifacts.example.com"}, CredentialHosts: []string{"artifacts.example.com"}, Username: "reader"},
+	} {
+		if err := bad.ValidateCredentials(); err == nil {
+			t.Errorf("invalid package settings passed: %+v", bad)
+		}
+	}
+	if err := dockerConfig.ValidateRuntime("kubernetes"); err != nil {
+		t.Fatalf("Kubernetes Docker config Secret: %v", err)
+	}
+	dockerDir := dockerConfig
+	dockerDir.DockerConfigSecret = ""
+	dockerDir.DockerConfigDir = "/run/package-auth"
+	if err := dockerDir.ValidateRuntime("docker"); err != nil {
+		t.Fatalf("Docker config directory: %v", err)
+	}
+	for _, invalid := range []struct {
+		packages InstallPackages
+		runtime  string
+	}{
+		{dockerConfig, "docker"},
+		{dockerDir, "kubernetes"},
+		{InstallPackages{DockerConfigDir: "relative", DockerConfigHost: "oci.example.com"}, "docker"},
+		{InstallPackages{DockerConfigSecret: "Bad_Name", DockerConfigHost: "oci.example.com"}, "kubernetes"},
+	} {
+		if err := invalid.packages.ValidateRuntime(invalid.runtime); err == nil {
+			t.Errorf("invalid %s package credential source passed: %+v", invalid.runtime, invalid.packages)
+		}
 	}
 }
 
@@ -155,6 +258,30 @@ func TestValidateAddonImagePullSecrets(t *testing.T) {
 				t.Fatalf("ValidateAddonImagePullSecrets(%v) err = %v, wantErr %v", tc.secrets, err, tc.wantErr)
 			}
 		})
+	}
+}
+
+func TestInstallRegistryCredentialSourceMatchesRuntime(t *testing.T) {
+	kubernetes := InstallRegistry{DockerConfigSecret: "registry-mirror-auth"}
+	if err := kubernetes.ValidateRuntime("kubernetes"); err != nil {
+		t.Fatal(err)
+	}
+	docker := InstallRegistry{Registry: Registry{DockerConfigDir: "/run/registry-auth"}}
+	if err := docker.ValidateRuntime("docker"); err != nil {
+		t.Fatal(err)
+	}
+	for _, invalid := range []struct {
+		registry InstallRegistry
+		runtime  string
+	}{
+		{kubernetes, "docker"},
+		{docker, "kubernetes"},
+		{InstallRegistry{Registry: Registry{DockerConfigDir: "relative"}}, "docker"},
+		{InstallRegistry{DockerConfigSecret: "Bad_Name"}, "kubernetes"},
+	} {
+		if err := invalid.registry.ValidateRuntime(invalid.runtime); err == nil {
+			t.Errorf("invalid %s registry credential source passed: %+v", invalid.runtime, invalid.registry)
+		}
 	}
 }
 

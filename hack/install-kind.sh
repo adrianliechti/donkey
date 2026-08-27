@@ -11,17 +11,21 @@ set -euo pipefail
 require_ai
 
 say "building donkey + images"
-(cd "${ROOT}" && task build && task server-image:kind && task demo-idp-image:kind)
+(cd "${ROOT}" && task build && task server-image:kind && task demo-idp-image:kind && task private-packages-image:kind)
 
 say "demo identity provider (fake, auto-login)"
 kubectl --context "${CTX}" apply -f "${ROOT}/hack/demo/fake-idp.yaml"
 kubectl --context "${CTX}" -n donkey-identity rollout restart deployment fake-idp >/dev/null 2>&1 || true
 
 say "the registry's certificate authority"
-"${ROOT}/hack/demo-ca.sh" "${CTX}"
+"${ROOT}/hack/demo-ca.sh" "${CTX}" "${ROOT}/.build/platform-ca.crt"
+
+say "authenticated package mirror"
+"${ROOT}/hack/install-private-packages-kind.sh"
 
 say "installing the control plane (real install command, demo settings)"
 "${DONKEY}" --yes --context "${CTX}" server install \
+  --file "${ROOT}/hack/demo/private-packages-kind-install.yaml" \
   --image "registry.platform/donkey/donkey-server:dev" \
   --registry-url "registry.platform/donkey" \
   --registry-ca-secret "donkey-registry-ca" \

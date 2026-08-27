@@ -170,7 +170,7 @@ func TestBuildConfigReachesBothPods(t *testing.T) {
 	in := systemInput()
 	in.Build = config.InstallBuild{
 		BuildSettings: config.BuildSettings{
-			Env:          map[string]string{"NPM_CONFIG_REGISTRY": "https://mirror.example.com/npm"},
+			Env:          map[string]string{"CGO_ENABLED": "0"},
 			Instructions: "Use FROM registry.example.com/mirror/<image>:<tag>.",
 		},
 		RegistryMirrors: map[string]string{"docker.io": "https://mirror.example.com/docker"},
@@ -183,7 +183,7 @@ func TestBuildConfigReachesBothPods(t *testing.T) {
 	for _, want := range []string{
 		// The build variables travel as JSON, the way DONKEY_ADMINS does.
 		"DONKEY_BUILD_ENV",
-		"NPM_CONFIG_REGISTRY",
+		"CGO_ENABLED",
 		"DONKEY_BUILDER_INSTRUCTIONS",
 		"registry.example.com/mirror/<image>",
 		// The mirrors are the build engine's business, and live in its config.

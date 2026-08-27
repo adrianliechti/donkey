@@ -18,3 +18,19 @@ func TestExtendedDockerfileInstructionsAppendOperatorGuidance(t *testing.T) {
 		t.Fatal("empty guidance should leave builder instructions unchanged")
 	}
 }
+
+func TestDockerfileInstructionsCoverInternalMavenAndNuGetSources(t *testing.T) {
+	for _, want := range []string{
+		"%DONKEY_NUGET_SOURCE%",
+		"MAVEN_REPO_CENTRAL",
+		"MVNW_REPOURL",
+		"${env.DONKEY_MAVEN_MIRROR}",
+		"--settings",
+		"allowInsecureConnections=\"true\"",
+		"--configfile",
+	} {
+		if !strings.Contains(dockerfileInstructions, want) {
+			t.Errorf("Dockerfile instructions do not mention %q", want)
+		}
+	}
+}

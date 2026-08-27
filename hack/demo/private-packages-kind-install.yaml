@@ -1,0 +1,17 @@
+build:
+  packages:
+    npm: https://packages.donkey-system.svc/npm
+    pypi: https://packages.donkey-system.svc/pypi
+    go: https://packages.donkey-system.svc/go
+    maven: https://packages.donkey-system.svc/maven
+    nuget: https://packages.donkey-system.svc/nuget/index.json
+    resourceHosts:
+      - registry.npmjs.org
+      - pypi.org
+      - files.pythonhosted.org
+      - storage.googleapis.com
+      - api.nuget.org
+    credentialHosts:
+      - packages.donkey-system.svc
+    dockerConfigSecret: package-registry-auth
+    dockerConfigHost: oci.mirror.e2e.test
