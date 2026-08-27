@@ -4,6 +4,7 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -141,6 +142,28 @@ func TestAppObjectsGolden(t *testing.T) {
 	}
 	if got != string(want) {
 		t.Errorf("rendered manifests differ from golden file.\nRun `go test ./pkg/runtime/kubernetes/manifests -update` if the change is intended.\n--- got ---\n%s", got)
+	}
+}
+
+func TestAppSecurityContextBalancesCompatibilityAndContainment(t *testing.T) {
+	dep, err := deployment(testInput(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := dep.Spec.Template.Spec
+	if spec.AutomountServiceAccountToken == nil || *spec.AutomountServiceAccountToken {
+		t.Fatal("app pods must not receive a Kubernetes service-account token")
+	}
+	security := spec.Containers[0].SecurityContext
+	if security == nil || security.AllowPrivilegeEscalation == nil || *security.AllowPrivilegeEscalation {
+		t.Fatal("app containers must not gain privileges")
+	}
+	if security.SeccompProfile == nil || security.SeccompProfile.Type != corev1.SeccompProfileTypeRuntimeDefault {
+		t.Fatal("app containers must use the runtime-default seccomp profile")
+	}
+	wantDrop := []corev1.Capability{"NET_RAW"}
+	if !slices.Equal(security.Capabilities.Drop, wantDrop) || len(security.Capabilities.Add) != 0 {
+		t.Fatalf("app capabilities = %+v, want only NET_RAW dropped", security.Capabilities)
 	}
 }
 

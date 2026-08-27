@@ -284,12 +284,12 @@ instead of assuming the shape of a typical project.
 - Listen on 0.0.0.0, never 127.0.0.1. A container bound to loopback answers
   nobody while looking perfectly healthy, so this failure is invisible until
   every request times out.
-- EVERY Linux capability is dropped and privilege escalation is off. At
-  runtime that means: no chown or chmod of files owned by someone else, no
-  setuid, no binding a port below 1024 — even as root. Do all ownership work
-  at BUILD time in a RUN line, where it is still allowed.
-  Stock nginx is the classic casualty: its entrypoint chowns its cache
-  directory and dies. Use nginxinc/nginx-unprivileged, or Caddy, instead.
+- Privilege escalation and raw sockets are disabled, while the conventional
+  container capability set remains available for compatibility. Stock nginx,
+  Caddy and similar images may perform their normal root-to-worker startup,
+  but the image still cannot become privileged or ask for host-level access.
+  Prefer doing ownership work at BUILD time and listening on PORT rather than
+  relying on more permissions than an ordinary container receives.
 - The filesystem is ephemeral. Anything written outside a mounted volume is
   gone on restart, so nothing the app must keep may be written at runtime.
 - Run as a non-root user where the base image offers one (node, and most
@@ -361,7 +361,7 @@ with a Caddyfile written by you, of the shape:
     file_server
 
 Caddy reads {$PORT} from the environment at run time and needs no entrypoint
-work, which is exactly what the capability rules above allow. Two details that
+work. Two details that
 decide whether this works at all:
 
 - Write the file with a QUOTED heredoc — ` + "`COPY <<'EOF' /etc/caddy/Caddyfile`" + ` —

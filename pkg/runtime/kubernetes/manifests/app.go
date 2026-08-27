@@ -323,10 +323,13 @@ func deployment(in Input) (*appsv1.Deployment, error) {
 	}
 
 	// App code is untrusted by definition: it gets no Kubernetes credential,
-	// cannot gain privileges, and keeps no capabilities it didn't need.
+	// cannot gain privileges, and cannot open raw sockets. Keep the runtime's
+	// other conventional container capabilities, though: stock images such as
+	// nginx use CHOWN/SETUID/SETGID during their root-to-worker startup, and the
+	// official Caddy binary carries NET_BIND_SERVICE as a file capability.
 	container.SecurityContext = &corev1.SecurityContext{
 		AllowPrivilegeEscalation: new(false),
-		Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+		Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"NET_RAW"}},
 		SeccompProfile:           &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
 	}
 	automount := false

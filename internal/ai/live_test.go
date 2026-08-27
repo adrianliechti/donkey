@@ -126,9 +126,6 @@ func TestLiveWriteDockerfile(t *testing.T) {
 		"static site": {
 			dir:  "static-site",
 			port: 8080,
-			// Stock nginx chowns its cache directory at startup and dies with
-			// every capability dropped.
-			avoids: []string{"FROM nginx:"},
 		},
 		"streamlit": {
 			dir:  "streamlit-report",
@@ -229,7 +226,7 @@ func TestLiveStaticSiteBecomesAWebServer(t *testing.T) {
 	t.Logf("\n%s", res.Dockerfile)
 
 	df := strings.ToLower(res.Dockerfile)
-	if !strings.Contains(df, "caddy") && !strings.Contains(df, "nginx-unprivileged") {
+	if !strings.Contains(df, "caddy") && !strings.Contains(df, "nginx") {
 		t.Errorf("a static site should end up on a web server, got:\n%s", res.Dockerfile)
 	}
 	// A multi-stage build is the point: the final image must not carry the
