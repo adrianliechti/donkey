@@ -9,9 +9,9 @@ func TestAppGatewayObjects(t *testing.T) {
 	in := testInput(t)
 	in.AppGateway = AppGatewayConfig{
 		Namespace:      "donkey-system",
-		ClassName:      "lgt-lb-standard",
+		ClassName:      "platform",
 		RouteNamespace: "projectcontour",
-		IssuerName:     "lgt",
+		IssuerName:     "platform-ca",
 	}
 
 	objects := NetworkObjects(in)
@@ -26,10 +26,10 @@ func TestAppGatewayObjects(t *testing.T) {
 		"name: donkey-app-shop",
 		"namespace: donkey-system",
 		"secretName: donkey-app-shop-tls",
-		"name: lgt",
+		"name: platform-ca",
 		"kind: ClusterIssuer",
 		"group: cert-manager.io",
-		"gatewayClassName: lgt-lb-standard",
+		"gatewayClassName: platform",
 		"name: donkey-system-shop-gw",
 		"namespace: projectcontour",
 		"kubernetes.io/metadata.name: donkey-system",
@@ -54,7 +54,7 @@ func TestAppGatewayObjectsAreOptional(t *testing.T) {
 		t.Fatalf("an unconfigured installation must not render app edge objects: %v", got)
 	}
 
-	in.AppGateway = AppGatewayConfig{Namespace: "donkey-system", ClassName: "lgt-lb-standard", IssuerName: "lgt"}
+	in.AppGateway = AppGatewayConfig{Namespace: "donkey-system", ClassName: "platform", IssuerName: "platform-ca"}
 	in.Domain = ""
 	if got := kindsOf(NetworkObjects(in)); got["Gateway"] != 0 || got["Certificate"] != 0 || got["HTTPRoute"] != 0 {
 		t.Fatalf("an internal app must not render app edge objects: %v", got)

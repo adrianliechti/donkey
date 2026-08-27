@@ -165,17 +165,17 @@ func TestAddonImageOverridesReachServer(t *testing.T) {
 func TestAppGatewaySettingsReachServer(t *testing.T) {
 	in := systemInput()
 	in.AppGateway = config.InstallAppGateway{
-		ClassName:      "lgt-lb-standard",
+		ClassName:      "platform",
 		RouteNamespace: "projectcontour",
-		IssuerName:     "lgt",
+		IssuerName:     "platform-ca",
 		IssuerKind:     "ClusterIssuer",
 		IssuerGroup:    "cert-manager.io",
 	}
 	out := componentNames(in)
 	for _, want := range []string{
-		"DONKEY_APP_GATEWAY_CLASS_NAME", "lgt-lb-standard",
+		"DONKEY_APP_GATEWAY_CLASS_NAME", "platform",
 		"DONKEY_APP_GATEWAY_ROUTE_NAMESPACE", "projectcontour",
-		"DONKEY_APP_GATEWAY_ISSUER_NAME", "lgt",
+		"DONKEY_APP_GATEWAY_ISSUER_NAME", "platform-ca",
 		"DONKEY_APP_GATEWAY_ISSUER_KIND", "ClusterIssuer",
 		"DONKEY_APP_GATEWAY_ISSUER_GROUP", "cert-manager.io",
 	} {

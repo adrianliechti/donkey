@@ -29,7 +29,7 @@ func doctorCommand() *cli.Command {
 						return err
 					}
 					return api.Ping(ctx)
-				}, s.Resolved.ServerURL()),
+				}, s.Server.URL),
 				doctor.AppConfigCheck(),
 			})
 

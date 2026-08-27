@@ -61,12 +61,12 @@ func TestRegistryCredentialsFromDockerConfig(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "mirror.json")
 	auth := base64.StdEncoding.EncodeToString([]byte("mirror-user:mirror-password"))
-	contents := `{"auths":{"https://oci.mirror.registry.lgt.com/v1/":{"auth":"` + auth + `"}}}`
+	contents := `{"auths":{"https://oci.mirror.registry.example.com/v1/":{"auth":"` + auth + `"}}}`
 	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
-	registry := Registry{URL: "oci.mirror.registry.lgt.com/docker", DockerConfigDir: dir}
+	registry := Registry{URL: "oci.mirror.registry.example.com/docker", DockerConfigDir: dir}
 	username, password, err := registry.Credentials()
 	if err != nil {
 		t.Fatal(err)
@@ -79,14 +79,14 @@ func TestRegistryCredentialsFromDockerConfig(t *testing.T) {
 func TestDockerConfigDirCredentialsSelectsHost(t *testing.T) {
 	dir := t.TempDir()
 	for name, contents := range map[string]string{
-		"dev.json":    `{"auths":{"oci.dev.registry.lgt.com":{"username":"dev","password":"dev-pass"}}}`,
-		"mirror.json": `{"auths":{"oci.mirror.registry.lgt.com":{"username":"mirror","password":"mirror-pass"}}}`,
+		"dev.json":    `{"auths":{"oci.dev.registry.example.com":{"username":"dev","password":"dev-pass"}}}`,
+		"mirror.json": `{"auths":{"oci.mirror.registry.example.com":{"username":"mirror","password":"mirror-pass"}}}`,
 	} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(contents), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
-	username, password, found, err := DockerConfigDirCredentials(dir, "oci.dev.registry.lgt.com")
+	username, password, found, err := DockerConfigDirCredentials(dir, "oci.dev.registry.example.com")
 	if err != nil || !found || username != "dev" || password != "dev-pass" {
 		t.Fatalf("got %q/%q found=%v err=%v", username, password, found, err)
 	}

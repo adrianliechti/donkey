@@ -17,15 +17,16 @@ import (
 	"github.com/adrianliechti/donkey/internal/ui"
 )
 
-func loginCommand() *cli.Command {
+func loginCommand(options Options) *cli.Command {
+	flags := []cli.Flag{
+		&cli.StringFlag{Name: "server", Value: options.Server, Usage: "server address, e.g. https://example.com"},
+		&cli.StringFlag{Name: "token", Usage: "use an existing donkey token instead of the browser (automation)"},
+		&cli.StringFlag{Name: "ca-file", Usage: "PEM file of the certificate authority to trust (private-CA installations)"},
+	}
 	return &cli.Command{
 		Name:  "login",
 		Usage: "connect this machine to a donkey server (opens your browser)",
-		Flags: []cli.Flag{
-			&cli.StringFlag{Name: "server", Usage: "server address, e.g. https://example.com"},
-			&cli.StringFlag{Name: "token", Usage: "use an existing donkey token instead of the browser (automation)"},
-			&cli.StringFlag{Name: "ca-file", Usage: "PEM file of the certificate authority to trust (private-CA installations)"},
-		},
+		Flags: flags,
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 			return runLogin(ctx, cmd)
 		},
@@ -48,12 +49,15 @@ func runLogin(ctx context.Context, cmd *cli.Command) error {
 		cfg = &config.GlobalConfig{}
 	}
 
-	url := cmd.String("server")
+	url := cfg.Server.URL
+	if url == "" {
+		url = commandOptions(cmd).Server
+	}
+	if cmd.IsSet("server") {
+		url = cmd.String("server")
+	}
 	token := cmd.String("token")
 	caFile := cmd.String("ca-file")
-	if url == "" {
-		url = cfg.Server.URL
-	}
 	if caFile == "" {
 		caFile = cfg.Server.CAFile
 	}

@@ -429,11 +429,11 @@ func TestInstallAttachmentValidation(t *testing.T) {
 	if err := appGateway.Validate(); err == nil {
 		t.Error("a route namespace without a GatewayClass points at nothing")
 	}
-	appGateway.ClassName = "lgt-lb-standard"
+	appGateway.ClassName = "platform"
 	if err := appGateway.Validate(); err == nil {
 		t.Error("a GatewayClass without an issuer cannot provision TLS")
 	}
-	appGateway.IssuerName = "lgt"
+	appGateway.IssuerName = "platform-ca"
 	if err := appGateway.Validate(); err != nil {
 		t.Errorf("class, parent namespace and issuer are the intended setup: %v", err)
 	}

@@ -57,7 +57,7 @@ func TestAddonObjectsReferenceExistingPullSecret(t *testing.T) {
 		Image: "mirror.example.com/docker/library/postgres:18.6", Port: 5432, PortName: "postgres",
 		DataPath: "/var/lib/postgresql/data", RunAsUser: 999, ReadyCommand: []string{"pg_isready"},
 	}
-	objs, err := addonObjects(in, w, nil, []string{"oci-mirror-registry-lgt-com", "", "oci-mirror-registry-lgt-com"})
+	objs, err := addonObjects(in, w, nil, []string{"oci-mirror-registry-example-com", "", "oci-mirror-registry-example-com"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +66,7 @@ func TestAddonObjectsReferenceExistingPullSecret(t *testing.T) {
 	}
 	dep, ok := objs[1].(*appsv1.Deployment)
 	if !ok || len(dep.Spec.Template.Spec.ImagePullSecrets) != 1 ||
-		dep.Spec.Template.Spec.ImagePullSecrets[0].Name != "oci-mirror-registry-lgt-com" {
+		dep.Spec.Template.Spec.ImagePullSecrets[0].Name != "oci-mirror-registry-example-com" {
 		t.Fatalf("addon deployment does not reference the existing pull secret: %T %+v", objs[1], dep)
 	}
 }

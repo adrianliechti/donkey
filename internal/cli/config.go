@@ -20,14 +20,14 @@ func configCommand() *cli.Command {
 						return err
 					}
 					u := s.UI
-					if s.Resolved.Global == nil || s.Resolved.Global.Server.URL == "" {
+					if s.Server.URL == "" {
 						u.Printf("Not connected yet — run %s.", u.Bold("donkey login"))
 						return nil
 					}
 					u.Printf("Settings file: %s", s.GlobalPath)
-					u.Printf("  Server: %s", s.Resolved.Global.Server.URL)
-					if s.Resolved.Global.KubeContext != "" {
-						u.Printf("  Kube context (for server install): %s", s.Resolved.Global.KubeContext)
+					u.Printf("  Server: %s", s.Server.URL)
+					if s.Resolved.KubeContext != "" {
+						u.Printf("  Kube context (for server install): %s", s.Resolved.KubeContext)
 					}
 					return nil
 				},

@@ -90,9 +90,9 @@ gateway:
 
   # A dedicated edge and exact certificate for every exposed app.
   appGateway:
-    className: lgt-lb-standard
+    className: platform
     routeNamespace: projectcontour
-    issuerName: lgt
+    issuerName: platform-ca
     # issuerKind: ClusterIssuer
     # issuerGroup: cert-manager.io
 

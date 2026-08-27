@@ -968,6 +968,34 @@ Kubernetes the pod then stays unready and out of rotation with the reason in
 its logs, which beats a control plane that looks healthy and fails on its
 first deploy.
 
+## Embedding the CLI
+
+The donkey command tree can be mounted as a subcommand of another
+[urfave/cli](https://github.com/urfave/cli) application:
+
+```go
+import (
+	donkeycli "github.com/adrianliechti/donkey/pkg/cli"
+	urfavecli "github.com/urfave/cli/v3"
+)
+
+root := &urfavecli.Command{
+	Name: "platform",
+	Commands: []*urfavecli.Command{
+		donkeycli.Command(donkeycli.RunOptions{
+			DisableManagement: true,
+			Server:            "https://donkey.example.com",
+		}),
+	},
+}
+```
+
+`DisableManagement` omits `donkey server` and the server-only `--context`
+flag. `Server` supplies the default server address: an explicit `donkey login
+--server` overrides it, and the selected address is saved for later commands.
+Client commands such as `deploy`, `status`, and `login` remain available. The
+standalone entry point is also exposed as `cli.Run(ctx, args, options)`.
+
 ## Repository structure
 
 ```
@@ -987,6 +1015,9 @@ internal/
   doctor/             client-side check engine behind `donkey doctor`
   ui/                 all terminal output: plain language, jargon behind -v
   gitutil/            pure-Go .git reader: HEAD sha (image tags), repo root (default space)
+pkg/
+  cli/                public facade for embedding the donkey command tree
+  runtime/            runtime implementations shared by the server and management CLI
 testdata/             deployable samples incl. a kitchen-sink monorepo; golden files
 examples/             what a finished project looks like: the demo (two apps, one
                       address, three services) + server-install.yaml reference
@@ -994,8 +1025,9 @@ hack/                 dev/demo scaffolding only — never part of the product
                       (cluster.sh → devkube, demo-ca.sh, demo/fake-idp)
 ```
 
-Conventions: everything under `internal/`; `config` and `k8s/manifests` are
-pure (no I/O) and unit-tested; nothing in the product shells out to
+Conventions: implementation stays under `internal/`, with the supported
+embedding and runtime surfaces under `pkg/`; `config` and `k8s/manifests`
+are pure (no I/O) and unit-tested; nothing in the product shells out to
 external CLIs (the one exception: `donkey open` launching your browser);
 demo concerns are code-review-enforced out of the product
 (`TestSystemObjectsSelfContainedEdge`, `TestInstallTouchesOnlyItsOwnObjects`).
