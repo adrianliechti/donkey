@@ -295,7 +295,7 @@ func (s *Service) handleTraffic(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Service) handleResources(w http.ResponseWriter, r *http.Request) {
-	selected, err := ParseTrafficRange(r.URL.Query().Get("range"))
+	selected, err := ParseResourceRange(r.URL.Query().Get("range"))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return

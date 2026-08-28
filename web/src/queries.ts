@@ -10,7 +10,7 @@ import {
   useQueryClient,
   type UseQueryResult,
 } from '@tanstack/react-query'
-import { api, type TrafficRange, type TrafficSource } from './api'
+import { api, type ResourceRange, type TrafficRange, type TrafficSource } from './api'
 import { errText } from './ui'
 
 export const fleetQuery = queryOptions({
@@ -43,7 +43,7 @@ export const trafficQuery = (space: string, app = '', source: TrafficSource = 'e
     refetchInterval: 30_000,
   })
 
-export const resourcesQuery = (space: string, app: string, range: TrafficRange = '30d') =>
+export const resourcesQuery = (space: string, app: string, range: ResourceRange = '4h') =>
   queryOptions({
     queryKey: ['resources', space, app, range],
     queryFn: () => api.resources(space, app, range),
@@ -108,7 +108,7 @@ export function useTraffic(space: string, app = '', source: TrafficSource = 'edg
   return present(useQuery(trafficQuery(space, app, source, range)))
 }
 
-export function useResources(space: string, app: string, range: TrafficRange = '30d') {
+export function useResources(space: string, app: string, range: ResourceRange = '4h') {
   return present(useQuery(resourcesQuery(space, app, range)))
 }
 

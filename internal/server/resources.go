@@ -22,7 +22,7 @@ func (s *Server) handleResources(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	selected, err := telemetry.ParseTrafficRange(r.URL.Query().Get("range"))
+	selected, err := telemetry.ParseResourceRange(r.URL.Query().Get("range"))
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return

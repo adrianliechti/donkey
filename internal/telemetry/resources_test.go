@@ -110,7 +110,7 @@ func TestStoreAggregatesContainerResourcesPerApp(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	report, err := store.Resources(context.Background(), "team", "site", Range48Hours, at.Add(time.Second))
+	report, err := store.Resources(context.Background(), "team", "site", ResourceRange48Hours, at.Add(time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,6 +129,69 @@ func TestStoreAggregatesContainerResourcesPerApp(t *testing.T) {
 	}
 	if populated == nil || populated.Samples != 1 || math.Abs(populated.AverageCPUCores-0.7) > 1e-9 || populated.AverageMemoryBytes != 300 {
 		t.Fatalf("history point=%+v", populated)
+	}
+}
+
+func TestStoreKeepsRecentResourceMovementByMinute(t *testing.T) {
+	store, err := OpenStore(":memory:", 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	firstAt := time.Now().UTC().Truncate(time.Minute).Add(-10 * time.Minute)
+	for _, observation := range []ResourceObservation{
+		{Space: "team", App: "worker", Instance: "one", SampledAt: firstAt, CPUCores: 0.1, MemoryBytes: 100},
+		{Space: "team", App: "worker", Instance: "one", SampledAt: firstAt.Add(time.Minute), CPUCores: 0.8, MemoryBytes: 250},
+	} {
+		metrics, err := resourceMetrics(observation)
+		if err != nil {
+			t.Fatal(err)
+		}
+		accepted, rejected, err := store.IngestResourceMetrics(context.Background(), &collectormetricspb.ExportMetricsServiceRequest{
+			ResourceMetrics: []*metricspb.ResourceMetrics{metrics},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if accepted != 2 || rejected != 0 {
+			t.Fatalf("accepted=%d rejected=%d", accepted, rejected)
+		}
+	}
+
+	report, err := store.Resources(context.Background(), "team", "worker", ResourceRange1Hour, firstAt.Add(2*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Granularity != "minute" || len(report.Series) != 60 {
+		t.Fatalf("granularity=%q points=%d", report.Granularity, len(report.Series))
+	}
+	var measured []ResourcePoint
+	for _, point := range report.Series {
+		if point.Samples > 0 {
+			measured = append(measured, point)
+		}
+	}
+	if len(measured) != 2 || measured[0].AverageCPUCores != 0.1 || measured[0].AverageMemoryBytes != 100 ||
+		measured[1].AverageCPUCores != 0.8 || measured[1].AverageMemoryBytes != 250 {
+		t.Fatalf("minute movement=%+v", measured)
+	}
+
+	fourHours, err := store.Resources(context.Background(), "team", "worker", ResourceRange4Hours, firstAt.Add(2*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fourHours.Granularity != "5m" || len(fourHours.Series) != 48 {
+		t.Fatalf("four-hour granularity=%q points=%d", fourHours.Granularity, len(fourHours.Series))
+	}
+}
+
+func TestResourceRangesAreIndependentFromTrafficRanges(t *testing.T) {
+	if got, err := ParseResourceRange(""); err != nil || got != ResourceRange4Hours {
+		t.Fatalf("default resource range=%q err=%v", got, err)
+	}
+	if _, err := ParseTrafficRange("4h"); err == nil {
+		t.Fatal("HTTP traffic unexpectedly accepted the resource-only 4h range")
 	}
 }
 

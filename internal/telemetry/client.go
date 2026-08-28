@@ -56,7 +56,7 @@ func (c *Client) Traffic(ctx context.Context, space, app, source string, selecte
 	return report, nil
 }
 
-func (c *Client) Resources(ctx context.Context, space, app string, selected TrafficRange) (ResourceReport, error) {
+func (c *Client) Resources(ctx context.Context, space, app string, selected ResourceRange) (ResourceReport, error) {
 	if c == nil || c.baseURL == "" {
 		return ResourceReport{}, errors.New("telemetry service is not configured")
 	}

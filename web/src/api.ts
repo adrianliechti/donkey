@@ -38,6 +38,7 @@ export interface AppStatus {
 
 export type TrafficSource = 'edge' | 'app'
 export type TrafficRange = '48h' | '7d' | '30d'
+export type ResourceRange = '1h' | '4h' | '48h' | '7d' | '30d'
 
 export interface TrafficTotals {
   requests: number
@@ -95,8 +96,8 @@ export interface ResourcePoint {
 export interface ResourceReport {
   space: string
   app: string
-  range: TrafficRange
-  granularity: 'hour' | 'day'
+  range: ResourceRange
+  granularity: 'minute' | '5m' | 'hour' | 'day'
   from: string
   to: string
   available: boolean
@@ -462,7 +463,7 @@ export const api = {
         : `/v1/spaces/${encodeURIComponent(space)}/traffic${query}`,
     )
   },
-  resources: (space: string, app: string, range: TrafficRange = '30d') =>
+  resources: (space: string, app: string, range: ResourceRange = '4h') =>
     request<ResourceReport>(`${appPath(space, app, '/resources')}?range=${range}`),
   env: (space: string, app: string) =>
     request<{ env: Record<string, string> }>(appPath(space, app, '/env')),

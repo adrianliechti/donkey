@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Dialog, DialogBackdrop, DialogPanel, DialogTitle } from '@headlessui/react'
 import { Activity, Cpu, MemoryStick, X } from 'lucide-react'
-import type { ResourcePoint, TrafficPoint, TrafficRange, TrafficSource, TrafficTotals } from './api'
+import type { ResourcePoint, ResourceRange, TrafficPoint, TrafficRange, TrafficSource, TrafficTotals } from './api'
 import { useResources, useTraffic } from './queries'
 import { ago, Card, ErrorNote, SectionTitle, Select, Spinner } from './ui'
 
@@ -11,6 +11,13 @@ const compactInteger = new Intl.NumberFormat(undefined, {
   maximumFractionDigits: 1,
 })
 const rangeOptions: { value: TrafficRange; label: string }[] = [
+  { value: '48h', label: 'Last 48 hours' },
+  { value: '7d', label: 'Last 7 days' },
+  { value: '30d', label: 'Last 30 days' },
+]
+const resourceRangeOptions: { value: ResourceRange; label: string }[] = [
+  { value: '1h', label: 'Last hour' },
+  { value: '4h', label: 'Last 4 hours' },
   { value: '48h', label: 'Last 48 hours' },
   { value: '7d', label: 'Last 7 days' },
   { value: '30d', label: 'Last 30 days' },
@@ -110,7 +117,7 @@ export function TrafficPanel({ space, app }: { space: string; app: string }) {
         </div>
       </div>
 
-      {app && <ResourceUsage space={space} app={app} range={range} />}
+      {app && <ResourceUsage space={space} app={app} />}
 
       <ErrorNote message={error} />
       {!data && !error && <Spinner label="Reading telemetry…" />}
@@ -180,7 +187,8 @@ export function TrafficPanel({ space, app }: { space: string; app: string }) {
   )
 }
 
-function ResourceUsage({ space, app, range }: { space: string; app: string; range: TrafficRange }) {
+function ResourceUsage({ space, app }: { space: string; app: string }) {
+  const [range, setRange] = useState<ResourceRange>('4h')
   const { data, error } = useResources(space, app, range)
 
   if (error) return <ErrorNote message={`Runtime usage is unavailable: ${error}`} />
@@ -210,11 +218,18 @@ function ResourceUsage({ space, app, range }: { space: string; app: string; rang
           <SectionTitle>Runtime resources</SectionTitle>
           <p className="mt-1 text-xs text-stone">Container usage across the app’s running instances.</p>
         </div>
-        {current && (
-          <span className={`text-xs ${current.fresh ? 'text-stone' : 'text-brick'}`}>
-            {current.fresh ? 'sampled' : 'last sample'} {ago(current.sampledAt)} ago
-          </span>
-        )}
+        <div className="flex items-center gap-2">
+          {current && !current.fresh && (
+            <span className="text-xs text-brick">Last sample {ago(current.sampledAt)} ago</span>
+          )}
+          <Select
+            value={range}
+            onChange={setRange}
+            options={resourceRangeOptions}
+            ariaLabel="Runtime resource time range"
+            size="sm"
+          />
+        </div>
       </div>
 
       {current && (

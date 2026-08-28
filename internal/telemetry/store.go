@@ -133,6 +133,21 @@ CREATE TABLE IF NOT EXISTS resource_rollups (
 CREATE INDEX IF NOT EXISTS resource_rollups_scope_time
   ON resource_rollups (space, app, hour);
 
+CREATE TABLE IF NOT EXISTS resource_recent_rollups (
+  minute BIGINT NOT NULL,
+  space TEXT NOT NULL,
+  app TEXT NOT NULL,
+  instance TEXT NOT NULL,
+  sample_count BIGINT NOT NULL,
+  cpu_sum DOUBLE NOT NULL,
+  cpu_max DOUBLE NOT NULL,
+  memory_sum DOUBLE NOT NULL,
+  memory_max BIGINT NOT NULL,
+  PRIMARY KEY (minute, space, app, instance)
+);
+CREATE INDEX IF NOT EXISTS resource_recent_rollups_scope_time
+  ON resource_recent_rollups (space, app, minute);
+
 CREATE TABLE IF NOT EXISTS resource_sample_state (
   space TEXT NOT NULL,
   app TEXT NOT NULL,
@@ -192,6 +207,12 @@ func (s *Store) Cleanup(ctx context.Context, now time.Time) error {
 		if _, err := tx.ExecContext(ctx, q, cutoff); err != nil {
 			return err
 		}
+	}
+	// One-minute resource rollups exist only for the short, movement-oriented
+	// charts. Long-term hourly rollups above retain the configured 30 days.
+	recentCutoff := now.UTC().Add(-48 * time.Hour).Truncate(time.Minute).Unix()
+	if _, err := tx.ExecContext(ctx, "DELETE FROM resource_recent_rollups WHERE minute < ?", recentCutoff); err != nil {
+		return err
 	}
 	return tx.Commit()
 }

@@ -231,6 +231,23 @@ ON CONFLICT(hour, space, app, instance) DO UPDATE SET
 	if err != nil {
 		return err
 	}
+	minute := observation.SampledAt.Truncate(time.Minute).Unix()
+	_, err = tx.ExecContext(ctx, `
+INSERT INTO resource_recent_rollups (
+  minute, space, app, instance, sample_count, cpu_sum, cpu_max, memory_sum, memory_max
+) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?)
+ON CONFLICT(minute, space, app, instance) DO UPDATE SET
+  sample_count=resource_recent_rollups.sample_count+1,
+  cpu_sum=resource_recent_rollups.cpu_sum+excluded.cpu_sum,
+  cpu_max=greatest(resource_recent_rollups.cpu_max, excluded.cpu_max),
+  memory_sum=resource_recent_rollups.memory_sum+excluded.memory_sum,
+  memory_max=greatest(resource_recent_rollups.memory_max, excluded.memory_max)`,
+		minute, observation.Space, observation.App, observation.Instance,
+		observation.CPUCores, observation.CPUCores, float64(observation.MemoryBytes), observation.MemoryBytes,
+	)
+	if err != nil {
+		return err
+	}
 	_, err = tx.ExecContext(ctx, `
 INSERT INTO resource_sample_state (space, app, instance, time_nano, last_seen)
 VALUES (?, ?, ?, ?, ?)
@@ -257,11 +274,69 @@ type latestResourceInstance struct {
 	memory int64
 }
 
-func (s *Store) Resources(ctx context.Context, space, app string, selected TrafficRange, now time.Time) (ResourceReport, error) {
+type resourceWindow struct {
+	selected    ResourceRange
+	granularity string
+	from        time.Time
+	to          time.Time
+	lastBucket  time.Time
+	through     time.Time
+	step        time.Duration
+	recent      bool
+	buckets     []string
+}
+
+func newResourceWindow(selected ResourceRange, now time.Time, retentionDays int) (resourceWindow, error) {
+	parsed, err := ParseResourceRange(string(selected))
+	if err != nil {
+		return resourceWindow{}, err
+	}
+	now = now.UTC()
+	window := resourceWindow{selected: parsed, to: now}
+	var count int
+	switch parsed {
+	case ResourceRange1Hour:
+		window.granularity, window.step, count = "minute", time.Minute, 60
+	case ResourceRange4Hours:
+		window.granularity, window.step, count = "5m", 5*time.Minute, 48
+	default:
+		longTerm, err := newTrafficWindow(TrafficRange(parsed), now, retentionDays)
+		if err != nil {
+			return resourceWindow{}, err
+		}
+		window.granularity = longTerm.granularity
+		window.from = longTerm.from
+		window.lastBucket = longTerm.lastBucket
+		window.through = longTerm.through
+		window.buckets = longTerm.buckets
+		return window, nil
+	}
+	window.recent = true
+	window.lastBucket = now.Truncate(window.step)
+	window.from = window.lastBucket.Add(-time.Duration(count-1) * window.step)
+	window.through = now.Truncate(time.Minute)
+	window.buckets = make([]string, 0, count)
+	for at := window.from; !at.After(window.lastBucket); at = at.Add(window.step) {
+		window.buckets = append(window.buckets, window.key(at))
+	}
+	return window, nil
+}
+
+func (w resourceWindow) key(at time.Time) string {
+	if w.recent {
+		return at.UTC().Truncate(w.step).Format(time.RFC3339)
+	}
+	if w.granularity == "hour" {
+		return at.UTC().Truncate(time.Hour).Format(time.RFC3339)
+	}
+	return at.UTC().Format(time.DateOnly)
+}
+
+func (s *Store) Resources(ctx context.Context, space, app string, selected ResourceRange, now time.Time) (ResourceReport, error) {
 	if !config.ValidName(space) || !config.ValidName(app) {
 		return ResourceReport{}, errors.New("invalid resource telemetry scope")
 	}
-	window, err := newTrafficWindow(selected, now, s.retentionDays)
+	window, err := newResourceWindow(selected, now, s.retentionDays)
 	if err != nil {
 		return ResourceReport{}, err
 	}
@@ -322,39 +397,46 @@ WHERE newest = 1`, space, app)
 	for _, bucket := range window.buckets {
 		series[bucket] = &resourceAggregate{}
 	}
-	perHour := make(map[int64]*resourceAggregate)
-	rows, err := s.db.QueryContext(ctx, `
+	perInterval := make(map[int64]*resourceAggregate)
+	query := `
 SELECT hour, sample_count, cpu_sum, cpu_max, memory_sum, memory_max
 FROM resource_rollups
-WHERE space = ? AND app = ? AND hour >= ? AND hour <= ?`,
+WHERE space = ? AND app = ? AND hour >= ? AND hour <= ?`
+	if window.recent {
+		query = `
+SELECT minute, sample_count, cpu_sum, cpu_max, memory_sum, memory_max
+FROM resource_recent_rollups
+WHERE space = ? AND app = ? AND minute >= ? AND minute <= ?`
+	}
+	rows, err := s.db.QueryContext(ctx, query,
 		space, app, window.from.Unix(), window.through.Unix())
 	if err != nil {
 		return ResourceReport{}, err
 	}
 	for rows.Next() {
-		var hour int64
+		var interval int64
 		var row resourceAggregate
-		if err := rows.Scan(&hour, &row.samples, &row.cpuSum, &row.cpuMax, &row.memorySum, &row.memoryMax); err != nil {
+		if err := rows.Scan(&interval, &row.samples, &row.cpuSum, &row.cpuMax, &row.memorySum, &row.memoryMax); err != nil {
 			rows.Close()
 			return ResourceReport{}, err
 		}
 		if row.samples <= 0 {
 			continue
 		}
-		if series[window.key(time.Unix(hour, 0))] == nil {
+		if series[window.key(time.Unix(interval, 0))] == nil {
 			continue
 		}
-		aggregate := perHour[hour]
+		aggregate := perInterval[interval]
 		if aggregate == nil {
 			aggregate = &resourceAggregate{}
-			perHour[hour] = aggregate
+			perInterval[interval] = aggregate
 		}
 		if row.samples > aggregate.samples {
 			aggregate.samples = row.samples
 		}
 		aggregate.cpuSum += row.cpuSum
 		// Per-instance maxima are not guaranteed to be simultaneous; their
-		// sum is a safe upper bound for the app's peak within this hour.
+		// sum is a safe upper bound for the app's peak within this interval.
 		aggregate.cpuMax += row.cpuMax
 		aggregate.memorySum += row.memorySum
 		aggregate.memoryMax += row.memoryMax
@@ -363,8 +445,8 @@ WHERE space = ? AND app = ? AND hour >= ? AND hour <= ?`,
 	if err := rows.Close(); err != nil {
 		return ResourceReport{}, err
 	}
-	for hour, aggregate := range perHour {
-		bucket := series[window.key(time.Unix(hour, 0))]
+	for interval, aggregate := range perInterval {
+		bucket := series[window.key(time.Unix(interval, 0))]
 		bucket.samples += aggregate.samples
 		bucket.cpuSum += aggregate.cpuSum
 		bucket.cpuMax = math.Max(bucket.cpuMax, aggregate.cpuMax)

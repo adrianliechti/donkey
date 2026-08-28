@@ -48,6 +48,33 @@ func ParseTrafficRange(value string) (TrafficRange, error) {
 	}
 }
 
+// ResourceRange is separate from TrafficRange because recent CPU and memory
+// snapshots have a finer retained resolution than HTTP traffic rollups.
+type ResourceRange string
+
+const (
+	ResourceRange1Hour   ResourceRange = "1h"
+	ResourceRange4Hours  ResourceRange = "4h"
+	ResourceRange48Hours ResourceRange = "48h"
+	ResourceRange7Days   ResourceRange = "7d"
+	ResourceRange30Days  ResourceRange = "30d"
+
+	DefaultResourceRange = ResourceRange4Hours
+)
+
+func ParseResourceRange(value string) (ResourceRange, error) {
+	if value == "" {
+		return DefaultResourceRange, nil
+	}
+	selected := ResourceRange(value)
+	switch selected {
+	case ResourceRange1Hour, ResourceRange4Hours, ResourceRange48Hours, ResourceRange7Days, ResourceRange30Days:
+		return selected, nil
+	default:
+		return "", fmt.Errorf("range must be one of 1h, 4h, 48h, 7d or 30d")
+	}
+}
+
 // HTTPDurationBounds are the explicit bucket boundaries recommended by the
 // OpenTelemetry HTTP semantic conventions. Values and stored sums are seconds.
 var HTTPDurationBounds = []float64{
@@ -140,7 +167,7 @@ type ResourceObservation struct {
 type ResourceReport struct {
 	Space       string           `json:"space"`
 	App         string           `json:"app"`
-	Range       TrafficRange     `json:"range"`
+	Range       ResourceRange    `json:"range"`
 	Granularity string           `json:"granularity"`
 	From        time.Time        `json:"from"`
 	To          time.Time        `json:"to"`
