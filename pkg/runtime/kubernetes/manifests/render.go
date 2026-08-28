@@ -11,11 +11,35 @@ import (
 // only exist because of Go zero values (creationTimestamp, empty status) are
 // pruned so the output reads like hand-written manifests.
 func Render(objs []runtime.Object) (string, error) {
+	return render(objs, "")
+}
+
+// RenderForInstance renders objects meant to be applied outside donkey's
+// Kubernetes client. Apply normally stamps this ownership label at the API
+// boundary; a generated manifest needs the same identity in the YAML itself.
+func RenderForInstance(objs []runtime.Object, instance string) (string, error) {
+	return render(objs, instance)
+}
+
+func render(objs []runtime.Object, instance string) (string, error) {
 	var parts []string
 	for _, obj := range objs {
 		u, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 		if err != nil {
 			return "", err
+		}
+		if instance != "" {
+			metadata, _ := u["metadata"].(map[string]any)
+			if metadata == nil {
+				metadata = map[string]any{}
+				u["metadata"] = metadata
+			}
+			labels, _ := metadata["labels"].(map[string]any)
+			if labels == nil {
+				labels = map[string]any{}
+				metadata["labels"] = labels
+			}
+			labels[LabelInstance] = instance
 		}
 		prune(u)
 		b, err := yaml.Marshal(u)

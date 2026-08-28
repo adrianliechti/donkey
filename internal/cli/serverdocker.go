@@ -75,27 +75,7 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 		settings.Registry.URL = dockerRegistryName + ":5000/donkey"
 		settings.Registry.Insecure = true
 	}
-	if missing := missingSettings(settings, false); len(missing) > 0 {
-		return fmt.Errorf("these settings are required (via -f file or flags): %v", missing)
-	}
-	if err := settings.Registry.Validate(); err != nil {
-		return err
-	}
-	if err := settings.Registry.ValidateRuntime("docker"); err != nil {
-		return err
-	}
-	switch settings.TLS.Mode {
-	case "", "acme", "ca":
-	default:
-		return fmt.Errorf("tls.mode must be acme or ca on the docker runtime, not %q", settings.TLS.Mode)
-	}
-	if err := settings.Build.Validate(); err != nil {
-		return err
-	}
-	if err := settings.Build.Packages.ValidateRuntime("docker"); err != nil {
-		return err
-	}
-	if err := settings.AddonImages.Validate(); err != nil {
+	if err := validateDockerSettings(settings); err != nil {
 		return err
 	}
 
@@ -492,6 +472,33 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 		u.Warn("No OIDC client configured yet — nobody can sign in until you register one at the issuer and re-run this install with the client id and secret.")
 	}
 	return nil
+}
+
+// validateDockerSettings is the engine-independent half of the Docker
+// installer. Compose rendering uses the same checks without opening a Docker
+// socket or resolving credentials from the host.
+func validateDockerSettings(settings *config.InstallFile) error {
+	if missing := missingSettings(settings, false); len(missing) > 0 {
+		return fmt.Errorf("these settings are required (via -f file or flags): %v", missing)
+	}
+	if err := settings.Registry.Validate(); err != nil {
+		return err
+	}
+	if err := settings.Registry.ValidateRuntime("docker"); err != nil {
+		return err
+	}
+	switch settings.TLS.Mode {
+	case "", "acme", "ca":
+	default:
+		return fmt.Errorf("tls.mode must be acme or ca on the docker runtime, not %q", settings.TLS.Mode)
+	}
+	if err := settings.Build.Validate(); err != nil {
+		return err
+	}
+	if err := settings.Build.Packages.ValidateRuntime("docker"); err != nil {
+		return err
+	}
+	return settings.AddonImages.Validate()
 }
 
 // builderEnvMap is the builder's settings; only what was chosen travels, so

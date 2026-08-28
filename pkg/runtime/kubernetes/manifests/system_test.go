@@ -101,15 +101,15 @@ func TestRegistryCredentialsPullMirroredSystemImages(t *testing.T) {
 	in.RegistryPassword = "s3cret"
 	in.BuildkitImage = "reg.example.com/mirror/moby/buildkit:v0.31.2"
 	out := componentNames(in)
-	if !strings.Contains(out, "name: "+systemRegistrySecretName) || !strings.Contains(out, "imagePullSecrets") {
+	if !strings.Contains(out, "name: "+SystemRegistrySecretName) || !strings.Contains(out, "imagePullSecrets") {
 		t.Fatalf("credentialed registry should render and reference a system pull secret:\n%s", out)
 	}
-	if n := strings.Count(out, "name: "+systemRegistrySecretName); n != 7 {
+	if n := strings.Count(out, "name: "+SystemRegistrySecretName); n != 7 {
 		t.Errorf("pull secret should be created once and referenced by six system deployments, found %d mentions", n)
 	}
 
 	plain := componentNames(systemInput())
-	if strings.Contains(plain, systemRegistrySecretName) || strings.Contains(plain, "imagePullSecrets") {
+	if strings.Contains(plain, SystemRegistrySecretName) || strings.Contains(plain, "imagePullSecrets") {
 		t.Error("an anonymous installation should not render system image pull credentials")
 	}
 }

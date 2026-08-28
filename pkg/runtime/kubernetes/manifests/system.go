@@ -138,11 +138,14 @@ const (
 	DefaultSystemNamespace = config.DefaultSystemNamespace
 	// ServerName is donkey-server's Service — the openai addon points app
 	// bindings at its AI proxy path.
-	ServerName   = "donkey-server"
-	buildkitName = "donkey-buildkitd"
-	// systemRegistrySecretName lets the kubelet pull mirrored control-plane
-	// images from the same credentialed registry app builds are pushed to.
-	systemRegistrySecretName = "donkey-system-registry"
+	ServerName = "donkey-server"
+	// SystemConfigSecretName holds the installation credentials and the
+	// settings intentionally kept out of pod specs.
+	SystemConfigSecretName = "donkey-system-config"
+	// SystemRegistrySecretName lets Kubernetes pull credentialed control-plane
+	// images. It is exported for offline deployment bundle renderers.
+	SystemRegistrySecretName = "donkey-system-registry"
+	buildkitName             = "donkey-buildkitd"
 	registryDockerConfigPath = "/etc/donkey/registry-auth"
 	serverPort               = 8088
 	buildkitPort             = 1234
@@ -296,7 +299,7 @@ func serverServiceAccount(in SystemInput) *corev1.ServiceAccount {
 func systemSecret(in SystemInput) *corev1.Secret {
 	return &corev1.Secret{
 		TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "Secret"},
-		ObjectMeta: metav1.ObjectMeta{Name: "donkey-system-config", Namespace: in.Namespace, Labels: systemLabels(ServerName)},
+		ObjectMeta: metav1.ObjectMeta{Name: SystemConfigSecretName, Namespace: in.Namespace, Labels: systemLabels(ServerName)},
 		StringData: map[string]string{
 			"registry-password":  in.RegistryPassword,
 			"openai-api-key":     in.OpenAIAPIKey,
@@ -318,7 +321,7 @@ func systemSecret(in SystemInput) *corev1.Secret {
 
 func systemRegistryPullSecret(in SystemInput) *corev1.Secret {
 	return RegistryPullSecret(
-		systemRegistrySecretName, in.Namespace,
+		SystemRegistrySecretName, in.Namespace,
 		systemLabels(ComponentRegistryAuth),
 		registryHostOf(in.RegistryURL), in.RegistryUsername, in.RegistryPassword,
 	)
@@ -328,7 +331,7 @@ func systemImagePullSecrets(in SystemInput) []corev1.LocalObjectReference {
 	if !hasSystemRegistryCredentials(in) {
 		return nil
 	}
-	return []corev1.LocalObjectReference{{Name: systemRegistrySecretName}}
+	return []corev1.LocalObjectReference{{Name: SystemRegistrySecretName}}
 }
 
 func hasSystemRegistryCredentials(in SystemInput) bool {
@@ -345,7 +348,7 @@ func serverDeployment(in SystemInput) *appsv1.Deployment {
 	secretEnv := func(name, key string) corev1.EnvVar {
 		return corev1.EnvVar{Name: name, ValueFrom: &corev1.EnvVarSource{
 			SecretKeyRef: &corev1.SecretKeySelector{
-				LocalObjectReference: corev1.LocalObjectReference{Name: "donkey-system-config"},
+				LocalObjectReference: corev1.LocalObjectReference{Name: SystemConfigSecretName},
 				Key:                  key,
 			},
 		}}

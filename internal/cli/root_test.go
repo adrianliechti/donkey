@@ -14,6 +14,10 @@ func TestCommandIncludesManagementByDefault(t *testing.T) {
 	if !hasCommand(cmd, "server") {
 		t.Fatal("default command tree is missing server management")
 	}
+	server := findCommand(cmd, "server")
+	if !hasCommand(server, "init") || !hasCommand(server, "render") || !hasCommand(server, "install") {
+		t.Fatal("server management is missing init, render, or install")
+	}
 	if !hasFlag(cmd, "context") {
 		t.Fatal("default command tree is missing the server context flag")
 	}

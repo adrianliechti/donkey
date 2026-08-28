@@ -832,12 +832,13 @@ engine asks through exactly these mirrors.
 
 ## Deployment model
 
-**Day 0 — admin installs the control plane** into an existing cluster.
-Settings live in a file
-([examples/server-install.yaml](examples/server-install.yaml)); flags
-override; secrets come from env:
+**Day 0 — admin deploys the control plane.** Start from the short generated
+settings file ([examples/server-install.yaml](examples/server-install.yaml));
+flags override it and secrets come from env:
 
 ```sh
+donkey server init --runtime kubernetes > server-install.yaml
+# edit image, registry, domain, OIDC and model settings
 donkey server install -f server-install.yaml
 ```
 
@@ -847,6 +848,20 @@ authenticate through the same OIDC login the apps use, and `auth.admins`
 administer; empty means everyone the IdP admits. Re-running with changed
 settings updates the installation idempotently (server-side apply; existing
 secrets and sessions survive; config changes roll the affected pods).
+
+For GitOps, review, or a machine where the CLI must not hold cluster access,
+render the same settings instead:
+
+```sh
+donkey server render -f server-install.yaml --output deploy/
+```
+
+Kubernetes output contains `manifests.yaml`, an apply helper, and a
+`secrets.env.example` containing names only — no Secret objects or credential
+values are written. `runtime: docker` renders `compose.yaml`,
+`buildkitd.toml`, and an equivalent `up.sh` bundle. The direct installer and
+both renderers share the install-file validation; Kubernetes uses the same
+canonical object generator in both paths.
 
 **One callback, one sign-in.** Every login under the domain rides through a
 single OAuth callback on the domain itself
@@ -947,7 +962,7 @@ deploy. What is *not* reproducible has to live outside the cluster:
 
 | Keep | Why |
 |---|---|
-| the install settings file (`server-install.yaml`) | every install and re-install needs it; it is the only written description of the installation |
+| the install settings file (`server-install.yaml`) | every install, re-install, or re-render needs it; it is the written description of the installation |
 | `DONKEY_REGISTRY_PASSWORD` | donkey stores it, but never invents it; without it the server can't push and apps can't pull |
 | `DONKEY_OIDC_CLIENT_SECRET` (with its client id) | belongs to a registration in your IdP — a new one means updating the IdP as well |
 | `OPENAI_API_KEY` | the assistant is required; no key, no deploys |
@@ -1081,8 +1096,8 @@ pkg/
   cli/                public facade for embedding the donkey command tree
   runtime/            runtime implementations shared by the server and management CLI
 testdata/             deployable samples incl. a kitchen-sink monorepo; golden files
-examples/             what a finished project looks like: the demo (two apps, one
-                      address, three services) + server-install.yaml reference
+examples/             finished-project demos + the concise server-install.yaml
+                      emitted by `donkey server init`
 hack/                 dev/demo scaffolding only — never part of the product
                       (cluster.sh → devkube, demo-ca.sh, demo/fake-idp)
 ```

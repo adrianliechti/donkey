@@ -70,7 +70,7 @@ func buildEnvJSON(b config.InstallBuild) string {
 func secretEnvVar(name, key string) corev1.EnvVar {
 	return corev1.EnvVar{Name: name, ValueFrom: &corev1.EnvVarSource{
 		SecretKeyRef: &corev1.SecretKeySelector{
-			LocalObjectReference: corev1.LocalObjectReference{Name: "donkey-system-config"},
+			LocalObjectReference: corev1.LocalObjectReference{Name: SystemConfigSecretName},
 			Key:                  key,
 		},
 	}}

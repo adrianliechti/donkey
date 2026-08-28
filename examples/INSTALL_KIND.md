@@ -276,6 +276,15 @@ export DONKEY_OIDC_CLIENT_SECRET=…
 donkey server install -f server.yaml
 ```
 
+For a reviewed or GitOps-style apply, the same file can be rendered without
+contacting the cluster. The generated bundle keeps Secret objects and values
+out of `manifests.yaml`:
+
+```sh
+donkey server render -f server.yaml --output deploy/
+# review deploy/README.md and deploy/manifests.yaml, then run deploy/apply.sh
+```
+
 It prints where to sign in — there is no API token: console and CLI use the
 same Pocket ID login as the apps (add `admins:` under `auth:` to narrow who
 may administer; empty means every Pocket ID account). The gateway requests

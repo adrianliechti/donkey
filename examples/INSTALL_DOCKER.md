@@ -130,6 +130,16 @@ donkey server install -f server.yaml
 Re-running with changed settings updates the installation; the session key
 (and with it every login and CLI token) survives re-installs.
 
+To manage the same machine with Compose instead, render a bundle and follow
+its README. The renderer writes no credential values:
+
+```sh
+donkey server render -f server.yaml --output deploy/
+cp deploy/secrets.env.example deploy/secrets.env
+# fill deploy/secrets.env, then:
+deploy/up.sh
+```
+
 ## 5. Log in and deploy
 
 From your laptop:
