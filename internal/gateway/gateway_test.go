@@ -212,6 +212,15 @@ func TestCookieDomain(t *testing.T) {
 	}
 }
 
+func TestCanonicalHTTPMethodIncludesQuery(t *testing.T) {
+	if got := canonicalHTTPMethod("QUERY"); got != "QUERY" {
+		t.Fatalf("QUERY method=%q", got)
+	}
+	if got := canonicalHTTPMethod("BREW"); got != "_OTHER" {
+		t.Fatalf("unknown method=%q", got)
+	}
+}
+
 func TestRouteFromConfigMap(t *testing.T) {
 	cm := corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{

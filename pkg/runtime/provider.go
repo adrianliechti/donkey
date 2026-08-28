@@ -126,6 +126,38 @@ type Provider interface {
 	Checks(ctx context.Context) []Check
 }
 
+// ResourceSampler is an optional runtime capability. Runtime resource usage
+// is deliberately separate from Provider.Status: status is read frequently
+// by fleet views, while Docker stats and the Kubernetes Metrics API are
+// comparatively expensive. The server discovers this interface and samples
+// it on its own bounded cadence.
+type ResourceSampler interface {
+	ResourceSamples(ctx context.Context) ([]ResourceSample, error)
+}
+
+// ResourceSample is one installation-owned web container at one instant. The
+// telemetry wire format keeps that container identity (as the OpenTelemetry
+// semantic conventions require); retained app reports aggregate replicas.
+type ResourceSample struct {
+	Space string
+	App   string
+	// Instance is the stable identity used to distinguish replicas. Container
+	// metadata is carried through to OTLP's standard resource attributes.
+	Instance      string
+	ContainerID   string
+	ContainerName string
+	KubeNamespace string
+	KubePodName   string
+	KubePodUID    string
+	SampledAt     time.Time
+
+	CPUCores          float64
+	CPUUserCores      float64
+	CPUSystemCores    float64
+	CPUModesAvailable bool
+	MemoryBytes       int64
+}
+
 type AppRef struct {
 	Space string
 	App   string

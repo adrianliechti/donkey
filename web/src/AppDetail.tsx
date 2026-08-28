@@ -36,7 +36,6 @@ import {
   Spinner,
   StateChip,
   StatusDot,
-  UpdatedAgo,
 } from './ui'
 
 // The app panel slides over the fleet. Each tab is one job — glance, read,
@@ -67,7 +66,7 @@ export function AppDetail({
   onTab: (tab: AppTab) => void
   onBack: () => void
 }) {
-  const { data: status, error, updatedAt, reload } = useAppStatus(space, app)
+  const { data: status, error, reload } = useAppStatus(space, app)
   // The tab also comes from the URL, so it can name one that is not offered:
   // .../files for an app with no disk. Fall back rather than leave the panel
   // blank with nothing selected.
@@ -104,7 +103,6 @@ export function AppDetail({
             )}
           </div>
           <div className="flex shrink-0 items-center gap-1.5">
-            {tab !== 'release' && <UpdatedAgo at={updatedAt} />}
             <button
               onClick={onBack}
               title="Close (Esc)"

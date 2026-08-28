@@ -15,6 +15,10 @@ const (
 	// instrument supplies request volume and latency without a second stream.
 	HTTPServerRequestDuration = "http.server.request.duration"
 
+	// Runtime resource snapshots use only OpenTelemetry's container metrics.
+	ContainerCPUUsage         = "container.cpu.usage"
+	ContainerMemoryWorkingSet = "container.memory.working_set"
+
 	SourceEdge = "edge"
 	SourceApp  = "app"
 
@@ -107,6 +111,60 @@ type TrafficPoint struct {
 	UniqueVisitors    int64   `json:"uniqueVisitors"`
 	IdentifiedViews   int64   `json:"identifiedViews"`
 	VisitorCoveragePC float64 `json:"visitorCoveragePercent"`
+}
+
+// ResourceObservation is one container snapshot exported by donkey-server as
+// OTLP after sampling Docker or Kubernetes. App totals are calculated only
+// when reports are read, preserving the standard container entity boundary.
+type ResourceObservation struct {
+	Space         string
+	App           string
+	Instance      string
+	ContainerID   string
+	ContainerName string
+	KubeNamespace string
+	KubePodName   string
+	KubePodUID    string
+	SampledAt     time.Time
+
+	CPUCores          float64
+	CPUUserCores      float64
+	CPUSystemCores    float64
+	CPUModesAvailable bool
+	MemoryBytes       int64
+}
+
+// ResourceReport is retained CPU and memory usage for one app. Current is the
+// most recent observation even when it is stale; Fresh tells the console
+// whether it is recent enough to describe the app now.
+type ResourceReport struct {
+	Space       string           `json:"space"`
+	App         string           `json:"app"`
+	Range       TrafficRange     `json:"range"`
+	Granularity string           `json:"granularity"`
+	From        time.Time        `json:"from"`
+	To          time.Time        `json:"to"`
+	Available   bool             `json:"available"`
+	Current     *ResourceCurrent `json:"current,omitempty"`
+	Series      []ResourcePoint  `json:"series"`
+}
+
+type ResourceCurrent struct {
+	SampledAt time.Time `json:"sampledAt"`
+	Fresh     bool      `json:"fresh"`
+	Instances int64     `json:"instances"`
+
+	CPUCores    float64 `json:"cpuCores"`
+	MemoryBytes int64   `json:"memoryBytes"`
+}
+
+type ResourcePoint struct {
+	Bucket             string  `json:"bucket"`
+	Samples            int64   `json:"samples"`
+	AverageCPUCores    float64 `json:"averageCpuCores"`
+	PeakCPUCores       float64 `json:"peakCpuCores"`
+	AverageMemoryBytes int64   `json:"averageMemoryBytes"`
+	PeakMemoryBytes    int64   `json:"peakMemoryBytes"`
 }
 
 // ViewEvent is the gateway's privacy-bounded document-navigation event.

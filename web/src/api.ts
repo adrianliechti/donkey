@@ -75,6 +75,35 @@ export interface TrafficReport {
   }
 }
 
+export interface ResourceCurrent {
+  sampledAt: string
+  fresh: boolean
+  instances: number
+  cpuCores: number
+  memoryBytes: number
+}
+
+export interface ResourcePoint {
+  bucket: string
+  samples: number
+  averageCpuCores: number
+  peakCpuCores: number
+  averageMemoryBytes: number
+  peakMemoryBytes: number
+}
+
+export interface ResourceReport {
+  space: string
+  app: string
+  range: TrafficRange
+  granularity: 'hour' | 'day'
+  from: string
+  to: string
+  available: boolean
+  current?: ResourceCurrent
+  series: ResourcePoint[]
+}
+
 /** Who may open a login-protected app; empty lists mean "everyone signed in". */
 export interface AccessConfig {
   users?: string[]
@@ -433,6 +462,8 @@ export const api = {
         : `/v1/spaces/${encodeURIComponent(space)}/traffic${query}`,
     )
   },
+  resources: (space: string, app: string, range: TrafficRange = '30d') =>
+    request<ResourceReport>(`${appPath(space, app, '/resources')}?range=${range}`),
   env: (space: string, app: string) =>
     request<{ env: Record<string, string> }>(appPath(space, app, '/env')),
   setEnv: (space: string, app: string, env: Record<string, string>, restart: boolean) =>

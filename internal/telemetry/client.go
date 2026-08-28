@@ -56,6 +56,35 @@ func (c *Client) Traffic(ctx context.Context, space, app, source string, selecte
 	return report, nil
 }
 
+func (c *Client) Resources(ctx context.Context, space, app string, selected TrafficRange) (ResourceReport, error) {
+	if c == nil || c.baseURL == "" {
+		return ResourceReport{}, errors.New("telemetry service is not configured")
+	}
+	query := url.Values{
+		"space": {space},
+		"app":   {app},
+		"range": {string(selected)},
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/v1/resources?"+query.Encode(), nil)
+	if err != nil {
+		return ResourceReport{}, err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	response, err := c.http.Do(req)
+	if err != nil {
+		return ResourceReport{}, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return ResourceReport{}, fmt.Errorf("telemetry service returned %s", response.Status)
+	}
+	var report ResourceReport
+	if err := json.NewDecoder(response.Body).Decode(&report); err != nil {
+		return ResourceReport{}, err
+	}
+	return report, nil
+}
+
 func (c *Client) Ready(ctx context.Context) error {
 	if c == nil || c.baseURL == "" {
 		return errors.New("telemetry service is not configured")

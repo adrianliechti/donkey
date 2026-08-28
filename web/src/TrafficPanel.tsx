@@ -1,9 +1,9 @@
 import { useState } from 'react'
 import { Dialog, DialogBackdrop, DialogPanel, DialogTitle } from '@headlessui/react'
-import { Activity, X } from 'lucide-react'
-import type { TrafficPoint, TrafficRange, TrafficSource, TrafficTotals } from './api'
-import { useTraffic } from './queries'
-import { Card, ErrorNote, SectionTitle, Select, Spinner, UpdatedAgo } from './ui'
+import { Activity, Cpu, MemoryStick, X } from 'lucide-react'
+import type { ResourcePoint, TrafficPoint, TrafficRange, TrafficSource, TrafficTotals } from './api'
+import { useResources, useTraffic } from './queries'
+import { ago, Card, ErrorNote, SectionTitle, Select, Spinner } from './ui'
 
 const integer = new Intl.NumberFormat()
 const compactInteger = new Intl.NumberFormat(undefined, {
@@ -84,7 +84,7 @@ export function SpaceTelemetry({ space }: { space: string }) {
 export function TrafficPanel({ space, app }: { space: string; app: string }) {
   const [source, setSource] = useState<TrafficSource>('edge')
   const [range, setRange] = useState<TrafficRange>('30d')
-  const { data, error, updatedAt } = useTraffic(space, app, source, range)
+  const { data, error } = useTraffic(space, app, source, range)
 
   return (
     <div className="space-y-4">
@@ -109,6 +109,8 @@ export function TrafficPanel({ space, app }: { space: string; app: string }) {
           </SourceButton>
         </div>
       </div>
+
+      {app && <ResourceUsage space={space} app={app} range={range} />}
 
       <ErrorNote message={error} />
       {!data && !error && <Spinner label="Reading telemetry…" />}
@@ -137,10 +139,7 @@ export function TrafficPanel({ space, app }: { space: string; app: string }) {
           <AudienceCard totals={data.totals} source={source} onShowGateway={() => setSource('edge')} />
 
           <Card className="p-4">
-            <div className="flex items-center justify-between gap-3">
-              <SectionTitle>Requests by {data.granularity}</SectionTitle>
-              <UpdatedAgo at={updatedAt} />
-            </div>
+            <SectionTitle>Requests by {data.granularity}</SectionTitle>
             {data.totals.requests > 0 ? (
               <>
                 <DailyBars points={data.series} />
@@ -179,6 +178,142 @@ export function TrafficPanel({ space, app }: { space: string; app: string }) {
       )}
     </div>
   )
+}
+
+function ResourceUsage({ space, app, range }: { space: string; app: string; range: TrafficRange }) {
+  const { data, error } = useResources(space, app, range)
+
+  if (error) return <ErrorNote message={`Runtime usage is unavailable: ${error}`} />
+  if (!data) {
+    return (
+      <Card className="p-4">
+        <Spinner label="Reading runtime usage…" />
+      </Card>
+    )
+  }
+  if (!data.available) {
+    return (
+      <Card className="px-4 py-5">
+        <SectionTitle>Runtime resources</SectionTitle>
+        <p className="mt-2 text-sm text-stone">
+          No container CPU or memory samples yet. Usage appears after the next runtime sample.
+        </p>
+      </Card>
+    )
+  }
+
+  const current = data.current
+  return (
+    <Card className="p-4">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div>
+          <SectionTitle>Runtime resources</SectionTitle>
+          <p className="mt-1 text-xs text-stone">Container usage across the app’s running instances.</p>
+        </div>
+        {current && (
+          <span className={`text-xs ${current.fresh ? 'text-stone' : 'text-brick'}`}>
+            {current.fresh ? 'sampled' : 'last sample'} {ago(current.sampledAt)} ago
+          </span>
+        )}
+      </div>
+
+      {current && (
+        <div className="mt-4 grid grid-cols-3 divide-x divide-line rounded-md border border-line/70 bg-surface/40 py-3">
+          <RuntimeValue label="CPU" value={formatCPU(current.cpuCores)} />
+          <RuntimeValue label="Memory" value={formatBytes(current.memoryBytes)} />
+          <RuntimeValue label="Instances" value={integer.format(current.instances)} />
+        </div>
+      )}
+
+      <div className="mt-4 grid gap-4 sm:grid-cols-2">
+        <ResourceBars
+          icon={<Cpu className="size-3.5" aria-hidden />}
+          label="CPU"
+          points={data.series}
+          value={(point) => point.averageCpuCores}
+          format={formatCPU}
+          tone="bg-hay/80"
+        />
+        <ResourceBars
+          icon={<MemoryStick className="size-3.5" aria-hidden />}
+          label="Memory"
+          points={data.series}
+          value={(point) => point.averageMemoryBytes}
+          format={formatBytes}
+          tone="bg-moss/75"
+        />
+      </div>
+    </Card>
+  )
+}
+
+function RuntimeValue({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="min-w-0 px-3 first:pl-3">
+      <div className="truncate font-mono text-lg font-bold text-ink">{value}</div>
+      <div className="mt-0.5 text-[10px] uppercase tracking-wider text-stone">{label}</div>
+    </div>
+  )
+}
+
+function ResourceBars({
+  icon,
+  label,
+  points,
+  value,
+  format,
+  tone,
+}: {
+  icon: React.ReactNode
+  label: string
+  points: ResourcePoint[]
+  value: (point: ResourcePoint) => number
+  format: (value: number) => string
+  tone: string
+}) {
+  const max = Math.max(0, ...points.map(value))
+  const measured = points.filter((point) => point.samples > 0)
+  const latest = measured.length ? value(measured.at(-1)!) : 0
+  return (
+    <div className="min-w-0">
+      <div className="flex items-center justify-between gap-2 text-xs text-stone">
+        <span className="flex items-center gap-1.5">{icon}{label} history</span>
+        <span className="font-mono text-ink-soft">{measured.length ? format(latest) : '—'}</span>
+      </div>
+      <div
+        className="mt-2 flex h-16 items-end gap-px"
+        role="img"
+        aria-label={`${label} average over the selected time range`}
+      >
+        {points.map((point) => {
+          const amount = value(point)
+          const height = point.samples === 0 || max === 0 ? 1 : Math.max(3, (amount / max) * 100)
+          return (
+            <span
+              key={point.bucket}
+              className={`min-w-0 flex-1 rounded-t-[1px] ${point.samples ? tone : 'bg-line/35'}`}
+              style={{ height: `${height}%` }}
+              title={point.samples ? `${point.bucket}: ${format(amount)}` : `${point.bucket}: no sample`}
+            />
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+function formatCPU(cores: number) {
+  if (!cores) return '0 cores'
+  const digits = cores >= 10 ? 1 : cores >= 1 ? 2 : 3
+  return `${cores.toFixed(digits).replace(/\.?0+$/, '')} cores`
+}
+
+function formatBytes(bytes: number) {
+  if (!bytes) return '0 B'
+  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB']
+  const power = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)))
+  const value = bytes / 1024 ** power
+  return `${value.toFixed(value >= 10 || power === 0 ? 0 : 1)} ${units[power]}`
 }
 
 function SourceButton({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {

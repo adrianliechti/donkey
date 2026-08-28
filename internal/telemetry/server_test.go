@@ -9,7 +9,9 @@ import (
 	"testing"
 	"time"
 
+	collectormetricspb "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
+	metricspb "go.opentelemetry.io/proto/otlp/metrics/v1"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -63,6 +65,52 @@ func TestOTLPHTTPRequiresScopeTokenAndServesAuthenticatedReport(t *testing.T) {
 	}
 	if report.Totals.Requests != 4 || report.Totals.Successful != 4 {
 		t.Fatalf("unexpected report: %+v", report.Totals)
+	}
+}
+
+func TestRuntimeCredentialIngestsResourcesButNotTraffic(t *testing.T) {
+	key := bytes.Repeat([]byte{5}, 32)
+	service, err := NewService(&Config{DatabasePath: ":memory:", RetentionDays: 30, Key: key})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = service.store.Close() })
+
+	rm, err := resourceMetrics(ResourceObservation{
+		Space: "team", App: "site", Instance: "one", SampledAt: time.Now().UTC(),
+		CPUCores: 0.25, MemoryBytes: 64 * 1024 * 1024,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := proto.Marshal(&collectormetricspb.ExportMetricsServiceRequest{
+		ResourceMetrics: []*metricspb.ResourceMetrics{rm},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/v1/metrics", bytes.NewReader(body))
+	request.Header.Set("Content-Type", "application/x-protobuf")
+	request.Header.Set(TelemetryTokenHeader, RuntimeToken(key))
+	response := httptest.NewRecorder()
+	service.ingestHandler().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("ingest status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	query := httptest.NewRequest(http.MethodGet, "/v1/resources?space=team&app=site&range=48h", nil)
+	query.Header.Set("Authorization", "Bearer "+QueryToken(key))
+	queryResponse := httptest.NewRecorder()
+	service.apiHandler().ServeHTTP(queryResponse, query)
+	if queryResponse.Code != http.StatusOK {
+		t.Fatalf("query status=%d body=%s", queryResponse.Code, queryResponse.Body.String())
+	}
+	var report ResourceReport
+	if err := json.NewDecoder(queryResponse.Body).Decode(&report); err != nil {
+		t.Fatal(err)
+	}
+	if report.Current == nil || report.Current.CPUCores != 0.25 || report.Current.MemoryBytes != 64*1024*1024 {
+		t.Fatalf("resource report=%+v", report)
 	}
 }
 

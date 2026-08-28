@@ -141,6 +141,7 @@ func (s *Service) apiHandler() http.Handler {
 	mux.HandleFunc("GET /healthz", s.health)
 	mux.HandleFunc("GET /readyz", s.health)
 	mux.HandleFunc("GET /v1/traffic", s.requireQueryToken(s.handleTraffic))
+	mux.HandleFunc("GET /v1/resources", s.requireQueryToken(s.handleResources))
 	return mux
 }
 
@@ -176,12 +177,24 @@ func (s *Service) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid OTLP metrics payload", http.StatusBadRequest)
 		return
 	}
-	gateway, ok := metricPrincipal(req, r.Header.Get(TelemetryTokenHeader), s.cfg.Key)
+	principal, ok := metricPrincipal(req, r.Header.Get(TelemetryTokenHeader), s.cfg.Key)
 	if !ok {
 		http.Error(w, "invalid telemetry scope token", http.StatusUnauthorized)
 		return
 	}
-	_, rejected, err := s.store.IngestMetrics(r.Context(), req, gateway)
+	var rejected int64
+	var partialMessage string
+	switch principal {
+	case metricPrincipalRuntime:
+		_, rejected, err = s.store.IngestResourceMetrics(r.Context(), req)
+		partialMessage = "only valid OpenTelemetry container CPU usage and memory working-set metrics are retained"
+	case metricPrincipalGateway, metricPrincipalApp:
+		_, rejected, err = s.store.IngestMetrics(r.Context(), req, principal == metricPrincipalGateway)
+		partialMessage = "only valid OpenTelemetry HTTP server duration histograms for the authenticated app scope are retained"
+	default:
+		http.Error(w, "invalid telemetry scope token", http.StatusUnauthorized)
+		return
+	}
 	if err != nil {
 		http.Error(w, "storing metrics failed", http.StatusInternalServerError)
 		return
@@ -190,7 +203,7 @@ func (s *Service) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	if rejected > 0 {
 		response.PartialSuccess = &collectormetricspb.ExportMetricsPartialSuccess{
 			RejectedDataPoints: rejected,
-			ErrorMessage:       "only valid OpenTelemetry HTTP server duration histograms for the authenticated app scope are retained",
+			ErrorMessage:       partialMessage,
 		}
 	}
 	writeOTLPResponse(w, mediaType, response)
@@ -274,6 +287,22 @@ func (s *Service) handleTraffic(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	report, err := s.store.Traffic(r.Context(), r.URL.Query().Get("space"), r.URL.Query().Get("app"), r.URL.Query().Get("source"), selected, time.Now())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	writeServiceJSON(w, http.StatusOK, report)
+}
+
+func (s *Service) handleResources(w http.ResponseWriter, r *http.Request) {
+	selected, err := ParseTrafficRange(r.URL.Query().Get("range"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	report, err := s.store.Resources(
+		r.Context(), r.URL.Query().Get("space"), r.URL.Query().Get("app"), selected, time.Now(),
+	)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return

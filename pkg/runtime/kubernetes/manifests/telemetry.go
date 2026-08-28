@@ -148,7 +148,10 @@ func telemetryNetworkPolicy(in SystemInput) *networkPolicy {
 	tcp := corev1.ProtocolTCP
 	otlp := intstr.FromInt32(telemetryOTLPPort)
 	api := intstr.FromInt32(telemetryAPIPort)
-	metricPeers := append([]networkingv1.NetworkPolicyPeer{systemPeer(in, GatewayAppName)}, appPeers(in)...)
+	metricPeers := append([]networkingv1.NetworkPolicyPeer{
+		systemPeer(in, GatewayAppName),
+		systemPeer(in, ServerName),
+	}, appPeers(in)...)
 	return &networkingv1.NetworkPolicy{
 		TypeMeta: metav1.TypeMeta{APIVersion: "networking.k8s.io/v1", Kind: "NetworkPolicy"},
 		ObjectMeta: metav1.ObjectMeta{

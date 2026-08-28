@@ -21,6 +21,7 @@ const (
 	gatewayTokenPurpose = "donkey/telemetry/gateway/v1"
 	queryTokenPurpose   = "donkey/telemetry/query/v1"
 	appTokenPurpose     = "donkey/telemetry/app/v1"
+	runtimeTokenPurpose = "donkey/telemetry/runtime/v1"
 	appVisitorPurpose   = "donkey/telemetry/app-visitor/v1"
 	spaceVisitorPurpose = "donkey/telemetry/space-visitor/v1"
 )
@@ -28,6 +29,11 @@ const (
 func GatewayToken(key []byte) string { return scopedToken(key, gatewayTokenPurpose) }
 
 func QueryToken(key []byte) string { return scopedToken(key, queryTokenPurpose) }
+
+// RuntimeToken lets donkey-server submit resource snapshots for every app in
+// its installation in one OTLP request. It is distinct from the gateway and
+// app tokens, so none of those writers can forge runtime-owned measurements.
+func RuntimeToken(key []byte) string { return scopedToken(key, runtimeTokenPurpose) }
 
 // AppToken is valid for exactly one semantic-convention resource scope. An
 // app can report its own in-process metrics, but cannot write another app's
@@ -64,28 +70,43 @@ func tokenMatches(got, expected string) bool {
 // metricPrincipal authenticates one whole OTLP request. A standard exporter
 // sends one service resource per request; requiring a single app scope keeps
 // the scoped token meaningful even if a caller constructs protobuf by hand.
-func metricPrincipal(req *collectormetricspb.ExportMetricsServiceRequest, token string, key []byte) (gateway bool, ok bool) {
+type metricPrincipalKind uint8
+
+const (
+	metricPrincipalInvalid metricPrincipalKind = iota
+	metricPrincipalApp
+	metricPrincipalGateway
+	metricPrincipalRuntime
+)
+
+func metricPrincipal(req *collectormetricspb.ExportMetricsServiceRequest, token string, key []byte) (metricPrincipalKind, bool) {
 	if tokenMatches(token, GatewayToken(key)) {
-		return true, true
+		return metricPrincipalGateway, true
+	}
+	if tokenMatches(token, RuntimeToken(key)) {
+		return metricPrincipalRuntime, true
 	}
 	space, app := "", ""
 	found := false
 	for _, rm := range req.ResourceMetrics {
 		if rm == nil {
-			return false, false
+			return metricPrincipalInvalid, false
 		}
 		resources := resourceMap(rm.Resource)
 		candidateSpace, candidateApp := resources["service.namespace"], resources["service.name"]
 		if !config.ValidName(candidateSpace) || !config.ValidName(candidateApp) {
-			return false, false
+			return metricPrincipalInvalid, false
 		}
 		if !found {
 			space, app, found = candidateSpace, candidateApp, true
 			continue
 		}
 		if candidateSpace != space || candidateApp != app {
-			return false, false
+			return metricPrincipalInvalid, false
 		}
 	}
-	return false, found && tokenMatches(token, AppToken(key, space, app))
+	if found && tokenMatches(token, AppToken(key, space, app)) {
+		return metricPrincipalApp, true
+	}
+	return metricPrincipalInvalid, false
 }

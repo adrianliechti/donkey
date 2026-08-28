@@ -43,6 +43,13 @@ export const trafficQuery = (space: string, app = '', source: TrafficSource = 'e
     refetchInterval: 30_000,
   })
 
+export const resourcesQuery = (space: string, app: string, range: TrafficRange = '30d') =>
+  queryOptions({
+    queryKey: ['resources', space, app, range],
+    queryFn: () => api.resources(space, app, range),
+    refetchInterval: 30_000,
+  })
+
 // Doctor probes everything (build engine, registry, gateway, assistant) and
 // can take up to ~15s — poll gently; the cache keeps the last report
 // visible while a new one is on its way.
@@ -99,6 +106,10 @@ export function useAppRelease(space: string, app: string) {
 
 export function useTraffic(space: string, app = '', source: TrafficSource = 'edge', range: TrafficRange = '30d') {
   return present(useQuery(trafficQuery(space, app, source, range)))
+}
+
+export function useResources(space: string, app: string, range: TrafficRange = '30d') {
+  return present(useQuery(resourcesQuery(space, app, range)))
 }
 
 export function useDoctor() {

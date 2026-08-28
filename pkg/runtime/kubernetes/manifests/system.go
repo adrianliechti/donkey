@@ -366,6 +366,7 @@ func serverDeployment(in SystemInput) *appsv1.Deployment {
 		// only — the path the console asks for is what gets proxied.
 		{Name: "DONKEY_AI_URL", Value: fmt.Sprintf("http://%s.%s.svc:80", AIAppName, in.Namespace)},
 		{Name: "DONKEY_TELEMETRY_URL", Value: TelemetryAPIEndpoint(in.Namespace)},
+		{Name: "DONKEY_TELEMETRY_OTLP_ENDPOINT", Value: TelemetryOTLPEndpoint(in.Namespace)},
 		{Name: "DONKEY_DEFAULT_PLATFORM", Value: in.DefaultPlatform},
 		{Name: "DONKEY_POSTGRES_IMAGE", Value: in.AddonImages.Postgres},
 		{Name: "DONKEY_RUSTFS_IMAGE", Value: in.AddonImages.RustFS},

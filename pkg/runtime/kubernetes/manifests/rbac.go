@@ -111,6 +111,13 @@ func serverRoleRules() []rbacv1.PolicyRule {
 			Verbs:     []string{"get", "list"},
 		},
 		{
+			// Resource telemetry reads the standard Metrics API. In most
+			// clusters Metrics Server provides this aggregated API.
+			APIGroups: []string{"metrics.k8s.io"},
+			Resources: []string{"pods"},
+			Verbs:     []string{"get", "list"},
+		},
+		{
 			APIGroups: []string{""},
 			Resources: []string{"pods/exec"},
 			Verbs:     []string{"get", "create"},

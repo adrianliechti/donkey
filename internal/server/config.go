@@ -44,7 +44,8 @@ type Config struct {
 	AIURL string
 	// TelemetryURL is the private query listener of the traffic telemetry
 	// service. App exporters use a different port and credential.
-	TelemetryURL string
+	TelemetryURL          string
+	TelemetryOTLPEndpoint string
 
 	OIDCIssuer       string
 	OIDCClientID     string
@@ -90,18 +91,19 @@ func FromEnv() (*Config, error) {
 			Immutable:       os.Getenv("DONKEY_REGISTRY_IMMUTABLE") == "true",
 			CAFile:          os.Getenv("DONKEY_REGISTRY_CA_FILE"),
 		},
-		Domain:            os.Getenv("DONKEY_DOMAIN"),
-		BuildkitAddr:      os.Getenv("DONKEY_BUILDKIT_ADDR"),
-		PackagesURL:       envOr("DONKEY_PACKAGES_URL", "http://donkey-packages"),
-		NamespacePrefix:   envOr("DONKEY_NAMESPACE_PREFIX", config.DefaultNamespacePrefix),
-		SystemNamespace:   envOr("DONKEY_SYSTEM_NAMESPACE", config.DefaultSystemNamespace),
-		WorkloadNamespace: os.Getenv("DONKEY_WORKLOAD_NAMESPACE"),
-		AIURL:             os.Getenv("DONKEY_AI_URL"),
-		TelemetryURL:      envOr("DONKEY_TELEMETRY_URL", "http://donkey-telemetry:9090"),
-		OIDCIssuer:        os.Getenv("DONKEY_OIDC_ISSUER"),
-		OIDCClientID:      os.Getenv("DONKEY_OIDC_CLIENT_ID"),
-		OIDCClientSecret:  os.Getenv("DONKEY_OIDC_CLIENT_SECRET"),
-		DefaultPlatform:   envOr("DONKEY_DEFAULT_PLATFORM", "linux/amd64"),
+		Domain:                os.Getenv("DONKEY_DOMAIN"),
+		BuildkitAddr:          os.Getenv("DONKEY_BUILDKIT_ADDR"),
+		PackagesURL:           envOr("DONKEY_PACKAGES_URL", "http://donkey-packages"),
+		NamespacePrefix:       envOr("DONKEY_NAMESPACE_PREFIX", config.DefaultNamespacePrefix),
+		SystemNamespace:       envOr("DONKEY_SYSTEM_NAMESPACE", config.DefaultSystemNamespace),
+		WorkloadNamespace:     os.Getenv("DONKEY_WORKLOAD_NAMESPACE"),
+		AIURL:                 os.Getenv("DONKEY_AI_URL"),
+		TelemetryURL:          envOr("DONKEY_TELEMETRY_URL", "http://donkey-telemetry:9090"),
+		TelemetryOTLPEndpoint: envOr("DONKEY_TELEMETRY_OTLP_ENDPOINT", "http://donkey-telemetry:4318"),
+		OIDCIssuer:            os.Getenv("DONKEY_OIDC_ISSUER"),
+		OIDCClientID:          os.Getenv("DONKEY_OIDC_CLIENT_ID"),
+		OIDCClientSecret:      os.Getenv("DONKEY_OIDC_CLIENT_SECRET"),
+		DefaultPlatform:       envOr("DONKEY_DEFAULT_PLATFORM", "linux/amd64"),
 		AddonImages: config.InstallAddonImages{
 			Postgres: os.Getenv("DONKEY_POSTGRES_IMAGE"),
 			RustFS:   os.Getenv("DONKEY_RUSTFS_IMAGE"),

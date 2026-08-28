@@ -146,7 +146,7 @@ func (t *edgeTelemetry) Record(r *http.Request, rt route, sess *session, status 
 func canonicalHTTPMethod(method string) string {
 	switch method {
 	case http.MethodConnect, http.MethodDelete, http.MethodGet, http.MethodHead,
-		http.MethodOptions, http.MethodPatch, http.MethodPost, http.MethodPut, http.MethodTrace:
+		http.MethodOptions, http.MethodPatch, http.MethodPost, http.MethodPut, "QUERY", http.MethodTrace:
 		return method
 	default:
 		return "_OTHER"

@@ -7,6 +7,62 @@ import (
 	corev1 "k8s.io/api/core/v1"
 )
 
+func TestServerCanSampleAndExportContainerMetrics(t *testing.T) {
+	in := systemInput()
+	deployment := serverDeployment(in)
+	env := map[string]string{}
+	for _, variable := range deployment.Spec.Template.Spec.Containers[0].Env {
+		env[variable.Name] = variable.Value
+	}
+	if got, want := env["DONKEY_TELEMETRY_OTLP_ENDPOINT"], TelemetryOTLPEndpoint(in.Namespace); got != want {
+		t.Fatalf("server OTLP endpoint=%q, want %q", got, want)
+	}
+
+	allowedMetrics := false
+	for _, rule := range serverRoleRules() {
+		if len(rule.APIGroups) == 1 && rule.APIGroups[0] == "metrics.k8s.io" &&
+			len(rule.Resources) == 1 && rule.Resources[0] == "pods" {
+			allowedMetrics = hasString(rule.Verbs, "get") && hasString(rule.Verbs, "list")
+		}
+	}
+	if !allowedMetrics {
+		t.Fatal("donkey-server cannot read pods from metrics.k8s.io")
+	}
+
+	policy := telemetryNetworkPolicy(in)
+	serverLabels := systemLabels(ServerName)
+	serverCanWriteOTLP := false
+	for _, peer := range policy.Spec.Ingress[0].From {
+		if peer.PodSelector != nil && mapsEqual(peer.PodSelector.MatchLabels, serverLabels) {
+			serverCanWriteOTLP = true
+		}
+	}
+	if !serverCanWriteOTLP {
+		t.Fatal("telemetry NetworkPolicy does not admit donkey-server on the OTLP port")
+	}
+}
+
+func hasString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
+func mapsEqual(left, right map[string]string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for key, value := range left {
+		if right[key] != value {
+			return false
+		}
+	}
+	return true
+}
+
 func TestTelemetryOwnsOnePersistentDuckDBWriter(t *testing.T) {
 	in := systemInput()
 	objects := telemetryObjects(in)

@@ -115,6 +115,35 @@ CREATE TABLE IF NOT EXISTS metric_stream_state (
 CREATE INDEX IF NOT EXISTS metric_stream_state_seen
   ON metric_stream_state (last_seen);
 
+CREATE TABLE IF NOT EXISTS resource_rollups (
+  hour BIGINT NOT NULL,
+  space TEXT NOT NULL,
+  app TEXT NOT NULL,
+  instance TEXT NOT NULL,
+  sample_count BIGINT NOT NULL,
+  cpu_sum DOUBLE NOT NULL,
+  cpu_max DOUBLE NOT NULL,
+  memory_sum DOUBLE NOT NULL,
+  memory_max BIGINT NOT NULL,
+  last_nano BIGINT NOT NULL,
+  last_cpu DOUBLE NOT NULL,
+  last_memory BIGINT NOT NULL,
+  PRIMARY KEY (hour, space, app, instance)
+);
+CREATE INDEX IF NOT EXISTS resource_rollups_scope_time
+  ON resource_rollups (space, app, hour);
+
+CREATE TABLE IF NOT EXISTS resource_sample_state (
+  space TEXT NOT NULL,
+  app TEXT NOT NULL,
+  instance TEXT NOT NULL,
+  time_nano BIGINT NOT NULL,
+  last_seen BIGINT NOT NULL,
+  PRIMARY KEY (space, app, instance)
+);
+CREATE INDEX IF NOT EXISTS resource_sample_state_seen
+  ON resource_sample_state (last_seen);
+
 CREATE TABLE IF NOT EXISTS view_rollups (
   hour BIGINT NOT NULL,
   space TEXT NOT NULL,
@@ -157,6 +186,8 @@ func (s *Store) Cleanup(ctx context.Context, now time.Time) error {
 		"DELETE FROM view_rollups WHERE hour < ?",
 		"DELETE FROM view_visitors WHERE hour < ?",
 		"DELETE FROM metric_stream_state WHERE last_seen < ?",
+		"DELETE FROM resource_rollups WHERE hour < ?",
+		"DELETE FROM resource_sample_state WHERE last_seen < ?",
 	} {
 		if _, err := tx.ExecContext(ctx, q, cutoff); err != nil {
 			return err
@@ -317,7 +348,7 @@ func (s *Store) ingestHTTPPoint(
 
 func canonicalMetricMethod(method string) string {
 	switch method {
-	case "CONNECT", "DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT", "TRACE", "_OTHER":
+	case "CONNECT", "DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT", "QUERY", "TRACE", "_OTHER":
 		return method
 	default:
 		return "_OTHER"

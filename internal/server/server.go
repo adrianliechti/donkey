@@ -23,8 +23,9 @@ type Server struct {
 	assistant ai.Assistant
 	// plans holds what donkey read about an upload between review and deploy,
 	// so the assistant answers once per app rather than once per screen.
-	plans   *planStore
-	traffic *telemetry.Client
+	plans     *planStore
+	traffic   *telemetry.Client
+	resources *telemetry.ResourceExporter
 
 	// deploying lets a terminating pod finish in-flight deploys.
 	deploying sync.WaitGroup
@@ -49,7 +50,8 @@ func New(cfg *Config, rt runtime.Provider) (*Server, error) {
 	}
 	return &Server{
 		cfg: cfg, rt: rt, assistant: assistant, plans: newPlanStore(),
-		traffic: telemetry.NewClient(cfg.TelemetryURL, cfg.TelemetryKey),
+		traffic:   telemetry.NewClient(cfg.TelemetryURL, cfg.TelemetryKey),
+		resources: telemetry.NewResourceExporter(cfg.TelemetryOTLPEndpoint, cfg.TelemetryKey),
 	}, nil
 }
 
@@ -108,6 +110,7 @@ func (s *Server) routes() http.Handler {
 	mux.Handle("DELETE /v1/spaces/{space}", s.auth(s.handleDeleteSpace))
 	mux.Handle("GET /v1/spaces/{space}/traffic", s.auth(s.handleTraffic))
 	mux.Handle("GET /v1/spaces/{space}/apps/{app}/traffic", s.auth(s.handleTraffic))
+	mux.Handle("GET /v1/spaces/{space}/apps/{app}/resources", s.auth(s.handleResources))
 	// The service catalog, and the services of a space. Containers with safe
 	// names (services, databases, tables, buckets) live in the path; leaf
 	// items with arbitrary names (object keys, row keys) ride in query/body.
@@ -192,6 +195,7 @@ func (s *Server) Run(ctx context.Context) error {
 		}
 		errs <- nil
 	}()
+	go s.resourceTelemetryLoop(ctx)
 
 	select {
 	case err := <-errs:
