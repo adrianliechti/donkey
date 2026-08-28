@@ -29,6 +29,13 @@ export const statusQuery = (space: string, app: string) =>
     refetchInterval: 10_000,
   })
 
+export const releaseQuery = (space: string, app: string) =>
+  queryOptions({
+    queryKey: ['release', space, app],
+    queryFn: () => api.release(space, app),
+    staleTime: 30_000,
+  })
+
 export const trafficQuery = (space: string, app = '', source: TrafficSource = 'edge', range: TrafficRange = '30d') =>
   queryOptions({
     queryKey: ['traffic', space, app, source, range],
@@ -84,6 +91,10 @@ export function useFleet() {
 
 export function useAppStatus(space: string, app: string) {
   return present(useQuery(statusQuery(space, app)))
+}
+
+export function useAppRelease(space: string, app: string) {
+  return present(useQuery(releaseQuery(space, app)))
 }
 
 export function useTraffic(space: string, app = '', source: TrafficSource = 'edge', range: TrafficRange = '30d') {

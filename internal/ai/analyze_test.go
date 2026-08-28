@@ -1,6 +1,9 @@
 package ai
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // The model's answer is a suggestion, not an instruction: anything donkey
 // would refuse anyway is dropped before a caller ever sees it.
@@ -51,5 +54,16 @@ func TestVolumePaths(t *testing.T) {
 	got := a.VolumePaths()
 	if len(got) != 2 || got[0] != "/a" || got[1] != "/b" {
 		t.Fatalf("VolumePaths() = %v", got)
+	}
+}
+
+// Every service donkey can provision has to be named in the analysis
+// contract; otherwise it exists in the catalog but can never appear in a
+// source-derived deploy plan.
+func TestAnalyzePromptOffersEveryService(t *testing.T) {
+	for _, service := range []string{"postgres", "rustfs", "openai"} {
+		if !strings.Contains(analyzeInstructions, `"`+service+`"`) {
+			t.Errorf("analysis instructions do not offer %s", service)
+		}
 	}
 }

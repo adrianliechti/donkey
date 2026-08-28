@@ -92,6 +92,7 @@ func (s *Server) routes() http.Handler {
 	// Apps live in a space, so their address does too.
 	mux.Handle("GET /v1/apps", s.auth(s.handleListApps))
 	mux.Handle("GET /v1/spaces/{space}/apps/{app}/status", s.auth(s.handleStatus))
+	mux.Handle("GET /v1/spaces/{space}/apps/{app}/release", s.auth(s.handleRelease))
 	mux.Handle("GET /v1/spaces/{space}/apps/{app}/logs", s.auth(s.handleLogs))
 	mux.Handle("GET /v1/spaces/{space}/apps/{app}/env", s.auth(s.handleGetEnv))
 	mux.Handle("PUT /v1/spaces/{space}/apps/{app}/env", s.auth(s.handlePutEnv))

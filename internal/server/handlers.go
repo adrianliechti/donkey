@@ -68,6 +68,9 @@ type StatusResponse struct {
 	Exposure string `json:"exposure,omitempty"`
 	// Port the app listens on (donkey.yaml's `port`).
 	Port int `json:"port,omitempty"`
+	// HasRelease says the last deploy left a bounded record that the console
+	// can reopen after the live stream is gone.
+	HasRelease bool `json:"hasRelease,omitempty"`
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
@@ -102,6 +105,9 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	if st.Found {
 		resp.Exposure = exposureOf(st)
 		resp.Port = int(st.Port)
+		if release, err := s.rt.AppMeta(r.Context(), space, app, runtime.MetaRelease); err == nil {
+			resp.HasRelease = hasRenderableRelease(release)
+		}
 	}
 	writeJSON(w, http.StatusOK, resp)
 }

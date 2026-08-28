@@ -285,6 +285,8 @@ const (
 	MetaConsole = "donkey.dev/console"
 	// MetaDecisions is what deploy-time analysis settled.
 	MetaDecisions = "donkey.dev/decisions"
+	// MetaRelease is the bounded latest deploy record rendered by the console.
+	MetaRelease = "donkey.dev/release"
 )
 
 // File-browser limits, shared by every provider.

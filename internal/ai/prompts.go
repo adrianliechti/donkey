@@ -45,9 +45,18 @@ Report:
     disk).
   · Prefer few, broad folders over many narrow ones. An app with nothing to
     keep gets an empty list — that is the common, correct answer.
-- services: backing services the app clearly expects (currently only
-  "postgres" is available); empty when the app needs none. Say in the reason
-  which file shows it (a DATABASE_URL default, a psycopg import, …).
+- services: backing services the running app clearly expects; empty when it
+  needs none. The available types are:
+  · "postgres" for a PostgreSQL database (DATABASE_URL, psycopg/pg, JDBC
+    PostgreSQL configuration, and equivalent connection code).
+  · "rustfs" for S3-compatible object storage (an S3 client used for runtime
+    uploads/objects plus endpoint, bucket, or AWS S3 configuration). Do not
+    infer it merely because a generic AWS SDK is installed for another AWS
+    service.
+  · "openai" for OpenAI-compatible inference (the running app calls an OpenAI
+    SDK/API and expects OPENAI_API_KEY or OPENAI_BASE_URL). Ignore build tools,
+    tests, and documentation examples that do not make a runtime call.
+  Say in each reason which file and connection call/configuration prove it.
 - localURLs: absolute addresses written into the code that point at localhost,
   127.0.0.1, 0.0.0.0, host.docker.internal or a development port — the ones
   that quietly stop meaning what the author intended once the app runs on a

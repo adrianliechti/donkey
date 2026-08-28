@@ -247,6 +247,18 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 	}); err != nil {
 		return err
 	}
+	// BuildKit's OCI worker uses its container's network namespace, but strips
+	// Docker's loopback DNS server from build-step resolv.conf. The package
+	// proxy's Docker name therefore resolves in donkey-server and not inside a
+	// RUN instruction. Its network IP is reachable from both and remains tied
+	// to this container for its lifetime; every supported reinstall replaces
+	// the package proxy and server together, so the recorded endpoint follows
+	// a recreated container too.
+	packagesIP, err := dockerContainerIP(ctx, cli, dockerPackagesName)
+	if err != nil {
+		return err
+	}
+	packagesURL := "http://" + packagesIP + ":8090"
 
 	if err := replaceInfraContainer(ctx, cli, infraContainer{
 		Name:         dockerBuildkitName,
@@ -283,7 +295,7 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 		"DONKEY_REGISTRY_INSECURE":  strconv.FormatBool(settings.Registry.Insecure),
 		"DONKEY_REGISTRY_IMMUTABLE": strconv.FormatBool(settings.Registry.Immutable),
 		"DONKEY_BUILDKIT_ADDR":      "tcp://" + dockerBuildkitName + ":1234",
-		"DONKEY_PACKAGES_URL":       "http://" + dockerPackagesName + ":8090",
+		"DONKEY_PACKAGES_URL":       packagesURL,
 		"DONKEY_AI_URL":             "http://" + dockerAIName + ":8089",
 		"DONKEY_TELEMETRY_URL":      "http://" + dockerTelemetryName + ":9090",
 		"DONKEY_DEFAULT_PLATFORM":   settings.DefaultPlatform,
@@ -681,6 +693,19 @@ func existingContainerEnv(ctx context.Context, cli *dockerclient.Client, name, k
 		}
 	}
 	return ""
+}
+
+func dockerContainerIP(ctx context.Context, cli *dockerclient.Client, name string) (string, error) {
+	info, err := cli.ContainerInspect(ctx, name)
+	if err != nil {
+		return "", fmt.Errorf("inspecting %s's network address: %w", name, err)
+	}
+	if info.NetworkSettings != nil {
+		if endpoint := info.NetworkSettings.Networks[dockerNetwork]; endpoint != nil && endpoint.IPAddress != "" {
+			return endpoint.IPAddress, nil
+		}
+	}
+	return "", fmt.Errorf("%s has no address on the %s network", name, dockerNetwork)
 }
 
 func waitDockerRunning(ctx context.Context, cli *dockerclient.Client, name string, timeout time.Duration) error {

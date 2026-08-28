@@ -50,15 +50,16 @@ type DeployUpdate struct {
 
 // lineStreamer writes progress lines to the client as they happen.
 type lineStreamer struct {
-	w http.ResponseWriter
-	f http.Flusher
+	w       http.ResponseWriter
+	f       http.Flusher
+	release *releaseRecorder
 }
 
-func newLineStreamer(w http.ResponseWriter) *lineStreamer {
+func newLineStreamer(w http.ResponseWriter, release *releaseRecorder) *lineStreamer {
 	f, _ := w.(http.Flusher)
 	w.Header().Set("Content-Type", "application/x-ndjson")
 	w.WriteHeader(http.StatusOK)
-	return &lineStreamer{w: w, f: f}
+	return &lineStreamer{w: w, f: f, release: release}
 }
 
 func (l *lineStreamer) send(v map[string]any) {
@@ -70,21 +71,40 @@ func (l *lineStreamer) send(v map[string]any) {
 }
 
 func (l *lineStreamer) Line(format string, a ...any) {
-	l.send(map[string]any{"line": fmt.Sprintf(format, a...)})
+	line := fmt.Sprintf(format, a...)
+	if l.release != nil {
+		l.release.line(line)
+	}
+	l.send(map[string]any{"line": line})
 }
 
 // Write lets the streamer act as the build progress sink.
 func (l *lineStreamer) Write(p []byte) (int, error) {
+	if l.release != nil {
+		l.release.progress(string(p))
+	}
 	l.send(map[string]any{"progress": string(p)})
 	return len(p), nil
 }
 
 func (l *lineStreamer) Result(res DeployResult) {
+	if l.release != nil {
+		l.release.result(res)
+	}
 	l.send(map[string]any{"result": res})
 }
 
 func (l *lineStreamer) Update(update DeployUpdate) {
+	if l.release != nil {
+		l.release.update(update)
+	}
 	l.send(map[string]any{"update": update})
+}
+
+func (l *lineStreamer) Inspection(build PlanBuild, analysis *ai.Analysis) {
+	if l.release != nil {
+		l.release.inspection(build, analysis)
+	}
 }
 
 // handleDeploy: POST /v1/deploys?platform=&dryRun=&noWait=&buildOnly=&tag=
@@ -156,14 +176,19 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	out := newLineStreamer(w)
+	started := time.Now()
+	var reviewed *Plan
+	if planned != nil {
+		reviewed = s.renderPlan(context.WithoutCancel(r.Context()), r.URL.Query().Get("plan"), planned)
+	}
+	release := newReleaseRecorder(started, reviewed)
+	out := newLineStreamer(w, release)
 	if took != "" {
 		out.Line("· Building %s — that's the folder with the donkey.yaml.", took)
 	}
 	// The deploy itself must survive a dropped client connection: route
 	// changes can drain the very stream this response rides on. The CLI
 	// reconnects via status polling.
-	started := time.Now()
 	// A reviewed plan settles the space too — it is one of the things the
 	// review screen shows, so a query parameter left over from before the
 	// review must not quietly move the app somewhere else.
@@ -171,7 +196,7 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 	if planned != nil {
 		space = ""
 	}
-	res := s.deploy(context.WithoutCancel(r.Context()), out, dir, app, deployOpts{
+	opts := deployOpts{
 		Analysis:  planned.reading(),
 		Space:     space,
 		Platform:  r.URL.Query().Get("platform"),
@@ -181,7 +206,9 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 		BuildOnly: r.URL.Query().Get("buildOnly") == "true",
 		NoBuild:   r.URL.Query().Get("noBuild") == "true",
 		SHA:       r.URL.Query().Get("sha"),
-	})
+	}
+	deployCtx := context.WithoutCancel(r.Context())
+	res := s.deploy(deployCtx, out, dir, app, opts)
 	// The stream is the caller's record; this line is the server's. Without
 	// it nothing on the cluster remembers that a deploy ever happened.
 	outcome := "ok"
@@ -192,6 +219,9 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 		res.App, res.Space, res.ImageRef, r.URL.Query().Get("sha"),
 		time.Since(started).Round(time.Second), outcome)
 	out.Result(res)
+	if !opts.DryRun && !opts.BuildOnly {
+		s.persistRelease(deployCtx, res.Space, res.App, release.finish(s, deployCtx, app))
+	}
 }
 
 // appFromParams synthesizes the minimal app config a web deploy needs when
@@ -304,12 +334,16 @@ func (s *Server) deploy(ctx context.Context, out *lineStreamer, dir string, app 
 		if opts.DryRun {
 			return s.renderDryRun(app, opts.Tag)
 		}
+		out.Update(DeployUpdate{Stage: "releasing"})
 		return s.applyAndWait(ctx, out, app, dir, opts.Tag, opts.NoWait)
 	}
 
 	out.Update(DeployUpdate{Stage: "detecting"})
 	out.Line("Looking at your app…")
 	det, detErr := detect.Detect(dir, app)
+	if detErr == nil {
+		out.Inspection(describePlanBuild(dir, det, nil), nil)
+	}
 
 	// Runs alongside the build: a model call should not sit between the user
 	// and their deploy.
@@ -319,7 +353,10 @@ func (s *Server) deploy(ctx context.Context, out *lineStreamer, dir string, app 
 	}
 	analysisReady := make(chan analysisResult, 1)
 	run := func() {
-		analysis, _, err := s.analyzeApp(ctx, dir, det, detErr)
+		analysis, signals, err := s.analyzeApp(ctx, dir, det, detErr)
+		if detErr == nil {
+			out.Inspection(describePlanBuild(dir, det, signals), analysis)
+		}
 		analysisReady <- analysisResult{analysis, err}
 	}
 	switch {

@@ -26,8 +26,8 @@ const stages: { id: DeployStage; label: string; detail: string }[] = [
 ]
 
 function statusText(stage: DeployStage | undefined, result?: DeployResult): string {
-  if (result?.ok) return 'Release complete'
-  if (result && !result.ok) return 'Release failed'
+  if (result?.ok) return 'Deployment complete'
+  if (result && !result.ok) return 'Deployment failed'
   if (stage === 'building') return 'Building the image'
   if (stage === 'releasing') return 'Releasing and checking health'
   return 'Inspecting the source'
@@ -51,7 +51,7 @@ function ReleaseState({ plan, update, result }: { plan: Plan; update: DeployUpda
     <Card className={`overflow-hidden ${failed ? 'border-brick/40' : result?.ok ? 'border-moss/40' : ''}`}>
       <div className="flex items-start justify-between gap-3 border-b border-line px-4 py-3">
         <div>
-          <SectionTitle>Release state</SectionTitle>
+          <SectionTitle>Deployment state</SectionTitle>
           <p
             aria-live="polite"
             className={`mt-1 text-sm font-medium ${failed ? 'text-brick' : result?.ok ? 'text-moss' : 'text-ink'}`}
@@ -227,6 +227,8 @@ function DetectionDetails({ plan, update }: { plan: Plan; update: DeployUpdate }
 }
 
 function ServicesNeeded({ plan }: { plan: Plan }) {
+  const services = plan.services ?? []
+  const storage = plan.app.storage ?? []
   return (
     <Card className="space-y-3 p-4">
       <SectionTitle>
@@ -234,11 +236,11 @@ function ServicesNeeded({ plan }: { plan: Plan }) {
           <Database className="size-3.5" aria-hidden /> Backing services
         </span>
       </SectionTitle>
-      {plan.services.length === 0 ? (
+      {services.length === 0 ? (
         <p className="text-xs text-stone">No backing service dependencies were detected.</p>
       ) : (
         <ul className="space-y-2">
-          {plan.services.map((service) => {
+          {services.map((service) => {
             const state = !service.known
               ? 'unsupported'
               : !service.selected
@@ -263,12 +265,12 @@ function ServicesNeeded({ plan }: { plan: Plan }) {
           })}
         </ul>
       )}
-      {plan.app.storage.length > 0 && (
+      {storage.length > 0 && (
         <p className="flex items-start gap-1.5 border-t border-line pt-2 text-xs text-stone">
           <Box className="mt-0.5 size-3.5 shrink-0" aria-hidden />
           <span>
             One {plan.app.storageSize || '1Gi'} disk keeps{' '}
-            <span className="font-mono text-ink-soft">{plan.app.storage.join(', ')}</span>.
+            <span className="font-mono text-ink-soft">{storage.join(', ')}</span>.
           </span>
         </p>
       )}
@@ -277,7 +279,7 @@ function ServicesNeeded({ plan }: { plan: Plan }) {
 }
 
 function Problems({ plan, result }: { plan: Plan; result?: DeployResult }) {
-  const findings = plan.findings.filter((finding) => finding.level !== 'info')
+  const findings = (plan.findings ?? []).filter((finding) => finding.level !== 'info')
   const failed = Boolean(result && !result.ok)
   if (!failed && findings.length === 0) {
     return (
@@ -334,7 +336,17 @@ function Problems({ plan, result }: { plan: Plan; result?: DeployResult }) {
   )
 }
 
-function ReleaseLog({ lines, buildLog, running }: { lines: string[]; buildLog: string; running: boolean }) {
+function ReleaseLog({
+  lines,
+  buildLog,
+  running,
+  sticky = true,
+}: {
+  lines: string[]
+  buildLog: string
+  running: boolean
+  sticky?: boolean
+}) {
   const pane = useRef<HTMLDivElement>(null)
   const pinned = useRef(true)
 
@@ -343,11 +355,15 @@ function ReleaseLog({ lines, buildLog, running }: { lines: string[]; buildLog: s
   }, [lines, buildLog])
 
   return (
-    <Card className="flex min-h-[34rem] flex-col overflow-hidden lg:sticky lg:top-20 lg:h-[calc(100vh-7rem)] lg:max-h-[52rem]">
+    <Card
+      className={`flex min-h-[34rem] flex-col overflow-hidden ${
+        sticky ? 'lg:sticky lg:top-20 lg:h-[calc(100vh-7rem)] lg:max-h-[52rem]' : 'h-[min(44rem,70vh)]'
+      }`}
+    >
       <div className="flex items-center justify-between gap-3 border-b border-line px-4 py-3">
         <SectionTitle>
           <span className="flex items-center gap-1.5">
-            <Terminal className="size-3.5" aria-hidden /> Release log
+            <Terminal className="size-3.5" aria-hidden /> Deployment log
           </span>
         </SectionTitle>
         <span className="flex items-center gap-1.5 text-xs text-stone">
@@ -403,6 +419,7 @@ export function ReleaseView({
   onOpen,
   onBackToReview,
   onDeployAnother,
+  layout = 'split',
 }: {
   plan: Plan
   lines: string[]
@@ -412,44 +429,58 @@ export function ReleaseView({
   onOpen?: () => void
   onBackToReview?: () => void
   onDeployAnother?: () => void
+  layout?: 'split' | 'stacked'
 }) {
   const running = result === undefined
+  const details = (
+    <div className="space-y-4">
+      <ReleaseState plan={plan} update={update} result={result} />
+      <DetectionDetails plan={plan} update={update} />
+      <ServicesNeeded plan={plan} />
+      <Problems plan={plan} result={result} />
+
+      {result && (result.url || onOpen || onBackToReview || onDeployAnother) && (
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          {result.ok ? (
+            <>
+              {result.url && (
+                <a
+                  href={result.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="mr-auto flex min-w-0 items-center gap-1.5 truncate font-mono text-xs text-hay-deep hover:underline"
+                >
+                  <span className="truncate">{result.url}</span>
+                  <ExternalLink className="size-3.5 shrink-0" aria-hidden />
+                </a>
+              )}
+              {onDeployAnother && <Button kind="quiet" onClick={onDeployAnother}>Deploy another</Button>}
+              {onOpen && <Button onClick={onOpen}>Open the app page</Button>}
+            </>
+          ) : (
+            <>
+              {onDeployAnother && <Button kind="quiet" onClick={onDeployAnother}>Pick something else</Button>}
+              {onBackToReview && <Button onClick={onBackToReview}>Back to review</Button>}
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  )
+
+  if (layout === 'stacked') {
+    return (
+      <div className="space-y-4">
+        {details}
+        <ReleaseLog lines={lines} buildLog={buildLog} running={running} sticky={false} />
+      </div>
+    )
+  }
+
   return (
     <div className="grid items-start gap-4 lg:grid-cols-2">
       <ReleaseLog lines={lines} buildLog={buildLog} running={running} />
-      <div className="space-y-4">
-        <ReleaseState plan={plan} update={update} result={result} />
-        <DetectionDetails plan={plan} update={update} />
-        <ServicesNeeded plan={plan} />
-        <Problems plan={plan} result={result} />
-
-        {result && (
-          <div className="flex flex-wrap items-center justify-end gap-2">
-            {result.ok ? (
-              <>
-                {result.url && (
-                  <a
-                    href={result.url}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="mr-auto flex min-w-0 items-center gap-1.5 truncate font-mono text-xs text-hay-deep hover:underline"
-                  >
-                    <span className="truncate">{result.url}</span>
-                    <ExternalLink className="size-3.5 shrink-0" aria-hidden />
-                  </a>
-                )}
-                <Button kind="quiet" onClick={onDeployAnother}>Deploy another</Button>
-                <Button onClick={onOpen}>Open the app page</Button>
-              </>
-            ) : (
-              <>
-                <Button kind="quiet" onClick={onDeployAnother}>Pick something else</Button>
-                <Button onClick={onBackToReview}>Back to review</Button>
-              </>
-            )}
-          </div>
-        )}
-      </div>
+      {details}
     </div>
   )
 }

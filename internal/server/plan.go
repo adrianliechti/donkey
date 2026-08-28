@@ -531,6 +531,7 @@ func (s *Server) renderPlan(ctx context.Context, id string, sp *storedPlan) *Pla
 		AppType:   sp.appType,
 		Notes:     sp.notes,
 		Build:     sp.build,
+		Findings:  []Finding{},
 		Volumes:   sp.volumes,
 		Services:  sp.services,
 		Skipped:   sp.skipped,

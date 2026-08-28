@@ -1,10 +1,11 @@
 import { useState } from 'react'
 import {
-	ExternalLink,
-	Activity,
+  Activity,
+  ExternalLink,
   FileText,
   HardDrive,
   KeyRound,
+  Rocket,
   RotateCw,
   ScrollText,
   SlidersHorizontal,
@@ -19,6 +20,7 @@ import { EnvEditor } from './EnvEditor'
 import { FilesPanel } from './FilesPanel'
 import { LogsPanel } from './LogsPanel'
 import { NetworkCard } from './NetworkCard'
+import { StoredRelease } from './StoredRelease'
 import { TrafficPanel } from './TrafficPanel'
 import { useAppStatus } from './queries'
 import {
@@ -40,11 +42,12 @@ import {
 // The app panel slides over the fleet. Each tab is one job — glance, read,
 // browse, configure, change how it's reached — and the header that answers
 // "is it up?" stays above all of them.
-export type AppTab = 'overview' | 'traffic' | 'logs' | 'files' | 'variables' | 'settings'
+export type AppTab = 'overview' | 'release' | 'traffic' | 'logs' | 'files' | 'variables' | 'settings'
 
 const TABS: { id: AppTab; label: string; icon: React.ReactNode }[] = [
-	{ id: 'overview', label: 'Overview', icon: <FileText className="size-4" aria-hidden /> },
-	{ id: 'traffic', label: 'Telemetry', icon: <Activity className="size-4" aria-hidden /> },
+  { id: 'overview', label: 'Overview', icon: <FileText className="size-4" aria-hidden /> },
+  { id: 'release', label: 'Deployment', icon: <Rocket className="size-4" aria-hidden /> },
+  { id: 'traffic', label: 'Telemetry', icon: <Activity className="size-4" aria-hidden /> },
   { id: 'logs', label: 'Logs', icon: <ScrollText className="size-4" aria-hidden /> },
   { id: 'files', label: 'Files', icon: <HardDrive className="size-4" aria-hidden /> },
   { id: 'variables', label: 'Variables', icon: <KeyRound className="size-4" aria-hidden /> },
@@ -68,7 +71,10 @@ export function AppDetail({
   // The tab also comes from the URL, so it can name one that is not offered:
   // .../files for an app with no disk. Fall back rather than leave the panel
   // blank with nothing selected.
-  const shown: AppTab = tab === 'files' && !status?.hasStorage ? 'overview' : tab
+  const shown: AppTab =
+    (tab === 'files' && !status?.hasStorage) || (tab === 'release' && status !== null && !status.hasRelease)
+      ? 'overview'
+      : tab
 
   return (
     <div className="flex min-h-full flex-col">
@@ -98,7 +104,7 @@ export function AppDetail({
             )}
           </div>
           <div className="flex shrink-0 items-center gap-1.5">
-            <UpdatedAgo at={updatedAt} />
+            {tab !== 'release' && <UpdatedAgo at={updatedAt} />}
             <button
               onClick={onBack}
               title="Close (Esc)"
@@ -140,7 +146,9 @@ export function AppDetail({
           /* Files is only offered when there is a disk to browse — an app
              without one has nothing on it a redeploy would not rebuild. */
           <nav className="mt-3 flex gap-1 overflow-x-auto px-5" role="tablist">
-            {TABS.filter((t) => t.id !== 'files' || status.hasStorage).map((t) => (
+            {TABS.filter(
+              (t) => (t.id !== 'files' || status.hasStorage) && (t.id !== 'release' || status.hasRelease),
+            ).map((t) => (
               <button
                 key={t.id}
                 role="tab"
@@ -188,8 +196,9 @@ export function AppDetail({
                 <AddonsCard space={space} app={app} />
               </>
             )}
-			{shown === 'logs' && <LogsPanel space={space} app={app} />}
-			{shown === 'traffic' && <TrafficPanel space={space} app={app} />}
+            {shown === 'release' && <StoredRelease space={space} app={app} />}
+            {shown === 'logs' && <LogsPanel space={space} app={app} />}
+            {shown === 'traffic' && <TrafficPanel space={space} app={app} />}
             {shown === 'files' && <FilesPanel space={space} app={app} />}
             {shown === 'variables' && <EnvEditor space={space} app={app} onSaved={reload} />}
             {shown === 'settings' && (

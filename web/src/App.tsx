@@ -26,7 +26,7 @@ import { UserMenu } from './UserMenu'
 // The routes live in the hash (#/app/acme/shop/logs) so refresh keeps your
 // place, an unhealthy app can be linked to a teammate, and bookmarks from
 // the previous console keep working.
-const APP_TABS: AppTab[] = ['overview', 'traffic', 'logs', 'files', 'variables', 'settings']
+const APP_TABS: AppTab[] = ['overview', 'release', 'traffic', 'logs', 'files', 'variables', 'settings']
 
 // One cache for the whole console. Short staleness keeps panels honest
 // while still letting a remounted view show what it knew instantly. The

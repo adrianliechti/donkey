@@ -32,6 +32,8 @@ export interface AppStatus {
   hasStorage?: boolean
   exposure?: Exposure
   port?: number
+  /** The latest deploy can be reopened from app details. */
+  hasRelease?: boolean
 }
 
 export type TrafficSource = 'edge' | 'app'
@@ -295,6 +297,18 @@ export interface DeployUpdate {
   baseImages?: string[]
 }
 
+/** The bounded latest deploy record stored with a deployed app. */
+export interface AppRelease {
+  startedAt: string
+  finishedAt: string
+  plan?: Plan
+  update: DeployUpdate
+  lines: string[]
+  buildLog?: string
+  result: DeployResult
+  truncated?: boolean
+}
+
 export interface DoctorCheck {
   name: string
   ok: boolean
@@ -409,6 +423,8 @@ export const api = {
     const st = await request<AppStatus>(appPath(space, app, '/status'))
     return { ...st, pods: st.pods ?? [] }
   },
+  release: (space: string, app: string) =>
+    request<AppRelease>(appPath(space, app, '/release')),
   traffic: (space: string, app: string, source: TrafficSource = 'edge', range: TrafficRange = '30d') => {
     const query = `?source=${source}&range=${range}`
     return request<TrafficReport>(

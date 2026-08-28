@@ -310,6 +310,8 @@ export function DeployView({
           })),
       )
       queryClient.invalidateQueries({ queryKey: fleetQuery.queryKey })
+      queryClient.invalidateQueries({ queryKey: ['status', result.space ?? settled.app.space, result.app] })
+      queryClient.invalidateQueries({ queryKey: ['release', result.space ?? settled.app.space, result.app] })
       setPhase({ step: 'done', result, plan: settled, review })
     } catch (err) {
       // The plan and the packed project are both still here, so the way back
