@@ -12,6 +12,13 @@ set -euo pipefail
 require_ai
 
 DOMAIN="${DONKEY_DOMAIN:-apps.localhost}"
+# One issuer name has to work from both sides of the OIDC redirect: browsers
+# resolve *.localhost to this machine, while Docker's network alias resolves
+# the same name straight to the fake IdP container. Keeping the same port on
+# both sides also keeps discovery and token exchange honest.
+IDP_HOST="${DONKEY_IDP_HOST:-auth.${DOMAIN}}"
+IDP_PORT="${DONKEY_IDP_PORT:-5556}"
+IDP_ISSUER="${DONKEY_IDP_ISSUER:-http://${IDP_HOST}:${IDP_PORT}}"
 
 say "building donkey + images"
 (cd "${ROOT}" && task build && task server-image && task demo-idp-image && task private-packages-image)
@@ -27,7 +34,7 @@ say "installing the control plane (real install command, demo settings)"
   --domain "${DOMAIN}" \
   --tls-mode "ca" \
   --default-platform "${PLATFORM}" \
-  --oidc-issuer "http://auth.donkey-identity" \
+  --oidc-issuer "${IDP_ISSUER}" \
   --oidc-client-id "donkey-demo" \
   --oidc-client-secret "donkey-demo-secret" \
   --openai-base-url "${AI_BASE}" \
@@ -36,13 +43,12 @@ say "installing the control plane (real install command, demo settings)"
 
 say "demo identity provider (fake, auto-login)"
 docker rm -f donkey-identity >/dev/null 2>&1 || true
-# The issuer URL has no port, so the container listens on :80 itself — no
-# Service in front to remap it here (Docker lets unprivileged users bind 80).
 docker run -d --name donkey-identity --restart=unless-stopped \
-  --network donkey --network-alias auth.donkey-identity \
-  -e ISSUER=http://auth.donkey-identity -e LISTEN=:80 \
+  --network donkey --network-alias "${IDP_HOST}" \
+  -p "127.0.0.1:${IDP_PORT}:${IDP_PORT}" -p "[::1]:${IDP_PORT}:${IDP_PORT}" \
+  -e ISSUER="${IDP_ISSUER}" -e LISTEN=":${IDP_PORT}" \
   donkey/fake-idp:dev >/dev/null
-echo "fake-idp running as auth.donkey-identity on the donkey network"
+echo "fake-idp ready at ${IDP_ISSUER} (host browser + donkey network)"
 
 say "the gateway's certificate authority (what the CLI and curl trust)"
 CA_DOCKER="${ROOT}/.build/donkey-gateway-ca-docker.crt"

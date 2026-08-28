@@ -10,16 +10,14 @@ import { useEffect, useRef, useState } from 'react'
 import {
   ArrowRight,
   Check,
-  CircleAlert,
   Copy,
   Database,
   FileCode2,
   HardDrive,
-  Info,
   Loader2,
-  TriangleAlert,
 } from 'lucide-react'
-import type { Exposure, Finding, Plan, PlanEdit, PortSource } from './api'
+import type { Exposure, Plan, PlanEdit, PortSource } from './api'
+import { FindingsList } from './FindingsList'
 import { Button, Card, ErrorNote, SectionTitle } from './ui'
 
 // editFrom is the plan as an answer sheet: the server already decided every
@@ -48,34 +46,6 @@ const EXPOSURE: { value: Exposure; label: string; hint: string }[] = [
   { value: 'public', label: 'Public', hint: 'Anyone with the address can open it.' },
   { value: 'internal', label: 'Internal', hint: 'No address of its own; only apps in this space reach it, by name.' },
 ]
-
-function FindingIcon({ level }: { level: Finding['level'] }) {
-  if (level === 'block') return <CircleAlert className="mt-0.5 size-4 shrink-0 text-brick" aria-label="blocked" />
-  if (level === 'warn')
-    return <TriangleAlert className="mt-0.5 size-4 shrink-0 text-hay" aria-label="warning" />
-  return <Info className="mt-0.5 size-4 shrink-0 text-stone" aria-label="note" />
-}
-
-// FindingList is the part of the plan that has no control to live in: the
-// things that are simply true about this app.
-function FindingList({ findings }: { findings: Finding[] }) {
-  if (findings.length === 0) return null
-  return (
-    <ul className="space-y-2.5">
-      {findings.map((f, i) => (
-        <li key={`${f.code}-${i}`} className="flex gap-2 text-sm">
-          <FindingIcon level={f.level} />
-          <div className="min-w-0">
-            <p className={f.level === 'block' ? 'text-brick' : 'text-ink-soft'}>{f.title}</p>
-            {(f.detail || f.fix) && (
-              <p className="mt-0.5 text-xs text-stone">{[f.detail, f.fix].filter(Boolean).join(' ')}</p>
-            )}
-          </div>
-        </li>
-      ))}
-    </ul>
-  )
-}
 
 function Field({
   label,
@@ -184,7 +154,8 @@ export function PlanReview({
 
   const offered = plan.services.filter((s) => s.known)
   const blocked = plan.findings.filter((f) => f.level === 'block')
-  const rest = plan.findings.filter((f) => f.level !== 'block')
+  const warnings = plan.findings.filter((f) => f.level === 'warn')
+  const notes = plan.findings.filter((f) => f.level === 'info')
 
   return (
     <div className="space-y-4">
@@ -353,11 +324,17 @@ export function PlanReview({
       )}
 
       {/* Everything else that is true about this app. */}
-      {(blocked.length > 0 || rest.length > 0) && (
+      {plan.findings.length > 0 && (
         <Card className="space-y-3 p-4">
-          <SectionTitle>Checks</SectionTitle>
-          {blocked.length > 0 && <FindingList findings={blocked} />}
-          {rest.length > 0 && <FindingList findings={rest} />}
+          <div className="flex items-center justify-between gap-2">
+            <SectionTitle>Checks</SectionTitle>
+            <span className="text-xs text-stone">
+              {blocked.length + warnings.length > 0
+                ? `${blocked.length + warnings.length} need attention`
+                : 'nothing blocking'}
+            </span>
+          </div>
+          <FindingsList findings={[...blocked, ...warnings, ...notes]} />
         </Card>
       )}
 

@@ -40,6 +40,14 @@ type DeployResult struct {
 	Manifests string         `json:"manifests,omitempty"` // dry-run only
 }
 
+// DeployUpdate is structured release progress for clients that can render a
+// state panel beside the human-readable log. Unknown update fields are safe
+// for older clients to ignore.
+type DeployUpdate struct {
+	Stage      string   `json:"stage,omitempty"`
+	BaseImages []string `json:"baseImages,omitempty"`
+}
+
 // lineStreamer writes progress lines to the client as they happen.
 type lineStreamer struct {
 	w http.ResponseWriter
@@ -73,6 +81,10 @@ func (l *lineStreamer) Write(p []byte) (int, error) {
 
 func (l *lineStreamer) Result(res DeployResult) {
 	l.send(map[string]any{"result": res})
+}
+
+func (l *lineStreamer) Update(update DeployUpdate) {
+	l.send(map[string]any{"update": update})
 }
 
 // handleDeploy: POST /v1/deploys?platform=&dryRun=&noWait=&buildOnly=&tag=
@@ -295,6 +307,7 @@ func (s *Server) deploy(ctx context.Context, out *lineStreamer, dir string, app 
 		return s.applyAndWait(ctx, out, app, dir, opts.Tag, opts.NoWait)
 	}
 
+	out.Update(DeployUpdate{Stage: "detecting"})
 	out.Line("Looking at your app…")
 	det, detErr := detect.Detect(dir, app)
 
@@ -306,7 +319,7 @@ func (s *Server) deploy(ctx context.Context, out *lineStreamer, dir string, app 
 	}
 	analysisReady := make(chan analysisResult, 1)
 	run := func() {
-		analysis, err := s.analyzeApp(ctx, dir, det, detErr)
+		analysis, _, err := s.analyzeApp(ctx, dir, det, detErr)
 		analysisReady <- analysisResult{analysis, err}
 	}
 	switch {
@@ -326,6 +339,9 @@ func (s *Server) deploy(ctx context.Context, out *lineStreamer, dir string, app 
 		return fail(detErr)
 	}
 	out.Line("✓ %s will be built with %s", app.Name, det.Summary)
+	if det.DockerfilePath != "" {
+		out.Update(DeployUpdate{BaseImages: dockerfileBaseImagesAt(dir, det.DockerfilePath)})
+	}
 
 	// merge fills in what donkey.yaml left open, right before the app's
 	// objects are rendered. Exactly one of the paths below runs it, and it
@@ -377,6 +393,7 @@ func (s *Server) deploy(ctx context.Context, out *lineStreamer, dir string, app 
 	logFile.Close()
 	defer os.Remove(logFile.Name())
 
+	out.Update(DeployUpdate{Stage: "building"})
 	out.Line("Building the image…")
 	builder := &build.BuildKitBuilder{
 		Registry:     s.cfg.Registry,
@@ -434,6 +451,7 @@ func (s *Server) deploy(ctx context.Context, out *lineStreamer, dir string, app 
 		return DeployResult{OK: true, App: app.Name, Space: space, ImageRef: result.ImageRef}
 	}
 
+	out.Update(DeployUpdate{Stage: "releasing"})
 	if err := merge(); err != nil {
 		// The image is already pushed — hand its reference back so a
 		// `--no-build --tag` retry doesn't have to rebuild.

@@ -10,12 +10,12 @@
 // read once.
 import { useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { CheckCircle2, ExternalLink, FileArchive, FolderUp, Loader2, UploadCloud } from 'lucide-react'
+import { FileArchive, FolderUp, Loader2, UploadCloud } from 'lucide-react'
 import { zipSync } from 'fflate'
-import { api, type DeployResult, type Plan, type PlanEdit } from './api'
-import { Button, Card, ErrorNote, errText, SectionTitle } from './ui'
-import { DiffView } from './DiffView'
+import { api, type DeployResult, type DeployUpdate, type Plan, type PlanEdit } from './api'
+import { Card, ErrorNote, errText, SectionTitle } from './ui'
 import { PlanReview } from './PlanReview'
+import { ReleaseView } from './ReleaseView'
 import { fleetQuery, useFleet } from './queries'
 
 // The same exclusions the CLI applies while packing — a browser upload
@@ -200,15 +200,17 @@ function zipUpload(file: File): Upload {
   }
 }
 
+type ReviewPhase = { step: 'review'; upload: Upload; blob: Blob; plan: Plan }
+
 type Phase =
   | { step: 'pick' }
   // Several apps in one drop: which one is a question only the person
   // dropping can answer, and it has to be answered before the upload.
   | { step: 'root'; upload: Upload }
   | { step: 'reading'; upload: Upload }
-  | { step: 'review'; upload: Upload; blob: Blob; plan: Plan }
+  | ReviewPhase
   | { step: 'deploying'; plan: Plan }
-  | { step: 'done'; result: DeployResult }
+  | { step: 'done'; result: DeployResult; plan: Plan; review: ReviewPhase }
 
 export function DeployView({
   space,
@@ -223,6 +225,7 @@ export function DeployView({
   const [dragOver, setDragOver] = useState(false)
   const [lines, setLines] = useState<string[]>([])
   const [buildLog, setBuildLog] = useState('')
+  const [releaseUpdate, setReleaseUpdate] = useState<DeployUpdate>({ stage: 'detecting' })
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const fileInput = useRef<HTMLInputElement>(null)
@@ -279,6 +282,7 @@ export function DeployView({
   async function deploy(at: Extract<Phase, { step: 'review' }>, edit: PlanEdit) {
     setBusy(true)
     setError('')
+    let review = at
     try {
       // The answers go up one last time, so what deploys is exactly what the
       // screen showed — including anything typed in the last 400ms.
@@ -288,30 +292,44 @@ export function DeployView({
         setError('Something still blocks this deploy — see the checks above.')
         return
       }
+      review = { ...at, plan: settled }
       setLines([])
       setBuildLog('')
+      setReleaseUpdate({ stage: 'detecting', baseImages: settled.build.baseImages })
       setPhase({ step: 'deploying', plan: settled })
       const result = await api.deployUpload(
         at.blob,
         { plan: settled.id },
         (line) => setLines((prev) => [...prev, line]),
         (progress) => setBuildLog((prev) => prev + progress),
+        (update) =>
+          setReleaseUpdate((prev) => ({
+            ...prev,
+            ...update,
+            baseImages: update.baseImages ?? prev.baseImages,
+          })),
       )
       queryClient.invalidateQueries({ queryKey: fleetQuery.queryKey })
-      setPhase({ step: 'done', result })
+      setPhase({ step: 'done', result, plan: settled, review })
     } catch (err) {
       // The plan and the packed project are both still here, so the way back
       // is the review screen — not the drop zone the folder came from.
       setError(errText(err, 'The deploy did not work.'))
-      setPhase(at)
+      setPhase(review)
     } finally {
       setBusy(false)
     }
   }
 
   return (
-    <div className="mx-auto max-w-2xl space-y-5">
-      <h1 className="text-lg font-semibold">Deploy</h1>
+    <div
+      className={`mx-auto space-y-5 ${phase.step === 'deploying' || phase.step === 'done' ? 'max-w-6xl' : 'max-w-2xl'}`}
+    >
+      <h1 className="text-lg font-semibold">
+        {phase.step === 'deploying' || phase.step === 'done'
+          ? `Release ${phase.plan.app.name}`
+          : 'Deploy'}
+      </h1>
 
       {(phase.step === 'pick' || phase.step === 'root') && (
         <>
@@ -432,82 +450,31 @@ export function DeployView({
       )}
 
       {phase.step === 'deploying' && (
-        <Card className="space-y-2 p-4">
-          <SectionTitle>Deploying {phase.plan.app.name}…</SectionTitle>
-          <ul className="space-y-1 text-sm">
-            {lines.map((line, i) => (
-              <li key={i}>{line}</li>
-            ))}
-          </ul>
-          {buildLog && (
-            <details className="text-xs">
-              <summary className="cursor-pointer text-stone">Build output</summary>
-              <pre className="mt-1 max-h-64 overflow-auto rounded bg-ink-well p-2 font-mono text-parchment whitespace-pre-wrap">
-                {buildLog}
-              </pre>
-            </details>
-          )}
-          <ErrorNote message={error} />
-        </Card>
+        <ReleaseView
+          plan={phase.plan}
+          lines={lines}
+          buildLog={buildLog}
+          update={releaseUpdate}
+        />
       )}
 
       {phase.step === 'done' && (
-        <Card className={`space-y-3 p-5 ${phase.result.ok ? 'border-moss/40' : 'border-brick/40'}`}>
-          {phase.result.ok ? (
-            <>
-              <p className="flex items-center gap-2 text-sm font-medium text-moss">
-                <CheckCircle2 className="size-4" aria-hidden />
-                {phase.result.app} is running.
-              </p>
-              {phase.result.url && (
-                <a
-                  href={phase.result.url}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="flex w-fit items-center gap-1.5 font-mono text-sm text-hay-deep hover:underline"
-                >
-                  {phase.result.url} <ExternalLink className="size-3.5" aria-hidden />
-                </a>
-              )}
-              <div className="flex gap-2">
-                <Button onClick={() => onDeployed(phase.result.space ?? 'default', phase.result.app)}>
-                  Open the app page
-                </Button>
-                <Button kind="quiet" onClick={() => setPhase({ step: 'pick' })}>
-                  Deploy another
-                </Button>
-              </div>
-            </>
-          ) : (
-            <>
-              <ErrorNote message={phase.result.error ?? 'The deploy did not work.'} />
-              {phase.result.diagnosis && (
-                <p className="text-sm">
-                  <span className="font-medium">What happened: </span>
-                  {phase.result.diagnosis}
-                </p>
-              )}
-              {/* The change itself, not a description of it. A browser deploy
-                  has no folder to write back to, so this is something to copy
-                  into the project — which only works if it is all here. */}
-              {(phase.result.proposals ?? []).map((p, i) => (
-                <div key={i} className="rounded-md border border-line bg-card px-3 py-2 text-sm">
-                  {p.type === 'set_env' && (
-                    <code className="font-mono text-xs">
-                      donkey env set {p.key}={p.value}
-                    </code>
-                  )}
-                  {p.type === 'edit_file' && <span className="font-mono text-xs">{p.path}</span>}
-                  <p className="mt-0.5 text-xs text-ink-soft">{p.explanation}</p>
-                  {p.diff && <DiffView diff={p.diff} />}
-                </div>
-              ))}
-              <Button kind="quiet" onClick={() => setPhase({ step: 'pick' })}>
-                Try again
-              </Button>
-            </>
-          )}
-        </Card>
+        <ReleaseView
+          plan={phase.plan}
+          lines={lines}
+          buildLog={buildLog}
+          update={releaseUpdate}
+          result={phase.result}
+          onOpen={() => onDeployed(phase.result.space ?? 'default', phase.result.app)}
+          onBackToReview={() => {
+            setError('')
+            setPhase(phase.review)
+          }}
+          onDeployAnother={() => {
+            setError('')
+            setPhase({ step: 'pick' })
+          }}
+        />
       )}
     </div>
   )

@@ -77,6 +77,7 @@ func (s *Server) buildGenerated(ctx context.Context, out *lineStreamer, builder 
 		if result.Notes != "" {
 			out.Line("· %s", result.Notes)
 		}
+		out.Update(DeployUpdate{BaseImages: dockerfileBaseImages([]byte(result.Dockerfile))})
 		// Into the throwaway build context, never the user's own folder —
 		// that copy only exists for this build, and what finally works
 		// travels back in the result instead.

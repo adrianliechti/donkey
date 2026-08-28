@@ -80,8 +80,9 @@ func planServer(rt runtime.Provider, analysis *ai.Analysis) *Server {
 func appUpload(t *testing.T, extra map[string]string) []byte {
 	t.Helper()
 	files := map[string]string{
-		"Dockerfile": "FROM node:22\nCOPY . .\nCMD [\"node\", \"server.js\"]\n",
-		"server.js":  "require('http').createServer().listen(4000)",
+		"Dockerfile":   "FROM node:22\nCOPY . .\nCMD [\"node\", \"server.js\"]\n",
+		"package.json": `{"dependencies":{"express":"^5.1.0"}}`,
+		"server.js":    "require('http').createServer().listen(4000)",
 	}
 	for k, v := range extra {
 		files[k] = v
@@ -166,6 +167,15 @@ func TestPlanAnswersEverything(t *testing.T) {
 	}
 	if !strings.Contains(plan.Build.Summary, "Dockerfile") {
 		t.Errorf("the build summary should name the Dockerfile, got %q", plan.Build.Summary)
+	}
+	if !slices.Contains(plan.Build.BaseImages, "node:22") {
+		t.Errorf("the plan should report the Dockerfile's base image, got %v", plan.Build.BaseImages)
+	}
+	if len(plan.Build.Runtimes) == 0 || plan.Build.Runtimes[0].Value != "Node.js" {
+		t.Errorf("the plan should carry detected runtime evidence, got %+v", plan.Build.Runtimes)
+	}
+	if len(plan.Build.PackageManagers) == 0 || !strings.Contains(plan.Build.PackageManagers[0].Value, "npm") {
+		t.Errorf("the plan should carry package-manager evidence, got %+v", plan.Build.PackageManagers)
 	}
 	if len(plan.Volumes) != 1 || !plan.Volumes[0].Selected || plan.Volumes[0].Reason == "" {
 		t.Errorf("the data folder should be offered, ticked, with its reason: %+v", plan.Volumes)

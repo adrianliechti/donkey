@@ -217,6 +217,23 @@ export interface PlanApp {
 export interface PlanBuild {
   summary: string
   strategy: string
+  runtimes?: PlanSignal[]
+  frameworks?: PlanSignal[]
+  versions?: PlanSignal[]
+  packageManagers?: PlanSignal[]
+  baseImages?: string[]
+  systemPackages?: PlanSystemPackage[]
+}
+
+export interface PlanSignal {
+  value: string
+  evidence?: string
+}
+
+export interface PlanSystemPackage {
+  dependency: string
+  build?: string[]
+  runtime?: string[]
 }
 
 export interface PlanVolume {
@@ -267,6 +284,15 @@ export interface PlanEdit {
   storage: string[]
   services: string[]
   exposure: Exposure
+}
+
+export type DeployStage = 'detecting' | 'building' | 'releasing'
+
+/** Structured facts that change while a release is running. The regular
+ * log remains the complete human-readable account. */
+export interface DeployUpdate {
+  stage?: DeployStage
+  baseImages?: string[]
 }
 
 export interface DoctorCheck {
@@ -614,6 +640,7 @@ export const api = {
     opts: { space?: string; name?: string; port?: string; plan?: string },
     onLine: (line: string) => void,
     onProgress: (progress: string) => void,
+    onUpdate: (update: DeployUpdate) => void,
   ): Promise<DeployResult> => {
     const params = new URLSearchParams()
     if (opts.plan) params.set('plan', opts.plan)
@@ -641,6 +668,7 @@ export const api = {
         if (msg.result) result = msg.result
         else if (msg.line) onLine(msg.line)
         else if (msg.progress) onProgress(msg.progress)
+        else if (msg.update) onUpdate(msg.update)
       } catch {
         /* partial line — wait for more */
       }
