@@ -6,27 +6,38 @@ write yours once you know the platform, saying everything explicitly and
 using everything the platform offers. Deploy them, read them, copy from
 them.
 
-## demo/ — two apps, one address, three services
+## demo/ — an AI-run helpdesk: two apps, one address, three services
 
 The showcase `task demo` deploys (`hack/demo-app.sh` does the two deploys):
+**Packmule Support**, a helpdesk for a fictional file-sync product, where
+every platform feature does a visible job.
 
 - **One address for two apps**: the `dashboard` (React/Tailwind) is the only
-  thing on the internet; the `backend` (FastAPI + FastMCP + DuckDB) is
+  thing on the internet; the `backend` (FastAPI + FastMCP) is
   `internal: true` — no hostname, no certificate — yet claims `/api` and
   `/mcp` on the dashboard's address via `routes:`. The gateway does the
   forwarding; there is no proxy code anywhere.
-- **MCP and REST over one embedded database**: sales analytics in DuckDB on
-  the app's disk (`storage:`), served to the dashboard as JSON and to
-  assistants as MCP tools — both readers see the same numbers.
 - **Three space services, put to real work** (`addons:` provisions them on
   first deploy):
-  - shared notes in `postgres`,
-  - attachments in `rustfs` (plain S3 via boto3),
-  - note summaries through the platform's `openai` proxy —
+  - the desk itself — tickets and threads — in `postgres`, self-seeded with
+    a believable backlog on first contact,
+  - per-ticket attachments in `rustfs` (plain S3 via boto3; the bucket *is*
+    the file store, no table mirrors it),
+  - the AI through the platform's `openai` proxy: it triages tickets
+    (category, priority, sentiment, a one-line summary), drafts replies as
+    a live token stream, and invents a fresh walk-in customer on the
+    "Simulate a ticket" button —
   all reached only through injected env; nothing in the folder holds an
-  address or a credential. The notes and files are also MCP tools, so an
-  assistant can do what the dashboard does. Until a service exists, the
-  affected endpoints answer 503 with a hint and the rest carries on.
+  address or a credential. Until a service exists, the affected endpoints
+  answer 503 with a hint and the rest carries on.
+- **The app's own disk** (`storage:`): the desk's activity log is an
+  append-only file under `/app/data` — the one piece of state neither in
+  postgres nor in the bucket, and the one part of an app a redeploy cannot
+  rebuild.
+- **The same desk again, as MCP tools**: `tickets_queue`, `ticket_read`,
+  `ticket_reply`, `ticket_triage`, `attachment_read`, `desk_overview` — the
+  same cores the REST endpoints call, so an assistant working the queue and
+  an agent watching the dashboard always see the same desk.
 
 ```sh
 cd examples/demo/backend   && donkey --yes deploy

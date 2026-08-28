@@ -66,6 +66,39 @@ func TestPlanEditIsAuthoritative(t *testing.T) {
 	}
 }
 
+// An internal app can also be public — its claimed routes on another app's
+// address then skip the login. Exposure renders that pair as "internal", and
+// the CLI echoes the rendering back as its edit; the round-trip must not
+// flatten the pair. An exposure that actually differs stays authoritative.
+func TestPlanEditKeepsInternalPublicPair(t *testing.T) {
+	sp := planned()
+	sp.app.Internal, sp.app.Public = true, true
+	sp.app.Routes = []config.RouteConfig{{App: "web", Path: "/mcp"}}
+	sp.app.Name = "backend"
+
+	applyPlanEdit(sp, PlanEdit{
+		Name: "backend", Space: "acme", Port: 8000,
+		Storage:  []string{"/app/data"},
+		Services: []string{"postgres"},
+		Exposure: exposureOfConfig(sp.app), // the CLI's echo of what it was shown
+	})
+	if !sp.app.Internal || !sp.app.Public {
+		t.Errorf("the echoed exposure must not flatten internal+public, got internal=%v public=%v",
+			sp.app.Internal, sp.app.Public)
+	}
+
+	applyPlanEdit(sp, PlanEdit{
+		Name: "backend", Space: "acme", Port: 8000,
+		Storage:  []string{"/app/data"},
+		Services: []string{"postgres"},
+		Exposure: "protected", // a real decision still wins
+	})
+	if sp.app.Internal || sp.app.Public {
+		t.Errorf("a changed exposure should apply, got internal=%v public=%v",
+			sp.app.Internal, sp.app.Public)
+	}
+}
+
 // A service that donkey.yaml declared with its own version and size keeps
 // them: the plan may propose services, but it must not rewrite the ones the
 // user already described.
