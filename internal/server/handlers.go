@@ -730,6 +730,15 @@ func (s *Server) handleDoctor(w http.ResponseWriter, r *http.Request) {
 		checks = append(checks, DoctorCheck{Name: c.Name, OK: c.OK, Detail: c.Detail})
 	}
 
+	telemetry := DoctorCheck{Name: "Telemetry (OTLP + DuckDB)"}
+	if err := s.traffic.Ready(ctx); err == nil {
+		telemetry.OK = true
+		telemetry.Detail = "30-day traffic store answering"
+	} else {
+		telemetry.Detail = err.Error()
+	}
+	checks = append(checks, telemetry)
+
 	// donkey needs the assistant to read apps, so doctor checks it like any
 	// other dependency: does the configured model actually answer?
 	assistant := DoctorCheck{Name: "Assistant (" + s.cfg.AIModel + ")"}

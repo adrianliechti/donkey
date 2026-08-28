@@ -55,11 +55,16 @@ type Options struct {
 	// AIContainer is the openai addon's endpoint — the one donkey container
 	// apps are meant to reach, which is why it is not the server.
 	AIContainer string
+	// TelemetryContainer accepts app-scoped OTLP metrics on every space
+	// network.
+	TelemetryContainer string
 	// ServerContainer/GatewayContainer name donkey's own containers, so the
 	// provider can attach them to every space network (the server must
 	// reach apps for tunnels and probes, the gateway to proxy).
 	ServerContainer  string
 	GatewayContainer string
+	// TelemetryKey derives app-scoped ingestion tokens.
+	TelemetryKey []byte
 }
 
 // Runtime runs donkey's apps on a Docker engine.
@@ -85,6 +90,9 @@ func New(opts Options) (*Runtime, error) {
 	}
 	if opts.AIContainer == "" {
 		opts.AIContainer = "donkey-ai"
+	}
+	if opts.TelemetryContainer == "" {
+		opts.TelemetryContainer = "donkey-telemetry"
 	}
 	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	if err != nil {
@@ -178,7 +186,7 @@ func (r *Runtime) ensureSpace(ctx context.Context, space string) error {
 	if err != nil {
 		return err
 	}
-	for _, own := range []string{r.opts.ServerContainer, r.opts.GatewayContainer, r.opts.AIContainer} {
+	for _, own := range []string{r.opts.ServerContainer, r.opts.GatewayContainer, r.opts.AIContainer, r.opts.TelemetryContainer} {
 		err := r.cli.NetworkConnect(ctx, name, own, nil)
 		// Already attached is fine; a missing own container (local
 		// development outside containers) must not fail the space.
@@ -254,7 +262,7 @@ func (r *Runtime) DeleteSpace(ctx context.Context, space string) error {
 	}
 	// donkey's own containers were attached to the network (to proxy and to
 	// probe) — it only goes once they let it.
-	for _, own := range []string{r.opts.ServerContainer, r.opts.GatewayContainer, r.opts.AIContainer} {
+	for _, own := range []string{r.opts.ServerContainer, r.opts.GatewayContainer, r.opts.AIContainer, r.opts.TelemetryContainer} {
 		_ = r.cli.NetworkDisconnect(ctx, netName(space), own, true)
 	}
 	err = r.cli.NetworkRemove(ctx, netName(space))
@@ -843,7 +851,7 @@ func AttachOwnContainers(ctx context.Context, cli *client.Client, names ...strin
 // failure it prevents is silent and total: every app in a space stops
 // answering, with nothing in its own logs to say why.
 func (r *Runtime) ReconcileOwnNetworks(ctx context.Context, every time.Duration) {
-	own := []string{r.opts.ServerContainer, r.opts.GatewayContainer}
+	own := []string{r.opts.ServerContainer, r.opts.GatewayContainer, r.opts.AIContainer, r.opts.TelemetryContainer}
 	for {
 		if err := AttachOwnContainers(ctx, r.cli, own...); err != nil && ctx.Err() == nil {
 			log.Printf("couldn't attach donkey's containers to the space networks: %v", err)

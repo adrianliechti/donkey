@@ -10,7 +10,7 @@ import {
   useQueryClient,
   type UseQueryResult,
 } from '@tanstack/react-query'
-import { api } from './api'
+import { api, type TrafficRange, type TrafficSource } from './api'
 import { errText } from './ui'
 
 export const fleetQuery = queryOptions({
@@ -27,6 +27,13 @@ export const statusQuery = (space: string, app: string) =>
     queryKey: ['status', space, app],
     queryFn: () => api.status(space, app),
     refetchInterval: 10_000,
+  })
+
+export const trafficQuery = (space: string, app = '', source: TrafficSource = 'edge', range: TrafficRange = '30d') =>
+  queryOptions({
+    queryKey: ['traffic', space, app, source, range],
+    queryFn: () => api.traffic(space, app, source, range),
+    refetchInterval: 30_000,
   })
 
 // Doctor probes everything (build engine, registry, gateway, assistant) and
@@ -77,6 +84,10 @@ export function useFleet() {
 
 export function useAppStatus(space: string, app: string) {
   return present(useQuery(statusQuery(space, app)))
+}
+
+export function useTraffic(space: string, app = '', source: TrafficSource = 'edge', range: TrafficRange = '30d') {
+  return present(useQuery(trafficQuery(space, app, source, range)))
 }
 
 export function useDoctor() {

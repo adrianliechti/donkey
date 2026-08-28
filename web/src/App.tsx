@@ -20,12 +20,13 @@ import { AppsList } from './AppsList'
 import { DeployView } from './DeployView'
 import { fleetQuery, statusQuery } from './queries'
 import { SystemView } from './SystemView'
+import { DonkeyLogo } from './ui'
 import { UserMenu } from './UserMenu'
 
 // The routes live in the hash (#/app/acme/shop/logs) so refresh keeps your
 // place, an unhealthy app can be linked to a teammate, and bookmarks from
 // the previous console keep working.
-const APP_TABS: AppTab[] = ['overview', 'logs', 'files', 'variables', 'settings']
+const APP_TABS: AppTab[] = ['overview', 'traffic', 'logs', 'files', 'variables', 'settings']
 
 // One cache for the whole console. Short staleness keeps panels honest
 // while still letting a remounted view show what it knew instantly. The
@@ -47,25 +48,26 @@ function Shell() {
               onClick={() => navigate({ to: '/' })}
               className="flex shrink-0 items-center gap-2 font-mono text-base font-bold tracking-tight focus-visible:outline-2 focus-visible:outline-hay-deep"
             >
-              <span className="text-xl" aria-hidden>
-                🫏
-              </span>
+              <DonkeyLogo className="size-5 text-white" />
               Donkey
             </button>
             <Breadcrumb />
           </div>
           <div className="flex shrink-0 items-center gap-1.5">
             <button
-              onClick={() => navigate({ to: '/system' })}
-              className="flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-sm text-ink-soft transition-colors hover:bg-raised focus-visible:outline-2 focus-visible:outline-hay-deep"
-            >
-              <Activity className="size-4" aria-hidden /> System
-            </button>
-            <button
               onClick={() => navigate({ to: '/deploy' })}
               className="flex items-center gap-1.5 rounded-md bg-hay px-3 py-1.5 text-sm font-semibold text-on-hay transition-colors hover:bg-hay-deep focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-hay-deep"
             >
               <UploadCloud className="size-4" aria-hidden /> Deploy
+            </button>
+            <button
+              type="button"
+              title="System health"
+              aria-label="System health"
+              onClick={() => navigate({ to: '/system' })}
+              className="flex items-center rounded-md p-1.5 text-stone hover:bg-line/60 hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-hay-deep"
+            >
+              <Activity className="size-5" aria-hidden />
             </button>
             <UserMenu
               onSignOut={() => {

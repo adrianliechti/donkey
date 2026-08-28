@@ -42,6 +42,9 @@ type Config struct {
 	// forwarded there. The address only, no path: what the console asks for
 	// is what gets proxied.
 	AIURL string
+	// TelemetryURL is the private query listener of the traffic telemetry
+	// service. App exporters use a different port and credential.
+	TelemetryURL string
 
 	OIDCIssuer       string
 	OIDCClientID     string
@@ -67,6 +70,9 @@ type Config struct {
 	// the CLI tokens the gateway mints with it (the direct, port-forwarded
 	// path next to the gateway's identity headers).
 	SessionKey []byte
+	// TelemetryKey authenticates the gateway, app exporters, and private query
+	// client independently of login-session rotation.
+	TelemetryKey []byte
 	// Admins narrows who may administer (users/groups/roles). Empty means
 	// everyone the IdP admits.
 	Admins  *config.AccessConfig
@@ -91,6 +97,7 @@ func FromEnv() (*Config, error) {
 		SystemNamespace:   envOr("DONKEY_SYSTEM_NAMESPACE", config.DefaultSystemNamespace),
 		WorkloadNamespace: os.Getenv("DONKEY_WORKLOAD_NAMESPACE"),
 		AIURL:             os.Getenv("DONKEY_AI_URL"),
+		TelemetryURL:      envOr("DONKEY_TELEMETRY_URL", "http://donkey-telemetry:9090"),
 		OIDCIssuer:        os.Getenv("DONKEY_OIDC_ISSUER"),
 		OIDCClientID:      os.Getenv("DONKEY_OIDC_CLIENT_ID"),
 		OIDCClientSecret:  os.Getenv("DONKEY_OIDC_CLIENT_SECRET"),
@@ -127,6 +134,11 @@ func FromEnv() (*Config, error) {
 		return nil, fmt.Errorf("DONKEY_SESSION_KEY must be 32 bytes of hex — `donkey server install` generates it")
 	}
 	c.SessionKey = key
+	telemetryKey, err := hex.DecodeString(os.Getenv("DONKEY_TELEMETRY_KEY"))
+	if err != nil || len(telemetryKey) != 32 {
+		return nil, fmt.Errorf("DONKEY_TELEMETRY_KEY must be 32 bytes of hex — `donkey server install` generates it")
+	}
+	c.TelemetryKey = telemetryKey
 	if raw := os.Getenv("DONKEY_ADMINS"); raw != "" {
 		var admins config.AccessConfig
 		if err := json.Unmarshal([]byte(raw), &admins); err != nil {

@@ -1,24 +1,34 @@
-# Packaging for donkey-server. The Go binary is cross-compiled by
-# `task server-image`; this image wraps it.
-FROM alpine:3.20
-RUN apk add --no-cache ca-certificates
-# No USER: the image states no opinion about who it runs as, because the
-# answer differs per runtime and only the runtime can enforce it anyway.
-# Kubernetes pins an unprivileged uid in the pod's security context (see
-# manifests.systemPodSecurityContext) alongside the capability and seccomp
-# rules that make it mean something; on Docker the server holds the engine
-# socket, which is already the whole of its power, so dropping privileges
-# inside its own container would buy nothing.
-#
-# Everything the server writes goes to /tmp — world-writable, so it works
-# under whichever uid a runtime picks. That is the build contexts it unpacks,
-# and nothing else: the build itself happens in buildkitd, and the only thing
-# donkey-server needs to reach is the model endpoint. HOME points at /tmp for
-# the same reason; a numeric uid would otherwise be handed /root, which it
-# cannot write.
+# DuckDB's Go client uses CGO and ships platform-native static bindings. Build
+# the server inside each target platform so a multi-arch build gets the right
+# compiler and binding without a host cross-C toolchain.
+FROM --platform=$BUILDPLATFORM node:24-bookworm-slim AS web
+WORKDIR /web
+COPY web/package.json web/package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY web/ ./
+RUN npm run build
+
+FROM golang:1.26.3-bookworm AS build
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends g++ \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+COPY --from=web /web/dist ./web/dist
+ARG VERSION=dev
+RUN CGO_ENABLED=1 go build \
+    -ldflags "-X github.com/adrianliechti/donkey/internal/server.Version=${VERSION}" \
+    -o /out/donkey-server ./cmd/donkey-server
+
+FROM debian:bookworm-slim
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates libstdc++6 wget \
+    && rm -rf /var/lib/apt/lists/*
+# No USER: Kubernetes pins an unprivileged numeric uid; Docker's control-plane
+# process holds the engine socket and is already host-powerful. HOME remains
+# writable for either runtime-selected identity.
 ENV HOME=/tmp
-# TARGETARCH comes from BuildKit: the daemon's own arch for a plain build,
-# each platform in turn for a multi-arch `task publish`.
-ARG TARGETARCH
-COPY --chmod=0755 donkey-server-${TARGETARCH} /donkey-server
+COPY --from=build --chmod=0755 /out/donkey-server /donkey-server
 ENTRYPOINT ["/donkey-server"]

@@ -1,0 +1,54 @@
+package manifests
+
+import (
+	"testing"
+
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+)
+
+func TestTelemetryOwnsOnePersistentDuckDBWriter(t *testing.T) {
+	in := systemInput()
+	objects := telemetryObjects(in)
+	var deployment *appsv1.Deployment
+	var claim *corev1.PersistentVolumeClaim
+	for _, object := range objects {
+		switch value := object.(type) {
+		case *appsv1.Deployment:
+			deployment = value
+		case *corev1.PersistentVolumeClaim:
+			claim = value
+		}
+	}
+	if deployment == nil || claim == nil {
+		t.Fatalf("telemetry objects need a Deployment and PVC: %+v", objects)
+	}
+	if deployment.Spec.Replicas == nil || *deployment.Spec.Replicas != 1 ||
+		deployment.Spec.Strategy.Type != appsv1.RecreateDeploymentStrategyType {
+		t.Fatalf("DuckDB must have exactly one writer with Recreate upgrades: %+v", deployment.Spec)
+	}
+	container := deployment.Spec.Template.Spec.Containers[0]
+	if len(container.Args) != 1 || container.Args[0] != "telemetry" || len(container.VolumeMounts) != 1 {
+		t.Fatalf("unexpected telemetry container: %+v", container)
+	}
+	if claim.Spec.AccessModes[0] != corev1.ReadWriteOnce {
+		t.Fatalf("DuckDB claim access = %v", claim.Spec.AccessModes)
+	}
+}
+
+func TestTelemetryCredentialIsIndependentFromLoginSessions(t *testing.T) {
+	in := systemInput()
+	original := telemetryDeployment(in).Spec.Template.Annotations["donkey.dev/config-hash"]
+	in.SessionKey = "rotated-session-key"
+	if got := telemetryDeployment(in).Spec.Template.Annotations["donkey.dev/config-hash"]; got != original {
+		t.Fatalf("session rotation changed telemetry config hash: %s -> %s", original, got)
+	}
+	in.TelemetryKey = "rotated-telemetry-key"
+	if got := telemetryDeployment(in).Spec.Template.Annotations["donkey.dev/config-hash"]; got == original {
+		t.Fatal("telemetry key rotation did not roll donkey-telemetry")
+	}
+	secret := systemSecret(in)
+	if secret.StringData["session-key"] == secret.StringData["telemetry-key"] {
+		t.Fatal("login sessions and telemetry must not share a root credential")
+	}
+}

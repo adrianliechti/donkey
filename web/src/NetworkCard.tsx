@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Globe, Lock, Network, Plus, X } from 'lucide-react'
 import { api, type AccessConfig, type Exposure, type NetworkInfo } from './api'
-import { Button, Card, ErrorNote, errText, SectionTitle, Spinner } from './ui'
+import { Button, ErrorNote, errText, SectionTitle, Spinner } from './ui'
 
 /**
  * How the app is reached, changed on the spot — no deploy.
@@ -84,8 +84,8 @@ export function NetworkCard({
 
   return (
     <>
-      <Card className="p-4">
-        <SectionTitle>Network</SectionTitle>
+      <section>
+        <SectionTitle>Ingress</SectionTitle>
         {net === null && !error && <Spinner label="Loading…" />}
         <ErrorNote message={error} />
         {net !== null && (
@@ -113,18 +113,20 @@ export function NetworkCard({
             </div>
 
             {exposure !== 'internal' && (
-              <label className="block">
-                <span className="text-sm font-medium">Address</span>
-                <input
-                  value={hostOverride}
-                  onChange={(e) => setHostOverride(e.target.value)}
-                  placeholder={net.host}
-                  className="mt-1 w-full rounded-md border border-line bg-surface px-3 py-2 font-mono text-sm placeholder:text-stone/60 focus:outline-2 focus:outline-hay-deep"
-                />
-                <span className="mt-1 block text-xs text-stone">
-                  Leave empty for <span className="font-mono">{net.host}</span>. A plain name
-                  sits under the space, <span className="font-mono">@</span> takes the space's own
-                  address, and a full hostname needs its DNS pointed at the gateway.
+              <label className="grid grid-cols-[6.5rem_minmax(0,1fr)] border-y border-line/70">
+                <span className="px-3 py-2.5 text-xs font-medium text-stone">Address</span>
+                <span className="min-w-0 border-l border-line/60">
+                  <input
+                    value={hostOverride}
+                    onChange={(e) => setHostOverride(e.target.value)}
+                    placeholder={net.host}
+                    className="block w-full bg-transparent px-3 pt-2.5 pb-1 font-mono text-sm placeholder:text-stone/60 focus:bg-raised/30 focus:outline-none focus:ring-1 focus:ring-inset focus:ring-hay-deep"
+                  />
+                  <span className="block px-3 pb-2.5 text-xs leading-relaxed text-stone">
+                    Leave empty for <span className="font-mono">{net.host}</span>. A plain name
+                    sits under the space, <span className="font-mono">@</span> takes the space's own
+                    address; a full hostname needs its DNS pointed at the gateway.
+                  </span>
                 </span>
               </label>
             )}
@@ -163,7 +165,7 @@ export function NetworkCard({
             )}
           </div>
         )}
-      </Card>
+      </section>
 
       {net && exposure === 'protected' && (
         <AccessCard space={space} app={app} initial={net.access ?? null} />
@@ -214,7 +216,7 @@ function AccessCard({ space, app, initial }: { space: string; app: string; initi
   const restricted = users.length + groups.length + roles.length > 0
 
   return (
-    <Card className="p-4">
+    <section className="border-t border-line pt-5">
       <SectionTitle>Access</SectionTitle>
       <p className="mt-2 text-sm text-ink-soft">
         {restricted
@@ -264,7 +266,7 @@ function AccessCard({ space, app, initial }: { space: string; app: string; initi
         </p>
       )}
       <ErrorNote message={error} />
-    </Card>
+    </section>
   )
 }
 

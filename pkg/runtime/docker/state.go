@@ -24,6 +24,8 @@ import (
 // Route is one routing-table entry as the gateway reads it from the state
 // directory (mirrors the annotations of the Kubernetes route ConfigMaps).
 type Route struct {
+	Space   string               `json:"space,omitempty"`
+	App     string               `json:"app,omitempty"`
 	Host    string               `json:"host"`
 	Path    string               `json:"path"`
 	Backend string               `json:"backend"`
@@ -254,6 +256,15 @@ func ReadRoutes(stateDir string) ([]Route, error) {
 		}
 		for _, name := range names {
 			if r, err := s.route(sp.Name(), name); err == nil && r != nil {
+				// Older route records predate explicit analytics identity. The
+				// folder and stable filename already encode it, so upgrades do not
+				// need every app to be redeployed before traffic appears.
+				if r.Space == "" && sp.Name() != "system" {
+					r.Space = sp.Name()
+				}
+				if r.App == "" && sp.Name() != "system" {
+					r.App = strings.Split(name, ".on.")[0]
+				}
 				out = append(out, *r)
 			}
 		}

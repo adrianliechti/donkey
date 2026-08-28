@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { RefreshCw } from 'lucide-react'
 import { api } from './api'
-import { Card, ErrorNote, errText, SectionTitle, Select } from './ui'
+import { ErrorNote, errText, Select } from './ui'
 
 export function LogsPanel({ space, app }: { space: string; app: string }) {
   const [logs, setLogs] = useState('')
@@ -54,44 +54,44 @@ export function LogsPanel({ space, app }: { space: string; app: string }) {
   const streamError = logs.trim().startsWith('error:') ? logs.trim() : ''
 
   return (
-    <Card className="p-4">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <SectionTitle>Logs</SectionTitle>
-        <div className="flex items-center gap-2">
-          <label className="flex items-center gap-1.5 text-xs text-ink-soft">
-            <input
-              type="checkbox"
-              checked={follow}
-              onChange={(e) => setFollow(e.target.checked)}
-              className="size-3.5 accent-hay-deep"
-            />
-            Follow
-          </label>
-          <Select
-            size="sm"
-            ariaLabel="How far back"
-            value={since}
-            onChange={setSince}
-            options={[
-              { value: '', label: 'all' },
-              { value: '5m', label: 'last 5 min' },
-              { value: '1h', label: 'last hour' },
-            ]}
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center justify-end gap-2">
+        <label className="flex items-center gap-1.5 text-xs text-ink-soft">
+          <input
+            type="checkbox"
+            checked={follow}
+            onChange={(e) => setFollow(e.target.checked)}
+            className="size-3.5 accent-hay-deep"
           />
-          <Select
-            size="sm"
-            ariaLabel="How many lines"
-            value={tail}
-            onChange={setTail}
-            options={[100, 200, 500].map((n) => ({ value: n, label: `last ${n}` }))}
-          />
-          <button
-            onClick={load}
-            className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-stone hover:bg-line/50 focus-visible:outline-2 focus-visible:outline-hay-deep"
-          >
-            <RefreshCw className={`size-3.5 ${busy && !follow ? 'animate-spin' : ''}`} aria-hidden />
-          </button>
-        </div>
+          Follow
+        </label>
+        <Select
+          size="sm"
+          ariaLabel="How far back"
+          value={since}
+          onChange={setSince}
+          options={[
+            { value: '', label: 'all' },
+            { value: '5m', label: 'last 5 min' },
+            { value: '1h', label: 'last hour' },
+          ]}
+        />
+        <Select
+          size="sm"
+          ariaLabel="How many lines"
+          value={tail}
+          onChange={setTail}
+          options={[100, 200, 500].map((n) => ({ value: n, label: `last ${n}` }))}
+        />
+        <button
+          type="button"
+          onClick={load}
+          title="Refresh logs"
+          aria-label="Refresh logs"
+          className="flex items-center rounded-md p-1.5 text-xs text-stone hover:bg-line/50 focus-visible:outline-2 focus-visible:outline-hay-deep"
+        >
+          <RefreshCw className={`size-3.5 ${busy && !follow ? 'animate-spin' : ''}`} aria-hidden />
+        </button>
       </div>
       <ErrorNote message={error || streamError} />
       {!streamError && (
@@ -103,7 +103,7 @@ export function LogsPanel({ space, app }: { space: string; app: string }) {
             const pane = paneRef.current
             if (pane) pinnedRef.current = pane.scrollHeight - pane.scrollTop - pane.clientHeight < 40
           }}
-          className="mt-3 h-80 overflow-auto rounded-md bg-ink-well p-3 font-mono text-xs leading-relaxed text-parchment whitespace-pre-wrap focus-visible:outline-2 focus-visible:outline-hay-deep"
+          className="h-80 overflow-auto rounded-md bg-ink-well p-3 font-mono text-xs leading-relaxed text-parchment whitespace-pre-wrap focus-visible:outline-2 focus-visible:outline-hay-deep"
         >
           {logs ||
             (busy
@@ -111,6 +111,6 @@ export function LogsPanel({ space, app }: { space: string; app: string }) {
               : 'Nothing here yet — the app has not written any output.')}
         </pre>
       )}
-    </Card>
+    </div>
   )
 }

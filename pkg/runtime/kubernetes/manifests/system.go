@@ -94,6 +94,10 @@ type SystemInput struct {
 	// Generated at install, reused on re-installs — rotating it signs
 	// everyone out.
 	SessionKey string
+	// TelemetryKey authenticates OTLP ingestion and private queries. It is
+	// generated and persisted independently so session rotation cannot break
+	// exporters embedded in already-running apps.
+	TelemetryKey string
 
 	OpenAIBaseURL string
 	OpenAIAPIKey  string
@@ -190,6 +194,9 @@ func SystemObjects(in SystemInput) []runtime.Object {
 	// Package traffic has its own unprivileged process and credentials. It is
 	// ready before builds are accepted by donkey-server.
 	objs = append(objs, packagesObjects(in)...)
+	// One replica owns the embedded DuckDB file and exposes OTLP/HTTP plus a
+	// separate control-plane query port.
+	objs = append(objs, telemetryObjects(in)...)
 	objs = append(objs,
 		buildkitDeployment(in),
 		systemService(in, buildkitName, buildkitPort, buildkitPort),
@@ -226,7 +233,7 @@ func configHash(values ...string) string {
 // serverConfigHash covers the secret-backed env vars of donkey-server
 // (secretKeyRef values are only read at pod creation).
 func (in SystemInput) serverConfigHash() string {
-	return configHash(in.SessionKey, in.OIDCClientID, in.OIDCClientSecret, in.RegistryPassword, in.OpenAIAPIKey,
+	return configHash(in.SessionKey, in.TelemetryKey, in.OIDCClientID, in.OIDCClientSecret, in.RegistryPassword, in.OpenAIAPIKey,
 		buildEnvJSON(in.Build), in.Build.Instructions, in.Build.Proxy.HTTP, in.Build.Proxy.HTTPS)
 }
 
@@ -296,6 +303,7 @@ func systemSecret(in SystemInput) *corev1.Secret {
 			"oidc-client-id":     in.OIDCClientID,
 			"oidc-client-secret": in.OIDCClientSecret,
 			"session-key":        in.SessionKey,
+			"telemetry-key":      in.TelemetryKey,
 			// Build environment and proxy settings routinely carry credentials
 			// ("https://ci:token@jfrog.corp"); builder instructions can expose
 			// internal registry topology. Keep all three out of the Deployment.
@@ -357,6 +365,7 @@ func serverDeployment(in SystemInput) *appsv1.Deployment {
 		// Where the console's /ai/v1 requests are forwarded. The address
 		// only — the path the console asks for is what gets proxied.
 		{Name: "DONKEY_AI_URL", Value: fmt.Sprintf("http://%s.%s.svc:80", AIAppName, in.Namespace)},
+		{Name: "DONKEY_TELEMETRY_URL", Value: TelemetryAPIEndpoint(in.Namespace)},
 		{Name: "DONKEY_DEFAULT_PLATFORM", Value: in.DefaultPlatform},
 		{Name: "DONKEY_POSTGRES_IMAGE", Value: in.AddonImages.Postgres},
 		{Name: "DONKEY_RUSTFS_IMAGE", Value: in.AddonImages.RustFS},
@@ -375,6 +384,7 @@ func serverDeployment(in SystemInput) *appsv1.Deployment {
 		// The session key lets the server verify sealed CLI tokens itself —
 		// the direct (port-forwarded) path next to the gateway's headers.
 		secretEnv("DONKEY_SESSION_KEY", "session-key"),
+		secretEnv("DONKEY_TELEMETRY_KEY", "telemetry-key"),
 		{Name: "DONKEY_ADMINS", Value: adminsJSON(in)},
 		secretEnv("DONKEY_REGISTRY_PASSWORD", "registry-password"),
 		secretEnv("OPENAI_API_KEY", "openai-api-key"),

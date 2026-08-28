@@ -4,6 +4,13 @@ import { Listbox, ListboxButton, ListboxOption, ListboxOptions } from '@headless
 import { Check, ChevronDown, CircleAlert, CircleCheck, Globe, Loader2, Lock, Network } from 'lucide-react'
 import type { Exposure } from './api'
 
+// The source SVG stays a plain monochrome shape. Rendering it as a mask lets
+// each surface choose the color in CSS and keeps the brand mark identical
+// across browsers (unlike the platform donkey emoji).
+export function DonkeyLogo({ className = '' }: { className?: string }) {
+  return <span className={`donkey-logo ${className}`} aria-hidden />
+}
+
 // errText gives every catch block the same voice: the server's own message
 // when there is one, the caller's plain-language fallback otherwise.
 export function errText(err: unknown, fallback: string): string {

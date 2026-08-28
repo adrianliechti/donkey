@@ -1,0 +1,91 @@
+package telemetry
+
+import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/hex"
+	"strings"
+
+	collectormetricspb "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
+
+	"github.com/adrianliechti/donkey/internal/config"
+)
+
+// TelemetryTokenHeader is deliberately separate from Authorization. It fits
+// OTEL_EXPORTER_OTLP_HEADERS without putting the installation's session key,
+// or a credential useful anywhere else, on the wire.
+const TelemetryTokenHeader = "X-Donkey-Telemetry-Token"
+
+const (
+	gatewayTokenPurpose = "donkey/telemetry/gateway/v1"
+	queryTokenPurpose   = "donkey/telemetry/query/v1"
+	appTokenPurpose     = "donkey/telemetry/app/v1"
+	appVisitorPurpose   = "donkey/telemetry/app-visitor/v1"
+	spaceVisitorPurpose = "donkey/telemetry/space-visitor/v1"
+)
+
+func GatewayToken(key []byte) string { return scopedToken(key, gatewayTokenPurpose) }
+
+func QueryToken(key []byte) string { return scopedToken(key, queryTokenPurpose) }
+
+// AppToken is valid for exactly one semantic-convention resource scope. An
+// app can report its own in-process metrics, but cannot write another app's
+// stream or the gateway-owned edge stream.
+func AppToken(key []byte, space, app string) string {
+	return scopedToken(key, appTokenPurpose, space, app)
+}
+
+// VisitorHashes deliberately use different domains. A query for a whole
+// space can deduplicate one signed-in person across its apps, while app-level
+// hashes cannot be joined across apps. Empty subjects remain anonymous.
+func VisitorHashes(key []byte, space, app, subject string) (appHash, spaceHash string) {
+	if subject == "" {
+		return "", ""
+	}
+	return scopedToken(key, appVisitorPurpose, space, app, subject),
+		scopedToken(key, spaceVisitorPurpose, space, subject)
+}
+
+func scopedToken(key []byte, values ...string) string {
+	h := hmac.New(sha256.New, key)
+	for _, value := range values {
+		_, _ = h.Write([]byte(value))
+		_, _ = h.Write([]byte{0})
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+func tokenMatches(got, expected string) bool {
+	got = strings.TrimSpace(got)
+	return len(got) == len(expected) && subtle.ConstantTimeCompare([]byte(got), []byte(expected)) == 1
+}
+
+// metricPrincipal authenticates one whole OTLP request. A standard exporter
+// sends one service resource per request; requiring a single app scope keeps
+// the scoped token meaningful even if a caller constructs protobuf by hand.
+func metricPrincipal(req *collectormetricspb.ExportMetricsServiceRequest, token string, key []byte) (gateway bool, ok bool) {
+	if tokenMatches(token, GatewayToken(key)) {
+		return true, true
+	}
+	space, app := "", ""
+	found := false
+	for _, rm := range req.ResourceMetrics {
+		if rm == nil {
+			return false, false
+		}
+		resources := resourceMap(rm.Resource)
+		candidateSpace, candidateApp := resources["service.namespace"], resources["service.name"]
+		if !config.ValidName(candidateSpace) || !config.ValidName(candidateApp) {
+			return false, false
+		}
+		if !found {
+			space, app, found = candidateSpace, candidateApp, true
+			continue
+		}
+		if candidateSpace != space || candidateApp != app {
+			return false, false
+		}
+	}
+	return false, found && tokenMatches(token, AppToken(key, space, app))
+}

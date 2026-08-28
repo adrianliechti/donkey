@@ -145,6 +145,36 @@ func TestAppObjectsGolden(t *testing.T) {
 	}
 }
 
+func TestAppTelemetryDefaultsAreScopedAndOverridable(t *testing.T) {
+	in := testInput(t)
+	in.TelemetryEndpoint = "http://donkey-telemetry.donkey-system.svc:4318"
+	in.TelemetryToken = "scoped-token"
+	objects, err := AppObjects(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rendered, err := Render(objects)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"name: shop-telemetry",
+		"OTEL_SERVICE_NAME: shop",
+		"OTEL_RESOURCE_ATTRIBUTES: service.namespace=acme",
+		"OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf",
+		"OTEL_METRICS_EXPORTER: otlp",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Errorf("telemetry defaults should contain %q", want)
+		}
+	}
+	_, envFrom := appEnvironment(in)
+	if len(envFrom) < 2 || envFrom[0].SecretRef == nil || envFrom[0].SecretRef.Name != TelemetrySecretName(in.Name()) ||
+		envFrom[1].SecretRef == nil || envFrom[1].SecretRef.Name != EnvSecretName(in.Name()) {
+		t.Fatalf("telemetry must load before the user env Secret so user values win: %+v", envFrom)
+	}
+}
+
 func TestAppSecurityContextBalancesCompatibilityAndContainment(t *testing.T) {
 	dep, err := deployment(testInput(t))
 	if err != nil {

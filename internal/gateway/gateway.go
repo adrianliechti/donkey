@@ -84,6 +84,13 @@ type Config struct {
 	// SessionKey seals the session cookie (32 bytes, hex). Sessions live in
 	// the cookie, not in memory, so replicas need nothing but the same key.
 	SessionKey []byte
+
+	// TelemetryEndpoint is donkey-telemetry's OTLP/HTTP base URL. Empty keeps
+	// telemetry disabled for standalone gateway development.
+	TelemetryEndpoint string
+	// TelemetryKey authenticates gateway metrics and derives privacy-preserving
+	// visitor identifiers without sharing the login-session sealing key.
+	TelemetryKey []byte
 }
 
 func FromEnv() (*Config, error) {
@@ -103,6 +110,7 @@ func FromEnv() (*Config, error) {
 		OIDCClientID:      os.Getenv("DONKEY_OIDC_CLIENT_ID"),
 		OIDCClientSecret:  os.Getenv("DONKEY_OIDC_CLIENT_SECRET"),
 		Domain:            os.Getenv("DONKEY_DOMAIN"),
+		TelemetryEndpoint: os.Getenv("DONKEY_TELEMETRY_OTLP_ENDPOINT"),
 	}
 	switch c.TLSMode {
 	case "", "none", "acme", "ca":
@@ -120,6 +128,13 @@ func FromEnv() (*Config, error) {
 		return nil, fmt.Errorf("DONKEY_SESSION_KEY must be 32 bytes of hex — `donkey server install` generates it")
 	}
 	c.SessionKey = key
+	if c.TelemetryEndpoint != "" {
+		telemetryKey, err := hex.DecodeString(os.Getenv("DONKEY_TELEMETRY_KEY"))
+		if err != nil || len(telemetryKey) != 32 {
+			return nil, fmt.Errorf("DONKEY_TELEMETRY_KEY must be 32 bytes of hex — `donkey server install` generates it")
+		}
+		c.TelemetryKey = telemetryKey
+	}
 	return c, nil
 }
 
@@ -149,7 +164,12 @@ func envOr(key, def string) string {
 // route is one hostname (or one path prefix of a hostname) this gateway
 // serves, read from the route ConfigMaps donkey rendered.
 type route struct {
-	Host string
+	// Space/App are donkey's logical identity, independent of qualified
+	// Kubernetes object names. Only app routes carry them; console traffic is
+	// intentionally not mixed into tenant analytics.
+	Space string
+	App   string
+	Host  string
 	// Path is the route's prefix; "/" for an app's own address.
 	Path    string
 	Backend *url.URL
@@ -189,13 +209,20 @@ type Server struct {
 	warmed sync.Map
 	// warm pre-issues a certificate for a hostname (set in acme mode).
 	warm func(host string)
+
+	telemetry *edgeTelemetry
 }
 
 func New(cfg *Config) (*Server, error) {
+	telemetry, err := newEdgeTelemetry(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("configuring gateway telemetry: %w", err)
+	}
 	s := &Server{
-		cfg:    cfg,
-		auth:   newAuthenticator(cfg),
-		routes: map[string][]route{},
+		cfg:       cfg,
+		auth:      newAuthenticator(cfg),
+		routes:    map[string][]route{},
+		telemetry: telemetry,
 	}
 	switch cfg.Runtime {
 	case "docker":
@@ -203,6 +230,7 @@ func New(cfg *Config) (*Server, error) {
 	default:
 		client, err := k8s.NewInCluster()
 		if err != nil {
+			_ = telemetry.Shutdown(context.Background())
 			return nil, err
 		}
 		// The gateway speaks for one installation: its own namespace is its
@@ -246,7 +274,7 @@ func (f fileRoutes) list(ctx context.Context) ([]route, error) {
 		if err != nil || target.Scheme != "http" || target.Host == "" || rec.Host == "" {
 			continue
 		}
-		r := route{Host: rec.Host, Path: rec.Path, Backend: target, Login: rec.Login, Access: rec.Access, Token: rec.Token}
+		r := route{Space: rec.Space, App: rec.App, Host: rec.Host, Path: rec.Path, Backend: target, Login: rec.Login, Access: rec.Access, Token: rec.Token}
 		if r.Path == "" {
 			r.Path = "/"
 		}
@@ -261,6 +289,13 @@ func (f fileRoutes) list(ctx context.Context) ([]route, error) {
 const routePollInterval = 10 * time.Second
 
 func (s *Server) Run(ctx context.Context) error {
+	defer func() {
+		shutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := s.telemetry.Shutdown(shutdown); err != nil {
+			log.Printf("gateway telemetry shutdown: %v", err)
+		}
+	}()
 	// TLS first: edgeTLS installs s.warm, and route syncs read it — setting
 	// it up before the first sync (and the poller goroutine) means the
 	// initial routes get their certificates pre-issued too, without a race.
@@ -434,6 +469,8 @@ func routeFromConfigMap(cm corev1.ConfigMap) (route, bool) {
 		return route{}, false
 	}
 	r := route{
+		Space:   ann[manifests.AnnotationSpaceName],
+		App:     ann[manifests.AnnotationAppName],
 		Host:    ann[manifests.AnnotationHost],
 		Path:    "/",
 		Backend: target,

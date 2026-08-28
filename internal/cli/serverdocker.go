@@ -50,18 +50,20 @@ const (
 	dockerBuildkitName   = "donkey-buildkitd"
 	dockerBuildkitVolume = "donkey-buildkit"
 
-	dockerServerName   = "donkey-server"
-	dockerGatewayName  = "donkey-gateway"
-	dockerAIName       = "donkey-ai"
-	dockerPackagesName = "donkey-packages"
-	dockerPackagesAuth = "/etc/donkey/package-auth"
+	dockerServerName      = "donkey-server"
+	dockerGatewayName     = "donkey-gateway"
+	dockerAIName          = "donkey-ai"
+	dockerTelemetryName   = "donkey-telemetry"
+	dockerTelemetryVolume = "donkey-telemetry"
+	dockerPackagesName    = "donkey-packages"
+	dockerPackagesAuth    = "/etc/donkey/package-auth"
 )
 
 // dockerNoProxy is what must never be sent to a forward proxy: donkey's own
 // containers, the Docker engine's socket and the loopback registry all live
 // on this machine, and no corporate proxy can route them.
 const dockerNoProxy = "localhost,127.0.0.1," +
-	dockerRegistryName + "," + dockerBuildkitName + "," + dockerServerName + "," + dockerGatewayName + "," + dockerAIName + "," + dockerPackagesName
+	dockerRegistryName + "," + dockerBuildkitName + "," + dockerServerName + "," + dockerGatewayName + "," + dockerAIName + "," + dockerTelemetryName + "," + dockerPackagesName
 
 // dockerInstallAction stands the whole control plane up on the local Docker
 // engine (or DOCKER_HOST).
@@ -109,6 +111,15 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 	sessionKey := existingContainerEnv(ctx, cli, dockerServerName, "DONKEY_SESSION_KEY")
 	if sessionKey == "" {
 		if sessionKey, err = randomHexKey(); err != nil {
+			return err
+		}
+	}
+	telemetryKey := existingContainerEnv(ctx, cli, dockerTelemetryName, "DONKEY_TELEMETRY_KEY")
+	if telemetryKey == "" {
+		telemetryKey = existingContainerEnv(ctx, cli, dockerServerName, "DONKEY_TELEMETRY_KEY")
+	}
+	if telemetryKey == "" {
+		if telemetryKey, err = randomHexKey(); err != nil {
 			return err
 		}
 	}
@@ -274,6 +285,7 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 		"DONKEY_BUILDKIT_ADDR":      "tcp://" + dockerBuildkitName + ":1234",
 		"DONKEY_PACKAGES_URL":       "http://" + dockerPackagesName + ":8090",
 		"DONKEY_AI_URL":             "http://" + dockerAIName + ":8089",
+		"DONKEY_TELEMETRY_URL":      "http://" + dockerTelemetryName + ":9090",
 		"DONKEY_DEFAULT_PLATFORM":   settings.DefaultPlatform,
 		"DONKEY_POSTGRES_IMAGE":     settings.AddonImages.Postgres,
 		"DONKEY_RUSTFS_IMAGE":       settings.AddonImages.RustFS,
@@ -281,6 +293,7 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 		"DONKEY_OIDC_CLIENT_ID":     settings.Auth.ClientID,
 		"DONKEY_OIDC_CLIENT_SECRET": settings.Auth.ClientSecret,
 		"DONKEY_SESSION_KEY":        sessionKey,
+		"DONKEY_TELEMETRY_KEY":      telemetryKey,
 		"DONKEY_ADMINS":             adminsJSONString(settings.Auth.Admins),
 		"DONKEY_AI_MODEL":           settings.AI.Model,
 		"OPENAI_BASE_URL":           settings.AI.BaseURL,
@@ -320,6 +333,28 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 		serverEnv["DONKEY_REGISTRY_PASSWORD"] = registryPassword
 	}
 	if err := replaceInfraContainer(ctx, cli, infraContainer{
+		Name:         dockerTelemetryName,
+		Image:        settings.Image,
+		RegistryAuth: serverPullAuth,
+		Cmd:          []string{"telemetry"},
+		Env: map[string]string{
+			"DONKEY_TELEMETRY_LISTEN":     ":4318",
+			"DONKEY_TELEMETRY_API_LISTEN": ":9090",
+			"DONKEY_TELEMETRY_DB":         "/var/lib/donkey/telemetry.duckdb",
+			"DONKEY_TELEMETRY_KEY":        telemetryKey,
+		},
+		Mounts: []mount.Mount{{
+			Type: mount.TypeVolume, Source: dockerTelemetryVolume, Target: "/var/lib/donkey",
+		}},
+		Healthcheck: &container.HealthConfig{
+			Test:     []string{"CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9090/readyz"},
+			Interval: 2 * time.Second, Timeout: 6 * time.Second, Retries: 3,
+		},
+		PullAlways: true,
+	}); err != nil {
+		return err
+	}
+	if err := replaceInfraContainer(ctx, cli, infraContainer{
 		Name:         dockerServerName,
 		Image:        settings.Image,
 		RegistryAuth: serverPullAuth,
@@ -335,20 +370,22 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 	}
 
 	gatewayEnv := map[string]string{
-		"DONKEY_RUNTIME":            "docker",
-		"DONKEY_STATE_DIR":          dockerDataDir,
-		"DONKEY_LISTEN":             ":8090",
-		"DONKEY_TLS_LISTEN":         ":8443",
-		"DONKEY_HEALTH_LISTEN":      ":8091",
-		"DONKEY_DOMAIN":             settings.Domain,
-		"DONKEY_SERVER_HOST":        serverHost,
-		"DONKEY_TLS_MODE":           tlsMode,
-		"DONKEY_ACME_EMAIL":         settings.TLS.Email,
-		"DONKEY_ACME_DIRECTORY":     settings.TLS.Directory,
-		"DONKEY_OIDC_ISSUER":        settings.Auth.Issuer,
-		"DONKEY_OIDC_CLIENT_ID":     settings.Auth.ClientID,
-		"DONKEY_OIDC_CLIENT_SECRET": settings.Auth.ClientSecret,
-		"DONKEY_SESSION_KEY":        sessionKey,
+		"DONKEY_RUNTIME":                 "docker",
+		"DONKEY_STATE_DIR":               dockerDataDir,
+		"DONKEY_LISTEN":                  ":8090",
+		"DONKEY_TLS_LISTEN":              ":8443",
+		"DONKEY_HEALTH_LISTEN":           ":8091",
+		"DONKEY_DOMAIN":                  settings.Domain,
+		"DONKEY_SERVER_HOST":             serverHost,
+		"DONKEY_TLS_MODE":                tlsMode,
+		"DONKEY_ACME_EMAIL":              settings.TLS.Email,
+		"DONKEY_ACME_DIRECTORY":          settings.TLS.Directory,
+		"DONKEY_OIDC_ISSUER":             settings.Auth.Issuer,
+		"DONKEY_OIDC_CLIENT_ID":          settings.Auth.ClientID,
+		"DONKEY_OIDC_CLIENT_SECRET":      settings.Auth.ClientSecret,
+		"DONKEY_SESSION_KEY":             sessionKey,
+		"DONKEY_TELEMETRY_KEY":           telemetryKey,
+		"DONKEY_TELEMETRY_OTLP_ENDPOINT": "http://" + dockerTelemetryName + ":4318",
 	}
 	if err := replaceInfraContainer(ctx, cli, infraContainer{
 		Name:         dockerGatewayName,
@@ -400,6 +437,9 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 	if err := waitDockerHealthy(ctx, cli, dockerPackagesName, 90*time.Second); err != nil {
 		return err
 	}
+	if err := waitDockerHealthy(ctx, cli, dockerTelemetryName, 90*time.Second); err != nil {
+		return err
+	}
 	if err := waitDockerRunning(ctx, cli, dockerServerName, 90*time.Second); err != nil {
 		return err
 	}
@@ -412,7 +452,7 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 	// Both containers were just recreated, which dropped the space networks
 	// they were on. Re-attach them, or every app deployed before this install
 	// stays unreachable until it is redeployed.
-	if err := docker.AttachOwnContainers(ctx, cli, dockerServerName, dockerGatewayName, dockerAIName); err != nil {
+	if err := docker.AttachOwnContainers(ctx, cli, dockerServerName, dockerGatewayName, dockerAIName, dockerTelemetryName); err != nil {
 		return err
 	}
 	u.Success("Control plane is running.")

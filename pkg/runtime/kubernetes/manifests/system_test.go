@@ -12,11 +12,12 @@ import (
 
 func systemInput() SystemInput {
 	return SystemInput{
-		Namespace:   DefaultSystemNamespace,
-		ServerImage: "reg.example.com/donkey-server:test",
-		Domain:      "apps.example.com",
-		RegistryURL: "reg.example.com/donkey",
-		SessionKey:  "sessionkey",
+		Namespace:    DefaultSystemNamespace,
+		ServerImage:  "reg.example.com/donkey-server:test",
+		Domain:       "apps.example.com",
+		RegistryURL:  "reg.example.com/donkey",
+		SessionKey:   "sessionkey",
+		TelemetryKey: "telemetrykey",
 	}
 }
 
@@ -36,7 +37,7 @@ func TestSystemObjectsSelfContainedEdge(t *testing.T) {
 	in := systemInput()
 	in.OIDCIssuer = "https://login.microsoftonline.com/x/v2.0"
 	out := componentNames(in)
-	for _, want := range []string{"donkey-server", "donkey-buildkitd", "donkey-packages", "donkey-gateway", "DONKEY_TLS_MODE", "type: LoadBalancer"} {
+	for _, want := range []string{"donkey-server", "donkey-buildkitd", "donkey-packages", "donkey-gateway", "donkey-telemetry", "telemetry.duckdb", "DONKEY_TLS_MODE", "type: LoadBalancer"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("system objects should contain %s", want)
 		}
@@ -103,8 +104,8 @@ func TestRegistryCredentialsPullMirroredSystemImages(t *testing.T) {
 	if !strings.Contains(out, "name: "+systemRegistrySecretName) || !strings.Contains(out, "imagePullSecrets") {
 		t.Fatalf("credentialed registry should render and reference a system pull secret:\n%s", out)
 	}
-	if n := strings.Count(out, "name: "+systemRegistrySecretName); n != 6 {
-		t.Errorf("pull secret should be created once and referenced by five system deployments, found %d mentions", n)
+	if n := strings.Count(out, "name: "+systemRegistrySecretName); n != 7 {
+		t.Errorf("pull secret should be created once and referenced by six system deployments, found %d mentions", n)
 	}
 
 	plain := componentNames(systemInput())

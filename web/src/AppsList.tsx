@@ -1,12 +1,11 @@
 import { useState } from 'react'
 import { Dialog, DialogBackdrop, DialogPanel, DialogTitle } from '@headlessui/react'
-import { Link } from '@tanstack/react-router'
 import { FolderPlus, RefreshCw } from 'lucide-react'
 import { api, type AppSummary } from './api'
 import { useFleet } from './queries'
 import { RemoveApps } from './RemoveApps'
 import { SpaceCard } from './SpaceCard'
-import { Button, ErrorNote, Skeleton, errText, healthLine, healthOf, type Health } from './ui'
+import { Button, DonkeyLogo, ErrorNote, Skeleton, errText, healthOf, type Health } from './ui'
 
 const healthRank: Record<Health, number> = { bad: 0, unknown: 1, ok: 2 }
 
@@ -38,15 +37,6 @@ export function AppsList() {
     })
   }
 
-  const all = apps ?? []
-  const troubled = all.filter((a) => healthOf(a.healthy, a.ready) === 'bad')
-  const summary =
-    all.length === 0
-      ? ''
-      : troubled.length === 0
-        ? `${all.length} ${all.length === 1 ? 'app' : 'apps'} in ${spaces.length} ${spaces.length === 1 ? 'space' : 'spaces'} — all running.`
-        : `${troubled.length} of ${all.length} ${all.length === 1 ? 'app' : 'apps'} ${troubled.length === 1 ? 'needs' : 'need'} attention.`
-
   return (
     <div className="space-y-5">
       <div className="flex items-center justify-between">
@@ -75,36 +65,6 @@ export function AppsList() {
         </div>
       </div>
 
-      {/* The herd at a glance: one tick per app, colored by health. */}
-      {all.length > 0 && (
-        <div>
-          <div className="flex flex-wrap gap-1" role="list" aria-label="All apps by health">
-            {[...all]
-              .sort((a, b) => healthRank[healthOf(a.healthy, a.ready)] - healthRank[healthOf(b.healthy, b.ready)])
-              .map((app) => {
-                const h = healthOf(app.healthy, app.ready)
-                const tone =
-                  h === 'ok'
-                    ? 'bg-moss/70 hover:bg-moss'
-                    : h === 'bad'
-                      ? 'bg-brick shadow-[0_0_10px_1px] shadow-brick/40'
-                      : 'bg-stone/50'
-                return (
-                  <Link
-                    key={`${app.space}/${app.name}`}
-                    role="listitem"
-                    title={`${app.name} (${app.space}) — ${healthLine[h](app.ready)}`}
-                    to="/app/$space/$name/{-$tab}"
-                    params={{ space: app.space, name: app.name, tab: undefined }}
-                    className={`h-3.5 w-6 rounded-sm ${tone} transition-transform hover:scale-y-125 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-hay-deep`}
-                  />
-                )
-              })}
-          </div>
-          <p className="mt-1.5 text-sm text-ink-soft">{summary}</p>
-        </div>
-      )}
-
       <ErrorNote message={error} />
 
       {apps === null && !error && (
@@ -117,9 +77,7 @@ export function AppsList() {
 
       {apps !== null && spaces.length === 0 && (
         <div className="rounded-xl border border-line bg-card p-12 text-center">
-          <div className="text-4xl" aria-hidden>
-            🫏
-          </div>
+          <DonkeyLogo className="mx-auto size-10 text-white" />
           <p className="mt-3 text-sm text-stone">The paddock is empty.</p>
           <p className="mt-2 text-sm">
             Deploy your first app from its project folder:{' '}

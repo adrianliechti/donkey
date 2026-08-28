@@ -1,13 +1,14 @@
 import { useState } from 'react'
 import { Link } from '@tanstack/react-router'
 import { Dialog, DialogBackdrop, DialogPanel, DialogTitle } from '@headlessui/react'
-import { Archive, Database, ExternalLink, HardDrive, Network, Plus, Sparkles, Table2, Trash2 } from 'lucide-react'
+import { Archive, Database, HardDrive, Network, Plus, Sparkles, Table2, Trash2 } from 'lucide-react'
 import { api, type AddAddonRequest, type AppSummary, type SpaceAddonEntry } from './api'
 import { AddServiceDialog } from './AddonForm'
 import { AiDialog } from './AiDialog'
 import { DatabaseDialog } from './DatabaseDialog'
 import { useInvalidateServices, useSpaceServices } from './queries'
 import { S3Dialog } from './S3Dialog'
+import { SpaceTelemetry } from './TrafficPanel'
 import { Button, ErrorNote, ExposureBadge, StatusDot, ago, errText, healthLine, healthOf, type Health } from './ui'
 
 /**
@@ -69,11 +70,10 @@ export function SpaceCard({
         <div className="flex items-center gap-2.5">
           <StatusDot health={worst} />
           <h2 className="font-mono text-base font-bold tracking-tight">{space}</h2>
-          <span className="text-xs text-stone">
-            {apps.length === 1 ? '1 app' : `${apps.length} apps`}
-          </span>
         </div>
         <div className="flex items-center gap-0.5">
+          <SpaceTelemetry space={space} />
+          <span className="mx-1 h-4 w-px bg-line" aria-hidden />
           <button
             type="button"
             title={`Add a service to ${space} (database & co.)`}
@@ -123,7 +123,7 @@ export function SpaceCard({
 
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
         {apps.map((app) => (
-          <AppCard key={app.name} app={app} siblings={apps} onRemove={onRemove} />
+          <AppCard key={app.name} app={app} />
         ))}
       </div>
 
@@ -384,23 +384,13 @@ function RemoveServiceDialog({
   )
 }
 
-function AppCard({
-  app,
-  siblings,
-  onRemove,
-}: {
-  app: AppSummary
-  siblings: AppSummary[]
-  onRemove: (r: { space: string; apps: string[]; siblings: string[] }) => void
-}) {
+function AppCard({ app }: { app: AppSummary }) {
   const h = healthOf(app.healthy, app.ready)
   const edge =
     h === 'bad' ? 'border-brick/50 hover:border-brick' : 'border-line hover:border-line-bright'
 
   return (
-    <div
-      className={`group relative rounded-lg border bg-card transition-colors ${edge}`}
-    >
+    <div className={`rounded-lg border bg-card transition-colors ${edge}`}>
       {/* A real router Link: modifier clicks, middle clicks and copy-link
           behave like the web, with none of the hand-rolled handling. */}
       <Link
@@ -461,37 +451,6 @@ function AppCard({
         )}
       </Link>
 
-      {/* Quick actions surface on hover, out of the card's click target. */}
-      <div className="absolute right-2 top-2 hidden items-center gap-0.5 rounded-md bg-card group-hover:flex">
-        {app.url && (
-          <a
-            href={app.url}
-            target="_blank"
-            rel="noreferrer"
-            title={`Open ${app.url}`}
-            aria-label={`Open ${app.name} in a new tab`}
-            className="rounded p-1.5 text-stone hover:bg-raised hover:text-ink"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <ExternalLink className="size-3.5" aria-hidden />
-          </a>
-        )}
-        <button
-          type="button"
-          title={`Remove ${app.name}`}
-          aria-label={`Remove ${app.name}`}
-          onClick={() =>
-            onRemove({
-              space: app.space,
-              apps: [app.name],
-              siblings: siblings.filter((a) => a.name !== app.name).map((a) => a.name),
-            })
-          }
-          className="rounded p-1.5 text-stone hover:bg-brick/10 hover:text-brick"
-        >
-          <Trash2 className="size-3.5" aria-hidden />
-        </button>
-      </div>
     </div>
   )
 }

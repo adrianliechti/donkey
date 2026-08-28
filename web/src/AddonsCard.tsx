@@ -3,7 +3,7 @@ import { Plus } from 'lucide-react'
 import { api, type AddAddonRequest } from './api'
 import { AddServiceDialog } from './AddonForm'
 import { useAppServices, useInvalidateServices, useSpaceServices } from './queries'
-import { Button, Card, ErrorNote, errText, SectionTitle, Spinner } from './ui'
+import { Button, ErrorNote, errText, SectionTitle, Spinner } from './ui'
 
 /**
  * The services this app is connected to. Services belong to the space —
@@ -51,7 +51,7 @@ export function AddonsCard({ space, app }: { space: string; app: string }) {
     )
 
   return (
-    <Card className="p-4">
+    <section className="border-t border-line pt-5">
       <div className="flex items-center justify-between gap-2">
         <SectionTitle>Connected services</SectionTitle>
         <Button kind="quiet" onClick={() => setAdding(true)}>
@@ -123,6 +123,6 @@ export function AddonsCard({ space, app }: { space: string; app: string }) {
         The variables above are injected into the app. Services belong to the space — disconnecting
         deletes nothing, and the space card manages the services themselves.
       </p>
-    </Card>
+    </section>
   )
 }

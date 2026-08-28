@@ -63,7 +63,7 @@ func donkeyGatewayServiceAccount(in SystemInput) *corev1.ServiceAccount {
 // donkeyGatewayConfigHash covers the secret-backed env vars (read only at pod
 // creation), so a rotated client secret or session key rolls the pod.
 func (in SystemInput) donkeyGatewayConfigHash() string {
-	return configHash(in.OIDCClientID, in.OIDCClientSecret, in.SessionKey)
+	return configHash(in.OIDCClientID, in.OIDCClientSecret, in.SessionKey, in.TelemetryKey)
 }
 
 func donkeyGatewayDeployment(in SystemInput) *appsv1.Deployment {
@@ -101,9 +101,11 @@ func donkeyGatewayDeployment(in SystemInput) *appsv1.Deployment {
 		// also what stops this gateway from serving another installation's
 		// apps, since both would otherwise match on managed-by=donkey.
 		{Name: "DONKEY_WORKLOAD_NAMESPACE", Value: in.WorkloadNamespace},
+		{Name: "DONKEY_TELEMETRY_OTLP_ENDPOINT", Value: TelemetryOTLPEndpoint(in.Namespace)},
 		secretEnv("DONKEY_OIDC_CLIENT_ID", "oidc-client-id"),
 		secretEnv("DONKEY_OIDC_CLIENT_SECRET", "oidc-client-secret"),
 		secretEnv("DONKEY_SESSION_KEY", "session-key"),
+		secretEnv("DONKEY_TELEMETRY_KEY", "telemetry-key"),
 	}
 	// The gateway reaches the outside world too — the OIDC token exchange
 	// and, in acme mode, Let's Encrypt. On a network whose only way out is a

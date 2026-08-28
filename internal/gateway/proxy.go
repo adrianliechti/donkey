@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/felixge/httpsnoop"
+
 	"github.com/adrianliechti/donkey/internal/identity"
 )
 
@@ -61,7 +63,10 @@ func (s *Server) serveApp(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	s.proxy(rt, sess, fromToken).ServeHTTP(w, r)
+	metrics := httpsnoop.CaptureMetrics(s.proxy(rt, sess, fromToken), w, r)
+	if s.telemetry != nil {
+		s.telemetry.Record(r, rt, sess, metrics.Code, metrics.Duration, w.Header().Get("Content-Type"))
+	}
 }
 
 // wantsHTML says whether the request came from a navigating browser.

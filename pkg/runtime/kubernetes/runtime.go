@@ -36,6 +36,9 @@ type Options struct {
 	// AppGateway enables namespaced Gateway API and cert-manager objects for
 	// every exposed app.
 	AppGateway config.InstallAppGateway
+	// TelemetryKey derives an app-scoped OTLP credential. It is the
+	// installation key already held by donkey-server, never exposed directly.
+	TelemetryKey []byte
 }
 
 // Runtime runs donkey's apps on a Kubernetes cluster. It deliberately does

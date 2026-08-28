@@ -34,6 +34,45 @@ export interface AppStatus {
   port?: number
 }
 
+export type TrafficSource = 'edge' | 'app'
+export type TrafficRange = '48h' | '7d' | '30d'
+
+export interface TrafficTotals {
+  requests: number
+  successful: number
+  clientErrors: number
+  serverErrors: number
+  otherResponses?: number
+  averageLatencyMs: number
+  p50LatencyMs: number
+  p95LatencyMs: number
+  views: number
+  uniqueVisitors: number
+  identifiedViews: number
+  visitorCoveragePercent: number
+}
+
+export interface TrafficPoint extends TrafficTotals {
+  bucket: string
+}
+
+export interface TrafficReport {
+  space: string
+  app?: string
+  source: TrafficSource
+  range: TrafficRange
+  granularity: 'hour' | 'day'
+  from: string
+  to: string
+  totals: TrafficTotals
+  series: TrafficPoint[]
+  definitions: {
+    success: string
+    view: string
+    uniqueVisitors: string
+  }
+}
+
 /** Who may open a login-protected app; empty lists mean "everyone signed in". */
 export interface AccessConfig {
   users?: string[]
@@ -343,6 +382,14 @@ export const api = {
   status: async (space: string, app: string): Promise<AppStatus> => {
     const st = await request<AppStatus>(appPath(space, app, '/status'))
     return { ...st, pods: st.pods ?? [] }
+  },
+  traffic: (space: string, app: string, source: TrafficSource = 'edge', range: TrafficRange = '30d') => {
+    const query = `?source=${source}&range=${range}`
+    return request<TrafficReport>(
+      app
+        ? `${appPath(space, app, '/traffic')}${query}`
+        : `/v1/spaces/${encodeURIComponent(space)}/traffic${query}`,
+    )
   },
   env: (space: string, app: string) =>
     request<{ env: Record<string, string> }>(appPath(space, app, '/env')),

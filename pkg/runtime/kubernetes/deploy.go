@@ -10,6 +10,7 @@ import (
 
 	"github.com/adrianliechti/donkey/internal/addons"
 	"github.com/adrianliechti/donkey/internal/config"
+	"github.com/adrianliechti/donkey/internal/telemetry"
 	rt "github.com/adrianliechti/donkey/pkg/runtime"
 	"github.com/adrianliechti/donkey/pkg/runtime/kubernetes/manifests"
 )
@@ -230,6 +231,10 @@ func (r *Runtime) manifestInput(spec rt.DeploySpec, includeCreds bool) (manifest
 			IssuerKind:     r.opts.AppGateway.CertificateIssuerKind(),
 			IssuerGroup:    r.opts.AppGateway.CertificateIssuerGroup(),
 		},
+	}
+	if len(r.opts.TelemetryKey) > 0 {
+		in.TelemetryEndpoint = manifests.TelemetryOTLPEndpoint(r.opts.SystemNamespace)
+		in.TelemetryToken = telemetry.AppToken(r.opts.TelemetryKey, space, app.Name)
 	}
 	if includeCreds {
 		username, password, err := r.opts.Registry.Credentials()

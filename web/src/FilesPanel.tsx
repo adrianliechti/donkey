@@ -12,7 +12,7 @@ import {
   Upload,
 } from 'lucide-react'
 import { api, type FileListing } from './api'
-import { Button, Card, ErrorNote, errText, SectionTitle, Spinner } from './ui'
+import { Button, ErrorNote, errText, Spinner } from './ui'
 
 function humanSize(n: number): string {
   if (n < 1024) return `${n} B`
@@ -89,25 +89,51 @@ export function FilesPanel({ space, app }: { space: string; app: string }) {
   const crumbs = path === '' ? [] : path.split('/')
 
   return (
-    <Card className="p-4">
+    <div className="space-y-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <SectionTitle>Files on the disk</SectionTitle>
+        {/* The breadcrumb is enough context inside the Files tab. */}
+        <nav className="flex flex-wrap items-center gap-1 text-xs" aria-label="Disk path">
+          <button
+            type="button"
+            onClick={() => setPath('')}
+            className="flex items-center gap-1 rounded px-1 py-0.5 font-mono text-stone hover:bg-line/50 hover:text-ink"
+          >
+            <HardDrive className="size-3.5" aria-hidden /> disk
+          </button>
+          {crumbs.map((part, i) => (
+            <span key={i} className="flex items-center gap-1">
+              <ChevronRight className="size-3 text-stone" aria-hidden />
+              <button
+                type="button"
+                onClick={() => setPath(crumbs.slice(0, i + 1).join('/'))}
+                className="rounded px-1 py-0.5 font-mono hover:bg-line/50"
+              >
+                {part}
+              </button>
+            </span>
+          ))}
+        </nav>
         <div className="flex items-center gap-2">
           <button
+            type="button"
             onClick={() => fileInput.current?.click()}
             className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-stone hover:bg-line/50 focus-visible:outline-2 focus-visible:outline-hay-deep"
           >
             <Upload className="size-3.5" aria-hidden /> Upload
           </button>
           <button
+            type="button"
             onClick={() => setNewFolder('')}
             className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-stone hover:bg-line/50 focus-visible:outline-2 focus-visible:outline-hay-deep"
           >
             <FolderPlus className="size-3.5" aria-hidden /> New folder
           </button>
           <button
+            type="button"
             onClick={load}
-            className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-stone hover:bg-line/50 focus-visible:outline-2 focus-visible:outline-hay-deep"
+            title="Refresh files"
+            aria-label="Refresh files"
+            className="flex items-center rounded-md p-1.5 text-xs text-stone hover:bg-line/50 focus-visible:outline-2 focus-visible:outline-hay-deep"
           >
             <RefreshCw className="size-3.5" aria-hidden />
           </button>
@@ -124,33 +150,12 @@ export function FilesPanel({ space, app }: { space: string; app: string }) {
         </div>
       </div>
 
-      {/* Where we are on the disk. */}
-      <nav className="mt-2 flex flex-wrap items-center gap-1 text-xs">
-        <button
-          onClick={() => setPath('')}
-          className="flex items-center gap-1 rounded px-1 py-0.5 font-mono text-stone hover:bg-line/50 hover:text-ink"
-        >
-          <HardDrive className="size-3.5" aria-hidden /> disk
-        </button>
-        {crumbs.map((part, i) => (
-          <span key={i} className="flex items-center gap-1">
-            <ChevronRight className="size-3 text-stone" aria-hidden />
-            <button
-              onClick={() => setPath(crumbs.slice(0, i + 1).join('/'))}
-              className="rounded px-1 py-0.5 font-mono hover:bg-line/50"
-            >
-              {part}
-            </button>
-          </span>
-        ))}
-      </nav>
-
       <ErrorNote message={error} />
-      {busy && <p className="mt-2 text-xs text-stone">{busy}</p>}
+      {busy && <p className="text-xs text-stone">{busy}</p>}
 
       {newFolder !== null && (
         <form
-          className="mt-2 flex items-center gap-2"
+          className="flex items-center gap-2"
           onSubmit={(e) => {
             e.preventDefault()
             const name = newFolder.trim()
@@ -187,7 +192,7 @@ export function FilesPanel({ space, app }: { space: string; app: string }) {
           setDragOver(false)
           if (e.dataTransfer.files.length) upload(e.dataTransfer.files)
         }}
-        className={`mt-2 rounded-md border border-dashed p-1 transition-colors ${
+        className={`rounded-md border border-dashed p-1 transition-colors ${
           dragOver ? 'border-hay-deep bg-hay-wash' : 'border-transparent'
         }`}
       >
@@ -345,6 +350,6 @@ export function FilesPanel({ space, app }: { space: string; app: string }) {
           </p>
         )}
       </div>
-    </Card>
+    </div>
   )
 }

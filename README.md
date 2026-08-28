@@ -64,6 +64,7 @@ five ideas:
                            │  ├─ donkey-buildkitd  image builds      │──▶ registry
                            │  ├─ donkey-packages  build package proxy│─▶ package registries
                            │  ├─ donkey-ai      openai addon endpoint│──▶ model API
+                           │  ├─ donkey-telemetry  OTLP + DuckDB     │
  browser ────80/443───────▶│  └─ donkey-gateway  TLS (ACME/CA/none)  │──OIDC──▶ Entra ID /
                            │       · routing by hostname and path    │        any IdP
      <app>.<space>.<domain>│       · OIDC login                      │
@@ -90,7 +91,7 @@ five ideas:
   the domain itself: open `https://<domain>` in a browser, sign in at your
   IdP (the gateway runs the login, like for any app — one sign-in covers
   console and apps), and you get the apps overview with health at a glance, live
-  logs, an env-var editor, restart, an AI "explain what's wrong" for
+  logs, selectable 48-hour/7-day/30-day traffic and latency, an env-var editor, restart, an AI "explain what's wrong" for
   unhealthy apps, remove-app, and the system checks. Spaces are managed
   here too — create one before any app exists, remove an empty one — and
   each space card carries its services: a catalog to add from, plus a
@@ -124,6 +125,13 @@ five ideas:
   requests to public registries by default or installation-wide enterprise upstreams.
   BuildKit is the only pod admitted by its NetworkPolicy, and upstream
   credentials stay in this process rather than becoming Docker build args.
+- **donkey-telemetry** — a dedicated `telemetry` process role of the single
+  `donkey-server` binary: a single-replica OTLP/HTTP metrics receiver with a
+  private query API backed by an embedded DuckDB file on its own 2 Gi PVC.
+  It keeps 30 days of hourly HTTP histograms and hourly view/visitor
+  rollups. Only this process opens the file; `Recreate` upgrades preserve
+  DuckDB's single-writer ownership. The server can query it, while the gateway
+  and apps can only ingest with scope-specific credentials.
 - **donkey-gateway** — donkey's own edge (same binary as the server,
   started with `gateway`): traffic enters the cluster here, on ports 80 and
   443. By default it terminates TLS and issues the certificates itself — one per
@@ -154,6 +162,53 @@ five ideas:
   registry pull auth and service bindings. Everything is labeled `donkey.dev/app` and
   `donkey.dev/space`, so status, logs and destroy know exactly what donkey
   owns.
+
+## Traffic telemetry
+
+Every app and space has a Traffic view in the console with **last 48 hours**,
+**last 7 days**, and **last 30 days** ranges. The 48-hour series uses hourly
+buckets; week and month series use daily buckets. The default
+source is **Gateway**: donkey-gateway records one stable OpenTelemetry
+`http.server.request.duration` histogram after an allowed request has been
+forwarded. The histogram count supplies request volume; status attributes split
+HTTP 200–399 successes, 4xx client errors and 5xx server errors; its standard
+explicit buckets supply average, p50 and p95 latency. Logical identity is kept
+as the bounded `donkey.space.name` and `donkey.app.name` attributes. This follows
+the [stable OTel HTTP metric semantic conventions](https://opentelemetry.io/docs/specs/semconv/http/http-metrics/).
+
+A **view** is a successful top-level HTML document load at the gateway. It does
+not pretend to see client-side SPA route transitions. Unique visitors are
+distinct signed-in subjects: the gateway HMAC-pseudonymizes them separately per
+app and per space before export. DuckDB never receives the subject, email, IP,
+user agent, path or query string, and anonymous visitors receive no tracking
+cookie. The report shows identification coverage alongside the unique count.
+
+Apps also receive standard exporter defaults:
+
+```text
+OTEL_SERVICE_NAME=<app>
+OTEL_RESOURCE_ATTRIBUTES=service.namespace=<space>
+OTEL_EXPORTER_OTLP_ENDPOINT=http://donkey-telemetry…:4318
+OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+OTEL_METRICS_EXPORTER=otlp
+```
+
+Explicit app environment values win over these defaults. The injected variables
+configure an OpenTelemetry SDK; they do not magically instrument application
+code. Use the language's HTTP auto-instrumentation or SDK and emit the stable
+HTTP server duration histogram. The console exposes this as **In-app OTEL** and
+keeps it separate from Gateway data, because adding both would count the same
+request twice. Each app's HMAC token is valid only for its own
+[`service.namespace` / `service.name` resource](https://opentelemetry.io/docs/specs/semconv/resource/service/),
+so it cannot write another app's series or the trusted edge series.
+
+No Collector is required: the purpose-built service already accepts standard
+OTLP/HTTP and owns retention/query semantics. A Collector remains useful when an
+installation needs external routing or processing, but it is a pipeline rather
+than the datastore. The embedded service uses the official
+[DuckDB Go client](https://duckdb.org/docs/current/clients/go) and one writer
+process; reports are analytical SQL over compact rollups rather than scans of
+gateway logs.
 - **Storage** — `storage.paths` in donkey.yaml (or what the assistant
   found) gives an app **one** PersistentVolumeClaim, with every path mounted
   as its own folder on it (`subPath`, derived from the path so data never
@@ -414,7 +469,7 @@ applies anything, and `donkey doctor` keeps checking them after):
 
 | Requirement | Why | Notes |
 |---|---|---|
-| **Kubernetes cluster** with a default StorageClass | apps with `storage.paths` and provisioned services claim volumes | any conformant cluster; nothing donkey-specific. No ingress controller, no Gateway API, no cert-manager — donkey brings its own edge, and optionally attaches to a Gateway API gateway the cluster already runs (below). Traffic enters through the donkey-gateway `LoadBalancer` service; on clusters where nothing assigns those an address (kind), set `gateway.serviceType: NodePort` or `ClusterIP` |
+| **Kubernetes cluster** with a default StorageClass | donkey-telemetry always claims its 2 Gi DuckDB volume; apps with `storage.paths` and provisioned services claim their own | any conformant cluster; nothing donkey-specific. No ingress controller, no Gateway API, no cert-manager — donkey brings its own edge, and optionally attaches to a Gateway API gateway the cluster already runs (below). Traffic enters through the donkey-gateway `LoadBalancer` service; on clusters where nothing assigns those an address (kind), set `gateway.serviceType: NodePort` or `ClusterIP` |
 | **Container registry** the cluster can pull from | donkey pushes every build there | `registry.url` + credentials; `registry.caSecret` when its certificate comes from a private CA |
 | **DNS** for `*.<domain>` and `<domain>` → the gateway address | apps are served at `<app>.<space>.<domain>`, the API and login callback at `<domain>` | one wildcard covers every depth; the apex needs its own record |
 | **OIDC provider** (Pocket ID, Entra ID, Keycloak, …) | the one way in: console, CLI and protected apps all sign in against it | required — `auth.issuer` (+ client id/secret); `auth.admins` optionally narrows who may administer |
@@ -884,7 +939,8 @@ on the second run, and never touches a namespace another installation has
 stamped — if the `namespacePrefix` changed with the upgrade, the old
 namespaces are left alone and named in a warning.
 
-**What to back up.** All donkey state lives in Kubernetes objects, and nearly
+**What to back up.** Donkey state lives in Kubernetes objects and the telemetry
+PVC, and nearly
 all of it is reproducible: images rebuild from the repositories, manifests
 re-render from `donkey.yaml`, namespaces and routes are re-created by the next
 deploy. What is *not* reproducible has to live outside the cluster:
@@ -896,6 +952,7 @@ deploy. What is *not* reproducible has to live outside the cluster:
 | `DONKEY_OIDC_CLIENT_SECRET` (with its client id) | belongs to a registration in your IdP — a new one means updating the IdP as well |
 | `OPENAI_API_KEY` | the assistant is required; no key, no deploys |
 | the `session-key` entry of `donkey-system-config` | a fresh install **generates a new one** and thereby invalidates every session and CLI token. Restoring it makes the rebuilt installation the same installation — everyone stays signed in |
+| the `telemetry-key` entry of `donkey-system-config` | existing app exporters carry credentials derived from it. Restoring it keeps those exporters valid and lets a restored telemetry database continue accepting them independently of login-session rotation |
 | the registry CA secret (`registry.caSecret`) | donkey only *references* that Secret in `donkey-system` — it never creates it. Whatever created it has to run again |
 | DNS for `*.<domain>` and `<domain>` | they point at the gateway address, which a rebuilt cluster changes |
 
@@ -904,10 +961,15 @@ set` (the ones in `donkey.yaml` come back with the app, the rest don't), and
 the generated credential of a provisioned service — which matters only as
 long as its data does.
 
+The `donkey-telemetry-data` PVC is cluster-only too; its database file is
+`/var/lib/donkey/telemetry.duckdb`. Losing it does not
+affect apps, but it erases the current 30-day traffic history; include it in
+volume snapshots when that history matters.
+
 **PVC data is the one thing that cannot be reconstructed.** Everything above
 is a copy of something you have; a volume is not. donkey never snapshots,
 exports or restores a PersistentVolumeClaim — neither an app's `storage.paths`
-volume nor a provisioned addon's data disk — and it has no restore command to
+volume, a provisioned addon's data disk, nor the telemetry DuckDB disk — and it has no restore command to
 add later in a hurry. `donkey destroy` without `--keep-data` deletes them
 (interactively it asks first, `--force` skips the question), and that is
 final: no donkey command brings that data back. Backing volumes up is your

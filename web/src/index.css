@@ -42,6 +42,17 @@ html {
   color-scheme: dark;
 }
 
+/* One-color brand mark: face it back toward the wordmark/content, and let
+ * currentColor choose white here without baking presentation into the SVG. */
+.donkey-logo {
+  display: inline-block;
+  flex: none;
+  background-color: currentColor;
+  -webkit-mask: url('/logo.svg') center / contain no-repeat;
+  mask: url('/logo.svg') center / contain no-repeat;
+  transform: scaleX(-1);
+}
+
 /* The paddock: the dotted field app cards sit on. */
 .dotgrid {
   background-image: radial-gradient(

@@ -8,20 +8,24 @@ import (
 	"syscall"
 	"time"
 
+	_ "github.com/duckdb/duckdb-go/v2"
+
 	"github.com/adrianliechti/donkey/internal/aiproxy"
 	"github.com/adrianliechti/donkey/internal/config"
 	"github.com/adrianliechti/donkey/internal/gateway"
 	"github.com/adrianliechti/donkey/internal/packages"
 	"github.com/adrianliechti/donkey/internal/server"
+	"github.com/adrianliechti/donkey/internal/telemetry"
 	"github.com/adrianliechti/donkey/pkg/runtime"
 	"github.com/adrianliechti/donkey/pkg/runtime/docker"
 	"github.com/adrianliechti/donkey/pkg/runtime/kubernetes"
 	"github.com/adrianliechti/donkey/pkg/runtime/kubernetes/manifests"
 )
 
-// One binary, four roles: the control plane by default, the login gateway,
-// the openai addon's endpoint, and the build-only package proxy. Separate
-// processes keep each role down to the credentials and permissions it needs.
+// One binary, five roles: the control plane by default, the login gateway,
+// the OpenAI addon's endpoint, the build-only package proxy, and the traffic
+// telemetry service. Separate processes keep each role down to the credentials
+// and permissions it needs while the release ships one server artifact.
 func main() {
 	// SIGTERM starts a drain rather than killing in-flight work: a
 	// control-plane upgrade must not abandon somebody's half-finished build,
@@ -78,6 +82,19 @@ func main() {
 		return
 	}
 
+	if len(os.Args) > 1 && os.Args[1] == "telemetry" {
+		cfg, err := telemetry.ConfigFromEnv()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "configuration error:", err)
+			os.Exit(1)
+		}
+		if err := telemetry.Run(ctx, cfg); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	cfg, err := server.FromEnv()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "configuration error:", err)
@@ -94,6 +111,7 @@ func main() {
 			Registry:     cfg.Registry,
 			AddonImages:  cfg.AddonImages,
 			PullRegistry: os.Getenv("DONKEY_PULL_REGISTRY"),
+			TelemetryKey: cfg.TelemetryKey,
 		})
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "startup error:", err)
@@ -140,6 +158,7 @@ func main() {
 			AddonImages:           cfg.AddonImages,
 			AddonImagePullSecrets: cfg.AddonImagePullSecrets,
 			AppGateway:            cfg.AppGateway,
+			TelemetryKey:          cfg.TelemetryKey,
 		})
 	}
 	srv, err := server.New(cfg, rt)

@@ -65,6 +65,11 @@ type Input struct {
 	// RouteTargets are the paths of other apps' addresses this app answers
 	// on. The server resolves the hostnames, so this package stays pure.
 	RouteTargets []RouteTarget
+
+	// TelemetryEndpoint and TelemetryToken configure a standard OTLP/HTTP
+	// metrics exporter without overriding values the app owner set explicitly.
+	TelemetryEndpoint string
+	TelemetryToken    string
 }
 
 // RouteTarget is one resolved entry of donkey.yaml's `routes`.
@@ -90,6 +95,8 @@ func PullSecretName(app string) string { return app + "-registry" }
 
 func EnvSecretName(app string) string { return app + "-env" }
 
+func TelemetrySecretName(app string) string { return app + "-telemetry" }
+
 func DataClaimName(app string) string { return app + "-data" }
 
 // AppObjects renders the namespace, optional pull secret, data volume,
@@ -100,6 +107,9 @@ func AppObjects(in Input) ([]runtime.Object, error) {
 
 	if in.RegistryUsername != "" && in.RegistryPassword != "" {
 		objs = append(objs, pullSecret(in))
+	}
+	if in.TelemetryEndpoint != "" && in.TelemetryToken != "" {
+		objs = append(objs, telemetrySecret(in))
 	}
 	if app.HasStorage() {
 		pvc, err := dataClaim(in)
@@ -221,6 +231,28 @@ func pullSecret(in Input) *corev1.Secret {
 	)
 }
 
+func telemetrySecret(in Input) *corev1.Secret {
+	return &corev1.Secret{
+		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Secret"},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      TelemetrySecretName(in.Name()),
+			Namespace: in.Namespace,
+			Labels:    Labels(in.Space, in.Name(), ComponentWeb),
+		},
+		StringData: map[string]string{
+			"OTEL_SERVICE_NAME":             in.App.Name,
+			"OTEL_RESOURCE_ATTRIBUTES":      "service.namespace=" + in.Space,
+			"OTEL_EXPORTER_OTLP_ENDPOINT":   in.TelemetryEndpoint,
+			"OTEL_EXPORTER_OTLP_PROTOCOL":   "http/protobuf",
+			"OTEL_EXPORTER_OTLP_HEADERS":    "x-donkey-telemetry-token=" + in.TelemetryToken,
+			"OTEL_METRICS_EXPORTER":         "otlp",
+			"OTEL_TRACES_EXPORTER":          "none",
+			"OTEL_LOGS_EXPORTER":            "none",
+			"OTEL_SEMCONV_STABILITY_OPT_IN": "http",
+		},
+	}
+}
+
 // RegistryPullSecret creates the docker config used by app and addon pods.
 // Keeping this shape in one place matters: both pull images from the same
 // enterprise registry and must encode its host and credentials identically.
@@ -254,12 +286,20 @@ func RegistryPullSecret(name, namespace string, labels map[string]string, host, 
 func appEnvironment(in Input) ([]corev1.EnvVar, []corev1.EnvFromSource) {
 	app := in.App
 	optional := true
-	envFrom := []corev1.EnvFromSource{{
+	var envFrom []corev1.EnvFromSource
+	if in.TelemetryEndpoint != "" && in.TelemetryToken != "" {
+		envFrom = append(envFrom, corev1.EnvFromSource{
+			SecretRef: &corev1.SecretEnvSource{
+				LocalObjectReference: corev1.LocalObjectReference{Name: TelemetrySecretName(in.Name())},
+			},
+		})
+	}
+	envFrom = append(envFrom, corev1.EnvFromSource{
 		SecretRef: &corev1.SecretEnvSource{
 			LocalObjectReference: corev1.LocalObjectReference{Name: EnvSecretName(in.Name())},
 			Optional:             &optional,
 		},
-	}}
+	})
 	for _, name := range in.AddonSecretNames {
 		envFrom = append(envFrom, corev1.EnvFromSource{
 			SecretRef: &corev1.SecretEnvSource{

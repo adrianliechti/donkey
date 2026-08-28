@@ -308,6 +308,14 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 			return err
 		}
 	}
+	// Exporters live longer than login sessions. Keep their root credential
+	// stable across re-installs and separate from deliberate session rotation.
+	telemetryKey := existing["telemetry-key"]
+	if telemetryKey == "" {
+		if telemetryKey, err = randomHexKey(); err != nil {
+			return err
+		}
+	}
 	in := manifests.SystemInput{
 		Namespace:            systemNamespace,
 		SkipNamespace:        nsPlan.SkipSystemNamespace,
@@ -340,6 +348,7 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 		OIDCClientID:               settings.Auth.ClientID,
 		OIDCClientSecret:           settings.Auth.ClientSecret,
 		SessionKey:                 sessionKey,
+		TelemetryKey:               telemetryKey,
 		DefaultPlatform:            settings.DefaultPlatform,
 		OpenAIBaseURL:              settings.AI.BaseURL,
 		OpenAIAPIKey:               settings.AI.APIKey,
@@ -357,10 +366,10 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 		in.OIDCClientSecret = pendingOIDC
 	}
 
-	// The one advisory preflight left: disks. Optional Gateway API and
-	// cert-manager machinery was checked above before any object was applied.
+	// DuckDB is system state, so unlike an app's optional disk the telemetry
+	// PVC must be provisionable before any control-plane objects are applied.
 	if hasDefault, err := client.HasDefaultStorageClass(ctx); err == nil && !hasDefault {
-		u.Warn("The cluster has no default StorageClass — apps with storage and provisioned addons won't get disks until one exists (or storage.class is set).")
+		return fmt.Errorf("the cluster has no default StorageClass — donkey-telemetry needs one for its 2 Gi DuckDB volume")
 	}
 
 	contextName := kubeContext
@@ -373,6 +382,9 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 	}
 	u.Info("Waiting for the server to come up…")
 	if err := client.WaitForRollout(ctx, in.Namespace, "donkey-packages"); err != nil {
+		return err
+	}
+	if err := client.WaitForRollout(ctx, in.Namespace, manifests.TelemetryAppName); err != nil {
 		return err
 	}
 	if err := client.WaitForRollout(ctx, in.Namespace, "donkey-server"); err != nil {
@@ -562,8 +574,8 @@ func missingSettings(settings *config.InstallFile, withSecrets bool) []string {
 	return missing
 }
 
-// randomHexKey is the installation's sealing key — every session cookie and
-// CLI token hangs off it: 32 bytes, hex-encoded.
+// randomHexKey makes a 32-byte installation secret, hex-encoded. Session and
+// telemetry credentials use separate generated values.
 func randomHexKey() (string, error) {
 	b := make([]byte, 32)
 	if _, err := rand.Read(b); err != nil {
