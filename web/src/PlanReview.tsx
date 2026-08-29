@@ -103,6 +103,7 @@ function Choice({
 export function PlanReview({
   plan,
   spaces,
+  space,
   onRecheck,
   onDeploy,
   busy,
@@ -112,6 +113,9 @@ export function PlanReview({
   plan: Plan
   /** Existing spaces, offered as completions — a new name is still allowed. */
   spaces: string[]
+  /** When the deploy already targets a space (from a space's Add menu), the
+   *  space is settled — the screen states it rather than asking for it. */
+  space?: string
   /** Sends the answers to the server, which re-checks them and returns the
    *  plan as it now stands. Settles either way — a check that failed must not
    *  leave the screen waiting for an answer that is never coming. */
@@ -191,7 +195,7 @@ export function PlanReview({
             </span>
           )}
         </div>
-        <div className="grid gap-3 sm:grid-cols-3">
+        <div className={`grid gap-3 ${space ? 'sm:grid-cols-2' : 'sm:grid-cols-3'}`}>
           <Field label="Name">
             <input
               value={edit.name}
@@ -200,20 +204,22 @@ export function PlanReview({
               spellCheck={false}
             />
           </Field>
-          <Field label="Space" hint={plan.hasConfig ? 'from donkey.yaml' : undefined}>
-            <input
-              value={edit.space}
-              onChange={(e) => set('space', e.target.value)}
-              list="donkey-spaces"
-              className={inputClass}
-              spellCheck={false}
-            />
-            <datalist id="donkey-spaces">
-              {spaces.map((s) => (
-                <option key={s} value={s} />
-              ))}
-            </datalist>
-          </Field>
+          {!space && (
+            <Field label="Space" hint={plan.hasConfig ? 'from donkey.yaml' : undefined}>
+              <input
+                value={edit.space}
+                onChange={(e) => set('space', e.target.value)}
+                list="donkey-spaces"
+                className={inputClass}
+                spellCheck={false}
+              />
+              <datalist id="donkey-spaces">
+                {spaces.map((s) => (
+                  <option key={s} value={s} />
+                ))}
+              </datalist>
+            </Field>
+          )}
           <Field label="Port" hint={PORT_SOURCE[plan.app.portSource]}>
             <input
               value={edit.port || ''}
@@ -223,6 +229,11 @@ export function PlanReview({
             />
           </Field>
         </div>
+        {space && (
+          <p className="text-xs text-muted">
+            Deploying into the space <span className="font-mono text-ink-soft">{space}</span>.
+          </p>
+        )}
         {plan.app.portReason && plan.app.portSource === 'code' && (
           <p className="text-xs text-muted">{plan.app.portReason}</p>
         )}

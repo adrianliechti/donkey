@@ -1,10 +1,11 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import {
   createHashHistory,
   createRootRouteWithContext,
   createRoute,
   createRouter,
   HeadContent,
+  Link,
   Navigate,
   Outlet,
   redirect,
@@ -13,15 +14,19 @@ import {
   useParams,
 } from '@tanstack/react-router'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { Activity, UploadCloud } from 'lucide-react'
-import { setUnauthorizedHandler } from './api'
+import { Activity, ArrowLeft, Search, X } from 'lucide-react'
+import { setUnauthorizedHandler, type AppSummary } from './api'
 import { AppDetail, type AppTab } from './AppDetail'
 import { AppsList } from './AppsList'
+import { CommandPalette } from './CommandPalette'
 import { DeployView } from './DeployView'
-import { fleetQuery, statusQuery } from './queries'
+import { fleetQuery, statusQuery, useFleet } from './queries'
+import { SpaceCard } from './SpaceCard'
 import { SystemView } from './SystemView'
-import { DonkeyLogo } from './ui'
+import { DonkeyLogo, ErrorNote, Spinner, healthOf, type Health } from './ui'
 import { UserMenu } from './UserMenu'
+
+const healthRank: Record<Health, number> = { bad: 0, unknown: 1, ok: 2 }
 
 // The routes live in the hash (#/app/acme/shop/logs) so refresh keeps your
 // place, an unhealthy app can be linked to a teammate, and bookmarks from
@@ -39,6 +44,21 @@ const queryClient = new QueryClient({
 
 function Shell() {
   const navigate = useNavigate()
+  const [paletteOpen, setPaletteOpen] = useState(false)
+
+  // ⌘K / Ctrl-K opens the palette from anywhere. Registered once at the shell
+  // so it works over the fleet, an app panel, or any page.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault()
+        setPaletteOpen((v) => !v)
+      }
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [])
+
   return (
     <div className="flex min-h-screen flex-col">
       <HeadContent />
@@ -54,12 +74,17 @@ function Shell() {
             </button>
             <Breadcrumb />
           </div>
-          <div className="flex shrink-0 items-center gap-1.5">
+          {/* A uniform icon toolbar. Deploying lives inside a space now (its
+              Add menu), so there is no global Deploy here. */}
+          <div className="flex shrink-0 items-center gap-1">
             <button
-              onClick={() => navigate({ to: '/deploy' })}
-              className="flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-semibold transition-colors bg-accent-soft/70 text-accent-strong hover:bg-accent-soft dark:bg-accent dark:text-on-accent dark:hover:bg-accent-strong focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-strong"
+              type="button"
+              title="Search — ⌘K"
+              aria-label="Search apps and spaces"
+              onClick={() => setPaletteOpen(true)}
+              className="flex items-center rounded-md p-1.5 text-muted hover:bg-line/60 hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-strong"
             >
-              <UploadCloud className="size-4" aria-hidden /> Deploy
+              <Search className="size-5" aria-hidden />
             </button>
             <button
               type="button"
@@ -81,6 +106,8 @@ function Shell() {
         </div>
       </header>
 
+      <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} />
+
       {/* The paddock: the fleet lives on a dotted field. */}
       <main className="dotgrid flex-1">
         <div className="mx-auto max-w-6xl px-4 py-8">
@@ -91,17 +118,75 @@ function Shell() {
   )
 }
 
-// Breadcrumb says where you are: fleet, or fleet / space / app.
+// Breadcrumb says where you are and lets you step back up: the space is a
+// link to its own page, the app name is where you are. It shows on both the
+// space page (space only) and inside an app (space / app).
 function Breadcrumb() {
   const params = useParams({ strict: false }) as { space?: string; name?: string }
-  if (!params.space || !params.name) return null
+  if (!params.space) return null
   return (
     <span className="flex min-w-0 items-center gap-1.5 font-mono text-sm text-muted">
       <span aria-hidden>/</span>
-      <span className="truncate text-ink-soft">{params.space}</span>
-      <span aria-hidden>/</span>
-      <span className="truncate font-semibold text-ink">{params.name}</span>
+      {params.name ? (
+        <Link
+          to="/space/$space"
+          params={{ space: params.space }}
+          className="truncate text-ink-soft hover:text-ink hover:underline"
+        >
+          {params.space}
+        </Link>
+      ) : (
+        <span className="truncate font-semibold text-ink">{params.space}</span>
+      )}
+      {params.name && (
+        <>
+          <span aria-hidden>/</span>
+          <span className="truncate font-semibold text-ink">{params.name}</span>
+        </>
+      )}
     </span>
+  )
+}
+
+// A space as a place of its own: its services and apps, linkable and
+// bookmarkable, reached from the breadcrumb or the command palette. It reuses
+// the same SpaceCard the fleet shows, so there is one way a space looks.
+function SpacePage({ space }: { space: string }) {
+  const { data, error, reload } = useFleet()
+  const apps = (data?.apps ?? [])
+    .filter((a: AppSummary) => (a.space || 'default') === space)
+    .sort((a, b) => {
+      const ra = healthRank[healthOf(a.healthy, a.ready)]
+      const rb = healthRank[healthOf(b.healthy, b.ready)]
+      return ra !== rb ? ra - rb : a.name.localeCompare(b.name)
+    })
+  // Known if it still has apps or is a declared (possibly empty) space. After
+  // a delete it is neither, so we send the operator back to the fleet.
+  const known = !data || apps.length > 0 || (data.spaces ?? []).includes(space)
+
+  return (
+    <div className="space-y-5">
+      <Link
+        to="/"
+        className="inline-flex items-center gap-1.5 text-sm text-muted hover:text-ink"
+      >
+        <ArrowLeft className="size-4" aria-hidden /> Fleet
+      </Link>
+      <ErrorNote message={error} />
+      {!data && !error && <Spinner label="Asking the cluster…" />}
+      {data && !known && (
+        <div className="rounded-xl border border-line bg-card p-8 text-center text-sm text-muted">
+          The space <span className="font-mono">{space}</span> is no longer here.
+        </div>
+      )}
+      {data && known && (
+        <SpaceCard
+          space={space}
+          apps={apps}
+          onChanged={reload}
+        />
+      )}
+    </div>
   )
 }
 
@@ -117,29 +202,48 @@ function FleetLayout() {
   )
 }
 
-// The app panel slides over the fleet instead of replacing it — the canvas
-// behind it keeps saying how everything else is doing.
-function AppOverlay({ space, name, tab }: { space: string; name: string; tab: AppTab }) {
-  const navigate = useNavigate()
-  const close = () => navigate({ to: '/' })
-
+// Escape closes an overlay — but only when nothing modal sits on top of it.
+// Headless UI dialogs/menus handle their own Escape on `window`, which fires
+// after this `document` listener; without the guard, Escape from a nested
+// confirm dialog or the ⌘K palette would tear down the whole overlay instead
+// of just the thing on top. The overlay itself is one aria-modal dialog, so
+// "more than one" means something is layered above it and owns the key.
+function useEscapeToClose(close: () => void) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') close()
+      if (e.key !== 'Escape') return
+      if (document.querySelectorAll('[role="dialog"][aria-modal="true"]').length > 1) return
+      close()
     }
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+}
+
+// The app panel slides over the fleet instead of replacing it — the canvas
+// behind it keeps saying how everything else is doing.
+function AppOverlay({ space, name, tab }: { space: string; name: string; tab: AppTab }) {
+  const navigate = useNavigate()
+  const close = () => navigate({ to: '/' })
+  useEscapeToClose(close)
 
   return (
     <>
-      <div className="fixed inset-0 z-40 bg-black/50" onClick={close} aria-hidden />
+      {/* Enter motion via @starting-style (Tailwind's starting: variant): the
+          scrim fades and the panel slides in from the right the moment it
+          mounts. Reduced-motion users get neither — index.css zeroes every
+          transition under prefers-reduced-motion. */}
+      <div
+        className="fixed inset-0 z-40 bg-black/50 transition-opacity duration-200 starting:opacity-0"
+        onClick={close}
+        aria-hidden
+      />
       <aside
         role="dialog"
         aria-modal="true"
         aria-label={`${name} — app details`}
-        className="fixed inset-y-0 right-0 z-50 flex w-full max-w-3xl flex-col overflow-y-auto border-l border-line bg-card shadow-[-24px_0_60px_rgba(0,0,0,.5)]"
+        className="fixed inset-y-0 right-0 z-50 flex w-full max-w-3xl flex-col overflow-y-auto border-l border-line bg-card shadow-[-24px_0_60px_rgba(0,0,0,.5)] transition-transform duration-200 ease-out will-change-transform starting:translate-x-full"
       >
         <AppDetail
           // A different app resets the panel; a different tab must not.
@@ -160,16 +264,48 @@ function AppOverlay({ space, name, tab }: { space: string; name: string; tab: Ap
   )
 }
 
-function DeployPage({ space, name }: { space: string; name: string }) {
+// Deploy slides over the fleet like the app panel, so the canvas behind keeps
+// saying how everything else is doing while a new app comes up. Wider than the
+// app panel, to hold the live build's split view.
+function DeployOverlay({ space, name }: { space: string; name: string }) {
   const navigate = useNavigate()
+  const close = () => navigate({ to: '/' })
+  useEscapeToClose(close)
+
   return (
-    <DeployView
-      space={space}
-      name={name}
-      onDeployed={(s, n) =>
-        navigate({ to: '/app/$space/$name/{-$tab}', params: { space: s, name: n, tab: undefined } })
-      }
-    />
+    <>
+      <div
+        className="fixed inset-0 z-40 bg-black/50 transition-opacity duration-200 starting:opacity-0"
+        onClick={close}
+        aria-hidden
+      />
+      <aside
+        role="dialog"
+        aria-modal="true"
+        aria-label="Deploy an app"
+        className="fixed inset-y-0 right-0 z-50 flex w-full max-w-4xl flex-col overflow-y-auto border-l border-line bg-card shadow-[-24px_0_60px_rgba(0,0,0,.5)] transition-transform duration-200 ease-out will-change-transform starting:translate-x-full"
+      >
+        <div className="flex items-center justify-end px-4 pt-4">
+          <button
+            onClick={close}
+            title="Close (Esc)"
+            aria-label="Close deploy"
+            className="rounded-md p-1.5 text-muted hover:bg-raised hover:text-ink focus-visible:outline-2 focus-visible:outline-accent-strong"
+          >
+            <X className="size-4" aria-hidden />
+          </button>
+        </div>
+        <div className="flex-1 px-6 pb-8">
+          <DeployView
+            space={space}
+            name={name}
+            onDeployed={(s, n) =>
+              navigate({ to: '/app/$space/$name/{-$tab}', params: { space: s, name: n, tab: undefined } })
+            }
+          />
+        </div>
+      </aside>
+    </>
   )
 }
 
@@ -213,19 +349,44 @@ const systemRoute = createRoute({
   head: () => ({ meta: [{ title: pageTitle('System') }] }),
 })
 
-const deployRoute = createRoute({
+const spaceRoute = createRoute({
   getParentRoute: () => rootRoute,
+  path: '/space/$space',
+  loader: ({ context }) => context.queryClient.ensureQueryData(fleetQuery),
+  head: ({ params }) => ({ meta: [{ title: pageTitle(params.space) }] }),
+  component: () => {
+    const { space } = spaceRoute.useParams()
+    return <SpacePage space={space} />
+  },
+})
+
+// Deploy overlays the fleet in three shapes: space-less (the palette's
+// entry — the space is chosen in the review), into a named space (a space's
+// Add menu), and a redeploy of a specific app. All slide over the fleet, so
+// they hang off the fleet layout.
+const deployRoute = createRoute({
+  getParentRoute: () => fleetRoute,
   path: '/deploy',
-  component: () => <DeployPage space="" name="" />,
+  component: () => <DeployOverlay space="" name="" />,
+  head: () => ({ meta: [{ title: pageTitle('Deploy') }] }),
+})
+
+const deploySpaceRoute = createRoute({
+  getParentRoute: () => fleetRoute,
+  path: '/deploy/$space',
+  component: () => {
+    const { space } = deploySpaceRoute.useParams()
+    return <DeployOverlay space={space} name="" />
+  },
   head: () => ({ meta: [{ title: pageTitle('Deploy') }] }),
 })
 
 const deployAppRoute = createRoute({
-  getParentRoute: () => rootRoute,
+  getParentRoute: () => fleetRoute,
   path: '/deploy/$space/$name',
   component: () => {
     const { space, name } = deployAppRoute.useParams()
-    return <DeployPage space={space} name={name} />
+    return <DeployOverlay space={space} name={name} />
   },
   head: () => ({ meta: [{ title: pageTitle('Deploy') }] }),
 })
@@ -249,11 +410,16 @@ const appRoute = createRoute({
 })
 
 const routeTree = rootRoute.addChildren([
-  fleetRoute.addChildren([fleetIndexRoute, appRoute]),
+  fleetRoute.addChildren([
+    fleetIndexRoute,
+    appRoute,
+    deployRoute,
+    deploySpaceRoute,
+    deployAppRoute,
+  ]),
   legacyAppsRoute,
   systemRoute,
-  deployRoute,
-  deployAppRoute,
+  spaceRoute,
 ])
 
 const router = createRouter({

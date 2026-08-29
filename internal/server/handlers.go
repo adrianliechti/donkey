@@ -412,6 +412,7 @@ func statusFor(err error) int {
 func (s *Server) handleCatalog(w http.ResponseWriter, r *http.Request) {
 	type entry struct {
 		Type        string   `json:"type"`
+		Title       string   `json:"title"`
 		Version     string   `json:"version"`
 		Storage     string   `json:"storage"`
 		Description string   `json:"description"`
@@ -426,7 +427,7 @@ func (s *Server) handleCatalog(w http.ResponseWriter, r *http.Request) {
 		}
 		keys := slices.Sorted(maps.Keys(a.Binding(dummy)))
 		out = append(out, entry{
-			Type: a.Type(), Version: a.DefaultVersion(), Storage: a.DefaultStorage(),
+			Type: a.Type(), Title: a.Title(), Version: a.DefaultVersion(), Storage: a.DefaultStorage(),
 			Description: a.Description(), Keys: keys,
 		})
 	}

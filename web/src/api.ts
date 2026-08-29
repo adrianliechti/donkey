@@ -144,7 +144,10 @@ export interface SpaceAddonEntry {
 /** One catalog entry: a service type donkey can provide, with its defaults
  * and the env variable names connected apps will see. */
 export interface AddonType {
+  /** The lowercase id the API speaks. */
   type: string
+  /** The product's own name for display (PostgreSQL, RustFS, OpenAI). */
+  title: string
   version: string
   storage: string
   description?: string

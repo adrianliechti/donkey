@@ -15,7 +15,12 @@ import (
 
 // Addon provisions an instance of a service type.
 type Addon interface {
+	// Type is the lowercase slug the API and CLI speak (postgres, rustfs…).
 	Type() string
+	// Title is the product's own name for the catalog and console
+	// (PostgreSQL, RustFS, OpenAI) — Type is the id, Title is what a person
+	// reads.
+	Title() string
 	// Description is the catalog's one-liner: what a person gets.
 	Description() string
 	Binding(in Input) map[string]string
