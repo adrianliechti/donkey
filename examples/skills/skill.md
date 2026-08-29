@@ -12,9 +12,9 @@ description: >
 
 donkey is a PaaS running inside a Kubernetes cluster. You only ever talk to
 it through the `donkey` CLI — a thin, token-authenticated client. The server
-does everything heavy: it recognizes the app, builds the image (Railpack or
-Dockerfile), pushes it to the registry, applies the Kubernetes objects and
-watches the rollout. **Never use `docker`, `kubectl` or `helm` for anything
+does everything heavy: it recognizes the app, builds the image (from your
+Dockerfile, or one its assistant writes for you), pushes it to the registry,
+applies the Kubernetes objects and watches the rollout. **Never use `docker`, `kubectl` or `helm` for anything
 donkey manages** — the CLI is the entire interface, and everything you need
 (logs, env vars, files on disks, database tunnels) is a subcommand.
 
@@ -28,19 +28,22 @@ the app folder, read the streamed output, verify with `donkey status` and
 donkey doctor        # client + server health, with plain-language fixes
 ```
 
-If `doctor` reports no login, a human must run
-`donkey login --server https://<domain>` once and sign in through the
-browser — that is not something you can do yourself. Everything else in
-this skill works unattended.
+If `doctor` reports no login, this machine has to be connected once. The
+browser sign-in — `donkey login --server https://<domain>` — is not
+something you can do yourself. But if you were handed a token, you can
+connect unattended:
+`donkey login --server https://<domain> --token <token>`. Everything else
+in this skill works unattended.
 
 Practical CLI facts for scripted use:
 
 - Most commands need the app's folder: they read `donkey.yaml` to know the
   app and space. Either `cd` there or pass `--app-dir <folder>` — it works
   from anywhere, and flags parse before or after the subcommand.
-- Add `--yes` to accept safe defaults; destructive commands additionally
-  need `--force` to skip their confirmation prompt. An unanswered prompt
-  blocks the run.
+- Add `--yes` to accept safe defaults. It does **not** cover deletions:
+  `destroy`, `addon remove --space` and `files rm` refuse to run
+  non-interactively without `--force` and exit with an error rather than
+  removing anything.
 - `donkey apps` lists every deployed app by space — use it to see what
   already exists before inventing names.
 
@@ -65,7 +68,10 @@ Practical CLI facts for scripted use:
 - **Private by default** — every app sits behind an OIDC browser login.
   `public: true` opts out; `access:` narrows to named users/groups/roles;
   `internal: true` removes the public address entirely (siblings still
-  reach it by name).
+  reach it by name). They don't combine freely: `public` and `access` are
+  mutually exclusive, and `internal` also rules out `public`/`access` —
+  *unless* the app carries `routes:`. (That exception is what lets the demo
+  backend be `internal` + `public` at once, exposing only its mounted paths.)
 
 ## The workflow
 
@@ -104,6 +110,8 @@ port: 8000                    # required; the port the code binds
 
 public: true                  # skip the OIDC login (machine clients, APIs)
 internal: true                # no public address; siblings use http://shop
+host: shop.example.com        # custom address: a full hostname, a plain
+                              # label, or @ for the space's apex domain
 access:                       # narrow the login (any match)
   users: [ada@example.com]
   groups: [staff]
@@ -130,7 +138,8 @@ addons:
                               # the same service share it.
 
 build:
-  type: auto                  # auto | railpack | dockerfile
+  type: auto                  # auto | dockerfile | ai
+  dockerfile: Dockerfile      # path to use when type is dockerfile
   env:                        # BUILD-time values — where bundlers inline
     VITE_API_URL: /api        # (a browser bundle can't read runtime env)
 
@@ -154,6 +163,11 @@ Rules the platform enforces:
   the repository.
 - `env` vs `build.env`: runtime container vs build. Frontend bundlers
   (`VITE_*`, `NEXT_PUBLIC_*`) need `build.env`.
+- Every build ends at a Dockerfile. `type: auto` uses your `Dockerfile` if
+  the folder has one, otherwise donkey's assistant writes one (`type: ai`
+  forces that; `type: dockerfile` pins a path). When the assistant writes
+  it, the deploy prints it and offers to save it as `.donkey/Dockerfile` —
+  commit that file to freeze the build so every later deploy is identical.
 - A `storage.paths` folder is a fresh, empty volume mount: anything the
   image itself had at that path is shadowed and invisible. Seed data at
   startup or with `donkey files put` — don't bake it into the image at a
@@ -287,7 +301,8 @@ donkey deploy --no-wait             # don't wait for health
 
 In a monorepo, deploy each app from its own folder; give every
 `donkey.yaml` the same `space:` so the apps land together and see each
-other by name.
+other by name. `donkey deploy` from the repo root (a folder with no
+`donkey.yaml` of its own) finds every app beneath it and deploys them all.
 
 ### 5. Verify
 
@@ -296,6 +311,7 @@ donkey status                # healthy or not, Address, image version, pods
 donkey logs --tail 100       # what the app writes (-f to follow, --since 30m)
 donkey logs postgres         # a managed service's logs, by its addon name
 donkey apps                  # everything deployed, by space
+donkey open                  # open the app's address in a browser
 ```
 
 A successful deploy already waited for the app to become healthy and
@@ -380,9 +396,11 @@ asked for the data to go too; prefer `--keep-data` when in doubt.
 | Command | Purpose |
 |---|---|
 | `donkey doctor` | client + server health with fixes |
+| `donkey login --server URL [--token T]` | connect this machine (browser, or `--token` for automation) |
 | `donkey init [--name N]` | read the app, write donkey.yaml |
 | `donkey deploy [--dry-run\|--build-only\|--no-build --tag REF\|--no-wait\|--platform P]` | upload → detect → build → deploy → URL |
 | `donkey status` / `donkey apps` | one app / everything, by space |
+| `donkey open` | open the app's address in a browser |
 | `donkey logs [addon-name] [-f] [--tail N] [--since 30m]` | app or managed-service logs |
 | `donkey env set K=V… [--no-restart]` / `env unset K…` / `env list [--show-values]` | env vars as cluster Secrets (list masks values without `--show-values`) |
 | `donkey addon add TYPE [--name N] [--version V] [--storage SIZE]` | create-if-missing + connect |
