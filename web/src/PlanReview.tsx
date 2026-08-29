@@ -58,15 +58,15 @@ function Field({
 }) {
   return (
     <label className="block text-sm">
-      <span className="mb-1 block text-xs text-stone">{label}</span>
+      <span className="mb-1 block text-xs text-muted">{label}</span>
       {children}
-      {hint && <span className="mt-1 block text-xs text-stone">{hint}</span>}
+      {hint && <span className="mt-1 block text-xs text-muted">{hint}</span>}
     </label>
   )
 }
 
 const inputClass =
-  'w-full rounded-md border border-line bg-surface px-2 py-1.5 font-mono text-sm focus:outline-2 focus:outline-hay-deep'
+  'w-full rounded-md border border-line bg-surface px-2 py-1.5 font-mono text-sm focus:outline-2 focus:outline-accent-strong'
 
 // Choice is a checkbox that reads as a decision already made, with the
 // assistant's reason for it right there — the reason is the whole point.
@@ -89,12 +89,12 @@ function Choice({
         type="checkbox"
         checked={checked}
         onChange={(e) => onChange(e.target.checked)}
-        className="mt-0.5 size-4 shrink-0 accent-hay-deep"
+        className="mt-0.5 size-4 shrink-0 accent-accent-strong"
       />
       <span className="min-w-0">
         <span className="block font-mono text-sm">{title}</span>
-        {reason && <span className="block text-xs text-stone">{reason}</span>}
-        {note && <span className="mt-0.5 block text-xs text-hay/80">{note}</span>}
+        {reason && <span className="block text-xs text-muted">{reason}</span>}
+        {note && <span className="mt-0.5 block text-xs text-accent/80">{note}</span>}
       </span>
     </label>
   )
@@ -163,7 +163,7 @@ export function PlanReview({
       <Card className="space-y-2 p-4">
         <SectionTitle>What donkey found</SectionTitle>
         <p className="flex items-center gap-2 text-sm">
-          <Check className="size-4 shrink-0 text-moss" aria-hidden />
+          <Check className="size-4 shrink-0 text-success" aria-hidden />
           <span>
             Builds with <span className="font-mono">{plan.build.summary}</span>
           </span>
@@ -175,7 +175,7 @@ export function PlanReview({
           </p>
         )}
         {plan.root && (
-          <p className="text-xs text-stone">
+          <p className="text-xs text-muted">
             The app is in <span className="font-mono">{plan.root}/</span> — only that folder was read.
           </p>
         )}
@@ -186,7 +186,7 @@ export function PlanReview({
         <div className="flex items-center justify-between gap-2">
           <SectionTitle>How it will run</SectionTitle>
           {checking && (
-            <span className="flex items-center gap-1.5 text-xs text-stone">
+            <span className="flex items-center gap-1.5 text-xs text-muted">
               <Loader2 className="size-3 animate-spin" aria-hidden /> checking
             </span>
           )}
@@ -224,7 +224,7 @@ export function PlanReview({
           </Field>
         </div>
         {plan.app.portReason && plan.app.portSource === 'code' && (
-          <p className="text-xs text-stone">{plan.app.portReason}</p>
+          <p className="text-xs text-muted">{plan.app.portReason}</p>
         )}
 
         <Field
@@ -241,7 +241,7 @@ export function PlanReview({
         </Field>
 
         <fieldset>
-          <legend className="mb-1.5 text-xs text-stone">Who can reach it</legend>
+          <legend className="mb-1.5 text-xs text-muted">Who can reach it</legend>
           <div className="space-y-1">
             {EXPOSURE.map((o) => (
               <label key={o.value} className="flex cursor-pointer items-start gap-2.5 text-sm">
@@ -250,11 +250,11 @@ export function PlanReview({
                   name="exposure"
                   checked={edit.exposure === o.value}
                   onChange={() => set('exposure', o.value)}
-                  className="mt-1 accent-hay-deep"
+                  className="mt-1 accent-accent-strong"
                 />
                 <span>
                   {o.label}
-                  <span className="block text-xs text-stone">{o.hint}</span>
+                  <span className="block text-xs text-muted">{o.hint}</span>
                 </span>
               </label>
             ))}
@@ -263,8 +263,8 @@ export function PlanReview({
 
         {plan.app.url && edit.exposure !== 'internal' && (
           <p className="rounded-md border border-line bg-surface px-3 py-2 text-sm">
-            <span className="text-stone">It will answer at </span>
-            <span className="font-mono text-hay">{plan.app.url}</span>
+            <span className="text-muted">It will answer at </span>
+            <span className="font-mono text-accent">{plan.app.url}</span>
           </p>
         )}
       </Card>
@@ -288,7 +288,7 @@ export function PlanReview({
               />
             ))}
           </div>
-          <p className="text-xs text-stone">
+          <p className="text-xs text-muted">
             {edit.storage.length > 0
               ? `They share one ${plan.app.storageSize || '1Gi'} disk (a folder each), and the app then runs as a single copy.`
               : 'Nothing is kept: everything the app writes disappears when it restarts.'}
@@ -328,7 +328,7 @@ export function PlanReview({
         <Card className="space-y-3 p-4">
           <div className="flex items-center justify-between gap-2">
             <SectionTitle>Checks</SectionTitle>
-            <span className="text-xs text-stone">
+            <span className="text-xs text-muted">
               {blocked.length + warnings.length > 0
                 ? `${blocked.length + warnings.length} need attention`
                 : 'nothing blocking'}
@@ -349,7 +349,7 @@ export function PlanReview({
         </button>
         {showConfig && (
           <>
-            <pre className="mt-2 max-h-72 overflow-auto rounded bg-ink-well p-3 font-mono text-xs whitespace-pre text-parchment">
+            <pre className="mt-2 max-h-72 overflow-auto rounded bg-well p-3 font-mono text-xs whitespace-pre text-emphasis">
               {plan.config}
             </pre>
             <div className="mt-2 flex items-center gap-2">
@@ -366,7 +366,7 @@ export function PlanReview({
                   <Copy className="size-3.5" aria-hidden /> {copied ? 'Copied' : 'Copy'}
                 </span>
               </Button>
-              <span className="text-xs text-stone">
+              <span className="text-xs text-muted">
                 Put this in your project so <span className="font-mono">donkey deploy</span> does the
                 same thing from your machine.
               </span>
@@ -382,7 +382,7 @@ export function PlanReview({
         </Button>
         <div className="flex items-center gap-3">
           {!plan.ready && (
-            <span className="text-xs text-brick">Fix what's blocked above to deploy.</span>
+            <span className="text-xs text-danger">Fix what's blocked above to deploy.</span>
           )}
           <Button onClick={() => onDeploy(edit)} disabled={busy || checking || !plan.ready}>
             <span className="flex items-center gap-1.5">

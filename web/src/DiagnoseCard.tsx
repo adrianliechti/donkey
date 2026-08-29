@@ -24,10 +24,10 @@ export function DiagnoseCard({ space, app }: { space: string; app: string }) {
   }
 
   return (
-    <Card className="border-hay/60 bg-hay-wash/60 p-4">
+    <Card className="border-accent/60 bg-accent-soft/60 p-4">
       <div className="flex items-center justify-between gap-3">
         <div className="flex items-center gap-2 text-sm font-medium">
-          <Stethoscope className="size-4 text-hay-deep" aria-hidden />
+          <Stethoscope className="size-4 text-accent-strong" aria-hidden />
           This app isn't fully up.
         </div>
         <Button kind="quiet" onClick={run} disabled={busy}>
@@ -39,7 +39,7 @@ export function DiagnoseCard({ space, app }: { space: string; app: string }) {
         <div className="mt-3 space-y-3">
           {result.diagnosis && <p className="text-sm">{result.diagnosis}</p>}
           {result.assistantError && (
-            <p className="text-xs text-stone">
+            <p className="text-xs text-muted">
               The assistant couldn't be reached ({result.assistantError}) — the raw evidence is below.
             </p>
           )}
@@ -59,7 +59,7 @@ export function DiagnoseCard({ space, app }: { space: string; app: string }) {
           ))}
           {(result.events ?? []).length > 0 && (
             <details className="text-xs text-ink-soft">
-              <summary className="cursor-pointer text-stone">Cluster events</summary>
+              <summary className="cursor-pointer text-muted">Cluster events</summary>
               <ul className="mt-1 space-y-0.5 font-mono">
                 {(result.events ?? []).map((e) => (
                   <li key={e}>{e}</li>
@@ -69,8 +69,8 @@ export function DiagnoseCard({ space, app }: { space: string; app: string }) {
           )}
           {result.logs && (
             <details className="text-xs">
-              <summary className="cursor-pointer text-stone">Last lines from the app</summary>
-              <pre className="mt-1 max-h-48 overflow-auto rounded bg-ink-well p-2 font-mono text-parchment whitespace-pre-wrap">
+              <summary className="cursor-pointer text-muted">Last lines from the app</summary>
+              <pre className="mt-1 max-h-48 overflow-auto rounded bg-well p-2 font-mono text-emphasis whitespace-pre-wrap">
                 {result.logs}
               </pre>
             </details>

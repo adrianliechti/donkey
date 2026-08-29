@@ -34,10 +34,10 @@ function statusText(stage: DeployStage | undefined, result?: DeployResult): stri
 }
 
 function StateIcon({ state }: { state: 'complete' | 'current' | 'failed' | 'waiting' }) {
-  if (state === 'complete') return <Check className="size-3.5 text-moss" aria-hidden />
-  if (state === 'failed') return <XCircle className="size-3.5 text-brick" aria-hidden />
-  if (state === 'current') return <Loader2 className="size-3.5 animate-spin text-hay" aria-hidden />
-  return <Circle className="size-3.5 text-line-bright" aria-hidden />
+  if (state === 'complete') return <Check className="size-3.5 text-success" aria-hidden />
+  if (state === 'failed') return <XCircle className="size-3.5 text-danger" aria-hidden />
+  if (state === 'current') return <Loader2 className="size-3.5 animate-spin text-accent" aria-hidden />
+  return <Circle className="size-3.5 text-line-strong" aria-hidden />
 }
 
 function ReleaseState({ plan, update, result }: { plan: Plan; update: DeployUpdate; result?: DeployResult }) {
@@ -48,41 +48,41 @@ function ReleaseState({ plan, update, result }: { plan: Plan; update: DeployUpda
   const failed = Boolean(result && !result.ok)
 
   return (
-    <Card className={`overflow-hidden ${failed ? 'border-brick/40' : result?.ok ? 'border-moss/40' : ''}`}>
+    <Card className={`overflow-hidden ${failed ? 'border-danger/40' : result?.ok ? 'border-success/40' : ''}`}>
       <div className="flex items-start justify-between gap-3 border-b border-line px-4 py-3">
         <div>
           <SectionTitle>Deployment state</SectionTitle>
           <p
             aria-live="polite"
-            className={`mt-1 text-sm font-medium ${failed ? 'text-brick' : result?.ok ? 'text-moss' : 'text-ink'}`}
+            className={`mt-1 text-sm font-medium ${failed ? 'text-danger' : result?.ok ? 'text-success' : 'text-ink'}`}
           >
             {statusText(update.stage, result)}
           </p>
         </div>
         {result?.ok ? (
-          <CheckCircle2 className="size-5 text-moss" aria-hidden />
+          <CheckCircle2 className="size-5 text-success" aria-hidden />
         ) : failed ? (
-          <CircleAlert className="size-5 text-brick" aria-hidden />
+          <CircleAlert className="size-5 text-danger" aria-hidden />
         ) : (
-          <Rocket className="size-5 text-hay" aria-hidden />
+          <Rocket className="size-5 text-accent" aria-hidden />
         )}
       </div>
       <div className="px-4 py-3">
         <dl className="mb-4 grid grid-cols-2 gap-x-4 gap-y-2 text-xs">
           <div>
-            <dt className="text-stone">App</dt>
+            <dt className="text-muted">App</dt>
             <dd className="mt-0.5 truncate font-mono text-ink">{plan.app.name}</dd>
           </div>
           <div>
-            <dt className="text-stone">Space</dt>
+            <dt className="text-muted">Space</dt>
             <dd className="mt-0.5 truncate font-mono text-ink">{plan.app.space}</dd>
           </div>
           <div>
-            <dt className="text-stone">Port</dt>
+            <dt className="text-muted">Port</dt>
             <dd className="mt-0.5 font-mono text-ink">{plan.app.port}</dd>
           </div>
           <div>
-            <dt className="text-stone">Access</dt>
+            <dt className="text-muted">Access</dt>
             <dd className="mt-0.5 font-mono text-ink">{plan.app.exposure}</dd>
           </div>
         </dl>
@@ -97,17 +97,17 @@ function ReleaseState({ plan, update, result }: { plan: Plan; update: DeployUpda
                   <StateIcon state={state} />
                 </span>
                 <span className="min-w-0">
-                  <span className={`block text-sm ${state === 'waiting' ? 'text-stone' : 'text-ink'}`}>
+                  <span className={`block text-sm ${state === 'waiting' ? 'text-muted' : 'text-ink'}`}>
                     {stage.label}
                   </span>
-                  <span className="block text-xs text-stone">{stage.detail}</span>
+                  <span className="block text-xs text-muted">{stage.detail}</span>
                 </span>
               </li>
             )
           })}
         </ol>
         {result?.imageRef && (
-          <p className="mt-3 break-all rounded-md bg-surface px-2.5 py-2 font-mono text-[10px] text-stone">
+          <p className="mt-3 break-all rounded-md bg-surface px-2.5 py-2 font-mono text-[10px] text-muted">
             {result.imageRef}
           </p>
         )}
@@ -135,7 +135,7 @@ function SignalChips({ signals }: { signals: PlanSignal[] }) {
 function DetailGroup({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div>
-      <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-stone">{label}</p>
+      <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted">{label}</p>
       {children}
     </div>
   )
@@ -158,7 +158,7 @@ function DetectionDetails({ plan, update }: { plan: Plan; update: DeployUpdate }
       {plan.appType && (
         <DetailGroup label="Application">
           <p className="text-sm text-ink">{plan.appType}</p>
-          {plan.notes && <p className="mt-1 text-xs leading-relaxed text-stone">{plan.notes}</p>}
+          {plan.notes && <p className="mt-1 text-xs leading-relaxed text-muted">{plan.notes}</p>}
         </DetailGroup>
       )}
 
@@ -182,13 +182,13 @@ function DetectionDetails({ plan, update }: { plan: Plan; update: DeployUpdate }
         {images.length > 0 ? (
           <div className="space-y-1">
             {images.map((image) => (
-              <p key={image} className="break-all rounded bg-surface px-2 py-1.5 font-mono text-xs text-parchment">
+              <p key={image} className="break-all rounded bg-surface px-2 py-1.5 font-mono text-xs text-emphasis">
                 {image}
               </p>
             ))}
           </div>
         ) : (
-          <p className="text-xs text-stone">
+          <p className="text-xs text-muted">
             {plan.build.strategy === 'ai'
               ? 'Chosen when donkey writes the Dockerfile; it will appear here before the build starts.'
               : 'No FROM instruction was found.'}
@@ -204,15 +204,15 @@ function DetectionDetails({ plan, update }: { plan: Plan; update: DeployUpdate }
               {packages.map((item) => (
                 <li key={item.dependency} className="rounded-md border border-line bg-surface/60 px-2.5 py-2">
                   <p className="flex items-center gap-1.5 font-mono text-xs text-ink">
-                    <Package className="size-3.5 text-hay" aria-hidden /> {item.dependency}
+                    <Package className="size-3.5 text-accent" aria-hidden /> {item.dependency}
                   </p>
                   {(item.build ?? []).length > 0 && (
-                    <p className="mt-1 text-[11px] text-stone">
+                    <p className="mt-1 text-[11px] text-muted">
                       build: <span className="font-mono text-ink-soft">{item.build?.join(' ')}</span>
                     </p>
                   )}
                   {(item.runtime ?? []).length > 0 && (
-                    <p className="mt-0.5 text-[11px] text-stone">
+                    <p className="mt-0.5 text-[11px] text-muted">
                       runtime: <span className="font-mono text-ink-soft">{item.runtime?.join(' ')}</span>
                     </p>
                   )}
@@ -237,7 +237,7 @@ function ServicesNeeded({ plan }: { plan: Plan }) {
         </span>
       </SectionTitle>
       {services.length === 0 ? (
-        <p className="text-xs text-stone">No backing service dependencies were detected.</p>
+        <p className="text-xs text-muted">No backing service dependencies were detected.</p>
       ) : (
         <ul className="space-y-2">
           {services.map((service) => {
@@ -248,25 +248,25 @@ function ServicesNeeded({ plan }: { plan: Plan }) {
                 : service.exists
                   ? 'connect existing'
                   : 'create with release'
-            const tone = service.selected && service.known ? 'text-moss' : 'text-stone'
+            const tone = service.selected && service.known ? 'text-success' : 'text-muted'
             return (
               <li key={service.name} className="rounded-md border border-line bg-surface/50 px-2.5 py-2">
                 <div className="flex items-center justify-between gap-2">
                   <span className="flex min-w-0 items-center gap-1.5 font-mono text-xs text-ink">
                     <Database className={`size-3.5 shrink-0 ${tone}`} aria-hidden />
                     <span className="truncate">{service.name}</span>
-                    {service.type !== service.name && <span className="text-stone">({service.type})</span>}
+                    {service.type !== service.name && <span className="text-muted">({service.type})</span>}
                   </span>
                   <span className={`shrink-0 text-[10px] ${tone}`}>{state}</span>
                 </div>
-                {service.reason && <p className="mt-1 text-[11px] leading-relaxed text-stone">{service.reason}</p>}
+                {service.reason && <p className="mt-1 text-[11px] leading-relaxed text-muted">{service.reason}</p>}
               </li>
             )
           })}
         </ul>
       )}
       {storage.length > 0 && (
-        <p className="flex items-start gap-1.5 border-t border-line pt-2 text-xs text-stone">
+        <p className="flex items-start gap-1.5 border-t border-line pt-2 text-xs text-muted">
           <Box className="mt-0.5 size-3.5 shrink-0" aria-hidden />
           <span>
             One {plan.app.storageSize || '1Gi'} disk keeps{' '}
@@ -283,7 +283,7 @@ function Problems({ plan, result }: { plan: Plan; result?: DeployResult }) {
   const failed = Boolean(result && !result.ok)
   if (!failed && findings.length === 0) {
     return (
-      <Card className="flex items-center gap-2 border-moss/25 p-4 text-sm text-moss">
+      <Card className="flex items-center gap-2 border-success/25 p-4 text-sm text-success">
         <CheckCircle2 className="size-4 shrink-0" aria-hidden /> No problems detected before release.
       </Card>
     )
@@ -292,21 +292,21 @@ function Problems({ plan, result }: { plan: Plan; result?: DeployResult }) {
     <Card className="space-y-3 p-4">
       <div className="flex items-center justify-between gap-2">
         <SectionTitle>Problems</SectionTitle>
-        <span className={`text-xs ${failed ? 'text-brick' : 'text-hay'}`}>
+        <span className={`text-xs ${failed ? 'text-danger' : 'text-accent'}`}>
           {failed ? 'release stopped' : `${findings.length} need attention`}
         </span>
       </div>
       {failed && (
-        <div className="rounded-md border border-brick/35 bg-brick/5 px-3 py-2.5">
-          <p className="flex items-start gap-2 text-sm text-brick">
+        <div className="rounded-md border border-danger/35 bg-danger/5 px-3 py-2.5">
+          <p className="flex items-start gap-2 text-sm text-danger">
             <CircleAlert className="mt-0.5 size-4 shrink-0" aria-hidden />
             <span className="whitespace-pre-wrap break-words">
               {result?.error || 'The release did not complete.'}
             </span>
           </p>
           {result?.diagnosis && (
-            <div className="mt-2 border-t border-brick/20 pt-2">
-              <p className="text-[10px] font-semibold uppercase tracking-wider text-stone">Diagnosis</p>
+            <div className="mt-2 border-t border-danger/20 pt-2">
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-muted">Diagnosis</p>
               <p className="mt-1 text-sm leading-relaxed text-ink-soft">{result.diagnosis}</p>
             </div>
           )}
@@ -315,16 +315,16 @@ function Problems({ plan, result }: { plan: Plan; result?: DeployResult }) {
       <FindingsList findings={findings} />
       {(result?.proposals ?? []).length > 0 && (
         <div className="space-y-2 border-t border-line pt-3">
-          <p className="text-[10px] font-semibold uppercase tracking-wider text-stone">Suggested fixes</p>
+          <p className="text-[10px] font-semibold uppercase tracking-wider text-muted">Suggested fixes</p>
           {(result?.proposals ?? []).map((proposal, index) => (
             <div key={index} className="rounded-md border border-line bg-surface px-3 py-2 text-sm">
               {proposal.type === 'set_env' && (
-                <code className="break-all font-mono text-xs text-hay">
+                <code className="break-all font-mono text-xs text-accent">
                   donkey env set {proposal.key}={proposal.value}
                 </code>
               )}
               {proposal.type === 'edit_file' && (
-                <span className="font-mono text-xs text-hay">{proposal.path}</span>
+                <span className="font-mono text-xs text-accent">{proposal.path}</span>
               )}
               <p className="mt-1 text-xs leading-relaxed text-ink-soft">{proposal.explanation}</p>
               {proposal.diff && <DiffView diff={proposal.diff} />}
@@ -366,8 +366,8 @@ function ReleaseLog({
             <Terminal className="size-3.5" aria-hidden /> Deployment log
           </span>
         </SectionTitle>
-        <span className="flex items-center gap-1.5 text-xs text-stone">
-          <span className={`size-1.5 rounded-full ${running ? 'animate-pulse bg-hay' : 'bg-stone'}`} aria-hidden />
+        <span className="flex items-center gap-1.5 text-xs text-muted">
+          <span className={`size-1.5 rounded-full ${running ? 'animate-pulse bg-accent' : 'bg-muted'}`} aria-hidden />
           {running ? 'live' : 'finished'}
         </span>
       </div>
@@ -380,10 +380,10 @@ function ReleaseLog({
           const el = pane.current
           if (el) pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48
         }}
-        className="min-h-0 flex-1 overflow-auto bg-ink-well p-4 font-mono text-xs leading-relaxed focus-visible:outline-2 focus-visible:outline-inset focus-visible:outline-hay-deep"
+        className="min-h-0 flex-1 overflow-auto bg-well p-4 font-mono text-xs leading-relaxed focus-visible:outline-2 focus-visible:outline-inset focus-visible:outline-accent-strong"
       >
         {lines.length === 0 && !buildLog && (
-          <p className="flex items-center gap-2 text-stone">
+          <p className="flex items-center gap-2 text-muted">
             <Loader2 className="size-3.5 animate-spin" aria-hidden /> Waiting for the first release event…
           </p>
         )}
@@ -391,7 +391,7 @@ function ReleaseLog({
           {lines.map((line, index) => (
             <p
               key={index}
-              className={`whitespace-pre-wrap break-words ${line.startsWith('✓') ? 'text-moss' : line.startsWith('·') ? 'text-ink-soft' : 'text-parchment'}`}
+              className={`whitespace-pre-wrap break-words ${line.startsWith('✓') ? 'text-success' : line.startsWith('·') ? 'text-ink-soft' : 'text-emphasis'}`}
             >
               {line}
             </p>
@@ -399,7 +399,7 @@ function ReleaseLog({
         </div>
         {buildLog && (
           <div className={`${lines.length > 0 ? 'mt-4 border-t border-line/70 pt-3' : ''}`}>
-            <p className="mb-2 text-[10px] uppercase tracking-wider text-stone">Build output</p>
+            <p className="mb-2 text-[10px] uppercase tracking-wider text-muted">Build output</p>
             <pre className="whitespace-pre-wrap break-words text-[11px] leading-relaxed text-ink-soft">
               {buildLog}
             </pre>
@@ -448,7 +448,7 @@ export function ReleaseView({
                   href={result.url}
                   target="_blank"
                   rel="noreferrer"
-                  className="mr-auto flex min-w-0 items-center gap-1.5 truncate font-mono text-xs text-hay-deep hover:underline"
+                  className="mr-auto flex min-w-0 items-center gap-1.5 truncate font-mono text-xs text-accent-strong hover:underline"
                 >
                   <span className="truncate">{result.url}</span>
                   <ExternalLink className="size-3.5 shrink-0" aria-hidden />

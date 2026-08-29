@@ -64,7 +64,7 @@ export function AddonsCard({ space, app }: { space: string; app: string }) {
       {note && <p className="mt-2 text-xs text-ink-soft">{note}</p>}
       {addons === null && !error && <Spinner label="Loading…" />}
       {addons !== null && addons.length === 0 && (
-        <p className="mt-2 text-sm text-stone">Not connected to any service yet.</p>
+        <p className="mt-2 text-sm text-muted">Not connected to any service yet.</p>
       )}
       <ul className="mt-2 space-y-3">
         {(addons ?? []).map((a) => (
@@ -85,7 +85,7 @@ export function AddonsCard({ space, app }: { space: string; app: string }) {
               {a.keys.map((k) => (
                 <span
                   key={k}
-                  className="rounded bg-raised px-1.5 py-0.5 font-mono text-[10px] text-stone"
+                  className="rounded bg-raised px-1.5 py-0.5 font-mono text-[10px] text-muted"
                 >
                   {k}
                 </span>
@@ -96,7 +96,7 @@ export function AddonsCard({ space, app }: { space: string; app: string }) {
       </ul>
       {others.length > 0 && (
         <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-line pt-3">
-          <span className="text-xs text-stone">Also in this space:</span>
+          <span className="text-xs text-muted">Also in this space:</span>
           {others.map((s) => (
             <Button
               key={s.name}
@@ -119,7 +119,7 @@ export function AddonsCard({ space, app }: { space: string; app: string }) {
         onSubmit={create}
         onClose={() => setAdding(false)}
       />
-      <p className="mt-3 text-xs text-stone">
+      <p className="mt-3 text-xs text-muted">
         The variables above are injected into the app. Services belong to the space — disconnecting
         deletes nothing, and the space card manages the services themselves.
       </p>

@@ -6,7 +6,7 @@ import { useCatalog } from './queries'
 import { Button, ErrorNote, Select, Spinner } from './ui'
 
 const inputStyle =
-  'rounded-md border border-line bg-surface px-2 py-1.5 font-mono text-sm focus:outline-2 focus:outline-hay-deep'
+  'rounded-md border border-line bg-surface px-2 py-1.5 font-mono text-sm focus:outline-2 focus:outline-accent-strong'
 
 // A short ladder of disk sizes is easier to pick right than a free-text
 // field is to fill right; the type's own default always leads the list.
@@ -27,7 +27,7 @@ const addressExamples: Record<string, string> = {
 
 function Eyebrow({ children }: { children: ReactNode }) {
   return (
-    <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-stone">
+    <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-muted">
       {children}
     </span>
   )
@@ -63,7 +63,7 @@ export function AddServiceDialog({
       <DialogBackdrop className="fixed inset-0 bg-black/60" />
       <div className="fixed inset-0 flex items-start justify-center p-4 pt-[14vh]">
         <DialogPanel className="w-full max-w-xl rounded-lg border border-line bg-card p-4 shadow-2xl">
-          <DialogTitle className="font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-stone">
+          <DialogTitle className="font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-muted">
             {title}
           </DialogTitle>
           <ErrorNote message={error ?? ''} />
@@ -117,7 +117,7 @@ export function AddonForm({
   if (!loaded) return <Spinner label="Opening the catalog…" />
   if (types.length === 0) {
     return (
-      <p className="py-6 text-sm text-stone">
+      <p className="py-6 text-sm text-muted">
         The catalog didn't load — reopen this dialog, or check the server if it keeps happening.
       </p>
     )
@@ -136,12 +136,12 @@ export function AddonForm({
                 key={t.type}
                 type="button"
                 onClick={() => setType(t.type)}
-                className="rounded-lg border border-line bg-surface p-3 text-left transition-colors hover:border-hay/70 hover:bg-hay-wash focus-visible:outline-2 focus-visible:outline-hay-deep"
+                className="rounded-lg border border-line bg-surface p-3 text-left transition-colors hover:border-accent/70 hover:bg-accent-soft focus-visible:outline-2 focus-visible:outline-accent-strong"
               >
                 <div className="flex items-center gap-2">
-                  <Icon className="size-4 text-stone" aria-hidden />
+                  <Icon className="size-4 text-muted" aria-hidden />
                   <span className="font-mono text-sm font-bold">{t.type}</span>
-                  <span className="font-mono text-[11px] text-stone">{t.version}</span>
+                  <span className="font-mono text-[11px] text-muted">{t.version}</span>
                 </div>
                 {t.description && (
                   <p className="mt-1.5 text-xs leading-relaxed text-ink-soft">{t.description}</p>
@@ -162,7 +162,7 @@ export function AddonForm({
   // Step 2 — how the chosen service runs.
   const ChosenIcon = typeIcons[chosen.type] ?? Server
   const sourceTile =
-    'cursor-pointer rounded-lg border border-line bg-surface px-3 py-2 transition-colors hover:border-line-bright focus:outline-2 focus:outline-hay-deep data-checked:border-hay/70 data-checked:bg-hay-wash'
+    'cursor-pointer rounded-lg border border-line bg-surface px-3 py-2 transition-colors hover:border-line-strong focus:outline-2 focus:outline-accent-strong data-checked:border-accent/70 data-checked:bg-accent-soft'
 
   return (
     <div className="flex flex-col gap-4">
@@ -171,14 +171,14 @@ export function AddonForm({
           type="button"
           onClick={() => setType('')}
           disabled={busy}
-          className="flex items-center gap-1 rounded-md px-1.5 py-1 text-xs text-stone hover:bg-line/50 hover:text-ink focus-visible:outline-2 focus-visible:outline-hay-deep"
+          className="flex items-center gap-1 rounded-md px-1.5 py-1 text-xs text-muted hover:bg-line/50 hover:text-ink focus-visible:outline-2 focus-visible:outline-accent-strong"
         >
           <ArrowLeft className="size-3.5" aria-hidden /> All services
         </button>
-        <span className="flex items-center gap-2 rounded-md border border-hay/40 bg-hay-wash px-2 py-1">
-          <ChosenIcon className="size-3.5 text-hay" aria-hidden />
+        <span className="flex items-center gap-2 rounded-md border border-accent/40 bg-accent-soft px-2 py-1">
+          <ChosenIcon className="size-3.5 text-accent" aria-hidden />
           <span className="font-mono text-sm font-bold">{chosen.type}</span>
-          <span className="font-mono text-[11px] text-stone">{chosen.version}</span>
+          <span className="font-mono text-[11px] text-muted">{chosen.version}</span>
         </span>
       </div>
 
@@ -192,11 +192,11 @@ export function AddonForm({
         >
           <Radio value="cluster" className={sourceTile}>
             <span className="text-sm font-medium">In this cluster</span>
-            <span className="mt-0.5 block text-xs text-stone">donkey creates and runs it</span>
+            <span className="mt-0.5 block text-xs text-muted">donkey creates and runs it</span>
           </Radio>
           <Radio value="external" className={sourceTile}>
             <span className="text-sm font-medium">Somewhere else</span>
-            <span className="mt-0.5 block text-xs text-stone">connect it by its address</span>
+            <span className="mt-0.5 block text-xs text-muted">connect it by its address</span>
           </Radio>
         </RadioGroup>
       </div>
@@ -245,7 +245,7 @@ export function AddonForm({
       </div>
 
       <div className="flex items-center justify-between gap-2">
-        <p className="text-xs text-stone">
+        <p className="text-xs text-muted">
           {external
             ? 'Nothing runs in the cluster for this — only the connection is stored.'
             : chosen.version

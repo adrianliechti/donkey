@@ -47,7 +47,7 @@ function Shell() {
           <div className="flex min-w-0 items-center gap-3">
             <button
               onClick={() => navigate({ to: '/' })}
-              className="flex shrink-0 items-center gap-2 font-mono text-base font-bold tracking-tight focus-visible:outline-2 focus-visible:outline-hay-deep"
+              className="flex shrink-0 items-center gap-2 font-mono text-base font-bold tracking-tight focus-visible:outline-2 focus-visible:outline-accent-strong"
             >
               <DonkeyLogo className="size-5 text-ink" />
               Donkey
@@ -57,7 +57,7 @@ function Shell() {
           <div className="flex shrink-0 items-center gap-1.5">
             <button
               onClick={() => navigate({ to: '/deploy' })}
-              className="flex items-center gap-1.5 rounded-md bg-hay px-3 py-1.5 text-sm font-semibold text-on-hay transition-colors hover:bg-hay-deep focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-hay-deep"
+              className="flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-semibold transition-colors bg-accent-soft/70 text-accent-strong hover:bg-accent-soft dark:bg-accent dark:text-on-accent dark:hover:bg-accent-strong focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-strong"
             >
               <UploadCloud className="size-4" aria-hidden /> Deploy
             </button>
@@ -66,7 +66,7 @@ function Shell() {
               title="System health"
               aria-label="System health"
               onClick={() => navigate({ to: '/system' })}
-              className="flex items-center rounded-md p-1.5 text-stone hover:bg-line/60 hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-hay-deep"
+              className="flex items-center rounded-md p-1.5 text-muted hover:bg-line/60 hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-strong"
             >
               <Activity className="size-5" aria-hidden />
             </button>
@@ -96,7 +96,7 @@ function Breadcrumb() {
   const params = useParams({ strict: false }) as { space?: string; name?: string }
   if (!params.space || !params.name) return null
   return (
-    <span className="flex min-w-0 items-center gap-1.5 font-mono text-sm text-stone">
+    <span className="flex min-w-0 items-center gap-1.5 font-mono text-sm text-muted">
       <span aria-hidden>/</span>
       <span className="truncate text-ink-soft">{params.space}</span>
       <span aria-hidden>/</span>

@@ -2,77 +2,62 @@
 @import '@fontsource-variable/jetbrains-mono';
 
 /*
- * Warm mission-control, light and dark.
+ * Mission-control, light and dark.
  *
- * The console keeps its character — leather-warm neutrals, hay as the single
- * accent, moss/brick strictly as health semantics — but now follows the
- * operating system's light/dark preference automatically. There is no toggle
- * and nothing is stored: the theme is `prefers-color-scheme`, full stop.
+ * Warm stone neutrals, a cool indigo accent, and green/red strictly as health
+ * semantics. The console follows the operating system's light/dark preference
+ * automatically — there is no toggle and nothing is stored: the theme is
+ * `prefers-color-scheme`, full stop.
  *
- * Every colour is sourced from Tailwind's default oklch palette (stone for
- * the warm neutrals, amber for hay, emerald for moss, red for brick), so the
- * two themes stay in gamut and in step with the framework. The semantic
- * tokens below are the only names the components know; the light values live
- * in @theme (so the utilities generate), and the dark values override :root
- * under the media query. Tokens resolve to concrete colours, which is what
- * keeps the many `/opacity` utilities (color-mix) correct in both themes.
+ * Every token is a plain semantic role (surface, card, ink, accent, success…)
+ * defined as a light-dark() pair of Tailwind's default oklch palette, so the
+ * console rides the framework's colours and both themes stay in gamut. One
+ * definition per token drives every utility — including the opacity modifiers
+ * (`bg-line/60`): the build expands each light-dark() to both computed values,
+ * switched by `color-scheme`. (Overriding a plain @theme variable in a media
+ * query bakes the light value into `/opacity` utilities statically, and
+ * `@theme inline` over a swappable var drops the opacity modifier — hence
+ * light-dark().)
  *
- * Identifiers (apps, spaces, addresses, env keys) are always mono — JetBrains
- * Mono is bundled, because the CSP allows no remote fonts.
+ * Components know only the role names below. Identifiers (apps, spaces,
+ * addresses, env keys) are always mono — JetBrains Mono is bundled, because
+ * the CSP allows no remote fonts.
  */
 @theme {
-  /* Light theme — the default. Dark overrides these under the media query. */
-  --color-surface: oklch(98.5% 0.001 106.423); /* page, inset fields — stone-50 */
-  --color-card: oklch(100% 0 0); /* white */
-  --color-raised: oklch(97% 0.001 106.424); /* hover surfaces, chips — stone-100 */
-  --color-canvas: oklch(97% 0.001 106.424); /* inset panels a step above the page */
-  --color-line: oklch(92.3% 0.003 48.717); /* stone-200 */
-  --color-line-bright: oklch(86.9% 0.005 56.366); /* stone-300 */
-  --color-ink: oklch(21.6% 0.006 56.043); /* stone-900 */
-  --color-ink-soft: oklch(44.4% 0.011 73.639); /* stone-600 */
-  --color-ink-well: oklch(97% 0.001 106.424); /* log panes — stone-100 inset */
-  --color-stone: oklch(55.3% 0.013 58.071); /* muted text — stone-500 */
-  --color-parchment: oklch(37.4% 0.01 67.558); /* emphasis text — stone-700 */
+  /* Surfaces, page → elevated */
+  --color-surface: light-dark(oklch(98.5% 0.001 106.423), oklch(14.7% 0.004 49.25)); /* stone-50 / 950 */
+  --color-card: light-dark(oklch(100% 0 0), oklch(21.6% 0.006 56.043)); /* white / stone-900 */
+  --color-raised: light-dark(oklch(97% 0.001 106.424), oklch(26.8% 0.007 34.298)); /* stone-100 / 800 */
+  --color-canvas: light-dark(oklch(97% 0.001 106.424), oklch(18% 0.005 56)); /* inset above the page */
+  --color-well: light-dark(oklch(97% 0.001 106.424), oklch(11% 0.004 49)); /* log panes — the darkest */
 
-  --color-hay: oklch(76.9% 0.188 70.08); /* amber-500 */
-  --color-hay-deep: oklch(66.6% 0.179 58.318); /* amber-600 — focus, hover-darken */
-  --color-hay-wash: oklch(96.2% 0.059 95.617); /* amber-100 */
-  --color-on-hay: oklch(14.7% 0.004 49.25); /* dark text on hay — stone-950 */
+  /* Borders */
+  --color-line: light-dark(oklch(92.3% 0.003 48.717), oklch(26.8% 0.007 34.298)); /* stone-200 / 800 */
+  --color-line-strong: light-dark(oklch(86.9% 0.005 56.366), oklch(37.4% 0.01 67.558)); /* stone-300 / 700 */
 
-  --color-moss: oklch(59.6% 0.145 163.225); /* emerald-600 */
-  --color-brick: oklch(57.7% 0.245 27.325); /* red-600 */
+  /* Text, strong → faint */
+  --color-ink: light-dark(oklch(21.6% 0.006 56.043), oklch(97% 0.001 106.424)); /* stone-900 / 100 */
+  --color-emphasis: light-dark(oklch(37.4% 0.01 67.558), oklch(86.9% 0.005 56.366)); /* stone-700 / 300 */
+  --color-ink-soft: light-dark(oklch(44.4% 0.011 73.639), oklch(70.9% 0.01 56.259)); /* stone-600 / 400 */
+  --color-muted: light-dark(oklch(55.3% 0.013 58.071), oklch(55.3% 0.013 58.071)); /* stone-500 */
+
+  /* Accent — cool indigo */
+  --color-accent: light-dark(oklch(58.5% 0.233 277.117), oklch(67.3% 0.182 276.935)); /* indigo-500 / 400 */
+  --color-accent-strong: light-dark(oklch(51.1% 0.262 276.966), oklch(58.5% 0.233 277.117)); /* indigo-600 / 500 */
+  --color-accent-soft: light-dark(oklch(93% 0.034 272.788), oklch(25.7% 0.09 281.288)); /* indigo-100 / 950 */
+  --color-on-accent: light-dark(oklch(100% 0 0), oklch(14.7% 0.004 49.25)); /* text on an accent fill: white / stone-950 */
+
+  /* Health semantics */
+  --color-success: light-dark(oklch(59.6% 0.145 163.225), oklch(76.5% 0.177 163.223)); /* emerald-600 / 400 */
+  --color-danger: light-dark(oklch(57.7% 0.245 27.325), oklch(70.4% 0.191 22.216)); /* red-600 / 400 */
 
   --font-sans: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
   --font-mono: 'JetBrains Mono Variable', ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas,
     monospace;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --color-surface: oklch(14.7% 0.004 49.25); /* stone-950 */
-    --color-card: oklch(21.6% 0.006 56.043); /* stone-900 */
-    --color-raised: oklch(26.8% 0.007 34.298); /* stone-800 */
-    --color-canvas: oklch(18% 0.005 56); /* between surface and card */
-    --color-line: oklch(26.8% 0.007 34.298); /* stone-800 */
-    --color-line-bright: oklch(37.4% 0.01 67.558); /* stone-700 */
-    --color-ink: oklch(97% 0.001 106.424); /* stone-100 */
-    --color-ink-soft: oklch(70.9% 0.01 56.259); /* stone-400 */
-    --color-ink-well: oklch(11% 0.004 49); /* the darkest thing here */
-    --color-stone: oklch(55.3% 0.013 58.071); /* muted text — stone-500 */
-    --color-parchment: oklch(86.9% 0.005 56.366); /* stone-300 */
-
-    --color-hay: oklch(82.8% 0.189 84.429); /* amber-400 */
-    --color-hay-deep: oklch(76.9% 0.188 70.08); /* amber-500 */
-    --color-hay-wash: oklch(27.9% 0.077 45.635); /* amber-950 */
-    --color-on-hay: oklch(14.7% 0.004 49.25); /* stone-950 */
-
-    --color-moss: oklch(76.5% 0.177 163.223); /* emerald-400 */
-    --color-brick: oklch(70.4% 0.191 22.216); /* red-400 */
-  }
-}
-
-/* Native form controls, scrollbars and the default canvas follow the system
- * too — one declaration, and light-mode inputs stop rendering dark. */
+/* light-dark() resolves against color-scheme; setting both here is what makes
+ * the theme follow the OS, and makes native controls and scrollbars follow. */
 html {
   background: var(--color-surface);
   color: var(--color-ink);
@@ -93,7 +78,7 @@ html {
 /* The paddock: the dotted field app cards sit on. */
 .dotgrid {
   background-image: radial-gradient(
-    color-mix(in srgb, var(--color-line-bright) 55%, transparent) 1px,
+    color-mix(in srgb, var(--color-line-strong) 55%, transparent) 1px,
     transparent 1px
   );
   background-size: 22px 22px;

@@ -23,7 +23,7 @@ export function StoredRelease({ space, app }: { space: string; app: string }) {
   const builds = history?.builds ?? []
   if (builds.length === 0) {
     return (
-      <Card className="mx-auto w-full max-w-3xl p-4 text-sm text-stone">
+      <Card className="mx-auto w-full max-w-3xl p-4 text-sm text-muted">
         No builds are recorded for this app yet — the next deploy starts its history.
       </Card>
     )
@@ -32,7 +32,7 @@ export function StoredRelease({ space, app }: { space: string; app: string }) {
   const current = builds.find((b) => b.sequence === sequence) ?? builds[0]
   return (
     <div className="mx-auto w-full max-w-3xl space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-stone">
+      <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted">
         <span className="flex items-center gap-1.5">
           <CheckIcon ok={current.ok} /> Build #{current.sequence}
           {current.image ? <span className="font-mono">{current.image}</span> : null}
@@ -62,14 +62,14 @@ function StoredBuild({ space, app, sequence }: { space: string; app: string; seq
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-stone">
+      <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted">
         <span className="flex items-center gap-1.5">
           <Clock3 className="size-3.5" aria-hidden /> Finished {when}
         </span>
         {release.truncated && <span>Older output was trimmed; the result and findings are complete.</span>}
       </div>
       {!release.plan ? (
-        <Card className="p-4 text-sm text-stone">This older build has no structured plan to display.</Card>
+        <Card className="p-4 text-sm text-muted">This older build has no structured plan to display.</Card>
       ) : (
         <ReleaseView
           plan={release.plan}
@@ -97,7 +97,7 @@ function DockerfileCard({ content }: { content: string }) {
         </span>
         <button
           type="button"
-          className="rounded-md border border-line px-2 py-1 text-xs text-stone hover:border-line-bright"
+          className="rounded-md border border-line px-2 py-1 text-xs text-muted hover:border-line-strong"
           onClick={() => {
             void navigator.clipboard.writeText(content).then(() => {
               setCopied(true)

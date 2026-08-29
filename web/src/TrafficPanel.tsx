@@ -44,15 +44,15 @@ export function SpaceTelemetry({ space }: { space: string }) {
         title={title}
         aria-label={title}
         onClick={() => setOpen(true)}
-        className={`inline-flex h-7 items-center gap-1.5 rounded-md px-1.5 font-mono text-[11px] transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-hay-deep ${
+        className={`inline-flex h-7 items-center gap-1.5 rounded-md px-1.5 font-mono text-[11px] transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-strong ${
           error
-            ? 'text-brick hover:bg-brick/10'
-            : 'text-stone hover:bg-line/60 hover:text-ink'
+            ? 'text-danger hover:bg-danger/10'
+            : 'text-muted hover:bg-line/60 hover:text-ink'
         }`}
       >
         <Activity className="size-3.5" aria-hidden />
         {data && <span>{compactInteger.format(data.totals.requests)}</span>}
-        {errors > 0 && <span className="size-1.5 rounded-full bg-brick" aria-hidden />}
+        {errors > 0 && <span className="size-1.5 rounded-full bg-danger" aria-hidden />}
       </button>
 
       <Dialog open={open} onClose={setOpen} className="relative z-50">
@@ -61,7 +61,7 @@ export function SpaceTelemetry({ space }: { space: string }) {
           <DialogPanel className="flex h-full w-full max-w-4xl flex-col border-l border-line bg-surface shadow-[-24px_0_60px_rgba(0,0,0,.5)]">
             <div className="flex items-center justify-between gap-3 border-b border-line bg-card px-5 py-4">
               <div className="min-w-0">
-                <div className="font-mono text-[10px] font-semibold uppercase tracking-[0.16em] text-stone">
+                <div className="font-mono text-[10px] font-semibold uppercase tracking-[0.16em] text-muted">
                   Space telemetry
                 </div>
                 <DialogTitle className="truncate font-mono text-xl font-bold tracking-tight">
@@ -73,7 +73,7 @@ export function SpaceTelemetry({ space }: { space: string }) {
                 title="Close"
                 aria-label="Close space telemetry"
                 onClick={() => setOpen(false)}
-                className="rounded-md p-1.5 text-stone hover:bg-raised hover:text-ink focus-visible:outline-2 focus-visible:outline-hay-deep"
+                className="rounded-md p-1.5 text-muted hover:bg-raised hover:text-ink focus-visible:outline-2 focus-visible:outline-accent-strong"
               >
                 <X className="size-4" aria-hidden />
               </button>
@@ -150,24 +150,24 @@ export function TrafficPanel({ space, app }: { space: string; app: string }) {
             {data.totals.requests > 0 ? (
               <>
                 <DailyBars points={data.series} />
-                <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-[10px] text-stone">
+                <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-[10px] text-muted">
                   <span>{bucketLabel(data.series[0]?.bucket, data.granularity)}</span>
                   <span className="text-right">{bucketLabel(data.series.at(-1)?.bucket, data.granularity)}</span>
                   <span className="col-span-2 flex items-center justify-center gap-3">
-                    <span><i className="mr-1 inline-block size-2 rounded-sm bg-hay" />requests</span>
-                    <span><i className="mr-1 inline-block size-2 rounded-sm bg-brick" />4xx / 5xx</span>
+                    <span><i className="mr-1 inline-block size-2 rounded-sm bg-accent" />requests</span>
+                    <span><i className="mr-1 inline-block size-2 rounded-sm bg-danger" />4xx / 5xx</span>
                   </span>
                 </div>
               </>
             ) : (
-              <div className="flex h-36 flex-col items-center justify-center gap-2 text-center text-stone">
+              <div className="flex h-36 flex-col items-center justify-center gap-2 text-center text-muted">
                 <Activity className="size-5" aria-hidden />
                 <p className="text-sm">No HTTP telemetry in this range.</p>
               </div>
             )}
           </Card>
 
-          <details className="rounded-md border border-line/60 bg-surface/40 px-3 py-2 text-xs text-stone">
+          <details className="rounded-md border border-line/60 bg-surface/40 px-3 py-2 text-xs text-muted">
             <summary className="cursor-pointer select-none font-medium text-ink-soft">
               How these numbers are counted
             </summary>
@@ -203,7 +203,7 @@ function ResourceUsage({ space, app }: { space: string; app: string }) {
     return (
       <Card className="px-4 py-5">
         <SectionTitle>Runtime resources</SectionTitle>
-        <p className="mt-2 text-sm text-stone">
+        <p className="mt-2 text-sm text-muted">
           No container CPU or memory samples yet. Usage appears after the next runtime sample.
         </p>
       </Card>
@@ -216,11 +216,11 @@ function ResourceUsage({ space, app }: { space: string; app: string }) {
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div>
           <SectionTitle>Runtime resources</SectionTitle>
-          <p className="mt-1 text-xs text-stone">Container usage across the app’s running instances.</p>
+          <p className="mt-1 text-xs text-muted">Container usage across the app’s running instances.</p>
         </div>
         <div className="flex items-center gap-2">
           {current && !current.fresh && (
-            <span className="text-xs text-brick">Last sample {ago(current.sampledAt)} ago</span>
+            <span className="text-xs text-danger">Last sample {ago(current.sampledAt)} ago</span>
           )}
           <Select
             value={range}
@@ -247,7 +247,7 @@ function ResourceUsage({ space, app }: { space: string; app: string }) {
           points={data.series}
           value={(point) => point.averageCpuCores}
           format={formatCPU}
-          tone="bg-hay/80"
+          tone="bg-accent/80"
         />
         <ResourceBars
           icon={<MemoryStick className="size-3.5" aria-hidden />}
@@ -255,7 +255,7 @@ function ResourceUsage({ space, app }: { space: string; app: string }) {
           points={data.series}
           value={(point) => point.averageMemoryBytes}
           format={formatBytes}
-          tone="bg-moss/75"
+          tone="bg-success/75"
         />
       </div>
     </Card>
@@ -266,7 +266,7 @@ function RuntimeValue({ label, value }: { label: string; value: string }) {
   return (
     <div className="min-w-0 px-3 first:pl-3">
       <div className="truncate font-mono text-lg font-bold text-ink">{value}</div>
-      <div className="mt-0.5 text-[10px] uppercase tracking-wider text-stone">{label}</div>
+      <div className="mt-0.5 text-[10px] uppercase tracking-wider text-muted">{label}</div>
     </div>
   )
 }
@@ -291,7 +291,7 @@ function ResourceBars({
   const latest = measured.length ? value(measured.at(-1)!) : 0
   return (
     <div className="min-w-0">
-      <div className="flex items-center justify-between gap-2 text-xs text-stone">
+      <div className="flex items-center justify-between gap-2 text-xs text-muted">
         <span className="flex items-center gap-1.5">{icon}{label} history</span>
         <span className="font-mono text-ink-soft">{measured.length ? format(latest) : '—'}</span>
       </div>
@@ -337,7 +337,7 @@ function SourceButton({ active, onClick, children }: { active: boolean; onClick:
       type="button"
       aria-pressed={active}
       onClick={onClick}
-      className={`whitespace-nowrap rounded px-2.5 py-1 text-xs transition-colors ${active ? 'bg-raised font-semibold text-ink' : 'text-stone hover:text-ink'}`}
+      className={`whitespace-nowrap rounded px-2.5 py-1 text-xs transition-colors ${active ? 'bg-raised font-semibold text-ink' : 'text-muted hover:text-ink'}`}
     >
       {children}
     </button>
@@ -346,10 +346,10 @@ function SourceButton({ active, onClick, children }: { active: boolean; onClick:
 
 function Metric({ label, value, note, bad = false }: { label: string; value: string; note?: string; bad?: boolean }) {
   return (
-    <Card className={`min-h-24 min-w-0 p-3.5 ${bad ? 'border-brick/30' : ''}`}>
-      <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-stone">{label}</div>
-      <div className={`mt-1 truncate font-mono text-2xl font-bold ${bad ? 'text-brick' : 'text-ink'}`}>{value}</div>
-      {note && <div className="mt-1 text-[10px] leading-4 text-stone">{note}</div>}
+    <Card className={`min-h-24 min-w-0 p-3.5 ${bad ? 'border-danger/30' : ''}`}>
+      <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-muted">{label}</div>
+      <div className={`mt-1 truncate font-mono text-2xl font-bold ${bad ? 'text-danger' : 'text-ink'}`}>{value}</div>
+      {note && <div className="mt-1 text-[10px] leading-4 text-muted">{note}</div>}
     </Card>
   )
 }
@@ -368,14 +368,14 @@ function AudienceCard({
       <Card className="flex min-h-24 flex-wrap items-center justify-between gap-3 px-4 py-3">
         <div>
           <SectionTitle>Audience</SectionTitle>
-          <p className="mt-1 text-xs text-stone">
+          <p className="mt-1 text-xs text-muted">
             Views and signed-in visitors are measured at the gateway, not by app metrics.
           </p>
         </div>
         <button
           type="button"
           onClick={onShowGateway}
-          className="rounded-md border border-line px-2.5 py-1.5 text-xs text-ink-soft hover:bg-line/50 hover:text-ink focus-visible:outline-2 focus-visible:outline-hay-deep"
+          className="rounded-md border border-line px-2.5 py-1.5 text-xs text-ink-soft hover:bg-line/50 hover:text-ink focus-visible:outline-2 focus-visible:outline-accent-strong"
         >
           Show gateway data
         </button>
@@ -387,7 +387,7 @@ function AudienceCard({
     <Card className="min-h-24 p-4">
       <div className="flex items-center justify-between gap-3">
         <SectionTitle>Audience</SectionTitle>
-        <span className="font-mono text-[10px] uppercase tracking-wider text-stone">Gateway only</span>
+        <span className="font-mono text-[10px] uppercase tracking-wider text-muted">Gateway only</span>
       </div>
       <div className="mt-3 grid grid-cols-3 divide-x divide-line">
         <AudienceMetric label="Views" value={integer.format(totals.views)} />
@@ -405,7 +405,7 @@ function AudienceMetric({ label, value }: { label: string; value: string }) {
   return (
     <div className="min-w-0 px-3 first:pl-0 last:pr-0">
       <div className="truncate font-mono text-lg font-bold text-ink">{value}</div>
-      <div className="mt-0.5 text-[10px] leading-4 text-stone">{label}</div>
+      <div className="mt-0.5 text-[10px] leading-4 text-muted">{label}</div>
     </div>
   )
 }
@@ -421,11 +421,11 @@ function DailyBars({ points }: { points: TrafficPoint[] }) {
         return (
           <div
             key={point.bucket}
-            className="group relative flex min-w-0 flex-1 flex-col-reverse overflow-hidden rounded-t-sm bg-hay/80"
+            className="group relative flex min-w-0 flex-1 flex-col-reverse overflow-hidden rounded-t-sm bg-accent/80"
             style={{ height: `${height}%` }}
             title={`${point.bucket}: ${integer.format(point.requests)} requests, ${integer.format(errors)} errors`}
           >
-            {errorHeight > 0 && <span className="block w-full bg-brick" style={{ height: `${errorHeight}%` }} />}
+            {errorHeight > 0 && <span className="block w-full bg-danger" style={{ height: `${errorHeight}%` }} />}
           </div>
         )
       })}

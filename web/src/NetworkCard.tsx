@@ -97,32 +97,32 @@ export function NetworkCard({
                   role="radio"
                   aria-checked={exposure === o.id}
                   onClick={() => setExposure(o.id)}
-                  className={`rounded-lg border p-3 text-left transition-colors focus-visible:outline-2 focus-visible:outline-hay-deep disabled:opacity-40 ${
+                  className={`rounded-lg border p-3 text-left transition-colors focus-visible:outline-2 focus-visible:outline-accent-strong disabled:opacity-40 ${
                     exposure === o.id
-                      ? 'border-hay bg-hay-wash'
-                      : 'border-line hover:border-line-bright'
+                      ? 'border-accent bg-accent-soft'
+                      : 'border-line hover:border-line-strong'
                   }`}
                 >
-                  <span className={`flex items-center gap-1.5 text-sm font-medium ${exposure === o.id ? 'text-hay' : ''}`}>
+                  <span className={`flex items-center gap-1.5 text-sm font-medium ${exposure === o.id ? 'text-accent' : ''}`}>
                     {o.icon}
                     {o.label}
                   </span>
-                  <span className="mt-1 block text-xs leading-snug text-stone">{o.hint}</span>
+                  <span className="mt-1 block text-xs leading-snug text-muted">{o.hint}</span>
                 </button>
               ))}
             </div>
 
             {exposure !== 'internal' && (
               <label className="grid grid-cols-[6.5rem_minmax(0,1fr)] border-y border-line/70">
-                <span className="px-3 py-2.5 text-xs font-medium text-stone">Address</span>
+                <span className="px-3 py-2.5 text-xs font-medium text-muted">Address</span>
                 <span className="min-w-0 border-l border-line/60">
                   <input
                     value={hostOverride}
                     onChange={(e) => setHostOverride(e.target.value)}
                     placeholder={net.host}
-                    className="block w-full bg-transparent px-3 pt-2.5 pb-1 font-mono text-sm placeholder:text-stone/60 focus:bg-raised/30 focus:outline-none focus:ring-1 focus:ring-inset focus:ring-hay-deep"
+                    className="block w-full bg-transparent px-3 pt-2.5 pb-1 font-mono text-sm placeholder:text-muted/60 focus:bg-raised/30 focus:outline-none focus:ring-1 focus:ring-inset focus:ring-accent-strong"
                   />
-                  <span className="block px-3 pb-2.5 text-xs leading-relaxed text-stone">
+                  <span className="block px-3 pb-2.5 text-xs leading-relaxed text-muted">
                     Leave empty for <span className="font-mono">{net.host}</span>. A plain name
                     sits under the space, <span className="font-mono">@</span> takes the space's own
                     address; a full hostname needs its DNS pointed at the gateway.
@@ -138,11 +138,11 @@ export function NetworkCard({
                   {(net.routes ?? []).map((r) => (
                     <li key={r.host + r.path} className="font-mono text-xs text-ink-soft">
                       https://{r.host}
-                      <span className="text-hay">{r.path}</span>
+                      <span className="text-accent">{r.path}</span>
                     </li>
                   ))}
                 </ul>
-                <p className="mt-1 text-xs text-stone">
+                <p className="mt-1 text-xs text-muted">
                   From <code className="font-mono">routes:</code> in donkey.yaml — they follow the
                   exposure above.
                 </p>
@@ -150,7 +150,7 @@ export function NetworkCard({
             )}
 
             <div className="flex flex-wrap items-center justify-between gap-2 border-t border-line pt-3">
-              <p className="text-xs text-stone">
+              <p className="text-xs text-muted">
                 Applies immediately, without a deploy. An explicit setting in donkey.yaml wins again
                 at the next deploy.
               </p>
@@ -159,7 +159,7 @@ export function NetworkCard({
               </Button>
             </div>
             {note && (
-              <p role="status" className="text-sm text-moss">
+              <p role="status" className="text-sm text-success">
                 {note}
               </p>
             )}
@@ -261,7 +261,7 @@ function AccessCard({ space, app, initial }: { space: string; app: string; initi
         </Button>
       </div>
       {note && (
-        <p role="status" className="mt-2 text-sm text-moss">
+        <p role="status" className="mt-2 text-sm text-success">
           {note}
         </p>
       )}
@@ -310,7 +310,7 @@ function ListEditor({
               type="button"
               aria-label={`Remove ${v}`}
               onClick={() => onChange(values.filter((x) => x !== v))}
-              className="rounded p-0.5 text-stone hover:bg-brick/20 hover:text-brick"
+              className="rounded p-0.5 text-muted hover:bg-danger/20 hover:text-danger"
             >
               <X className="size-3" aria-hidden />
             </button>
@@ -322,19 +322,19 @@ function ListEditor({
             onChange={(e) => setDraft(e.target.value)}
             placeholder={placeholder}
             aria-label={`Add to ${label}`}
-            className="w-44 rounded-md border border-line bg-surface px-2 py-1 font-mono text-xs placeholder:text-stone/60 focus:outline-2 focus:outline-hay-deep"
+            className="w-44 rounded-md border border-line bg-surface px-2 py-1 font-mono text-xs placeholder:text-muted/60 focus:outline-2 focus:outline-accent-strong"
           />
           <button
             type="submit"
             aria-label={`Add to ${label}`}
             disabled={draft.trim() === ''}
-            className="rounded-md border border-line p-1 text-stone hover:bg-raised hover:text-ink disabled:opacity-40"
+            className="rounded-md border border-line p-1 text-muted hover:bg-raised hover:text-ink disabled:opacity-40"
           >
             <Plus className="size-3.5" aria-hidden />
           </button>
         </form>
       </div>
-      <p className="mt-1 text-xs text-stone">{hint}</p>
+      <p className="mt-1 text-xs text-muted">{hint}</p>
     </div>
   )
 }

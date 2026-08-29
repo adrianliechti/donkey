@@ -14,7 +14,7 @@ import { DataGrid } from './DataGrid'
 import { Button, ErrorNote, Select, Spinner, errText } from './ui'
 
 const inputStyle =
-  'rounded border border-line bg-surface px-1.5 py-1 font-mono text-xs focus:outline-2 focus:outline-hay-deep'
+  'rounded border border-line bg-surface px-1.5 py-1 font-mono text-xs focus:outline-2 focus:outline-accent-strong'
 
 // Names the create forms accept — plain lowercase identifiers sidestep the
 // whole quoting swamp, and match what the addon's own objects use anyway.
@@ -28,7 +28,7 @@ function fmtBytes(n: number): string {
 }
 
 function CellText({ value }: { value: DbCell }) {
-  if (value === null) return <span className="italic text-stone">null</span>
+  if (value === null) return <span className="italic text-muted">null</span>
   return <>{value}</>
 }
 
@@ -74,7 +74,7 @@ function EditableCell({
       placeholder={isNull ? 'null' : undefined}
       aria-label={label}
       title={isNull && value === '' ? 'null — type to set a value' : undefined}
-      className="w-full border-b border-transparent bg-transparent font-mono text-xs text-ink-soft outline-none placeholder:italic placeholder:text-stone focus:border-hay-deep focus:text-ink"
+      className="w-full border-b border-transparent bg-transparent font-mono text-xs text-ink-soft outline-none placeholder:italic placeholder:text-muted focus:border-accent-strong focus:text-ink"
     />
   )
 }
@@ -199,13 +199,13 @@ export function DatabaseDialog({
         <DialogPanel className="flex h-[85vh] w-full max-w-5xl flex-col rounded-lg border border-line bg-card shadow-2xl">
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-4 py-3">
             <div className="flex items-center gap-3">
-              <DialogTitle className="flex items-center gap-2 font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-stone">
+              <DialogTitle className="flex items-center gap-2 font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-muted">
                 <Table2 className="size-3.5" aria-hidden />
                 {service} · {space}
               </DialogTitle>
               {droppingDb ? (
                 <div className="flex items-center gap-1.5">
-                  <span className="text-xs text-brick">
+                  <span className="text-xs text-danger">
                     Delete <span className="font-mono">{db}</span> and everything in it?
                   </span>
                   <Button kind="danger" onClick={dropDatabase} disabled={busy}>
@@ -238,7 +238,7 @@ export function DatabaseDialog({
                     title="New database"
                     aria-label="New database"
                     onClick={() => setNewDb('')}
-                    className="rounded p-1.5 text-stone hover:bg-line/50 hover:text-ink"
+                    className="rounded p-1.5 text-muted hover:bg-line/50 hover:text-ink"
                   >
                     <Plus className="size-3.5" aria-hidden />
                   </button>
@@ -248,7 +248,7 @@ export function DatabaseDialog({
                       title={`Delete the database ${db}`}
                       aria-label={`Delete the database ${db}`}
                       onClick={() => setDroppingDb(true)}
-                      className="rounded p-1.5 text-stone hover:bg-brick/10 hover:text-brick"
+                      className="rounded p-1.5 text-muted hover:bg-danger/10 hover:text-danger"
                     >
                       <Trash2 className="size-3.5" aria-hidden />
                     </button>
@@ -320,7 +320,7 @@ export function DatabaseDialog({
             <div className="flex min-h-0 flex-1">
               <aside className="w-52 shrink-0 overflow-y-auto border-r border-line p-2">
                 <div className="flex items-center justify-between px-1 pb-1">
-                  <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-stone">
+                  <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-muted">
                     Tables
                   </span>
                   <div className="flex items-center">
@@ -329,7 +329,7 @@ export function DatabaseDialog({
                       onClick={() => setView('create')}
                       title="New table"
                       aria-label="New table"
-                      className="rounded p-1 text-stone hover:bg-line/50 hover:text-ink"
+                      className="rounded p-1 text-muted hover:bg-line/50 hover:text-ink"
                     >
                       <Plus className="size-3" aria-hidden />
                     </button>
@@ -338,7 +338,7 @@ export function DatabaseDialog({
                       onClick={loadTables}
                       title="Refresh tables"
                       aria-label="Refresh tables"
-                      className="rounded p-1 text-stone hover:bg-line/50"
+                      className="rounded p-1 text-muted hover:bg-line/50"
                     >
                       <RefreshCw className="size-3" aria-hidden />
                     </button>
@@ -346,7 +346,7 @@ export function DatabaseDialog({
                 </div>
                 {tables === null && <Spinner label="Loading…" />}
                 {tables !== null && tables.length === 0 && (
-                  <p className="px-1 text-xs text-stone">Nothing here yet.</p>
+                  <p className="px-1 text-xs text-muted">Nothing here yet.</p>
                 )}
                 {(tables ?? []).map((t) =>
                   droppingTable?.schema === t.schema && droppingTable?.name === t.name ? (
@@ -354,7 +354,7 @@ export function DatabaseDialog({
                     // own list row, compactly.
                     <div
                       key={`${t.schema}.${t.name}`}
-                      className="flex w-full items-center justify-between gap-1 rounded-md bg-brick/10 px-2 py-1.5 font-mono text-xs text-brick"
+                      className="flex w-full items-center justify-between gap-1 rounded-md bg-danger/10 px-2 py-1.5 font-mono text-xs text-danger"
                     >
                       <span className="truncate">drop {t.name}?</span>
                       <span className="flex shrink-0 gap-0.5">
@@ -364,7 +364,7 @@ export function DatabaseDialog({
                           aria-label={`Drop ${t.name} and its rows`}
                           onClick={dropTable}
                           disabled={busy}
-                          className="rounded p-0.5 hover:bg-brick/20 disabled:opacity-40"
+                          className="rounded p-0.5 hover:bg-danger/20 disabled:opacity-40"
                         >
                           <Check className="size-3" aria-hidden />
                         </button>
@@ -373,7 +373,7 @@ export function DatabaseDialog({
                           title="Keep it"
                           aria-label="Keep the table"
                           onClick={() => setDroppingTable(null)}
-                          className="rounded p-0.5 text-stone hover:bg-line/50"
+                          className="rounded p-0.5 text-muted hover:bg-line/50"
                         >
                           <X className="size-3" aria-hidden />
                         </button>
@@ -384,7 +384,7 @@ export function DatabaseDialog({
                       key={`${t.schema}.${t.name}`}
                       className={`group/tbl flex w-full items-center rounded-md pr-1 ${
                         current?.schema === t.schema && current?.name === t.name
-                          ? 'bg-hay-wash text-ink'
+                          ? 'bg-accent-soft text-ink'
                           : 'text-ink-soft hover:bg-line/40'
                       }`}
                     >
@@ -397,14 +397,14 @@ export function DatabaseDialog({
                           {t.schema !== 'public' ? `${t.schema}.` : ''}
                           {t.name}
                         </span>
-                        <span className="text-[10px] text-stone">~{t.rows}</span>
+                        <span className="text-[10px] text-muted">~{t.rows}</span>
                       </button>
                       <button
                         type="button"
                         title={`Drop the table ${t.name}`}
                         aria-label={`Drop the table ${t.name}`}
                         onClick={() => setDroppingTable(t)}
-                        className="invisible rounded p-1 text-stone hover:bg-brick/10 hover:text-brick group-hover/tbl:visible"
+                        className="invisible rounded p-1 text-muted hover:bg-danger/10 hover:text-danger group-hover/tbl:visible"
                       >
                         <Trash2 className="size-3" aria-hidden />
                       </button>
@@ -446,14 +446,14 @@ export function DatabaseDialog({
                         Write it in SQL
                       </Button>
                     </div>
-                    <p className="mt-4 text-xs text-stone">
+                    <p className="mt-4 text-xs text-muted">
                       Only your tables show here — postgres' own bookkeeping (pg_catalog,
                       information_schema) is hidden on purpose.
                     </p>
                   </div>
                 </div>
               ) : (
-                <div className="flex flex-1 items-center justify-center text-sm text-stone">
+                <div className="flex flex-1 items-center justify-center text-sm text-muted">
                   Pick a table on the left.
                 </div>
               )}
@@ -552,7 +552,7 @@ function CreateTableView({
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-4">
       <label className="flex flex-col gap-1.5">
-        <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-stone">
+        <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-muted">
           Table name
         </span>
         <input
@@ -564,7 +564,7 @@ function CreateTableView({
         />
       </label>
       <div className="flex flex-col gap-1.5">
-        <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-stone">
+        <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-muted">
           Columns
         </span>
         <div className="flex flex-col gap-1.5">
@@ -589,7 +589,7 @@ function CreateTableView({
                   type="checkbox"
                   checked={c.pk}
                   onChange={(e) => patch(i, { pk: e.target.checked })}
-                  className="size-3.5 accent-hay-deep"
+                  className="size-3.5 accent-accent-strong"
                 />
                 key
               </label>
@@ -599,7 +599,7 @@ function CreateTableView({
                     type="checkbox"
                     checked={c.required}
                     onChange={(e) => patch(i, { required: e.target.checked })}
-                    className="size-3.5 accent-hay-deep"
+                    className="size-3.5 accent-accent-strong"
                   />
                   required
                 </label>
@@ -609,7 +609,7 @@ function CreateTableView({
                 title="Remove column"
                 aria-label={`Remove column ${i + 1}`}
                 onClick={() => setColumns(columns.filter((_, ci) => ci !== i))}
-                className="rounded p-1 text-stone hover:bg-brick/10 hover:text-brick"
+                className="rounded p-1 text-muted hover:bg-danger/10 hover:text-danger"
               >
                 <Trash2 className="size-3" aria-hidden />
               </button>
@@ -629,7 +629,7 @@ function CreateTableView({
       </div>
       <ErrorNote message={error} />
       <div className="mt-auto flex items-center justify-between gap-2 border-t border-line pt-3">
-        <p className="text-xs text-stone">
+        <p className="text-xs text-muted">
           "auto id" counts up by itself; empty column rows are skipped.
         </p>
         <div className="flex gap-2">
@@ -759,7 +759,7 @@ function TableView({
           <>
             {c}
             {page?.key.includes(c) && (
-              <span className="ml-1 text-[9px] text-hay" title="primary key">
+              <span className="ml-1 text-[9px] text-accent" title="primary key">
                 key
               </span>
             )}
@@ -813,7 +813,7 @@ function TableView({
               title="Delete row"
               aria-label="Delete row"
               onClick={() => setDeleting(row.index)}
-              className="rounded p-1 text-stone hover:bg-brick/10 hover:text-brick"
+              className="rounded p-1 text-muted hover:bg-danger/10 hover:text-danger"
             >
               <Trash2 className="size-3" aria-hidden />
             </button>
@@ -850,9 +850,9 @@ function TableView({
         <span className="font-mono text-xs text-ink-soft">
           {page.total} {page.total === 1 ? 'row' : 'rows'}
           {editable ? (
-            <span className="ml-2 text-stone">click a cell to edit — blur saves, Esc reverts</span>
+            <span className="ml-2 text-muted">click a cell to edit — blur saves, Esc reverts</span>
           ) : (
-            <span className="ml-2 text-stone">read-only (no primary key)</span>
+            <span className="ml-2 text-muted">read-only (no primary key)</span>
           )}
         </span>
         <div className="flex items-center gap-1.5">
@@ -862,7 +862,7 @@ function TableView({
             disabled={busy || adding}
             title="Add a row"
             aria-label="Add a row"
-            className="rounded p-1.5 text-stone hover:bg-line/50 hover:text-ink disabled:opacity-40"
+            className="rounded p-1.5 text-muted hover:bg-line/50 hover:text-ink disabled:opacity-40"
           >
             <Plus className="size-3.5" aria-hidden />
           </button>
@@ -871,7 +871,7 @@ function TableView({
             onClick={load}
             title="Refresh rows"
             aria-label="Refresh rows"
-            className="rounded p-1.5 text-stone hover:bg-line/50"
+            className="rounded p-1.5 text-muted hover:bg-line/50"
           >
             <RefreshCw className="size-3.5" aria-hidden />
           </button>
@@ -881,11 +881,11 @@ function TableView({
             disabled={offset === 0}
             title="Previous page"
             aria-label="Previous page"
-            className="rounded p-1.5 text-stone hover:bg-line/50 disabled:opacity-30"
+            className="rounded p-1.5 text-muted hover:bg-line/50 disabled:opacity-30"
           >
             <ChevronLeft className="size-3.5" aria-hidden />
           </button>
-          <span className="font-mono text-[10px] text-stone">
+          <span className="font-mono text-[10px] text-muted">
             {page.total === 0 ? '0' : `${offset + 1}–${Math.min(offset + limit, page.total)}`}
           </span>
           <button
@@ -894,7 +894,7 @@ function TableView({
             disabled={offset + limit >= page.total}
             title="Next page"
             aria-label="Next page"
-            className="rounded p-1.5 text-stone hover:bg-line/50 disabled:opacity-30"
+            className="rounded p-1.5 text-muted hover:bg-line/50 disabled:opacity-30"
           >
             <ChevronRight className="size-3.5" aria-hidden />
           </button>
@@ -911,7 +911,7 @@ function TableView({
               // The pending row speaks the same language as the cells
               // around it: bare inputs, Enter saves, Escape discards — the
               // tint is what says "not stored yet".
-              <tr className="bg-hay-wash/40">
+              <tr className="bg-accent-soft/40">
                 {page.columns.map((c, ci) => (
                   <td key={c} className="border-b border-line/50 px-2 py-1">
                     <input
@@ -930,7 +930,7 @@ function TableView({
                       }}
                       placeholder="default"
                       aria-label={`New ${c}`}
-                      className="w-full border-b border-transparent bg-transparent font-mono text-xs text-ink outline-none placeholder:italic placeholder:text-stone/60 focus:border-hay-deep"
+                      className="w-full border-b border-transparent bg-transparent font-mono text-xs text-ink outline-none placeholder:italic placeholder:text-muted/60 focus:border-accent-strong"
                     />
                   </td>
                 ))}
@@ -942,7 +942,7 @@ function TableView({
                       aria-label="Save the row"
                       onClick={insert}
                       disabled={busy}
-                      className="rounded p-1 text-moss hover:bg-moss/10 disabled:opacity-40"
+                      className="rounded p-1 text-success hover:bg-success/10 disabled:opacity-40"
                     >
                       <Check className="size-3" aria-hidden />
                     </button>
@@ -954,7 +954,7 @@ function TableView({
                         setAdding(false)
                         setDraft({})
                       }}
-                      className="rounded p-1 text-stone hover:bg-line/50"
+                      className="rounded p-1 text-muted hover:bg-line/50"
                     >
                       <X className="size-3" aria-hidden />
                     </button>
@@ -965,7 +965,7 @@ function TableView({
           }
         />
         {page.rows.length === 0 && !adding && (
-          <p className="py-8 text-center text-sm text-stone">No rows yet — Add row puts the first one in.</p>
+          <p className="py-8 text-center text-sm text-muted">No rows yet — Add row puts the first one in.</p>
         )}
       </div>
     </div>
@@ -1017,10 +1017,10 @@ function SqlView({
         placeholder={`select * from … — runs against ${db}`}
         aria-label="SQL statement"
         spellCheck={false}
-        className="h-28 shrink-0 resize-y rounded-md border border-line bg-surface p-2 font-mono text-xs focus:outline-2 focus:outline-hay-deep"
+        className="h-28 shrink-0 resize-y rounded-md border border-line bg-surface p-2 font-mono text-xs focus:outline-2 focus:outline-accent-strong"
       />
       <div className="flex items-center justify-between gap-2">
-        <p className="text-xs text-stone">Runs exactly what you wrote, against {db} — ⌘↵ works too.</p>
+        <p className="text-xs text-muted">Runs exactly what you wrote, against {db} — ⌘↵ works too.</p>
         <Button onClick={runSql} disabled={busy || !sql.trim()}>
           {busy ? 'Running…' : 'Run'}
         </Button>
@@ -1035,7 +1035,7 @@ function SqlView({
           ) : (
             <>
               {result.truncated && (
-                <p className="pb-1 text-xs text-stone">Showing the first {result.rows.length} rows.</p>
+                <p className="pb-1 text-xs text-muted">Showing the first {result.rows.length} rows.</p>
               )}
               <SqlResultGrid columns={result.columns} rows={result.rows} />
             </>

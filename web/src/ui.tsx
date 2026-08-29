@@ -1,8 +1,25 @@
 // Small shared pieces so every view speaks the same visual language.
-import { Component, type ReactNode } from 'react'
+import { Component, type ReactNode, useSyncExternalStore } from 'react'
 import { Listbox, ListboxButton, ListboxOption, ListboxOptions } from '@headlessui/react'
 import { Check, ChevronDown, CircleAlert, CircleCheck, Globe, Loader2, Lock, Network } from 'lucide-react'
 import type { Exposure } from './api'
+
+// useColorScheme follows the OS light/dark preference — the console has no
+// theme toggle and stores nothing, so this reads `prefers-color-scheme` live.
+// It exists for the rare place a value can't be a CSS token: the code
+// highlighter's theme is a token→hex map chosen in JS.
+const darkQuery = () => window.matchMedia('(prefers-color-scheme: dark)')
+export function useColorScheme(): 'light' | 'dark' {
+  return useSyncExternalStore(
+    (cb) => {
+      const mq = darkQuery()
+      mq.addEventListener('change', cb)
+      return () => mq.removeEventListener('change', cb)
+    },
+    () => (darkQuery().matches ? 'dark' : 'light'),
+    () => 'dark',
+  )
+}
 
 // The source SVG stays a plain monochrome shape. Rendering it as a mask lets
 // each surface choose the color in CSS and keeps the brand mark identical
@@ -33,9 +50,9 @@ export const healthLine: Record<Health, (ready: string) => string> = {
 
 // The dots glow: on a dark field, a lit lamp reads faster than a color chip.
 const dotColor: Record<Health, string> = {
-  ok: 'bg-moss shadow-[0_0_8px_2px] shadow-moss/40',
-  bad: 'bg-brick shadow-[0_0_8px_2px] shadow-brick/40',
-  unknown: 'bg-stone',
+  ok: 'bg-success shadow-[0_0_8px_2px] shadow-success/40',
+  bad: 'bg-danger shadow-[0_0_8px_2px] shadow-danger/40',
+  unknown: 'bg-muted',
 }
 
 export function StatusDot({ health }: { health: Health }) {
@@ -48,8 +65,8 @@ export function ExposureBadge({ exposure }: { exposure?: Exposure }) {
   if (!exposure) return null
   const spec = {
     public: { icon: <Globe className="size-3" aria-hidden />, label: 'public', tone: 'text-ink-soft border-line' },
-    protected: { icon: <Lock className="size-3" aria-hidden />, label: 'login', tone: 'text-hay border-hay/40' },
-    internal: { icon: <Network className="size-3" aria-hidden />, label: 'internal', tone: 'text-stone border-line' },
+    protected: { icon: <Lock className="size-3" aria-hidden />, label: 'login', tone: 'text-accent border-accent/40' },
+    internal: { icon: <Network className="size-3" aria-hidden />, label: 'internal', tone: 'text-muted border-line' },
   }[exposure]
   return (
     <span
@@ -70,15 +87,15 @@ export function ExposureBadge({ exposure }: { exposure?: Exposure }) {
 
 export function CheckIcon({ ok }: { ok: boolean }) {
   return ok ? (
-    <CircleCheck className="size-4 shrink-0 text-moss" aria-label="ok" />
+    <CircleCheck className="size-4 shrink-0 text-success" aria-label="ok" />
   ) : (
-    <CircleAlert className="size-4 shrink-0 text-brick" aria-label="problem" />
+    <CircleAlert className="size-4 shrink-0 text-danger" aria-label="problem" />
   )
 }
 
 export function Spinner({ label }: { label: string }) {
   return (
-    <div className="flex items-center gap-2 py-10 justify-center text-stone text-sm">
+    <div className="flex items-center gap-2 py-10 justify-center text-muted text-sm">
       <Loader2 className="size-4 animate-spin" aria-hidden /> {label}
     </div>
   )
@@ -90,7 +107,7 @@ export function Card({ children, className = '' }: { children: ReactNode; classN
 
 export function SectionTitle({ children }: { children: ReactNode }) {
   return (
-    <h2 className="font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-stone">
+    <h2 className="font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-muted">
       {children}
     </h2>
   )
@@ -111,16 +128,16 @@ export function Button({
 }) {
   const styles = {
     primary:
-      'bg-hay text-on-hay hover:bg-hay-deep hover:text-white border border-transparent font-semibold',
+      'bg-accent text-on-accent hover:bg-accent-strong hover:text-white border border-transparent font-semibold',
     quiet: 'bg-transparent text-ink-soft hover:bg-line/50 border border-line',
-    danger: 'bg-transparent text-brick hover:bg-brick hover:text-white border border-brick/40',
+    danger: 'bg-transparent text-danger hover:bg-danger hover:text-white border border-danger/40',
   }[kind]
   return (
     <button
       type={type}
       onClick={onClick}
       disabled={disabled}
-      className={`rounded-md px-3 py-1.5 text-sm transition-colors disabled:opacity-40 disabled:pointer-events-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-hay-deep ${styles}`}
+      className={`rounded-md px-3 py-1.5 text-sm transition-colors disabled:opacity-40 disabled:pointer-events-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-strong ${styles}`}
     >
       {children}
     </button>
@@ -149,10 +166,10 @@ export function Select<T extends string | number>({
     <Listbox value={value} onChange={onChange}>
       <ListboxButton
         aria-label={ariaLabel}
-        className={`flex items-center gap-1.5 rounded-md border border-line bg-surface font-mono ${pad} focus:outline-2 focus:outline-hay-deep data-open:border-line-bright`}
+        className={`flex items-center gap-1.5 rounded-md border border-line bg-surface font-mono ${pad} focus:outline-2 focus:outline-accent-strong data-open:border-line-strong`}
       >
         {current?.label ?? String(value)}
-        <ChevronDown className="size-3.5 text-stone" aria-hidden />
+        <ChevronDown className="size-3.5 text-muted" aria-hidden />
       </ListboxButton>
       <ListboxOptions
         anchor="bottom start"
@@ -162,7 +179,7 @@ export function Select<T extends string | number>({
           <ListboxOption
             key={String(o.value)}
             value={o.value}
-            className={`flex cursor-default items-center justify-between gap-2 ${pad} font-mono text-ink-soft data-focus:bg-hay-wash data-focus:text-ink`}
+            className={`flex cursor-default items-center justify-between gap-2 ${pad} font-mono text-ink-soft data-focus:bg-accent-soft data-focus:text-ink`}
           >
             {({ selected }) => (
               <>
@@ -182,7 +199,7 @@ export function Select<T extends string | number>({
 export function ErrorNote({ message }: { message: string }) {
   if (!message) return null
   return (
-    <p role="alert" className="rounded-md border border-brick/30 bg-brick/5 px-3 py-2 text-sm text-brick">
+    <p role="alert" className="rounded-md border border-danger/30 bg-danger/5 px-3 py-2 text-sm text-danger">
       {message}
     </p>
   )
@@ -194,9 +211,9 @@ export function StateChip({ state }: { state: string }) {
   const bad = /crashloop|error|backoff|failed|pending|terminat/i.test(state)
   const good = /running|ready/i.test(state)
   const tone = bad
-    ? 'bg-brick/10 text-brick border-brick/30'
+    ? 'bg-danger/10 text-danger border-danger/30'
     : good
-      ? 'bg-moss/10 text-moss border-moss/30'
+      ? 'bg-success/10 text-success border-success/30'
       : 'bg-line/50 text-ink-soft border-line'
   return (
     <span className={`inline-block rounded border px-1.5 py-0.5 font-mono text-[11px] leading-4 ${tone}`}>
@@ -223,7 +240,7 @@ export function UpdatedAgo({ at }: { at: number | null }) {
   if (at === null) return null
   const secs = Math.max(0, Math.round((Date.now() - at) / 1000))
   const text = secs < 5 ? 'just now' : secs < 90 ? `${secs}s ago` : `${Math.round(secs / 60)}m ago`
-  return <span className="text-xs text-stone">updated {text}</span>
+  return <span className="text-xs text-muted">updated {text}</span>
 }
 
 // ErrorBoundary keeps one broken view from blanking the whole console.

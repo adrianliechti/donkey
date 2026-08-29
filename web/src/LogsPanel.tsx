@@ -61,7 +61,7 @@ export function LogsPanel({ space, app }: { space: string; app: string }) {
             type="checkbox"
             checked={follow}
             onChange={(e) => setFollow(e.target.checked)}
-            className="size-3.5 accent-hay-deep"
+            className="size-3.5 accent-accent-strong"
           />
           Follow
         </label>
@@ -88,7 +88,7 @@ export function LogsPanel({ space, app }: { space: string; app: string }) {
           onClick={load}
           title="Refresh logs"
           aria-label="Refresh logs"
-          className="flex items-center rounded-md p-1.5 text-xs text-stone hover:bg-line/50 focus-visible:outline-2 focus-visible:outline-hay-deep"
+          className="flex items-center rounded-md p-1.5 text-xs text-muted hover:bg-line/50 focus-visible:outline-2 focus-visible:outline-accent-strong"
         >
           <RefreshCw className={`size-3.5 ${busy && !follow ? 'animate-spin' : ''}`} aria-hidden />
         </button>
@@ -103,7 +103,7 @@ export function LogsPanel({ space, app }: { space: string; app: string }) {
             const pane = paneRef.current
             if (pane) pinnedRef.current = pane.scrollHeight - pane.scrollTop - pane.clientHeight < 40
           }}
-          className="h-80 overflow-auto rounded-md bg-ink-well p-3 font-mono text-xs leading-relaxed text-parchment whitespace-pre-wrap focus-visible:outline-2 focus-visible:outline-hay-deep"
+          className="h-80 overflow-auto rounded-md bg-well p-3 font-mono text-xs leading-relaxed text-emphasis whitespace-pre-wrap focus-visible:outline-2 focus-visible:outline-accent-strong"
         >
           {logs ||
             (busy

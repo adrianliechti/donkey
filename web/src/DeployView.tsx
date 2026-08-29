@@ -354,24 +354,24 @@ export function DeployView({
               const items = e.dataTransfer.items
               if (items.length > 0) accept(() => uploadFromDrop(items, buffers.current))
             }}
-            className={`flex cursor-pointer flex-col items-center gap-2 rounded-lg border-2 border-dashed p-10 text-center transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-hay-deep ${
-              dragOver ? 'border-hay-deep bg-hay-wash' : 'border-line bg-card hover:bg-hay-wash/50'
+            className={`flex cursor-pointer flex-col items-center gap-2 rounded-lg border-2 border-dashed p-10 text-center transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-strong ${
+              dragOver ? 'border-accent-strong bg-accent-soft' : 'border-line bg-card hover:bg-accent-soft/50'
             }`}
           >
-            <UploadCloud className="size-8 text-hay-deep" aria-hidden />
+            <UploadCloud className="size-8 text-accent-strong" aria-hidden />
             {phase.step === 'root' ? (
               <p className="flex items-center gap-2 font-mono text-sm">
                 {/\.zip/.test(phase.upload.label) ? (
-                  <FileArchive className="size-4 text-stone" aria-hidden />
+                  <FileArchive className="size-4 text-muted" aria-hidden />
                 ) : (
-                  <FolderUp className="size-4 text-stone" aria-hidden />
+                  <FolderUp className="size-4 text-muted" aria-hidden />
                 )}
                 {phase.upload.label}
               </p>
             ) : (
               <>
                 <p className="text-sm font-medium">Drop your project folder or a .zip here</p>
-                <p className="text-xs text-stone">
+                <p className="text-xs text-muted">
                   Donkey reads the code first — the port, the folders that hold data, the services it
                   needs — and shows you what it found before anything is built.
                 </p>
@@ -393,7 +393,7 @@ export function DeployView({
           {phase.step === 'root' && (
             <Card className="p-4">
               <SectionTitle>Which app do you want to deploy?</SectionTitle>
-              <p className="mt-1 text-xs text-stone">
+              <p className="mt-1 text-xs text-muted">
                 This drop holds several. Only the chosen folder is uploaded and read.
               </p>
               <div className="mt-3 space-y-1.5">
@@ -401,10 +401,10 @@ export function DeployView({
                   <button
                     key={r.dir}
                     onClick={() => read(phase.upload, r.dir)}
-                    className="flex w-full items-center justify-between gap-2 rounded-md border border-line px-3 py-2 text-left text-sm hover:border-line-bright hover:bg-raised"
+                    className="flex w-full items-center justify-between gap-2 rounded-md border border-line px-3 py-2 text-left text-sm hover:border-line-strong hover:bg-raised"
                   >
                     <span className="font-mono">{r.dir === '' ? '/ (the whole drop)' : r.dir + '/'}</span>
-                    {r.hasConfig && <span className="text-xs text-stone">has donkey.yaml</span>}
+                    {r.hasConfig && <span className="text-xs text-muted">has donkey.yaml</span>}
                   </button>
                 ))}
               </div>
@@ -412,7 +412,7 @@ export function DeployView({
           )}
 
           {phase.step === 'root' && phase.upload.skipped.length > 0 && (
-            <p className="text-xs text-stone">
+            <p className="text-xs text-muted">
               Left behind (secret-shaped or excluded): {phase.upload.skipped.slice(0, 4).join(', ')}
               {phase.upload.skipped.length > 4 && ` and ${phase.upload.skipped.length - 4} more`}
             </p>
@@ -425,10 +425,10 @@ export function DeployView({
       {phase.step === 'reading' && (
         <Card className="space-y-2 p-6">
           <p className="flex items-center gap-2 text-sm">
-            <Loader2 className="size-4 animate-spin text-hay" aria-hidden />
+            <Loader2 className="size-4 animate-spin text-accent" aria-hidden />
             Reading <span className="font-mono">{phase.upload.label}</span>…
           </p>
-          <p className="text-xs text-stone">
+          <p className="text-xs text-muted">
             Donkey is detecting how to build it and reading the source for the things no detector can
             see — which port it listens on, which folders must survive a restart, which services it
             expects. This takes a moment.

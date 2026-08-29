@@ -37,7 +37,7 @@ export function AppsList() {
   return (
     <div className="space-y-5">
       <div className="flex items-center justify-between">
-        <h1 className="font-mono text-[11px] font-semibold uppercase tracking-[0.18em] text-stone">
+        <h1 className="font-mono text-[11px] font-semibold uppercase tracking-[0.18em] text-muted">
           Fleet
         </h1>
         <div className="flex items-center gap-0.5">
@@ -46,7 +46,7 @@ export function AppsList() {
             onClick={() => setCreating(true)}
             title="New space"
             aria-label="New space"
-            className="rounded-md p-1.5 text-stone hover:bg-raised focus-visible:outline-2 focus-visible:outline-hay-deep"
+            className="rounded-md p-1.5 text-muted hover:bg-raised focus-visible:outline-2 focus-visible:outline-accent-strong"
           >
             <FolderPlus className="size-4" aria-hidden />
           </button>
@@ -55,7 +55,7 @@ export function AppsList() {
             onClick={reload}
             title="Refresh"
             aria-label="Refresh"
-            className="rounded-md p-1.5 text-stone hover:bg-raised focus-visible:outline-2 focus-visible:outline-hay-deep"
+            className="rounded-md p-1.5 text-muted hover:bg-raised focus-visible:outline-2 focus-visible:outline-accent-strong"
           >
             <RefreshCw className="size-4" aria-hidden />
           </button>
@@ -74,13 +74,13 @@ export function AppsList() {
 
       {apps !== null && spaces.length === 0 && (
         <div className="rounded-xl border border-line bg-card p-12 text-center">
-          <DonkeyLogo className="mx-auto size-10 text-stone" />
-          <p className="mt-3 text-sm text-stone">The paddock is empty.</p>
+          <DonkeyLogo className="mx-auto size-10 text-muted" />
+          <p className="mt-3 text-sm text-muted">The paddock is empty.</p>
           <p className="mt-2 text-sm">
             Deploy your first app from its project folder:{' '}
             <code className="rounded bg-surface px-2 py-0.5 font-mono text-sm">donkey deploy</code>
           </p>
-          <p className="mt-1 text-sm text-stone">
+          <p className="mt-1 text-sm text-muted">
             — or use <span className="font-medium text-ink">Deploy</span> above and drop the project
             folder right here.
           </p>
@@ -139,7 +139,7 @@ function NewSpaceDialog({
       <DialogBackdrop className="fixed inset-0 bg-black/60" />
       <div className="fixed inset-0 flex items-start justify-center p-4 pt-[18vh]">
         <DialogPanel className="w-full max-w-sm rounded-lg border border-line bg-card p-4 shadow-2xl">
-          <DialogTitle className="font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-stone">
+          <DialogTitle className="font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-muted">
             New space
           </DialogTitle>
           <ErrorNote message={error} />
@@ -156,9 +156,9 @@ function NewSpaceDialog({
               onChange={(e) => setName(e.target.value)}
               placeholder="my-project"
               aria-label="Space name"
-              className="rounded-md border border-line bg-surface px-2 py-1.5 font-mono text-sm focus:outline-2 focus:outline-hay-deep"
+              className="rounded-md border border-line bg-surface px-2 py-1.5 font-mono text-sm focus:outline-2 focus:outline-accent-strong"
             />
-            <p className="text-xs text-stone">
+            <p className="text-xs text-muted">
               A space groups apps that belong together — they reach each other by name and share its
               services.
             </p>

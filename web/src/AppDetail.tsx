@@ -87,12 +87,12 @@ export function AppDetail({
                   <StatusDot health={healthOf(status.healthy, status.ready)} />
                   {healthLine[healthOf(status.healthy, status.ready)](status.ready)}
                 </span>
-                {status.startedAt && <span className="text-xs text-stone">up {ago(status.startedAt)}</span>}
+                {status.startedAt && <span className="text-xs text-muted">up {ago(status.startedAt)}</span>}
                 {(status.restarts ?? 0) > 0 && (
-                  <span className="text-xs text-brick">{status.restarts} restarts</span>
+                  <span className="text-xs text-danger">{status.restarts} restarts</span>
                 )}
                 {status.image && (
-                  <span className="hidden font-mono text-xs text-stone sm:inline">
+                  <span className="hidden font-mono text-xs text-muted sm:inline">
                     {status.image.split('/').pop()}
                   </span>
                 )}
@@ -104,7 +104,7 @@ export function AppDetail({
               onClick={onBack}
               title="Close (Esc)"
               aria-label="Close the app panel"
-              className="rounded-md p-1.5 text-stone hover:bg-raised hover:text-ink focus-visible:outline-2 focus-visible:outline-hay-deep"
+              className="rounded-md p-1.5 text-muted hover:bg-raised hover:text-ink focus-visible:outline-2 focus-visible:outline-accent-strong"
             >
               <X className="size-4" aria-hidden />
             </button>
@@ -118,7 +118,7 @@ export function AppDetail({
                 href={status.url}
                 target="_blank"
                 rel="noreferrer"
-                className="flex items-center gap-1.5 rounded-md bg-hay px-3 py-1.5 text-sm font-semibold text-on-hay transition-colors hover:bg-hay-deep focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-hay-deep"
+                className="flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-sm font-semibold text-on-accent transition-colors hover:bg-accent-strong focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-strong"
               >
                 Open app <ExternalLink className="size-3.5" aria-hidden />
               </a>
@@ -147,10 +147,10 @@ export function AppDetail({
                 role="tab"
                 aria-selected={shown === t.id}
                 onClick={() => onTab(t.id)}
-                className={`-mb-px flex shrink-0 items-center gap-1.5 border-b-2 px-3 py-2 text-sm transition-colors focus-visible:outline-2 focus-visible:outline-hay-deep ${
+                className={`-mb-px flex shrink-0 items-center gap-1.5 border-b-2 px-3 py-2 text-sm transition-colors focus-visible:outline-2 focus-visible:outline-accent-strong ${
                   shown === t.id
-                    ? 'border-hay font-medium text-ink'
-                    : 'border-transparent text-stone hover:border-line hover:text-ink'
+                    ? 'border-accent font-medium text-ink'
+                    : 'border-transparent text-muted hover:border-line hover:text-ink'
                 }`}
               >
                 {t.icon}
@@ -168,7 +168,7 @@ export function AppDetail({
         {status && !status.found && (
           <Card className="p-8 text-center">
             <h2 className="font-mono text-xl font-bold tracking-tight">{app}</h2>
-            <p className="mt-2 text-sm text-stone">
+            <p className="mt-2 text-sm text-muted">
               Nothing with this name is deployed in the space <span className="font-mono">{space}</span>.
             </p>
             <p className="mt-1 text-sm">
@@ -212,7 +212,7 @@ function InstancesCard({ pods }: { pods: string[] }) {
     <section>
       <SectionTitle>Instances</SectionTitle>
       {pods.length === 0 ? (
-        <p className="mt-2 text-sm text-stone">
+        <p className="mt-2 text-sm text-muted">
           No instances running — the app may be starting, or its rollout is stuck. The logs usually
           say why.
         </p>
@@ -256,7 +256,7 @@ function RestartButton({ space, app, onRestarted }: { space: string; app: string
 
   return (
     <div className="flex items-center gap-2">
-      {error && <span className="text-xs text-brick">{error}</span>}
+      {error && <span className="text-xs text-danger">{error}</span>}
       <Button kind="quiet" onClick={restart} disabled={busy}>
         <span className="flex items-center gap-1.5">
           <RotateCw className={`size-3.5 ${busy ? 'animate-spin' : ''}`} aria-hidden />

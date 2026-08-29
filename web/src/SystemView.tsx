@@ -13,7 +13,7 @@ export function SystemView() {
           <UpdatedAgo at={updatedAt} />
           <button
             onClick={reload}
-            className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-stone hover:bg-line/50 focus-visible:outline-2 focus-visible:outline-hay-deep"
+            className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted hover:bg-line/50 focus-visible:outline-2 focus-visible:outline-accent-strong"
           >
             <RefreshCw className="size-3.5" aria-hidden /> Check again
           </button>
@@ -30,7 +30,7 @@ export function SystemView() {
                 <div className="min-w-0">
                   <div className="text-sm font-medium">{check.name}</div>
                   {check.detail && (
-                    <div className="text-xs text-stone break-words">{check.detail}</div>
+                    <div className="text-xs text-muted break-words">{check.detail}</div>
                   )}
                 </div>
               </div>
@@ -41,7 +41,7 @@ export function SystemView() {
             <p className="mt-1 font-mono text-sm">
               {'<app>'}.{'<space>'}.{report.domain}
             </p>
-            <p className="mt-1 text-xs text-stone">
+            <p className="mt-1 text-xs text-muted">
               One *.{report.domain} record covers every app — plus {report.domain} itself for the console and login.
             </p>
           </Card>

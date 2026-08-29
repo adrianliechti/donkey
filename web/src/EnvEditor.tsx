@@ -5,11 +5,11 @@ import { Button, ErrorNote, errText, Spinner } from './ui'
 
 const KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
 const ROW_ACTION =
-  'rounded-md p-1.5 text-stone transition-colors hover:bg-line/50 hover:text-ink focus-visible:outline-2 focus-visible:outline-hay-deep'
+  'rounded-md p-1.5 text-muted transition-colors hover:bg-line/50 hover:text-ink focus-visible:outline-2 focus-visible:outline-accent-strong'
 const ROW_DANGER_ACTION =
-  'rounded-md p-1.5 text-stone transition-colors hover:bg-brick/10 hover:text-brick focus-visible:outline-2 focus-visible:outline-hay-deep'
+  'rounded-md p-1.5 text-muted transition-colors hover:bg-danger/10 hover:text-danger focus-visible:outline-2 focus-visible:outline-accent-strong'
 const COLUMN_INPUT =
-  'min-w-0 bg-transparent px-3 py-2.5 font-mono text-sm placeholder:text-stone/60 focus:bg-raised/30 focus:outline-none focus:ring-1 focus:ring-inset focus:ring-hay-deep'
+  'min-w-0 bg-transparent px-3 py-2.5 font-mono text-sm placeholder:text-muted/60 focus:bg-raised/30 focus:outline-none focus:ring-1 focus:ring-inset focus:ring-accent-strong'
 
 export function EnvEditor({ space, app, onSaved }: { space: string; app: string; onSaved: () => void }) {
   const [env, setEnv] = useState<Record<string, string> | null>(null)
@@ -150,7 +150,7 @@ export function EnvEditor({ space, app, onSaved }: { space: string; app: string;
         <button
           type="button"
           onClick={() => setPasteMode(!pasteMode)}
-          className="text-xs text-stone hover:text-ink focus-visible:outline-2 focus-visible:outline-hay-deep"
+          className="text-xs text-muted hover:text-ink focus-visible:outline-2 focus-visible:outline-accent-strong"
         >
           {pasteMode ? 'Add one' : 'Paste .env'}
         </button>
@@ -158,7 +158,7 @@ export function EnvEditor({ space, app, onSaved }: { space: string; app: string;
           type="button"
           onClick={() => setRevealAll(!revealAll)}
           aria-pressed={revealAll}
-          className="flex items-center gap-1 text-xs text-stone hover:text-ink focus-visible:outline-2 focus-visible:outline-hay-deep"
+          className="flex items-center gap-1 text-xs text-muted hover:text-ink focus-visible:outline-2 focus-visible:outline-accent-strong"
         >
           {revealAll ? (
             <>
@@ -177,7 +177,7 @@ export function EnvEditor({ space, app, onSaved }: { space: string; app: string;
         <>
           <div className="overflow-hidden border-y border-line/70">
             {keys.length === 0 ? (
-              <p className="px-3 py-5 text-center text-sm text-stone">
+              <p className="px-3 py-5 text-center text-sm text-muted">
                 No variables yet — add the first one below.
               </p>
             ) : (
@@ -209,13 +209,13 @@ export function EnvEditor({ space, app, onSaved }: { space: string; app: string;
                             }}
                             autoFocus
                             aria-label={`New value for ${key}`}
-                            className="w-full min-w-0 border-b border-hay/60 bg-transparent py-0.5 font-mono text-sm focus:border-hay focus:outline-none"
+                            className="w-full min-w-0 border-b border-accent/60 bg-transparent py-0.5 font-mono text-sm focus:border-accent focus:outline-none"
                           />
                         </form>
                       ) : (
                         <span className="min-w-0 truncate font-mono text-sm text-ink-soft">
                           {shown(key) ? (
-                            env[key] || <span className="font-sans text-xs italic text-stone">empty</span>
+                            env[key] || <span className="font-sans text-xs italic text-muted">empty</span>
                           ) : (
                             '••••••••'
                           )}
@@ -236,7 +236,7 @@ export function EnvEditor({ space, app, onSaved }: { space: string; app: string;
                             aria-label={`Apply change to ${key}`}
                             className={ROW_ACTION}
                           >
-                            <Check className="size-3.5 text-moss" aria-hidden />
+                            <Check className="size-3.5 text-success" aria-hidden />
                           </button>
                           <button
                             type="button"
@@ -272,7 +272,7 @@ export function EnvEditor({ space, app, onSaved }: { space: string; app: string;
                             className={ROW_ACTION}
                           >
                             {copied === key ? (
-                              <Check className="size-3.5 text-moss" aria-hidden />
+                              <Check className="size-3.5 text-success" aria-hidden />
                             ) : (
                               <ClipboardCopy className="size-3.5" aria-hidden />
                             )}
@@ -311,10 +311,10 @@ export function EnvEditor({ space, app, onSaved }: { space: string; app: string;
                   placeholder={'DATABASE_URL=postgres://…\nSMTP_HOST=mail.example.com'}
                   rows={4}
                   aria-label="Paste KEY=VALUE lines"
-                  className="block w-full resize-y bg-transparent px-3 py-2.5 font-mono text-sm placeholder:text-stone/60 focus:bg-raised/30 focus:outline-none focus:ring-1 focus:ring-inset focus:ring-hay-deep"
+                  className="block w-full resize-y bg-transparent px-3 py-2.5 font-mono text-sm placeholder:text-muted/60 focus:bg-raised/30 focus:outline-none focus:ring-1 focus:ring-inset focus:ring-accent-strong"
                 />
                 <div className="flex flex-wrap items-center justify-between gap-2 border-t border-line/60 px-3 py-2">
-                  <p className="text-xs text-stone">One KEY=VALUE per line; # comments are skipped.</p>
+                  <p className="text-xs text-muted">One KEY=VALUE per line; # comments are skipped.</p>
                   <Button kind="quiet" onClick={addPasted} disabled={pasteText.trim() === ''}>
                     Add these
                   </Button>
@@ -343,7 +343,7 @@ export function EnvEditor({ space, app, onSaved }: { space: string; app: string;
                   <button
                     type="submit"
                     disabled={newKey.trim() === ''}
-                    className="inline-flex items-center gap-1 rounded-md px-2 py-1.5 text-xs font-medium text-ink-soft transition-colors hover:bg-line/50 hover:text-ink disabled:pointer-events-none disabled:opacity-35 focus-visible:outline-2 focus-visible:outline-hay-deep"
+                    className="inline-flex items-center gap-1 rounded-md px-2 py-1.5 text-xs font-medium text-ink-soft transition-colors hover:bg-line/50 hover:text-ink disabled:pointer-events-none disabled:opacity-35 focus-visible:outline-2 focus-visible:outline-accent-strong"
                   >
                     <Plus className="size-3.5" aria-hidden /> Add
                   </button>
@@ -353,7 +353,7 @@ export function EnvEditor({ space, app, onSaved }: { space: string; app: string;
           </div>
 
           <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
-            <p className={`text-xs ${dirty ? 'text-ink-soft' : 'text-stone'}`}>
+            <p className={`text-xs ${dirty ? 'text-ink-soft' : 'text-muted'}`}>
               {dirty ? 'Unsaved changes' : 'Changes apply when you save.'}
             </p>
             <div className="flex gap-2">
@@ -366,7 +366,7 @@ export function EnvEditor({ space, app, onSaved }: { space: string; app: string;
             </div>
           </div>
           {note && (
-            <p role="status" className="text-sm text-moss">
+            <p role="status" className="text-sm text-success">
               {note}
             </p>
           )}
