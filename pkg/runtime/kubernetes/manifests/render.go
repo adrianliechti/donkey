@@ -47,8 +47,10 @@ func render(objs []runtime.Object, installation string) (string, error) {
 }
 
 // StampInstallation applies the ownership boundary to an object and to every
-// selector/template that creates or targets its pods. Apply and offline
-// rendering share this function so their manifests cannot drift apart.
+// selector/template that creates or targets its pods. It also guarantees the
+// standard managed-by marker for every object donkey itself applies. Apply
+// and offline rendering share this function so their manifests cannot drift
+// apart.
 func StampInstallation(u *unstructured.Unstructured, installation string) error {
 	if installation == "" {
 		return fmt.Errorf("installation label cannot be empty")
@@ -57,6 +59,7 @@ func StampInstallation(u *unstructured.Unstructured, installation string) error 
 	if labels == nil {
 		labels = map[string]string{}
 	}
+	labels[LabelManagedBy] = ManagedByValue
 	labels[LabelInstallation] = installation
 	u.SetLabels(labels)
 

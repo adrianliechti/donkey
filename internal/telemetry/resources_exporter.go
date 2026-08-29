@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"net/http"
 	"strings"
@@ -80,6 +81,28 @@ func (e *ResourceExporter) Export(ctx context.Context, observations []ResourceOb
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
 		invalid = append(invalid, fmt.Errorf("telemetry OTLP endpoint returned %s", response.Status))
+		return errors.Join(invalid...)
+	}
+	// OTLP reports permanent point-level rejection in a successful response.
+	// Ignoring it would make the sampling loop look healthy while every
+	// snapshot is being discarded by the receiver.
+	body, err = io.ReadAll(io.LimitReader(response.Body, 1<<20))
+	if err != nil {
+		invalid = append(invalid, fmt.Errorf("reading telemetry OTLP response: %w", err))
+		return errors.Join(invalid...)
+	}
+	result := new(collectormetricspb.ExportMetricsServiceResponse)
+	if err := proto.Unmarshal(body, result); err != nil {
+		invalid = append(invalid, fmt.Errorf("decoding telemetry OTLP response: %w", err))
+		return errors.Join(invalid...)
+	}
+	if partial := result.GetPartialSuccess(); partial != nil && partial.RejectedDataPoints > 0 {
+		message := strings.TrimSpace(partial.ErrorMessage)
+		if message == "" {
+			message = "receiver did not provide a reason"
+		}
+		invalid = append(invalid, fmt.Errorf("telemetry OTLP endpoint rejected %d data points: %s",
+			partial.RejectedDataPoints, message))
 	}
 	return errors.Join(invalid...)
 }

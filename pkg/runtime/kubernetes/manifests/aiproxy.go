@@ -162,5 +162,5 @@ func aiDeployment(in SystemInput) *appsv1.Deployment {
 // /ai/v1 here so the console's chat stays on its own origin.
 func aiNetworkPolicy(in SystemInput) *networkPolicy {
 	return ingressPolicy(in, AIAppName, aiPort,
-		append(appPeers(in), systemPeer(in, ServerName)))
+		append(appPeers(in), systemPeer(in.Namespace, ServerName)))
 }

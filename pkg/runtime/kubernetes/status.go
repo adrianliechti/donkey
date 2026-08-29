@@ -13,13 +13,17 @@ import (
 	"github.com/adrianliechti/donkey/pkg/runtime/kubernetes/manifests"
 )
 
-func (c *Client) AppStatus(ctx context.Context, namespace, app string) (*rt.AppStatus, error) {
+func (c *Client) AppStatus(ctx context.Context, namespace, objectName, space, app string) (*rt.AppStatus, error) {
 	st := &rt.AppStatus{}
-	dep, err := c.Clientset.AppsV1().Deployments(namespace).Get(ctx, app, metav1.GetOptions{})
+	dep, err := c.Clientset.AppsV1().Deployments(namespace).Get(ctx, objectName, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
 		return st, nil
 	}
 	if err != nil {
+		return nil, err
+	}
+	if err := c.requireOwnedObject("Deployment", namespace, objectName, dep.Labels,
+		manifests.Labels(space, app, manifests.ComponentWeb)); err != nil {
 		return nil, err
 	}
 	st.Found = true
@@ -52,8 +56,9 @@ func (c *Client) AppStatus(ctx context.Context, namespace, app string) (*rt.AppS
 			}
 		}
 	}
-	if cm, err := c.Clientset.CoreV1().ConfigMaps(namespace).Get(ctx, app, metav1.GetOptions{}); err == nil {
-		if cm.Annotations[manifests.AnnotationBackend] != "" {
+	if cm, err := c.Clientset.CoreV1().ConfigMaps(namespace).Get(ctx, objectName, metav1.GetOptions{}); err == nil {
+		if c.requireOwnedObject("ConfigMap", namespace, objectName, cm.Labels,
+			manifests.Labels(space, app, manifests.ComponentRoute)) == nil && cm.Annotations[manifests.AnnotationBackend] != "" {
 			st.IngressHost = cm.Annotations[manifests.AnnotationHost]
 			st.Protected = cm.Annotations[manifests.AnnotationLogin] == manifests.LoginRequired
 		}
@@ -63,12 +68,16 @@ func (c *Client) AppStatus(ctx context.Context, namespace, app string) (*rt.AppS
 
 // DeploymentAnnotation reads one annotation off a Deployment; a missing
 // Deployment (or annotation) is "".
-func (c *Client) DeploymentAnnotation(ctx context.Context, namespace, name, key string) (string, error) {
+func (c *Client) DeploymentAnnotation(ctx context.Context, namespace, name, space, app, key string) (string, error) {
 	dep, err := c.Clientset.AppsV1().Deployments(namespace).Get(ctx, name, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
 		return "", nil
 	}
 	if err != nil {
+		return "", err
+	}
+	if err := c.requireOwnedObject("Deployment", namespace, name, dep.Labels,
+		manifests.Labels(space, app, manifests.ComponentWeb)); err != nil {
 		return "", err
 	}
 	return dep.Annotations[key], nil
@@ -77,12 +86,16 @@ func (c *Client) DeploymentAnnotation(ctx context.Context, namespace, name, key 
 // ServiceEndpoint returns the in-cluster host and port of a space service
 // ("" when none runs) — donkey-server sits in the cluster and can dial it
 // directly, which is what the tunnel rides on.
-func (c *Client) ServiceEndpoint(ctx context.Context, namespace, name string) (string, int32, error) {
+func (c *Client) ServiceEndpoint(ctx context.Context, namespace, name, space, addon string) (string, int32, error) {
 	svc, err := c.Clientset.CoreV1().Services(namespace).Get(ctx, name, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
 		return "", 0, nil
 	}
 	if err != nil {
+		return "", 0, err
+	}
+	if err := c.requireOwnedObject("Service", namespace, name, svc.Labels,
+		manifests.AddonLabels(space, addon, manifests.ComponentAddon)); err != nil {
 		return "", 0, err
 	}
 	if len(svc.Spec.Ports) == 0 {
@@ -92,15 +105,15 @@ func (c *Client) ServiceEndpoint(ctx context.Context, namespace, name string) (s
 }
 
 // DeploymentIdentity reports the stable role of a named Deployment.
-func (c *Client) DeploymentIdentity(ctx context.Context, namespace, name string) (component, addon string, exists bool, err error) {
+func (c *Client) DeploymentIdentity(ctx context.Context, namespace, name string) (map[string]string, bool, error) {
 	dep, err := c.Clientset.AppsV1().Deployments(namespace).Get(ctx, name, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
-		return "", "", false, nil
+		return nil, false, nil
 	}
 	if err != nil {
-		return "", "", false, err
+		return nil, false, err
 	}
-	return dep.Labels[manifests.LabelComponent], dep.Labels[manifests.LabelAddon], true, nil
+	return dep.Labels, true, nil
 }
 
 // ListAddonBindings finds the app's addon binding Secrets.
@@ -121,11 +134,15 @@ func (c *Client) ListAddonBindings(ctx context.Context, namespace, space, app st
 	}
 	var out []rt.ServiceBindingInfo
 	for _, sec := range secrets.Items {
-		if !c.ours(sec.Labels) || (app == "") != (sec.Labels[manifests.LabelApp] == "") {
-			continue
-		}
 		name := sec.Labels[manifests.LabelAddon]
 		if name == "" {
+			continue
+		}
+		identity := manifests.AddonLabels(space, name, manifests.ComponentBinding)
+		if app != "" {
+			identity[manifests.LabelApp] = app
+		}
+		if c.requireOwnedObject("Secret", namespace, sec.Name, sec.Labels, identity) != nil {
 			continue
 		}
 		b := rt.ServiceBindingInfo{Name: name}
@@ -153,7 +170,9 @@ func (c *Client) SharedBindingValues(ctx context.Context, key string) ([]string,
 			return nil, err
 		}
 		for _, sec := range secrets.Items {
-			if !c.ours(sec.Labels) || sec.Labels[manifests.LabelApp] != "" {
+			space, addon := sec.Labels[manifests.LabelSpace], sec.Labels[manifests.LabelAddon]
+			if space == "" || addon == "" || c.requireOwnedObject("Secret", sec.Namespace, sec.Name, sec.Labels,
+				manifests.AddonLabels(space, addon, manifests.ComponentBinding)) != nil {
 				continue
 			}
 			if v, ok := sec.Data[key]; ok && len(v) > 0 {
@@ -182,7 +201,12 @@ func (c *Client) ListAddonAttachments(ctx context.Context, namespace, space, add
 	}
 	var out []string
 	for _, sec := range secrets.Items {
-		if app := sec.Labels[manifests.LabelApp]; app != "" && c.ours(sec.Labels) {
+		if app := sec.Labels[manifests.LabelApp]; app != "" {
+			identity := manifests.AddonLabels(space, addon, manifests.ComponentBinding)
+			identity[manifests.LabelApp] = app
+			if c.requireOwnedObject("Secret", namespace, sec.Name, sec.Labels, identity) != nil {
+				continue
+			}
 			out = append(out, app)
 		}
 	}
@@ -193,8 +217,13 @@ func (c *Client) ListAddonAttachments(ctx context.Context, namespace, space, add
 // RolloutEvidenceFor collects the same pod summaries, problem-pod logs and
 // warning events a failed rollout reports — for on-demand diagnosis of an
 // app that is currently unhealthy.
-func (c *Client) RolloutEvidenceFor(ctx context.Context, namespace, app string) rt.Evidence {
-	return c.rolloutError(ctx, namespace, app, "").Evidence
+func (c *Client) RolloutEvidenceFor(ctx context.Context, namespace, objectName, space, app string) rt.Evidence {
+	dep, err := c.Clientset.AppsV1().Deployments(namespace).Get(ctx, objectName, metav1.GetOptions{})
+	if err != nil || c.requireOwnedObject("Deployment", namespace, objectName, dep.Labels,
+		manifests.Labels(space, app, manifests.ComponentWeb)) != nil {
+		return rt.Evidence{}
+	}
+	return c.rolloutError(ctx, namespace, objectName, "").Evidence
 }
 
 // ListRouteNames returns the shared-address routes an app currently owns —
@@ -210,6 +239,10 @@ func (c *Client) ListRouteNames(ctx context.Context, namespace, space, app strin
 	}
 	var out []string
 	for _, r := range routes.Items {
+		if c.requireOwnedObject("ConfigMap", namespace, r.Name, r.Labels,
+			manifests.Labels(space, app, manifests.ComponentPathRoute)) != nil {
+			continue
+		}
 		out = append(out, r.Name)
 	}
 	return out, nil

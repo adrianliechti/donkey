@@ -44,6 +44,10 @@ func (r *Runtime) ResourceSamples(ctx context.Context) ([]rt.ResourceSample, err
 	var failures []error
 	for _, summary := range containers {
 		summary := summary
+		space, app := summary.Labels[labelSpace], summary.Labels[labelApp]
+		if space == "" || app == "" || !sameIdentity(summary.Labels, appLabels(space, app, componentWeb)) {
+			continue
+		}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()

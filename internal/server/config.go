@@ -38,6 +38,13 @@ type Config struct {
 	// WorkloadNamespace, when set, is the single namespace every app lives
 	// in; donkey neither creates nor deletes it.
 	WorkloadNamespace string
+	// IsolateSpaces fences every space with a NetworkPolicy (Kubernetes
+	// runtime only — Docker spaces are separate networks and isolated as is).
+	IsolateSpaces bool
+	// RestrictEgress adds the egress half of that fence — a space's pods reach
+	// only their own space, donkey-ai, donkey-telemetry and DNS, never the
+	// internet. Off by default; only meaningful with IsolateSpaces.
+	RestrictEgress bool
 	// AIURL is donkey-ai's address — the console's /ai/v1 calls are
 	// forwarded there. The address only, no path: what the console asks for
 	// is what gets proxied.
@@ -91,12 +98,18 @@ func FromEnv() (*Config, error) {
 			Immutable:       os.Getenv("DONKEY_REGISTRY_IMMUTABLE") == "true",
 			CAFile:          os.Getenv("DONKEY_REGISTRY_CA_FILE"),
 		},
-		Domain:                os.Getenv("DONKEY_DOMAIN"),
-		BuildkitAddr:          os.Getenv("DONKEY_BUILDKIT_ADDR"),
-		PackagesURL:           envOr("DONKEY_PACKAGES_URL", "http://donkey-packages"),
-		NamespacePrefix:       envOr("DONKEY_NAMESPACE_PREFIX", config.DefaultNamespacePrefix),
-		SystemNamespace:       envOr("DONKEY_SYSTEM_NAMESPACE", config.DefaultSystemNamespace),
-		WorkloadNamespace:     os.Getenv("DONKEY_WORKLOAD_NAMESPACE"),
+		Domain:            os.Getenv("DONKEY_DOMAIN"),
+		BuildkitAddr:      os.Getenv("DONKEY_BUILDKIT_ADDR"),
+		PackagesURL:       envOr("DONKEY_PACKAGES_URL", "http://donkey-packages"),
+		NamespacePrefix:   envOr("DONKEY_NAMESPACE_PREFIX", config.DefaultNamespacePrefix),
+		SystemNamespace:   envOr("DONKEY_SYSTEM_NAMESPACE", config.DefaultSystemNamespace),
+		WorkloadNamespace: os.Getenv("DONKEY_WORKLOAD_NAMESPACE"),
+		// Isolation is on by default, so only an explicit "false" opens the
+		// network — including on manifests that predate the setting.
+		IsolateSpaces: os.Getenv("DONKEY_SPACE_ISOLATION") != "false",
+		// Egress restriction is opt-in — it can cut an app off from the
+		// internet, so it is on only when the installation asked for it.
+		RestrictEgress:        os.Getenv("DONKEY_RESTRICT_EGRESS") == "true",
 		AIURL:                 os.Getenv("DONKEY_AI_URL"),
 		TelemetryURL:          envOr("DONKEY_TELEMETRY_URL", "http://donkey-telemetry:9090"),
 		TelemetryOTLPEndpoint: envOr("DONKEY_TELEMETRY_OTLP_ENDPOINT", "http://donkey-telemetry:4318"),

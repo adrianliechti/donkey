@@ -193,7 +193,8 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 	if err := checkOptionalCRDs(ctx, client, settings); err != nil {
 		return err
 	}
-	existing, err := client.GetSecretData(ctx, systemNamespace, manifests.SystemConfigSecretName)
+	existing, err := client.GetOwnedSecretData(ctx, systemNamespace, manifests.SystemConfigSecretName,
+		manifests.SystemLabels(manifests.ServerName))
 	if err != nil {
 		return fmt.Errorf("couldn't read the existing installation's secrets: %w", err)
 	}
@@ -296,6 +297,21 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 	if err := client.Apply(ctx, manifests.SystemObjects(in)); err != nil {
 		return fmt.Errorf("the cluster refused the installation: %w", err)
 	}
+	// Fence (or unfence) the spaces that already exist, so toggling
+	// kubernetes.isolateSpaces takes effect now — not at each space's next
+	// deploy. New spaces get their fence when they are created.
+	rt := k8s.NewRuntime(client, k8s.Options{
+		Placement: manifests.Placement{
+			SharedNamespace: settings.Kubernetes.Workload.Namespace,
+			NamespacePrefix: settings.Kubernetes.NamespacePrefix(),
+		},
+		SystemNamespace: systemNamespace,
+		IsolateSpaces:   settings.Kubernetes.SpacesIsolated(),
+		RestrictEgress:  settings.Kubernetes.RestrictEgress,
+	})
+	if err := rt.ReconcileSpaceIsolation(ctx); err != nil {
+		return fmt.Errorf("updating space isolation: %w", err)
+	}
 	u.Info("Waiting for the server to come up…")
 	if err := client.WaitForRollout(ctx, in.Namespace, "donkey-packages"); err != nil {
 		return err
@@ -322,6 +338,14 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 		u.Printf("  Admins:     %s", u.Faint("everyone your identity provider signs in (narrow it with auth.admins)"))
 	default:
 		u.Printf("  Admins:     %s", u.Faint("per auth.admins"))
+	}
+	switch {
+	case in.IsolateSpaces && in.RestrictEgress:
+		u.Printf("  Spaces:     %s", u.Faint("fenced in and out — no cross-space or outbound traffic beyond DNS, donkey-ai and telemetry"))
+	case in.IsolateSpaces:
+		u.Printf("  Spaces:     %s", u.Faint("fenced from each other on the network (open them with kubernetes.isolateSpaces: false)"))
+	default:
+		u.Printf("  Spaces:     %s", u.Faint("share the cluster network (kubernetes.isolateSpaces: false)"))
 	}
 	u.Printf("")
 	u.Printf("Console:  open %s and sign in", u.Bold(serverURL))
@@ -411,6 +435,8 @@ func kubernetesSystemInput(settings *config.InstallFile, skipNamespace bool, reg
 		SkipNamespace:        skipNamespace,
 		WorkloadNamespace:    settings.Kubernetes.Workload.Namespace,
 		NamespacePrefix:      settings.Kubernetes.NamespacePrefix(),
+		IsolateSpaces:        settings.Kubernetes.SpacesIsolated(),
+		RestrictEgress:       settings.Kubernetes.RestrictEgress,
 		ServerImage:          settings.Image,
 		Domain:               settings.Domain,
 		ServerHostname:       settings.ServerHost,

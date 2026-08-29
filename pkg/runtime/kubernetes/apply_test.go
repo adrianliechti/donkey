@@ -3,9 +3,12 @@ package kubernetes
 import (
 	"context"
 	"fmt"
+	"maps"
 	"reflect"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"
@@ -14,6 +17,99 @@ import (
 
 	"github.com/adrianliechti/donkey/pkg/runtime/kubernetes/manifests"
 )
+
+func TestApplyRefusesToAdoptSameNamedForeignObject(t *testing.T) {
+	ctx := context.Background()
+	existing := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "v1",
+		"kind":       "ConfigMap",
+		"metadata": map[string]any{
+			"name":      "team--site",
+			"namespace": "workloads",
+			"labels": map[string]any{
+				manifests.LabelInstallation: "another-donkey",
+				manifests.LabelSpace:        "team",
+				manifests.LabelApp:          "site",
+				manifests.LabelComponent:    manifests.ComponentRoute,
+			},
+		},
+	}}
+	dynamic := dynamicfake.NewSimpleDynamicClient(k8sruntime.NewScheme(), existing)
+	client := (&Client{Dynamic: dynamic}).WithInstallation("bank-donkey-system")
+	desired := &corev1.ConfigMap{
+		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "ConfigMap"},
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "team--site", Namespace: "workloads",
+			Labels: manifests.Labels("team", "site", manifests.ComponentRoute),
+		},
+	}
+	if err := client.Apply(ctx, []k8sruntime.Object{desired}); err == nil {
+		t.Fatal("force-apply adopted a same-named object owned by another installation")
+	}
+	for _, action := range dynamic.Actions() {
+		if action.GetVerb() == "patch" {
+			t.Fatalf("foreign object reached the apply mutation: %v", action)
+		}
+	}
+}
+
+func TestDeleteObjectPreconditionsOnValidatedUID(t *testing.T) {
+	ctx := context.Background()
+	identity := manifests.Labels("team", "site", manifests.ComponentRoute)
+	identity[manifests.LabelInstallation] = "bank-donkey-system"
+	existing := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "v1", "kind": "ConfigMap",
+		"metadata": map[string]any{
+			"name": "team--site", "namespace": "workloads",
+			"uid": "validated-object", "labels": mapStringAny(identity),
+		},
+	}}
+	dynamic := dynamicfake.NewSimpleDynamicClient(k8sruntime.NewScheme(), existing)
+	client := (&Client{Dynamic: dynamic}).WithInstallation("bank-donkey-system")
+	if err := client.DeleteObject(ctx, "ConfigMap", "workloads", "team--site",
+		manifests.Labels("team", "site", manifests.ComponentRoute)); err != nil {
+		t.Fatal(err)
+	}
+	for _, action := range dynamic.Actions() {
+		deleted, ok := action.(k8stesting.DeleteAction)
+		if !ok {
+			continue
+		}
+		preconditions := deleted.GetDeleteOptions().Preconditions
+		if preconditions == nil || preconditions.UID == nil || *preconditions.UID != "validated-object" {
+			t.Fatalf("delete preconditions = %+v", preconditions)
+		}
+		return
+	}
+	t.Fatal("no delete action recorded")
+}
+
+func mapStringAny(values map[string]string) map[string]any {
+	out := make(map[string]any, len(values))
+	for key, value := range values {
+		out[key] = value
+	}
+	return out
+}
+
+func TestObjectIdentitySeparatesManagerFromDescriptiveLabels(t *testing.T) {
+	expected := manifests.Labels("team", "site", manifests.ComponentWeb)
+	expected[manifests.LabelInstallation] = "donkey-system"
+	actual := maps.Clone(expected)
+	actual["app.kubernetes.io/version"] = "v2"
+	if !sameObjectIdentity(actual, expected) {
+		t.Fatal("a version change altered immutable identity")
+	}
+	actual[manifests.LabelManagedBy] = "gitops"
+	if sameObjectIdentity(actual, expected) {
+		t.Fatal("an object managed by another tool preserved donkey's immutable identity")
+	}
+	actual[manifests.LabelManagedBy] = manifests.ManagedByValue
+	actual[manifests.LabelSpace] = "other"
+	if sameObjectIdentity(actual, expected) {
+		t.Fatal("a logical space change preserved immutable identity")
+	}
+}
 
 func TestStampInstallationCoversWorkloadTemplatesAndSelectors(t *testing.T) {
 	client := &Client{Installation: "donkey-test"}
@@ -79,6 +175,9 @@ func TestStampInstallationCoversWorkloadTemplatesAndSelectors(t *testing.T) {
 			if got := object.GetLabels()[manifests.LabelInstallation]; got != client.Installation {
 				t.Errorf("object installation = %q", got)
 			}
+			if got := object.GetLabels()[manifests.LabelManagedBy]; got != manifests.ManagedByValue {
+				t.Errorf("object managed-by = %q", got)
+			}
 			for _, path := range test.paths {
 				values, found, err := unstructured.NestedStringMap(object.Object, path...)
 				if err != nil || !found {
@@ -126,11 +225,46 @@ func TestDestructiveSelectorsAlwaysIncludeInstallationAndLogicalScope(t *testing
 	if err := client.DeleteSpaceObjects(ctx, "workloads", "team"); err != nil {
 		t.Fatal(err)
 	}
-	assertDeleteActions(t, dynamic.Actions(), []string{
+	base := map[string]string{
+		manifests.LabelInstallation: "bank-donkey-system",
+		manifests.LabelSpace:        "team",
+	}
+	baseSelector := labels.Set(base).String()
+	routeSelector, err := labels.Parse(baseSelector + "," + manifests.LabelComponent + "!=" + manifests.ComponentSpace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker := maps.Clone(base)
+	marker[manifests.LabelComponent] = manifests.ComponentSpace
+	assertDeleteActionsWithSelectors(t, dynamic.Actions(), []string{
 		"configmaps", "services", "deployments", "pods", "secrets", "persistentvolumeclaims",
+		"networkpolicies", "configmaps",
+	}, []string{
+		routeSelector.String(), baseSelector, baseSelector, baseSelector,
+		baseSelector, baseSelector, baseSelector, labels.Set(marker).String(),
+	})
+
+	dynamic.ClearActions()
+	if err := client.DeleteSpaceIsolation(ctx, "workloads", "team"); err != nil {
+		t.Fatal(err)
+	}
+	assertDeleteActions(t, dynamic.Actions(), []string{"networkpolicies"}, map[string]string{
+		manifests.LabelInstallation: "bank-donkey-system",
+		manifests.LabelSpace:        "team",
+		manifests.LabelComponent:    manifests.ComponentSpace,
+	})
+
+	dynamic.ClearActions()
+	if err := client.DeleteAppEdges(ctx, "bank-donkey-system", "team", "site"); err != nil {
+		t.Fatal(err)
+	}
+	assertDeleteActions(t, dynamic.Actions(), []string{
+		"httproutes", "gateways", "certificates", "secrets",
 	}, map[string]string{
 		manifests.LabelInstallation: "bank-donkey-system",
 		manifests.LabelSpace:        "team",
+		manifests.LabelApp:          "site",
+		manifests.LabelComponent:    manifests.ComponentEdge,
 	})
 
 	dynamic.ClearActions()
@@ -148,8 +282,18 @@ func TestDestructiveSelectorsAlwaysIncludeInstallationAndLogicalScope(t *testing
 
 func assertDeleteActions(t *testing.T, actions []k8stesting.Action, wantResources []string, wantLabels map[string]string) {
 	t.Helper()
-	var gotResources []string
 	wantSelector := labels.Set(wantLabels).String()
+	wantSelectors := make([]string, len(wantResources))
+	for i := range wantSelectors {
+		wantSelectors[i] = wantSelector
+	}
+	assertDeleteActionsWithSelectors(t, actions, wantResources, wantSelectors)
+}
+
+func assertDeleteActionsWithSelectors(t *testing.T, actions []k8stesting.Action, wantResources, wantSelectors []string) {
+	t.Helper()
+	var gotResources []string
+	var i int
 	for _, action := range actions {
 		if action.GetVerb() != "delete-collection" {
 			continue
@@ -159,9 +303,13 @@ func assertDeleteActions(t *testing.T, actions []k8stesting.Action, wantResource
 			t.Fatalf("%T is not a DeleteCollectionAction", action)
 		}
 		gotResources = append(gotResources, action.GetResource().Resource)
-		if got := deletion.GetListRestrictions().Labels.String(); got != wantSelector {
-			t.Errorf("%s selector = %q, want %q", action.GetResource().Resource, got, wantSelector)
+		if i >= len(wantSelectors) {
+			t.Fatalf("unexpected extra delete action: %v", action)
 		}
+		if got := deletion.GetListRestrictions().Labels.String(); got != wantSelectors[i] {
+			t.Errorf("%s selector = %q, want %q", action.GetResource().Resource, got, wantSelectors[i])
+		}
+		i++
 	}
 	if !reflect.DeepEqual(gotResources, wantResources) {
 		t.Fatalf("delete order = %v, want %v (%s)", gotResources, wantResources, fmt.Sprint(actions))

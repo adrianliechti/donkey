@@ -159,6 +159,8 @@ func main() {
 			AddonImagePullSecrets: cfg.AddonImagePullSecrets,
 			AppGateway:            cfg.AppGateway,
 			TelemetryKey:          cfg.TelemetryKey,
+			IsolateSpaces:         cfg.IsolateSpaces,
+			RestrictEgress:        cfg.RestrictEgress,
 		})
 	}
 	srv, err := server.New(cfg, rt)

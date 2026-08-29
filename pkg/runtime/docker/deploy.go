@@ -13,12 +13,10 @@ import (
 	"strings"
 	"time"
 
-	cerrdefs "github.com/containerd/errdefs"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/api/types/network"
-	"github.com/docker/docker/api/types/volume"
 
 	"github.com/adrianliechti/donkey/internal/config"
 	"github.com/adrianliechti/donkey/internal/telemetry"
@@ -565,15 +563,13 @@ func (r *Runtime) Render(spec rt.DeploySpec) (string, error) {
 }
 
 func (r *Runtime) Destroy(ctx context.Context, space, app string, keepData bool) error {
-	for _, name := range []string{
-		ctrName(space, app),
-		filesHelperName(space, app),
+	for _, helper := range []struct{ name, component string }{
+		{ctrName(space, app), componentWeb},
+		{filesHelperName(space, app), componentFiles},
+		{volName(space, app) + ".init", componentInit},
 	} {
-		component := componentWeb
-		if name == filesHelperName(space, app) {
-			component = componentFiles
-		}
-		if err := r.removeOwnedContainer(ctx, name, appLabels(space, app, component)); err != nil {
+		if err := r.removeOwnedContainer(ctx, helper.name,
+			appLabels(space, app, helper.component)); err != nil {
 			return err
 		}
 	}

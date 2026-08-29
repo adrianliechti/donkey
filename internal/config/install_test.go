@@ -353,6 +353,16 @@ func TestInstallKubernetesDefaults(t *testing.T) {
 	if k.SystemNamespace() != "bank-donkey-system" {
 		t.Error("a configured system namespace should win")
 	}
+
+	// Space isolation is on unless an installation says otherwise — an
+	// unset pointer must not read as "off".
+	if !k.SpacesIsolated() {
+		t.Error("space isolation should default to on")
+	}
+	k.IsolateSpaces = new(false)
+	if k.SpacesIsolated() {
+		t.Error("an explicit isolateSpaces: false was ignored")
+	}
 }
 
 func TestInstallKubernetesRejectsUnworkableCombinations(t *testing.T) {
@@ -378,6 +388,17 @@ func TestInstallKubernetesRejectsUnworkableCombinations(t *testing.T) {
 	bad.Workload.Namespace = "Donkey_Apps"
 	if err := bad.Validate(); err == nil {
 		t.Error("a name the cluster would reject must be caught before the install runs")
+	}
+
+	// Egress rules ride the isolation policy, so restricting egress without
+	// isolation has nowhere to live.
+	egress := InstallKubernetes{IsolateSpaces: new(false), RestrictEgress: true}
+	if err := egress.Validate(); err == nil {
+		t.Error("restrictEgress without isolateSpaces must be refused")
+	}
+	egress.IsolateSpaces = nil // default-on
+	if err := egress.Validate(); err != nil {
+		t.Errorf("restrictEgress with isolation on (the default) is valid: %v", err)
 	}
 }
 

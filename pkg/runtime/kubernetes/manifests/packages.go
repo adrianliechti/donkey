@@ -138,6 +138,6 @@ func packagesDeployment(in SystemInput) *appsv1.Deployment {
 
 func packagesNetworkPolicy(in SystemInput) *networkPolicy {
 	return ingressPolicy(in, packagesName, packagesPort, []networkingv1.NetworkPolicyPeer{
-		systemPeer(in, buildkitName),
+		systemPeer(in.Namespace, buildkitName),
 	})
 }

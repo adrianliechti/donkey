@@ -43,6 +43,13 @@ type Input struct {
 	// namespace donkey doesn't own: there is no namespace to render, and the
 	// space is recorded by a marker object instead.
 	SharedNamespace bool
+	// IsolateSpace renders the space's network fence next to its home — see
+	// SpaceIsolationPolicy. RestrictEgress adds the egress half. SystemNamespace
+	// is the control plane's namespace (the installation identity), which names
+	// the fence's admitted peers.
+	IsolateSpace    bool
+	RestrictEgress  bool
+	SystemNamespace string
 	// ObjectName is what this app's objects are called. It is App.Name unless
 	// the installation shares one namespace, where every name carries its
 	// space. Empty means the two are the same.
@@ -104,6 +111,9 @@ func DataClaimName(app string) string { return app + "-data" }
 func AppObjects(in Input) ([]runtime.Object, error) {
 	app := in.App
 	objs := []runtime.Object{SpaceHome(in.Space, in.Namespace, in.SharedNamespace)}
+	if in.IsolateSpace {
+		objs = append(objs, SpaceIsolationPolicy(in.Space, in.Namespace, in.SystemNamespace, in.RestrictEgress))
+	}
 
 	if in.RegistryUsername != "" && in.RegistryPassword != "" {
 		objs = append(objs, pullSecret(in))

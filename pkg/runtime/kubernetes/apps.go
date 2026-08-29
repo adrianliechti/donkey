@@ -22,9 +22,10 @@ func (c *Client) DeleteAppResources(ctx context.Context, namespace, space, app s
 
 // HasDataClaim reports whether the app's data volume exists — used to tell
 // the user about a disk left over from an earlier configuration.
-func (c *Client) HasDataClaim(ctx context.Context, namespace, app string) bool {
-	_, err := c.Clientset.CoreV1().PersistentVolumeClaims(namespace).Get(ctx, manifests.DataClaimName(app), metav1.GetOptions{})
-	return err == nil
+func (c *Client) HasDataClaim(ctx context.Context, namespace, objectName, space, app string) bool {
+	pvc, err := c.Clientset.CoreV1().PersistentVolumeClaims(namespace).Get(ctx, manifests.DataClaimName(objectName), metav1.GetOptions{})
+	return err == nil && c.requireOwnedObject("PersistentVolumeClaim", namespace, pvc.Name, pvc.Labels,
+		manifests.Labels(space, app, manifests.ComponentStorage)) == nil
 }
 
 // SwitchToRecreate clears a Deployment's rolling-update settings so its
@@ -34,13 +35,21 @@ func (c *Client) HasDataClaim(ctx context.Context, namespace, app string) bool {
 // replacement starts, since a disk attaches to one machine at a time) would
 // otherwise be stuck on its old strategy. A missing Deployment is fine: the
 // first deploy renders Recreate directly.
-func (c *Client) SwitchToRecreate(ctx context.Context, namespace, name string) error {
-	patch := []byte(`{"spec":{"strategy":{"type":"Recreate","rollingUpdate":null}}}`)
-	_, err := c.Clientset.AppsV1().Deployments(namespace).Patch(ctx, name,
-		types.StrategicMergePatchType, patch, metav1.PatchOptions{})
+func (c *Client) SwitchToRecreate(ctx context.Context, namespace, name, space, app string) error {
+	dep, err := c.Clientset.AppsV1().Deployments(namespace).Get(ctx, name, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
 		return nil
 	}
+	if err != nil {
+		return err
+	}
+	if err := c.requireOwnedObject("Deployment", namespace, name, dep.Labels,
+		manifests.Labels(space, app, manifests.ComponentWeb)); err != nil {
+		return err
+	}
+	patch := []byte(`{"spec":{"strategy":{"type":"Recreate","rollingUpdate":null}}}`)
+	_, err = c.Clientset.AppsV1().Deployments(namespace).Patch(ctx, name,
+		types.StrategicMergePatchType, patch, metav1.PatchOptions{})
 	return err
 }
 
@@ -58,20 +67,21 @@ func (c *Client) ListApps(ctx context.Context) ([]AppRef, error) {
 	var out []AppRef
 	for _, ns := range c.sweep() {
 		deps, err := c.Clientset.AppsV1().Deployments(ns).List(ctx, metav1.ListOptions{
-			LabelSelector: fmt.Sprintf("%s=%s,app.kubernetes.io/managed-by=%s,%s=%s,%s",
-				manifests.LabelInstallation, c.installation(), manifests.ManagedByValue,
-				manifests.LabelComponent, manifests.ComponentWeb, manifests.LabelApp),
+			LabelSelector: fmt.Sprintf("%s=%s,%s=%s,%s=%s,%s",
+				manifests.LabelInstallation, c.installation(), manifests.LabelManagedBy,
+				manifests.ManagedByValue, manifests.LabelComponent, manifests.ComponentWeb, manifests.LabelApp),
 		})
 		if err != nil {
 			return nil, err
 		}
 		for _, d := range deps.Items {
-			name := d.Labels[manifests.LabelApp]
-			if name == "" || !c.ours(d.Labels) {
+			space, name := d.Labels[manifests.LabelSpace], d.Labels[manifests.LabelApp]
+			if space == "" || name == "" || c.requireOwnedObject("Deployment", d.Namespace, d.Name, d.Labels,
+				manifests.Labels(space, name, manifests.ComponentWeb)) != nil {
 				continue
 			}
 			out = append(out, AppRef{
-				Space:     d.Labels[manifests.LabelSpace],
+				Space:     space,
 				App:       name,
 				Namespace: d.Namespace,
 			})

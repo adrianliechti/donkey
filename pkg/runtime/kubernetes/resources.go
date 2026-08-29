@@ -26,7 +26,8 @@ type measuredPod struct {
 	app         string
 	namespace   string
 	name        string
-	uid         string
+	instanceID  string
+	podUID      string
 	containerID string
 }
 
@@ -39,9 +40,9 @@ func (r *Runtime) ResourceSamples(ctx context.Context) ([]rt.ResourceSample, err
 	var failures []error
 	for _, namespace := range r.c.sweep() {
 		pods, err := r.c.Clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
-			LabelSelector: fmt.Sprintf("%s=%s,app.kubernetes.io/managed-by=%s,%s=%s,%s",
-				manifests.LabelInstallation, r.c.installation(), manifests.ManagedByValue,
-				manifests.LabelComponent, manifests.ComponentWeb, manifests.LabelApp),
+			LabelSelector: fmt.Sprintf("%s=%s,%s=%s,%s=%s,%s",
+				manifests.LabelInstallation, r.c.installation(), manifests.LabelManagedBy,
+				manifests.ManagedByValue, manifests.LabelComponent, manifests.ComponentWeb, manifests.LabelApp),
 		})
 		if err != nil {
 			failures = append(failures, err)
@@ -65,6 +66,10 @@ func (r *Runtime) ResourceSamples(ctx context.Context) ([]rt.ResourceSample, err
 			}
 			space := pod.Labels[manifests.LabelSpace]
 			app := pod.Labels[manifests.LabelApp]
+			if space == "" || app == "" || r.c.requireOwnedObject("Pod", pod.Namespace, pod.Name, pod.Labels,
+				manifests.Labels(space, app, manifests.ComponentWeb)) != nil {
+				continue
+			}
 			containerID := ""
 			for _, status := range pod.Status.ContainerStatuses {
 				if status.Name == manifests.WebContainerName {
@@ -75,12 +80,14 @@ func (r *Runtime) ResourceSamples(ctx context.Context) ([]rt.ResourceSample, err
 					break
 				}
 			}
-			uid := string(pod.UID)
-			if uid == "" {
-				uid = pod.Namespace + "/" + pod.Name
+			podUID := string(pod.UID)
+			instanceID := podUID
+			if instanceID == "" {
+				instanceID = pod.Namespace + "/" + pod.Name
 			}
 			measured[pod.Namespace+"/"+pod.Name] = measuredPod{
-				space: space, app: app, namespace: pod.Namespace, name: pod.Name, uid: uid,
+				space: space, app: app, namespace: pod.Namespace, name: pod.Name,
+				instanceID: instanceID, podUID: podUID,
 				containerID: containerID,
 			}
 		}
@@ -112,8 +119,8 @@ func (r *Runtime) ResourceSamples(ctx context.Context) ([]rt.ResourceSample, err
 			}
 			samples = append(samples, rt.ResourceSample{
 				Space: pod.space, App: pod.app, SampledAt: at,
-				Instance: pod.uid, ContainerID: pod.containerID, ContainerName: manifests.WebContainerName,
-				KubeNamespace: pod.namespace, KubePodName: pod.name, KubePodUID: pod.uid,
+				Instance: pod.instanceID, ContainerID: pod.containerID, ContainerName: manifests.WebContainerName,
+				KubeNamespace: pod.namespace, KubePodName: pod.name, KubePodUID: pod.podUID,
 				CPUCores: cpu, MemoryBytes: memory,
 			})
 		}

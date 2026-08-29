@@ -116,6 +116,32 @@ func TestResourceExporterDoesNotDropValidPodsBesideInvalidSample(t *testing.T) {
 	}
 }
 
+func TestResourceExporterSurfacesOTLPPartialSuccess(t *testing.T) {
+	exporter := NewResourceExporter("http://telemetry.test", make([]byte, 32))
+	exporter.http = &http.Client{Transport: resourceRoundTripFunc(func(*http.Request) (*http.Response, error) {
+		body, err := proto.Marshal(&collectormetricspb.ExportMetricsServiceResponse{
+			PartialSuccess: &collectormetricspb.ExportMetricsPartialSuccess{
+				RejectedDataPoints: 2,
+				ErrorMessage:       "invalid timestamps",
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK, Status: "200 OK",
+			Body: io.NopCloser(strings.NewReader(string(body))), Header: make(http.Header),
+		}, nil
+	})}
+
+	err := exporter.Export(context.Background(), []ResourceObservation{{
+		Space: "team", App: "site", Instance: "pod-uid", CPUCores: 0.25, MemoryBytes: 64,
+	}})
+	if err == nil || !strings.Contains(err.Error(), "rejected 2 data points: invalid timestamps") {
+		t.Fatalf("partial OTLP success was hidden: %v", err)
+	}
+}
+
 func TestStoreAggregatesContainerResourcesPerApp(t *testing.T) {
 	store, err := OpenStore(":memory:", 30)
 	if err != nil {

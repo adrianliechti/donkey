@@ -95,7 +95,7 @@ func renderDockerBundle(settings *config.InstallFile) (map[string]bundleFile, er
 		return nil, err
 	}
 	files["secrets.env.example"] = bundleFile{Data: []byte(composeSecretsExample), Mode: 0o600}
-	files["up.sh"] = bundleFile{Data: []byte(renderComposeUpScript(renderSettings, features)), Mode: 0o755}
+	files["up.sh"] = bundleFile{Data: []byte(renderComposeUpScript(renderSettings, features, bundledRegistry)), Mode: 0o755}
 	files["README.md"] = bundleFile{Data: []byte(renderComposeReadme(renderSettings, bundledRegistry))}
 	return files, nil
 }
@@ -423,7 +423,7 @@ HTTPS_PROXY=
 # DONKEY_PACKAGES_IP=172.31.250.10
 `
 
-func renderComposeUpScript(settings *config.InstallFile, features composeSecretFeatures) string {
+func renderComposeUpScript(settings *config.InstallFile, features composeSecretFeatures, bundledRegistry bool) string {
 	clientID := settings.Auth.ClientID
 	if clientID == "" {
 		clientID = pendingOIDC
@@ -439,6 +439,37 @@ if [ -f "$bundle_dir/secrets.env" ]; then
   set +a
 fi
 
+require_owned() {
+  kind=$1
+  name=$2
+  component=$3
+  case "$kind" in
+    container)
+      actual=$(docker container inspect "$name" --format '{{with .Config.Labels}}{{index . "dev.donkey.managed"}}|{{index . "dev.donkey.installation"}}|{{index . "dev.donkey.space"}}|{{index . "dev.donkey.app"}}|{{index . "dev.donkey.addon"}}|{{index . "dev.donkey.component"}}{{end}}' 2>/dev/null) || return 0
+      ;;
+    network)
+      actual=$(docker network inspect "$name" --format '{{with .Labels}}{{index . "dev.donkey.managed"}}|{{index . "dev.donkey.installation"}}|{{index . "dev.donkey.space"}}|{{index . "dev.donkey.app"}}|{{index . "dev.donkey.addon"}}|{{index . "dev.donkey.component"}}{{end}}' 2>/dev/null) || return 0
+      ;;
+    volume)
+      actual=$(docker volume inspect "$name" --format '{{with .Labels}}{{index . "dev.donkey.managed"}}|{{index . "dev.donkey.installation"}}|{{index . "dev.donkey.space"}}|{{index . "dev.donkey.app"}}|{{index . "dev.donkey.addon"}}|{{index . "dev.donkey.component"}}{{end}}' 2>/dev/null) || return 0
+      ;;
+  esac
+  expected="true|donkey||||$component"
+  [ "$actual" = "$expected" ] || {
+    echo "the Docker $kind $name exists but is not this donkey installation's $component resource" >&2
+    exit 1
+  }
+}
+
+`)
+	b.WriteString("require_owned network donkey network\n")
+	for _, item := range dockerInstallVolumes(bundledRegistry) {
+		fmt.Fprintf(&b, "require_owned volume %s %s\n", item.name, item.component)
+	}
+	for _, item := range dockerInstallContainers(bundledRegistry) {
+		fmt.Fprintf(&b, "require_owned container %s %s\n", item.name, item.component)
+	}
+	b.WriteString(`
 existing() {
   docker inspect "$1" --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null \
     | sed -n "s/^$2=//p" | head -n 1 || true
@@ -511,7 +542,9 @@ apps to them. App images use %s.
 
 1. Copy secrets.env.example to secrets.env and fill the required values. Keep
    it out of source control. up.sh preserves values from existing containers
-   and creates session and telemetry keys only when no prior value exists.
+   and creates session and telemetry keys only when no prior value exists. It
+   first refuses any same-named container, network or volume that does not
+   carry Donkey's exact control-plane ownership labels.
 2. Review compose.yaml and buildkitd.toml.
 3. Run ./up.sh.
 

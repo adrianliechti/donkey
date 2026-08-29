@@ -87,6 +87,9 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 	if _, err := cli.Ping(ctx); err != nil {
 		return fmt.Errorf("the Docker engine didn't answer — is Docker running? (%w)", err)
 	}
+	if err := checkDockerInstallOwnership(ctx, cli, bundledRegistry); err != nil {
+		return err
+	}
 
 	// Keep the session key on re-installs — rotating it signs everyone out.
 	sessionKey := existingContainerEnv(ctx, cli, dockerServerName, "DONKEY_SESSION_KEY")
@@ -150,18 +153,14 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 	if err := ensureDockerNetwork(ctx, cli); err != nil {
 		return err
 	}
-	volumes := []struct{ name, component string }{
-		{dockerDataVolume, "state-storage"},
-		{dockerBuildkitVolume, "buildkit-storage"},
-		{dockerTelemetryVolume, "telemetry-storage"},
-	}
-	if bundledRegistry {
-		volumes = append(volumes, struct{ name, component string }{dockerRegistryVolume, "registry-storage"})
-	}
-	for _, item := range volumes {
-		if _, err := cli.VolumeCreate(ctx, volume.CreateOptions{
+	for _, item := range dockerInstallVolumes(bundledRegistry) {
+		vol, err := cli.VolumeCreate(ctx, volume.CreateOptions{
 			Name: item.name, Labels: docker.SystemLabels(item.component),
-		}); err != nil {
+		})
+		if err != nil {
+			return err
+		}
+		if err := requireDockerSystemResource("volume", item.name, vol.Labels, item.component); err != nil {
 			return err
 		}
 	}
@@ -571,14 +570,100 @@ func adminsJSONString(admins *config.AccessConfig) string {
 	return string(b)
 }
 
-func ensureDockerNetwork(ctx context.Context, cli *dockerclient.Client) error {
-	_, err := cli.NetworkInspect(ctx, dockerNetwork, network.InspectOptions{})
-	if cerrdefs.IsNotFound(err) {
-		_, err = cli.NetworkCreate(ctx, dockerNetwork, network.CreateOptions{
-			Labels: docker.SystemLabels("network"),
-		})
+type dockerOwnedResource struct {
+	name      string
+	component string
+}
+
+func dockerInstallVolumes(bundledRegistry bool) []dockerOwnedResource {
+	resources := []dockerOwnedResource{
+		{name: dockerDataVolume, component: "state-storage"},
+		{name: dockerBuildkitVolume, component: "buildkit-storage"},
+		{name: dockerTelemetryVolume, component: "telemetry-storage"},
 	}
-	return err
+	if bundledRegistry {
+		resources = append(resources, dockerOwnedResource{name: dockerRegistryVolume, component: "registry-storage"})
+	}
+	return resources
+}
+
+func dockerInstallContainers(bundledRegistry bool) []dockerOwnedResource {
+	resources := []dockerOwnedResource{
+		{name: dockerPackagesName, component: "packages"},
+		{name: dockerBuildkitName, component: "buildkitd"},
+		{name: dockerTelemetryName, component: "telemetry"},
+		{name: dockerServerName, component: "server"},
+		{name: dockerGatewayName, component: "gateway"},
+		{name: dockerAIName, component: "ai"},
+	}
+	if bundledRegistry {
+		resources = append(resources, dockerOwnedResource{name: dockerRegistryName, component: "registry"})
+	}
+	return resources
+}
+
+func requireDockerSystemResource(kind, name string, labels map[string]string, component string) error {
+	if docker.MatchesSystemLabels(labels, component) {
+		return nil
+	}
+	return fmt.Errorf("the Docker %s %s exists but isn't this donkey installation's %s resource — remove or rename it before installing", kind, name, component)
+}
+
+// checkDockerInstallOwnership fails before reading secrets or replacing any
+// container. A direct install owns deterministic names, so an existing object
+// must carry the complete immutable system identity introduced by this schema.
+func checkDockerInstallOwnership(ctx context.Context, cli *dockerclient.Client, bundledRegistry bool) error {
+	if nw, err := cli.NetworkInspect(ctx, dockerNetwork, network.InspectOptions{}); err == nil {
+		if err := requireDockerSystemResource("network", dockerNetwork, nw.Labels, "network"); err != nil {
+			return err
+		}
+	} else if !cerrdefs.IsNotFound(err) {
+		return err
+	}
+	for _, item := range dockerInstallVolumes(bundledRegistry) {
+		vol, err := cli.VolumeInspect(ctx, item.name)
+		if cerrdefs.IsNotFound(err) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if err := requireDockerSystemResource("volume", item.name, vol.Labels, item.component); err != nil {
+			return err
+		}
+	}
+	for _, item := range dockerInstallContainers(bundledRegistry) {
+		info, err := cli.ContainerInspect(ctx, item.name)
+		if cerrdefs.IsNotFound(err) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if info.Config == nil {
+			return fmt.Errorf("the Docker container %s has no inspectable configuration", item.name)
+		}
+		if err := requireDockerSystemResource("container", item.name, info.Config.Labels, item.component); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func ensureDockerNetwork(ctx context.Context, cli *dockerclient.Client) error {
+	nw, err := cli.NetworkInspect(ctx, dockerNetwork, network.InspectOptions{})
+	if cerrdefs.IsNotFound(err) {
+		if _, err = cli.NetworkCreate(ctx, dockerNetwork, network.CreateOptions{
+			Labels: docker.SystemLabels("network"),
+		}); err != nil {
+			return err
+		}
+		nw, err = cli.NetworkInspect(ctx, dockerNetwork, network.InspectOptions{})
+	}
+	if err != nil {
+		return err
+	}
+	return requireDockerSystemResource("network", dockerNetwork, nw.Labels, "network")
 }
 
 type infraContainer struct {
@@ -598,6 +683,19 @@ type infraContainer struct {
 // replaceInfraContainer recreates one of donkey's own containers — the
 // Docker spelling of an idempotent install: same name, fresh config.
 func replaceInfraContainer(ctx context.Context, cli *dockerclient.Client, spec infraContainer) error {
+	component := strings.TrimPrefix(spec.Name, "donkey-")
+	info, err := cli.ContainerInspect(ctx, spec.Name)
+	switch {
+	case err == nil:
+		if info.Config == nil {
+			return fmt.Errorf("the Docker container %s has no inspectable configuration", spec.Name)
+		}
+		if err := requireDockerSystemResource("container", spec.Name, info.Config.Labels, component); err != nil {
+			return err
+		}
+	case !cerrdefs.IsNotFound(err):
+		return err
+	}
 	if err := pullInfraImage(ctx, cli, spec.Image, spec.RegistryAuth, spec.PullAlways); err != nil {
 		return err
 	}
@@ -626,7 +724,7 @@ func replaceInfraContainer(ctx context.Context, cli *dockerclient.Client, spec i
 		Env:          env,
 		ExposedPorts: exposed,
 		Healthcheck:  spec.Healthcheck,
-		Labels:       docker.SystemLabels(strings.TrimPrefix(spec.Name, "donkey-")),
+		Labels:       docker.SystemLabels(component),
 	}
 	hostCfg := &container.HostConfig{
 		Mounts:        spec.Mounts,
@@ -712,6 +810,9 @@ func copyFileIntoContainer(ctx context.Context, cli *dockerclient.Client, name, 
 func existingContainerEnv(ctx context.Context, cli *dockerclient.Client, name, key string) string {
 	info, err := cli.ContainerInspect(ctx, name)
 	if err != nil || info.Config == nil {
+		return ""
+	}
+	if !docker.MatchesSystemLabels(info.Config.Labels, strings.TrimPrefix(name, "donkey-")) {
 		return ""
 	}
 	for _, kv := range info.Config.Env {

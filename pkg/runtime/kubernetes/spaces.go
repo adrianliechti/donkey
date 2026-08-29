@@ -6,6 +6,7 @@ import (
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 
 	"github.com/adrianliechti/donkey/pkg/runtime/kubernetes/manifests"
 )
@@ -26,7 +27,11 @@ func (c *Client) DeleteSpace(ctx context.Context, namespace, space string) error
 		ns.Labels[manifests.LabelComponent] != manifests.ComponentSpace {
 		return fmt.Errorf("that namespace isn't this installation's to delete")
 	}
-	err = c.Clientset.CoreV1().Namespaces().Delete(ctx, namespace, metav1.DeleteOptions{})
+	deleteOptions := metav1.DeleteOptions{}
+	if uid := ns.UID; uid != "" {
+		deleteOptions.Preconditions = &metav1.Preconditions{UID: &uid}
+	}
+	err = c.Clientset.CoreV1().Namespaces().Delete(ctx, namespace, deleteOptions)
 	if apierrors.IsNotFound(err) {
 		return nil
 	}
@@ -37,8 +42,36 @@ func (c *Client) DeleteSpace(ctx context.Context, namespace, space string) error
 // installation + space selector keeps every other tenant and installation
 // outside the deletion boundary.
 func (c *Client) DeleteSpaceObjects(ctx context.Context, namespace, space string) error {
-	return c.deleteKindsBySelector(ctx, namespace, spaceKinds,
-		map[string]string{manifests.LabelSpace: space}, false)
+	owned := map[string]string{
+		manifests.LabelInstallation: c.installation(),
+		manifests.LabelSpace:        space,
+	}
+	// Stop routing first, but preserve the space marker. The `!=` selector
+	// also matches externally managed route records with no component label.
+	// Keeping the marker until every later deletion succeeds makes a partial
+	// cascade visible and retryable after a UI refresh.
+	routes := labels.Set(owned).String() + "," + manifests.LabelComponent + "!=" + manifests.ComponentSpace
+	if err := c.deleteKindBySelector(ctx, namespace, "ConfigMap", routes); err != nil {
+		return err
+	}
+	if err := c.deleteKindsBySelector(ctx, namespace, spaceKinds,
+		map[string]string{manifests.LabelSpace: space}, false); err != nil {
+		return err
+	}
+	return c.deleteKindsBySelector(ctx, namespace, []string{"ConfigMap"}, map[string]string{
+		manifests.LabelSpace:     space,
+		manifests.LabelComponent: manifests.ComponentSpace,
+	}, false)
+}
+
+// DeleteSpaceIsolation retracts only the space's network fence when an
+// installation turns isolation off. The deterministic policy name is not
+// deletion authority; installation + logical space + component are.
+func (c *Client) DeleteSpaceIsolation(ctx context.Context, namespace, space string) error {
+	return c.deleteKindsBySelector(ctx, namespace, []string{"NetworkPolicy"}, map[string]string{
+		manifests.LabelSpace:     space,
+		manifests.LabelComponent: manifests.ComponentSpace,
+	}, false)
 }
 
 // DeleteSpaceEdges retracts cross-namespace Gateway API and cert-manager
@@ -49,6 +82,20 @@ func (c *Client) DeleteSpaceEdges(ctx context.Context, namespace, space string) 
 		[]string{"HTTPRoute", "Gateway", "Certificate", "Secret"},
 		map[string]string{
 			manifests.LabelSpace:     space,
+			manifests.LabelComponent: manifests.ComponentEdge,
+		}, false)
+}
+
+// DeleteAppEdges retracts one app's cross-namespace edge. Labels, rather than
+// deterministic names, are the deletion authority: a collision with an
+// object written by somebody else must be reported by apply, never erased by
+// cleanup.
+func (c *Client) DeleteAppEdges(ctx context.Context, namespace, space, app string) error {
+	return c.deleteKindsBySelector(ctx, namespace,
+		[]string{"HTTPRoute", "Gateway", "Certificate", "Secret"},
+		map[string]string{
+			manifests.LabelSpace:     space,
+			manifests.LabelApp:       app,
 			manifests.LabelComponent: manifests.ComponentEdge,
 		}, false)
 }
@@ -69,10 +116,12 @@ func (c *Client) ListSpaces(ctx context.Context) ([]AppRef, error) {
 		if ns.Name == c.installation() || ns.DeletionTimestamp != nil {
 			continue
 		}
-		if ns.Annotations[manifests.AnnotationManaged] != "true" || !c.ours(ns.Labels) {
+		space := ns.Labels[manifests.LabelSpace]
+		if space == "" || ns.Annotations[manifests.AnnotationManaged] != "true" ||
+			c.requireOwnedObject("Namespace", "", ns.Name, ns.Labels, manifests.SpaceLabels(space)) != nil {
 			continue
 		}
-		out = append(out, AppRef{Space: ns.Labels[manifests.LabelSpace], Namespace: ns.Name})
+		out = append(out, AppRef{Space: space, Namespace: ns.Name})
 	}
 	return out, nil
 }
@@ -92,7 +141,8 @@ func (c *Client) ListSpaceMarkers(ctx context.Context, namespace string) ([]AppR
 	var out []AppRef
 	for _, cm := range cms.Items {
 		space := cm.Labels[manifests.LabelSpace]
-		if space == "" || !c.ours(cm.Labels) {
+		if space == "" || c.requireOwnedObject("ConfigMap", namespace, cm.Name, cm.Labels,
+			manifests.SpaceLabels(space)) != nil {
 			continue
 		}
 		out = append(out, AppRef{Space: space, Namespace: namespace})

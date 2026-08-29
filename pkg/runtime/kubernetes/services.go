@@ -16,7 +16,11 @@ import (
 // --- Services (addons) ----------------------------------------------------
 
 func (r *Runtime) ServiceBinding(ctx context.Context, space, owner, name string) (map[string]string, error) {
-	return r.c.GetSecretData(ctx, r.ns(space), addons.SecretName(r.name(space, owner), name))
+	identity := manifests.AddonLabels(space, name, manifests.ComponentBinding)
+	if owner != addons.SharedOwner {
+		identity[manifests.LabelApp] = owner
+	}
+	return r.c.GetOwnedSecretData(ctx, r.ns(space), addons.SecretName(r.name(space, owner), name), identity)
 }
 
 // EnsureService creates (or re-applies) one service of the space —
@@ -41,10 +45,8 @@ func (r *Runtime) EnsureService(ctx context.Context, space string, spec rt.Servi
 		if err != nil {
 			return nil, "", "", rt.UserError{Err: err}
 		}
-		objs := []k8sruntime.Object{
-			r.opts.Placement.SpaceObject(space),
-			spaceBindingSecret(space, r.sharedOwner(space), ns, spec.Name, binding),
-		}
+		objs := append(r.spaceObjects(space),
+			spaceBindingSecret(space, r.sharedOwner(space), ns, spec.Name, binding))
 		if err := r.c.Apply(ctx, objs); err != nil {
 			return nil, "", "", err
 		}
@@ -52,10 +54,17 @@ func (r *Runtime) EnsureService(ctx context.Context, space string, spec rt.Servi
 		// The service takes its plain name, reachable as e.g. "postgres" the
 		// way siblings reach each other — so it must not seize a name an app
 		// (or a differently-named service) already holds.
-		if component, addonName, exists, err := r.c.DeploymentIdentity(ctx, ns, r.name(space, spec.Name)); err != nil {
+		if identity, exists, err := r.c.DeploymentIdentity(ctx, ns, r.name(space, spec.Name)); err != nil {
 			return nil, "", "", err
-		} else if exists && (component != manifests.ComponentAddon || addonName != spec.Name) {
-			return nil, "", "", rt.UserError{Err: fmt.Errorf("the name %q is taken by an app in this space — pick another for the service", spec.Name)}
+		} else if exists {
+			expected := manifests.AddonLabels(space, spec.Name, manifests.ComponentAddon)
+			if err := r.c.requireOwnedObject("Deployment", ns, r.name(space, spec.Name), identity, expected); err != nil {
+				if r.c.requireOwnedObject("Deployment", ns, r.name(space, spec.Name), identity,
+					manifests.Labels(space, spec.Name, manifests.ComponentWeb)) == nil {
+					return nil, "", "", rt.UserError{Err: fmt.Errorf("the name %q is taken by an app in this space — pick another for the service", spec.Name)}
+				}
+				return nil, "", "", err
+			}
 		}
 		in, err := r.provisionService(ctx, space, ns, spec)
 		if err != nil {
@@ -77,7 +86,7 @@ func (r *Runtime) EnsureService(ctx context.Context, space string, spec rt.Servi
 			return nil, "", "", err
 		}
 		if spec.External {
-			if _, err := r.c.RestartApp(ctx, ns, obj); err != nil {
+			if _, err := r.c.RestartApp(ctx, ns, obj, space, app); err != nil {
 				return nil, "", "", err
 			}
 		}
@@ -105,7 +114,8 @@ func (r *Runtime) provisionService(ctx context.Context, space, ns string, spec r
 	if in.Storage == "" {
 		in.Storage = addon.DefaultStorage()
 	}
-	existing, err := r.c.GetSecretData(ctx, ns, addons.SecretName(in.App, spec.Name))
+	existing, err := r.c.GetOwnedSecretData(ctx, ns, addons.SecretName(in.App, spec.Name),
+		manifests.AddonLabels(space, spec.Name, manifests.ComponentBinding))
 	if err != nil {
 		return in, err
 	}
@@ -116,10 +126,8 @@ func (r *Runtime) provisionService(ctx context.Context, space, ns string, spec r
 	} else if in.Password, err = addons.NewPassword(); err != nil {
 		return in, err
 	}
-	objs := []k8sruntime.Object{
-		r.opts.Placement.SpaceObject(space),
-		spaceBindingSecret(space, in.App, ns, in.Name, addon.Binding(in)),
-	}
+	objs := append(r.spaceObjects(space),
+		spaceBindingSecret(space, in.App, ns, in.Name, addon.Binding(in)))
 	workload, err := addon.Workload(in)
 	if err != nil {
 		return in, err
@@ -179,7 +187,7 @@ func (r *Runtime) AttachService(ctx context.Context, space, app, name string, bi
 	}
 	// An app that is already deployed picks the binding up on the spot; one
 	// that isn't gets it wired by its first deploy.
-	return r.c.SetAddonEnvFrom(ctx, ns, obj, addons.SecretName(obj, name), true)
+	return r.c.SetAddonEnvFrom(ctx, ns, obj, space, app, addons.SecretName(obj, name), true)
 }
 
 func (r *Runtime) DetachService(ctx context.Context, space, app, name string) error {
@@ -187,7 +195,7 @@ func (r *Runtime) DetachService(ctx context.Context, space, app, name string) er
 	obj := r.name(space, app)
 	// Unwire before deleting: a pod template that still references the
 	// binding secret would fail to start once the secret is gone.
-	if _, err := r.c.SetAddonEnvFrom(ctx, ns, obj, addons.SecretName(obj, name), false); err != nil {
+	if _, err := r.c.SetAddonEnvFrom(ctx, ns, obj, space, app, addons.SecretName(obj, name), false); err != nil {
 		return err
 	}
 	return r.c.DetachAddon(ctx, ns, space, app, name)
@@ -202,7 +210,7 @@ func (r *Runtime) RemoveService(ctx context.Context, space, name string, keepDat
 	var apps []string
 	for _, obj := range attached {
 		objectName := r.name(space, obj)
-		if _, err := r.c.SetAddonEnvFrom(ctx, ns, objectName, addons.SecretName(objectName, name), false); err != nil {
+		if _, err := r.c.SetAddonEnvFrom(ctx, ns, objectName, space, obj, addons.SecretName(objectName, name), false); err != nil {
 			return nil, err
 		}
 		if err := r.c.DetachAddon(ctx, ns, space, obj, name); err != nil {
@@ -225,7 +233,7 @@ func (r *Runtime) ServiceAttachments(ctx context.Context, space, name string) ([
 }
 
 func (r *Runtime) ServiceEndpoint(ctx context.Context, space, name string) (string, int32, error) {
-	return r.c.ServiceEndpoint(ctx, r.ns(space), r.name(space, name))
+	return r.c.ServiceEndpoint(ctx, r.ns(space), r.name(space, name), space, name)
 }
 
 func (r *Runtime) ListServices(ctx context.Context, space, owner string) ([]rt.ServiceBindingInfo, error) {

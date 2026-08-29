@@ -264,6 +264,27 @@ func TestRouteFromConfigMap(t *testing.T) {
 		t.Error("routes without a backend annotation are not ours to serve")
 	}
 
+	// Scope is mandatory: without it the route would work while gateway
+	// request and view telemetry disappeared silently.
+	unscoped := cm.DeepCopy()
+	delete(unscoped.Labels, manifests.LabelApp)
+	if _, ok := routeFromConfigMap(*unscoped); ok {
+		t.Error("routes without a valid logical telemetry scope must not be served")
+	}
+	system := unscoped.DeepCopy()
+	delete(system.Labels, manifests.LabelSpace)
+	system.Labels[manifests.LabelManagedBy] = manifests.ManagedByValue
+	system.Labels[manifests.LabelComponent] = manifests.ServerName
+	system.Annotations[manifests.AnnotationToken] = manifests.TokenForward
+	if route, ok := routeFromConfigMap(*system); !ok || !route.Token || route.Space != "" || route.App != "" {
+		t.Errorf("the managed console route must remain system-scoped, got %+v, ok=%v", route, ok)
+	}
+	spoofedToken := cm.DeepCopy()
+	spoofedToken.Annotations[manifests.AnnotationToken] = manifests.TokenForward
+	if route, ok := routeFromConfigMap(*spoofedToken); !ok || route.Token {
+		t.Errorf("a tenant route must not opt into admin-token forwarding, got %+v, ok=%v", route, ok)
+	}
+
 	// A non-http backend must be refused, not proxied.
 	bad := cm.DeepCopy()
 	bad.Annotations["donkey.dev/backend"] = "https://evil.example.com"

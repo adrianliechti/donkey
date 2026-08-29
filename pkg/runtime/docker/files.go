@@ -56,10 +56,21 @@ func (r *Runtime) filesHelper(ctx context.Context, space, app string) (string, e
 	volume, err := r.cli.VolumeInspect(ctx, volName(space, app))
 	if err != nil {
 		// Tell the two "nothing to browse" cases apart.
-		if _, cerr := r.cli.ContainerInspect(ctx, ctrName(space, app)); cerrdefs.IsNotFound(cerr) {
+		appInfo, containerErr := r.cli.ContainerInspect(ctx, ctrName(space, app))
+		if cerrdefs.IsNotFound(containerErr) {
 			return "", rt.ErrNotDeployed
 		}
 		if !cerrdefs.IsNotFound(err) {
+			return "", err
+		}
+		if containerErr != nil {
+			return "", containerErr
+		}
+		if appInfo.Config == nil {
+			return "", fmt.Errorf("the Docker container %s has no inspectable configuration", ctrName(space, app))
+		}
+		if err := requireIdentity("container", ctrName(space, app), appInfo.Config.Labels,
+			appLabels(space, app, componentWeb)); err != nil {
 			return "", err
 		}
 		return "", rt.ErrNoDisk
@@ -84,6 +95,8 @@ func (r *Runtime) filesHelper(ctx context.Context, space, app string) (string, e
 		if err := r.removeOwnedContainer(ctx, name, appLabels(space, app, componentFiles)); err != nil {
 			return "", err
 		}
+	} else if !cerrdefs.IsNotFound(err) {
+		return "", err
 	}
 	if err := r.pullImage(ctx, filesImage); err != nil {
 		return "", err
@@ -101,8 +114,20 @@ func (r *Runtime) filesHelper(ctx context.Context, space, app string) (string, e
 			Type: mount.TypeVolume, Source: volName(space, app), Target: filesMount,
 		}},
 	}, nil, nil, name)
-	if err != nil && !strings.Contains(err.Error(), "already in use") {
-		return "", fmt.Errorf("opening the app's disk: %w", err)
+	if err != nil {
+		if !strings.Contains(err.Error(), "already in use") {
+			return "", fmt.Errorf("opening the app's disk: %w", err)
+		}
+		info, inspectErr := r.cli.ContainerInspect(ctx, name)
+		if inspectErr != nil {
+			return "", inspectErr
+		}
+		if info.Config == nil {
+			return "", fmt.Errorf("the Docker container %s has no inspectable configuration", name)
+		}
+		if err := requireIdentity("container", name, info.Config.Labels, labels); err != nil {
+			return "", err
+		}
 	}
 	if err := r.cli.ContainerStart(ctx, name, container.StartOptions{}); err != nil {
 		return "", err

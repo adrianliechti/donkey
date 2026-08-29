@@ -60,7 +60,56 @@ var appKinds = []string{
 }
 
 var spaceKinds = []string{
-	"ConfigMap", "Service", "Deployment", "Pod", "Secret", "PersistentVolumeClaim",
+	"Service", "Deployment", "Pod", "Secret", "PersistentVolumeClaim",
+	// The space's isolation fence goes after the workloads, so it still holds
+	// while they drain.
+	"NetworkPolicy",
+}
+
+var immutableIdentityLabels = []string{
+	manifests.LabelManagedBy,
+	manifests.LabelInstallation,
+	manifests.LabelSpace,
+	manifests.LabelApp,
+	manifests.LabelAddon,
+	manifests.LabelComponent,
+}
+
+// sameObjectIdentity compares only labels that grant ownership or select a
+// logical resource. The standard managed-by and component labels are stable
+// identity; standard name, part-of and version labels remain descriptive and
+// may legitimately change during an apply.
+func sameObjectIdentity(actual, expected map[string]string) bool {
+	for _, key := range immutableIdentityLabels {
+		if actual[key] != expected[key] {
+			return false
+		}
+	}
+	return true
+}
+
+func requireObjectIdentity(kind, namespace, name string, actual, expected map[string]string) error {
+	if sameObjectIdentity(actual, expected) {
+		return nil
+	}
+	qualified := name
+	if namespace != "" {
+		qualified = namespace + "/" + name
+	}
+	return fmt.Errorf("the Kubernetes %s %s exists but isn't the expected donkey resource — remove or rename it before continuing", kind, qualified)
+}
+
+func (c *Client) expectedObjectIdentity(identity map[string]string) map[string]string {
+	expected := maps.Clone(identity)
+	if expected == nil {
+		expected = map[string]string{}
+	}
+	expected[manifests.LabelInstallation] = c.installation()
+	return expected
+}
+
+func (c *Client) requireOwnedObject(kind, namespace, name string, actual, identity map[string]string) error {
+	return requireObjectIdentity(kind, namespace, name, actual, c.expectedObjectIdentity(identity))
 }
 
 // Apply server-side-applies every object with donkey as field manager.
@@ -83,6 +132,19 @@ func (c *Client) Apply(ctx context.Context, objs []runtime.Object) error {
 		ri := c.Dynamic.Resource(gvr).Namespace("")
 		if !clusterScoped[kind] {
 			ri = c.Dynamic.Resource(gvr).Namespace(u.GetNamespace())
+		}
+		// Force-apply owns donkey's fields, but ownership of the object itself
+		// comes only from its immutable identity labels. Without this check a
+		// same-named object in a shared namespace would be silently relabelled
+		// and later become eligible for deletion by this installation.
+		existing, err := ri.Get(ctx, u.GetName(), metav1.GetOptions{})
+		if err == nil {
+			if err := requireObjectIdentity(kind, u.GetNamespace(), u.GetName(),
+				existing.GetLabels(), u.GetLabels()); err != nil {
+				return err
+			}
+		} else if !apierrors.IsNotFound(err) {
+			return fmt.Errorf("checking existing %s %s: %w", kind, u.GetName(), err)
 		}
 		if err := applyWithRetry(ctx, ri, u); err != nil {
 			return fmt.Errorf("applying %s %s: %w", kind, u.GetName(), err)
@@ -129,19 +191,46 @@ func isTransient(err error) bool {
 	return strings.Contains(err.Error(), "failed calling webhook")
 }
 
-// DeleteObject removes a single named object of a known kind; missing
-// objects are fine (used to retract objects an apply no longer includes,
-// e.g. the route ConfigMap when an app turns internal).
-func (c *Client) DeleteObject(ctx context.Context, kind, namespace, name string) error {
+// DeleteObject removes one named object only after its immutable identity
+// matches. Missing objects are fine. The caller gets the name from an owned
+// query, but the second check closes the list/delete race.
+func (c *Client) DeleteObject(ctx context.Context, kind, namespace, name string, identity map[string]string) error {
 	gvr, ok := gvrFor[kind]
 	if !ok {
 		return fmt.Errorf("donkey doesn't know how to delete a %s", kind)
 	}
-	err := c.Dynamic.Resource(gvr).Namespace(namespace).Delete(ctx, name, metav1.DeleteOptions{})
+	ri := c.Dynamic.Resource(gvr).Namespace(namespace)
+	existing, err := ri.Get(ctx, name, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if err := c.requireOwnedObject(kind, namespace, name, existing.GetLabels(), identity); err != nil {
+		return err
+	}
+	deleteOptions := metav1.DeleteOptions{}
+	if uid := existing.GetUID(); uid != "" {
+		deleteOptions.Preconditions = &metav1.Preconditions{UID: &uid}
+	}
+	err = ri.Delete(ctx, name, deleteOptions)
 	if err != nil && !apierrors.IsNotFound(err) {
 		return err
 	}
 	return nil
+}
+
+// DeleteAppRoute removes the app's own-hostname route by immutable identity.
+// The path-route cleanup separately deletes names obtained from an owned label
+// query, but this route starts from a deterministic name and therefore must
+// not grant that name deletion authority by itself.
+func (c *Client) DeleteAppRoute(ctx context.Context, namespace, space, app string) error {
+	return c.deleteKindsBySelector(ctx, namespace, []string{"ConfigMap"}, map[string]string{
+		manifests.LabelSpace:     space,
+		manifests.LabelApp:       app,
+		manifests.LabelComponent: manifests.ComponentRoute,
+	}, false)
 }
 
 // deleteBySelector removes every namespaced donkey kind matching the label
@@ -163,11 +252,18 @@ func (c *Client) deleteKindsBySelector(ctx context.Context, namespace string, ki
 		if keepData && (kind == "PersistentVolumeClaim" || kind == "Secret") {
 			continue
 		}
-		err := c.Dynamic.Resource(gvrFor[kind]).Namespace(namespace).DeleteCollection(ctx,
-			metav1.DeleteOptions{}, metav1.ListOptions{LabelSelector: selector})
-		if err != nil && !apierrors.IsNotFound(err) {
-			return fmt.Errorf("removing %s objects: %w", kind, err)
+		if err := c.deleteKindBySelector(ctx, namespace, kind, selector); err != nil {
+			return err
 		}
+	}
+	return nil
+}
+
+func (c *Client) deleteKindBySelector(ctx context.Context, namespace, kind, selector string) error {
+	err := c.Dynamic.Resource(gvrFor[kind]).Namespace(namespace).DeleteCollection(ctx,
+		metav1.DeleteOptions{}, metav1.ListOptions{LabelSelector: selector})
+	if err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("removing %s objects: %w", kind, err)
 	}
 	return nil
 }

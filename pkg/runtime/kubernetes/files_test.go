@@ -1,12 +1,19 @@
 package kubernetes
 
 import (
+	"context"
 	"errors"
 	"io"
 	"strings"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes/fake"
+
 	rt "github.com/adrianliechti/donkey/pkg/runtime"
+	"github.com/adrianliechti/donkey/pkg/runtime/kubernetes/manifests"
 )
 
 // Every path a file browser sends is attacker-controlled, so this is the test
@@ -229,5 +236,71 @@ func TestCapWriter(t *testing.T) {
 func TestFilesHelperName(t *testing.T) {
 	if got := filesHelperName("shop"); got != "shop-files" {
 		t.Fatalf("filesHelperName = %q", got)
+	}
+}
+
+func TestFileOperationsRequireRequestedAppIdentity(t *testing.T) {
+	const namespace = "workloads"
+	labels := manifests.Labels("other-space", "other-app", manifests.ComponentStorage)
+	labels[manifests.LabelInstallation] = "donkey-system"
+	pvc := &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{
+		Name: manifests.DataClaimName("team--site"), Namespace: namespace, Labels: labels,
+	}}
+	client := (&Client{Clientset: fake.NewSimpleClientset(pvc)}).WithInstallation("donkey-system")
+
+	if _, err := client.ListFiles(context.Background(), namespace, "team--site", "team", "site", ""); err == nil {
+		t.Fatal("a same-named disk carrying another app's identity was accepted")
+	}
+	if _, err := client.Clientset.CoreV1().Pods(namespace).Get(
+		context.Background(), filesHelperName("team--site"), metav1.GetOptions{},
+	); err == nil {
+		t.Fatal("a helper was created for a disk outside the requested app identity")
+	}
+}
+
+func TestRemoveFilesHelperRequiresRequestedAppIdentity(t *testing.T) {
+	const namespace = "workloads"
+	labels := manifests.Labels("other-space", "other-app", manifests.ComponentFiles)
+	labels[manifests.LabelInstallation] = "donkey-system"
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+		Name: filesHelperName("team--site"), Namespace: namespace, Labels: labels,
+	}}
+	client := (&Client{Clientset: fake.NewSimpleClientset(pod)}).WithInstallation("donkey-system")
+
+	if err := client.RemoveFilesHelper(context.Background(), namespace, "team--site", "team", "site"); err == nil {
+		t.Fatal("a same-named helper carrying another app's identity was accepted")
+	}
+	if _, err := client.Clientset.CoreV1().Pods(namespace).Get(
+		context.Background(), pod.Name, metav1.GetOptions{},
+	); err != nil {
+		t.Fatalf("foreign helper was deleted: %v", err)
+	}
+}
+
+func TestFilesHelperCommandsRequireLabelsAndOriginalUID(t *testing.T) {
+	const namespace = "workloads"
+	labels := manifests.Labels("team", "site", manifests.ComponentFiles)
+	labels[manifests.LabelInstallation] = "donkey-system"
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+		Name:      filesHelperName("team--site"),
+		Namespace: namespace,
+		Labels:    labels,
+		UID:       types.UID("current-helper"),
+	}}
+	client := (&Client{Clientset: fake.NewSimpleClientset(pod)}).WithInstallation("donkey-system")
+
+	replaced := filesHelperRef{name: pod.Name, uid: types.UID("previous-helper"), space: "team", app: "site"}
+	if _, err := client.requireFilesHelper(context.Background(), namespace, replaced); err == nil {
+		t.Fatal("a replacement Pod with the same name was accepted")
+	}
+
+	wrongApp := filesHelperRef{name: pod.Name, uid: pod.UID, space: "team", app: "other"}
+	if _, err := client.requireFilesHelper(context.Background(), namespace, wrongApp); err == nil {
+		t.Fatal("a helper carrying another app's identity was accepted")
+	}
+
+	exact := filesHelperRef{name: pod.Name, uid: pod.UID, space: "team", app: "site"}
+	if _, err := client.requireFilesHelper(context.Background(), namespace, exact); err != nil {
+		t.Fatalf("exact helper identity rejected: %v", err)
 	}
 }

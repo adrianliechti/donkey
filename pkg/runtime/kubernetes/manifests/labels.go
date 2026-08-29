@@ -24,10 +24,14 @@ const (
 	AnnotationConsole = "donkey.dev/console"
 	// LabelSpace and LabelApp are logical donkey identities. Object names may
 	// be qualified when several spaces share a namespace; labels never are.
-	LabelApp       = "donkey.dev/app"
-	LabelAddon     = "donkey.dev/addon"
-	LabelComponent = "donkey.dev/component"
-	LabelSpace     = "donkey.dev/space"
+	LabelApp   = "donkey.dev/app"
+	LabelAddon = "donkey.dev/addon"
+	LabelSpace = "donkey.dev/space"
+	// Kubernetes already defines the component vocabulary. Using its key for
+	// both display and selectors avoids maintaining a duplicate
+	// donkey.dev/component label with the same value on every object.
+	LabelComponent = "app.kubernetes.io/component"
+	LabelManagedBy = "app.kubernetes.io/managed-by"
 	// LabelInstallation names the installation an object belongs to — the control
 	// plane's namespace. Several donkeys can share a cluster, and every
 	// cluster-wide sweep donkey does would otherwise match the others' objects
@@ -52,12 +56,12 @@ const (
 // Labels marks one object as donkey's; callers that don't know the space pass
 // "" and get no space label.
 //
-// Two sets say the same things. donkey.dev/* is what donkey selects on. The
-// app.kubernetes.io/* set is the Kubernetes-recommended vocabulary, so the
-// grouping is legible to k9s, Lens and Backstage, which group by `part-of`.
+// Donkey-specific identity uses donkey.dev/*; the component and descriptive
+// grouping use Kubernetes' recommended app.kubernetes.io/* vocabulary so the
+// same objects are legible to k9s, Lens and Backstage.
 //
 // Metadata only: the Deployment's selector is written separately from
-// donkey.dev/* alone, because a selector is immutable once created.
+// these richer labels, because a selector is immutable once created.
 func Labels(space, app, component string) map[string]string {
 	l := baseLabels(space, app, component)
 	if app != "" {
@@ -88,13 +92,12 @@ func SystemLabels(name string) map[string]string {
 }
 
 func baseLabels(space, name, component string) map[string]string {
-	l := map[string]string{"app.kubernetes.io/managed-by": ManagedByValue}
+	l := map[string]string{LabelManagedBy: ManagedByValue}
 	if name != "" {
 		l["app.kubernetes.io/name"] = name
 	}
 	if component != "" {
 		l[LabelComponent] = component
-		l["app.kubernetes.io/component"] = component
 	}
 	if space != "" {
 		l[LabelSpace] = space
@@ -116,7 +119,7 @@ func AddonSelector(space, addon string) map[string]string {
 }
 
 // SystemSelector is the small, stable selector for one control-plane
-// workload. Descriptive app.kubernetes.io labels stay out of selectors.
+// workload. Descriptive name, part-of and version labels stay out of selectors.
 func SystemSelector(name string) map[string]string {
 	return map[string]string{LabelComponent: name}
 }

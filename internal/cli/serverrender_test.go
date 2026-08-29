@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -181,6 +182,28 @@ func TestDockerRenderMatchesRuntimeTopologyWithoutSecrets(t *testing.T) {
 			volume.Labels["dev.donkey.installation"] != "donkey" || volume.Labels["dev.donkey.component"] == "" {
 			t.Errorf("Compose volume %s labels=%v", name, volume.Labels)
 		}
+	}
+	up := string(files["up.sh"].Data)
+	for _, want := range []string{
+		"require_owned network donkey network",
+		"require_owned volume donkey-data state-storage",
+		"require_owned volume donkey-registry registry-storage",
+		"require_owned container donkey-server server",
+		"require_owned container donkey-registry registry",
+		"dev.donkey.managed", "dev.donkey.installation", "dev.donkey.space",
+		"dev.donkey.app", "dev.donkey.addon", "dev.donkey.component",
+	} {
+		if !strings.Contains(up, want) {
+			t.Errorf("Compose ownership preflight is missing %q", want)
+		}
+	}
+	if strings.Index(up, "require_owned container donkey-server server") > strings.Index(up, "existing donkey-server DONKEY_SESSION_KEY") {
+		t.Error("Compose must validate ownership before reading an existing container's secrets")
+	}
+	check := exec.Command("sh", "-n")
+	check.Stdin = strings.NewReader(up)
+	if output, err := check.CombinedOutput(); err != nil {
+		t.Fatalf("generated up.sh is not valid POSIX shell: %v\n%s", err, output)
 	}
 }
 

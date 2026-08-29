@@ -164,16 +164,21 @@ five ideas:
 
 Runtime metadata has one small identity vocabulary. On Kubernetes,
 `donkey.dev/installation` is the ownership boundary, `donkey.dev/space` is
-the lifecycle boundary, exactly one of `donkey.dev/app` or `donkey.dev/addon`
-is the logical workload identity, and `donkey.dev/component` is its role.
-The descriptive `app.kubernetes.io/*` labels are present for ecosystem tools,
-but destructive sweeps and workload selectors use only the stable
-`donkey.dev/*` identity. Deployment, Pod and Service selectors match exactly;
+the lifecycle boundary, `donkey.dev/app` and `donkey.dev/addon` are the logical
+workload identities, and the standard `app.kubernetes.io/component` is the
+resource's role. App resources carry `app`, space services carry `addon`, and
+an app's copy of a service binding deliberately carries both because it
+represents that relationship.
+The remaining descriptive `app.kubernetes.io/*` labels are present for
+ecosystem tools. Destructive sweeps require Donkey's installation and exact
+logical scope; workload selectors use only stable identity labels. Deployment
+and Service selectors match the Pod identity exactly;
 object-name qualification in a shared namespace never leaks into logical
 labels. Non-identifying or potentially large configuration (host, backend,
 access policy, image and config hashes) stays in annotations.
 
 Docker uses the same dimensions as reverse-DNS labels:
+`dev.donkey.managed` is the coarse discovery marker, followed by
 `dev.donkey.installation`, `dev.donkey.space`, `dev.donkey.app`,
 `dev.donkey.addon` and `dev.donkey.component`. Containers, networks and
 volumes — including the control plane rendered by Compose — carry ownership
@@ -553,6 +558,52 @@ Two limits to check before you commit to a name:
   `pod-security.kubernetes.io/enforce=privileged` (or no enforcement); the
   workload namespace must not be `restricted`, because most real application
   images run as root. donkey sets `baseline` on namespaces it creates itself.
+
+### Isolating spaces from each other
+
+Spaces are a network boundary, not just an organizational one: each space
+gets one ingress NetworkPolicy, and its pods accept traffic only from their
+own space, the donkey gateway and donkey-server. Cross-space calls keep
+working the sanctioned way — through the gateway on an app's public hostname,
+where login and access rules apply — they just don't work as anonymous
+pod-to-pod traffic. Neither does anything else the cluster runs against those
+pods (a cluster-wide Prometheus scraping them, say). To open the network
+between spaces instead:
+
+```yaml
+kubernetes:
+  isolateSpaces: false
+```
+
+The fence selects only pods carrying this installation's labels, so in a
+workload namespace you were given it never constrains pods donkey doesn't
+own. Toggling the setting takes effect on the next `donkey server install`
+for existing spaces, and immediately for new ones. One prerequisite: the
+cluster's network plugin must enforce NetworkPolicy — on one that doesn't,
+the policies apply cleanly and change nothing (which also means the default
+is safe on such clusters, just not protective).
+
+By default only *ingress* is fenced; a space's pods may still reach out
+anywhere, the internet included. To close that side too:
+
+```yaml
+kubernetes:
+  restrictEgress: true
+```
+
+Now a space's pods reach only their own space (sibling apps and its
+services, postgres and rustfs included), the platform endpoints an app
+actually uses — donkey-ai for the openai addon and donkey-telemetry for
+metrics — and DNS. Everything else, the public internet and every other
+space, is cut.
+
+This one is **off by default and deliberate**, unlike the ingress fence:
+cutting outbound traffic breaks any app that calls a third-party API,
+webhook or email service at runtime, and even calling another donkey app by
+its public hostname (that leaves the cluster and comes back through the
+edge). Turn it on for spaces whose apps only talk to their own database and
+the platform. It needs `isolateSpaces` on, since the egress rules ride the
+same per-space policy.
 
 ### Using the cluster's edge
 

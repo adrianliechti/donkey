@@ -136,6 +136,13 @@ func serverRoleRules() []rbacv1.PolicyRule {
 			Resources: []string{"deployments", "replicasets"},
 			Verbs:     write,
 		},
+		{
+			// Per-space isolation fences (kubernetes.isolateSpaces). Retained
+			// when the feature is off so a later deploy can retract them.
+			APIGroups: []string{"networking.k8s.io"},
+			Resources: []string{"networkpolicies"},
+			Verbs:     write,
+		},
 	}
 }
 

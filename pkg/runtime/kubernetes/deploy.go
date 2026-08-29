@@ -33,17 +33,17 @@ func (r *Runtime) Deploy(ctx context.Context, spec rt.DeploySpec, out rt.Progres
 	// to one node at a time — leaving it running would strand the new pod on
 	// another node with a multi-attach error until the rollout times out.
 	if app.HasStorage() {
-		if err := r.c.RemoveFilesHelper(ctx, ns, obj); err != nil {
+		if err := r.c.RemoveFilesHelper(ctx, ns, obj, space, app.Name); err != nil {
 			return err
 		}
 	}
-	if !app.HasStorage() && r.c.HasDataClaim(ctx, ns, obj) {
+	if !app.HasStorage() && r.c.HasDataClaim(ctx, ns, obj, space, app.Name) {
 		out.Line("· A disk from an earlier setup still exists (with its data). This deploy doesn't mount it — add its paths back under `storage:` in donkey.yaml to use it, or `donkey destroy` removes it.")
 	}
 	if app.HasStorage() {
 		out.Line("· One disk (%s) for %s", app.Storage.Size, strings.Join(app.Storage.Paths, ", "))
 		// An app that just gained a disk has to leave rolling updates behind.
-		if err := r.c.SwitchToRecreate(ctx, ns, obj); err != nil {
+		if err := r.c.SwitchToRecreate(ctx, ns, obj, space, app.Name); err != nil {
 			return fmt.Errorf("couldn't switch %s to single-copy rollouts: %w", app.Name, err)
 		}
 	}
@@ -53,7 +53,8 @@ func (r *Runtime) Deploy(ctx context.Context, spec rt.DeploySpec, out rt.Progres
 	// the binding. An existing service is left alone: a second app naming it
 	// simply joins it.
 	for _, a := range app.Addons {
-		shared, err := r.c.GetSecretData(ctx, ns, addons.SecretName(r.sharedOwner(space), a.Name))
+		shared, err := r.c.GetOwnedSecretData(ctx, ns, addons.SecretName(r.sharedOwner(space), a.Name),
+			manifests.AddonLabels(space, a.Name, manifests.ComponentBinding))
 		if err != nil {
 			return err
 		}
@@ -125,6 +126,11 @@ func (r *Runtime) Deploy(ctx context.Context, spec rt.DeploySpec, out rt.Progres
 	if err := r.retractRemovedRoutes(ctx, ns, in); err != nil {
 		return err
 	}
+	// An installation that stopped isolating spaces retracts the fence the
+	// same way — apply never removes it.
+	if err := r.syncSpaceIsolation(ctx, space); err != nil {
+		return err
+	}
 	for _, route := range in.RouteTargets {
 		out.Line("· Also answering https://%s%s", route.Host, route.Path)
 	}
@@ -134,7 +140,7 @@ func (r *Runtime) Deploy(ctx context.Context, spec rt.DeploySpec, out rt.Progres
 		// Internal: no hostname, so the route goes — including when the app
 		// used to have one. The gateway stops serving the hostname within
 		// seconds; its cached certificate simply expires unused.
-		if err := r.c.DeleteObject(ctx, "ConfigMap", ns, obj); err != nil {
+		if err := r.c.DeleteAppRoute(ctx, ns, space, app.Name); err != nil {
 			return err
 		}
 		// The name siblings dial, which carries the space when the whole
@@ -144,7 +150,7 @@ func (r *Runtime) Deploy(ctx context.Context, spec rt.DeploySpec, out rt.Progres
 		out.Line("· Login protection is in force.")
 	}
 	if in.Domain == "" || !in.AppGateway.Enabled() {
-		if err := r.deleteAppGatewayObjects(ctx, obj); err != nil {
+		if err := r.deleteAppGatewayObjects(ctx, space, app.Name); err != nil {
 			return err
 		}
 	}
@@ -176,10 +182,10 @@ func (r *Runtime) Destroy(ctx context.Context, space, app string, keepData bool)
 	ns, obj := r.ns(space), r.name(space, app)
 	// A file-browser helper still holding the disk would keep the volume in
 	// Terminating — and it is a Pod, which the app's own delete never covers.
-	if err := r.c.RemoveFilesHelper(ctx, ns, obj); err != nil {
+	if err := r.c.RemoveFilesHelper(ctx, ns, obj, space, app); err != nil {
 		return err
 	}
-	if err := r.deleteAppGatewayObjects(ctx, obj); err != nil {
+	if err := r.deleteAppGatewayObjects(ctx, space, app); err != nil {
 		return err
 	}
 	return r.c.DeleteAppResources(ctx, ns, space, app, keepData)
@@ -189,19 +195,9 @@ func (r *Runtime) Destroy(ctx context.Context, space, app string, keepData bool)
 // of the workload objects: the app may live in another namespace, while its
 // Certificate, TLS Secret, Gateway and HTTPRoute deliberately live with the
 // control plane. It is safe on clusters without either optional CRD.
-func (r *Runtime) deleteAppGatewayObjects(ctx context.Context, app string) error {
-	for _, object := range []struct {
-		kind string
-		name string
-	}{
-		{kind: "HTTPRoute", name: manifests.AppEdgeName(app)},
-		{kind: "Gateway", name: manifests.AppGatewayName(r.opts.SystemNamespace, app)},
-		{kind: "Certificate", name: manifests.AppEdgeName(app)},
-		{kind: "Secret", name: manifests.AppCertificateSecretName(app)},
-	} {
-		if err := r.c.DeleteObject(ctx, object.kind, r.opts.SystemNamespace, object.name); err != nil {
-			return fmt.Errorf("removing the app's %s: %w", object.kind, err)
-		}
+func (r *Runtime) deleteAppGatewayObjects(ctx context.Context, space, app string) error {
+	if err := r.c.DeleteAppEdges(ctx, r.opts.SystemNamespace, space, app); err != nil {
+		return fmt.Errorf("removing the app's edge: %w", err)
 	}
 	return nil
 }
@@ -218,6 +214,9 @@ func (r *Runtime) manifestInput(spec rt.DeploySpec, includeCreds bool) (manifest
 		Space:           space,
 		Namespace:       r.ns(space),
 		SharedNamespace: r.opts.Placement.Shared(),
+		IsolateSpace:    r.opts.IsolateSpaces,
+		RestrictEgress:  r.opts.RestrictEgress,
+		SystemNamespace: r.opts.SystemNamespace,
 		ObjectName:      r.name(space, app.Name),
 		ImageRef:        spec.ImageRef,
 		Decisions:       spec.Decisions,
@@ -317,7 +316,8 @@ func (r *Runtime) retractRemovedRoutes(ctx context.Context, ns string, in manife
 		if keep[name] {
 			continue
 		}
-		if err := r.c.DeleteObject(ctx, "ConfigMap", ns, name); err != nil {
+		if err := r.c.DeleteObject(ctx, "ConfigMap", ns, name,
+			manifests.Labels(in.Space, in.App.Name, manifests.ComponentPathRoute)); err != nil {
 			return err
 		}
 	}
@@ -331,7 +331,7 @@ func (r *Runtime) retractRemovedRoutes(ctx context.Context, ns string, in manife
 func (r *Runtime) ApplyNetwork(ctx context.Context, cfg *config.AppConfig) (string, error) {
 	space, app := cfg.Space, cfg.Name
 	ns, obj := r.ns(space), r.name(space, app)
-	st, err := r.c.AppStatus(ctx, ns, obj)
+	st, err := r.c.AppStatus(ctx, ns, obj, space, app)
 	if err != nil {
 		return "", err
 	}
@@ -367,12 +367,12 @@ func (r *Runtime) ApplyNetwork(ctx context.Context, cfg *config.AppConfig) (stri
 	}
 
 	if in.Domain == "" {
-		if err := r.c.DeleteObject(ctx, "ConfigMap", ns, obj); err != nil {
+		if err := r.c.DeleteAppRoute(ctx, ns, space, app); err != nil {
 			return "", err
 		}
 	}
 	if in.Domain == "" || !in.AppGateway.Enabled() {
-		if err := r.deleteAppGatewayObjects(ctx, obj); err != nil {
+		if err := r.deleteAppGatewayObjects(ctx, space, app); err != nil {
 			return "", err
 		}
 	}
@@ -403,7 +403,8 @@ func (r *Runtime) SetAccess(ctx context.Context, space, app string, access *conf
 	}
 	patch := map[string]*string{manifests.AnnotationAccess: value}
 	if net.Protected {
-		if err := r.c.SetAnnotations(ctx, "ConfigMap", ns, obj, patch); err != nil {
+		if err := r.c.SetAnnotations(ctx, "ConfigMap", ns, obj,
+			manifests.Labels(space, app, manifests.ComponentRoute), patch); err != nil {
 			return err
 		}
 	}
@@ -411,7 +412,8 @@ func (r *Runtime) SetAccess(ctx context.Context, space, app string, access *conf
 		if !pr.Protected {
 			continue
 		}
-		if err := r.c.SetAnnotations(ctx, "ConfigMap", ns, pr.Name, patch); err != nil {
+		if err := r.c.SetAnnotations(ctx, "ConfigMap", ns, pr.Name,
+			manifests.Labels(space, app, manifests.ComponentPathRoute), patch); err != nil {
 			return err
 		}
 	}

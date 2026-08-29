@@ -468,14 +468,27 @@ func routeFromConfigMap(cm corev1.ConfigMap) (route, bool) {
 	if ann[manifests.AnnotationHost] == "" {
 		return route{}, false
 	}
+	space, app := cm.Labels[manifests.LabelSpace], cm.Labels[manifests.LabelApp]
+	// Scope is part of a route's required identity, not optional telemetry
+	// decoration. Serving an unscoped route would work while every request and
+	// view metric is silently discarded by the telemetry boundary. The one
+	// intentional exception is donkey-server's own console/API route: it is
+	// control-plane traffic, not a tenant app stream.
+	systemRoute := space == "" && app == "" &&
+		cm.Labels[manifests.LabelManagedBy] == manifests.ManagedByValue &&
+		cm.Labels[manifests.LabelComponent] == manifests.ServerName &&
+		ann[manifests.AnnotationToken] == manifests.TokenForward
+	if (!config.ValidName(space) || !config.ValidName(app)) && !systemRoute {
+		return route{}, false
+	}
 	r := route{
-		Space:   cm.Labels[manifests.LabelSpace],
-		App:     cm.Labels[manifests.LabelApp],
+		Space:   space,
+		App:     app,
 		Host:    ann[manifests.AnnotationHost],
 		Path:    "/",
 		Backend: target,
 		Login:   ann[manifests.AnnotationLogin] == manifests.LoginRequired,
-		Token:   ann[manifests.AnnotationToken] == manifests.TokenForward,
+		Token:   systemRoute,
 	}
 	if p := ann[manifests.AnnotationPath]; p != "" {
 		r.Path = p

@@ -171,6 +171,14 @@ func sameIdentity(actual, expected map[string]string) bool {
 	return true
 }
 
+// MatchesSystemLabels reports whether labels describe exactly one donkey
+// control-plane resource. Tenant dimensions must be absent: an app resource
+// does not become installation infrastructure merely by carrying the three
+// system labels as well.
+func MatchesSystemLabels(actual map[string]string, component string) bool {
+	return sameIdentity(actual, SystemLabels(component))
+}
+
 func requireIdentity(kind, name string, actual, expected map[string]string) error {
 	if sameIdentity(actual, expected) {
 		return nil
@@ -192,7 +200,13 @@ func (r *Runtime) removeOwnedContainer(ctx context.Context, name string, expecte
 	if err := requireIdentity("container", name, info.Config.Labels, expected); err != nil {
 		return err
 	}
-	return r.removeContainer(ctx, name)
+	// Names are reusable. Remove the immutable ID that passed the ownership
+	// check so a concurrent same-named replacement cannot be deleted instead.
+	target := info.ID
+	if target == "" {
+		target = name // defensive fallback for unusual Engine-compatible APIs
+	}
+	return r.removeContainer(ctx, target)
 }
 
 func (r *Runtime) ensureOwnedVolume(ctx context.Context, name string, expected map[string]string) error {
@@ -258,8 +272,7 @@ func (r *Runtime) CheckSpaceFree(ctx context.Context, space string) error {
 	if err != nil {
 		return err
 	}
-	if nw.Labels[labelManaged] != "true" || nw.Labels[labelInstallation] != dockerInstallation ||
-		nw.Labels[labelSpace] != space || nw.Labels[labelComponent] != componentSpace {
+	if !sameIdentity(nw.Labels, resourceLabels(space, componentSpace)) {
 		return fmt.Errorf("the network %s exists but isn't donkey's — pick a different space name", netName(space))
 	}
 	return nil
@@ -271,8 +284,13 @@ func (r *Runtime) ensureSpace(ctx context.Context, space string) error {
 	if err := r.CheckSpaceFree(ctx, space); err != nil {
 		return err
 	}
+	own, err := ownedSystemContainers(ctx, r.cli,
+		r.opts.ServerContainer, r.opts.GatewayContainer, r.opts.AIContainer, r.opts.TelemetryContainer)
+	if err != nil {
+		return err
+	}
 	name := netName(space)
-	_, err := r.cli.NetworkInspect(ctx, name, network.InspectOptions{})
+	_, err = r.cli.NetworkInspect(ctx, name, network.InspectOptions{})
 	if cerrdefs.IsNotFound(err) {
 		_, err = r.cli.NetworkCreate(ctx, name, network.CreateOptions{
 			Labels: resourceLabels(space, componentSpace),
@@ -281,10 +299,9 @@ func (r *Runtime) ensureSpace(ctx context.Context, space string) error {
 	if err != nil {
 		return err
 	}
-	for _, own := range []string{r.opts.ServerContainer, r.opts.GatewayContainer, r.opts.AIContainer, r.opts.TelemetryContainer} {
-		err := r.cli.NetworkConnect(ctx, name, own, nil)
-		// Already attached is fine; a missing own container (local
-		// development outside containers) must not fail the space.
+	for _, containerName := range own {
+		err := r.cli.NetworkConnect(ctx, name, containerName, nil)
+		// Already attached is the normal idempotent case.
 		if err != nil && !strings.Contains(err.Error(), "already exists") && !cerrdefs.IsNotFound(err) {
 			return err
 		}
@@ -305,7 +322,8 @@ func (r *Runtime) ListSpaces(ctx context.Context) ([]string, error) {
 	}
 	var out []string
 	for _, nw := range nets {
-		if space := nw.Labels[labelSpace]; space != "" {
+		if space := nw.Labels[labelSpace]; space != "" &&
+			sameIdentity(nw.Labels, resourceLabels(space, componentSpace)) {
 			out = append(out, space)
 		}
 	}
@@ -327,10 +345,13 @@ func (r *Runtime) DeleteSpace(ctx context.Context, space string) error {
 	if inspectErr != nil && !cerrdefs.IsNotFound(inspectErr) {
 		return inspectErr
 	}
-	if inspectErr == nil && (nw.Labels[labelManaged] != "true" ||
-		nw.Labels[labelInstallation] != dockerInstallation || nw.Labels[labelSpace] != space ||
-		nw.Labels[labelComponent] != componentSpace) {
+	if inspectErr == nil && !sameIdentity(nw.Labels, resourceLabels(space, componentSpace)) {
 		return fmt.Errorf("the network %s isn't donkey's space %s to delete", netName(space), space)
+	}
+	own, err := ownedSystemContainers(ctx, r.cli,
+		r.opts.ServerContainer, r.opts.GatewayContainer, r.opts.AIContainer, r.opts.TelemetryContainer)
+	if err != nil {
+		return err
 	}
 	// Apps, managed services, and short-lived helpers all go with the space.
 	resources, err := r.spaceContainers(ctx, space, "")
@@ -365,8 +386,8 @@ func (r *Runtime) DeleteSpace(ctx context.Context, space string) error {
 	}
 	// donkey's own containers were attached to the network (to proxy and to
 	// probe) — it only goes once they let it.
-	for _, own := range []string{r.opts.ServerContainer, r.opts.GatewayContainer, r.opts.AIContainer, r.opts.TelemetryContainer} {
-		_ = r.cli.NetworkDisconnect(ctx, netName(space), own, true)
+	for _, containerName := range own {
+		_ = r.cli.NetworkDisconnect(ctx, netName(space), containerName, true)
 	}
 	if inspectErr != nil {
 		return nil
@@ -415,7 +436,11 @@ func (r *Runtime) ListApps(ctx context.Context) ([]rt.AppRef, error) {
 	}
 	var out []rt.AppRef
 	for _, c := range list {
-		out = append(out, rt.AppRef{Space: c.Labels[labelSpace], App: c.Labels[labelApp]})
+		space, app := c.Labels[labelSpace], c.Labels[labelApp]
+		if space == "" || app == "" || !sameIdentity(c.Labels, appLabels(space, app, componentWeb)) {
+			continue
+		}
+		out = append(out, rt.AppRef{Space: space, App: app})
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Space != out[j].Space {
@@ -660,10 +685,19 @@ func (r *Runtime) EnsureService(ctx context.Context, space string, spec rt.Servi
 		// The service takes its plain name, reachable as e.g. "postgres" the
 		// way siblings reach each other — so it must not seize a name an app
 		// already holds.
-		if info, err := r.cli.ContainerInspect(ctx, ctrName(space, spec.Name)); err == nil {
-			if info.Config.Labels[labelComponent] == componentWeb {
-				return nil, "", "", rt.UserError{Err: fmt.Errorf("the name %q is taken by an app in this space — pick another for the service", spec.Name)}
+		if info, inspectErr := r.cli.ContainerInspect(ctx, ctrName(space, spec.Name)); inspectErr == nil {
+			if info.Config == nil {
+				return nil, "", "", fmt.Errorf("the Docker container %s has no inspectable configuration", ctrName(space, spec.Name))
 			}
+			switch {
+			case sameIdentity(info.Config.Labels, appLabels(space, spec.Name, componentWeb)):
+				return nil, "", "", rt.UserError{Err: fmt.Errorf("the name %q is taken by an app in this space — pick another for the service", spec.Name)}
+			case !sameIdentity(info.Config.Labels, addonLabels(space, spec.Name, componentAddon)):
+				return nil, "", "", requireIdentity("container", ctrName(space, spec.Name), info.Config.Labels,
+					addonLabels(space, spec.Name, componentAddon))
+			}
+		} else if !cerrdefs.IsNotFound(inspectErr) {
+			return nil, "", "", inspectErr
 		}
 		in := addons.Input{
 			App: sharedOwner, Space: space, Namespace: netName(space),
@@ -879,6 +913,8 @@ func (r *Runtime) Checks(ctx context.Context) []rt.Check {
 		gw.Detail = "not found — is the gateway container running?"
 	} else if err != nil {
 		gw.Detail = err.Error()
+	} else if info.Config == nil || !MatchesSystemLabels(info.Config.Labels, strings.TrimPrefix(r.opts.GatewayContainer, "donkey-")) {
+		gw.Detail = "the name is held by a container outside this donkey installation"
 	} else if info.State == nil || !info.State.Running {
 		gw.Detail = "not running"
 	} else {
@@ -955,6 +991,10 @@ func (r *Runtime) waitRunning(ctx context.Context, name string, timeout time.Dur
 // stops answering until it happens to be redeployed. ensureSpace does the same
 // thing for one new space; this covers the ones already there.
 func AttachOwnContainers(ctx context.Context, cli *client.Client, names ...string) error {
+	owned, err := ownedSystemContainers(ctx, cli, names...)
+	if err != nil {
+		return err
+	}
 	nets, err := cli.NetworkList(ctx, network.ListOptions{
 		Filters: filters.NewArgs(
 			filters.Arg("label", labelManaged+"=true"),
@@ -966,10 +1006,11 @@ func AttachOwnContainers(ctx context.Context, cli *client.Client, names ...strin
 		return err
 	}
 	for _, nw := range nets {
-		if nw.Labels[labelSpace] == "" {
+		space := nw.Labels[labelSpace]
+		if space == "" || !sameIdentity(nw.Labels, resourceLabels(space, componentSpace)) {
 			continue
 		}
-		for _, name := range names {
+		for _, name := range owned {
 			err := cli.NetworkConnect(ctx, nw.Name, name, nil)
 			// Already attached is the normal case on a re-install that
 			// changed nothing; a missing container is not this code's problem.
@@ -979,6 +1020,32 @@ func AttachOwnContainers(ctx context.Context, cli *client.Client, names ...strin
 		}
 	}
 	return nil
+}
+
+// ownedSystemContainers resolves the control-plane names that are present and
+// verifies their complete immutable identity before another resource is
+// connected to, disconnected from, or diagnosed through them. Missing names
+// are normal when the provider runs outside Docker in development.
+func ownedSystemContainers(ctx context.Context, cli *client.Client, names ...string) ([]string, error) {
+	owned := make([]string, 0, len(names))
+	for _, name := range names {
+		info, err := cli.ContainerInspect(ctx, name)
+		if cerrdefs.IsNotFound(err) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		if info.Config == nil {
+			return nil, fmt.Errorf("the Docker container %s has no inspectable configuration", name)
+		}
+		component := strings.TrimPrefix(name, "donkey-")
+		if !MatchesSystemLabels(info.Config.Labels, component) {
+			return nil, fmt.Errorf("the Docker container %s exists but isn't this donkey installation's %s resource", name, component)
+		}
+		owned = append(owned, name)
+	}
+	return owned, nil
 }
 
 // ReconcileOwnNetworks keeps donkey's own containers attached to every space

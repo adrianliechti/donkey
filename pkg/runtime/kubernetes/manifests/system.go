@@ -130,6 +130,15 @@ type SystemInput struct {
 	// didn't create: applying one would take ownership of its labels and mark
 	// it deletable.
 	SkipNamespace bool
+	// IsolateSpaces fences every space with a NetworkPolicy — see
+	// SpaceIsolationPolicy. On by default; the installer resolves the
+	// settings file's tri-state (unset means on) before it reaches here.
+	// Needs a CNI that enforces NetworkPolicy.
+	IsolateSpaces bool
+	// RestrictEgress adds the egress half of that fence — a space's pods reach
+	// only their own space, donkey-ai, donkey-telemetry and DNS, never the
+	// internet. Off by default; only meaningful with IsolateSpaces.
+	RestrictEgress bool
 }
 
 const (
@@ -356,6 +365,8 @@ func serverDeployment(in SystemInput) *appsv1.Deployment {
 		{Name: "DONKEY_NAMESPACE_PREFIX", Value: in.NamespacePrefix},
 		{Name: "DONKEY_SYSTEM_NAMESPACE", Value: in.Namespace},
 		{Name: "DONKEY_WORKLOAD_NAMESPACE", Value: in.WorkloadNamespace},
+		{Name: "DONKEY_SPACE_ISOLATION", Value: strconv.FormatBool(in.IsolateSpaces)},
+		{Name: "DONKEY_RESTRICT_EGRESS", Value: strconv.FormatBool(in.RestrictEgress)},
 		// Where the console's /ai/v1 requests are forwarded. The address
 		// only — the path the console asks for is what gets proxied.
 		{Name: "DONKEY_AI_URL", Value: fmt.Sprintf("http://%s.%s.svc:80", AIAppName, in.Namespace)},

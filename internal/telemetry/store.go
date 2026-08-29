@@ -293,6 +293,7 @@ func (s *Store) IngestMetrics(ctx context.Context, req *collectormetricspb.Expor
 				}
 				legacy := metric.Name == "http.server.duration"
 				if metric.Name != HTTPServerRequestDuration && !legacy {
+					rejected += int64(metricDataPointCount(metric))
 					continue
 				}
 				histogram := metric.GetHistogram()
@@ -373,7 +374,7 @@ func (s *Store) ingestHTTPPoint(
 	method := attrs[methodKey]
 	method = canonicalMetricMethod(method)
 	status, _ := strconv.Atoi(attrs[statusKey])
-	if status < 0 || status > 999 || point.TimeUnixNano == 0 || point.TimeUnixNano > math.MaxInt64 || point.Count > math.MaxInt64 {
+	if status < 100 || status > 599 || point.TimeUnixNano == 0 || point.TimeUnixNano > math.MaxInt64 || point.Count > math.MaxInt64 {
 		return false, nil
 	}
 	pointTime := time.Unix(0, int64(point.TimeUnixNano)).UTC()

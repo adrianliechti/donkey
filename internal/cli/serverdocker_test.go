@@ -6,7 +6,24 @@ import (
 	"testing"
 
 	"github.com/adrianliechti/donkey/internal/config"
+	runtimedocker "github.com/adrianliechti/donkey/pkg/runtime/docker"
 )
+
+func TestDockerInstallerRequiresExactSystemIdentity(t *testing.T) {
+	if err := requireDockerSystemResource("container", dockerServerName,
+		runtimedocker.SystemLabels("server"), "server"); err != nil {
+		t.Fatal(err)
+	}
+	if err := requireDockerSystemResource("container", dockerServerName,
+		runtimedocker.SystemLabels("gateway"), "server"); err == nil {
+		t.Fatal("a different control-plane component was accepted")
+	}
+	labels := runtimedocker.SystemLabels("server")
+	labels["dev.donkey.space"] = "team"
+	if err := requireDockerSystemResource("container", dockerServerName, labels, "server"); err == nil {
+		t.Fatal("a tenant resource was accepted as control-plane infrastructure")
+	}
+}
 
 func TestRegistryPullAuthUsesEnterpriseHostWithPrefixedURL(t *testing.T) {
 	reg := config.Registry{URL: "registry.example.com/platform/donkey", Username: "builder"}

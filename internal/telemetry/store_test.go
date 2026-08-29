@@ -181,6 +181,37 @@ func TestPurgeSpaceRemovesEveryTelemetryTableAndKeepsOtherSpaces(t *testing.T) {
 	}
 }
 
+func TestStoreReportsUnsupportedMetricsAndInvalidHTTPStatus(t *testing.T) {
+	store, err := OpenStore(":memory:", DefaultRetentionDays)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	now := time.Now().UTC().Truncate(time.Second)
+	req := exportRequest(now, []histogramPoint{
+		{status: 200, count: 1, sum: 0.01, bucket: 2},
+		{status: 0, count: 1, sum: 0.01, bucket: 2},
+	})
+	req.ResourceMetrics[0].ScopeMetrics[0].Metrics = append(
+		req.ResourceMetrics[0].ScopeMetrics[0].Metrics,
+		&metricspb.Metric{
+			Name: "process.runtime.go.goroutines",
+			Data: &metricspb.Metric_Gauge{Gauge: &metricspb.Gauge{DataPoints: []*metricspb.NumberDataPoint{{
+				TimeUnixNano: uint64(now.UnixNano()),
+				Value:        &metricspb.NumberDataPoint_AsInt{AsInt: 12},
+			}}}},
+		},
+	)
+
+	accepted, rejected, err := store.IngestMetrics(context.Background(), req, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if accepted != 1 || rejected != 2 {
+		t.Fatalf("accepted=%d rejected=%d, want 1/2", accepted, rejected)
+	}
+}
+
 type histogramPoint struct {
 	status int64
 	count  uint64

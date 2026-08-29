@@ -6,6 +6,8 @@
 
 > **What changed since the last review.** The `Multi-Runtime Support` and `Better Auth` commits restructured the tree (`internal/k8s/` → `pkg/runtime/kubernetes/`) and added a second runtime (`pkg/runtime/docker/`). More importantly, **the authentication model was replaced**: the single static bearer token is gone. Every line number below is against the current tree.
 
+> **Addendum (2026-08-29): per-space network isolation.** Kubernetes installations now fence each space with a NetworkPolicy — ingress on by default, optional egress restriction — which substantially closes **finding 9** and corrects the "only one NetworkPolicy in the product" premise several findings leaned on. See the dated update under finding 9; findings 4 and the remaining-work list are annotated where the premise changed. Line numbers elsewhere are still against the reviewed commit and may have drifted.
+
 ---
 
 ## The structural point that frames everything else
@@ -36,7 +38,7 @@ Per-space authorization still does not exist, so "an authenticated operator can 
 | 6 | Medium | `donkey-gateway`'s Role covers every Secret in `donkey-system` | Open |
 | 7 | Medium | Access allowlists match an unverified `email` claim | Open |
 | 8 | Medium | Push-capable registry credential copied into every tenant namespace | Open (carried) |
-| 9 | Medium | No NetworkPolicy for tenant namespaces; `internal` is not enforced | Open (carried) |
+| 9 | ~~Medium~~ Low | No NetworkPolicy for tenant namespaces; `internal` is not enforced | **Largely resolved** (2026-08-29) — per-space fence, default on; egress residual only |
 | 10 | Medium | Deploy-time AI analysis sends unredacted secrets to the model provider | Open (carried) |
 | 11 | Medium | Docker addon binding hosts are bare aliases that collide across spaces | Open (new) |
 | 12 | Medium | Domain-wide session cookie can be overwritten by any app under the base domain | Open |
@@ -223,7 +225,9 @@ Args: []string{"--addr", fmt.Sprintf("tcp://0.0.0.0:%d", buildkitPort), ...},
 SecurityContext: &corev1.SecurityContext{Privileged: &privileged},
 ```
 
-Unchanged from the last review: no TLS flags anywhere (zero repo hits for `tlscacert`/`tlscert`/`tlskey`), and `buildkitPodSpec` (`:492-539`) is the only pod spec that omits `AutomountServiceAccountToken: false` **without needing API access** — app (`app.go:404`), predeploy (`predeploy.go:58`), the files helper (`files.go:632`) and every addon (`addonservice.go:130`) all set it, and the server and gateway omit it only because they legitimately call the API. Its sole compensating control remains `buildkitNetworkPolicy` (`:544-566`) — correctly written, but still the only NetworkPolicy in the product, and kind's default CNI does not enforce NetworkPolicy at all. Nothing in `internal/doctor` checks whether policies are enforced.
+Unchanged from the last review: no TLS flags anywhere (zero repo hits for `tlscacert`/`tlscert`/`tlskey`), and `buildkitPodSpec` (`:492-539`) is the only pod spec that omits `AutomountServiceAccountToken: false` **without needing API access** — app (`app.go:404`), predeploy (`predeploy.go:58`), the files helper (`files.go:632`) and every addon (`addonservice.go:130`) all set it, and the server and gateway omit it only because they legitimately call the API. Its compensating control remains `buildkitNetworkPolicy` (`:544-566`) — correctly written, and kind's default CNI does not enforce NetworkPolicy at all. Nothing in `internal/doctor` checks whether policies are enforced.
+
+> **Update (2026-08-29):** the "only NetworkPolicy in the product" clause is no longer true — per-space fences now ship too (finding 9). BuildKit's own policy, mTLS gap and `AutomountServiceAccountToken` are unchanged, so this finding stays open; only the premise about NetworkPolicy being unique is corrected. The "no doctor check that policies are enforced" point stands and now matters more, since two features rely on enforcement.
 
 The image is digest-pinned (`internal/config/install.go:107`), which is correct and worth keeping.
 
@@ -301,17 +305,23 @@ Fed from the server's single registry config (`pkg/runtime/kubernetes/deploy.go:
 
 ---
 
-## 9. Medium — no NetworkPolicy for tenant namespaces; `internal` is not enforced
+## 9. ~~Medium~~ Low — no NetworkPolicy for tenant namespaces; `internal` is not enforced
 
-**Location:** `pkg/runtime/kubernetes/manifests/app.go:222-234,465-484` — *still present on Kubernetes; the Docker runtime is better here*
+> **Largely resolved (2026-08-29).** Kubernetes installations now render a per-space NetworkPolicy (`manifests/isolation.go`, `SpaceIsolationPolicy`), applied through `AppObjects`, `CreateSpace`/`EnsureService` and reconciled at install time. **Ingress is on by default** (`kubernetes.isolateSpaces`, unset means on): a space's pods accept traffic only from their own space, the donkey gateway and donkey-server, so an `internal: true` app is now reachable only from its own space — the documented promise. Cross-space and cross-namespace pod-to-pod reach is cut. **Optional egress restriction** (`kubernetes.restrictEgress`, off by default) additionally confines outbound traffic to the same space, donkey-ai, donkey-telemetry and DNS — closing the `169.254.169.254` and `donkey-buildkitd:1234` reach this finding named, and the internet with them.
+>
+> **Two residuals keep it on the list, at Low:**
+>
+> - **Enforcement is the CNI's.** On a plugin that ignores NetworkPolicy (kind's default) the fence is a no-op and nothing here holds — the same caveat as finding 4, and still unchecked by `internal/doctor`.
+> - **Egress is opt-in.** With the default (ingress-only) an app pod can still reach `169.254.169.254` and the internet; only `restrictEgress: true` closes that, and it is off by default because it breaks apps that call external APIs.
+> - Plaintext postgres (below) is unchanged, but now confined to same-space traffic rather than the whole cluster.
 
-`Namespace()` renders only Pod Security labels and the managed annotation; no NetworkPolicy appears in `AppObjects` or `NetworkObjects`. `service()` is a plain ClusterIP, so an `internal: true` app — documented at `internal/config/app.go:28-31` as reachable by "only the apps of its own space" — is reachable from any pod in any namespace. `Internal: true` only suppresses the gateway route (`pkg/runtime/kubernetes/deploy.go:138-144`).
+**Original finding (for the record).** `Namespace()` renders only Pod Security labels and the managed annotation; no NetworkPolicy appears in `AppObjects` or `NetworkObjects`. `service()` is a plain ClusterIP, so an `internal: true` app — documented at `internal/config/app.go:28-31` as reachable by "only the apps of its own space" — is reachable from any pod in any namespace. `Internal: true` only suppresses the gateway route (`pkg/runtime/kubernetes/deploy.go:138-144`).
 
 Postgres bindings still pin plaintext (`internal/addons/postgres.go:30-35`), so the 192-bit password crosses the pod network in the clear on every connect. Usernames are fixed and public (`pgUser = "donkey"`, `rfAccessKey = "donkey"`, `pbAdminEmail = "admin@donkey.local"`), so the password is the entire barrier. Egress is equally unrestricted, so app pods reach `169.254.169.254` and `donkey-buildkitd:1234`.
 
 **The Docker runtime does not have this problem** — each space gets its own Docker network (`pkg/runtime/docker/runtime.go:96-98`) and app containers join only their own (`deploy.go:352,461-468`). Layer-3 isolation between spaces holds there; it is finding 5 (no NET_RAW drop) that undermines it *within* a space.
 
-**Fix:** a default-deny ingress policy per space namespace allowing same-namespace plus the gateway. This also closes finding 4's lateral path.
+**Fix (delivered):** a per-space ingress policy allowing same-space plus the gateway/server, with optional egress restriction. This also closes finding 4's lateral path where the CNI enforces policy. Remaining: a `donkey doctor` check that NetworkPolicy is actually enforced, and a decision on whether `restrictEgress` should default on for installations whose apps never call out.
 
 ---
 
@@ -485,6 +495,6 @@ Worth recording, because it shapes where effort should go. Each was re-verified 
 4. **Findings 6, 7, 13** — small and self-contained: `resourceNames` on the gateway's secrets Role, `email_verified` in the claims struct, a `state` parameter on the CLI login callback.
 5. **Findings 14 and 15** — a few lines each: reject `http://` for non-loopback hosts, `os.Chmod` the token file after writing.
 6. **Finding 10** — reuse the existing `redact()` on the analyze path, extend `deniedFile`, and add `app.Env`/`app.Build.Env` to `KnownSecrets`.
-7. **Findings 4, 9, 11** — the network work: tenant NetworkPolicies restore the `internal` guarantee and close BuildKit's lateral path; BuildKit also needs mTLS and `AutomountServiceAccountToken: false`; the Docker binding-host rewrite is a one-line change to `ctrName`. Needs a cluster to validate against.
+7. **Findings 4, 9, 11** — the network work. ~~Finding 9~~ is largely done (2026-08-29): per-space NetworkPolicies restore the `internal` guarantee and close BuildKit's lateral path where the CNI enforces policy. What remains here: a `donkey doctor` check that NetworkPolicy is actually enforced (also finding 4's caveat), BuildKit mTLS and `AutomountServiceAccountToken: false`, and the Docker binding-host rewrite (a one-line change to `ctrName`). Needs a cluster to validate against.
 8. **Findings 3 and 8** — the larger structural changes: scoped RBAC in place of `cluster-admin`, and a pull-only registry credential.
 9. The [lower-severity items](#lower-severity-items) as a batch — the fail-open access annotation and the trailing-slash route are the two with real consequences.

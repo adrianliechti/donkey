@@ -6,6 +6,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // The point of the split: the endpoint tenant code reaches is not the
@@ -69,6 +70,11 @@ func TestAdminAPIIsGatewayOnly(t *testing.T) {
 	if peer.NamespaceSelector == nil ||
 		peer.NamespaceSelector.MatchLabels["kubernetes.io/metadata.name"] != "donkey-apps" {
 		t.Errorf("donkey-ai should admit the namespace apps live in, got %+v", peer)
+	}
+	if len(peer.PodSelector.MatchExpressions) != 1 ||
+		peer.PodSelector.MatchExpressions[0].Key != LabelSpace ||
+		peer.PodSelector.MatchExpressions[0].Operator != metav1.LabelSelectorOpExists {
+		t.Errorf("the tenant peer must require a logical space, got %+v", peer.PodSelector)
 	}
 }
 

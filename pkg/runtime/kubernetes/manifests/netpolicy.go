@@ -40,11 +40,15 @@ func ingressPolicy(in SystemInput, name string, port int32, peers []networkingv1
 }
 
 // systemPeer is one of donkey's own workloads, in the control plane's
-// namespace.
-func systemPeer(in SystemInput, name string) networkingv1.NetworkPolicyPeer {
+// namespace (which is also the installation identity — pinning the namespace
+// is what keeps a second installation's same-named pods out).
+func systemPeer(namespace, name string) networkingv1.NetworkPolicyPeer {
 	return networkingv1.NetworkPolicyPeer{
-		PodSelector:       &metav1.LabelSelector{MatchLabels: SystemSelector(name)},
-		NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": in.Namespace}},
+		PodSelector: &metav1.LabelSelector{MatchLabels: map[string]string{
+			LabelInstallation: namespace,
+			LabelComponent:    name,
+		}},
+		NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": namespace}},
 	}
 }
 
@@ -54,7 +58,15 @@ func systemPeer(in SystemInput, name string) networkingv1.NetworkPolicyPeer {
 // retained in both modes: a manually-created workload in one of those
 // namespaces is not silently granted access to control-plane endpoints.
 func appPeers(in SystemInput) []networkingv1.NetworkPolicyPeer {
-	pods := &metav1.LabelSelector{MatchLabels: map[string]string{LabelInstallation: in.Namespace}}
+	pods := &metav1.LabelSelector{
+		MatchLabels: map[string]string{LabelInstallation: in.Namespace},
+		// The system namespace carries the installation label too. Requiring a
+		// logical space keeps other control-plane pods out of the broad tenant
+		// peer and leaves only the explicitly named system peers below.
+		MatchExpressions: []metav1.LabelSelectorRequirement{{
+			Key: LabelSpace, Operator: metav1.LabelSelectorOpExists,
+		}},
+	}
 	if in.Shared() {
 		return []networkingv1.NetworkPolicyPeer{{
 			PodSelector: pods,
@@ -80,7 +92,7 @@ func appPeers(in SystemInput) []networkingv1.NetworkPolicyPeer {
 // code; it now runs as donkey-ai, and nothing an app needs lives here.
 func serverNetworkPolicy(in SystemInput) *networkPolicy {
 	return ingressPolicy(in, ServerName, serverPort, []networkingv1.NetworkPolicyPeer{
-		systemPeer(in, GatewayAppName),
+		systemPeer(in.Namespace, GatewayAppName),
 	})
 }
 
@@ -89,6 +101,6 @@ func serverNetworkPolicy(in SystemInput) *networkPolicy {
 // can reach its port can run code on a node. Only donkey-server may.
 func buildkitNetworkPolicy(in SystemInput) *networkPolicy {
 	return ingressPolicy(in, buildkitName, buildkitPort, []networkingv1.NetworkPolicyPeer{
-		systemPeer(in, ServerName),
+		systemPeer(in.Namespace, ServerName),
 	})
 }

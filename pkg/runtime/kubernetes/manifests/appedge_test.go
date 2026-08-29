@@ -23,14 +23,14 @@ func TestAppGatewayObjects(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		"name: donkey-app-shop",
+		"name: donkey-app-acme.shop",
 		"namespace: donkey-system",
-		"secretName: donkey-app-shop-tls",
+		"secretName: donkey-app-acme.shop-tls",
 		"name: platform-ca",
 		"kind: ClusterIssuer",
 		"group: cert-manager.io",
 		"gatewayClassName: platform",
-		"name: donkey-system-shop-gw",
+		"name: donkey-system.donkey-app-acme.shop-gw",
 		"namespace: projectcontour",
 		"kubernetes.io/metadata.name: donkey-system",
 		"- shop.acme.apps.example.com",
@@ -45,6 +45,19 @@ func TestAppGatewayObjects(t *testing.T) {
 		if strings.Contains(rendered, constrained) {
 			t.Errorf("enterprise issuer policy should choose certificate %s", constrained)
 		}
+	}
+}
+
+func TestAppEdgeNamesIncludeLogicalSpace(t *testing.T) {
+	first := AppEdgeName("alpha", "shop")
+	second := AppEdgeName("beta", "shop")
+	if first == second {
+		t.Fatalf("two spaces produced the same app edge name %q", first)
+	}
+	// The delimiter must be unambiguous even when logical names contain
+	// dashes; these pairs collide under ordinary dash-joining.
+	if AppEdgeName("a", "b-c") == AppEdgeName("a-b", "c") {
+		t.Fatal("edge name is ambiguous across space/app pairs")
 	}
 }
 

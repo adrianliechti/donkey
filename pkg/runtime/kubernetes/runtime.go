@@ -39,6 +39,12 @@ type Options struct {
 	// TelemetryKey derives an app-scoped OTLP credential. It is the
 	// installation key already held by donkey-server, never exposed directly.
 	TelemetryKey []byte
+	// IsolateSpaces fences every space with an ingress NetworkPolicy — see
+	// manifests.SpaceIsolationPolicy.
+	IsolateSpaces bool
+	// RestrictEgress adds the egress half of that fence — only meaningful
+	// together with IsolateSpaces.
+	RestrictEgress bool
 }
 
 // Runtime runs donkey's apps on a Kubernetes cluster. It deliberately does
@@ -164,7 +170,54 @@ func (r *Runtime) CreateSpace(ctx context.Context, space string) error {
 	if err := r.ValidateSpace(space); err != nil {
 		return err
 	}
-	return r.c.Apply(ctx, []k8sruntime.Object{r.opts.Placement.SpaceObject(space)})
+	if err := r.c.Apply(ctx, r.spaceObjects(space)); err != nil {
+		return err
+	}
+	return r.syncSpaceIsolation(ctx, space)
+}
+
+// spaceObjects is what makes a space exist: its home (namespace or marker),
+// and its network fence when the installation isolates spaces.
+func (r *Runtime) spaceObjects(space string) []k8sruntime.Object {
+	objs := []k8sruntime.Object{r.opts.Placement.SpaceObject(space)}
+	if r.opts.IsolateSpaces {
+		objs = append(objs, manifests.SpaceIsolationPolicy(space, r.ns(space), r.opts.SystemNamespace, r.opts.RestrictEgress))
+	}
+	return objs
+}
+
+// syncSpaceIsolation retracts the space's fence when the installation no
+// longer isolates spaces — server-side apply never removes what a new
+// configuration leaves out.
+func (r *Runtime) syncSpaceIsolation(ctx context.Context, space string) error {
+	if r.opts.IsolateSpaces {
+		return nil
+	}
+	return r.c.DeleteSpaceIsolation(ctx, r.ns(space), space)
+}
+
+// ReconcileSpaceIsolation applies (or retracts) every existing space's fence.
+// The installer calls it, so toggling kubernetes.isolateSpaces takes effect
+// at install time rather than at each space's next deploy.
+func (r *Runtime) ReconcileSpaceIsolation(ctx context.Context) error {
+	spaces, err := r.ListSpaces(ctx)
+	if err != nil {
+		return err
+	}
+	for _, space := range spaces {
+		if r.opts.IsolateSpaces {
+			if err := r.c.Apply(ctx, []k8sruntime.Object{
+				manifests.SpaceIsolationPolicy(space, r.ns(space), r.opts.SystemNamespace, r.opts.RestrictEgress),
+			}); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := r.syncSpaceIsolation(ctx, space); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (r *Runtime) DeleteSpace(ctx context.Context, space string) error {
@@ -201,15 +254,15 @@ func (r *Runtime) ListApps(ctx context.Context) ([]rt.AppRef, error) {
 }
 
 func (r *Runtime) Status(ctx context.Context, space, app string) (*rt.AppStatus, error) {
-	return r.c.AppStatus(ctx, r.ns(space), r.name(space, app))
+	return r.c.AppStatus(ctx, r.ns(space), r.name(space, app), space, app)
 }
 
 func (r *Runtime) HasData(ctx context.Context, space, app string) bool {
-	return r.c.HasDataClaim(ctx, r.ns(space), r.name(space, app))
+	return r.c.HasDataClaim(ctx, r.ns(space), r.name(space, app), space, app)
 }
 
 func (r *Runtime) Restart(ctx context.Context, space, app string) (bool, error) {
-	return r.c.RestartApp(ctx, r.ns(space), r.name(space, app))
+	return r.c.RestartApp(ctx, r.ns(space), r.name(space, app), space, app)
 }
 
 func (r *Runtime) Logs(ctx context.Context, space, app string, opts rt.LogOptions, out io.Writer) error {
@@ -217,13 +270,13 @@ func (r *Runtime) Logs(ctx context.Context, space, app string, opts rt.LogOption
 }
 
 func (r *Runtime) Evidence(ctx context.Context, space, app string) rt.Evidence {
-	return r.c.RolloutEvidenceFor(ctx, r.ns(space), r.name(space, app))
+	return r.c.RolloutEvidenceFor(ctx, r.ns(space), r.name(space, app), space, app)
 }
 
 // --- Env ------------------------------------------------------------------
 
 func (r *Runtime) GetEnv(ctx context.Context, space, app string) (map[string]string, error) {
-	return r.c.GetEnv(ctx, r.ns(space), r.name(space, app))
+	return r.c.GetEnv(ctx, r.ns(space), space, app, r.name(space, app))
 }
 
 func (r *Runtime) SetEnv(ctx context.Context, space, app string, env map[string]string) error {
@@ -239,41 +292,42 @@ func (r *Runtime) SetEnv(ctx context.Context, space, app string, env map[string]
 // --- App metadata ---------------------------------------------------------
 
 func (r *Runtime) AppMeta(ctx context.Context, space, app, key string) (string, error) {
-	return r.c.DeploymentAnnotation(ctx, r.ns(space), r.name(space, app), key)
+	return r.c.DeploymentAnnotation(ctx, r.ns(space), r.name(space, app), space, app, key)
 }
 
 func (r *Runtime) SetAppMeta(ctx context.Context, space, app, key string, value *string) error {
-	return r.c.SetAnnotations(ctx, "Deployment", r.ns(space), r.name(space, app), map[string]*string{key: value})
+	return r.c.SetAnnotations(ctx, "Deployment", r.ns(space), r.name(space, app),
+		manifests.Labels(space, app, manifests.ComponentWeb), map[string]*string{key: value})
 }
 
 // --- Files ----------------------------------------------------------------
 
 func (r *Runtime) ListFiles(ctx context.Context, space, app, path string) ([]rt.FileEntry, error) {
-	return r.c.ListFiles(ctx, r.ns(space), r.name(space, app), path)
+	return r.c.ListFiles(ctx, r.ns(space), r.name(space, app), space, app, path)
 }
 
 func (r *Runtime) StorageFolders(ctx context.Context, space, app string) ([]rt.StorageFolder, error) {
-	return r.c.StorageFolders(ctx, r.ns(space), r.name(space, app))
+	return r.c.StorageFolders(ctx, r.ns(space), r.name(space, app), space, app)
 }
 
 func (r *Runtime) ReadFile(ctx context.Context, space, app, path string, out io.Writer) error {
-	return r.c.ReadFile(ctx, r.ns(space), r.name(space, app), path, out)
+	return r.c.ReadFile(ctx, r.ns(space), r.name(space, app), space, app, path, out)
 }
 
 func (r *Runtime) WriteFile(ctx context.Context, space, app, path string, in io.Reader) error {
-	return r.c.WriteFile(ctx, r.ns(space), r.name(space, app), path, in)
+	return r.c.WriteFile(ctx, r.ns(space), r.name(space, app), space, app, path, in)
 }
 
 func (r *Runtime) RemoveFile(ctx context.Context, space, app, path string) error {
-	return r.c.RemoveFile(ctx, r.ns(space), r.name(space, app), path)
+	return r.c.RemoveFile(ctx, r.ns(space), r.name(space, app), space, app, path)
 }
 
 func (r *Runtime) MoveFile(ctx context.Context, space, app, from, to string) error {
-	return r.c.MoveFile(ctx, r.ns(space), r.name(space, app), from, to)
+	return r.c.MoveFile(ctx, r.ns(space), r.name(space, app), space, app, from, to)
 }
 
 func (r *Runtime) MakeDir(ctx context.Context, space, app, path string) error {
-	return r.c.MakeDir(ctx, r.ns(space), r.name(space, app), path)
+	return r.c.MakeDir(ctx, r.ns(space), r.name(space, app), space, app, path)
 }
 
 // --- Health ---------------------------------------------------------------

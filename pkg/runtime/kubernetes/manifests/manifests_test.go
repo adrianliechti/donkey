@@ -418,12 +418,12 @@ func mustObjects(t *testing.T, in Input) []runtime.Object {
 func TestStandardLabels(t *testing.T) {
 	l := Labels("demo", "backend", ComponentWeb)
 	for k, want := range map[string]string{
-		"app.kubernetes.io/name":       "backend",
-		"app.kubernetes.io/part-of":    "demo",
-		"app.kubernetes.io/component":  ComponentWeb,
-		"app.kubernetes.io/managed-by": ManagedByValue,
-		LabelApp:                       "backend",
-		LabelSpace:                     "demo",
+		"app.kubernetes.io/name":    "backend",
+		"app.kubernetes.io/part-of": "demo",
+		LabelComponent:               ComponentWeb,
+		LabelManagedBy:               ManagedByValue,
+		LabelApp:                     "backend",
+		LabelSpace:                   "demo",
 	} {
 		if l[k] != want {
 			t.Errorf("%s = %q, want %q", k, l[k], want)
@@ -435,9 +435,9 @@ func TestStandardLabels(t *testing.T) {
 	}
 }
 
-// A selector cannot be changed after the Deployment exists, so the labels the
-// pods are selected by must stay exactly what they always were — adding
-// metadata labels must never reach them.
+// A selector cannot be changed after the Deployment exists, so it stays at
+// the minimum immutable identity. Descriptive name, part-of and version
+// labels must never leak into it.
 func TestDeploymentSelectorIsUnaffectedByLabels(t *testing.T) {
 	in := testInput(t)
 	dep, err := deployment(in)

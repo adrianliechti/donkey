@@ -66,6 +66,10 @@ func (c *Client) AppNetwork(ctx context.Context, namespace, objectName, space, a
 	case apierrors.IsNotFound(err):
 	case err != nil:
 		return nil, err
+	case !sameObjectIdentity(cm.Labels, c.expectedObjectIdentity(
+		manifests.Labels(space, app, manifests.ComponentRoute))):
+		return nil, c.requireOwnedObject("ConfigMap", namespace, objectName, cm.Labels,
+			manifests.Labels(space, app, manifests.ComponentRoute))
 	case cm.Annotations[manifests.AnnotationBackend] != "":
 		st.RouteFound = true
 		st.Host = cm.Annotations[manifests.AnnotationHost]
@@ -87,6 +91,10 @@ func (c *Client) AppNetwork(ctx context.Context, namespace, objectName, space, a
 		return nil, err
 	}
 	for i := range routes.Items {
+		if c.requireOwnedObject("ConfigMap", namespace, routes.Items[i].Name, routes.Items[i].Labels,
+			manifests.Labels(space, app, manifests.ComponentPathRoute)) != nil {
+			continue
+		}
 		st.Routes = append(st.Routes, routeState(&routes.Items[i]))
 	}
 	return st, nil
@@ -97,10 +105,17 @@ func (c *Client) AppNetwork(ctx context.Context, namespace, objectName, space, a
 // the Deployment) and for access rules on routes — a patch instead of an
 // apply, so the field stays out of the deploy's server-side-apply ownership
 // and survives the next deploy untouched.
-func (c *Client) SetAnnotations(ctx context.Context, kind, namespace, name string, annotations map[string]*string) error {
+func (c *Client) SetAnnotations(ctx context.Context, kind, namespace, name string, identity map[string]string, annotations map[string]*string) error {
 	gvr, ok := gvrFor[kind]
 	if !ok {
 		return fmt.Errorf("donkey doesn't know how to annotate a %s", kind)
+	}
+	existing, err := c.Dynamic.Resource(gvr).Namespace(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return err
+	}
+	if err := c.requireOwnedObject(kind, namespace, name, existing.GetLabels(), identity); err != nil {
+		return err
 	}
 	patch := map[string]any{
 		"metadata": map[string]any{

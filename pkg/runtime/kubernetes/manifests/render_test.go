@@ -21,6 +21,9 @@ func TestRenderForInstallationStampsOfflineObjects(t *testing.T) {
 	if !strings.Contains(out, LabelInstallation+": bank-donkey-system") {
 		t.Fatalf("rendered object has no installation label:\n%s", out)
 	}
+	if !strings.Contains(out, LabelManagedBy+": "+ManagedByValue) {
+		t.Fatalf("rendered object has no managed-by label:\n%s", out)
+	}
 	if object.Labels != nil {
 		t.Fatal("rendering should not mutate the source object")
 	}
