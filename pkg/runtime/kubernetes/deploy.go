@@ -54,7 +54,7 @@ func (r *Runtime) Deploy(ctx context.Context, spec rt.DeploySpec, out rt.Progres
 	// simply joins it.
 	for _, a := range app.Addons {
 		shared, err := r.c.GetOwnedSecretData(ctx, ns, addons.SecretName(r.sharedOwner(space), a.Name),
-			manifests.AddonLabels(space, a.Name, manifests.ComponentBinding))
+			manifests.AddonLabels(space, a.Name, manifests.RoleBinding))
 		if err != nil {
 			return err
 		}
@@ -160,7 +160,7 @@ func (r *Runtime) Deploy(ctx context.Context, spec rt.DeploySpec, out rt.Progres
 
 	out.Line("Waiting for the app to become healthy…")
 	return r.c.WaitForRollout(ctx, ns, obj,
-		manifests.Labels(space, app.Name, manifests.ComponentWeb))
+		manifests.Labels(space, app.Name, manifests.RoleWorkload))
 }
 
 // Render renders the app's objects without touching the cluster.
@@ -318,7 +318,7 @@ func (r *Runtime) retractRemovedRoutes(ctx context.Context, ns string, in manife
 			continue
 		}
 		if err := r.c.DeleteObject(ctx, "ConfigMap", ns, name,
-			manifests.Labels(in.Space, in.App.Name, manifests.ComponentPathRoute)); err != nil {
+			manifests.Labels(in.Space, in.App.Name, manifests.RolePathRoute)); err != nil {
 			return err
 		}
 	}
@@ -405,7 +405,7 @@ func (r *Runtime) SetAccess(ctx context.Context, space, app string, access *conf
 	patch := map[string]*string{manifests.AnnotationAccess: value}
 	if net.Protected {
 		if err := r.c.SetAnnotations(ctx, "ConfigMap", ns, obj,
-			manifests.Labels(space, app, manifests.ComponentRoute), patch); err != nil {
+			manifests.Labels(space, app, manifests.RoleRoute), patch); err != nil {
 			return err
 		}
 	}
@@ -414,7 +414,7 @@ func (r *Runtime) SetAccess(ctx context.Context, space, app string, access *conf
 			continue
 		}
 		if err := r.c.SetAnnotations(ctx, "ConfigMap", ns, pr.Name,
-			manifests.Labels(space, app, manifests.ComponentPathRoute), patch); err != nil {
+			manifests.Labels(space, app, manifests.RolePathRoute), patch); err != nil {
 			return err
 		}
 	}

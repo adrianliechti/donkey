@@ -202,7 +202,7 @@ func dataClaim(in Input) (*corev1.PersistentVolumeClaim, error) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      DataClaimName(in.Name()),
 			Namespace: in.Namespace,
-			Labels:    Labels(in.Space, in.App.Name, ComponentStorage),
+			Labels:    Labels(in.Space, in.App.Name, RoleStorage),
 		},
 		Spec: corev1.PersistentVolumeClaimSpec{
 			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
@@ -235,7 +235,7 @@ func storageMounts(app *config.AppConfig) []corev1.VolumeMount {
 func pullSecret(in Input) *corev1.Secret {
 	return RegistryPullSecret(
 		PullSecretName(in.Name()), in.Namespace,
-		Labels(in.Space, in.App.Name, ComponentRegistryAuth),
+		Labels(in.Space, in.App.Name, RoleRegistryAuth),
 		in.RegistryHost, in.RegistryUsername, in.RegistryPassword,
 	)
 }
@@ -246,7 +246,7 @@ func telemetrySecret(in Input) *corev1.Secret {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      TelemetrySecretName(in.Name()),
 			Namespace: in.Namespace,
-			Labels:    Labels(in.Space, in.App.Name, ComponentConfig),
+			Labels:    Labels(in.Space, in.App.Name, RoleConfig),
 		},
 		StringData: map[string]string{
 			"OTEL_SERVICE_NAME":             in.App.Name,
@@ -404,14 +404,14 @@ func deployment(in Input) (*appsv1.Deployment, error) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        in.Name(),
 			Namespace:   in.Namespace,
-			Labels:      withVersion(Labels(in.Space, in.App.Name, ComponentWeb), in.ImageRef),
+			Labels:      withVersion(Labels(in.Space, in.App.Name, RoleWorkload), in.ImageRef),
 			Annotations: annotations,
 		},
 		Spec: appsv1.DeploymentSpec{
 			Replicas: app.Replicas,
-			Selector: &metav1.LabelSelector{MatchLabels: AppSelector(in.Space, in.App.Name, ComponentWeb)},
+			Selector: &metav1.LabelSelector{MatchLabels: AppSelector(in.Space, in.App.Name, RoleWorkload)},
 			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{Labels: withVersion(Labels(in.Space, in.App.Name, ComponentWeb), in.ImageRef)},
+				ObjectMeta: metav1.ObjectMeta{Labels: withVersion(Labels(in.Space, in.App.Name, RoleWorkload), in.ImageRef)},
 			},
 		},
 	}
@@ -453,11 +453,11 @@ func service(in Input) *corev1.Service {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      in.Name(),
 			Namespace: in.Namespace,
-			Labels:    Labels(in.Space, in.App.Name, ComponentWeb),
+			Labels:    Labels(in.Space, in.App.Name, RoleWorkload),
 		},
 		Spec: corev1.ServiceSpec{
 			Type:     corev1.ServiceTypeClusterIP,
-			Selector: AppSelector(in.Space, in.App.Name, ComponentWeb),
+			Selector: AppSelector(in.Space, in.App.Name, RoleWorkload),
 			Ports: []corev1.ServicePort{{
 				Name:       "http",
 				Port:       80,

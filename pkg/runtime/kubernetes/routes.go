@@ -67,9 +67,9 @@ func (c *Client) AppNetwork(ctx context.Context, namespace, objectName, space, a
 	case err != nil:
 		return nil, err
 	case !sameObjectIdentity(cm.Labels, c.expectedObjectIdentity(
-		manifests.Labels(space, app, manifests.ComponentRoute))):
+		manifests.Labels(space, app, manifests.RoleRoute))):
 		return nil, c.requireOwnedObject("ConfigMap", namespace, objectName, cm.Labels,
-			manifests.Labels(space, app, manifests.ComponentRoute))
+			manifests.Labels(space, app, manifests.RoleRoute))
 	case cm.Annotations[manifests.AnnotationBackend] != "":
 		st.RouteFound = true
 		st.Host = cm.Annotations[manifests.AnnotationHost]
@@ -85,14 +85,14 @@ func (c *Client) AppNetwork(ctx context.Context, namespace, objectName, space, a
 	routes, err := c.Clientset.CoreV1().ConfigMaps(namespace).List(ctx, metav1.ListOptions{
 		LabelSelector: fmt.Sprintf("%s=%s,%s=%s,%s=%s,%s=%s",
 			manifests.LabelInstallation, c.installation(), manifests.LabelSpace, space,
-			manifests.LabelApp, app, manifests.LabelComponent, manifests.ComponentPathRoute),
+			manifests.LabelApp, app, manifests.LabelRole, manifests.RolePathRoute),
 	})
 	if err != nil {
 		return nil, err
 	}
 	for i := range routes.Items {
 		if c.requireOwnedObject("ConfigMap", namespace, routes.Items[i].Name, routes.Items[i].Labels,
-			manifests.Labels(space, app, manifests.ComponentPathRoute)) != nil {
+			manifests.Labels(space, app, manifests.RolePathRoute)) != nil {
 			continue
 		}
 		st.Routes = append(st.Routes, routeState(&routes.Items[i]))

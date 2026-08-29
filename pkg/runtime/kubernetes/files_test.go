@@ -241,7 +241,7 @@ func TestFilesHelperName(t *testing.T) {
 
 func TestFileOperationsRequireRequestedAppIdentity(t *testing.T) {
 	const namespace = "workloads"
-	labels := manifests.Labels("other-space", "other-app", manifests.ComponentStorage)
+	labels := manifests.Labels("other-space", "other-app", manifests.RoleStorage)
 	labels[manifests.LabelInstallation] = "donkey-system"
 	pvc := &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{
 		Name: manifests.DataClaimName("team--site"), Namespace: namespace, Labels: labels,
@@ -260,7 +260,7 @@ func TestFileOperationsRequireRequestedAppIdentity(t *testing.T) {
 
 func TestRemoveFilesHelperRequiresRequestedAppIdentity(t *testing.T) {
 	const namespace = "workloads"
-	labels := manifests.Labels("other-space", "other-app", manifests.ComponentFiles)
+	labels := manifests.Labels("other-space", "other-app", manifests.RoleFiles)
 	labels[manifests.LabelInstallation] = "donkey-system"
 	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
 		Name: filesHelperName("team--site"), Namespace: namespace, Labels: labels,
@@ -279,7 +279,7 @@ func TestRemoveFilesHelperRequiresRequestedAppIdentity(t *testing.T) {
 
 func TestFilesHelperCommandsRequireLabelsAndOriginalUID(t *testing.T) {
 	const namespace = "workloads"
-	labels := manifests.Labels("team", "site", manifests.ComponentFiles)
+	labels := manifests.Labels("team", "site", manifests.RoleFiles)
 	labels[manifests.LabelInstallation] = "donkey-system"
 	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
 		Name:      filesHelperName("team--site"),

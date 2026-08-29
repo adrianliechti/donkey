@@ -23,40 +23,47 @@ that never heard of donkey.
 | `donkey.local/space` | everything space-scoped | The lifecycle boundary: removing the space removes everything carrying it. |
 | `donkey.local/app` | an app's objects | The logical app. Never qualified, even where object names are. |
 | `donkey.local/addon` | a space service's objects | The logical service. An app's copy of a service binding deliberately carries **both** `app` and `addon`, because it represents that relationship. |
+| `donkey.local/role` | every object | Donkey's immutable internal role (`workload`, `route`, `binding`, `storage`, …). This is the role selectors and ownership checks use; it is not Kubernetes API Kind or architectural component. |
 
 ### Description: `app.kubernetes.io/*`
 
 | Label | App objects | Space service | Space | Control plane |
 |---|---|---|---|---|
 | `name` | app | addon | space | workload (`donkey-server`, …) |
-| `instance` | `<space>--<app>` | `<space>--<addon>` | space | the installation (system namespace) |
+| `instance` | space | space | space | the installation (system namespace) |
 | `version` | image tag | — | — | control-plane image tag (workloads) |
-| `component` | role, see below | `addon` | `space` | workload name |
 | `part-of` | space | space | space | `donkey` |
 | `managed-by` | `donkey` | `donkey` | `donkey` | `donkey` |
 
-The instance value uses the same `--` join as object names in a shared
-workload namespace (names may not contain it, so the value is unambiguous) —
-where names are qualified, instance equals the object name. A version label
-is derived from the image tag and dropped when the tag cannot be a legal
-label value: a missing label costs a line in k9s, a rejected one costs the
-deploy.
+The space is the release and lifecycle instance; `name + instance` identifies
+one app or addon. Shared-namespace object names still use `<space>--<name>` to
+avoid collisions, but that storage detail never leaks into standard metadata.
+`app.kubernetes.io/component` is omitted: donkey does not know whether an
+arbitrary app is a frontend, backend or database, and will not invent the
+answer. A version label is derived from the image tag and dropped when the tag
+cannot be a legal label value.
 
-App components: `web` (Deployment, Service, pods), `route` and `path-route`
+Donkey roles: `workload` (Deployment, Service, pods), `route` and `path-route`
 (the gateway's routing entries), `config` (env and telemetry Secrets),
 `registry-auth` (pull secret), `storage` (the data claim), `binding` (a
 service connection), `edge` (optional per-app managed edge objects), `files`
 (the short-lived file-browser helper pod). Spaces are `space`, services
-`addon`; control-plane objects use their workload name as the component.
+`addon`; control-plane roles are `server`, `gateway`, `ai`, `telemetry`,
+`packages` and `buildkitd`, aligned with Docker while their standard `name`
+keeps the actual `donkey-*` workload name.
 
 ### Selectors
 
 Selectors are immutable once created, so they carry the minimum stable
 identity and nothing descriptive:
 
-- an app's Deployment and Service select `space + app + component`;
-- a service's select `space + addon + component=addon`;
-- a control-plane workload's select its `component` alone.
+- an app's Deployment and Service select `space + app + role=workload`;
+- a service's select `space + addon + role=addon`;
+- a control-plane workload selects its Donkey role.
+
+The installation is added to each selector at the apply/render boundary. No
+`app.kubernetes.io/*` label—including `managed-by`—ever enters a selector or
+ownership comparison; those labels remain freely changeable metadata.
 
 The apply/render boundary stamps `donkey.local/installation` into every
 object, every selector and every pod template — offline-rendered manifests
@@ -75,7 +82,6 @@ Non-identifying or potentially large configuration stays in annotations:
 | `donkey.local/image` | app Deployments | the deployed image reference |
 | `donkey.local/decisions` | app Deployments | deploy-time analysis decisions (JSON), so `--no-build` redeploys keep them |
 | `donkey.local/console` | app Deployments | console choices that survive deploys (until donkey.yaml settles the matter) |
-| `donkey.local/release` | app Deployments | the bounded latest-deploy record the console renders |
 | `donkey.local/config-hash` | control-plane pod templates | rolls pods that read config only at startup |
 | `donkey.local/restarted-at` | app pod templates | patched to force a restart |
 | `donkey.local/files-expires-at` | file-browser helper pods | when an abandoned helper may be reaped |
@@ -90,8 +96,8 @@ kubectl get all -A -l donkey.local/installation=donkey-system
 # everything of one space
 kubectl get all -A -l donkey.local/space=acme
 
-# one app instance, using only standard labels
-kubectl get all -A -l app.kubernetes.io/instance=acme--shop
+# one app instance, using only standard metadata
+kubectl get all -A -l app.kubernetes.io/instance=acme,app.kubernetes.io/name=shop
 
 # the platform itself
 kubectl get all -A -l app.kubernetes.io/part-of=donkey

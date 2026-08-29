@@ -55,7 +55,7 @@ func secretStringData(sec *corev1.Secret) map[string]string {
 // GetEnv returns the app's current env vars from its env secret.
 func (c *Client) GetEnv(ctx context.Context, namespace, space, app, objectName string) (map[string]string, error) {
 	return c.GetOwnedSecretData(ctx, namespace, manifests.EnvSecretName(objectName),
-		manifests.Labels(space, app, manifests.ComponentConfig))
+		manifests.Labels(space, app, manifests.RoleConfig))
 }
 
 // SetEnv replaces the app's env secret with the given variables.
@@ -69,7 +69,7 @@ func (c *Client) SetEnv(ctx context.Context, namespace, space, app, objectName s
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      manifests.EnvSecretName(objectName),
 			Namespace: namespace,
-			Labels:    manifests.Labels(space, app, manifests.ComponentConfig),
+			Labels:    manifests.Labels(space, app, manifests.RoleConfig),
 		},
 		Data: data,
 	}
@@ -90,7 +90,7 @@ func (c *Client) SetAddonEnvFrom(ctx context.Context, namespace, objectName, spa
 		return false, err
 	}
 	if err := c.requireOwnedObject("Deployment", namespace, objectName, dep.Labels,
-		manifests.Labels(space, app, manifests.ComponentWeb)); err != nil {
+		manifests.Labels(space, app, manifests.RoleWorkload)); err != nil {
 		return false, err
 	}
 	if len(dep.Spec.Template.Spec.Containers) == 0 {
@@ -132,7 +132,7 @@ func (c *Client) RestartApp(ctx context.Context, namespace, objectName, space, a
 		return false, err
 	}
 	if err := c.requireOwnedObject("Deployment", namespace, objectName, dep.Labels,
-		manifests.Labels(space, app, manifests.ComponentWeb)); err != nil {
+		manifests.Labels(space, app, manifests.RoleWorkload)); err != nil {
 		return false, err
 	}
 	patch := fmt.Sprintf(

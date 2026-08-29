@@ -29,11 +29,17 @@ export const statusQuery = (space: string, app: string) =>
     refetchInterval: 10_000,
   })
 
-export const releaseQuery = (space: string, app: string) =>
+export const buildsQuery = (space: string, app: string) =>
   queryOptions({
-    queryKey: ['release', space, app],
-    queryFn: () => api.release(space, app),
-    staleTime: 30_000,
+    queryKey: ['builds', space, app],
+    queryFn: () => api.builds(space, app),
+  })
+
+export const buildQuery = (space: string, app: string, sequence: number) =>
+  queryOptions({
+    queryKey: ['build', space, app, sequence],
+    queryFn: () => api.build(space, app, sequence),
+    staleTime: Infinity, // a stored build never changes
   })
 
 export const trafficQuery = (space: string, app = '', source: TrafficSource = 'edge', range: TrafficRange = '30d') =>
@@ -100,8 +106,12 @@ export function useAppStatus(space: string, app: string) {
   return present(useQuery(statusQuery(space, app)))
 }
 
-export function useAppRelease(space: string, app: string) {
-  return present(useQuery(releaseQuery(space, app)))
+export function useAppBuilds(space: string, app: string) {
+  return present(useQuery(buildsQuery(space, app)))
+}
+
+export function useAppBuild(space: string, app: string, sequence: number | null) {
+  return present(useQuery({ ...buildQuery(space, app, sequence ?? 0), enabled: sequence !== null }))
 }
 
 export function useTraffic(space: string, app = '', source: TrafficSource = 'edge', range: TrafficRange = '30d') {

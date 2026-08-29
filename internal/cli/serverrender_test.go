@@ -169,29 +169,29 @@ func TestDockerRenderMatchesRuntimeTopologyWithoutSecrets(t *testing.T) {
 	if err := yaml.Unmarshal([]byte(compose), &typed); err != nil {
 		t.Fatalf("compose.yaml does not match the renderer schema: %v", err)
 	}
-	// Every compose service must carry exactly the component the direct
+	// Every compose service must carry exactly the role the direct
 	// installer (and the bundle's own preflight) expects for its container —
 	// the compose service key is not that contract.
-	installComponents := map[string]string{}
+	installRoles := map[string]string{}
 	for _, item := range dockerInstallContainers(true) {
-		installComponents[item.name] = item.component
+		installRoles[item.name] = item.role
 	}
 	for key, service := range typed.Services {
-		component, ok := installComponents[service.ContainerName]
+		role, ok := installRoles[service.ContainerName]
 		if !ok {
 			t.Errorf("Compose service %s container %s is not in the installer's owned set", key, service.ContainerName)
 			continue
 		}
-		if got := service.Labels; !reflect.DeepEqual(got, runtimedocker.SystemLabels(component)) {
-			t.Errorf("Compose service %s labels=%v, want SystemLabels(%q)", key, got, component)
+		if got := service.Labels; !reflect.DeepEqual(got, runtimedocker.SystemLabels(role)) {
+			t.Errorf("Compose service %s labels=%v, want SystemLabels(%q)", key, got, role)
 		}
 	}
-	if got := typed.Networks["donkey"].Labels; !reflect.DeepEqual(got, runtimedocker.SystemLabels(runtimedocker.ComponentNetwork)) {
+	if got := typed.Networks["donkey"].Labels; !reflect.DeepEqual(got, runtimedocker.SystemLabels(runtimedocker.RoleNetwork)) {
 		t.Errorf("Compose network labels=%v", got)
 	}
 	for name, volume := range typed.Volumes {
 		if volume.Labels["local.donkey.managed"] != "true" ||
-			volume.Labels["local.donkey.installation"] != "donkey" || volume.Labels["local.donkey.component"] == "" {
+			volume.Labels["local.donkey.installation"] != "donkey" || volume.Labels["local.donkey.role"] == "" {
 			t.Errorf("Compose volume %s labels=%v", name, volume.Labels)
 		}
 	}
@@ -204,7 +204,7 @@ func TestDockerRenderMatchesRuntimeTopologyWithoutSecrets(t *testing.T) {
 		"require_owned container donkey-buildkitd buildkitd",
 		"require_owned container donkey-registry registry",
 		"local.donkey.managed", "local.donkey.installation", "local.donkey.space",
-		"local.donkey.app", "local.donkey.addon", "local.donkey.component",
+		"local.donkey.app", "local.donkey.addon", "local.donkey.role",
 		// Recovered env values are read with a non-line delimiter: a
 		// line-based read truncated multi-line builder instructions.
 		`awk -v RS="$(printf '\037')"`,

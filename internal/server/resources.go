@@ -27,7 +27,7 @@ func (s *Server) handleResources(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	report, err := s.traffic.Resources(r.Context(), space, app, selected)
+	report, err := s.telemetry.Resources(r.Context(), space, app, selected)
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err)
 		return

@@ -70,13 +70,13 @@ func (r *Runtime) filesHelper(ctx context.Context, space, app string) (string, e
 			return "", fmt.Errorf("the Docker container %s has no inspectable configuration", ctrName(space, app))
 		}
 		if err := requireIdentity("container", ctrName(space, app), appInfo.Config.Labels,
-			appLabels(space, app, componentWeb)); err != nil {
+			appLabels(space, app, roleWorkload)); err != nil {
 			return "", err
 		}
 		return "", rt.ErrNoDisk
 	}
 	if err := requireIdentity("volume", volName(space, app), volume.Labels,
-		appLabels(space, app, componentStorage)); err != nil {
+		appLabels(space, app, roleStorage)); err != nil {
 		return "", err
 	}
 	name := filesHelperName(space, app)
@@ -86,13 +86,13 @@ func (r *Runtime) filesHelper(ctx context.Context, space, app string) (string, e
 			return "", fmt.Errorf("the Docker container %s has no inspectable configuration", name)
 		}
 		if err := requireIdentity("container", name, info.Config.Labels,
-			appLabels(space, app, componentFiles)); err != nil {
+			appLabels(space, app, roleFiles)); err != nil {
 			return "", err
 		}
 		return name, nil
 	}
 	if err == nil {
-		if err := r.removeOwnedContainer(ctx, name, appLabels(space, app, componentFiles)); err != nil {
+		if err := r.removeOwnedContainer(ctx, name, appLabels(space, app, roleFiles)); err != nil {
 			return "", err
 		}
 	} else if !cerrdefs.IsNotFound(err) {
@@ -101,7 +101,7 @@ func (r *Runtime) filesHelper(ctx context.Context, space, app string) (string, e
 	if err := r.pullImage(ctx, filesImage); err != nil {
 		return "", err
 	}
-	labels := appLabels(space, app, componentFiles)
+	labels := appLabels(space, app, roleFiles)
 	_, err = r.cli.ContainerCreate(ctx, &container.Config{
 		Image: filesImage,
 		// The helper stops by itself: browsing files once must not leave a

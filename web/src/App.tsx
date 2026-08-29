@@ -27,6 +27,7 @@ import { UserMenu } from './UserMenu'
 // place, an unhealthy app can be linked to a teammate, and bookmarks from
 // the previous console keep working.
 const APP_TABS: AppTab[] = ['overview', 'release', 'traffic', 'logs', 'files', 'variables', 'settings']
+const pageTitle = (page: string) => page + ' · Donkey'
 
 // One cache for the whole console. Short staleness keeps panels honest
 // while still letting a remounted view show what it knew instantly. The
@@ -48,7 +49,7 @@ function Shell() {
               onClick={() => navigate({ to: '/' })}
               className="flex shrink-0 items-center gap-2 font-mono text-base font-bold tracking-tight focus-visible:outline-2 focus-visible:outline-hay-deep"
             >
-              <DonkeyLogo className="size-5 text-white" />
+              <DonkeyLogo className="size-5 text-ink" />
               Donkey
             </button>
             <Breadcrumb />
@@ -177,7 +178,7 @@ function DeployPage({ space, name }: { space: string; name: string }) {
 // query cache so a view opens with its data already there.
 const rootRoute = createRootRouteWithContext<{ queryClient: QueryClient }>()({
   component: Shell,
-  head: () => ({ meta: [{ title: 'Donkey — admin' }] }),
+  head: () => ({ meta: [{ title: pageTitle('Apps') }] }),
 })
 
 // Pathless layout: it has no path of its own, so it stays mounted for both
@@ -209,14 +210,14 @@ const systemRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/system',
   component: SystemView,
-  head: () => ({ meta: [{ title: 'System · Donkey' }] }),
+  head: () => ({ meta: [{ title: pageTitle('System') }] }),
 })
 
 const deployRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/deploy',
   component: () => <DeployPage space="" name="" />,
-  head: () => ({ meta: [{ title: 'Deploy · Donkey' }] }),
+  head: () => ({ meta: [{ title: pageTitle('Deploy') }] }),
 })
 
 const deployAppRoute = createRoute({
@@ -226,7 +227,7 @@ const deployAppRoute = createRoute({
     const { space, name } = deployAppRoute.useParams()
     return <DeployPage space={space} name={name} />
   },
-  head: () => ({ meta: [{ title: 'Deploy · Donkey' }] }),
+  head: () => ({ meta: [{ title: pageTitle('Deploy') }] }),
 })
 
 // One route for the panel and every one of its tabs ({-$tab} is optional,
@@ -237,7 +238,7 @@ const appRoute = createRoute({
   path: '/app/$space/$name/{-$tab}',
   loader: ({ context, params }) =>
     context.queryClient.ensureQueryData(statusQuery(params.space, params.name)),
-  head: ({ params }) => ({ meta: [{ title: `${params.name} · Donkey` }] }),
+  head: ({ params }) => ({ meta: [{ title: pageTitle(params.name) }] }),
   component: () => {
     const { space, name, tab } = appRoute.useParams()
     // The tab comes from the URL, so it can name something that doesn't

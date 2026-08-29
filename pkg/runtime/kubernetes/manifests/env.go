@@ -22,6 +22,8 @@ func buildEnv(b config.InstallBuild) []corev1.EnvVar {
 		{Name: "DONKEY_BUILDER_VERIFY", Value: verifyValue(b.BuildSettings)},
 		{Name: "DONKEY_BUILDER_VERIFY_SECONDS", Value: positiveOrEmpty(b.VerifySeconds)},
 		{Name: "DONKEY_BUILDER_ATTEMPTS", Value: positiveOrEmpty(b.Attempts)},
+		{Name: "DONKEY_BUILDER_PROVENANCE", Value: b.Provenance},
+		{Name: "DONKEY_BUILDER_SBOM", Value: trueOrEmpty(b.SBOM)},
 	} {
 		if e.Value != "" {
 			env = append(env, e)
@@ -120,4 +122,13 @@ func proxyEnv(p config.InstallProxy, registryHost string) []corev1.EnvVar {
 		)
 	}
 	return env
+}
+
+// trueOrEmpty renders an opt-in boolean the way this env block travels:
+// only what was configured.
+func trueOrEmpty(v bool) string {
+	if v {
+		return "true"
+	}
+	return ""
 }

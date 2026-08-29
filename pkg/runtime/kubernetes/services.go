@@ -16,7 +16,7 @@ import (
 // --- Services (addons) ----------------------------------------------------
 
 func (r *Runtime) ServiceBinding(ctx context.Context, space, owner, name string) (map[string]string, error) {
-	identity := manifests.AddonLabels(space, name, manifests.ComponentBinding)
+	identity := manifests.AddonLabels(space, name, manifests.RoleBinding)
 	if owner != addons.SharedOwner {
 		identity[manifests.LabelApp] = owner
 	}
@@ -57,10 +57,10 @@ func (r *Runtime) EnsureService(ctx context.Context, space string, spec rt.Servi
 		if identity, exists, err := r.c.DeploymentIdentity(ctx, ns, r.name(space, spec.Name)); err != nil {
 			return nil, "", "", err
 		} else if exists {
-			expected := manifests.AddonLabels(space, spec.Name, manifests.ComponentAddon)
+			expected := manifests.AddonLabels(space, spec.Name, manifests.RoleAddon)
 			if err := r.c.requireOwnedObject("Deployment", ns, r.name(space, spec.Name), identity, expected); err != nil {
 				if r.c.requireOwnedObject("Deployment", ns, r.name(space, spec.Name), identity,
-					manifests.Labels(space, spec.Name, manifests.ComponentWeb)) == nil {
+					manifests.Labels(space, spec.Name, manifests.RoleWorkload)) == nil {
 					return nil, "", "", rt.UserError{Err: fmt.Errorf("the name %q is taken by an app in this space — pick another for the service", spec.Name)}
 				}
 				return nil, "", "", err
@@ -115,7 +115,7 @@ func (r *Runtime) provisionService(ctx context.Context, space, ns string, spec r
 		in.Storage = addon.DefaultStorage()
 	}
 	existing, err := r.c.GetOwnedSecretData(ctx, ns, addons.SecretName(in.App, spec.Name),
-		manifests.AddonLabels(space, spec.Name, manifests.ComponentBinding))
+		manifests.AddonLabels(space, spec.Name, manifests.RoleBinding))
 	if err != nil {
 		return in, err
 	}
@@ -155,7 +155,7 @@ func (r *Runtime) provisionService(ctx context.Context, space, ns string, spec r
 		return in, nil
 	}
 	return in, r.c.WaitForRollout(ctx, ns, in.HostName(),
-		manifests.AddonLabels(space, spec.Name, manifests.ComponentAddon))
+		manifests.AddonLabels(space, spec.Name, manifests.RoleAddon))
 }
 
 // addonImagePullCredentials reuses the configured registry login when an

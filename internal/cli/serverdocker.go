@@ -155,12 +155,12 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 	}
 	for _, item := range dockerInstallVolumes(bundledRegistry) {
 		vol, err := cli.VolumeCreate(ctx, volume.CreateOptions{
-			Name: item.name, Labels: docker.SystemLabels(item.component),
+			Name: item.name, Labels: docker.SystemLabels(item.role),
 		})
 		if err != nil {
 			return err
 		}
-		if err := requireDockerSystemResource("volume", item.name, vol.Labels, item.component); err != nil {
+		if err := requireDockerSystemResource("volume", item.name, vol.Labels, item.role); err != nil {
 			return err
 		}
 	}
@@ -502,6 +502,9 @@ func validateDockerSettings(settings *config.InstallFile) error {
 	if err := settings.Registry.ValidateRuntime("docker"); err != nil {
 		return err
 	}
+	if err := settings.Build.ValidateProvenance(); err != nil {
+		return err
+	}
 	switch settings.TLS.Mode {
 	case "", "acme", "ca":
 	default:
@@ -531,6 +534,12 @@ func builderEnvMap(b config.BuildSettings) map[string]string {
 	}
 	if b.Attempts > 0 {
 		env["DONKEY_BUILDER_ATTEMPTS"] = strconv.Itoa(b.Attempts)
+	}
+	if b.Provenance != "" {
+		env["DONKEY_BUILDER_PROVENANCE"] = b.Provenance
+	}
+	if b.SBOM {
+		env["DONKEY_BUILDER_SBOM"] = "true"
 	}
 	return env
 }
@@ -571,42 +580,42 @@ func adminsJSONString(admins *config.AccessConfig) string {
 }
 
 type dockerOwnedResource struct {
-	name      string
-	component string
+	name string
+	role string
 }
 
 func dockerInstallVolumes(bundledRegistry bool) []dockerOwnedResource {
 	resources := []dockerOwnedResource{
-		{name: dockerDataVolume, component: docker.ComponentStateStorage},
-		{name: dockerBuildkitVolume, component: docker.ComponentBuildkitStorage},
-		{name: dockerTelemetryVolume, component: docker.ComponentTelemetryStorage},
+		{name: dockerDataVolume, role: docker.RoleStateStorage},
+		{name: dockerBuildkitVolume, role: docker.RoleBuildkitStorage},
+		{name: dockerTelemetryVolume, role: docker.RoleTelemetryStorage},
 	}
 	if bundledRegistry {
-		resources = append(resources, dockerOwnedResource{name: dockerRegistryVolume, component: docker.ComponentRegistryStorage})
+		resources = append(resources, dockerOwnedResource{name: dockerRegistryVolume, role: docker.RoleRegistryStorage})
 	}
 	return resources
 }
 
 func dockerInstallContainers(bundledRegistry bool) []dockerOwnedResource {
 	resources := []dockerOwnedResource{
-		{name: dockerPackagesName, component: docker.ComponentPackages},
-		{name: dockerBuildkitName, component: docker.ComponentBuildkit},
-		{name: dockerTelemetryName, component: docker.ComponentTelemetry},
-		{name: dockerServerName, component: docker.ComponentServer},
-		{name: dockerGatewayName, component: docker.ComponentGateway},
-		{name: dockerAIName, component: docker.ComponentAI},
+		{name: dockerPackagesName, role: docker.RolePackages},
+		{name: dockerBuildkitName, role: docker.RoleBuildkit},
+		{name: dockerTelemetryName, role: docker.RoleTelemetry},
+		{name: dockerServerName, role: docker.RoleServer},
+		{name: dockerGatewayName, role: docker.RoleGateway},
+		{name: dockerAIName, role: docker.RoleAI},
 	}
 	if bundledRegistry {
-		resources = append(resources, dockerOwnedResource{name: dockerRegistryName, component: docker.ComponentRegistry})
+		resources = append(resources, dockerOwnedResource{name: dockerRegistryName, role: docker.RoleRegistry})
 	}
 	return resources
 }
 
-func requireDockerSystemResource(kind, name string, labels map[string]string, component string) error {
-	if docker.MatchesSystemLabels(labels, component) {
+func requireDockerSystemResource(kind, name string, labels map[string]string, role string) error {
+	if docker.MatchesSystemLabels(labels, role) {
 		return nil
 	}
-	return fmt.Errorf("the Docker %s %s exists but isn't this donkey installation's %s resource — remove or rename it before installing", kind, name, component)
+	return fmt.Errorf("the Docker %s %s exists but isn't this donkey installation's %s resource — remove or rename it before installing", kind, name, role)
 }
 
 // checkDockerInstallOwnership fails before reading secrets or replacing any
@@ -614,7 +623,7 @@ func requireDockerSystemResource(kind, name string, labels map[string]string, co
 // must carry the complete immutable system identity introduced by this schema.
 func checkDockerInstallOwnership(ctx context.Context, cli *dockerclient.Client, bundledRegistry bool) error {
 	if nw, err := cli.NetworkInspect(ctx, dockerNetwork, network.InspectOptions{}); err == nil {
-		if err := requireDockerSystemResource("network", dockerNetwork, nw.Labels, docker.ComponentNetwork); err != nil {
+		if err := requireDockerSystemResource("network", dockerNetwork, nw.Labels, docker.RoleNetwork); err != nil {
 			return err
 		}
 	} else if !cerrdefs.IsNotFound(err) {
@@ -628,7 +637,7 @@ func checkDockerInstallOwnership(ctx context.Context, cli *dockerclient.Client, 
 		if err != nil {
 			return err
 		}
-		if err := requireDockerSystemResource("volume", item.name, vol.Labels, item.component); err != nil {
+		if err := requireDockerSystemResource("volume", item.name, vol.Labels, item.role); err != nil {
 			return err
 		}
 	}
@@ -643,7 +652,7 @@ func checkDockerInstallOwnership(ctx context.Context, cli *dockerclient.Client, 
 		if info.Config == nil {
 			return fmt.Errorf("the Docker container %s has no inspectable configuration", item.name)
 		}
-		if err := requireDockerSystemResource("container", item.name, info.Config.Labels, item.component); err != nil {
+		if err := requireDockerSystemResource("container", item.name, info.Config.Labels, item.role); err != nil {
 			return err
 		}
 	}
@@ -654,7 +663,7 @@ func ensureDockerNetwork(ctx context.Context, cli *dockerclient.Client) error {
 	nw, err := cli.NetworkInspect(ctx, dockerNetwork, network.InspectOptions{})
 	if cerrdefs.IsNotFound(err) {
 		if _, err = cli.NetworkCreate(ctx, dockerNetwork, network.CreateOptions{
-			Labels: docker.SystemLabels(docker.ComponentNetwork),
+			Labels: docker.SystemLabels(docker.RoleNetwork),
 		}); err != nil {
 			return err
 		}
@@ -663,7 +672,7 @@ func ensureDockerNetwork(ctx context.Context, cli *dockerclient.Client) error {
 	if err != nil {
 		return err
 	}
-	return requireDockerSystemResource("network", dockerNetwork, nw.Labels, docker.ComponentNetwork)
+	return requireDockerSystemResource("network", dockerNetwork, nw.Labels, docker.RoleNetwork)
 }
 
 type infraContainer struct {
@@ -683,14 +692,14 @@ type infraContainer struct {
 // replaceInfraContainer recreates one of donkey's own containers — the
 // Docker spelling of an idempotent install: same name, fresh config.
 func replaceInfraContainer(ctx context.Context, cli *dockerclient.Client, spec infraContainer) error {
-	component := docker.SystemComponentOf(spec.Name)
+	role := docker.SystemRoleOf(spec.Name)
 	info, err := cli.ContainerInspect(ctx, spec.Name)
 	switch {
 	case err == nil:
 		if info.Config == nil {
 			return fmt.Errorf("the Docker container %s has no inspectable configuration", spec.Name)
 		}
-		if err := requireDockerSystemResource("container", spec.Name, info.Config.Labels, component); err != nil {
+		if err := requireDockerSystemResource("container", spec.Name, info.Config.Labels, role); err != nil {
 			return err
 		}
 	case !cerrdefs.IsNotFound(err):
@@ -724,7 +733,7 @@ func replaceInfraContainer(ctx context.Context, cli *dockerclient.Client, spec i
 		Env:          env,
 		ExposedPorts: exposed,
 		Healthcheck:  spec.Healthcheck,
-		Labels:       docker.SystemLabels(component),
+		Labels:       docker.SystemLabels(role),
 	}
 	hostCfg := &container.HostConfig{
 		Mounts:        spec.Mounts,
@@ -812,7 +821,7 @@ func existingContainerEnv(ctx context.Context, cli *dockerclient.Client, name, k
 	if err != nil || info.Config == nil {
 		return ""
 	}
-	if !docker.MatchesSystemLabels(info.Config.Labels, docker.SystemComponentOf(name)) {
+	if !docker.MatchesSystemLabels(info.Config.Labels, docker.SystemRoleOf(name)) {
 		return ""
 	}
 	for _, kv := range info.Config.Env {

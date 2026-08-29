@@ -47,13 +47,13 @@ func bindingSecret(objectOwner, namespace string, labels map[string]string, name
 // identity and deliberately no pseudo-app label.
 func spaceBindingSecret(space, objectOwner, namespace, name string, data map[string]string) *corev1.Secret {
 	return bindingSecret(objectOwner, namespace,
-		manifests.AddonLabels(space, name, manifests.ComponentBinding), name, data)
+		manifests.AddonLabels(space, name, manifests.RoleBinding), name, data)
 }
 
 // attachmentSecret is an app's copy of a space service binding. App and addon
 // identity make it selectable without a boolean "shared" marker.
 func attachmentSecret(space, app, objectApp, namespace, name string, data map[string]string) *corev1.Secret {
-	labels := manifests.AddonLabels(space, name, manifests.ComponentBinding)
+	labels := manifests.AddonLabels(space, name, manifests.RoleBinding)
 	labels[manifests.LabelApp] = app
 	return bindingSecret(objectApp, namespace, labels, name, data)
 }
@@ -63,7 +63,7 @@ func attachmentSecret(space, app, objectApp, namespace, name string, data map[st
 // the space reach it as e.g. "postgres" the same way they reach each other.
 func addonObjects(in addons.Input, w *addons.Workload, pull *imagePullCredentials, pullSecretNames []string) ([]k8sruntime.Object, error) {
 	name := in.HostName()
-	labels := manifests.AddonLabels(in.Space, in.Name, manifests.ComponentAddon)
+	labels := manifests.AddonLabels(in.Space, in.Name, manifests.RoleAddon)
 	selector := manifests.AddonSelector(in.Space, in.Name)
 
 	storage, err := resource.ParseQuantity(in.Storage)
@@ -75,7 +75,7 @@ func addonObjects(in addons.Input, w *addons.Workload, pull *imagePullCredential
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name + "-data",
 			Namespace: in.Namespace,
-			Labels:    manifests.AddonLabels(in.Space, in.Name, manifests.ComponentStorage),
+			Labels:    manifests.AddonLabels(in.Space, in.Name, manifests.RoleStorage),
 		},
 		Spec: corev1.PersistentVolumeClaimSpec{
 			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
@@ -198,7 +198,7 @@ func addonObjects(in addons.Input, w *addons.Workload, pull *imagePullCredential
 	if pull != nil {
 		objs = append(objs, manifests.RegistryPullSecret(
 			manifests.PullSecretName(name), in.Namespace,
-			manifests.AddonLabels(in.Space, in.Name, manifests.ComponentRegistryAuth),
+			manifests.AddonLabels(in.Space, in.Name, manifests.RoleRegistryAuth),
 			pull.Host, pull.Username, pull.Password,
 		))
 	}

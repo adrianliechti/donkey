@@ -127,11 +127,10 @@ func startCommand(cfg ocispecs.Image) string {
 	return strings.Join(quoted, " ")
 }
 
-// imageConfigOf reads the frontend's config for the built image.
-func imageConfigOf(metadata map[string][]byte) (ocispecs.Image, error) {
+// imageConfig reads the frontend's config for the built image.
+func imageConfig(raw []byte) (ocispecs.Image, error) {
 	var cfg ocispecs.Image
-	raw, ok := metadata["containerimage.config"]
-	if !ok {
+	if len(raw) == 0 {
 		return cfg, fmt.Errorf("the build produced no image configuration to verify")
 	}
 	if err := json.Unmarshal(raw, &cfg); err != nil {

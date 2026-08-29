@@ -46,6 +46,9 @@ type DeployResult struct {
 type DeployUpdate struct {
 	Stage      string   `json:"stage,omitempty"`
 	BaseImages []string `json:"baseImages,omitempty"`
+	// Dockerfile is the exact file this build used, reported once it is
+	// settled — the app's own, or the one the assistant wrote.
+	Dockerfile string `json:"dockerfile,omitempty"`
 }
 
 // lineStreamer writes progress lines to the client as they happen.
@@ -326,9 +329,11 @@ func (s *Server) deploy(ctx context.Context, out *lineStreamer, dir string, app 
 		if opts.Tag == "" {
 			return fail(fmt.Errorf("a no-build deploy needs the image tag to deploy"))
 		}
-		// No build means no analysis — keep what the last deploy decided
+		// No build means no analysis — keep what an earlier deploy decided
 		// (storage, health route) instead of silently rendering without it.
-		for _, line := range s.adoptStoredDecisions(ctx, space, app) {
+		// The tag's own build record wins: a rollback adopts the decisions
+		// that image was verified with, not whatever a newer analysis found.
+		for _, line := range s.adoptStoredDecisions(ctx, space, opts.Tag, app) {
 			out.Line("· %s", line)
 		}
 		if opts.DryRun {
@@ -438,6 +443,14 @@ func (s *Server) deploy(ctx context.Context, out *lineStreamer, dir string, app 
 		PackagesURL:  s.cfg.PackagesURL,
 		Settings:     s.cfg.Build,
 	}
+	// The standard OCI vocabulary, so any registry tool can answer where an
+	// image came from without knowing donkey.
+	imageLabels := map[string]string{
+		"org.opencontainers.image.created": time.Now().UTC().Format(time.RFC3339),
+	}
+	if opts.SHA != "" {
+		imageLabels["org.opencontainers.image.revision"] = opts.SHA
+	}
 	req := build.Request{
 		ContextDir:     dir,
 		ImageRef:       imageRef,
@@ -446,6 +459,7 @@ func (s *Server) deploy(ctx context.Context, out *lineStreamer, dir string, app 
 		BuildEnv:       app.Build.Env,
 		Strategy:       det.Strategy,
 		DockerfilePath: det.DockerfilePath,
+		ImageLabels:    imageLabels,
 		Progress:       build.ProgressSink{LogPath: logFile.Name(), Writer: out},
 	}
 	var result *build.Result
@@ -469,10 +483,16 @@ func (s *Server) deploy(ctx context.Context, out *lineStreamer, dir string, app 
 			for _, line := range strings.Split(strings.TrimRight(outcome.Dockerfile, "\n"), "\n") {
 				out.Line("    %s", line)
 			}
+			out.Update(DeployUpdate{Dockerfile: outcome.Dockerfile})
 		} else {
 			err = aerr
 		}
 	} else {
+		// The recipe goes into the build record either way; for an app that
+		// brings its own file this is the only place it is read whole.
+		if content := readDockerfile(dir, det.DockerfilePath); content != "" {
+			out.Update(DeployUpdate{Dockerfile: content})
+		}
 		result, err = builder.Build(ctx, req)
 	}
 	if err != nil {
@@ -586,13 +606,27 @@ func (s *Server) adoptConsoleChoices(ctx context.Context, space string, app *con
 	return lines
 }
 
-// adoptStoredDecisions fills what donkey.yaml leaves open from the running
-// Deployment's record, and says what it kept. An adopted value that no longer
-// fits is dropped again, and only ever the adopted values.
-func (s *Server) adoptStoredDecisions(ctx context.Context, space string, app *config.AppConfig) []string {
-	raw, err := s.rt.AppMeta(ctx, space, app.Name, runtime.MetaDecisions)
-	if err != nil || raw == "" {
-		return nil
+// adoptStoredDecisions fills what donkey.yaml leaves open, and says what it
+// kept. The deployed tag's own build record is asked first — its decisions
+// are the ones that image was verified with — and the running Deployment's
+// record answers for images that predate the build store or when telemetry
+// is unreachable. An adopted value that no longer fits is dropped again, and
+// only ever the adopted values.
+func (s *Server) adoptStoredDecisions(ctx context.Context, space, imageRef string, app *config.AppConfig) []string {
+	var raw string
+	if imageRef != "" {
+		if record, err := s.telemetry.BuildByImage(ctx, space, app.Name, imageRef); err == nil {
+			var release AppRelease
+			if json.Unmarshal(record, &release) == nil && len(release.Decisions) > 0 {
+				raw = string(release.Decisions)
+			}
+		}
+	}
+	if raw == "" {
+		var err error
+		if raw, err = s.rt.AppMeta(ctx, space, app.Name, runtime.MetaDecisions); err != nil || raw == "" {
+			return nil
+		}
 	}
 	var dec deployDecisions
 	if json.Unmarshal([]byte(raw), &dec) != nil {
@@ -766,4 +800,20 @@ func tailBytes(b []byte, n int) string {
 		b = b[len(b)-n:]
 	}
 	return string(b)
+}
+
+// readDockerfile returns the app's own Dockerfile for the build record,
+// bounded: the record stores the recipe, not an arbitrarily large file.
+func readDockerfile(dir, path string) string {
+	if path == "" {
+		return ""
+	}
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(dir, path)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil || len(raw) > 256<<10 {
+		return ""
+	}
+	return string(raw)
 }

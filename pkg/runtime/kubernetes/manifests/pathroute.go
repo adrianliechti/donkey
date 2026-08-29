@@ -35,6 +35,6 @@ func PathRoute(in Input, r RouteTarget) *corev1.ConfigMap {
 // out).
 func PathRouteNamed(in Input, name string, r RouteTarget) *corev1.ConfigMap {
 	return routeConfigMap(name, in.Namespace,
-		Labels(in.Space, in.App.Name, ComponentPathRoute),
+		Labels(in.Space, in.App.Name, RolePathRoute),
 		routeAnnotations(in, r.Host, r.Path))
 }

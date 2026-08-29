@@ -325,7 +325,7 @@ func systemSecret(in SystemInput) *corev1.Secret {
 func systemRegistryPullSecret(in SystemInput) *corev1.Secret {
 	return RegistryPullSecret(
 		SystemRegistrySecretName, in.Namespace,
-		SystemLabels(ComponentRegistryAuth),
+		SystemLabels(RoleRegistryAuth),
 		registryHostOf(in.RegistryURL), in.RegistryUsername, in.RegistryPassword,
 	)
 }

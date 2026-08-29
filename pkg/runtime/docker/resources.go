@@ -29,7 +29,7 @@ func (r *Runtime) ResourceSamples(ctx context.Context) ([]rt.ResourceSample, err
 		Filters: filters.NewArgs(
 			filters.Arg("label", labelManaged+"=true"),
 			filters.Arg("label", labelInstallation+"="+dockerInstallation),
-			filters.Arg("label", labelComponent+"="+componentWeb),
+			filters.Arg("label", labelRole+"="+roleWorkload),
 		),
 	})
 	if err != nil {
@@ -45,7 +45,7 @@ func (r *Runtime) ResourceSamples(ctx context.Context) ([]rt.ResourceSample, err
 	for _, summary := range containers {
 		summary := summary
 		space, app := summary.Labels[labelSpace], summary.Labels[labelApp]
-		if space == "" || app == "" || !sameIdentity(summary.Labels, appLabels(space, app, componentWeb)) {
+		if space == "" || app == "" || !sameIdentity(summary.Labels, appLabels(space, app, roleWorkload)) {
 			continue
 		}
 		wg.Add(1)

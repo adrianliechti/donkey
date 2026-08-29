@@ -44,7 +44,7 @@ func TestResourceSamplesFindInstallationStampedAppPods(t *testing.T) {
 		installation = "bank-donkey-system"
 		namespace    = "bank-apps"
 	)
-	labels := manifests.Labels("team", "site", manifests.ComponentWeb)
+	labels := manifests.Labels("team", "site", manifests.RoleWorkload)
 	labels[manifests.LabelInstallation] = installation
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{

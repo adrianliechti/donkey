@@ -68,9 +68,6 @@ type StatusResponse struct {
 	Exposure string `json:"exposure,omitempty"`
 	// Port the app listens on (donkey.yaml's `port`).
 	Port int `json:"port,omitempty"`
-	// HasRelease says the last deploy left a bounded record that the console
-	// can reopen after the live stream is gone.
-	HasRelease bool `json:"hasRelease,omitempty"`
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
@@ -105,9 +102,6 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	if st.Found {
 		resp.Exposure = exposureOf(st)
 		resp.Port = int(st.Port)
-		if release, err := s.rt.AppMeta(r.Context(), space, app, runtime.MetaRelease); err == nil {
-			resp.HasRelease = hasRenderableRelease(release)
-		}
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -732,7 +726,7 @@ func (s *Server) handleDoctor(w http.ResponseWriter, r *http.Request) {
 	}
 
 	telemetry := DoctorCheck{Name: "Telemetry (OTLP + DuckDB)"}
-	if err := s.traffic.Ready(ctx); err == nil {
+	if err := s.telemetry.Ready(ctx); err == nil {
 		telemetry.OK = true
 		telemetry.Detail = "30-day traffic store answering"
 	} else {

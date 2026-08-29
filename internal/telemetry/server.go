@@ -144,8 +144,77 @@ func (s *Service) apiHandler() http.Handler {
 	mux.HandleFunc("GET /readyz", s.health)
 	mux.HandleFunc("GET /v1/traffic", s.requireQueryToken(s.handleTraffic))
 	mux.HandleFunc("GET /v1/resources", s.requireQueryToken(s.handleResources))
+	mux.HandleFunc("PUT /v1/builds", s.requireQueryToken(s.handlePutBuild))
+	mux.HandleFunc("GET /v1/builds", s.requireQueryToken(s.handleBuilds))
+	mux.HandleFunc("GET /v1/builds/record", s.requireQueryToken(s.handleBuildRecord))
 	mux.HandleFunc("DELETE /v1/spaces/{space}", s.requireQueryToken(s.handleDeleteSpace))
 	return mux
+}
+
+// buildEnvelope is the wire shape of one stored build. The record itself is
+// the server's JSON, carried opaquely: this service versions and lists build
+// history, it does not interpret it.
+type buildEnvelope struct {
+	Space    string          `json:"space"`
+	App      string          `json:"app"`
+	Image    string          `json:"image,omitempty"`
+	OK       bool            `json:"ok"`
+	Sequence int64           `json:"sequence,omitempty"`
+	Record   json.RawMessage `json:"record,omitempty"`
+}
+
+func (s *Service) handlePutBuild(w http.ResponseWriter, r *http.Request) {
+	var envelope buildEnvelope
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxIngestBody))
+	if err := decoder.Decode(&envelope); err != nil {
+		http.Error(w, "invalid build record payload", http.StatusBadRequest)
+		return
+	}
+	sequence, err := s.store.InsertBuild(r.Context(),
+		envelope.Space, envelope.App, envelope.Image, envelope.OK, string(envelope.Record), time.Now())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	writeServiceJSON(w, http.StatusOK, buildEnvelope{
+		Space: envelope.Space, App: envelope.App, Sequence: sequence,
+	})
+}
+
+func (s *Service) handleBuilds(w http.ResponseWriter, r *http.Request) {
+	builds, err := s.store.Builds(r.Context(), r.URL.Query().Get("space"), r.URL.Query().Get("app"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	writeServiceJSON(w, http.StatusOK, map[string]any{"builds": builds})
+}
+
+func (s *Service) handleBuildRecord(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query()
+	space, app := query.Get("space"), query.Get("app")
+	var record string
+	var err error
+	if image := query.Get("image"); image != "" {
+		record, err = s.store.BuildByImage(r.Context(), space, app, image)
+	} else {
+		var sequence int64
+		if sequence, err = strconv.ParseInt(query.Get("sequence"), 10, 64); err != nil {
+			http.Error(w, "sequence or image is required", http.StatusBadRequest)
+			return
+		}
+		record, err = s.store.Build(r.Context(), space, app, sequence)
+	}
+	if errors.Is(err, ErrNoBuild) {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = io.WriteString(w, record)
 }
 
 func (s *Service) health(w http.ResponseWriter, r *http.Request) {

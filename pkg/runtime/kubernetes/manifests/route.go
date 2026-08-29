@@ -98,7 +98,7 @@ func routeConfigMap(name, namespace string, labels, annotations map[string]strin
 // apps over plain http was never right; its http listener redirects.
 func appRoute(in Input) *corev1.ConfigMap {
 	return routeConfigMap(in.Name(), in.Namespace,
-		Labels(in.Space, in.App.Name, ComponentRoute),
+		Labels(in.Space, in.App.Name, RoleRoute),
 		routeAnnotations(in, in.Domain, "/"))
 }
 

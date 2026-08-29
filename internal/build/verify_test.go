@@ -109,16 +109,14 @@ func TestVerifyStateUsesDonkeysPort(t *testing.T) {
 	}
 }
 
-func TestImageConfigOf(t *testing.T) {
-	if _, err := imageConfigOf(map[string][]byte{}); err == nil {
+func TestImageConfig(t *testing.T) {
+	if _, err := imageConfig(nil); err == nil {
 		t.Error("a build with no image config should be reported, not verified blindly")
 	}
-	if _, err := imageConfigOf(map[string][]byte{"containerimage.config": []byte("not json")}); err == nil {
+	if _, err := imageConfig([]byte("not json")); err == nil {
 		t.Error("an unreadable image config should be reported")
 	}
-	cfg, err := imageConfigOf(map[string][]byte{
-		"containerimage.config": []byte(`{"config":{"Entrypoint":["/app"],"WorkingDir":"/srv"}}`),
-	})
+	cfg, err := imageConfig([]byte(`{"config":{"Entrypoint":["/app"],"WorkingDir":"/srv"}}`))
 	if err != nil {
 		t.Fatal(err)
 	}

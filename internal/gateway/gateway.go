@@ -475,8 +475,7 @@ func routeFromConfigMap(cm corev1.ConfigMap) (route, bool) {
 	// intentional exception is donkey-server's own console/API route: it is
 	// control-plane traffic, not a tenant app stream.
 	systemRoute := space == "" && app == "" &&
-		cm.Labels[manifests.LabelManagedBy] == manifests.ManagedByValue &&
-		cm.Labels[manifests.LabelComponent] == manifests.ServerName &&
+		cm.Labels[manifests.LabelRole] == manifests.SystemRole(manifests.ServerName) &&
 		ann[manifests.AnnotationToken] == manifests.TokenForward
 	if (!config.ValidName(space) || !config.ValidName(app)) && !systemRoute {
 		return route{}, false

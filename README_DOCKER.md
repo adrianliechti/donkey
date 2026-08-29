@@ -35,12 +35,12 @@ spelled the way Docker tooling expects:
 | `local.donkey.space` | the lifecycle boundary |
 | `local.donkey.app` | the logical app |
 | `local.donkey.addon` | the logical space service |
-| `local.donkey.component` | the resource's role |
+| `local.donkey.role` | the resource's immutable Donkey role |
 | `local.donkey.image`, `local.donkey.port` | descriptive: the deployed image reference and app port |
 
-App components are `web`, `addon`, `storage`, `space` (the network), `files`
+App roles are `workload`, `addon`, `storage`, `space` (the network), `files`
 and `init`. Control-plane containers follow one naming rule: the container
-`donkey-<component>` carries that component (`server`, `gateway`, `ai`,
+`donkey-<role>` carries that role (`server`, `gateway`, `ai`,
 `telemetry`, `packages`, `buildkitd`, `registry`); the infrastructure network
 is `network`, and the volumes are `state-storage`, `buildkit-storage`,
 `telemetry-storage` and `registry-storage`.

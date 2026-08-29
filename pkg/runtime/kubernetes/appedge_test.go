@@ -32,7 +32,7 @@ func TestDeleteAppGatewayObjectsUsesSystemNamespace(t *testing.T) {
 			manifests.LabelInstallation: "bank-donkey-system",
 			manifests.LabelSpace:        "acme",
 			manifests.LabelApp:          "shop",
-			manifests.LabelComponent:    manifests.ComponentEdge,
+			manifests.LabelRole:         manifests.RoleEdge,
 		})
 	for _, action := range actions {
 		if action.GetVerb() == "delete-collection" && action.GetNamespace() != "bank-donkey-system" {

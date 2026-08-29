@@ -16,14 +16,14 @@ import (
 	"github.com/adrianliechti/donkey/pkg/runtime/kubernetes/manifests"
 )
 
-// StreamLogs writes the logs of every pod of the selected component to out,
+// StreamLogs writes the logs of every pod of the selected Donkey role to out,
 // prefixed with the pod name when there is more than one.
 func (c *Client) StreamLogs(ctx context.Context, namespace, space, app string, opts rt.LogOptions, out io.Writer) error {
 	var identity map[string]string
 	if addon, ok := strings.CutPrefix(opts.Component, "addon-"); ok {
-		identity = manifests.AddonLabels(space, addon, manifests.ComponentAddon)
+		identity = manifests.AddonLabels(space, addon, manifests.RoleAddon)
 	} else {
-		identity = manifests.Labels(space, app, manifests.ComponentWeb)
+		identity = manifests.Labels(space, app, manifests.RoleWorkload)
 	}
 	selector := labels.Set(c.expectedObjectIdentity(identity)).String()
 	pods, err := c.Clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{LabelSelector: selector})

@@ -32,52 +32,52 @@ const (
 	labelSpace        = "local.donkey.space"
 	labelApp          = "local.donkey.app"
 	labelAddon        = "local.donkey.addon"
-	labelComponent    = "local.donkey.component"
+	labelRole         = "local.donkey.role"
 	labelImage        = "local.donkey.image"
 	labelPort         = "local.donkey.port"
 
 	dockerInstallation = "donkey"
 
-	componentWeb     = "web"
-	componentAddon   = "addon"
-	componentFiles   = "files"
-	componentInit    = "init"
-	componentSpace   = "space"
-	componentStorage = "storage"
+	roleWorkload = "workload"
+	roleAddon    = "addon"
+	roleFiles    = "files"
+	roleInit     = "init"
+	roleSpace    = "space"
+	roleStorage  = "storage"
 
 	sharedOwner = "shared" // addons.SharedOwner, spelled here for state.go
 )
 
-// System component values, shared by the direct Docker installer, generated
+// System role values, shared by the direct Docker installer, generated
 // Compose bundles and the runtime's own checks. One constant per resource:
 // the ownership preflights compare these exactly, so a value spelled twice
 // is a re-install that refuses its own resources.
 const (
-	ComponentServer           = "server"
-	ComponentGateway          = "gateway"
-	ComponentAI               = "ai"
-	ComponentTelemetry        = "telemetry"
-	ComponentPackages         = "packages"
-	ComponentBuildkit         = "buildkitd"
-	ComponentRegistry         = "registry"
-	ComponentNetwork          = "network"
-	ComponentStateStorage     = "state-storage"
-	ComponentBuildkitStorage  = "buildkit-storage"
-	ComponentTelemetryStorage = "telemetry-storage"
-	ComponentRegistryStorage  = "registry-storage"
+	RoleServer           = "server"
+	RoleGateway          = "gateway"
+	RoleAI               = "ai"
+	RoleTelemetry        = "telemetry"
+	RolePackages         = "packages"
+	RoleBuildkit         = "buildkitd"
+	RoleRegistry         = "registry"
+	RoleNetwork          = "network"
+	RoleStateStorage     = "state-storage"
+	RoleBuildkitStorage  = "buildkit-storage"
+	RoleTelemetryStorage = "telemetry-storage"
+	RoleRegistryStorage  = "registry-storage"
 )
 
 // IdentityLabelKeys is the immutable ownership vocabulary in comparison
 // order — what sameIdentity checks, exported for generated bundles whose
 // shell preflight re-implements that comparison with `docker inspect`.
 func IdentityLabelKeys() []string {
-	return []string{labelManaged, labelInstallation, labelSpace, labelApp, labelAddon, labelComponent}
+	return []string{labelManaged, labelInstallation, labelSpace, labelApp, labelAddon, labelRole}
 }
 
-// SystemComponentOf is the naming rule for control-plane containers: the
-// container donkey-<component> carries that component label. The constants
+// SystemRoleOf is the naming rule for control-plane containers: the
+// container donkey-<role> carries that role label. The constants
 // above and every donkey-* container name are chosen to satisfy it.
-func SystemComponentOf(containerName string) string {
+func SystemRoleOf(containerName string) string {
 	return strings.TrimPrefix(containerName, "donkey-")
 }
 
@@ -163,30 +163,30 @@ func ctrName(space, name string) string { return "donkey." + space + "." + name 
 // volName is an app's (or service's) data volume.
 func volName(space, name string) string { return ctrName(space, name) + ".data" }
 
-func appLabels(space, app, component string) map[string]string {
-	labels := resourceLabels(space, component)
+func appLabels(space, app, role string) map[string]string {
+	labels := resourceLabels(space, role)
 	labels[labelApp] = app
 	return labels
 }
 
-func addonLabels(space, addon, component string) map[string]string {
-	labels := resourceLabels(space, component)
+func addonLabels(space, addon, role string) map[string]string {
+	labels := resourceLabels(space, role)
 	labels[labelAddon] = addon
 	return labels
 }
 
 // SystemLabels is the ownership/role vocabulary shared by the direct Docker
 // installer, generated Compose bundles, and runtime-created resources.
-func SystemLabels(component string) map[string]string {
+func SystemLabels(role string) map[string]string {
 	return map[string]string{
 		labelManaged:      "true",
 		labelInstallation: dockerInstallation,
-		labelComponent:    component,
+		labelRole:         role,
 	}
 }
 
-func resourceLabels(space, component string) map[string]string {
-	labels := SystemLabels(component)
+func resourceLabels(space, role string) map[string]string {
+	labels := SystemLabels(role)
 	labels[labelSpace] = space
 	return labels
 }
@@ -206,8 +206,8 @@ func sameIdentity(actual, expected map[string]string) bool {
 // control-plane resource. Tenant dimensions must be absent: an app resource
 // does not become installation infrastructure merely by carrying the three
 // system labels as well.
-func MatchesSystemLabels(actual map[string]string, component string) bool {
-	return sameIdentity(actual, SystemLabels(component))
+func MatchesSystemLabels(actual map[string]string, role string) bool {
+	return sameIdentity(actual, SystemLabels(role))
 }
 
 func requireIdentity(kind, name string, actual, expected map[string]string) error {
@@ -303,7 +303,7 @@ func (r *Runtime) CheckSpaceFree(ctx context.Context, space string) error {
 	if err != nil {
 		return err
 	}
-	if !sameIdentity(nw.Labels, resourceLabels(space, componentSpace)) {
+	if !sameIdentity(nw.Labels, resourceLabels(space, roleSpace)) {
 		return fmt.Errorf("the network %s exists but isn't donkey's — pick a different space name", netName(space))
 	}
 	return nil
@@ -324,7 +324,7 @@ func (r *Runtime) ensureSpace(ctx context.Context, space string) error {
 	_, err = r.cli.NetworkInspect(ctx, name, network.InspectOptions{})
 	if cerrdefs.IsNotFound(err) {
 		_, err = r.cli.NetworkCreate(ctx, name, network.CreateOptions{
-			Labels: resourceLabels(space, componentSpace),
+			Labels: resourceLabels(space, roleSpace),
 		})
 	}
 	if err != nil {
@@ -345,7 +345,7 @@ func (r *Runtime) ListSpaces(ctx context.Context) ([]string, error) {
 		Filters: filters.NewArgs(
 			filters.Arg("label", labelManaged+"=true"),
 			filters.Arg("label", labelInstallation+"="+dockerInstallation),
-			filters.Arg("label", labelComponent+"="+componentSpace),
+			filters.Arg("label", labelRole+"="+roleSpace),
 		),
 	})
 	if err != nil {
@@ -354,7 +354,7 @@ func (r *Runtime) ListSpaces(ctx context.Context) ([]string, error) {
 	var out []string
 	for _, nw := range nets {
 		if space := nw.Labels[labelSpace]; space != "" &&
-			sameIdentity(nw.Labels, resourceLabels(space, componentSpace)) {
+			sameIdentity(nw.Labels, resourceLabels(space, roleSpace)) {
 			out = append(out, space)
 		}
 	}
@@ -376,7 +376,7 @@ func (r *Runtime) DeleteSpace(ctx context.Context, space string) error {
 	if inspectErr != nil && !cerrdefs.IsNotFound(inspectErr) {
 		return inspectErr
 	}
-	if inspectErr == nil && !sameIdentity(nw.Labels, resourceLabels(space, componentSpace)) {
+	if inspectErr == nil && !sameIdentity(nw.Labels, resourceLabels(space, roleSpace)) {
 		return fmt.Errorf("the network %s isn't donkey's space %s to delete", netName(space), space)
 	}
 	own, err := ownedSystemContainers(ctx, r.cli,
@@ -430,15 +430,15 @@ func (r *Runtime) DeleteSpace(ctx context.Context, space string) error {
 	return err
 }
 
-// spaceContainers lists a space's containers, all or one component.
-func (r *Runtime) spaceContainers(ctx context.Context, space, component string) ([]container.Summary, error) {
+// spaceContainers lists a space's containers, all or one Donkey role.
+func (r *Runtime) spaceContainers(ctx context.Context, space, role string) ([]container.Summary, error) {
 	args := filters.NewArgs(
 		filters.Arg("label", labelManaged+"=true"),
 		filters.Arg("label", labelInstallation+"="+dockerInstallation),
 		filters.Arg("label", labelSpace+"="+space),
 	)
-	if component != "" {
-		args.Add("label", labelComponent+"="+component)
+	if role != "" {
+		args.Add("label", labelRole+"="+role)
 	}
 	return r.cli.ContainerList(ctx, container.ListOptions{All: true, Filters: args})
 }
@@ -459,7 +459,7 @@ func (r *Runtime) ListApps(ctx context.Context) ([]rt.AppRef, error) {
 		Filters: filters.NewArgs(
 			filters.Arg("label", labelManaged+"=true"),
 			filters.Arg("label", labelInstallation+"="+dockerInstallation),
-			filters.Arg("label", labelComponent+"="+componentWeb),
+			filters.Arg("label", labelRole+"="+roleWorkload),
 		),
 	})
 	if err != nil {
@@ -468,7 +468,7 @@ func (r *Runtime) ListApps(ctx context.Context) ([]rt.AppRef, error) {
 	var out []rt.AppRef
 	for _, c := range list {
 		space, app := c.Labels[labelSpace], c.Labels[labelApp]
-		if space == "" || app == "" || !sameIdentity(c.Labels, appLabels(space, app, componentWeb)) {
+		if space == "" || app == "" || !sameIdentity(c.Labels, appLabels(space, app, roleWorkload)) {
 			continue
 		}
 		out = append(out, rt.AppRef{Space: space, App: app})
@@ -495,7 +495,7 @@ func (r *Runtime) Status(ctx context.Context, space, app string) (*rt.AppStatus,
 		return nil, fmt.Errorf("the Docker container %s has no inspectable configuration", ctrName(space, app))
 	}
 	if err := requireIdentity("container", ctrName(space, app), info.Config.Labels,
-		appLabels(space, app, componentWeb)); err != nil {
+		appLabels(space, app, roleWorkload)); err != nil {
 		return nil, err
 	}
 	st.Found = true
@@ -544,7 +544,7 @@ func containerSummary(info container.InspectResponse) string {
 
 func (r *Runtime) HasData(ctx context.Context, space, app string) bool {
 	vol, err := r.cli.VolumeInspect(ctx, volName(space, app))
-	return err == nil && sameIdentity(vol.Labels, appLabels(space, app, componentStorage))
+	return err == nil && sameIdentity(vol.Labels, appLabels(space, app, roleStorage))
 }
 
 // Restart recreates the app's container from its stored run record — that
@@ -566,7 +566,7 @@ func (r *Runtime) Restart(ctx context.Context, space, app string) (bool, error) 
 
 func (r *Runtime) Logs(ctx context.Context, space, app string, opts rt.LogOptions, out io.Writer) error {
 	name := ctrName(space, app)
-	expected := appLabels(space, app, componentWeb)
+	expected := appLabels(space, app, roleWorkload)
 	// A space's services belong to the pseudo-app "shared"; their container
 	// carries the service's own name.
 	//
@@ -579,7 +579,7 @@ func (r *Runtime) Logs(ctx context.Context, space, app string, opts rt.LogOption
 			return fmt.Errorf("%q is not a service of this space", svc)
 		}
 		name = ctrName(space, svc)
-		expected = addonLabels(space, svc, componentAddon)
+		expected = addonLabels(space, svc, roleAddon)
 	}
 	info, err := r.cli.ContainerInspect(ctx, name)
 	if cerrdefs.IsNotFound(err) {
@@ -624,7 +624,7 @@ func (r *Runtime) Evidence(ctx context.Context, space, app string) rt.Evidence {
 	if err != nil {
 		return ev
 	}
-	if info.Config == nil || !sameIdentity(info.Config.Labels, appLabels(space, app, componentWeb)) {
+	if info.Config == nil || !sameIdentity(info.Config.Labels, appLabels(space, app, roleWorkload)) {
 		return ev
 	}
 	ev.Summaries = append(ev.Summaries, containerSummary(info))
@@ -721,11 +721,11 @@ func (r *Runtime) EnsureService(ctx context.Context, space string, spec rt.Servi
 				return nil, "", "", fmt.Errorf("the Docker container %s has no inspectable configuration", ctrName(space, spec.Name))
 			}
 			switch {
-			case sameIdentity(info.Config.Labels, appLabels(space, spec.Name, componentWeb)):
+			case sameIdentity(info.Config.Labels, appLabels(space, spec.Name, roleWorkload)):
 				return nil, "", "", rt.UserError{Err: fmt.Errorf("the name %q is taken by an app in this space — pick another for the service", spec.Name)}
-			case !sameIdentity(info.Config.Labels, addonLabels(space, spec.Name, componentAddon)):
+			case !sameIdentity(info.Config.Labels, addonLabels(space, spec.Name, roleAddon)):
 				return nil, "", "", requireIdentity("container", ctrName(space, spec.Name), info.Config.Labels,
-					addonLabels(space, spec.Name, componentAddon))
+					addonLabels(space, spec.Name, roleAddon))
 			}
 		} else if !cerrdefs.IsNotFound(inspectErr) {
 			return nil, "", "", inspectErr
@@ -805,11 +805,11 @@ func rewriteBindingHosts(binding map[string]string, name, namespace string) map[
 // runService materializes an addon workload as a container with its data
 // volume, and waits until it runs.
 func (r *Runtime) runService(ctx context.Context, space, name string, in addons.Input, w *addons.Workload, binding map[string]string) error {
-	labels := addonLabels(space, name, componentAddon)
+	labels := addonLabels(space, name, roleAddon)
 	labels[labelPort] = strconv.Itoa(int(w.Port))
 
 	vol := volName(space, name)
-	if err := r.ensureOwnedVolume(ctx, vol, addonLabels(space, name, componentStorage)); err != nil {
+	if err := r.ensureOwnedVolume(ctx, vol, addonLabels(space, name, roleStorage)); err != nil {
 		return err
 	}
 	env := map[string]string{}
@@ -860,14 +860,14 @@ func (r *Runtime) RemoveService(ctx context.Context, space, name string, keepDat
 			return nil, err
 		}
 	}
-	if err := r.removeOwnedContainer(ctx, ctrName(space, name), addonLabels(space, name, componentAddon)); err != nil {
+	if err := r.removeOwnedContainer(ctx, ctrName(space, name), addonLabels(space, name, roleAddon)); err != nil {
 		return nil, err
 	}
 	if !keepData {
 		if err := r.state.removeBinding(space, sharedOwner, name); err != nil {
 			return nil, err
 		}
-		if err := r.removeOwnedVolume(ctx, volName(space, name), addonLabels(space, name, componentStorage)); err != nil {
+		if err := r.removeOwnedVolume(ctx, volName(space, name), addonLabels(space, name, roleStorage)); err != nil {
 			return nil, err
 		}
 	}
@@ -890,7 +890,7 @@ func (r *Runtime) ServiceEndpoint(ctx context.Context, space, name string) (stri
 		return "", 0, fmt.Errorf("the Docker container %s has no inspectable configuration", ctrName(space, name))
 	}
 	if err := requireIdentity("container", ctrName(space, name), info.Config.Labels,
-		addonLabels(space, name, componentAddon)); err != nil {
+		addonLabels(space, name, roleAddon)); err != nil {
 		return "", 0, err
 	}
 	port, _ := strconv.Atoi(info.Config.Labels[labelPort])
@@ -944,7 +944,7 @@ func (r *Runtime) Checks(ctx context.Context) []rt.Check {
 		gw.Detail = "not found — is the gateway container running?"
 	} else if err != nil {
 		gw.Detail = err.Error()
-	} else if info.Config == nil || !MatchesSystemLabels(info.Config.Labels, SystemComponentOf(r.opts.GatewayContainer)) {
+	} else if info.Config == nil || !MatchesSystemLabels(info.Config.Labels, SystemRoleOf(r.opts.GatewayContainer)) {
 		gw.Detail = "the name is held by a container outside this donkey installation"
 	} else if info.State == nil || !info.State.Running {
 		gw.Detail = "not running"
@@ -1030,7 +1030,7 @@ func AttachOwnContainers(ctx context.Context, cli *client.Client, names ...strin
 		Filters: filters.NewArgs(
 			filters.Arg("label", labelManaged+"=true"),
 			filters.Arg("label", labelInstallation+"="+dockerInstallation),
-			filters.Arg("label", labelComponent+"="+componentSpace),
+			filters.Arg("label", labelRole+"="+roleSpace),
 		),
 	})
 	if err != nil {
@@ -1038,7 +1038,7 @@ func AttachOwnContainers(ctx context.Context, cli *client.Client, names ...strin
 	}
 	for _, nw := range nets {
 		space := nw.Labels[labelSpace]
-		if space == "" || !sameIdentity(nw.Labels, resourceLabels(space, componentSpace)) {
+		if space == "" || !sameIdentity(nw.Labels, resourceLabels(space, roleSpace)) {
 			continue
 		}
 		for _, name := range owned {
@@ -1070,9 +1070,9 @@ func ownedSystemContainers(ctx context.Context, cli *client.Client, names ...str
 		if info.Config == nil {
 			return nil, fmt.Errorf("the Docker container %s has no inspectable configuration", name)
 		}
-		component := SystemComponentOf(name)
-		if !MatchesSystemLabels(info.Config.Labels, component) {
-			return nil, fmt.Errorf("the Docker container %s exists but isn't this donkey installation's %s resource", name, component)
+		role := SystemRoleOf(name)
+		if !MatchesSystemLabels(info.Config.Labels, role) {
+			return nil, fmt.Errorf("the Docker container %s exists but isn't this donkey installation's %s resource", name, role)
 		}
 		owned = append(owned, name)
 	}

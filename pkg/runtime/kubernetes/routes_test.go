@@ -69,9 +69,9 @@ func TestHostOwnerIgnoresPathRoutes(t *testing.T) {
 		host         = "site.team.example.com"
 	)
 	cm := func(name, app, path string) *corev1.ConfigMap {
-		component := manifests.ComponentRoute
+		role := manifests.RoleRoute
 		if path != "/" {
-			component = manifests.ComponentPathRoute
+			role = manifests.RolePathRoute
 		}
 		return &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
@@ -80,7 +80,7 @@ func TestHostOwnerIgnoresPathRoutes(t *testing.T) {
 				manifests.LabelInstallation: installation,
 				manifests.LabelSpace:        "team",
 				manifests.LabelApp:          app,
-				manifests.LabelComponent:    component,
+				manifests.LabelRole:         role,
 			},
 			Annotations: map[string]string{
 				manifests.AnnotationBackend: "http://" + app + "." + namespace + ".svc:80",

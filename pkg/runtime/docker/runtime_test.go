@@ -20,19 +20,19 @@ func (f dockerRoundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) 
 
 func TestRuntimeLabelsSeparateAppsAddonsAndInstallation(t *testing.T) {
 	for name, labels := range map[string]map[string]string{
-		"app":   appLabels("team", "site", componentWeb),
-		"addon": addonLabels("team", "postgres", componentAddon),
-		"space": resourceLabels("team", componentSpace),
+		"app":   appLabels("team", "site", roleWorkload),
+		"addon": addonLabels("team", "postgres", roleAddon),
+		"space": resourceLabels("team", roleSpace),
 	} {
 		if labels[labelManaged] != "true" || labels[labelInstallation] != dockerInstallation ||
 			labels[labelSpace] != "team" {
 			t.Errorf("%s ownership labels=%v", name, labels)
 		}
 	}
-	if labels := appLabels("team", "site", componentWeb); labels[labelApp] != "site" || labels[labelAddon] != "" {
+	if labels := appLabels("team", "site", roleWorkload); labels[labelApp] != "site" || labels[labelAddon] != "" {
 		t.Errorf("app identity=%v", labels)
 	}
-	if labels := addonLabels("team", "postgres", componentAddon); labels[labelAddon] != "postgres" || labels[labelApp] != "" {
+	if labels := addonLabels("team", "postgres", roleAddon); labels[labelAddon] != "postgres" || labels[labelApp] != "" {
 		t.Errorf("addon identity=%v", labels)
 	}
 	for key := range SystemLabels("server") {
@@ -64,7 +64,7 @@ func TestRemoveOwnedContainerRefusesSameNamedForeignResource(t *testing.T) {
 				"Id": "foreign",
 				"Config": map[string]any{"Labels": map[string]string{
 					labelManaged: "true", labelInstallation: dockerInstallation,
-					labelComponent: componentWeb,
+					labelRole: roleWorkload,
 				}},
 			}), nil
 		case request.Method == http.MethodDelete:
@@ -84,7 +84,7 @@ func TestRemoveOwnedContainerRefusesSameNamedForeignResource(t *testing.T) {
 	}
 	runtime := &Runtime{cli: cli}
 	if err := runtime.removeOwnedContainer(context.Background(), "donkey.team.site",
-		appLabels("team", "site", componentWeb)); err == nil {
+		appLabels("team", "site", roleWorkload)); err == nil {
 		t.Fatal("same-named foreign container was accepted")
 	}
 	if deleted {
@@ -100,7 +100,7 @@ func TestRemoveOwnedContainerDeletesTheInspectedID(t *testing.T) {
 		case request.Method == http.MethodGet && path == "/containers/donkey.team.site/json":
 			return dockerJSONResponse(http.StatusOK, map[string]any{
 				"Id":     "immutable-container-id",
-				"Config": map[string]any{"Labels": appLabels("team", "site", componentWeb)},
+				"Config": map[string]any{"Labels": appLabels("team", "site", roleWorkload)},
 			}), nil
 		case request.Method == http.MethodDelete && strings.HasPrefix(path, "/containers/"):
 			deleted = strings.TrimPrefix(path, "/containers/")
@@ -119,7 +119,7 @@ func TestRemoveOwnedContainerDeletesTheInspectedID(t *testing.T) {
 	}
 	runtime := &Runtime{cli: cli}
 	if err := runtime.removeOwnedContainer(context.Background(), "donkey.team.site",
-		appLabels("team", "site", componentWeb)); err != nil {
+		appLabels("team", "site", roleWorkload)); err != nil {
 		t.Fatal(err)
 	}
 	if deleted != "immutable-container-id" {
@@ -136,7 +136,7 @@ func TestDeleteSpaceCascadesAllOwnedDockerResources(t *testing.T) {
 		switch {
 		case request.Method == http.MethodGet && path == "/networks/donkey-team":
 			return dockerJSONResponse(http.StatusOK, network.Inspect{
-				Name: "donkey-team", Labels: resourceLabels("team", componentSpace),
+				Name: "donkey-team", Labels: resourceLabels("team", roleSpace),
 			}), nil
 		case request.Method == http.MethodGet && strings.HasPrefix(path, "/containers/donkey-") && strings.HasSuffix(path, "/json"):
 			name := strings.TrimSuffix(strings.TrimPrefix(path, "/containers/"), "/json")
@@ -203,22 +203,22 @@ func TestDeleteSpaceCascadesAllOwnedDockerResources(t *testing.T) {
 }
 
 func TestDestroyAppRemovesEveryHelperAndItsVolume(t *testing.T) {
-	wantComponents := map[string]string{
-		"donkey.team.site":           componentWeb,
-		"donkey.team.site.files":     componentFiles,
-		"donkey.team.site.data.init": componentInit,
+	wantRoles := map[string]string{
+		"donkey.team.site":           roleWorkload,
+		"donkey.team.site.files":     roleFiles,
+		"donkey.team.site.data.init": roleInit,
 	}
 	var removed []string
 	transport := dockerRoundTripFunc(func(request *http.Request) (*http.Response, error) {
 		path := strings.TrimPrefix(request.URL.Path, "/v1.48")
 		if request.Method == http.MethodGet && strings.HasPrefix(path, "/containers/") && strings.HasSuffix(path, "/json") {
 			name := strings.TrimSuffix(strings.TrimPrefix(path, "/containers/"), "/json")
-			component, ok := wantComponents[name]
+			role, ok := wantRoles[name]
 			if !ok {
 				t.Fatalf("unexpected container inspect: %s", name)
 			}
 			return dockerJSONResponse(http.StatusOK, map[string]any{
-				"Id": name, "Config": map[string]any{"Labels": appLabels("team", "site", component)},
+				"Id": name, "Config": map[string]any{"Labels": appLabels("team", "site", role)},
 			}), nil
 		}
 		if request.Method == http.MethodDelete && strings.HasPrefix(path, "/containers/") {
@@ -227,7 +227,7 @@ func TestDestroyAppRemovesEveryHelperAndItsVolume(t *testing.T) {
 		}
 		if request.Method == http.MethodGet && path == "/volumes/donkey.team.site.data" {
 			return dockerJSONResponse(http.StatusOK, volume.Volume{
-				Name: "donkey.team.site.data", Labels: appLabels("team", "site", componentStorage),
+				Name: "donkey.team.site.data", Labels: appLabels("team", "site", roleStorage),
 			}), nil
 		}
 		if request.Method == http.MethodDelete && path == "/volumes/donkey.team.site.data" {

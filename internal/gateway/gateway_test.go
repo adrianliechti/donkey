@@ -274,8 +274,10 @@ func TestRouteFromConfigMap(t *testing.T) {
 	}
 	system := unscoped.DeepCopy()
 	delete(system.Labels, manifests.LabelSpace)
-	system.Labels[manifests.LabelManagedBy] = manifests.ManagedByValue
-	system.Labels[manifests.LabelComponent] = manifests.ServerName
+	// Standard manager metadata is not routing authority; only Donkey identity
+	// may distinguish the intentional unscoped system route.
+	system.Labels[manifests.LabelManagedBy] = "Helm"
+	system.Labels[manifests.LabelRole] = manifests.SystemRole(manifests.ServerName)
 	system.Annotations[manifests.AnnotationToken] = manifests.TokenForward
 	if route, ok := routeFromConfigMap(*system); !ok || !route.Token || route.Space != "" || route.App != "" {
 		t.Errorf("the managed console route must remain system-scoped, got %+v, ok=%v", route, ok)

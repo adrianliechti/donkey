@@ -3,10 +3,12 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -14,13 +16,13 @@ import (
 
 	"github.com/adrianliechti/donkey/internal/ai"
 	"github.com/adrianliechti/donkey/internal/config"
-	"github.com/adrianliechti/donkey/pkg/runtime"
+	"github.com/adrianliechti/donkey/internal/telemetry"
 )
 
-// AppRelease is the last deploy as the release screen rendered it live. It is
-// intentionally one bounded record rather than an unbounded history: runtime
-// app metadata survives deploys on both Kubernetes and Docker, while still
-// being small enough for a Kubernetes annotation.
+// AppRelease is one deploy as the release screen rendered it live. Records
+// are versioned in the telemetry store — one per build, success or failure,
+// newest-first with bounded retention — so the console can show history, not
+// just the latest attempt.
 type AppRelease struct {
 	StartedAt  string       `json:"startedAt"`
 	FinishedAt string       `json:"finishedAt"`
@@ -28,9 +30,16 @@ type AppRelease struct {
 	Update     DeployUpdate `json:"update"`
 	Lines      []string     `json:"lines"`
 	BuildLog   string       `json:"buildLog,omitempty"`
+	// Dockerfile is the exact file the image was built from — the durable
+	// recipe, whether the app brought it or donkey's assistant wrote it.
+	Dockerfile string       `json:"dockerfile,omitempty"`
 	Result     DeployResult `json:"result"`
+	// Decisions is what this deploy settled (storage, health route), kept
+	// with the image it was verified against: a `--no-build` rollback to
+	// this record's tag adopts these, not whatever a newer analysis found.
+	Decisions json.RawMessage `json:"decisions,omitempty"`
 	// Truncated says the useful tail was retained but older output was left
-	// out to keep the app metadata bounded.
+	// out to keep the record bounded.
 	Truncated bool `json:"truncated,omitempty"`
 }
 
@@ -38,9 +47,9 @@ const (
 	releaseLinesBytes    = 40 << 10
 	releaseBuildLogBytes = 64 << 10
 	releaseDiffBytes     = 16 << 10
-	// Kubernetes caps all annotations on an object at 256 KiB. Leave room
-	// for donkey's decisions, console choices, and platform annotations.
-	releaseMetaBytes = 192 << 10
+	// The store refuses unbounded records; stay comfortably under its cap
+	// while keeping room for full build logs and proposal contents.
+	releaseMetaBytes = 1 << 20
 )
 
 // releaseRecorder observes the same structured events and text sent to the
@@ -112,21 +121,6 @@ func normalizeReleasePlan(plan *Plan) {
 	}
 }
 
-// hasRenderableRelease keeps the Deployment tab honest for apps that predate
-// release recording, as well as for an interrupted or malformed metadata
-// write. A real record always has both its structured plan and final result.
-func hasRenderableRelease(raw string) bool {
-	if raw == "" {
-		return false
-	}
-	var release AppRelease
-	if json.Unmarshal([]byte(raw), &release) != nil {
-		return false
-	}
-	return release.Plan != nil && release.FinishedAt != "" &&
-		release.Result.App != "" && release.Result.Space != ""
-}
-
 func (r *releaseRecorder) line(line string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -157,6 +151,9 @@ func (r *releaseRecorder) update(update DeployUpdate) {
 	}
 	if update.BaseImages != nil {
 		r.release.Update.BaseImages = append([]string{}, update.BaseImages...)
+	}
+	if update.Dockerfile != "" {
+		r.release.Dockerfile = update.Dockerfile
 	}
 }
 
@@ -201,6 +198,9 @@ func (r *releaseRecorder) finish(s *Server, ctx context.Context, app *config.App
 		release.Plan = s.recordedDeployPlan(ctx, app, analysis, build)
 	}
 	normalizeReleasePlan(release.Plan)
+	if release.Result.OK && app != nil {
+		release.Decisions = json.RawMessage(decisionsJSON(app))
+	}
 	return release
 }
 
@@ -286,7 +286,9 @@ func cloneReleaseApp(in *config.AppConfig) *config.AppConfig {
 
 // persistRelease stores only records attached to a real app. A first build
 // that fails before anything exists has no app page to attach one to; a failed
-// update does, and its failure is exactly the record worth keeping.
+// update does, and its failure is exactly the record worth keeping. Storage
+// is best-effort by design: the deploy already happened, and a telemetry
+// hiccup must not turn it into a failure after the fact.
 func (s *Server) persistRelease(ctx context.Context, space, app string, release AppRelease) {
 	if space == "" || app == "" {
 		return
@@ -303,8 +305,7 @@ func (s *Server) persistRelease(ctx context.Context, space, app string, release 
 		log.Printf("store release app=%s space=%s: %v", app, space, err)
 		return
 	}
-	value := string(raw)
-	if err := s.rt.SetAppMeta(ctx, space, app, runtime.MetaRelease, &value); err != nil {
+	if _, err := s.telemetry.RecordBuild(ctx, space, app, release.Result.ImageRef, release.Result.OK, raw); err != nil {
 		log.Printf("store release app=%s space=%s: %v", app, space, err)
 	}
 }
@@ -315,7 +316,7 @@ func marshalRelease(release AppRelease) ([]byte, error) {
 		return b, err
 	}
 	// JSON escaping and unusually large findings can push a bounded log over
-	// the final annotation budget. Shed old output first, then bulky diffs.
+	// the record budget. Shed old output first, then bulky diffs.
 	release.Truncated = true
 	release.BuildLog = tailUTF8(release.BuildLog, 16<<10)
 	release.Lines = tailLines(release.Lines, 16<<10)
@@ -360,10 +361,13 @@ func scrubRelease(release *AppRelease, known []string) {
 	release.BuildLog = scrub(release.BuildLog)
 	release.Result.Error = scrub(release.Result.Error)
 	release.Result.Diagnosis = scrub(release.Result.Diagnosis)
+	release.Dockerfile = scrub(release.Dockerfile)
 	for i := range release.Result.Proposals {
 		proposal := &release.Result.Proposals[i]
 		proposal.Explanation = scrub(proposal.Explanation)
-		proposal.NewContent = ""
+		// A proposal's content is a Dockerfile or config file worth keeping —
+		// scrubbed like everything else, never blanked.
+		proposal.NewContent = scrub(proposal.NewContent)
 		proposal.Diff = prefixUTF8(scrub(proposal.Diff), releaseDiffBytes)
 		proposal.Value = scrub(proposal.Value)
 	}
@@ -424,29 +428,47 @@ func prefixUTF8(value string, limit int) string {
 	return value[:cut] + "\n… omitted …"
 }
 
-// handleRelease: GET /v1/spaces/{space}/apps/{app}/release
-func (s *Server) handleRelease(w http.ResponseWriter, r *http.Request) {
+// handleBuilds: GET /v1/spaces/{space}/apps/{app}/builds — the retained
+// history, newest first. An app that predates the build store simply has an
+// empty history.
+func (s *Server) handleBuilds(w http.ResponseWriter, r *http.Request) {
 	space, app, err := s.spaceApp(r)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	raw, err := s.rt.AppMeta(r.Context(), space, app, runtime.MetaRelease)
+	builds, err := s.telemetry.Builds(r.Context(), space, app)
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err)
 		return
 	}
-	if raw == "" {
-		writeErr(w, http.StatusNotFound, fmt.Errorf("no stored release is available for this app yet"))
+	writeJSON(w, http.StatusOK, map[string]any{"builds": builds})
+}
+
+// handleBuild: GET /v1/spaces/{space}/apps/{app}/builds/{sequence}
+func (s *Server) handleBuild(w http.ResponseWriter, r *http.Request) {
+	space, app, err := s.spaceApp(r)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	sequence, err := strconv.ParseInt(r.PathValue("sequence"), 10, 64)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("the build number must be a number"))
+		return
+	}
+	raw, err := s.telemetry.Build(r.Context(), space, app, sequence)
+	if errors.Is(err, telemetry.ErrNoBuild) {
+		writeErr(w, http.StatusNotFound, fmt.Errorf("no stored build %d is available for this app", sequence))
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err)
 		return
 	}
 	var release AppRelease
-	if err := json.Unmarshal([]byte(raw), &release); err != nil {
-		writeErr(w, http.StatusBadGateway, fmt.Errorf("the stored release record is invalid: %w", err))
-		return
-	}
-	if !hasRenderableRelease(raw) {
-		writeErr(w, http.StatusNotFound, fmt.Errorf("no complete stored release is available for this app yet"))
+	if err := json.Unmarshal(raw, &release); err != nil {
+		writeErr(w, http.StatusBadGateway, fmt.Errorf("the stored build record is invalid: %w", err))
 		return
 	}
 	normalizeReleasePlan(release.Plan)

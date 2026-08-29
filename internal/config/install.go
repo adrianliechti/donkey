@@ -368,6 +368,38 @@ type BuildSettings struct {
 	VerifySeconds int   `json:"verifySeconds,omitempty"`
 	// Attempts is the first Dockerfile plus one revision per failure shown.
 	Attempts int `json:"attempts,omitempty"`
+
+	// Provenance selects the SLSA provenance attestation BuildKit attaches
+	// to every pushed image: "min" (the default — materials and build
+	// metadata, no sources), "max", or "off". Max additionally embeds the
+	// Dockerfile and every build-arg *value* into the pushed attestation —
+	// never choose it while build.env carries credentials.
+	Provenance string `json:"provenance,omitempty"`
+	// SBOM attaches an SPDX SBOM attestation to every pushed image. Off by
+	// default: it pulls a scanner image (covered by registryMirrors) and
+	// lengthens every build.
+	SBOM bool `json:"sbom,omitempty"`
+}
+
+// ProvenanceMode resolves the attestation tri-state: unset means "min",
+// "off" means none. Any other value is refused at validation.
+func (b BuildSettings) ProvenanceMode() string {
+	switch b.Provenance {
+	case "", "min":
+		return "min"
+	case "max":
+		return "max"
+	}
+	return ""
+}
+
+// ValidateProvenance refuses values ProvenanceMode would silently drop.
+func (b BuildSettings) ValidateProvenance() error {
+	switch b.Provenance {
+	case "", "min", "max", "off":
+		return nil
+	}
+	return fmt.Errorf("build.provenance must be min, max or off (got %q)", b.Provenance)
 }
 
 // InstallProxy is the forward proxy donkey's own processes use.

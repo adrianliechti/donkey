@@ -79,7 +79,7 @@ func TestPackageProxyOnlyAdmitsBuildkit(t *testing.T) {
 		t.Fatalf("package ingress = %+v", p.Spec.Ingress)
 	}
 	peer := p.Spec.Ingress[0].From[0]
-	if peer.PodSelector == nil || peer.PodSelector.MatchLabels[LabelComponent] != buildkitName {
+	if peer.PodSelector == nil || peer.PodSelector.MatchLabels[LabelRole] != SystemRole(buildkitName) {
 		t.Fatalf("package peer = %+v, want only %s", peer, buildkitName)
 	}
 }

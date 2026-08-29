@@ -74,7 +74,7 @@ export function AppsList() {
 
       {apps !== null && spaces.length === 0 && (
         <div className="rounded-xl border border-line bg-card p-12 text-center">
-          <DonkeyLogo className="mx-auto size-10 text-white" />
+          <DonkeyLogo className="mx-auto size-10 text-stone" />
           <p className="mt-3 text-sm text-stone">The paddock is empty.</p>
           <p className="mt-2 text-sm">
             Deploy your first app from its project folder:{' '}

@@ -24,7 +24,7 @@ type Server struct {
 	// plans holds what donkey read about an upload between review and deploy,
 	// so the assistant answers once per app rather than once per screen.
 	plans     *planStore
-	traffic   *telemetry.Client
+	telemetry *telemetry.Client
 	resources *telemetry.ResourceExporter
 
 	// deploying lets a terminating pod finish in-flight deploys.
@@ -50,7 +50,7 @@ func New(cfg *Config, rt runtime.Provider) (*Server, error) {
 	}
 	return &Server{
 		cfg: cfg, rt: rt, assistant: assistant, plans: newPlanStore(),
-		traffic:   telemetry.NewClient(cfg.TelemetryURL, cfg.TelemetryKey),
+		telemetry: telemetry.NewClient(cfg.TelemetryURL, cfg.TelemetryKey),
 		resources: telemetry.NewResourceExporter(cfg.TelemetryOTLPEndpoint, cfg.TelemetryKey),
 	}, nil
 }
@@ -94,7 +94,8 @@ func (s *Server) routes() http.Handler {
 	// Apps live in a space, so their address does too.
 	mux.Handle("GET /v1/apps", s.auth(s.handleListApps))
 	mux.Handle("GET /v1/spaces/{space}/apps/{app}/status", s.auth(s.handleStatus))
-	mux.Handle("GET /v1/spaces/{space}/apps/{app}/release", s.auth(s.handleRelease))
+	mux.Handle("GET /v1/spaces/{space}/apps/{app}/builds", s.auth(s.handleBuilds))
+	mux.Handle("GET /v1/spaces/{space}/apps/{app}/builds/{sequence}", s.auth(s.handleBuild))
 	mux.Handle("GET /v1/spaces/{space}/apps/{app}/logs", s.auth(s.handleLogs))
 	mux.Handle("GET /v1/spaces/{space}/apps/{app}/env", s.auth(s.handleGetEnv))
 	mux.Handle("PUT /v1/spaces/{space}/apps/{app}/env", s.auth(s.handlePutEnv))

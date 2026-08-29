@@ -32,7 +32,7 @@ func TestServerCanSampleAndExportContainerMetrics(t *testing.T) {
 	policy := telemetryNetworkPolicy(in)
 	serverLabels := map[string]string{
 		LabelInstallation: in.Namespace,
-		LabelComponent:    ServerName,
+		LabelRole:         SystemRole(ServerName),
 	}
 	serverCanWriteOTLP := false
 	for _, peer := range policy.Spec.Ingress[0].From {

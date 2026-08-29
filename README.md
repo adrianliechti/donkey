@@ -128,8 +128,9 @@ five ideas:
 - **donkey-telemetry** — a dedicated `telemetry` process role of the single
   `donkey-server` binary: a single-replica OTLP/HTTP metrics receiver with a
   private query API backed by an embedded DuckDB file on its own 2 Gi PVC.
-  It keeps 30 days of hourly HTTP histograms and hourly view/visitor
-  rollups. Only this process opens the file; `Recreate` upgrades preserve
+  It keeps 30 days of hourly HTTP histograms, hourly view/visitor
+  rollups, and the versioned build records the console's Deployment tab
+  renders (a bounded history per app). Only this process opens the file; `Recreate` upgrades preserve
   DuckDB's single-writer ownership. The server can query it, while the gateway
   and apps can only ingest with scope-specific credentials.
 - **donkey-gateway** — donkey's own edge (same binary as the server,
@@ -165,14 +166,15 @@ five ideas:
 Runtime metadata has one small identity vocabulary, spelled `donkey.local/*`
 on Kubernetes and `local.donkey.*` (reverse-DNS) on Docker: the installation
 is the ownership boundary, the space the lifecycle boundary, app and addon
-the logical workload identities. On Kubernetes every object additionally
-carries the full
+the logical workload identities, and role its immutable internal purpose. On
+Kubernetes every object additionally carries the applicable
 [recommended common labels](https://kubernetes.io/docs/concepts/overview/working-with-objects/common-labels/)
-(`app.kubernetes.io/name`, `instance`, `version`, `component`, `part-of`,
-`managed-by`) — on the platform's own workloads and on every deployed app —
-so donkey's grouping is legible to standard tooling. Destructive sweeps
-require the installation and exact logical scope; selectors use only stable
-identity labels; non-identifying configuration stays in annotations. The
+(`app.kubernetes.io/name`, `instance`, `version`, `part-of`, `managed-by`) —
+on the platform's own workloads and on every deployed app — so donkey's
+grouping is legible to standard tooling. Architectural `component` is omitted
+because donkey does not know it. Destructive sweeps require the installation
+and exact logical scope; selectors and ownership use only `donkey.local/*`;
+non-identifying configuration stays in annotations. The
 complete reference, per runtime:
 [README_KUBERNETES.md](README_KUBERNETES.md#labels-annotations-and-selectors)
 and [README_DOCKER.md](README_DOCKER.md#labels).
@@ -572,7 +574,27 @@ build:
   verify: true          # default; false skips running the image
   verifySeconds: 45     # how long the app gets to come up
   attempts: 3           # the first Dockerfile plus two revisions
+  provenance: min       # SLSA provenance attestation: min (default) | max | off
+  sbom: true            # attach an SPDX SBOM to every image (off by default)
 ```
+
+**Every image carries its paperwork.** BuildKit attaches a standard SLSA
+provenance attestation to every push (and an SPDX SBOM when opted in), and
+the image config carries the OCI `org.opencontainers.image.revision`/`created`
+labels — so any registry tool can answer where an image came from without
+knowing donkey. `provenance: max` additionally embeds the Dockerfile and
+every build-arg **value** into the pushed attestation; never choose it while
+`build.env` carries credentials, which is exactly why `min` is the default.
+The SBOM stays opt-in because it pulls a scanner image (covered by
+`registryMirrors`) and lengthens every build.
+
+**Every deploy leaves a versioned record.** The full release view — plan,
+findings, complete build log, the exact Dockerfile the image was built from,
+and the decisions the deploy settled — is stored per build in
+donkey-telemetry (bounded history per app), which is what the console's
+Deployment tab renders and lets you browse. A `--no-build --tag` rollback
+adopts the decisions recorded with that image, not whatever a newer analysis
+found.
 
 ### Restricted networks
 
@@ -867,8 +889,9 @@ long as its data does.
 
 The `donkey-telemetry-data` PVC is cluster-only too; its database file is
 `/var/lib/donkey/telemetry.duckdb`. Losing it does not
-affect apps, but it erases the current 30-day traffic history; include it in
-volume snapshots when that history matters.
+affect apps, but it erases the current 30-day traffic history and the
+retained build records; include it in volume snapshots when that history
+matters.
 
 **PVC data is the one thing that cannot be reconstructed.** Everything above
 is a copy of something you have; a volume is not. donkey never snapshots,

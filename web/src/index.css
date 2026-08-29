@@ -2,48 +2,85 @@
 @import '@fontsource-variable/jetbrains-mono';
 
 /*
- * Night stable.
+ * Warm mission-control, light and dark.
  *
- * The console is a mission-control surface, so it commits to one dark
- * theme — but donkey's dark is warm: brown-black like tack leather, hay as
- * the single accent, moss/brick strictly as health semantics. Identifiers
- * (apps, spaces, addresses, env keys) are always mono — JetBrains Mono is
- * bundled, because the CSP allows no remote fonts.
+ * The console keeps its character — leather-warm neutrals, hay as the single
+ * accent, moss/brick strictly as health semantics — but now follows the
+ * operating system's light/dark preference automatically. There is no toggle
+ * and nothing is stored: the theme is `prefers-color-scheme`, full stop.
+ *
+ * Every colour is sourced from Tailwind's default oklch palette (stone for
+ * the warm neutrals, amber for hay, emerald for moss, red for brick), so the
+ * two themes stay in gamut and in step with the framework. The semantic
+ * tokens below are the only names the components know; the light values live
+ * in @theme (so the utilities generate), and the dark values override :root
+ * under the media query. Tokens resolve to concrete colours, which is what
+ * keeps the many `/opacity` utilities (color-mix) correct in both themes.
+ *
+ * Identifiers (apps, spaces, addresses, env keys) are always mono — JetBrains
+ * Mono is bundled, because the CSP allows no remote fonts.
  */
 @theme {
-  --color-surface: #14100c; /* the page, and inset fields on cards */
-  --color-card: #1d1712;
-  --color-raised: #262019; /* hover surfaces, chips on cards */
-  --color-canvas: #181310; /* inset panels a step above the page */
-  --color-line: #322a20;
-  --color-line-bright: #4a3d2b;
-  --color-ink: #ede6da;
-  --color-ink-soft: #a89c8c;
-  --color-ink-well: #0d0a07; /* log panes — the darkest thing here */
-  --color-stone: #7a6e5f;
-  --color-parchment: #d8d0c2;
+  /* Light theme — the default. Dark overrides these under the media query. */
+  --color-surface: oklch(98.5% 0.001 106.423); /* page, inset fields — stone-50 */
+  --color-card: oklch(100% 0 0); /* white */
+  --color-raised: oklch(97% 0.001 106.424); /* hover surfaces, chips — stone-100 */
+  --color-canvas: oklch(97% 0.001 106.424); /* inset panels a step above the page */
+  --color-line: oklch(92.3% 0.003 48.717); /* stone-200 */
+  --color-line-bright: oklch(86.9% 0.005 56.366); /* stone-300 */
+  --color-ink: oklch(21.6% 0.006 56.043); /* stone-900 */
+  --color-ink-soft: oklch(44.4% 0.011 73.639); /* stone-600 */
+  --color-ink-well: oklch(97% 0.001 106.424); /* log panes — stone-100 inset */
+  --color-stone: oklch(55.3% 0.013 58.071); /* muted text — stone-500 */
+  --color-parchment: oklch(37.4% 0.01 67.558); /* emphasis text — stone-700 */
 
-  --color-hay: #e8a33d;
-  --color-hay-deep: #c9821a;
-  --color-hay-wash: #271e10;
-  --color-on-hay: #1c1206;
+  --color-hay: oklch(76.9% 0.188 70.08); /* amber-500 */
+  --color-hay-deep: oklch(66.6% 0.179 58.318); /* amber-600 — focus, hover-darken */
+  --color-hay-wash: oklch(96.2% 0.059 95.617); /* amber-100 */
+  --color-on-hay: oklch(14.7% 0.004 49.25); /* dark text on hay — stone-950 */
 
-  --color-moss: #7fbc8c;
-  --color-brick: #e0765c;
+  --color-moss: oklch(59.6% 0.145 163.225); /* emerald-600 */
+  --color-brick: oklch(57.7% 0.245 27.325); /* red-600 */
 
   --font-sans: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
   --font-mono: 'JetBrains Mono Variable', ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas,
     monospace;
 }
 
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-surface: oklch(14.7% 0.004 49.25); /* stone-950 */
+    --color-card: oklch(21.6% 0.006 56.043); /* stone-900 */
+    --color-raised: oklch(26.8% 0.007 34.298); /* stone-800 */
+    --color-canvas: oklch(18% 0.005 56); /* between surface and card */
+    --color-line: oklch(26.8% 0.007 34.298); /* stone-800 */
+    --color-line-bright: oklch(37.4% 0.01 67.558); /* stone-700 */
+    --color-ink: oklch(97% 0.001 106.424); /* stone-100 */
+    --color-ink-soft: oklch(70.9% 0.01 56.259); /* stone-400 */
+    --color-ink-well: oklch(11% 0.004 49); /* the darkest thing here */
+    --color-stone: oklch(55.3% 0.013 58.071); /* muted text — stone-500 */
+    --color-parchment: oklch(86.9% 0.005 56.366); /* stone-300 */
+
+    --color-hay: oklch(82.8% 0.189 84.429); /* amber-400 */
+    --color-hay-deep: oklch(76.9% 0.188 70.08); /* amber-500 */
+    --color-hay-wash: oklch(27.9% 0.077 45.635); /* amber-950 */
+    --color-on-hay: oklch(14.7% 0.004 49.25); /* stone-950 */
+
+    --color-moss: oklch(76.5% 0.177 163.223); /* emerald-400 */
+    --color-brick: oklch(70.4% 0.191 22.216); /* red-400 */
+  }
+}
+
+/* Native form controls, scrollbars and the default canvas follow the system
+ * too — one declaration, and light-mode inputs stop rendering dark. */
 html {
   background: var(--color-surface);
   color: var(--color-ink);
-  color-scheme: dark;
+  color-scheme: light dark;
 }
 
 /* One-color brand mark: face it back toward the wordmark/content, and let
- * currentColor choose white here without baking presentation into the SVG. */
+ * currentColor choose the tone so it flips with the theme. */
 .donkey-logo {
   display: inline-block;
   flex: none;

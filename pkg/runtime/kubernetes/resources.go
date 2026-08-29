@@ -40,9 +40,9 @@ func (r *Runtime) ResourceSamples(ctx context.Context) ([]rt.ResourceSample, err
 	var failures []error
 	for _, namespace := range r.c.sweep() {
 		pods, err := r.c.Clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
-			LabelSelector: fmt.Sprintf("%s=%s,%s=%s,%s=%s,%s",
-				manifests.LabelInstallation, r.c.installation(), manifests.LabelManagedBy,
-				manifests.ManagedByValue, manifests.LabelComponent, manifests.ComponentWeb, manifests.LabelApp),
+			LabelSelector: fmt.Sprintf("%s=%s,%s=%s,%s",
+				manifests.LabelInstallation, r.c.installation(),
+				manifests.LabelRole, manifests.RoleWorkload, manifests.LabelApp),
 		})
 		if err != nil {
 			failures = append(failures, err)
@@ -67,7 +67,7 @@ func (r *Runtime) ResourceSamples(ctx context.Context) ([]rt.ResourceSample, err
 			space := pod.Labels[manifests.LabelSpace]
 			app := pod.Labels[manifests.LabelApp]
 			if space == "" || app == "" || r.c.requireOwnedObject("Pod", pod.Namespace, pod.Name, pod.Labels,
-				manifests.Labels(space, app, manifests.ComponentWeb)) != nil {
+				manifests.Labels(space, app, manifests.RoleWorkload)) != nil {
 				continue
 			}
 			containerID := ""

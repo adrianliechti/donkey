@@ -24,7 +24,7 @@ func (c *Client) DeleteSpace(ctx context.Context, namespace, space string) error
 	}
 	if ns.Annotations[manifests.AnnotationManaged] != "true" || !c.ours(ns.Labels) ||
 		ns.Labels[manifests.LabelSpace] != space ||
-		ns.Labels[manifests.LabelComponent] != manifests.ComponentSpace {
+		ns.Labels[manifests.LabelRole] != manifests.RoleSpace {
 		return fmt.Errorf("that namespace isn't this installation's to delete")
 	}
 	deleteOptions := metav1.DeleteOptions{}
@@ -47,10 +47,10 @@ func (c *Client) DeleteSpaceObjects(ctx context.Context, namespace, space string
 		manifests.LabelSpace:        space,
 	}
 	// Stop routing first, but preserve the space marker. The `!=` selector
-	// also matches externally managed route records with no component label.
+	// also matches externally managed route records with no role label.
 	// Keeping the marker until every later deletion succeeds makes a partial
 	// cascade visible and retryable after a UI refresh.
-	routes := labels.Set(owned).String() + "," + manifests.LabelComponent + "!=" + manifests.ComponentSpace
+	routes := labels.Set(owned).String() + "," + manifests.LabelRole + "!=" + manifests.RoleSpace
 	if err := c.deleteKindBySelector(ctx, namespace, "ConfigMap", routes); err != nil {
 		return err
 	}
@@ -59,18 +59,18 @@ func (c *Client) DeleteSpaceObjects(ctx context.Context, namespace, space string
 		return err
 	}
 	return c.deleteKindsBySelector(ctx, namespace, []string{"ConfigMap"}, map[string]string{
-		manifests.LabelSpace:     space,
-		manifests.LabelComponent: manifests.ComponentSpace,
+		manifests.LabelSpace: space,
+		manifests.LabelRole:  manifests.RoleSpace,
 	}, false)
 }
 
 // DeleteSpaceIsolation retracts only the space's network fence when an
 // installation turns isolation off. The deterministic policy name is not
-// deletion authority; installation + logical space + component are.
+// deletion authority; installation + logical space + role are.
 func (c *Client) DeleteSpaceIsolation(ctx context.Context, namespace, space string) error {
 	return c.deleteKindsBySelector(ctx, namespace, []string{"NetworkPolicy"}, map[string]string{
-		manifests.LabelSpace:     space,
-		manifests.LabelComponent: manifests.ComponentSpace,
+		manifests.LabelSpace: space,
+		manifests.LabelRole:  manifests.RoleSpace,
 	}, false)
 }
 
@@ -81,8 +81,8 @@ func (c *Client) DeleteSpaceEdges(ctx context.Context, namespace, space string) 
 	return c.deleteKindsBySelector(ctx, namespace,
 		[]string{"HTTPRoute", "Gateway", "Certificate", "Secret"},
 		map[string]string{
-			manifests.LabelSpace:     space,
-			manifests.LabelComponent: manifests.ComponentEdge,
+			manifests.LabelSpace: space,
+			manifests.LabelRole:  manifests.RoleEdge,
 		}, false)
 }
 
@@ -94,9 +94,9 @@ func (c *Client) DeleteAppEdges(ctx context.Context, namespace, space, app strin
 	return c.deleteKindsBySelector(ctx, namespace,
 		[]string{"HTTPRoute", "Gateway", "Certificate", "Secret"},
 		map[string]string{
-			manifests.LabelSpace:     space,
-			manifests.LabelApp:       app,
-			manifests.LabelComponent: manifests.ComponentEdge,
+			manifests.LabelSpace: space,
+			manifests.LabelApp:   app,
+			manifests.LabelRole:  manifests.RoleEdge,
 		}, false)
 }
 
@@ -106,7 +106,7 @@ func (c *Client) DeleteAppEdges(ctx context.Context, namespace, space, app strin
 func (c *Client) ListSpaces(ctx context.Context) ([]AppRef, error) {
 	namespaces, err := c.Clientset.CoreV1().Namespaces().List(ctx, metav1.ListOptions{
 		LabelSelector: fmt.Sprintf("%s=%s,%s=%s,%s", manifests.LabelInstallation, c.installation(),
-			manifests.LabelComponent, manifests.ComponentSpace, manifests.LabelSpace),
+			manifests.LabelRole, manifests.RoleSpace, manifests.LabelSpace),
 	})
 	if err != nil {
 		return nil, err
@@ -133,7 +133,7 @@ func (c *Client) ListSpaces(ctx context.Context) ([]AppRef, error) {
 func (c *Client) ListSpaceMarkers(ctx context.Context, namespace string) ([]AppRef, error) {
 	cms, err := c.Clientset.CoreV1().ConfigMaps(namespace).List(ctx, metav1.ListOptions{
 		LabelSelector: fmt.Sprintf("%s=%s,%s=%s,%s", manifests.LabelInstallation, c.installation(),
-			manifests.LabelComponent, manifests.ComponentSpace, manifests.LabelSpace),
+			manifests.LabelRole, manifests.RoleSpace, manifests.LabelSpace),
 	})
 	if err != nil {
 		return nil, err
@@ -191,7 +191,7 @@ func (c *Client) CheckNamespaceFree(ctx context.Context, namespace, space string
 		// namespace, and adopting the other's would rewrite its labels
 		// (server-side apply forces them) and make it deletable from here.
 		if c.ours(ns.Labels) && ns.Labels[manifests.LabelSpace] == space &&
-			ns.Labels[manifests.LabelComponent] == manifests.ComponentSpace {
+			ns.Labels[manifests.LabelRole] == manifests.RoleSpace {
 			return nil
 		}
 		if c.ours(ns.Labels) {

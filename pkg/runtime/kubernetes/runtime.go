@@ -297,7 +297,7 @@ func (r *Runtime) AppMeta(ctx context.Context, space, app, key string) (string, 
 
 func (r *Runtime) SetAppMeta(ctx context.Context, space, app, key string, value *string) error {
 	return r.c.SetAnnotations(ctx, "Deployment", r.ns(space), r.name(space, app),
-		manifests.Labels(space, app, manifests.ComponentWeb), map[string]*string{key: value})
+		manifests.Labels(space, app, manifests.RoleWorkload), map[string]*string{key: value})
 }
 
 // --- Files ----------------------------------------------------------------

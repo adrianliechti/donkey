@@ -67,18 +67,17 @@ var spaceKinds = []string{
 }
 
 var immutableIdentityLabels = []string{
-	manifests.LabelManagedBy,
 	manifests.LabelInstallation,
 	manifests.LabelSpace,
 	manifests.LabelApp,
 	manifests.LabelAddon,
-	manifests.LabelComponent,
+	manifests.LabelRole,
 }
 
 // sameObjectIdentity compares only labels that grant ownership or select a
-// logical resource. The standard managed-by and component labels are stable
-// identity; standard name, part-of and version labels remain descriptive and
-// may legitimately change during an apply.
+// logical resource. Every one is donkey.local/*; Kubernetes' standard name,
+// instance, component, part-of, managed-by and version labels are descriptive
+// metadata and may legitimately change during an apply.
 func sameObjectIdentity(actual, expected map[string]string) bool {
 	for _, key := range immutableIdentityLabels {
 		if actual[key] != expected[key] {
@@ -227,9 +226,9 @@ func (c *Client) DeleteObject(ctx context.Context, kind, namespace, name string,
 // not grant that name deletion authority by itself.
 func (c *Client) DeleteAppRoute(ctx context.Context, namespace, space, app string) error {
 	return c.deleteKindsBySelector(ctx, namespace, []string{"ConfigMap"}, map[string]string{
-		manifests.LabelSpace:     space,
-		manifests.LabelApp:       app,
-		manifests.LabelComponent: manifests.ComponentRoute,
+		manifests.LabelSpace: space,
+		manifests.LabelApp:   app,
+		manifests.LabelRole:  manifests.RoleRoute,
 	}, false)
 }
 
@@ -279,9 +278,9 @@ func (c *Client) DeleteAddon(ctx context.Context, namespace, space, addon string
 // DetachAddon removes only one app's copy of a space service binding.
 func (c *Client) DetachAddon(ctx context.Context, namespace, space, app, addon string) error {
 	return c.deleteBySelector(ctx, namespace, map[string]string{
-		manifests.LabelSpace:     space,
-		manifests.LabelApp:       app,
-		manifests.LabelAddon:     addon,
-		manifests.LabelComponent: manifests.ComponentBinding,
+		manifests.LabelSpace: space,
+		manifests.LabelApp:   app,
+		manifests.LabelAddon: addon,
+		manifests.LabelRole:  manifests.RoleBinding,
 	}, false)
 }

@@ -28,7 +28,7 @@ func (s *Server) handleTraffic(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	report, err := s.traffic.Traffic(r.Context(), space, app, r.URL.Query().Get("source"), selected)
+	report, err := s.telemetry.Traffic(r.Context(), space, app, r.URL.Query().Get("source"), selected)
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err)
 		return

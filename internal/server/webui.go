@@ -103,7 +103,7 @@ func (s *Server) handleDeleteSpace(w http.ResponseWriter, r *http.Request) {
 	// Runtime deletion comes first. If telemetry is temporarily unavailable,
 	// retrying this endpoint is safe and completes the purge without reviving
 	// any runtime resource.
-	if err := s.traffic.PurgeSpace(r.Context(), space); err != nil {
+	if err := s.telemetry.PurgeSpace(r.Context(), space); err != nil {
 		writeErr(w, http.StatusBadGateway, err)
 		return
 	}

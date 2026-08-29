@@ -61,7 +61,7 @@ func TestAdminAPIIsGatewayOnly(t *testing.T) {
 		t.Fatalf("the admin API should admit exactly one peer, got %d", n)
 	}
 	if peer := server.Spec.Ingress[0].From[0]; peer.PodSelector == nil ||
-		peer.PodSelector.MatchLabels[LabelComponent] != GatewayAppName {
+		peer.PodSelector.MatchLabels[LabelRole] != SystemRole(GatewayAppName) {
 		t.Errorf("the admin API's only peer should be the gateway, got %+v", peer)
 	}
 
@@ -100,7 +100,7 @@ func TestServerForwardsToTheAIEndpoint(t *testing.T) {
 	// And the server may actually reach it.
 	var reachesAI bool
 	for _, peer := range aiNetworkPolicy(in).Spec.Ingress[0].From {
-		if peer.PodSelector != nil && peer.PodSelector.MatchLabels[LabelComponent] == ServerName {
+		if peer.PodSelector != nil && peer.PodSelector.MatchLabels[LabelRole] == SystemRole(ServerName) {
 			reachesAI = true
 		}
 	}

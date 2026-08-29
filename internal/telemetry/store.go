@@ -171,6 +171,17 @@ CREATE TABLE IF NOT EXISTS resource_sample_state (
 CREATE INDEX IF NOT EXISTS resource_sample_state_seen
   ON resource_sample_state (last_seen);
 
+CREATE TABLE IF NOT EXISTS build_records (
+  space TEXT NOT NULL,
+  app TEXT NOT NULL,
+  sequence BIGINT NOT NULL,
+  created BIGINT NOT NULL,
+  image TEXT NOT NULL,
+  ok BOOLEAN NOT NULL,
+  record TEXT NOT NULL,
+  PRIMARY KEY (space, app, sequence)
+);
+
 CREATE TABLE IF NOT EXISTS view_rollups (
   hour BIGINT NOT NULL,
   space TEXT NOT NULL,
@@ -265,6 +276,7 @@ func (s *Store) PurgeSpace(ctx context.Context, space string) error {
 		"DELETE FROM resource_sample_state WHERE space = ?",
 		"DELETE FROM view_rollups WHERE space = ?",
 		"DELETE FROM view_visitors WHERE space = ?",
+		"DELETE FROM build_records WHERE space = ?",
 	} {
 		if _, err := tx.ExecContext(ctx, q, space); err != nil {
 			return err

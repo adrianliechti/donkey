@@ -25,7 +25,7 @@ func (c *Client) DeleteAppResources(ctx context.Context, namespace, space, app s
 func (c *Client) HasDataClaim(ctx context.Context, namespace, objectName, space, app string) bool {
 	pvc, err := c.Clientset.CoreV1().PersistentVolumeClaims(namespace).Get(ctx, manifests.DataClaimName(objectName), metav1.GetOptions{})
 	return err == nil && c.requireOwnedObject("PersistentVolumeClaim", namespace, pvc.Name, pvc.Labels,
-		manifests.Labels(space, app, manifests.ComponentStorage)) == nil
+		manifests.Labels(space, app, manifests.RoleStorage)) == nil
 }
 
 // SwitchToRecreate clears a Deployment's rolling-update settings so its
@@ -44,7 +44,7 @@ func (c *Client) SwitchToRecreate(ctx context.Context, namespace, name, space, a
 		return err
 	}
 	if err := c.requireOwnedObject("Deployment", namespace, name, dep.Labels,
-		manifests.Labels(space, app, manifests.ComponentWeb)); err != nil {
+		manifests.Labels(space, app, manifests.RoleWorkload)); err != nil {
 		return err
 	}
 	patch := []byte(`{"spec":{"strategy":{"type":"Recreate","rollingUpdate":null}}}`)
@@ -67,9 +67,9 @@ func (c *Client) ListApps(ctx context.Context) ([]AppRef, error) {
 	var out []AppRef
 	for _, ns := range c.sweep() {
 		deps, err := c.Clientset.AppsV1().Deployments(ns).List(ctx, metav1.ListOptions{
-			LabelSelector: fmt.Sprintf("%s=%s,%s=%s,%s=%s,%s",
-				manifests.LabelInstallation, c.installation(), manifests.LabelManagedBy,
-				manifests.ManagedByValue, manifests.LabelComponent, manifests.ComponentWeb, manifests.LabelApp),
+			LabelSelector: fmt.Sprintf("%s=%s,%s=%s,%s",
+				manifests.LabelInstallation, c.installation(),
+				manifests.LabelRole, manifests.RoleWorkload, manifests.LabelApp),
 		})
 		if err != nil {
 			return nil, err
@@ -77,7 +77,7 @@ func (c *Client) ListApps(ctx context.Context) ([]AppRef, error) {
 		for _, d := range deps.Items {
 			space, name := d.Labels[manifests.LabelSpace], d.Labels[manifests.LabelApp]
 			if space == "" || name == "" || c.requireOwnedObject("Deployment", d.Namespace, d.Name, d.Labels,
-				manifests.Labels(space, name, manifests.ComponentWeb)) != nil {
+				manifests.Labels(space, name, manifests.RoleWorkload)) != nil {
 				continue
 			}
 			out = append(out, AppRef{

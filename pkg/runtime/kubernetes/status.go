@@ -23,7 +23,7 @@ func (c *Client) AppStatus(ctx context.Context, namespace, objectName, space, ap
 		return nil, err
 	}
 	if err := c.requireOwnedObject("Deployment", namespace, objectName, dep.Labels,
-		manifests.Labels(space, app, manifests.ComponentWeb)); err != nil {
+		manifests.Labels(space, app, manifests.RoleWorkload)); err != nil {
 		return nil, err
 	}
 	st.Found = true
@@ -48,7 +48,7 @@ func (c *Client) AppStatus(ctx context.Context, namespace, objectName, space, ap
 	}); err == nil {
 		for _, p := range pods.Items {
 			if c.requireOwnedObject("Pod", namespace, p.Name, p.Labels,
-				manifests.Labels(space, app, manifests.ComponentWeb)) != nil {
+				manifests.Labels(space, app, manifests.RoleWorkload)) != nil {
 				continue
 			}
 			st.Instances = append(st.Instances, podSummary(&p))
@@ -62,7 +62,7 @@ func (c *Client) AppStatus(ctx context.Context, namespace, objectName, space, ap
 	}
 	if cm, err := c.Clientset.CoreV1().ConfigMaps(namespace).Get(ctx, objectName, metav1.GetOptions{}); err == nil {
 		if c.requireOwnedObject("ConfigMap", namespace, objectName, cm.Labels,
-			manifests.Labels(space, app, manifests.ComponentRoute)) == nil && cm.Annotations[manifests.AnnotationBackend] != "" {
+			manifests.Labels(space, app, manifests.RoleRoute)) == nil && cm.Annotations[manifests.AnnotationBackend] != "" {
 			st.IngressHost = cm.Annotations[manifests.AnnotationHost]
 			st.Protected = cm.Annotations[manifests.AnnotationLogin] == manifests.LoginRequired
 		}
@@ -81,7 +81,7 @@ func (c *Client) DeploymentAnnotation(ctx context.Context, namespace, name, spac
 		return "", err
 	}
 	if err := c.requireOwnedObject("Deployment", namespace, name, dep.Labels,
-		manifests.Labels(space, app, manifests.ComponentWeb)); err != nil {
+		manifests.Labels(space, app, manifests.RoleWorkload)); err != nil {
 		return "", err
 	}
 	return dep.Annotations[key], nil
@@ -99,7 +99,7 @@ func (c *Client) ServiceEndpoint(ctx context.Context, namespace, name, space, ad
 		return "", 0, err
 	}
 	if err := c.requireOwnedObject("Service", namespace, name, svc.Labels,
-		manifests.AddonLabels(space, addon, manifests.ComponentAddon)); err != nil {
+		manifests.AddonLabels(space, addon, manifests.RoleAddon)); err != nil {
 		return "", 0, err
 	}
 	if len(svc.Spec.Ports) == 0 {
@@ -126,7 +126,7 @@ func (c *Client) DeploymentIdentity(ctx context.Context, namespace, name string)
 func (c *Client) ListAddonBindings(ctx context.Context, namespace, space, app string) ([]rt.ServiceBindingInfo, error) {
 	selector := fmt.Sprintf("%s=%s,%s=%s,%s=%s,%s",
 		manifests.LabelInstallation, c.installation(), manifests.LabelSpace, space,
-		manifests.LabelComponent, manifests.ComponentBinding, manifests.LabelAddon)
+		manifests.LabelRole, manifests.RoleBinding, manifests.LabelAddon)
 	if app != "" {
 		selector += "," + manifests.LabelApp + "=" + app
 	}
@@ -142,7 +142,7 @@ func (c *Client) ListAddonBindings(ctx context.Context, namespace, space, app st
 		if name == "" {
 			continue
 		}
-		identity := manifests.AddonLabels(space, name, manifests.ComponentBinding)
+		identity := manifests.AddonLabels(space, name, manifests.RoleBinding)
 		if app != "" {
 			identity[manifests.LabelApp] = app
 		}
@@ -164,7 +164,7 @@ func (c *Client) ListAddonBindings(ctx context.Context, namespace, space, app st
 func (c *Client) SharedBindingValues(ctx context.Context, key string) ([]string, error) {
 	selector := fmt.Sprintf("%s=%s,%s=%s,%s",
 		manifests.LabelInstallation, c.installation(),
-		manifests.LabelComponent, manifests.ComponentBinding, manifests.LabelAddon)
+		manifests.LabelRole, manifests.RoleBinding, manifests.LabelAddon)
 	var out []string
 	for _, ns := range c.sweep() {
 		secrets, err := c.Clientset.CoreV1().Secrets(ns).List(ctx, metav1.ListOptions{
@@ -176,7 +176,7 @@ func (c *Client) SharedBindingValues(ctx context.Context, key string) ([]string,
 		for _, sec := range secrets.Items {
 			space, addon := sec.Labels[manifests.LabelSpace], sec.Labels[manifests.LabelAddon]
 			if space == "" || addon == "" || c.requireOwnedObject("Secret", sec.Namespace, sec.Name, sec.Labels,
-				manifests.AddonLabels(space, addon, manifests.ComponentBinding)) != nil {
+				manifests.AddonLabels(space, addon, manifests.RoleBinding)) != nil {
 				continue
 			}
 			if v, ok := sec.Data[key]; ok && len(v) > 0 {
@@ -191,13 +191,13 @@ func (c *Client) SharedBindingValues(ctx context.Context, key string) ([]string,
 // binding.
 //
 // The space is part of the selector, not a nicety: where every space shares
-// one namespace, "addon-postgres" is a component several spaces have, and
+// one namespace, "addon-postgres" is a binding name several spaces have, and
 // without it removing one space's database would detach another's apps.
 func (c *Client) ListAddonAttachments(ctx context.Context, namespace, space, addon string) ([]string, error) {
 	secrets, err := c.Clientset.CoreV1().Secrets(namespace).List(ctx, metav1.ListOptions{
 		LabelSelector: fmt.Sprintf("%s=%s,%s=%s,%s=%s,%s=%s,%s",
 			manifests.LabelInstallation, c.installation(), manifests.LabelSpace, space,
-			manifests.LabelAddon, addon, manifests.LabelComponent, manifests.ComponentBinding,
+			manifests.LabelAddon, addon, manifests.LabelRole, manifests.RoleBinding,
 			manifests.LabelApp),
 	})
 	if err != nil {
@@ -206,7 +206,7 @@ func (c *Client) ListAddonAttachments(ctx context.Context, namespace, space, add
 	var out []string
 	for _, sec := range secrets.Items {
 		if app := sec.Labels[manifests.LabelApp]; app != "" {
-			identity := manifests.AddonLabels(space, addon, manifests.ComponentBinding)
+			identity := manifests.AddonLabels(space, addon, manifests.RoleBinding)
 			identity[manifests.LabelApp] = app
 			if c.requireOwnedObject("Secret", namespace, sec.Name, sec.Labels, identity) != nil {
 				continue
@@ -222,7 +222,7 @@ func (c *Client) ListAddonAttachments(ctx context.Context, namespace, space, add
 // warning events a failed rollout reports — for on-demand diagnosis of an
 // app that is currently unhealthy.
 func (c *Client) RolloutEvidenceFor(ctx context.Context, namespace, objectName, space, app string) rt.Evidence {
-	identity := manifests.Labels(space, app, manifests.ComponentWeb)
+	identity := manifests.Labels(space, app, manifests.RoleWorkload)
 	dep, err := c.Clientset.AppsV1().Deployments(namespace).Get(ctx, objectName, metav1.GetOptions{})
 	if err != nil || c.requireOwnedObject("Deployment", namespace, objectName, dep.Labels,
 		identity) != nil {
@@ -237,7 +237,7 @@ func (c *Client) ListRouteNames(ctx context.Context, namespace, space, app strin
 	routes, err := c.Clientset.CoreV1().ConfigMaps(namespace).List(ctx, metav1.ListOptions{
 		LabelSelector: fmt.Sprintf("%s=%s,%s=%s,%s=%s,%s=%s",
 			manifests.LabelInstallation, c.installation(), manifests.LabelSpace, space,
-			manifests.LabelApp, app, manifests.LabelComponent, manifests.ComponentPathRoute),
+			manifests.LabelApp, app, manifests.LabelRole, manifests.RolePathRoute),
 	})
 	if err != nil {
 		return nil, err
@@ -245,7 +245,7 @@ func (c *Client) ListRouteNames(ctx context.Context, namespace, space, app strin
 	var out []string
 	for _, r := range routes.Items {
 		if c.requireOwnedObject("ConfigMap", namespace, r.Name, r.Labels,
-			manifests.Labels(space, app, manifests.ComponentPathRoute)) != nil {
+			manifests.Labels(space, app, manifests.RolePathRoute)) != nil {
 			continue
 		}
 		out = append(out, r.Name)

@@ -319,7 +319,7 @@ func (c *Client) StorageFolders(ctx context.Context, namespace, objectName, spac
 		return nil, err
 	}
 	if err := c.requireOwnedObject("Deployment", namespace, objectName, dep.Labels,
-		manifests.Labels(space, app, manifests.ComponentWeb)); err != nil {
+		manifests.Labels(space, app, manifests.RoleWorkload)); err != nil {
 		return nil, err
 	}
 	volume := ""
@@ -364,7 +364,7 @@ func (c *Client) RemoveFilesHelper(ctx context.Context, namespace, objectName, s
 		return err
 	}
 	if err := c.requireOwnedObject("Pod", namespace, name, pod.Labels,
-		manifests.Labels(space, app, manifests.ComponentFiles)); err != nil {
+		manifests.Labels(space, app, manifests.RoleFiles)); err != nil {
 		return err
 	}
 	deleteOptions := metav1.DeleteOptions{}
@@ -550,7 +550,7 @@ func (c *Client) filesHelper(ctx context.Context, namespace, objectName, space, 
 			return empty, derr
 		}
 		if err := c.requireOwnedObject("Deployment", namespace, objectName, dep.Labels,
-			manifests.Labels(space, app, manifests.ComponentWeb)); err != nil {
+			manifests.Labels(space, app, manifests.RoleWorkload)); err != nil {
 			return empty, err
 		}
 		return empty, rt.ErrNoDisk
@@ -559,14 +559,14 @@ func (c *Client) filesHelper(ctx context.Context, namespace, objectName, space, 
 		return empty, err
 	}
 	if err := c.requireOwnedObject("PersistentVolumeClaim", namespace, pvc.Name, pvc.Labels,
-		manifests.Labels(space, app, manifests.ComponentStorage)); err != nil {
+		manifests.Labels(space, app, manifests.RoleStorage)); err != nil {
 		return empty, err
 	}
 
 	name := filesHelperName(objectName)
 	pods := c.Clientset.CoreV1().Pods(namespace)
 	existing, err := pods.Get(ctx, name, metav1.GetOptions{})
-	expectedHelper := manifests.Labels(space, app, manifests.ComponentFiles)
+	expectedHelper := manifests.Labels(space, app, manifests.RoleFiles)
 	switch {
 	case err != nil && !apierrors.IsNotFound(err):
 		return empty, err
@@ -637,7 +637,7 @@ func (c *Client) pinToAppNode(ctx context.Context, namespace, objectName, space,
 		return
 	}
 	if c.requireOwnedObject("Deployment", namespace, objectName, dep.Labels,
-		manifests.Labels(space, app, manifests.ComponentWeb)) != nil {
+		manifests.Labels(space, app, manifests.RoleWorkload)) != nil {
 		return
 	}
 	list, err := c.Clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
@@ -650,7 +650,7 @@ func (c *Client) pinToAppNode(ctx context.Context, namespace, objectName, space,
 	for i := range list.Items {
 		p := &list.Items[i]
 		if c.requireOwnedObject("Pod", namespace, p.Name, p.Labels,
-			manifests.Labels(space, app, manifests.ComponentWeb)) != nil {
+			manifests.Labels(space, app, manifests.RoleWorkload)) != nil {
 			continue
 		}
 		if p.DeletionTimestamp != nil || p.Spec.NodeName == "" {
@@ -679,7 +679,7 @@ func filesHelperPod(namespace, space, app, objectName, installation string) *cor
 	grace := int64(2)
 	deadline := int64(filesHelperLifetime.Seconds()) + 60
 
-	podLabels := manifests.Labels(space, app, manifests.ComponentFiles)
+	podLabels := manifests.Labels(space, app, manifests.RoleFiles)
 	podLabels[manifests.LabelInstallation] = installation
 	return &corev1.Pod{
 		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Pod"},
@@ -802,7 +802,7 @@ func (c *Client) requireFilesHelper(ctx context.Context, namespace string, helpe
 		return nil, err
 	}
 	if err := c.requireOwnedObject("Pod", namespace, helper.name, pod.Labels,
-		manifests.Labels(helper.space, helper.app, manifests.ComponentFiles)); err != nil {
+		manifests.Labels(helper.space, helper.app, manifests.RoleFiles)); err != nil {
 		return nil, err
 	}
 	if pod.UID != helper.uid {

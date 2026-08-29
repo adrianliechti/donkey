@@ -33,7 +33,6 @@ export interface AppStatus {
   exposure?: Exposure
   port?: number
   /** The latest deploy can be reopened from app details. */
-  hasRelease?: boolean
 }
 
 export type TrafficSource = 'edge' | 'app'
@@ -325,9 +324,10 @@ export type DeployStage = 'detecting' | 'building' | 'releasing'
 export interface DeployUpdate {
   stage?: DeployStage
   baseImages?: string[]
+  dockerfile?: string
 }
 
-/** The bounded latest deploy record stored with a deployed app. */
+/** One versioned deploy record from the app's retained build history. */
 export interface AppRelease {
   startedAt: string
   finishedAt: string
@@ -335,8 +335,17 @@ export interface AppRelease {
   update: DeployUpdate
   lines: string[]
   buildLog?: string
+  dockerfile?: string
   result: DeployResult
   truncated?: boolean
+}
+
+/** One line of an app's build history, newest first. */
+export interface BuildSummary {
+  sequence: number
+  created: string
+  image?: string
+  ok: boolean
 }
 
 export interface DoctorCheck {
@@ -453,8 +462,10 @@ export const api = {
     const st = await request<AppStatus>(appPath(space, app, '/status'))
     return { ...st, pods: st.pods ?? [] }
   },
-  release: (space: string, app: string) =>
-    request<AppRelease>(appPath(space, app, '/release')),
+  builds: (space: string, app: string) =>
+    request<{ builds: BuildSummary[] }>(appPath(space, app, '/builds')),
+  build: (space: string, app: string, sequence: number) =>
+    request<AppRelease>(appPath(space, app, `/builds/${sequence}`)),
   traffic: (space: string, app: string, source: TrafficSource = 'edge', range: TrafficRange = '30d') => {
     const query = `?source=${source}&range=${range}`
     return request<TrafficReport>(

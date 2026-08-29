@@ -19,7 +19,7 @@ func TestAttachmentSecret(t *testing.T) {
 		t.Fatalf("name = %q", sec.Name)
 	}
 	if sec.Labels[manifests.LabelApp] != "shop" || sec.Labels[manifests.LabelAddon] != "db" ||
-		sec.Labels[manifests.LabelComponent] != manifests.ComponentBinding {
+		sec.Labels[manifests.LabelRole] != manifests.RoleBinding {
 		t.Fatalf("attachment identity = %v", sec.Labels)
 	}
 	plain := spaceBindingSecret("prod", "shared", "donkey-prod", "db", nil)

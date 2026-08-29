@@ -80,7 +80,7 @@ func TestStampInstallationFillsInstance(t *testing.T) {
 
 	app := &corev1.ConfigMap{
 		TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "ConfigMap"},
-		ObjectMeta: metav1.ObjectMeta{Name: "shop", Namespace: "donkey-acme", Labels: Labels("acme", "shop", ComponentRoute)},
+		ObjectMeta: metav1.ObjectMeta{Name: "shop", Namespace: "donkey-acme", Labels: Labels("acme", "shop", RoleRoute)},
 	}
 	m, err = runtime.DefaultUnstructuredConverter.ToUnstructured(app)
 	if err != nil {
@@ -90,7 +90,7 @@ func TestStampInstallationFillsInstance(t *testing.T) {
 	if err := StampInstallation(u, "bank-donkey-system"); err != nil {
 		t.Fatal(err)
 	}
-	if got := u.GetLabels()[LabelInstance]; got != "acme"+NameSeparator+"shop" {
+	if got := u.GetLabels()[LabelInstance]; got != "acme" {
 		t.Errorf("app instance = %q, the stamp must not override it", got)
 	}
 }

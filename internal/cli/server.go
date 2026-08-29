@@ -403,6 +403,9 @@ func validateKubernetesSettings(settings *config.InstallFile) error {
 	if err := settings.TLS.Validate(); err != nil {
 		return err
 	}
+	if err := settings.Build.ValidateProvenance(); err != nil {
+		return err
+	}
 	if err := settings.Gateway.HTTPRoute.Validate(); err != nil {
 		return err
 	}

@@ -238,6 +238,12 @@ func dockerComposeFiles(settings *config.InstallFile, bundledRegistry bool) (map
 	if settings.Build.Attempts > 0 {
 		serverEnv["DONKEY_BUILDER_ATTEMPTS"] = strconv.Itoa(settings.Build.Attempts)
 	}
+	if settings.Build.Provenance != "" {
+		serverEnv["DONKEY_BUILDER_PROVENANCE"] = settings.Build.Provenance
+	}
+	if settings.Build.SBOM {
+		serverEnv["DONKEY_BUILDER_SBOM"] = "true"
+	}
 	if features.BuildEnvironment {
 		serverEnv["DONKEY_BUILD_ENV"] = "${DONKEY_BUILD_ENV:-}"
 	}
@@ -359,20 +365,20 @@ func dockerComposeFiles(settings *config.InstallFile, bundledRegistry bool) (map
 		server.DependsOn["registry"] = composeDependency{Condition: "service_started"}
 		services["server"] = server
 	}
-	// Label every service with the component the direct installer and the
+	// Label every service with the role the direct installer and the
 	// bundle's own preflight expect for its container name. Deriving the
-	// component from the compose service key instead is how a bundle ends up
+	// role from the compose service key instead is how a bundle ends up
 	// refusing the very containers it created.
-	components := map[string]string{}
+	roles := map[string]string{}
 	for _, item := range dockerInstallContainers(bundledRegistry) {
-		components[item.name] = item.component
+		roles[item.name] = item.role
 	}
 	for key, service := range services {
-		component, ok := components[service.ContainerName]
+		role, ok := roles[service.ContainerName]
 		if !ok {
-			return nil, features, fmt.Errorf("compose service %s has no install component for container %s", key, service.ContainerName)
+			return nil, features, fmt.Errorf("compose service %s has no install role for container %s", key, service.ContainerName)
 		}
-		service.Labels = runtimedocker.SystemLabels(component)
+		service.Labels = runtimedocker.SystemLabels(role)
 		services[key] = service
 	}
 
@@ -382,14 +388,14 @@ func dockerComposeFiles(settings *config.InstallFile, bundledRegistry bool) (map
 			"donkey": {
 				Name:   dockerNetwork,
 				IPAM:   composeNetworkIPAM{Config: []composeSubnet{{Subnet: "${DONKEY_NETWORK_SUBNET:-" + composeNetworkSubnet + "}"}}},
-				Labels: runtimedocker.SystemLabels(runtimedocker.ComponentNetwork),
+				Labels: runtimedocker.SystemLabels(runtimedocker.RoleNetwork),
 			},
 		},
 		Volumes: map[string]composeVolume{
-			"data":      {Name: dockerDataVolume, Labels: runtimedocker.SystemLabels(runtimedocker.ComponentStateStorage)},
-			"buildkit":  {Name: dockerBuildkitVolume, Labels: runtimedocker.SystemLabels(runtimedocker.ComponentBuildkitStorage)},
-			"telemetry": {Name: dockerTelemetryVolume, Labels: runtimedocker.SystemLabels(runtimedocker.ComponentTelemetryStorage)},
-			"registry":  {Name: dockerRegistryVolume, Labels: runtimedocker.SystemLabels(runtimedocker.ComponentRegistryStorage)},
+			"data":      {Name: dockerDataVolume, Labels: runtimedocker.SystemLabels(runtimedocker.RoleStateStorage)},
+			"buildkit":  {Name: dockerBuildkitVolume, Labels: runtimedocker.SystemLabels(runtimedocker.RoleBuildkitStorage)},
+			"telemetry": {Name: dockerTelemetryVolume, Labels: runtimedocker.SystemLabels(runtimedocker.RoleTelemetryStorage)},
+			"registry":  {Name: dockerRegistryVolume, Labels: runtimedocker.SystemLabels(runtimedocker.RoleRegistryStorage)},
 		},
 	}
 	if !bundledRegistry {
@@ -465,7 +471,7 @@ fi
 require_owned() {
   kind=$1
   name=$2
-  component=$3
+  role=$3
   case "$kind" in
     container)
       actual=$(docker container inspect "$name" --format '` + composeIdentityFormat(".Config.Labels") + `' 2>/dev/null) || return 0
@@ -477,20 +483,20 @@ require_owned() {
       actual=$(docker volume inspect "$name" --format '` + composeIdentityFormat(".Labels") + `' 2>/dev/null) || return 0
       ;;
   esac
-  expected="true|donkey||||$component"
-  [ "$actual" = "$expected" ] || {
-    echo "the Docker $kind $name exists but is not this donkey installation's $component resource" >&2
+	  expected="true|donkey||||$role"
+	  [ "$actual" = "$expected" ] || {
+	    echo "the Docker $kind $name exists but is not this donkey installation's $role resource" >&2
     exit 1
   }
 }
 
 `)
-	fmt.Fprintf(&b, "require_owned network %s %s\n", dockerNetwork, runtimedocker.ComponentNetwork)
+	fmt.Fprintf(&b, "require_owned network %s %s\n", dockerNetwork, runtimedocker.RoleNetwork)
 	for _, item := range dockerInstallVolumes(bundledRegistry) {
-		fmt.Fprintf(&b, "require_owned volume %s %s\n", item.name, item.component)
+		fmt.Fprintf(&b, "require_owned volume %s %s\n", item.name, item.role)
 	}
 	for _, item := range dockerInstallContainers(bundledRegistry) {
-		fmt.Fprintf(&b, "require_owned container %s %s\n", item.name, item.component)
+		fmt.Fprintf(&b, "require_owned container %s %s\n", item.name, item.role)
 	}
 	b.WriteString(`
 # Env entries are emitted with a unit-separator delimiter: a line-based read
@@ -561,7 +567,7 @@ func renderComposeReadme(settings *config.InstallFile, bundledRegistry bool) str
 	}
 	return fmt.Sprintf(`# Donkey Docker Compose deployment
 
-This bundle runs the same control-plane components as server install,
+This bundle runs the same control-plane roles as server install,
 using exact container and volume names so donkey's Docker runtime can attach
 apps to them. App images use %s.
 

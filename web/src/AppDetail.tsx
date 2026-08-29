@@ -70,10 +70,7 @@ export function AppDetail({
   // The tab also comes from the URL, so it can name one that is not offered:
   // .../files for an app with no disk. Fall back rather than leave the panel
   // blank with nothing selected.
-  const shown: AppTab =
-    (tab === 'files' && !status?.hasStorage) || (tab === 'release' && status !== null && !status.hasRelease)
-      ? 'overview'
-      : tab
+  const shown: AppTab = tab === 'files' && !status?.hasStorage ? 'overview' : tab
 
   return (
     <div className="flex min-h-full flex-col">
@@ -144,9 +141,7 @@ export function AppDetail({
           /* Files is only offered when there is a disk to browse — an app
              without one has nothing on it a redeploy would not rebuild. */
           <nav className="mt-3 flex gap-1 overflow-x-auto px-5" role="tablist">
-            {TABS.filter(
-              (t) => (t.id !== 'files' || status.hasStorage) && (t.id !== 'release' || status.hasRelease),
-            ).map((t) => (
+            {TABS.filter((t) => t.id !== 'files' || status.hasStorage).map((t) => (
               <button
                 key={t.id}
                 role="tab"

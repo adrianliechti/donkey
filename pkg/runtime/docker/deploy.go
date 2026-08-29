@@ -368,7 +368,7 @@ func (r *Runtime) appMounts(ctx context.Context, space, app string, spec runSpec
 		return nil, nil
 	}
 	vol := volName(space, app)
-	labels := appLabels(space, app, componentStorage)
+	labels := appLabels(space, app, roleStorage)
 	if err := r.ensureOwnedVolume(ctx, vol, labels); err != nil {
 		return nil, err
 	}
@@ -379,7 +379,7 @@ func (r *Runtime) appMounts(ctx context.Context, space, app string, spec runSpec
 		volumes[p] = volumeMount{Volume: vol, Subpath: sub}
 		subs = append(subs, sub)
 	}
-	if err := r.initVolumeDirs(ctx, vol, subs, appLabels(space, app, componentInit)); err != nil {
+	if err := r.initVolumeDirs(ctx, vol, subs, appLabels(space, app, roleInit)); err != nil {
 		return nil, err
 	}
 	return volumes, nil
@@ -434,7 +434,7 @@ func (r *Runtime) runApp(ctx context.Context, space, app string, spec runSpec) e
 	if err != nil {
 		return err
 	}
-	labels := appLabels(space, app, componentWeb)
+	labels := appLabels(space, app, roleWorkload)
 	labels[labelImage] = spec.Image
 	labels[labelPort] = strconv.Itoa(spec.Port)
 
@@ -563,18 +563,18 @@ func (r *Runtime) Render(spec rt.DeploySpec) (string, error) {
 }
 
 func (r *Runtime) Destroy(ctx context.Context, space, app string, keepData bool) error {
-	for _, helper := range []struct{ name, component string }{
-		{ctrName(space, app), componentWeb},
-		{filesHelperName(space, app), componentFiles},
-		{volName(space, app) + ".init", componentInit},
+	for _, helper := range []struct{ name, role string }{
+		{ctrName(space, app), roleWorkload},
+		{filesHelperName(space, app), roleFiles},
+		{volName(space, app) + ".init", roleInit},
 	} {
 		if err := r.removeOwnedContainer(ctx, helper.name,
-			appLabels(space, app, helper.component)); err != nil {
+			appLabels(space, app, helper.role)); err != nil {
 			return err
 		}
 	}
 	if !keepData {
-		if err := r.removeOwnedVolume(ctx, volName(space, app), appLabels(space, app, componentStorage)); err != nil {
+		if err := r.removeOwnedVolume(ctx, volName(space, app), appLabels(space, app, roleStorage)); err != nil {
 			return err
 		}
 	}

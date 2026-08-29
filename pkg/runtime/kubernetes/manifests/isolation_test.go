@@ -46,10 +46,10 @@ func TestSpaceIsolationPolicyAdmitsSpaceGatewayAndServer(t *testing.T) {
 	if got := sameSpace.PodSelector.MatchLabels; len(got) != len(want) || got[LabelInstallation] != want[LabelInstallation] || got[LabelSpace] != want[LabelSpace] {
 		t.Errorf("same-space peer = %v, want %v", got, want)
 	}
-	for i, component := range []string{GatewayAppName, ServerName} {
+	for i, name := range []string{GatewayAppName, ServerName} {
 		peer := from[i+1]
-		if got := peer.PodSelector.MatchLabels[LabelComponent]; got != component {
-			t.Errorf("peer %d selects component %q, want %q", i+1, got, component)
+		if got, want := peer.PodSelector.MatchLabels[LabelRole], SystemRole(name); got != want {
+			t.Errorf("peer %d selects role %q, want %q", i+1, got, want)
 		}
 		if got := peer.NamespaceSelector.MatchLabels["kubernetes.io/metadata.name"]; got != "donkey-system" {
 			t.Errorf("peer %d is pinned to namespace %q, want the control plane's", i+1, got)
@@ -106,19 +106,19 @@ func TestSpaceIsolationPolicyRestrictsEgressToDNSSpaceAndPlatform(t *testing.T) 
 	// The two platform endpoints are separate so each gets only its actual
 	// workload port (NetworkPolicy sees the target Pod port after Service
 	// translation).
-	for i, component := range []string{AIAppName, TelemetryAppName} {
+	for i, name := range []string{AIAppName, TelemetryAppName} {
 		rule := p.Spec.Egress[i+2]
 		if len(rule.To) != 1 || len(rule.Ports) != 1 {
 			t.Fatalf("platform rule %d = %+v, want one peer and one port", i, rule)
 		}
-		if got := rule.To[0].PodSelector.MatchLabels[LabelComponent]; got != component {
-			t.Errorf("platform egress peer %d selects %q, want %q", i, got, component)
+		if got, want := rule.To[0].PodSelector.MatchLabels[LabelRole], SystemRole(name); got != want {
+			t.Errorf("platform egress peer %d selects role %q, want %q", i, got, want)
 		}
 		if got := rule.To[0].NamespaceSelector.MatchLabels["kubernetes.io/metadata.name"]; got != "donkey-system" {
 			t.Errorf("platform egress peer %d namespace = %q, want the control plane's", i, got)
 		}
 		wantPort := int(aiPort)
-		if component == TelemetryAppName {
+		if name == TelemetryAppName {
 			wantPort = int(telemetryOTLPPort)
 		}
 		if got := rule.Ports[0].Port.IntValue(); got != wantPort {

@@ -30,7 +30,7 @@ func TestApplyRefusesToAdoptSameNamedForeignObject(t *testing.T) {
 				manifests.LabelInstallation: "another-donkey",
 				manifests.LabelSpace:        "team",
 				manifests.LabelApp:          "site",
-				manifests.LabelComponent:    manifests.ComponentRoute,
+				manifests.LabelRole:         manifests.RoleRoute,
 			},
 		},
 	}}
@@ -40,7 +40,7 @@ func TestApplyRefusesToAdoptSameNamedForeignObject(t *testing.T) {
 		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "ConfigMap"},
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "team--site", Namespace: "workloads",
-			Labels: manifests.Labels("team", "site", manifests.ComponentRoute),
+			Labels: manifests.Labels("team", "site", manifests.RoleRoute),
 		},
 	}
 	if err := client.Apply(ctx, []k8sruntime.Object{desired}); err == nil {
@@ -55,7 +55,7 @@ func TestApplyRefusesToAdoptSameNamedForeignObject(t *testing.T) {
 
 func TestDeleteObjectPreconditionsOnValidatedUID(t *testing.T) {
 	ctx := context.Background()
-	identity := manifests.Labels("team", "site", manifests.ComponentRoute)
+	identity := manifests.Labels("team", "site", manifests.RoleRoute)
 	identity[manifests.LabelInstallation] = "bank-donkey-system"
 	existing := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "v1", "kind": "ConfigMap",
@@ -67,7 +67,7 @@ func TestDeleteObjectPreconditionsOnValidatedUID(t *testing.T) {
 	dynamic := dynamicfake.NewSimpleDynamicClient(k8sruntime.NewScheme(), existing)
 	client := (&Client{Dynamic: dynamic}).WithInstallation("bank-donkey-system")
 	if err := client.DeleteObject(ctx, "ConfigMap", "workloads", "team--site",
-		manifests.Labels("team", "site", manifests.ComponentRoute)); err != nil {
+		manifests.Labels("team", "site", manifests.RoleRoute)); err != nil {
 		t.Fatal(err)
 	}
 	for _, action := range dynamic.Actions() {
@@ -93,7 +93,7 @@ func mapStringAny(values map[string]string) map[string]any {
 }
 
 func TestObjectIdentitySeparatesManagerFromDescriptiveLabels(t *testing.T) {
-	expected := manifests.Labels("team", "site", manifests.ComponentWeb)
+	expected := manifests.Labels("team", "site", manifests.RoleWorkload)
 	expected[manifests.LabelInstallation] = "donkey-system"
 	actual := maps.Clone(expected)
 	actual["app.kubernetes.io/version"] = "v2"
@@ -101,10 +101,18 @@ func TestObjectIdentitySeparatesManagerFromDescriptiveLabels(t *testing.T) {
 		t.Fatal("a version change altered immutable identity")
 	}
 	actual[manifests.LabelManagedBy] = "gitops"
-	if sameObjectIdentity(actual, expected) {
-		t.Fatal("an object managed by another tool preserved donkey's immutable identity")
+	if !sameObjectIdentity(actual, expected) {
+		t.Fatal("descriptive managed-by altered donkey's immutable identity")
 	}
-	actual[manifests.LabelManagedBy] = manifests.ManagedByValue
+	actual["app.kubernetes.io/component"] = "backend"
+	if !sameObjectIdentity(actual, expected) {
+		t.Fatal("descriptive component altered donkey's immutable identity")
+	}
+	actual[manifests.LabelRole] = manifests.RoleRoute
+	if sameObjectIdentity(actual, expected) {
+		t.Fatal("a donkey role change preserved immutable identity")
+	}
+	actual[manifests.LabelRole] = manifests.RoleWorkload
 	actual[manifests.LabelSpace] = "other"
 	if sameObjectIdentity(actual, expected) {
 		t.Fatal("a logical space change preserved immutable identity")
@@ -230,12 +238,12 @@ func TestDestructiveSelectorsAlwaysIncludeInstallationAndLogicalScope(t *testing
 		manifests.LabelSpace:        "team",
 	}
 	baseSelector := labels.Set(base).String()
-	routeSelector, err := labels.Parse(baseSelector + "," + manifests.LabelComponent + "!=" + manifests.ComponentSpace)
+	routeSelector, err := labels.Parse(baseSelector + "," + manifests.LabelRole + "!=" + manifests.RoleSpace)
 	if err != nil {
 		t.Fatal(err)
 	}
 	marker := maps.Clone(base)
-	marker[manifests.LabelComponent] = manifests.ComponentSpace
+	marker[manifests.LabelRole] = manifests.RoleSpace
 	assertDeleteActionsWithSelectors(t, dynamic.Actions(), []string{
 		"configmaps", "services", "deployments", "pods", "secrets", "persistentvolumeclaims",
 		"networkpolicies", "configmaps",
@@ -251,7 +259,7 @@ func TestDestructiveSelectorsAlwaysIncludeInstallationAndLogicalScope(t *testing
 	assertDeleteActions(t, dynamic.Actions(), []string{"networkpolicies"}, map[string]string{
 		manifests.LabelInstallation: "bank-donkey-system",
 		manifests.LabelSpace:        "team",
-		manifests.LabelComponent:    manifests.ComponentSpace,
+		manifests.LabelRole:         manifests.RoleSpace,
 	})
 
 	dynamic.ClearActions()
@@ -264,7 +272,7 @@ func TestDestructiveSelectorsAlwaysIncludeInstallationAndLogicalScope(t *testing
 		manifests.LabelInstallation: "bank-donkey-system",
 		manifests.LabelSpace:        "team",
 		manifests.LabelApp:          "site",
-		manifests.LabelComponent:    manifests.ComponentEdge,
+		manifests.LabelRole:         manifests.RoleEdge,
 	})
 
 	dynamic.ClearActions()
@@ -276,7 +284,7 @@ func TestDestructiveSelectorsAlwaysIncludeInstallationAndLogicalScope(t *testing
 	}, map[string]string{
 		manifests.LabelInstallation: "bank-donkey-system",
 		manifests.LabelSpace:        "team",
-		manifests.LabelComponent:    manifests.ComponentEdge,
+		manifests.LabelRole:         manifests.RoleEdge,
 	})
 }
 
