@@ -386,10 +386,10 @@ func deployment(in Input) (*appsv1.Deployment, error) {
 		Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"NET_RAW"}},
 		SeccompProfile:           &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
 	}
-	automount := false
 	spec := corev1.PodSpec{
 		Containers:                   []corev1.Container{container},
-		AutomountServiceAccountToken: &automount,
+		AutomountServiceAccountToken: new(false),
+		EnableServiceLinks:           new(false),
 	}
 	if in.RegistryUsername != "" && in.RegistryPassword != "" {
 		spec.ImagePullSecrets = []corev1.LocalObjectReference{{Name: PullSecretName(in.Name())}}
