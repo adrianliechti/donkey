@@ -25,16 +25,16 @@ import (
 
 const (
 	// Docker recommends reverse-DNS label keys for third-party tools. Keep
-	// the same identity dimensions as Kubernetes, expressed in Docker's
-	// dot-separated spelling.
-	labelManaged      = "dev.donkey.managed"
-	labelInstallation = "dev.donkey.installation"
-	labelSpace        = "dev.donkey.space"
-	labelApp          = "dev.donkey.app"
-	labelAddon        = "dev.donkey.addon"
-	labelComponent    = "dev.donkey.component"
-	labelImage        = "dev.donkey.image"
-	labelPort         = "dev.donkey.port"
+	// the same identity dimensions as Kubernetes (donkey.local/*), expressed
+	// in Docker's dot-separated spelling.
+	labelManaged      = "local.donkey.managed"
+	labelInstallation = "local.donkey.installation"
+	labelSpace        = "local.donkey.space"
+	labelApp          = "local.donkey.app"
+	labelAddon        = "local.donkey.addon"
+	labelComponent    = "local.donkey.component"
+	labelImage        = "local.donkey.image"
+	labelPort         = "local.donkey.port"
 
 	dockerInstallation = "donkey"
 
@@ -47,6 +47,39 @@ const (
 
 	sharedOwner = "shared" // addons.SharedOwner, spelled here for state.go
 )
+
+// System component values, shared by the direct Docker installer, generated
+// Compose bundles and the runtime's own checks. One constant per resource:
+// the ownership preflights compare these exactly, so a value spelled twice
+// is a re-install that refuses its own resources.
+const (
+	ComponentServer           = "server"
+	ComponentGateway          = "gateway"
+	ComponentAI               = "ai"
+	ComponentTelemetry        = "telemetry"
+	ComponentPackages         = "packages"
+	ComponentBuildkit         = "buildkitd"
+	ComponentRegistry         = "registry"
+	ComponentNetwork          = "network"
+	ComponentStateStorage     = "state-storage"
+	ComponentBuildkitStorage  = "buildkit-storage"
+	ComponentTelemetryStorage = "telemetry-storage"
+	ComponentRegistryStorage  = "registry-storage"
+)
+
+// IdentityLabelKeys is the immutable ownership vocabulary in comparison
+// order — what sameIdentity checks, exported for generated bundles whose
+// shell preflight re-implements that comparison with `docker inspect`.
+func IdentityLabelKeys() []string {
+	return []string{labelManaged, labelInstallation, labelSpace, labelApp, labelAddon, labelComponent}
+}
+
+// SystemComponentOf is the naming rule for control-plane containers: the
+// container donkey-<component> carries that component label. The constants
+// above and every donkey-* container name are chosen to satisfy it.
+func SystemComponentOf(containerName string) string {
+	return strings.TrimPrefix(containerName, "donkey-")
+}
 
 // Options is what the Docker runtime needs to know about the installation.
 type Options struct {
@@ -161,9 +194,7 @@ func resourceLabels(space, component string) map[string]string {
 // sameIdentity compares only immutable ownership dimensions. Version, image,
 // port and other descriptive labels may legitimately change on a rollout.
 func sameIdentity(actual, expected map[string]string) bool {
-	for _, key := range []string{
-		labelManaged, labelInstallation, labelSpace, labelApp, labelAddon, labelComponent,
-	} {
+	for _, key := range IdentityLabelKeys() {
 		if actual[key] != expected[key] {
 			return false
 		}
@@ -913,7 +944,7 @@ func (r *Runtime) Checks(ctx context.Context) []rt.Check {
 		gw.Detail = "not found — is the gateway container running?"
 	} else if err != nil {
 		gw.Detail = err.Error()
-	} else if info.Config == nil || !MatchesSystemLabels(info.Config.Labels, strings.TrimPrefix(r.opts.GatewayContainer, "donkey-")) {
+	} else if info.Config == nil || !MatchesSystemLabels(info.Config.Labels, SystemComponentOf(r.opts.GatewayContainer)) {
 		gw.Detail = "the name is held by a container outside this donkey installation"
 	} else if info.State == nil || !info.State.Running {
 		gw.Detail = "not running"
@@ -1039,7 +1070,7 @@ func ownedSystemContainers(ctx context.Context, cli *client.Client, names ...str
 		if info.Config == nil {
 			return nil, fmt.Errorf("the Docker container %s has no inspectable configuration", name)
 		}
-		component := strings.TrimPrefix(name, "donkey-")
+		component := SystemComponentOf(name)
 		if !MatchesSystemLabels(info.Config.Labels, component) {
 			return nil, fmt.Errorf("the Docker container %s exists but isn't this donkey installation's %s resource", name, component)
 		}

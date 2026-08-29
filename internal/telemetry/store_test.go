@@ -2,7 +2,9 @@ package telemetry
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -263,4 +265,81 @@ func stringAttribute(key, value string) *commonpb.KeyValue {
 
 func intAttribute(key string, value int64) *commonpb.KeyValue {
 	return &commonpb.KeyValue{Key: key, Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_IntValue{IntValue: value}}}
+}
+
+// A point donkey cannot normalize is a point donkey did not store: the
+// exporter must see it rejected in the partial-success response, not a full
+// success that quietly discards everything it sends.
+func TestStoreRejectsUnsupportedTemporality(t *testing.T) {
+	store, err := OpenStore(":memory:", DefaultRetentionDays)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	req := exportRequest(time.Now().UTC(), []histogramPoint{{status: 200, count: 1, sum: 0.01, bucket: 2}})
+	req.ResourceMetrics[0].ScopeMetrics[0].Metrics[0].GetHistogram().AggregationTemporality =
+		metricspb.AggregationTemporality_AGGREGATION_TEMPORALITY_UNSPECIFIED
+	accepted, rejected, err := store.IngestMetrics(context.Background(), req, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if accepted != 0 || rejected != 1 {
+		t.Fatalf("accepted=%d rejected=%d, want 0/1", accepted, rejected)
+	}
+}
+
+// Databases written before duration_sum widened to DOUBLE are rebuilt on
+// open: rollup rows survive, the columns come out DOUBLE, and the baselines
+// are simply re-established by the next export.
+func TestMigrateWidensLegacyRealDurationColumns(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "telemetry.duckdb")
+	legacy, err := sql.Open("duckdb", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	realBody := strings.Replace(httpRollupsBody, "duration_sum DOUBLE", "duration_sum REAL", 1)
+	streamBody := strings.Replace(metricStreamStateBody, "duration_sum DOUBLE", "duration_sum REAL", 1)
+	for _, q := range []string{
+		fmt.Sprintf("CREATE TABLE http_rollups "+realBody, bucketColumns(true)),
+		"CREATE INDEX http_rollups_scope_time ON http_rollups (source, space, app, hour)",
+		fmt.Sprintf("CREATE TABLE metric_stream_state "+streamBody, bucketColumns(true)),
+		// A current hour, or the retention sweep at open reaps the row.
+		fmt.Sprintf("INSERT INTO http_rollups (hour, source, space, app, method, status, request_count, duration_sum) "+
+			"VALUES (%d, 'gateway', 'team', 'site', 'GET', 200, 3, 0.5)",
+			time.Now().UTC().Truncate(time.Hour).Unix()),
+	} {
+		if _, err := legacy.Exec(q); err != nil {
+			t.Fatalf("preparing legacy schema: %v", err)
+		}
+	}
+	if err := legacy.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := OpenStore(path, DefaultRetentionDays)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	for _, table := range []string{"http_rollups", "metric_stream_state"} {
+		var dataType string
+		if err := store.db.QueryRow(
+			"SELECT data_type FROM duckdb_columns() WHERE table_name = ? AND column_name = 'duration_sum'", table,
+		).Scan(&dataType); err != nil {
+			t.Fatal(err)
+		}
+		if dataType != "DOUBLE" {
+			t.Errorf("%s.duration_sum = %s, want DOUBLE", table, dataType)
+		}
+	}
+	var count int64
+	var sum float64
+	if err := store.db.QueryRow(
+		"SELECT request_count, duration_sum FROM http_rollups WHERE space = 'team' AND app = 'site'",
+	).Scan(&count, &sum); err != nil {
+		t.Fatal(err)
+	}
+	if count != 3 || sum != 0.5 {
+		t.Errorf("migrated rollup = %d/%v, want 3/0.5", count, sum)
+	}
 }

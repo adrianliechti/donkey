@@ -129,7 +129,7 @@ func packagesDeployment(in SystemInput) *appsv1.Deployment {
 			Replicas: &replicas,
 			Selector: &metav1.LabelSelector{MatchLabels: SystemSelector(packagesName)},
 			Template: corev1.PodTemplateSpec{
-				ObjectMeta: in.hashedTemplateMeta(packagesName, in.packagesConfigHash()),
+				ObjectMeta: in.hashedTemplateMeta(packagesName, in.ServerImage, in.packagesConfigHash()),
 				Spec:       spec,
 			},
 		},

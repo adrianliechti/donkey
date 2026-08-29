@@ -249,10 +249,13 @@ func (in SystemInput) serverConfigHash() string {
 		buildEnvJSON(in.Build), in.Build.Instructions, in.Build.Proxy.HTTP, in.Build.Proxy.HTTPS)
 }
 
-func (in SystemInput) hashedTemplateMeta(name, hash string) metav1.ObjectMeta {
+// hashedTemplateMeta is the pod template metadata of one control-plane
+// deployment: the full descriptive label set (version from the image that
+// actually runs in the pod) plus the config hash that rolls it.
+func (in SystemInput) hashedTemplateMeta(name, image, hash string) metav1.ObjectMeta {
 	return metav1.ObjectMeta{
-		Labels:      SystemLabels(name),
-		Annotations: map[string]string{"donkey.dev/config-hash": hash},
+		Labels:      withVersion(SystemLabels(name), image),
+		Annotations: map[string]string{AnnotationConfigHash: hash},
 	}
 }
 
@@ -343,7 +346,7 @@ func hasSystemRegistryCredentials(in SystemInput) bool {
 const registryCAPath = "/etc/donkey/registry-ca"
 
 func serverDeployment(in SystemInput) *appsv1.Deployment {
-	labels := SystemLabels(ServerName)
+	labels := withVersion(SystemLabels(ServerName), in.ServerImage)
 	replicas := int32(1)
 	secretEnv := func(name, key string) corev1.EnvVar {
 		return corev1.EnvVar{Name: name, ValueFrom: &corev1.EnvVarSource{
@@ -458,7 +461,7 @@ func serverDeployment(in SystemInput) *appsv1.Deployment {
 			Replicas: &replicas,
 			Selector: &metav1.LabelSelector{MatchLabels: SystemSelector(ServerName)},
 			Template: corev1.PodTemplateSpec{
-				ObjectMeta: in.hashedTemplateMeta(ServerName, in.serverConfigHash()),
+				ObjectMeta: in.hashedTemplateMeta(ServerName, in.ServerImage, in.serverConfigHash()),
 				Spec:       spec,
 			},
 		},

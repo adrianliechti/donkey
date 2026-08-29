@@ -44,11 +44,8 @@ func ingressPolicy(in SystemInput, name string, port int32, peers []networkingv1
 // is what keeps a second installation's same-named pods out).
 func systemPeer(namespace, name string) networkingv1.NetworkPolicyPeer {
 	return networkingv1.NetworkPolicyPeer{
-		PodSelector: &metav1.LabelSelector{MatchLabels: map[string]string{
-			LabelInstallation: namespace,
-			LabelComponent:    name,
-		}},
-		NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": namespace}},
+		PodSelector:       &metav1.LabelSelector{MatchLabels: SystemPodSelector(namespace, name)},
+		NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{LabelNamespaceName: namespace}},
 	}
 }
 
@@ -71,7 +68,7 @@ func appPeers(in SystemInput) []networkingv1.NetworkPolicyPeer {
 		return []networkingv1.NetworkPolicyPeer{{
 			PodSelector: pods,
 			NamespaceSelector: &metav1.LabelSelector{
-				MatchLabels: map[string]string{"kubernetes.io/metadata.name": in.WorkloadNamespace},
+				MatchLabels: map[string]string{LabelNamespaceName: in.WorkloadNamespace},
 			},
 		}}
 	}

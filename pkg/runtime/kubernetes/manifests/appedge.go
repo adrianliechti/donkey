@@ -125,7 +125,7 @@ func AppGatewayObjects(in Input) []runtime.Object {
 							"from": "Selector",
 							"selector": map[string]any{
 								"matchLabels": map[string]any{
-									"kubernetes.io/metadata.name": in.AppGateway.Namespace,
+									LabelNamespaceName: in.AppGateway.Namespace,
 								},
 							},
 						},

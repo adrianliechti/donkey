@@ -156,7 +156,7 @@ func donkeyGatewayDeployment(in SystemInput) *appsv1.Deployment {
 			Replicas: &replicas,
 			Selector: &metav1.LabelSelector{MatchLabels: SystemSelector(GatewayAppName)},
 			Template: corev1.PodTemplateSpec{
-				ObjectMeta: in.hashedTemplateMeta(GatewayAppName, in.donkeyGatewayConfigHash()),
+				ObjectMeta: in.hashedTemplateMeta(GatewayAppName, in.ServerImage, in.donkeyGatewayConfigHash()),
 				Spec:       spec,
 			},
 		},

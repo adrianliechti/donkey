@@ -97,13 +97,13 @@ func TestTelemetryOwnsOnePersistentDuckDBWriter(t *testing.T) {
 
 func TestTelemetryCredentialIsIndependentFromLoginSessions(t *testing.T) {
 	in := systemInput()
-	original := telemetryDeployment(in).Spec.Template.Annotations["donkey.dev/config-hash"]
+	original := telemetryDeployment(in).Spec.Template.Annotations["donkey.local/config-hash"]
 	in.SessionKey = "rotated-session-key"
-	if got := telemetryDeployment(in).Spec.Template.Annotations["donkey.dev/config-hash"]; got != original {
+	if got := telemetryDeployment(in).Spec.Template.Annotations["donkey.local/config-hash"]; got != original {
 		t.Fatalf("session rotation changed telemetry config hash: %s -> %s", original, got)
 	}
 	in.TelemetryKey = "rotated-telemetry-key"
-	if got := telemetryDeployment(in).Spec.Template.Annotations["donkey.dev/config-hash"]; got == original {
+	if got := telemetryDeployment(in).Spec.Template.Annotations["donkey.local/config-hash"]; got == original {
 		t.Fatal("telemetry key rotation did not roll donkey-telemetry")
 	}
 	secret := systemSecret(in)

@@ -19,7 +19,7 @@ func TestDockerInstallerRequiresExactSystemIdentity(t *testing.T) {
 		t.Fatal("a different control-plane component was accepted")
 	}
 	labels := runtimedocker.SystemLabels("server")
-	labels["dev.donkey.space"] = "team"
+	labels["local.donkey.space"] = "team"
 	if err := requireDockerSystemResource("container", dockerServerName, labels, "server"); err == nil {
 		t.Fatal("a tenant resource was accepted as control-plane infrastructure")
 	}

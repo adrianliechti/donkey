@@ -122,7 +122,7 @@ func aiDeployment(in SystemInput) *appsv1.Deployment {
 			Replicas: &replicas,
 			Selector: &metav1.LabelSelector{MatchLabels: SystemSelector(AIAppName)},
 			Template: corev1.PodTemplateSpec{
-				ObjectMeta: in.hashedTemplateMeta(AIAppName, in.aiConfigHash()),
+				ObjectMeta: in.hashedTemplateMeta(AIAppName, in.ServerImage, in.aiConfigHash()),
 				Spec: corev1.PodSpec{
 					ServiceAccountName: AIAppName,
 					PriorityClassName:  systemPriorityClass,

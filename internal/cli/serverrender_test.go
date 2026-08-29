@@ -107,7 +107,7 @@ func TestKubernetesRenderOmitsEverySecretValue(t *testing.T) {
 	if strings.Contains(manifest, "kind: Secret") {
 		t.Fatal("Kubernetes bundle contains a Secret object")
 	}
-	if !strings.Contains(manifest, "donkey.dev/installation: donkey-system") {
+	if !strings.Contains(manifest, "donkey.local/installation: donkey-system") {
 		t.Fatal("rendered objects do not carry the installation identity")
 	}
 	if !strings.Contains(manifest, "name: donkey-system-registry") {
@@ -169,17 +169,29 @@ func TestDockerRenderMatchesRuntimeTopologyWithoutSecrets(t *testing.T) {
 	if err := yaml.Unmarshal([]byte(compose), &typed); err != nil {
 		t.Fatalf("compose.yaml does not match the renderer schema: %v", err)
 	}
-	for component, service := range typed.Services {
+	// Every compose service must carry exactly the component the direct
+	// installer (and the bundle's own preflight) expects for its container —
+	// the compose service key is not that contract.
+	installComponents := map[string]string{}
+	for _, item := range dockerInstallContainers(true) {
+		installComponents[item.name] = item.component
+	}
+	for key, service := range typed.Services {
+		component, ok := installComponents[service.ContainerName]
+		if !ok {
+			t.Errorf("Compose service %s container %s is not in the installer's owned set", key, service.ContainerName)
+			continue
+		}
 		if got := service.Labels; !reflect.DeepEqual(got, runtimedocker.SystemLabels(component)) {
-			t.Errorf("Compose service %s labels=%v", component, got)
+			t.Errorf("Compose service %s labels=%v, want SystemLabels(%q)", key, got, component)
 		}
 	}
-	if got := typed.Networks["donkey"].Labels; !reflect.DeepEqual(got, runtimedocker.SystemLabels("network")) {
+	if got := typed.Networks["donkey"].Labels; !reflect.DeepEqual(got, runtimedocker.SystemLabels(runtimedocker.ComponentNetwork)) {
 		t.Errorf("Compose network labels=%v", got)
 	}
 	for name, volume := range typed.Volumes {
-		if volume.Labels["dev.donkey.managed"] != "true" ||
-			volume.Labels["dev.donkey.installation"] != "donkey" || volume.Labels["dev.donkey.component"] == "" {
+		if volume.Labels["local.donkey.managed"] != "true" ||
+			volume.Labels["local.donkey.installation"] != "donkey" || volume.Labels["local.donkey.component"] == "" {
 			t.Errorf("Compose volume %s labels=%v", name, volume.Labels)
 		}
 	}
@@ -189,9 +201,13 @@ func TestDockerRenderMatchesRuntimeTopologyWithoutSecrets(t *testing.T) {
 		"require_owned volume donkey-data state-storage",
 		"require_owned volume donkey-registry registry-storage",
 		"require_owned container donkey-server server",
+		"require_owned container donkey-buildkitd buildkitd",
 		"require_owned container donkey-registry registry",
-		"dev.donkey.managed", "dev.donkey.installation", "dev.donkey.space",
-		"dev.donkey.app", "dev.donkey.addon", "dev.donkey.component",
+		"local.donkey.managed", "local.donkey.installation", "local.donkey.space",
+		"local.donkey.app", "local.donkey.addon", "local.donkey.component",
+		// Recovered env values are read with a non-line delimiter: a
+		// line-based read truncated multi-line builder instructions.
+		`awk -v RS="$(printf '\037')"`,
 	} {
 		if !strings.Contains(up, want) {
 			t.Errorf("Compose ownership preflight is missing %q", want)

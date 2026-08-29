@@ -136,8 +136,8 @@ func (c *Client) RestartApp(ctx context.Context, namespace, objectName, space, a
 		return false, err
 	}
 	patch := fmt.Sprintf(
-		`{"spec":{"template":{"metadata":{"annotations":{"donkey.dev/restarted-at":%q}}}}}`,
-		time.Now().UTC().Format(time.RFC3339))
+		`{"spec":{"template":{"metadata":{"annotations":{%q:%q}}}}}`,
+		manifests.AnnotationRestartedAt, time.Now().UTC().Format(time.RFC3339))
 	_, err = c.Clientset.AppsV1().Deployments(namespace).Patch(ctx, objectName,
 		types.StrategicMergePatchType, []byte(patch), metav1.PatchOptions{})
 	if err != nil {

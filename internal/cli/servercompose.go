@@ -359,9 +359,21 @@ func dockerComposeFiles(settings *config.InstallFile, bundledRegistry bool) (map
 		server.DependsOn["registry"] = composeDependency{Condition: "service_started"}
 		services["server"] = server
 	}
-	for component, service := range services {
+	// Label every service with the component the direct installer and the
+	// bundle's own preflight expect for its container name. Deriving the
+	// component from the compose service key instead is how a bundle ends up
+	// refusing the very containers it created.
+	components := map[string]string{}
+	for _, item := range dockerInstallContainers(bundledRegistry) {
+		components[item.name] = item.component
+	}
+	for key, service := range services {
+		component, ok := components[service.ContainerName]
+		if !ok {
+			return nil, features, fmt.Errorf("compose service %s has no install component for container %s", key, service.ContainerName)
+		}
 		service.Labels = runtimedocker.SystemLabels(component)
-		services[component] = service
+		services[key] = service
 	}
 
 	compose := composeFile{
@@ -370,14 +382,14 @@ func dockerComposeFiles(settings *config.InstallFile, bundledRegistry bool) (map
 			"donkey": {
 				Name:   dockerNetwork,
 				IPAM:   composeNetworkIPAM{Config: []composeSubnet{{Subnet: "${DONKEY_NETWORK_SUBNET:-" + composeNetworkSubnet + "}"}}},
-				Labels: runtimedocker.SystemLabels("network"),
+				Labels: runtimedocker.SystemLabels(runtimedocker.ComponentNetwork),
 			},
 		},
 		Volumes: map[string]composeVolume{
-			"data":      {Name: dockerDataVolume, Labels: runtimedocker.SystemLabels("state-storage")},
-			"buildkit":  {Name: dockerBuildkitVolume, Labels: runtimedocker.SystemLabels("buildkit-storage")},
-			"telemetry": {Name: dockerTelemetryVolume, Labels: runtimedocker.SystemLabels("telemetry-storage")},
-			"registry":  {Name: dockerRegistryVolume, Labels: runtimedocker.SystemLabels("registry-storage")},
+			"data":      {Name: dockerDataVolume, Labels: runtimedocker.SystemLabels(runtimedocker.ComponentStateStorage)},
+			"buildkit":  {Name: dockerBuildkitVolume, Labels: runtimedocker.SystemLabels(runtimedocker.ComponentBuildkitStorage)},
+			"telemetry": {Name: dockerTelemetryVolume, Labels: runtimedocker.SystemLabels(runtimedocker.ComponentTelemetryStorage)},
+			"registry":  {Name: dockerRegistryVolume, Labels: runtimedocker.SystemLabels(runtimedocker.ComponentRegistryStorage)},
 		},
 	}
 	if !bundledRegistry {
@@ -423,6 +435,17 @@ HTTPS_PROXY=
 # DONKEY_PACKAGES_IP=172.31.250.10
 `
 
+// composeIdentityFormat renders the docker-inspect Go template printing the
+// immutable identity labels in the exact order the runtime's sameIdentity
+// compares them, so the generated preflight cannot drift from the installer.
+func composeIdentityFormat(path string) string {
+	var parts []string
+	for _, key := range runtimedocker.IdentityLabelKeys() {
+		parts = append(parts, fmt.Sprintf("{{index . %q}}", key))
+	}
+	return fmt.Sprintf("{{with %s}}%s{{end}}", path, strings.Join(parts, "|"))
+}
+
 func renderComposeUpScript(settings *config.InstallFile, features composeSecretFeatures, bundledRegistry bool) string {
 	clientID := settings.Auth.ClientID
 	if clientID == "" {
@@ -445,13 +468,13 @@ require_owned() {
   component=$3
   case "$kind" in
     container)
-      actual=$(docker container inspect "$name" --format '{{with .Config.Labels}}{{index . "dev.donkey.managed"}}|{{index . "dev.donkey.installation"}}|{{index . "dev.donkey.space"}}|{{index . "dev.donkey.app"}}|{{index . "dev.donkey.addon"}}|{{index . "dev.donkey.component"}}{{end}}' 2>/dev/null) || return 0
+      actual=$(docker container inspect "$name" --format '` + composeIdentityFormat(".Config.Labels") + `' 2>/dev/null) || return 0
       ;;
     network)
-      actual=$(docker network inspect "$name" --format '{{with .Labels}}{{index . "dev.donkey.managed"}}|{{index . "dev.donkey.installation"}}|{{index . "dev.donkey.space"}}|{{index . "dev.donkey.app"}}|{{index . "dev.donkey.addon"}}|{{index . "dev.donkey.component"}}{{end}}' 2>/dev/null) || return 0
+      actual=$(docker network inspect "$name" --format '` + composeIdentityFormat(".Labels") + `' 2>/dev/null) || return 0
       ;;
     volume)
-      actual=$(docker volume inspect "$name" --format '{{with .Labels}}{{index . "dev.donkey.managed"}}|{{index . "dev.donkey.installation"}}|{{index . "dev.donkey.space"}}|{{index . "dev.donkey.app"}}|{{index . "dev.donkey.addon"}}|{{index . "dev.donkey.component"}}{{end}}' 2>/dev/null) || return 0
+      actual=$(docker volume inspect "$name" --format '` + composeIdentityFormat(".Labels") + `' 2>/dev/null) || return 0
       ;;
   esac
   expected="true|donkey||||$component"
@@ -462,7 +485,7 @@ require_owned() {
 }
 
 `)
-	b.WriteString("require_owned network donkey network\n")
+	fmt.Fprintf(&b, "require_owned network %s %s\n", dockerNetwork, runtimedocker.ComponentNetwork)
 	for _, item := range dockerInstallVolumes(bundledRegistry) {
 		fmt.Fprintf(&b, "require_owned volume %s %s\n", item.name, item.component)
 	}
@@ -470,9 +493,11 @@ require_owned() {
 		fmt.Fprintf(&b, "require_owned container %s %s\n", item.name, item.component)
 	}
 	b.WriteString(`
+# Env entries are emitted with a unit-separator delimiter: a line-based read
+# would truncate multi-line values (builder instructions) to their first line.
 existing() {
-  docker inspect "$1" --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null \
-    | sed -n "s/^$2=//p" | head -n 1 || true
+  docker inspect "$1" --format '{{range .Config.Env}}{{.}}{{printf "\x1f"}}{{end}}' 2>/dev/null \
+    | awk -v RS="$(printf '\037')" -v k="$2" 'index($0, k "=") == 1 { printf "%s", substr($0, length(k) + 2); exit }' || true
 }
 
 DONKEY_REGISTRY_PASSWORD="${DONKEY_REGISTRY_PASSWORD:-$(existing donkey-server DONKEY_REGISTRY_PASSWORD)}"

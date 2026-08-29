@@ -36,7 +36,7 @@ func TestRuntimeLabelsSeparateAppsAddonsAndInstallation(t *testing.T) {
 		t.Errorf("addon identity=%v", labels)
 	}
 	for key := range SystemLabels("server") {
-		if !strings.HasPrefix(key, "dev.donkey.") {
+		if !strings.HasPrefix(key, "local.donkey.") {
 			t.Errorf("Docker label %q is not reverse-DNS namespaced", key)
 		}
 	}

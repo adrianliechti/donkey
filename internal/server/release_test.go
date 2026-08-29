@@ -183,3 +183,21 @@ func TestHandleReleaseReturnsStoredRecord(t *testing.T) {
 		t.Fatal("legacy null arrays should be normalized when read")
 	}
 }
+
+func TestPrefixUTF8KeepsContentAroundInvalidBytes(t *testing.T) {
+	// An invalid byte early in a diff (a binary hunk) must not eat the rest
+	// of the prefix.
+	diff := "keep\xffthis and everything after it 0123456789"
+	got := prefixUTF8(diff, 20)
+	if !strings.HasPrefix(got, "keep\xffthis") || len(got) < 20 {
+		t.Fatalf("prefixUTF8 discarded content after an invalid byte: %q", got)
+	}
+	// A multi-byte rune straddling the cut is trimmed cleanly, not split.
+	got = prefixUTF8(strings.Repeat("a", 19)+"é", 20)
+	if want := strings.Repeat("a", 19) + "\n… omitted …"; got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+	if short := prefixUTF8("short", 100); short != "short" {
+		t.Fatalf("an under-limit value must pass through, got %q", short)
+	}
+}

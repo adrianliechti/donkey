@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -231,11 +232,11 @@ func TestRouteFromConfigMap(t *testing.T) {
 				manifests.LabelApp:   "shop",
 			},
 			Annotations: map[string]string{
-				"donkey.dev/backend": "http://shop.donkey-acme.svc.cluster.local:80",
-				"donkey.dev/host":    "shop.example.com",
-				"donkey.dev/path":    "/api",
-				"donkey.dev/login":   "required",
-				"donkey.dev/access":  `{"users":["ada@example.com"],"roles":["developer"]}`,
+				"donkey.local/backend": "http://shop.donkey-acme.svc.cluster.local:80",
+				"donkey.local/host":    "shop.example.com",
+				"donkey.local/path":    "/api",
+				"donkey.local/login":   "required",
+				"donkey.local/access":  `{"users":["ada@example.com"],"roles":["developer"]}`,
 			},
 		},
 	}
@@ -257,7 +258,7 @@ func TestRouteFromConfigMap(t *testing.T) {
 	// ConfigMap that happens to carry donkey labels).
 	plain := corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
-			Annotations: map[string]string{"donkey.dev/host": "donkey.example.com"},
+			Annotations: map[string]string{"donkey.local/host": "donkey.example.com"},
 		},
 	}
 	if _, ok := routeFromConfigMap(plain); ok {
@@ -287,7 +288,7 @@ func TestRouteFromConfigMap(t *testing.T) {
 
 	// A non-http backend must be refused, not proxied.
 	bad := cm.DeepCopy()
-	bad.Annotations["donkey.dev/backend"] = "https://evil.example.com"
+	bad.Annotations["donkey.local/backend"] = "https://evil.example.com"
 	if _, ok := routeFromConfigMap(*bad); ok {
 		t.Error("only in-cluster plain-http backends are proxied")
 	}
@@ -357,5 +358,29 @@ func TestProxyIdentityAndToken(t *testing.T) {
 	send(route{Backend: target, Token: true}, nil)
 	if got.Get("X-Access-Token") != "" || got.Get("X-Auth-Request-User") != "" {
 		t.Error("no session, no identity — nothing may reach the backend")
+	}
+}
+
+// Shutting telemetry down must never panic a request that finishes at the
+// same moment: the view queue stays open forever; only the exporter stops
+// reading it. Before this held, a drain during shutdown was a send on a
+// closed channel — a crash of the whole edge.
+func TestTelemetryRecordAfterShutdownDoesNotPanic(t *testing.T) {
+	tel, err := newEdgeTelemetry(&Config{
+		TelemetryEndpoint: "http://127.0.0.1:1",
+		TelemetryKey:      testKey,
+		SystemNamespace:   "donkey-system",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_ = tel.Shutdown(ctx) // canceled context: closes the queue path, skips network flushes
+	r := httptest.NewRequest(http.MethodGet, "https://shop.acme.example.com/", nil)
+	r.Header.Set("Accept", "text/html")
+	// Past the queue size, so both the enqueue and the backpressure paths run.
+	for range viewQueueSize + 8 {
+		tel.Record(r, route{Space: "acme", App: "shop", Path: "/"}, nil, http.StatusOK, time.Millisecond, "text/html; charset=utf-8")
 	}
 }

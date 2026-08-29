@@ -188,7 +188,7 @@ func buildkitDeployment(in SystemInput) *appsv1.Deployment {
 			Selector: &metav1.LabelSelector{MatchLabels: SystemSelector(buildkitName)},
 			Template: corev1.PodTemplateSpec{
 				// The config hash rolls buildkitd when the registry setup changes.
-				ObjectMeta: in.hashedTemplateMeta(buildkitName, in.buildkitConfigHash()),
+				ObjectMeta: in.hashedTemplateMeta(buildkitName, in.BuildkitImage, in.buildkitConfigHash()),
 				Spec:       buildkitPodSpec(in, privileged),
 			},
 		},

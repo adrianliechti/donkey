@@ -71,7 +71,7 @@ func telemetryDeployment(in SystemInput) *appsv1.Deployment {
 			Strategy: appsv1.DeploymentStrategy{Type: appsv1.RecreateDeploymentStrategyType},
 			Selector: &metav1.LabelSelector{MatchLabels: SystemSelector(TelemetryAppName)},
 			Template: corev1.PodTemplateSpec{
-				ObjectMeta: in.hashedTemplateMeta(TelemetryAppName, configHash(in.TelemetryKey)),
+				ObjectMeta: in.hashedTemplateMeta(TelemetryAppName, in.ServerImage, configHash(in.TelemetryKey)),
 				Spec: corev1.PodSpec{
 					AutomountServiceAccountToken: &automount,
 					PriorityClassName:            systemPriorityClass,

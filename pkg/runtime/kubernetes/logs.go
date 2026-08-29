@@ -10,6 +10,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 
 	rt "github.com/adrianliechti/donkey/pkg/runtime"
 	"github.com/adrianliechti/donkey/pkg/runtime/kubernetes/manifests"
@@ -18,18 +19,25 @@ import (
 // StreamLogs writes the logs of every pod of the selected component to out,
 // prefixed with the pod name when there is more than one.
 func (c *Client) StreamLogs(ctx context.Context, namespace, space, app string, opts rt.LogOptions, out io.Writer) error {
-	selector := fmt.Sprintf("%s=%s,%s=%s,", manifests.LabelInstallation, c.installation(), manifests.LabelSpace, space)
+	var identity map[string]string
 	if addon, ok := strings.CutPrefix(opts.Component, "addon-"); ok {
-		selector += fmt.Sprintf("%s=%s,%s=%s", manifests.LabelAddon, addon,
-			manifests.LabelComponent, manifests.ComponentAddon)
+		identity = manifests.AddonLabels(space, addon, manifests.ComponentAddon)
 	} else {
-		selector += fmt.Sprintf("%s=%s,%s=%s", manifests.LabelApp, app,
-			manifests.LabelComponent, manifests.ComponentWeb)
+		identity = manifests.Labels(space, app, manifests.ComponentWeb)
 	}
+	selector := labels.Set(c.expectedObjectIdentity(identity)).String()
 	pods, err := c.Clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{LabelSelector: selector})
 	if err != nil {
 		return err
 	}
+	owned := pods.Items[:0]
+	for i := range pods.Items {
+		pod := &pods.Items[i]
+		if c.requireOwnedObject("Pod", namespace, pod.Name, pod.Labels, identity) == nil {
+			owned = append(owned, *pod)
+		}
+	}
+	pods.Items = owned
 	if len(pods.Items) == 0 {
 		if strings.HasPrefix(opts.Component, "addon-") {
 			return fmt.Errorf("no running copies found — is the service still in the space? `donkey addon list` shows them")

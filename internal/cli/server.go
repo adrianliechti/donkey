@@ -313,18 +313,22 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 		return fmt.Errorf("updating space isolation: %w", err)
 	}
 	u.Info("Waiting for the server to come up…")
-	if err := client.WaitForRollout(ctx, in.Namespace, "donkey-packages"); err != nil {
+	if err := client.WaitForRollout(ctx, in.Namespace, "donkey-packages",
+		manifests.SystemLabels("donkey-packages")); err != nil {
 		return err
 	}
-	if err := client.WaitForRollout(ctx, in.Namespace, manifests.TelemetryAppName); err != nil {
+	if err := client.WaitForRollout(ctx, in.Namespace, manifests.TelemetryAppName,
+		manifests.SystemLabels(manifests.TelemetryAppName)); err != nil {
 		return err
 	}
-	if err := client.WaitForRollout(ctx, in.Namespace, "donkey-server"); err != nil {
+	if err := client.WaitForRollout(ctx, in.Namespace, manifests.ServerName,
+		manifests.SystemLabels(manifests.ServerName)); err != nil {
 		return err
 	}
 	// Every app's traffic enters through the donkey gateway, so an install
 	// isn't done until it routes.
-	if err := client.WaitForRollout(ctx, in.Namespace, manifests.GatewayAppName); err != nil {
+	if err := client.WaitForRollout(ctx, in.Namespace, manifests.GatewayAppName,
+		manifests.SystemLabels(manifests.GatewayAppName)); err != nil {
 		return err
 	}
 	u.Success("Control plane is running.")

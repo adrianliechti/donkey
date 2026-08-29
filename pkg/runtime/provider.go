@@ -317,11 +317,11 @@ type Check struct {
 const (
 	// MetaConsole is written by the console endpoints only — a deploy must
 	// never wipe it.
-	MetaConsole = "donkey.dev/console"
+	MetaConsole = "donkey.local/console"
 	// MetaDecisions is what deploy-time analysis settled.
-	MetaDecisions = "donkey.dev/decisions"
+	MetaDecisions = "donkey.local/decisions"
 	// MetaRelease is the bounded latest deploy record rendered by the console.
-	MetaRelease = "donkey.dev/release"
+	MetaRelease = "donkey.local/release"
 )
 
 // File-browser limits, shared by every provider.

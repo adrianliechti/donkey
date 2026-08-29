@@ -413,11 +413,15 @@ func prefixUTF8(value string, limit int) string {
 	if len(value) <= limit {
 		return value
 	}
-	value = value[:limit]
-	for len(value) > 0 && !utf8.ValidString(value) {
-		value = value[:len(value)-1]
+	// Back the cut up to a rune boundary and no further: an invalid byte
+	// earlier in the content (binary hunks in a diff) is the content's
+	// business — trimming until the whole prefix validates would discard
+	// everything after it.
+	cut := limit
+	for cut > 0 && limit-cut < utf8.UTFMax && !utf8.RuneStart(value[cut]) {
+		cut--
 	}
-	return value + "\n… omitted …"
+	return value[:cut] + "\n… omitted …"
 }
 
 // handleRelease: GET /v1/spaces/{space}/apps/{app}/release

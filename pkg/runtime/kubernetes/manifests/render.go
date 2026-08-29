@@ -48,9 +48,12 @@ func render(objs []runtime.Object, installation string) (string, error) {
 
 // StampInstallation applies the ownership boundary to an object and to every
 // selector/template that creates or targets its pods. It also guarantees the
-// standard managed-by marker for every object donkey itself applies. Apply
-// and offline rendering share this function so their manifests cannot drift
-// apart.
+// standard managed-by marker, and — where the labels name no instance of
+// their own — the standard instance label: control-plane objects belong to
+// the installation, which is exactly what distinguishes two donkeys on one
+// cluster. Selectors stay minimal identity and never gain the descriptive
+// instance label. Apply and offline rendering share this function so their
+// manifests cannot drift apart.
 func StampInstallation(u *unstructured.Unstructured, installation string) error {
 	if installation == "" {
 		return fmt.Errorf("installation label cannot be empty")
@@ -61,31 +64,32 @@ func StampInstallation(u *unstructured.Unstructured, installation string) error 
 	}
 	labels[LabelManagedBy] = ManagedByValue
 	labels[LabelInstallation] = installation
+	if _, ok := labels[LabelInstance]; !ok {
+		labels[LabelInstance] = installation
+	}
 	u.SetLabels(labels)
 
-	var paths [][]string
+	var selectorPaths, labelPaths [][]string
 	switch u.GetKind() {
 	case "Deployment":
-		paths = append(paths,
-			[]string{"spec", "selector", "matchLabels"},
-			[]string{"spec", "template", "metadata", "labels"},
-		)
+		selectorPaths = append(selectorPaths, []string{"spec", "selector", "matchLabels"})
+		labelPaths = append(labelPaths, []string{"spec", "template", "metadata", "labels"})
 	case "Job":
-		paths = append(paths, []string{"spec", "template", "metadata", "labels"})
+		labelPaths = append(labelPaths, []string{"spec", "template", "metadata", "labels"})
 	case "Service":
 		// A selector-less Service is intentional (for example ExternalName).
 		if _, found, err := unstructured.NestedStringMap(u.Object, "spec", "selector"); err != nil {
 			return fmt.Errorf("reading Service %s selector: %w", u.GetName(), err)
 		} else if found {
-			paths = append(paths, []string{"spec", "selector"})
+			selectorPaths = append(selectorPaths, []string{"spec", "selector"})
 		}
 	case "NetworkPolicy":
-		paths = append(paths, []string{"spec", "podSelector", "matchLabels"})
+		selectorPaths = append(selectorPaths, []string{"spec", "podSelector", "matchLabels"})
 	case "Certificate":
 		// cert-manager copies these labels to the generated TLS Secret.
-		paths = append(paths, []string{"spec", "secretTemplate", "labels"})
+		labelPaths = append(labelPaths, []string{"spec", "secretTemplate", "labels"})
 	}
-	for _, path := range paths {
+	stamp := func(path []string, fillInstance bool) error {
 		values, _, err := unstructured.NestedStringMap(u.Object, path...)
 		if err != nil {
 			return fmt.Errorf("reading %s %s %s: %w", u.GetKind(), u.GetName(), strings.Join(path, "."), err)
@@ -94,8 +98,24 @@ func StampInstallation(u *unstructured.Unstructured, installation string) error 
 			values = map[string]string{}
 		}
 		values[LabelInstallation] = installation
+		if fillInstance {
+			if _, ok := values[LabelInstance]; !ok {
+				values[LabelInstance] = installation
+			}
+		}
 		if err := unstructured.SetNestedStringMap(u.Object, values, path...); err != nil {
 			return fmt.Errorf("stamping %s %s %s: %w", u.GetKind(), u.GetName(), strings.Join(path, "."), err)
+		}
+		return nil
+	}
+	for _, path := range selectorPaths {
+		if err := stamp(path, false); err != nil {
+			return err
+		}
+	}
+	for _, path := range labelPaths {
+		if err := stamp(path, true); err != nil {
+			return err
 		}
 	}
 	return nil

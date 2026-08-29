@@ -159,7 +159,8 @@ func (r *Runtime) Deploy(ctx context.Context, spec rt.DeploySpec, out rt.Progres
 	}
 
 	out.Line("Waiting for the app to become healthy…")
-	return r.c.WaitForRollout(ctx, ns, obj)
+	return r.c.WaitForRollout(ctx, ns, obj,
+		manifests.Labels(space, app.Name, manifests.ComponentWeb))
 }
 
 // Render renders the app's objects without touching the cluster.

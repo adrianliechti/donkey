@@ -38,7 +38,12 @@ type edgeTelemetry struct {
 	viewToken string
 	key       []byte
 	client    *http.Client
+	// views is never closed: request handlers send to it concurrently, and a
+	// send on a closed channel panics even inside a select with a default.
+	// Shutdown closes closing instead; the exporter drains what is buffered
+	// and signals done. Events sent after that are simply never read.
 	views     chan telemetry.ViewEvent
+	closing   chan struct{}
 	done      chan struct{}
 	closeOnce sync.Once
 }
@@ -47,6 +52,7 @@ func newEdgeTelemetry(cfg *Config) (*edgeTelemetry, error) {
 	t := &edgeTelemetry{
 		key:       cfg.TelemetryKey,
 		views:     make(chan telemetry.ViewEvent, viewQueueSize),
+		closing:   make(chan struct{}),
 		done:      make(chan struct{}),
 		client:    &http.Client{Timeout: 5 * time.Second},
 		viewToken: telemetry.GatewayToken(cfg.TelemetryKey),
@@ -76,11 +82,16 @@ func newEdgeTelemetry(cfg *Config) (*edgeTelemetry, error) {
 		metric.WithTimeout(5*time.Second),
 	)
 	hostname, _ := os.Hostname()
-	res := resource.NewSchemaless(
+	// Merged over the SDK default so the required telemetry.sdk.* resource
+	// attributes survive; the schemaless overlay wins for service identity.
+	res, err := resource.Merge(resource.Default(), resource.NewSchemaless(
 		attribute.String("service.name", "donkey-gateway"),
 		attribute.String("service.namespace", cfg.SystemNamespace),
 		attribute.String("service.instance.id", hostname),
-	)
+	))
+	if err != nil {
+		return nil, err
+	}
 	t.provider = metric.NewMeterProvider(metric.WithReader(reader), metric.WithResource(res))
 	meter := t.provider.Meter("github.com/adrianliechti/donkey/internal/gateway")
 	t.duration, err = meter.Float64Histogram(telemetry.HTTPServerRequestDuration,
@@ -114,9 +125,10 @@ func (t *edgeTelemetry) Record(r *http.Request, rt route, sess *session, status 
 	// request-controlled authority. The logical route already supplies the
 	// bounded app/space dimensions, so recording it would add cardinality
 	// without adding a report dimension.
-	if method == "_OTHER" {
-		attrs = append(attrs, attribute.String("http.request.method_original", r.Method))
-	}
+	// http.request.method_original is deliberately absent: the semconv MUST
+	// that records it applies to spans, not this metric — and its value is
+	// the client's own bytes, so every garbage method would mint a fresh
+	// metric stream. Collapsing to _OTHER is the whole point of _OTHER.
 	if status >= 500 {
 		attrs = append(attrs, attribute.String("error.type", strconv.Itoa(status)))
 	}
@@ -192,21 +204,32 @@ func (t *edgeTelemetry) runViewExporter() {
 	}
 	for {
 		select {
-		case event, ok := <-t.views:
-			if !ok {
-				flush()
-				return
-			}
-			added := false
+		case event := <-t.views:
 			if len(batch) < viewBatchSize {
 				batch = append(batch, event)
-				added = true
-			}
-			if added && len(batch) >= viewBatchSize {
-				flush()
+				if len(batch) >= viewBatchSize {
+					flush()
+				}
 			}
 		case <-ticker.C:
 			flush()
+		case <-t.closing:
+			// Drain what handlers already queued, then stop. The channel
+			// stays open, so a request finishing mid-shutdown cannot panic.
+			for {
+				select {
+				case event := <-t.views:
+					if len(batch) < viewBatchSize {
+						batch = append(batch, event)
+						if len(batch) >= viewBatchSize {
+							flush()
+						}
+					}
+				default:
+					flush()
+					return
+				}
+			}
 		}
 	}
 }
@@ -238,11 +261,7 @@ func (t *edgeTelemetry) Shutdown(ctx context.Context) error {
 	if t == nil {
 		return nil
 	}
-	t.closeOnce.Do(func() {
-		if t.provider != nil {
-			close(t.views)
-		}
-	})
+	t.closeOnce.Do(func() { close(t.closing) })
 	if t.provider == nil {
 		return nil
 	}

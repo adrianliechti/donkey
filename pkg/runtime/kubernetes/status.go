@@ -47,6 +47,10 @@ func (c *Client) AppStatus(ctx context.Context, namespace, objectName, space, ap
 		LabelSelector: labels.Set(dep.Spec.Selector.MatchLabels).String(),
 	}); err == nil {
 		for _, p := range pods.Items {
+			if c.requireOwnedObject("Pod", namespace, p.Name, p.Labels,
+				manifests.Labels(space, app, manifests.ComponentWeb)) != nil {
+				continue
+			}
 			st.Instances = append(st.Instances, podSummary(&p))
 			for _, cs := range p.Status.ContainerStatuses {
 				st.Restarts += cs.RestartCount
@@ -218,12 +222,13 @@ func (c *Client) ListAddonAttachments(ctx context.Context, namespace, space, add
 // warning events a failed rollout reports — for on-demand diagnosis of an
 // app that is currently unhealthy.
 func (c *Client) RolloutEvidenceFor(ctx context.Context, namespace, objectName, space, app string) rt.Evidence {
+	identity := manifests.Labels(space, app, manifests.ComponentWeb)
 	dep, err := c.Clientset.AppsV1().Deployments(namespace).Get(ctx, objectName, metav1.GetOptions{})
 	if err != nil || c.requireOwnedObject("Deployment", namespace, objectName, dep.Labels,
-		manifests.Labels(space, app, manifests.ComponentWeb)) != nil {
+		identity) != nil {
 		return rt.Evidence{}
 	}
-	return c.rolloutError(ctx, namespace, objectName, "").Evidence
+	return c.rolloutError(ctx, namespace, objectName, identity, "").Evidence
 }
 
 // ListRouteNames returns the shared-address routes an app currently owns —

@@ -162,27 +162,20 @@ five ideas:
   login and access rules as annotations — and Secrets for env vars,
   registry pull auth and service bindings.
 
-Runtime metadata has one small identity vocabulary. On Kubernetes,
-`donkey.dev/installation` is the ownership boundary, `donkey.dev/space` is
-the lifecycle boundary, `donkey.dev/app` and `donkey.dev/addon` are the logical
-workload identities, and the standard `app.kubernetes.io/component` is the
-resource's role. App resources carry `app`, space services carry `addon`, and
-an app's copy of a service binding deliberately carries both because it
-represents that relationship.
-The remaining descriptive `app.kubernetes.io/*` labels are present for
-ecosystem tools. Destructive sweeps require Donkey's installation and exact
-logical scope; workload selectors use only stable identity labels. Deployment
-and Service selectors match the Pod identity exactly;
-object-name qualification in a shared namespace never leaks into logical
-labels. Non-identifying or potentially large configuration (host, backend,
-access policy, image and config hashes) stays in annotations.
-
-Docker uses the same dimensions as reverse-DNS labels:
-`dev.donkey.managed` is the coarse discovery marker, followed by
-`dev.donkey.installation`, `dev.donkey.space`, `dev.donkey.app`,
-`dev.donkey.addon` and `dev.donkey.component`. Containers, networks and
-volumes — including the control plane rendered by Compose — carry ownership
-and component labels, and all list/delete filters include the installation.
+Runtime metadata has one small identity vocabulary, spelled `donkey.local/*`
+on Kubernetes and `local.donkey.*` (reverse-DNS) on Docker: the installation
+is the ownership boundary, the space the lifecycle boundary, app and addon
+the logical workload identities. On Kubernetes every object additionally
+carries the full
+[recommended common labels](https://kubernetes.io/docs/concepts/overview/working-with-objects/common-labels/)
+(`app.kubernetes.io/name`, `instance`, `version`, `component`, `part-of`,
+`managed-by`) — on the platform's own workloads and on every deployed app —
+so donkey's grouping is legible to standard tooling. Destructive sweeps
+require the installation and exact logical scope; selectors use only stable
+identity labels; non-identifying configuration stays in annotations. The
+complete reference, per runtime:
+[README_KUBERNETES.md](README_KUBERNETES.md#labels-annotations-and-selectors)
+and [README_DOCKER.md](README_DOCKER.md#labels).
 
 ## Traffic telemetry
 
@@ -482,7 +475,7 @@ files on nodes, no admission webhooks, no StorageClasses, no required CRDs — e
 it applies is in `donkey-system`, in a `donkey-<space>` namespace, or is one of
 the few cluster-scoped RBAC objects it names after itself. A test asserts
 exactly that (`TestInstallTouchesOnlyItsOwnObjects`). Configured with a
-[workload namespace](#namespaces-and-restricted-clusters) it applies nothing
+[workload namespace](README_KUBERNETES.md#namespaces-and-restricted-clusters) it applies nothing
 cluster-scoped at all.
 
 What has to be there first (`donkey server install` checks these before it
@@ -505,202 +498,31 @@ all — `runtime: docker` runs apps straight on the Docker engine).
 
 RBAC: by default donkey-server binds `cluster-admin`, because it creates and
 deletes namespaces and no Role can express that. Giving it a workload
-namespace instead drops it to two namespaced Roles — see below.
+namespace instead drops it to two namespaced Roles — see [README_KUBERNETES.md](README_KUBERNETES.md#namespaces-and-restricted-clusters).
 
-### Namespaces and restricted clusters
+### Installation modes (Kubernetes)
 
-By default every space gets a namespace of its own (`donkey-<space>`), created
-and deleted by donkey. That is the right shape on a cluster you own, and it is
-what makes an app's Service reachable as plain `api` from its siblings.
+Four arrangements change the shape of a Kubernetes installation, all
+documented in [README_KUBERNETES.md](README_KUBERNETES.md):
 
-Plenty of clusters don't work that way. Namespaces are handed out by a
-platform team, through a CRD or a GitOps pipeline, and `cluster-admin` is not
-something a review will approve. For those, name the namespaces donkey should
-use:
+- **[Namespaces and restricted clusters](README_KUBERNETES.md#namespaces-and-restricted-clusters)**
+  — a namespace per space (the default), or one workload namespace you were
+  given: qualified object names, and no cluster-scoped grant at all.
+- **[Isolating spaces from each other](README_KUBERNETES.md#isolating-spaces-from-each-other)**
+  — the per-space ingress NetworkPolicy fence (`kubernetes.isolateSpaces`,
+  on by default) and its opt-in egress half
+  (`kubernetes.restrictEgress`), which confines a space's pods to their own
+  space, the platform endpoints and DNS.
+- **[Using the cluster's edge](README_KUBERNETES.md#using-the-clusters-edge)**
+  — entering through a Gateway API gateway the cluster already runs, or
+  per-app managed edges via cert-manager.
+- **[Several donkeys on one cluster](README_KUBERNETES.md#several-donkeys-on-one-cluster)**
+  — what must differ per installation, and why the system namespace is the
+  installation's identity.
 
-```yaml
-kubernetes:
-  system:
-    namespace: bank-donkey-system   # where the control plane lives
-  workload:
-    namespace: bank-donkey-apps     # where every app of every space lives
-```
-
-One rule covers both fields: **name a namespace and it is yours.** donkey
-expects it to exist, applies its objects into it, and never creates, deletes
-or relabels it. Leave a field empty and donkey makes and manages that
-namespace itself.
-
-Setting `workload.namespace` changes three things:
-
-- **Every app lives in one namespace**, so object names carry their space:
-  the app `api` in space `shop` becomes `shop--api` on the cluster. The
-  separator is `--`, and neither a space nor an app name may contain it.
-- **Siblings are addressed by that name too.** Where an app in a namespace of
-  its own reaches a sibling at `http://api`, here it is `http://shop--api`.
-  Addon bindings (`DATABASE_URL` and friends) are generated, so they follow
-  automatically — only a hostname you hardcoded needs changing.
-- **donkey needs nothing above a namespace.** No ClusterRole, no
-  ClusterRoleBinding, no namespace permissions: namespaced Roles in the two
-  namespaces — the server's, spelled out in `serverRoleRules`, and the
-  gateway's read-only route access. This is the only arrangement that runs
-  with no cluster-scoped grant at all.
-
-Two limits to check before you commit to a name:
-
-- A Service name is a DNS label, so `<space>--<app>` must be **63 characters
-  or fewer**. donkey refuses the pair at deploy time rather than letting the
-  cluster reject it.
-- Both namespaces must **already exist**, and their Pod Security Standard has
-  to admit the pods that go in them. The install refuses up front rather than
-  letting admission fail silently later:
-  `donkey-system` runs a **privileged** BuildKit, so it needs
-  `pod-security.kubernetes.io/enforce=privileged` (or no enforcement); the
-  workload namespace must not be `restricted`, because most real application
-  images run as root. donkey sets `baseline` on namespaces it creates itself.
-
-### Isolating spaces from each other
-
-Spaces are a network boundary, not just an organizational one: each space
-gets one ingress NetworkPolicy, and its pods accept traffic only from their
-own space, the donkey gateway and donkey-server. Cross-space calls keep
-working the sanctioned way — through the gateway on an app's public hostname,
-where login and access rules apply — they just don't work as anonymous
-pod-to-pod traffic. Neither does anything else the cluster runs against those
-pods (a cluster-wide Prometheus scraping them, say). To open the network
-between spaces instead:
-
-```yaml
-kubernetes:
-  isolateSpaces: false
-```
-
-The fence selects only pods carrying this installation's labels, so in a
-workload namespace you were given it never constrains pods donkey doesn't
-own. Toggling the setting takes effect on the next `donkey server install`
-for existing spaces, and immediately for new ones. One prerequisite: the
-cluster's network plugin must enforce NetworkPolicy — on one that doesn't,
-the policies apply cleanly and change nothing (which also means the default
-is safe on such clusters, just not protective).
-
-By default only *ingress* is fenced; a space's pods may still reach out
-anywhere, the internet included. To close that side too:
-
-```yaml
-kubernetes:
-  restrictEgress: true
-```
-
-Now a space's pods reach only their own space (sibling apps and its
-services, postgres and rustfs included), the platform endpoints an app
-actually uses — donkey-ai for the openai addon and donkey-telemetry for
-metrics — and DNS. Everything else, the public internet and every other
-space, is cut.
-
-This one is **off by default and deliberate**, unlike the ingress fence:
-cutting outbound traffic breaks any app that calls a third-party API,
-webhook or email service at runtime, and even calling another donkey app by
-its public hostname (that leaves the cluster and comes back through the
-edge). Turn it on for spaces whose apps only talk to their own database and
-the platform. It needs `isolateSpaces` on, since the egress rules ride the
-same per-space policy.
-
-### Using the cluster's edge
-
-donkey needs no Gateway API — but a cluster that standardizes on one can put
-its edge in front of donkey with one setting, checked at install: naming a
-gateway on a cluster that doesn't serve HTTPRoute is refused up front
-instead of failing mid-apply.
-
-**Enter through the cluster's Gateway API gateway** instead of exposing
-donkey's edge Service:
-
-```yaml
-gateway:
-  serviceType: ClusterIP
-  httpRoute:
-    name: shared-gateway      # the Gateway to attach to
-    namespace: infra
-tls:
-  mode: none                  # that gateway terminates TLS before routes match
-```
-
-donkey renders one HTTPRoute sending `<domain>` and `*.<domain>` (a Gateway
-API wildcard matches any depth) to the donkey gateway, which keeps doing what
-it always does — routing, login, access — one hop further in. Custom app
-hostnames outside the domain are not covered by this route.
-
-TLS in this arrangement is the platform's prerequisite, not donkey's job:
-the cluster gateway's listeners terminate it with certificates provisioned
-however the platform likes — cert-manager, a PKI process, a ReferenceGrant
-when the certificate Secrets live outside the gateway's namespace. Remember
-that a TLS certificate wildcard covers one label while apps live at
-`<app>.<space>.<domain>`, so the gateway wants a listener per
-`*.<space>.<domain>`.
-
-Managed platforms can also let donkey request a dedicated edge and
-certificate for every exposed app:
-
-```yaml
-gateway:
-  serviceType: ClusterIP
-  appGateway:
-    className: private-app-edge
-    issuerName: corporate-pki
-    # issuerKind: ClusterIssuer       # default
-    # issuerGroup: cert-manager.io    # default
-    # routeNamespace: gateway-infra   # only when the platform mirrors Gateways
-```
-
-This renders a cert-manager `Certificate`, Gateway API `Gateway`, and
-`HTTPRoute` per hostname. All three tenant-owned objects live in donkey's
-system namespace, where the route can reach the `donkey-gateway` Service
-without a cross-namespace backend grant. In the confined two-namespace setup,
-the server Role can manage those three resource kinds only in the system
-namespace; it receives no permission in `gateway-infra`.
-
-Leave `routeNamespace` empty when the configured GatewayClass watches tenant
-Gateways directly. Set it only for a platform that mirrors a tenant Gateway
-into its controller namespace. That platform must also make the generated TLS
-Secret available to the mirrored Gateway (by mirroring it, or by rewriting the
-certificate reference and arranging the appropriate `ReferenceGrant`). The
-mirrored listener must allow routes from donkey's system namespace. donkey
-puts that namespace selector on the source Gateway, but whether it is preserved
-is part of the platform's mirroring contract. Installation checks for Gateway,
-HTTPRoute and Certificate CRDs before changing the cluster.
-
-### Several donkeys on one cluster
-
-Supported, with one requirement: **every installation needs its own
-`kubernetes.system.namespace`.** That namespace is the installation's
-identity — it is stamped on every object as `donkey.dev/installation`, every sweep
-donkey makes requires it, and every cluster-scoped object it applies is named
-after it. Without a distinct one the second install would apply the first's
-`ClusterRoleBinding`, and because server-side apply forces the subject list,
-the first installation would silently lose every permission it has.
-
-`kubectl get all -A -l donkey.dev/installation=bank-donkey-system` shows one
-installation's objects.
-
-The rest is not enforceable from inside a single installation — donkey can
-only see its own configuration — so these are yours to get right:
-
-| Must differ per installation | Why |
-|---|---|
-| `kubernetes.system.namespace` | the installation's identity — every object is stamped and swept by it; the install warns when it finds no existing installation there |
-| `domain` | two gateways cannot divide one wildcard, and DNS resolves to one of them |
-| `kubernetes.workload.namespace`, or `kubernetes.workload.namespacePrefix` | otherwise both installations write into the same namespaces |
-| `gateway.httpNodePort` / `httpsNodePort` | node ports are cluster-wide |
-| `registry.url` | see below |
-
-The registry one is the subtlest. An image is pushed to
-`<registry.url>/<app>:<tag>`, and the repository path carries neither the
-space nor the installation. Two installations sharing a `registry.url`
-therefore share the repository for every app of the same name — and
-`--no-build --tag` only checks that an image sits under the configured
-registry prefix, which is what stops one app from being deployed with
-another's image. Sharing the prefix defeats that check across installations.
-Give each one its own.
+The Docker runtime's shape — per-space networks as the isolation model, the
+`local.donkey.*` labels, the Compose bundle — is described in
+[README_DOCKER.md](README_DOCKER.md).
 
 ### The builder
 

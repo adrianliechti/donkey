@@ -51,10 +51,7 @@ func SpaceIsolationPolicy(space, namespace, installation string, restrictEgress 
 	// the policy's own namespace, which is where all of the space's pods
 	// live in either placement arrangement.
 	sameSpace := networkingv1.NetworkPolicyPeer{
-		PodSelector: &metav1.LabelSelector{MatchLabels: map[string]string{
-			LabelInstallation: installation,
-			LabelSpace:        space,
-		}},
+		PodSelector: &metav1.LabelSelector{MatchLabels: SpacePodSelector(installation, space)},
 	}
 	policy := &networkingv1.NetworkPolicy{
 		TypeMeta: metav1.TypeMeta{APIVersion: "networking.k8s.io/v1", Kind: "NetworkPolicy"},

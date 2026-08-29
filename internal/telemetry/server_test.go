@@ -12,6 +12,8 @@ import (
 	collectormetricspb "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 	metricspb "go.opentelemetry.io/proto/otlp/metrics/v1"
+	codepb "google.golang.org/genproto/googleapis/rpc/code"
+	statuspb "google.golang.org/genproto/googleapis/rpc/status"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -187,5 +189,59 @@ WHERE app_visitor_hash = ? OR space_visitor_hash = ?`, "the-raw-subject", "the-r
 	}
 	if rawSubjectRows != 0 {
 		t.Fatal("raw subject reached DuckDB")
+	}
+}
+
+// OTLP/HTTP requires every 4xx/5xx body to be a google.rpc.Status in the
+// request's encoding, and the response Content-Type to mirror the request.
+func TestOTLPErrorsAreStatusMessages(t *testing.T) {
+	key := bytes.Repeat([]byte{7}, 32)
+	service, err := NewService(&Config{DatabasePath: ":memory:", RetentionDays: 30, Key: key})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = service.store.Close() })
+
+	// Protobuf request, bad payload → protobuf-encoded Status.
+	request := httptest.NewRequest(http.MethodPost, "/v1/metrics", strings.NewReader("not protobuf"))
+	request.Header.Set("Content-Type", "application/x-protobuf")
+	request.Header.Set(TelemetryTokenHeader, GatewayToken(key))
+	response := httptest.NewRecorder()
+	service.ingestHandler().ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d, want 400", response.Code)
+	}
+	if got := response.Header().Get("Content-Type"); got != "application/x-protobuf" {
+		t.Fatalf("error Content-Type=%q, want application/x-protobuf", got)
+	}
+	status := new(statuspb.Status)
+	if err := proto.Unmarshal(response.Body.Bytes(), status); err != nil {
+		t.Fatalf("error body is not a google.rpc.Status: %v", err)
+	}
+	if status.Code != int32(codepb.Code_INVALID_ARGUMENT) || status.Message == "" {
+		t.Fatalf("status = %d %q, want INVALID_ARGUMENT with a message", status.Code, status.Message)
+	}
+
+	// JSON request, bad token → JSON-encoded Status.
+	request = httptest.NewRequest(http.MethodPost, "/v1/metrics", strings.NewReader("{}"))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set(TelemetryTokenHeader, "bogus")
+	response = httptest.NewRecorder()
+	service.ingestHandler().ServeHTTP(response, request)
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("status=%d, want 401", response.Code)
+	}
+	if got := response.Header().Get("Content-Type"); got != "application/json" {
+		t.Fatalf("error Content-Type=%q, want application/json", got)
+	}
+	var decoded struct {
+		Code    int32  `json:"code"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &decoded); err != nil {
+		t.Fatalf("error body is not JSON: %v", err)
+	}
+	if decoded.Code != int32(codepb.Code_UNAUTHENTICATED) || decoded.Message == "" {
+		t.Fatalf("status = %d %q, want UNAUTHENTICATED with a message", decoded.Code, decoded.Message)
 	}
 }

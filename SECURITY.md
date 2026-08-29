@@ -71,7 +71,7 @@ These were fixed after the last review and are **not** regressions — each was 
 > `internal/server/server_test.go`.
 >
 > The credential goes to exactly one backend. Routes carry
-> `donkey.dev/token: forward`, set only on the console/API route; the proxy
+> `donkey.local/token: forward`, set only on the console/API route; the proxy
 > strips inbound `X-Access-Token` on every route and mints an outbound one
 > only where the annotation says so — an app handed a token could replay its
 > visitors against the API. `internal/gateway/gateway_test.go` pins both

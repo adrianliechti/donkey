@@ -85,9 +85,10 @@ func bucketColumns(definition bool) string {
 	return strings.Join(cols, ", ")
 }
 
-func (s *Store) migrate(ctx context.Context) error {
-	schema := fmt.Sprintf(`
-CREATE TABLE IF NOT EXISTS http_rollups (
+// httpRollupsBody and metricStreamStateBody are the table shapes, shared by
+// the initial CREATE and the duration_sum type migration below so the two
+// cannot drift apart. %s is the bucket column list.
+const httpRollupsBody = `(
   hour BIGINT NOT NULL,
   source TEXT NOT NULL,
   space TEXT NOT NULL,
@@ -95,14 +96,12 @@ CREATE TABLE IF NOT EXISTS http_rollups (
   method TEXT NOT NULL,
   status INTEGER NOT NULL,
   request_count BIGINT NOT NULL,
-  duration_sum REAL NOT NULL,
+  duration_sum DOUBLE NOT NULL,
   %s,
   PRIMARY KEY (hour, source, space, app, method, status)
-);
-CREATE INDEX IF NOT EXISTS http_rollups_scope_time
-  ON http_rollups (source, space, app, hour);
+)`
 
-CREATE TABLE IF NOT EXISTS metric_stream_state (
+const metricStreamStateBody = `(
   stream_key TEXT PRIMARY KEY,
   source TEXT NOT NULL,
   space TEXT NOT NULL,
@@ -111,10 +110,20 @@ CREATE TABLE IF NOT EXISTS metric_stream_state (
   start_nano BIGINT NOT NULL,
   time_nano BIGINT NOT NULL,
   request_count BIGINT NOT NULL,
-  duration_sum REAL NOT NULL,
+  duration_sum DOUBLE NOT NULL,
   %s,
   last_seen BIGINT NOT NULL
-);
+)`
+
+func (s *Store) migrate(ctx context.Context) error {
+	httpRollups := fmt.Sprintf(httpRollupsBody, bucketColumns(true))
+	streamState := fmt.Sprintf(metricStreamStateBody, bucketColumns(true))
+	schema := fmt.Sprintf(`
+CREATE TABLE IF NOT EXISTS http_rollups %s;
+CREATE INDEX IF NOT EXISTS http_rollups_scope_time
+  ON http_rollups (source, space, app, hour);
+
+CREATE TABLE IF NOT EXISTS metric_stream_state %s;
 CREATE INDEX IF NOT EXISTS metric_stream_state_seen
   ON metric_stream_state (last_seen);
 
@@ -185,7 +194,7 @@ CREATE INDEX IF NOT EXISTS view_visitors_app_time
   ON view_visitors (space, app, hour);
 CREATE INDEX IF NOT EXISTS view_visitors_space_time
   ON view_visitors (space, hour);
-`, bucketColumns(true), bucketColumns(true))
+`, httpRollups, streamState)
 	if _, err := s.db.ExecContext(ctx, schema); err != nil {
 		return fmt.Errorf("creating telemetry schema: %w", err)
 	}
@@ -200,6 +209,37 @@ CREATE INDEX IF NOT EXISTS view_visitors_space_time
 	} {
 		if _, err := s.db.ExecContext(ctx, q); err != nil {
 			return fmt.Errorf("updating telemetry stream scope: %w", err)
+		}
+	}
+	// duration_sum began as REAL. float32 rounding skews long-run latency
+	// sums, and a cumulative stream growing by less than its float32
+	// baseline's rounding error read as a reset, silently dropping the
+	// interval. DuckDB cannot retype a column on an indexed table, so the
+	// rollups are rebuilt with their rows; the normalization baselines are
+	// recreated empty, which costs at most one export interval per stream —
+	// the same as a service restart.
+	var durationType string
+	if err := s.db.QueryRowContext(ctx,
+		"SELECT data_type FROM duckdb_columns() WHERE table_name = 'http_rollups' AND column_name = 'duration_sum'",
+	).Scan(&durationType); err != nil {
+		return fmt.Errorf("reading telemetry schema: %w", err)
+	}
+	if durationType != "DOUBLE" {
+		for _, q := range []string{
+			"DROP TABLE IF EXISTS http_rollups_migrate",
+			"CREATE TABLE http_rollups_migrate " + httpRollups,
+			"INSERT INTO http_rollups_migrate SELECT * FROM http_rollups",
+			"DROP TABLE http_rollups",
+			"ALTER TABLE http_rollups_migrate RENAME TO http_rollups",
+			"CREATE INDEX IF NOT EXISTS http_rollups_scope_time ON http_rollups (source, space, app, hour)",
+			"DROP TABLE metric_stream_state",
+			"CREATE TABLE metric_stream_state " + streamState,
+			"CREATE INDEX IF NOT EXISTS metric_stream_state_seen ON metric_stream_state (last_seen)",
+			"CREATE INDEX IF NOT EXISTS metric_stream_state_scope ON metric_stream_state (space, app)",
+		} {
+			if _, err := s.db.ExecContext(ctx, q); err != nil {
+				return fmt.Errorf("widening telemetry duration columns: %w", err)
+			}
 		}
 	}
 	return nil
@@ -399,8 +439,15 @@ func (s *Store) ingestHTTPPoint(
 		ctx, tx, streamKey, source, space, app, histogram.AggregationTemporality,
 		point.StartTimeUnixNano, point.TimeUnixNano, count, sum, buckets, now.Unix(),
 	)
-	if err != nil || !keep {
-		return err == nil, err
+	if err != nil {
+		return false, err
+	}
+	if !keep {
+		// The one keep=false without an error is an unsupported aggregation
+		// temporality. Reject the point so the exporter's partial-success
+		// accounting shows the loss — an accepted-but-discarded point is an
+		// outage nobody can see.
+		return false, nil
 	}
 	if deltaCount == 0 {
 		return true, nil

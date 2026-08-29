@@ -577,27 +577,27 @@ type dockerOwnedResource struct {
 
 func dockerInstallVolumes(bundledRegistry bool) []dockerOwnedResource {
 	resources := []dockerOwnedResource{
-		{name: dockerDataVolume, component: "state-storage"},
-		{name: dockerBuildkitVolume, component: "buildkit-storage"},
-		{name: dockerTelemetryVolume, component: "telemetry-storage"},
+		{name: dockerDataVolume, component: docker.ComponentStateStorage},
+		{name: dockerBuildkitVolume, component: docker.ComponentBuildkitStorage},
+		{name: dockerTelemetryVolume, component: docker.ComponentTelemetryStorage},
 	}
 	if bundledRegistry {
-		resources = append(resources, dockerOwnedResource{name: dockerRegistryVolume, component: "registry-storage"})
+		resources = append(resources, dockerOwnedResource{name: dockerRegistryVolume, component: docker.ComponentRegistryStorage})
 	}
 	return resources
 }
 
 func dockerInstallContainers(bundledRegistry bool) []dockerOwnedResource {
 	resources := []dockerOwnedResource{
-		{name: dockerPackagesName, component: "packages"},
-		{name: dockerBuildkitName, component: "buildkitd"},
-		{name: dockerTelemetryName, component: "telemetry"},
-		{name: dockerServerName, component: "server"},
-		{name: dockerGatewayName, component: "gateway"},
-		{name: dockerAIName, component: "ai"},
+		{name: dockerPackagesName, component: docker.ComponentPackages},
+		{name: dockerBuildkitName, component: docker.ComponentBuildkit},
+		{name: dockerTelemetryName, component: docker.ComponentTelemetry},
+		{name: dockerServerName, component: docker.ComponentServer},
+		{name: dockerGatewayName, component: docker.ComponentGateway},
+		{name: dockerAIName, component: docker.ComponentAI},
 	}
 	if bundledRegistry {
-		resources = append(resources, dockerOwnedResource{name: dockerRegistryName, component: "registry"})
+		resources = append(resources, dockerOwnedResource{name: dockerRegistryName, component: docker.ComponentRegistry})
 	}
 	return resources
 }
@@ -614,7 +614,7 @@ func requireDockerSystemResource(kind, name string, labels map[string]string, co
 // must carry the complete immutable system identity introduced by this schema.
 func checkDockerInstallOwnership(ctx context.Context, cli *dockerclient.Client, bundledRegistry bool) error {
 	if nw, err := cli.NetworkInspect(ctx, dockerNetwork, network.InspectOptions{}); err == nil {
-		if err := requireDockerSystemResource("network", dockerNetwork, nw.Labels, "network"); err != nil {
+		if err := requireDockerSystemResource("network", dockerNetwork, nw.Labels, docker.ComponentNetwork); err != nil {
 			return err
 		}
 	} else if !cerrdefs.IsNotFound(err) {
@@ -654,7 +654,7 @@ func ensureDockerNetwork(ctx context.Context, cli *dockerclient.Client) error {
 	nw, err := cli.NetworkInspect(ctx, dockerNetwork, network.InspectOptions{})
 	if cerrdefs.IsNotFound(err) {
 		if _, err = cli.NetworkCreate(ctx, dockerNetwork, network.CreateOptions{
-			Labels: docker.SystemLabels("network"),
+			Labels: docker.SystemLabels(docker.ComponentNetwork),
 		}); err != nil {
 			return err
 		}
@@ -663,7 +663,7 @@ func ensureDockerNetwork(ctx context.Context, cli *dockerclient.Client) error {
 	if err != nil {
 		return err
 	}
-	return requireDockerSystemResource("network", dockerNetwork, nw.Labels, "network")
+	return requireDockerSystemResource("network", dockerNetwork, nw.Labels, docker.ComponentNetwork)
 }
 
 type infraContainer struct {
@@ -683,7 +683,7 @@ type infraContainer struct {
 // replaceInfraContainer recreates one of donkey's own containers — the
 // Docker spelling of an idempotent install: same name, fresh config.
 func replaceInfraContainer(ctx context.Context, cli *dockerclient.Client, spec infraContainer) error {
-	component := strings.TrimPrefix(spec.Name, "donkey-")
+	component := docker.SystemComponentOf(spec.Name)
 	info, err := cli.ContainerInspect(ctx, spec.Name)
 	switch {
 	case err == nil:
@@ -812,7 +812,7 @@ func existingContainerEnv(ctx context.Context, cli *dockerclient.Client, name, k
 	if err != nil || info.Config == nil {
 		return ""
 	}
-	if !docker.MatchesSystemLabels(info.Config.Labels, strings.TrimPrefix(name, "donkey-")) {
+	if !docker.MatchesSystemLabels(info.Config.Labels, docker.SystemComponentOf(name)) {
 		return ""
 	}
 	for _, kv := range info.Config.Env {

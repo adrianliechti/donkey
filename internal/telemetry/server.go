@@ -17,6 +17,8 @@ import (
 	"time"
 
 	collectormetricspb "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
+	codepb "google.golang.org/genproto/googleapis/rpc/code"
+	statuspb "google.golang.org/genproto/googleapis/rpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 )
@@ -162,7 +164,7 @@ func (s *Service) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	}
 	body, err := ingestBody(w, r)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeOTLPError(w, mediaType, http.StatusBadRequest, codepb.Code_INVALID_ARGUMENT, err.Error())
 		return
 	}
 	switch mediaType {
@@ -171,16 +173,17 @@ func (s *Service) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	case "application/json":
 		err = protojson.Unmarshal(body, req)
 	default:
-		http.Error(w, "OTLP/HTTP metrics require protobuf or JSON", http.StatusUnsupportedMediaType)
+		writeOTLPError(w, mediaType, http.StatusUnsupportedMediaType, codepb.Code_INVALID_ARGUMENT,
+			"OTLP/HTTP metrics require protobuf or JSON")
 		return
 	}
 	if err != nil {
-		http.Error(w, "invalid OTLP metrics payload", http.StatusBadRequest)
+		writeOTLPError(w, mediaType, http.StatusBadRequest, codepb.Code_INVALID_ARGUMENT, "invalid OTLP metrics payload")
 		return
 	}
 	principal, ok := metricPrincipal(req, r.Header.Get(TelemetryTokenHeader), s.cfg.Key)
 	if !ok {
-		http.Error(w, "invalid telemetry scope token", http.StatusUnauthorized)
+		writeOTLPError(w, mediaType, http.StatusUnauthorized, codepb.Code_UNAUTHENTICATED, "invalid telemetry scope token")
 		return
 	}
 	var rejected int64
@@ -193,11 +196,14 @@ func (s *Service) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		_, rejected, err = s.store.IngestMetrics(r.Context(), req, principal == metricPrincipalGateway)
 		partialMessage = "only valid OpenTelemetry HTTP server duration histograms for the authenticated app scope are retained"
 	default:
-		http.Error(w, "invalid telemetry scope token", http.StatusUnauthorized)
+		writeOTLPError(w, mediaType, http.StatusUnauthorized, codepb.Code_UNAUTHENTICATED, "invalid telemetry scope token")
 		return
 	}
 	if err != nil {
-		http.Error(w, "storing metrics failed", http.StatusInternalServerError)
+		// 503 is one of OTLP's retryable codes; a 500 would make conformant
+		// exporters drop the batch a transient storage hiccup only delayed.
+		w.Header().Set("Retry-After", "5")
+		writeOTLPError(w, mediaType, http.StatusServiceUnavailable, codepb.Code_UNAVAILABLE, "storing metrics failed")
 		return
 	}
 	response := &collectormetricspb.ExportMetricsServiceResponse{}
@@ -232,22 +238,44 @@ func ingestBody(w http.ResponseWriter, r *http.Request) ([]byte, error) {
 	return body, nil
 }
 
-func writeOTLPResponse(w http.ResponseWriter, mediaType string, response proto.Message) {
+// otlpContentType mirrors the request's media type, as OTLP/HTTP requires —
+// including the lenient application/protobuf alias — and answers anything
+// unrecognized in the protocol's default encoding.
+func otlpContentType(mediaType string) string {
+	switch mediaType {
+	case "application/json", "application/protobuf":
+		return mediaType
+	}
+	return "application/x-protobuf"
+}
+
+func writeOTLPMessage(w http.ResponseWriter, mediaType string, httpStatus int, message proto.Message) {
+	contentType := otlpContentType(mediaType)
 	var body []byte
 	var err error
-	if mediaType == "application/json" {
-		body, err = protojson.Marshal(response)
-		w.Header().Set("Content-Type", "application/json")
+	if contentType == "application/json" {
+		body, err = protojson.Marshal(message)
 	} else {
-		body, err = proto.Marshal(response)
-		w.Header().Set("Content-Type", "application/x-protobuf")
+		body, err = proto.Marshal(message)
 	}
 	if err != nil {
 		http.Error(w, "encoding OTLP response failed", http.StatusInternalServerError)
 		return
 	}
-	w.WriteHeader(http.StatusOK)
+	w.Header().Set("Content-Type", contentType)
+	w.WriteHeader(httpStatus)
 	_, _ = w.Write(body)
+}
+
+func writeOTLPResponse(w http.ResponseWriter, mediaType string, response proto.Message) {
+	writeOTLPMessage(w, mediaType, http.StatusOK, response)
+}
+
+// writeOTLPError answers a failed export. OTLP/HTTP requires every 4xx/5xx
+// body to be a google.rpc.Status in the request's encoding — a text/plain
+// body is a protocol violation clients cannot parse.
+func writeOTLPError(w http.ResponseWriter, mediaType string, httpStatus int, code codepb.Code, message string) {
+	writeOTLPMessage(w, mediaType, httpStatus, &statuspb.Status{Code: int32(code), Message: message})
 }
 
 func (s *Service) handleViews(w http.ResponseWriter, r *http.Request) {

@@ -59,7 +59,7 @@ const (
 	// survives names that contain the separator.
 	statFormat = "%f|%s|%Y|%n"
 
-	annotationFilesExpires = "donkey.dev/files-expires-at"
+	annotationFilesExpires = manifests.AnnotationFilesExpires
 )
 
 // File type bits of a Unix mode, spelled out so this file stays portable
@@ -649,6 +649,10 @@ func (c *Client) pinToAppNode(ctx context.Context, namespace, objectName, space,
 	var chosen *corev1.Pod
 	for i := range list.Items {
 		p := &list.Items[i]
+		if c.requireOwnedObject("Pod", namespace, p.Name, p.Labels,
+			manifests.Labels(space, app, manifests.ComponentWeb)) != nil {
+			continue
+		}
 		if p.DeletionTimestamp != nil || p.Spec.NodeName == "" {
 			continue
 		}

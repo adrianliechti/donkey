@@ -154,7 +154,8 @@ func (r *Runtime) provisionService(ctx context.Context, space, ns string, spec r
 	if workload == nil {
 		return in, nil
 	}
-	return in, r.c.WaitForRollout(ctx, ns, in.HostName())
+	return in, r.c.WaitForRollout(ctx, ns, in.HostName(),
+		manifests.AddonLabels(space, spec.Name, manifests.ComponentAddon))
 }
 
 // addonImagePullCredentials reuses the configured registry login when an

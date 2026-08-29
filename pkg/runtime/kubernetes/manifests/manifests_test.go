@@ -10,6 +10,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime"
 
 	"github.com/adrianliechti/donkey/internal/config"
@@ -104,7 +105,7 @@ func TestAccessAnnotation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out, `donkey.dev/access: '{"users":["ada@example.com"],"groups":["staff"]}'`) {
+	if !strings.Contains(out, `donkey.local/access: '{"users":["ada@example.com"],"groups":["staff"]}'`) {
 		t.Errorf("access rules should ride on the route, got:\n%s", out)
 	}
 
@@ -306,7 +307,7 @@ func TestSpaceLabels(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out, "donkey.dev/space: acme") {
+	if !strings.Contains(out, "donkey.local/space: acme") {
 		t.Error("objects should carry the space label")
 	}
 	if !strings.Contains(out, "namespace: donkey-acme") {
@@ -413,25 +414,85 @@ func mustObjects(t *testing.T, in Input) []runtime.Object {
 }
 
 // The app.kubernetes.io/* labels exist so donkey's grouping is readable by
-// tools that never heard of donkey. `part-of` is the one that matters: it is
-// the standard spelling of the thing a space is.
+// tools that never heard of donkey: the full recommended set — name,
+// instance, component, part-of, managed-by (and version where an image tag
+// supplies one) — on apps and platform alike.
 func TestStandardLabels(t *testing.T) {
 	l := Labels("demo", "backend", ComponentWeb)
 	for k, want := range map[string]string{
-		"app.kubernetes.io/name":    "backend",
-		"app.kubernetes.io/part-of": "demo",
-		LabelComponent:               ComponentWeb,
-		LabelManagedBy:               ManagedByValue,
-		LabelApp:                     "backend",
-		LabelSpace:                   "demo",
+		LabelName:      "backend",
+		LabelInstance:  "demo" + NameSeparator + "backend",
+		LabelPartOf:    "demo",
+		LabelComponent: ComponentWeb,
+		LabelManagedBy: ManagedByValue,
+		LabelApp:       "backend",
+		LabelSpace:     "demo",
 	} {
 		if l[k] != want {
 			t.Errorf("%s = %q, want %q", k, l[k], want)
 		}
 	}
-	// A caller with no space must not claim the app is part of one.
-	if _, ok := Labels("", "backend", ComponentWeb)["app.kubernetes.io/part-of"]; ok {
+	// A caller with no space must not claim the app is part of one, and has
+	// no instance to name.
+	noSpace := Labels("", "backend", ComponentWeb)
+	if _, ok := noSpace[LabelPartOf]; ok {
 		t.Error("part-of must be absent when the space is unknown")
+	}
+	if _, ok := noSpace[LabelInstance]; ok {
+		t.Error("instance must be absent when the space is unknown")
+	}
+}
+
+// Platform workloads are part of the application called donkey; their
+// instance is the installation, stamped at the apply/render boundary.
+func TestSystemStandardLabels(t *testing.T) {
+	l := SystemLabels(ServerName)
+	for k, want := range map[string]string{
+		LabelName:      ServerName,
+		LabelPartOf:    ManagedByValue,
+		LabelComponent: ServerName,
+		LabelManagedBy: ManagedByValue,
+	} {
+		if l[k] != want {
+			t.Errorf("%s = %q, want %q", k, l[k], want)
+		}
+	}
+	if _, ok := l[LabelInstance]; ok {
+		t.Error("instance is the installation's to stamp, not SystemLabels'")
+	}
+	// The space itself is the unit, not a qualified copy of one.
+	if got := SpaceLabels("demo")[LabelInstance]; got != "demo" {
+		t.Errorf("space instance = %q, want the space itself", got)
+	}
+}
+
+func TestEveryAppAndSystemObjectUsesCanonicalMetadata(t *testing.T) {
+	appObjects, err := AppObjects(testInput(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for group, objects := range map[string][]runtime.Object{
+		"app":    appObjects,
+		"system": SystemObjects(systemInput()),
+	} {
+		for _, object := range objects {
+			accessor, err := meta.Accessor(object)
+			if err != nil {
+				t.Fatalf("%s object metadata: %v", group, err)
+			}
+			labels := accessor.GetLabels()
+			kind := object.GetObjectKind().GroupVersionKind().Kind
+			if labels[LabelManagedBy] != ManagedByValue || labels[LabelComponent] == "" ||
+				labels["app.kubernetes.io/name"] == "" {
+				t.Errorf("%s %s/%s has incomplete canonical labels: %v", group, kind, accessor.GetName(), labels)
+			}
+			if _, duplicate := labels["donkey.local/component"]; duplicate {
+				t.Errorf("%s %s/%s carries the removed duplicate component label", group, kind, accessor.GetName())
+			}
+			if group == "app" && labels[LabelSpace] != "acme" {
+				t.Errorf("app %s/%s has space label %q", kind, accessor.GetName(), labels[LabelSpace])
+			}
+		}
 	}
 }
 

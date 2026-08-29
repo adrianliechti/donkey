@@ -70,7 +70,7 @@ func (p Placement) Unname(space, objectName string) string {
 // SpaceOf recovers the space from a namespace — the inverse of Namespace for
 // the per-space arrangement, where the namespace name is the only record. In
 // the shared arrangement the namespace says nothing, so callers read the
-// donkey.dev/space label instead.
+// donkey.local/space label instead.
 func (p Placement) SpaceOf(namespace string) string {
 	if p.Shared() {
 		return ""
