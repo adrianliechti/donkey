@@ -323,7 +323,7 @@ listen. An image that exits immediately fails the deploy. So:
 # Getting the build right
 
 - Pin base images to a real, specific tag: python:3.12-slim, node:22-alpine,
-  golang:1.23-alpine, eclipse-temurin:21-jre. Never ":latest".
+  golang:1.27-alpine, eclipse-temurin:21-jre. Never ":latest".
 - Match the version the repo asks for. .python-version, .nvmrc,
   .tool-versions, go.mod's go directive and package.json's engines are
   statements about what the code needs; a newer base image is a build failure
