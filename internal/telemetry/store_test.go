@@ -2,6 +2,7 @@ package telemetry
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -114,6 +115,69 @@ func TestStoreKeepsAppTelemetrySeparateAndRejectsSpoofedEdge(t *testing.T) {
 	}
 	if appReport.Totals.Requests != 2 || appReport.Totals.ClientErrors != 2 || edgeReport.Totals.Requests != 0 {
 		t.Fatalf("app=%+v edge=%+v", appReport.Totals, edgeReport.Totals)
+	}
+}
+
+func TestPurgeSpaceRemovesEveryTelemetryTableAndKeepsOtherSpaces(t *testing.T) {
+	store, err := OpenStore(":memory:", DefaultRetentionDays)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Minute)
+
+	for i, scope := range []struct{ space, app string }{{"team", "site"}, {"other", "api"}} {
+		httpMetrics := exportRequest(now.Add(time.Duration(i)*time.Second), []histogramPoint{{
+			status: 200, count: 2, sum: 0.1, bucket: 5,
+		}})
+		httpMetrics.ResourceMetrics[0].Resource.Attributes = []*commonpb.KeyValue{
+			stringAttribute("service.namespace", scope.space),
+			stringAttribute("service.name", scope.app),
+		}
+		if _, _, err := store.IngestMetrics(ctx, httpMetrics, false); err != nil {
+			t.Fatal(err)
+		}
+
+		resources, err := resourceMetrics(ResourceObservation{
+			Space: scope.space, App: scope.app, Instance: "one", SampledAt: now,
+			CPUCores: 0.2, MemoryBytes: 64,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := store.IngestResourceMetrics(ctx, &collectormetricspb.ExportMetricsServiceRequest{
+			ResourceMetrics: []*metricspb.ResourceMetrics{resources},
+		}); err != nil {
+			t.Fatal(err)
+		}
+
+		hash := strings.Repeat(fmt.Sprintf("%d", i+1), 64)
+		if _, _, err := store.InsertViews(ctx, ViewBatch{Events: []ViewEvent{{
+			TimeUnixNano: uint64(now.UnixNano()), Space: scope.space, App: scope.app,
+			AppVisitorHash: hash, SpaceVisitorHash: hash,
+		}}}, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := store.PurgeSpace(ctx, "team"); err != nil {
+		t.Fatal(err)
+	}
+	for _, table := range []string{
+		"http_rollups", "metric_stream_state", "resource_rollups", "resource_recent_rollups",
+		"resource_sample_state", "view_rollups", "view_visitors",
+	} {
+		var teamRows, otherRows int
+		if err := store.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+table+" WHERE space = ?", "team").Scan(&teamRows); err != nil {
+			t.Fatalf("counting %s team rows: %v", table, err)
+		}
+		if err := store.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+table+" WHERE space = ?", "other").Scan(&otherRows); err != nil {
+			t.Fatalf("counting %s other rows: %v", table, err)
+		}
+		if teamRows != 0 || otherRows == 0 {
+			t.Errorf("%s rows after purge: team=%d other=%d", table, teamRows, otherRows)
+		}
 	}
 }
 

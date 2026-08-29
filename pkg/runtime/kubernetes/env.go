@@ -37,7 +37,7 @@ func (c *Client) GetEnv(ctx context.Context, namespace, app string) (map[string]
 }
 
 // SetEnv replaces the app's env secret with the given variables.
-func (c *Client) SetEnv(ctx context.Context, namespace, space, app string, env map[string]string) error {
+func (c *Client) SetEnv(ctx context.Context, namespace, space, app, objectName string, env map[string]string) error {
 	data := map[string][]byte{}
 	for k, v := range env {
 		data[k] = []byte(v)
@@ -45,9 +45,9 @@ func (c *Client) SetEnv(ctx context.Context, namespace, space, app string, env m
 	sec := &corev1.Secret{
 		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Secret"},
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      manifests.EnvSecretName(app),
+			Name:      manifests.EnvSecretName(objectName),
 			Namespace: namespace,
-			Labels:    manifests.Labels(space, app, "env"),
+			Labels:    manifests.Labels(space, app, manifests.ComponentConfig),
 		},
 		Data: data,
 	}

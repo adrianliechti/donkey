@@ -50,7 +50,7 @@ func httpRoute(in SystemInput) *unstructured.Unstructured {
 		"metadata": map[string]any{
 			"name":      GatewayAppName,
 			"namespace": in.Namespace,
-			"labels":    toAnyMap(systemLabels(GatewayAppName)),
+			"labels":    toAnyMap(SystemLabels(GatewayAppName)),
 		},
 		"spec": map[string]any{
 			"parentRefs": []any{parent},

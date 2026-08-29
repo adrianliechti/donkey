@@ -128,15 +128,13 @@ func Get(typ string) (Addon, error) {
 	return a, nil
 }
 
-// SharedOwner is the pseudo-app owning a space's shared addons. Everything
-// app-scoped — instance names, binding secrets, labels, deletion — works
-// verbatim with this as the app, which is the whole trick. The name is
-// reserved: an actual app called "shared" would be deleted together with the
-// space's services.
+// SharedOwner is the API/storage owner used when asking for a space's
+// canonical service binding. Runtime labels identify the service directly;
+// they never present it as an app. The name remains reserved so an actual app
+// cannot collide with binding object names and persisted Docker state.
 const SharedOwner = "shared"
 
 func SecretName(app, addon string) string { return app + "-addon-" + addon }
-func Component(addon string) string       { return "addon-" + addon }
 
 // NewPassword generates a credential for a provisioned addon.
 func NewPassword() (string, error) {

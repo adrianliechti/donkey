@@ -4,8 +4,11 @@ metadata:
   annotations:
     donkey.dev/managed: "true"
   labels:
+    app.kubernetes.io/component: space
     app.kubernetes.io/managed-by: donkey
     app.kubernetes.io/name: acme
+    app.kubernetes.io/part-of: acme
+    donkey.dev/component: space
     donkey.dev/space: acme
     pod-security.kubernetes.io/enforce: baseline
     pod-security.kubernetes.io/warn: restricted
@@ -50,6 +53,7 @@ spec:
     matchLabels:
       donkey.dev/app: shop
       donkey.dev/component: web
+      donkey.dev/space: acme
   strategy: {}
   template:
     metadata:
@@ -135,6 +139,7 @@ spec:
   selector:
     donkey.dev/app: shop
     donkey.dev/component: web
+    donkey.dev/space: acme
   type: ClusterIP
 status:
   loadBalancer: {}
@@ -143,19 +148,17 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   annotations:
-    donkey.dev/app-name: shop
     donkey.dev/backend: http://shop.donkey-acme.svc:80
     donkey.dev/host: shop.acme.apps.example.com
     donkey.dev/login: required
     donkey.dev/path: /
-    donkey.dev/space-name: acme
   labels:
-    app.kubernetes.io/component: web
+    app.kubernetes.io/component: route
     app.kubernetes.io/managed-by: donkey
     app.kubernetes.io/name: shop
     app.kubernetes.io/part-of: acme
     donkey.dev/app: shop
-    donkey.dev/component: web
+    donkey.dev/component: route
     donkey.dev/space: acme
   name: shop
   namespace: donkey-acme

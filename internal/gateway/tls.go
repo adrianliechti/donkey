@@ -208,8 +208,10 @@ func (c *secretCache) update(ctx context.Context, mutate func(map[string][]byte)
 		}
 		sec, err := secrets.Get(ctx, c.name, metav1.GetOptions{})
 		if apierrors.IsNotFound(err) {
+			labels := manifests.SystemLabels(manifests.GatewayAppName)
+			labels[manifests.LabelInstallation] = c.namespace
 			fresh := &corev1.Secret{
-				ObjectMeta: metav1.ObjectMeta{Name: c.name, Namespace: c.namespace},
+				ObjectMeta: metav1.ObjectMeta{Name: c.name, Namespace: c.namespace, Labels: labels},
 				Data:       map[string][]byte{},
 			}
 			mutate(fresh.Data)
@@ -336,8 +338,10 @@ func (s *Server) writeCA(ctx context.Context, certPEM, keyPEM []byte) ([]byte, [
 		return certPEM, keyPEM, nil
 	}
 	secrets := s.k8s.Clientset.CoreV1().Secrets(s.cfg.SystemNamespace)
+	labels := manifests.SystemLabels(manifests.GatewayAppName)
+	labels[manifests.LabelInstallation] = s.cfg.SystemNamespace
 	fresh := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: manifests.GatewayCASecret, Namespace: s.cfg.SystemNamespace},
+		ObjectMeta: metav1.ObjectMeta{Name: manifests.GatewayCASecret, Namespace: s.cfg.SystemNamespace, Labels: labels},
 		Data:       map[string][]byte{"ca.crt": certPEM, "ca.key": keyPEM},
 	}
 	if _, err := secrets.Create(ctx, fresh, metav1.CreateOptions{}); err != nil {

@@ -26,10 +26,10 @@ func ingressPolicy(in SystemInput, name string, port int32, peers []networkingv1
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: in.Namespace,
-			Labels:    systemLabels(name),
+			Labels:    SystemLabels(name),
 		},
 		Spec: networkingv1.NetworkPolicySpec{
-			PodSelector: metav1.LabelSelector{MatchLabels: systemLabels(name)},
+			PodSelector: metav1.LabelSelector{MatchLabels: SystemSelector(name)},
 			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
 			Ingress: []networkingv1.NetworkPolicyIngressRule{{
 				From:  peers,
@@ -43,26 +43,30 @@ func ingressPolicy(in SystemInput, name string, port int32, peers []networkingv1
 // namespace.
 func systemPeer(in SystemInput, name string) networkingv1.NetworkPolicyPeer {
 	return networkingv1.NetworkPolicyPeer{
-		PodSelector:       &metav1.LabelSelector{MatchLabels: systemLabels(name)},
+		PodSelector:       &metav1.LabelSelector{MatchLabels: SystemSelector(name)},
 		NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": in.Namespace}},
 	}
 }
 
 // appPeers is where this installation's apps run. With one namespace for
 // every app that is a single name; with a namespace per space it is the
-// instance label donkey stamps on each of them, which also keeps a second
-// installation's apps out.
+// installation label donkey stamps on each namespace. The pod selector is
+// retained in both modes: a manually-created workload in one of those
+// namespaces is not silently granted access to control-plane endpoints.
 func appPeers(in SystemInput) []networkingv1.NetworkPolicyPeer {
+	pods := &metav1.LabelSelector{MatchLabels: map[string]string{LabelInstallation: in.Namespace}}
 	if in.Shared() {
 		return []networkingv1.NetworkPolicyPeer{{
+			PodSelector: pods,
 			NamespaceSelector: &metav1.LabelSelector{
 				MatchLabels: map[string]string{"kubernetes.io/metadata.name": in.WorkloadNamespace},
 			},
 		}}
 	}
 	return []networkingv1.NetworkPolicyPeer{{
+		PodSelector: pods,
 		NamespaceSelector: &metav1.LabelSelector{
-			MatchLabels: map[string]string{LabelInstance: in.Namespace},
+			MatchLabels: map[string]string{LabelInstallation: in.Namespace},
 		},
 	}}
 }

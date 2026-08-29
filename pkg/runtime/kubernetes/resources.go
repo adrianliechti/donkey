@@ -39,8 +39,9 @@ func (r *Runtime) ResourceSamples(ctx context.Context) ([]rt.ResourceSample, err
 	var failures []error
 	for _, namespace := range r.c.sweep() {
 		pods, err := r.c.Clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
-			LabelSelector: fmt.Sprintf("app.kubernetes.io/managed-by=%s,%s=%s,%s",
-				manifests.ManagedByValue, manifests.LabelComponent, manifests.ComponentWeb, manifests.LabelApp),
+			LabelSelector: fmt.Sprintf("%s=%s,app.kubernetes.io/managed-by=%s,%s=%s,%s",
+				manifests.LabelInstallation, r.c.installation(), manifests.ManagedByValue,
+				manifests.LabelComponent, manifests.ComponentWeb, manifests.LabelApp),
 		})
 		if err != nil {
 			failures = append(failures, err)
@@ -54,7 +55,7 @@ func (r *Runtime) ResourceSamples(ctx context.Context) ([]rt.ResourceSample, err
 			}
 			var web *corev1.Container
 			for j := range pod.Spec.Containers {
-				if pod.Spec.Containers[j].Name == manifests.ComponentWeb {
+				if pod.Spec.Containers[j].Name == manifests.WebContainerName {
 					web = &pod.Spec.Containers[j]
 					break
 				}
@@ -63,10 +64,10 @@ func (r *Runtime) ResourceSamples(ctx context.Context) ([]rt.ResourceSample, err
 				continue
 			}
 			space := pod.Labels[manifests.LabelSpace]
-			app := r.unname(space, pod.Labels[manifests.LabelApp])
+			app := pod.Labels[manifests.LabelApp]
 			containerID := ""
 			for _, status := range pod.Status.ContainerStatuses {
-				if status.Name == manifests.ComponentWeb {
+				if status.Name == manifests.WebContainerName {
 					containerID = status.ContainerID
 					if _, value, found := strings.Cut(containerID, "://"); found {
 						containerID = value
@@ -102,7 +103,7 @@ func (r *Runtime) ResourceSamples(ctx context.Context) ([]rt.ResourceSample, err
 			if !ok {
 				continue
 			}
-			cpu, memory, at, ok := podMetricUsage(item, manifests.ComponentWeb)
+			cpu, memory, at, ok := podMetricUsage(item, manifests.WebContainerName)
 			if !ok {
 				continue
 			}
@@ -111,7 +112,7 @@ func (r *Runtime) ResourceSamples(ctx context.Context) ([]rt.ResourceSample, err
 			}
 			samples = append(samples, rt.ResourceSample{
 				Space: pod.space, App: pod.app, SampledAt: at,
-				Instance: pod.uid, ContainerID: pod.containerID, ContainerName: manifests.ComponentWeb,
+				Instance: pod.uid, ContainerID: pod.containerID, ContainerName: manifests.WebContainerName,
 				KubeNamespace: pod.namespace, KubePodName: pod.name, KubePodUID: pod.uid,
 				CPUCores: cpu, MemoryBytes: memory,
 			})

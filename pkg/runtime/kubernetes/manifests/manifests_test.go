@@ -445,8 +445,8 @@ func TestDeploymentSelectorIsUnaffectedByLabels(t *testing.T) {
 		t.Fatal(err)
 	}
 	sel := dep.Spec.Selector.MatchLabels
-	if len(sel) != 2 || sel[LabelApp] != in.App.Name || sel[LabelComponent] != ComponentWeb {
-		t.Fatalf("the selector must stay donkey.dev/app + donkey.dev/component only, got %v", sel)
+	if len(sel) != 3 || sel[LabelSpace] != in.Space || sel[LabelApp] != in.App.Name || sel[LabelComponent] != ComponentWeb {
+		t.Fatalf("the selector must be logical space + app + component, got %v", sel)
 	}
 	// The pod template still has to satisfy it.
 	for k, v := range sel {

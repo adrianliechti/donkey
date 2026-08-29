@@ -7,10 +7,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 )
 
-// ComponentRoute marks the extra routes an app claims on another app's
-// address, so they can be found and retracted when they go away.
-const ComponentRoute = "route"
-
 var routeSlugRE = regexp.MustCompile(`[^a-z0-9]+`)
 
 // PathRouteName is the object name for one shared-address route. It has to be
@@ -39,6 +35,6 @@ func PathRoute(in Input, r RouteTarget) *corev1.ConfigMap {
 // out).
 func PathRouteNamed(in Input, name string, r RouteTarget) *corev1.ConfigMap {
 	return routeConfigMap(name, in.Namespace,
-		Labels(in.Space, in.Name(), ComponentRoute),
+		Labels(in.Space, in.App.Name, ComponentPathRoute),
 		routeAnnotations(in, r.Host, r.Path))
 }

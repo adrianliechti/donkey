@@ -78,7 +78,7 @@ func newEdgeTelemetry(cfg *Config) (*edgeTelemetry, error) {
 	hostname, _ := os.Hostname()
 	res := resource.NewSchemaless(
 		attribute.String("service.name", "donkey-gateway"),
-		attribute.String("service.namespace", "donkey-system"),
+		attribute.String("service.namespace", cfg.SystemNamespace),
 		attribute.String("service.instance.id", hostname),
 	)
 	t.provider = metric.NewMeterProvider(metric.WithReader(reader), metric.WithResource(res))
@@ -106,11 +106,14 @@ func (t *edgeTelemetry) Record(r *http.Request, rt route, sess *session, status 
 		attribute.Int("http.response.status_code", status),
 		attribute.String("url.scheme", requestScheme(r)),
 		attribute.String("http.route", rt.Path),
-		attribute.String("server.address", requestHost(r)),
 		attribute.String("network.protocol.version", protocolVersion(r)),
 		attribute.String("donkey.space.name", rt.Space),
 		attribute.String("donkey.app.name", rt.App),
 	}
+	// server.address is opt-in for HTTP server metrics and derives from a
+	// request-controlled authority. The logical route already supplies the
+	// bounded app/space dimensions, so recording it would add cardinality
+	// without adding a report dimension.
 	if method == "_OTHER" {
 		attrs = append(attrs, attribute.String("http.request.method_original", r.Method))
 	}
@@ -163,6 +166,9 @@ func requestScheme(r *http.Request) string {
 func protocolVersion(r *http.Request) string {
 	if r.ProtoMajor == 0 {
 		return ""
+	}
+	if r.ProtoMajor > 1 {
+		return strconv.Itoa(r.ProtoMajor)
 	}
 	return fmt.Sprintf("%d.%d", r.ProtoMajor, r.ProtoMinor)
 }

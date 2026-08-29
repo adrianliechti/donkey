@@ -3,12 +3,14 @@ package kubernetes
 import (
 	"context"
 	"fmt"
+	"maps"
 	"strings"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
@@ -23,6 +25,7 @@ const fieldManager = "donkey"
 // outright so the set is closed.
 var gvrFor = map[string]schema.GroupVersionResource{
 	"Namespace":             {Version: "v1", Resource: "namespaces"},
+	"Pod":                   {Version: "v1", Resource: "pods"},
 	"Secret":                {Version: "v1", Resource: "secrets"},
 	"ConfigMap":             {Version: "v1", Resource: "configmaps"},
 	"Service":               {Version: "v1", Resource: "services"},
@@ -51,7 +54,13 @@ var clusterScoped = map[string]bool{"Namespace": true, "ClusterRole": true, "Clu
 // installation confined to namespaces it was given holds no permission over
 // them, so asking would turn `donkey destroy` into a permission error.
 var appKinds = []string{
-	"Secret", "ConfigMap", "Service", "PersistentVolumeClaim", "Deployment",
+	// Route/config first, then traffic and compute. Secrets and disks stay
+	// available until the workloads that use them have been asked to stop.
+	"ConfigMap", "Service", "Deployment", "Secret", "PersistentVolumeClaim",
+}
+
+var spaceKinds = []string{
+	"ConfigMap", "Service", "Deployment", "Pod", "Secret", "PersistentVolumeClaim",
 }
 
 // Apply server-side-applies every object with donkey as field manager.
@@ -63,7 +72,9 @@ func (c *Client) Apply(ctx context.Context, objs []runtime.Object) error {
 			return err
 		}
 		u := &unstructured.Unstructured{Object: m}
-		c.stampInstance(u)
+		if err := c.stampInstallation(u); err != nil {
+			return err
+		}
 		kind := u.GetKind()
 		gvr, ok := gvrFor[kind]
 		if !ok {
@@ -80,16 +91,11 @@ func (c *Client) Apply(ctx context.Context, objs []runtime.Object) error {
 	return nil
 }
 
-// stampInstance marks the object as this installation's, on its way out. It
+// stampInstallation marks the object as this installation's, on its way out. It
 // happens here rather than in the manifests package so no renderer can forget
 // it: an unstamped object is one a second installation would adopt as its own.
-func (c *Client) stampInstance(u *unstructured.Unstructured) {
-	labels := u.GetLabels()
-	if labels == nil {
-		labels = map[string]string{}
-	}
-	labels[manifests.LabelInstance] = c.instance()
-	u.SetLabels(labels)
+func (c *Client) stampInstallation(u *unstructured.Unstructured) error {
+	return manifests.StampInstallation(u, c.installation())
 }
 
 // applyWithRetry rides out transient control-plane hiccups — most commonly
@@ -142,8 +148,18 @@ func (c *Client) DeleteObject(ctx context.Context, kind, namespace, name string)
 // selector. keepData keeps the PVCs and the Secrets: a kept database is
 // worthless without the credentials that open it (the addon binding Secret
 // holds the password the initialized data was created with).
-func (c *Client) deleteBySelector(ctx context.Context, namespace, selector string, keepData bool) error {
-	for _, kind := range appKinds {
+func (c *Client) deleteBySelector(ctx context.Context, namespace string, match map[string]string, keepData bool) error {
+	return c.deleteKindsBySelector(ctx, namespace, appKinds, match, keepData)
+}
+
+func (c *Client) deleteKindsBySelector(ctx context.Context, namespace string, kinds []string, match map[string]string, keepData bool) error {
+	owned := maps.Clone(match)
+	if owned == nil {
+		owned = map[string]string{}
+	}
+	owned[manifests.LabelInstallation] = c.installation()
+	selector := labels.Set(owned).String()
+	for _, kind := range kinds {
 		if keepData && (kind == "PersistentVolumeClaim" || kind == "Secret") {
 			continue
 		}
@@ -156,16 +172,20 @@ func (c *Client) deleteBySelector(ctx context.Context, namespace, selector strin
 	return nil
 }
 
-// DeleteComponent removes one component's objects (e.g. an addon), keeping
-// the PVC when keepData is set.
-func (c *Client) DeleteComponent(ctx context.Context, namespace, app, component string, keepData bool) error {
-	return c.deleteBySelector(ctx, namespace,
-		fmt.Sprintf("%s=%s,%s=%s", manifests.LabelApp, app, manifests.LabelComponent, component), keepData)
+// DeleteAddon removes one space service and optionally keeps its disk.
+func (c *Client) DeleteAddon(ctx context.Context, namespace, space, addon string, keepData bool) error {
+	return c.deleteBySelector(ctx, namespace, map[string]string{
+		manifests.LabelSpace: space,
+		manifests.LabelAddon: addon,
+	}, keepData)
 }
 
-// DetachAddon removes an app's copy of a shared addon's binding — only the
-// copy: the shared marker keeps an app-owned addon of the same name safe.
-func (c *Client) DetachAddon(ctx context.Context, namespace, app, component string) error {
-	return c.deleteBySelector(ctx, namespace,
-		fmt.Sprintf("%s=%s,%s=%s,%s=true", manifests.LabelApp, app, manifests.LabelComponent, component, manifests.LabelShared), false)
+// DetachAddon removes only one app's copy of a space service binding.
+func (c *Client) DetachAddon(ctx context.Context, namespace, space, app, addon string) error {
+	return c.deleteBySelector(ctx, namespace, map[string]string{
+		manifests.LabelSpace:     space,
+		manifests.LabelApp:       app,
+		manifests.LabelAddon:     addon,
+		manifests.LabelComponent: manifests.ComponentBinding,
+	}, false)
 }

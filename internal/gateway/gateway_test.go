@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"bytes"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/adrianliechti/donkey/internal/config"
 	"github.com/adrianliechti/donkey/internal/identity"
+	"github.com/adrianliechti/donkey/pkg/runtime/kubernetes/manifests"
 )
 
 var testKey = bytes.Repeat([]byte{7}, 32)
@@ -224,6 +226,10 @@ func TestCanonicalHTTPMethodIncludesQuery(t *testing.T) {
 func TestRouteFromConfigMap(t *testing.T) {
 	cm := corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
+			Labels: map[string]string{
+				manifests.LabelSpace: "acme",
+				manifests.LabelApp:   "shop",
+			},
 			Annotations: map[string]string{
 				"donkey.dev/backend": "http://shop.donkey-acme.svc.cluster.local:80",
 				"donkey.dev/host":    "shop.example.com",
@@ -239,6 +245,9 @@ func TestRouteFromConfigMap(t *testing.T) {
 	}
 	if rt.Host != "shop.example.com" || rt.Path != "/api" || !rt.Login {
 		t.Errorf("unexpected route: %+v", rt)
+	}
+	if rt.Space != "acme" || rt.App != "shop" {
+		t.Errorf("route telemetry scope = %q/%q", rt.Space, rt.App)
 	}
 	if rt.Access == nil || len(rt.Access.Users) != 1 || len(rt.Access.Roles) != 1 {
 		t.Errorf("access rules should be parsed: %+v", rt.Access)
@@ -260,6 +269,18 @@ func TestRouteFromConfigMap(t *testing.T) {
 	bad.Annotations["donkey.dev/backend"] = "https://evil.example.com"
 	if _, ok := routeFromConfigMap(*bad); ok {
 		t.Error("only in-cluster plain-http backends are proxied")
+	}
+}
+
+func TestProtocolVersionUsesOpenTelemetryValues(t *testing.T) {
+	for proto, want := range map[string]string{"HTTP/1.1": "1.1", "HTTP/2.0": "2", "HTTP/3.0": "3"} {
+		req := &http.Request{Proto: proto}
+		if _, err := fmt.Sscanf(proto, "HTTP/%d.%d", &req.ProtoMajor, &req.ProtoMinor); err != nil {
+			t.Fatal(err)
+		}
+		if got := protocolVersion(req); got != want {
+			t.Errorf("protocolVersion(%s) = %q, want %q", proto, got, want)
+		}
 	}
 }
 

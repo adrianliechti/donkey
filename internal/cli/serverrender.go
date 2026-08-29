@@ -256,7 +256,7 @@ func renderKubernetesBundle(settings *config.InstallFile) (map[string]bundleFile
 	skipNamespace := settings.Kubernetes.System.Namespace != ""
 	in := kubernetesSystemInput(renderSettings, skipNamespace, settings.Registry.Username, registryPassword, configured, configured)
 	objects := withoutSecrets(manifests.SystemObjects(in))
-	manifestYAML, err := manifests.RenderForInstance(objects, in.Namespace)
+	manifestYAML, err := manifests.RenderForInstallation(objects, in.Namespace)
 	if err != nil {
 		return nil, err
 	}

@@ -19,6 +19,7 @@ import (
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/api/types/network"
+	"github.com/docker/docker/api/types/volume"
 	dockerclient "github.com/docker/docker/client"
 	"github.com/docker/go-connections/nat"
 
@@ -148,6 +149,21 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 
 	if err := ensureDockerNetwork(ctx, cli); err != nil {
 		return err
+	}
+	volumes := []struct{ name, component string }{
+		{dockerDataVolume, "state-storage"},
+		{dockerBuildkitVolume, "buildkit-storage"},
+		{dockerTelemetryVolume, "telemetry-storage"},
+	}
+	if bundledRegistry {
+		volumes = append(volumes, struct{ name, component string }{dockerRegistryVolume, "registry-storage"})
+	}
+	for _, item := range volumes {
+		if _, err := cli.VolumeCreate(ctx, volume.CreateOptions{
+			Name: item.name, Labels: docker.SystemLabels(item.component),
+		}); err != nil {
+			return err
+		}
 	}
 	if bundledRegistry {
 		// The registry: no host port beyond the loopback, no credentials — it
@@ -558,7 +574,9 @@ func adminsJSONString(admins *config.AccessConfig) string {
 func ensureDockerNetwork(ctx context.Context, cli *dockerclient.Client) error {
 	_, err := cli.NetworkInspect(ctx, dockerNetwork, network.InspectOptions{})
 	if cerrdefs.IsNotFound(err) {
-		_, err = cli.NetworkCreate(ctx, dockerNetwork, network.CreateOptions{})
+		_, err = cli.NetworkCreate(ctx, dockerNetwork, network.CreateOptions{
+			Labels: docker.SystemLabels("network"),
+		})
 	}
 	return err
 }
@@ -608,6 +626,7 @@ func replaceInfraContainer(ctx context.Context, cli *dockerclient.Client, spec i
 		Env:          env,
 		ExposedPorts: exposed,
 		Healthcheck:  spec.Healthcheck,
+		Labels:       docker.SystemLabels(strings.TrimPrefix(spec.Name, "donkey-")),
 	}
 	hostCfg := &container.HostConfig{
 		Mounts:        spec.Mounts,

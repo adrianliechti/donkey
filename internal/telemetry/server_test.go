@@ -114,6 +114,47 @@ func TestRuntimeCredentialIngestsResourcesButNotTraffic(t *testing.T) {
 	}
 }
 
+func TestDeleteSpaceEndpointRequiresQueryCredentialAndPurgesHistory(t *testing.T) {
+	key := bytes.Repeat([]byte{6}, 32)
+	service, err := NewService(&Config{DatabasePath: ":memory:", RetentionDays: 30, Key: key})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = service.store.Close() })
+
+	now := time.Now().UTC()
+	export := exportRequest(now, []histogramPoint{{status: 200, count: 3, sum: 0.15, bucket: 5}})
+	export.ResourceMetrics[0].Resource.Attributes = []*commonpb.KeyValue{
+		stringAttribute("service.namespace", "team"),
+		stringAttribute("service.name", "site"),
+	}
+	if _, _, err := service.store.IngestMetrics(t.Context(), export, false); err != nil {
+		t.Fatal(err)
+	}
+
+	unauthorized := httptest.NewRequest(http.MethodDelete, "/v1/spaces/team", nil)
+	unauthorizedResponse := httptest.NewRecorder()
+	service.apiHandler().ServeHTTP(unauthorizedResponse, unauthorized)
+	if unauthorizedResponse.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthorized purge status=%d", unauthorizedResponse.Code)
+	}
+
+	request := httptest.NewRequest(http.MethodDelete, "/v1/spaces/team", nil)
+	request.Header.Set("Authorization", "Bearer "+QueryToken(key))
+	response := httptest.NewRecorder()
+	service.apiHandler().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("purge status=%d body=%s", response.Code, response.Body.String())
+	}
+	report, err := service.store.Traffic(t.Context(), "team", "site", SourceApp, Range48Hours, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Totals.Requests != 0 {
+		t.Fatalf("deleted space retained traffic: %+v", report.Totals)
+	}
+}
+
 func TestViewsRequireGatewayCredentialAndNeverStoreRawIdentity(t *testing.T) {
 	key := bytes.Repeat([]byte{9}, 32)
 	service, err := NewService(&Config{DatabasePath: ":memory:", RetentionDays: 30, Key: key})

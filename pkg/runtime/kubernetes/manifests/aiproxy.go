@@ -1,6 +1,8 @@
 package manifests
 
 import (
+	"fmt"
+
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
@@ -36,7 +38,7 @@ func aiObjects(in SystemInput) []runtime.Object {
 func aiServiceAccount(in SystemInput) *corev1.ServiceAccount {
 	return &corev1.ServiceAccount{
 		TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "ServiceAccount"},
-		ObjectMeta: metav1.ObjectMeta{Name: AIAppName, Namespace: in.Namespace, Labels: systemLabels(AIAppName)},
+		ObjectMeta: metav1.ObjectMeta{Name: AIAppName, Namespace: in.Namespace, Labels: SystemLabels(AIAppName)},
 	}
 }
 
@@ -59,7 +61,7 @@ func aiTokenAccess(in SystemInput) []runtime.Object {
 				TypeMeta: metav1.TypeMeta{APIVersion: "rbac.authorization.k8s.io/v1", Kind: "ClusterRole"},
 				ObjectMeta: metav1.ObjectMeta{
 					Name:   clusterScopedName(AIAppName, in.Namespace),
-					Labels: systemLabels(AIAppName),
+					Labels: SystemLabels(AIAppName),
 				},
 				Rules: rules,
 			},
@@ -67,7 +69,7 @@ func aiTokenAccess(in SystemInput) []runtime.Object {
 				TypeMeta: metav1.TypeMeta{APIVersion: "rbac.authorization.k8s.io/v1", Kind: "ClusterRoleBinding"},
 				ObjectMeta: metav1.ObjectMeta{
 					Name:   clusterScopedName(AIAppName, in.Namespace),
-					Labels: systemLabels(AIAppName),
+					Labels: SystemLabels(AIAppName),
 				},
 				RoleRef: rbacv1.RoleRef{
 					APIGroup: "rbac.authorization.k8s.io", Kind: "ClusterRole",
@@ -80,12 +82,12 @@ func aiTokenAccess(in SystemInput) []runtime.Object {
 	return []runtime.Object{
 		&rbacv1.Role{
 			TypeMeta:   metav1.TypeMeta{APIVersion: "rbac.authorization.k8s.io/v1", Kind: "Role"},
-			ObjectMeta: metav1.ObjectMeta{Name: AIAppName, Namespace: in.WorkloadNamespace, Labels: systemLabels(AIAppName)},
+			ObjectMeta: metav1.ObjectMeta{Name: AIAppName, Namespace: in.WorkloadNamespace, Labels: SystemLabels(AIAppName)},
 			Rules:      rules,
 		},
 		&rbacv1.RoleBinding{
 			TypeMeta:   metav1.TypeMeta{APIVersion: "rbac.authorization.k8s.io/v1", Kind: "RoleBinding"},
-			ObjectMeta: metav1.ObjectMeta{Name: AIAppName, Namespace: in.WorkloadNamespace, Labels: systemLabels(AIAppName)},
+			ObjectMeta: metav1.ObjectMeta{Name: AIAppName, Namespace: in.WorkloadNamespace, Labels: SystemLabels(AIAppName)},
 			RoleRef:    rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "Role", Name: AIAppName},
 			Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: AIAppName, Namespace: in.Namespace}},
 		},
@@ -96,13 +98,13 @@ func aiTokenAccess(in SystemInput) []runtime.Object {
 func (in SystemInput) aiConfigHash() string { return configHash(in.OpenAIAPIKey) }
 
 func aiDeployment(in SystemInput) *appsv1.Deployment {
-	labels := systemLabels(AIAppName)
+	labels := SystemLabels(AIAppName)
 	replicas := int32(1)
 	health := corev1.ProbeHandler{
 		HTTPGet: &corev1.HTTPGetAction{Path: "/healthz", Port: intstr.FromInt32(aiPort)},
 	}
 	env := []corev1.EnvVar{
-		{Name: "DONKEY_LISTEN", Value: ":8089"},
+		{Name: "DONKEY_LISTEN", Value: fmt.Sprintf(":%d", aiPort)},
 		{Name: "OPENAI_BASE_URL", Value: in.OpenAIBaseURL},
 		secretEnvVar("OPENAI_API_KEY", "openai-api-key"),
 		// Where to look for the binding Secrets. Only the namespaces — this
@@ -118,7 +120,7 @@ func aiDeployment(in SystemInput) *appsv1.Deployment {
 		ObjectMeta: metav1.ObjectMeta{Name: AIAppName, Namespace: in.Namespace, Labels: labels},
 		Spec: appsv1.DeploymentSpec{
 			Replicas: &replicas,
-			Selector: &metav1.LabelSelector{MatchLabels: labels},
+			Selector: &metav1.LabelSelector{MatchLabels: SystemSelector(AIAppName)},
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: in.hashedTemplateMeta(AIAppName, in.aiConfigHash()),
 				Spec: corev1.PodSpec{

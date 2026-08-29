@@ -370,8 +370,8 @@ func (r *Runtime) appMounts(ctx context.Context, space, app string, spec runSpec
 		return nil, nil
 	}
 	vol := volName(space, app)
-	labels := appLabels(space, app, componentWeb)
-	if _, err := r.cli.VolumeCreate(ctx, volume.CreateOptions{Name: vol, Labels: labels}); err != nil {
+	labels := appLabels(space, app, componentStorage)
+	if err := r.ensureOwnedVolume(ctx, vol, labels); err != nil {
 		return nil, err
 	}
 	volumes := map[string]volumeMount{}
@@ -381,7 +381,7 @@ func (r *Runtime) appMounts(ctx context.Context, space, app string, spec runSpec
 		volumes[p] = volumeMount{Volume: vol, Subpath: sub}
 		subs = append(subs, sub)
 	}
-	if err := r.initVolumeDirs(ctx, vol, subs); err != nil {
+	if err := r.initVolumeDirs(ctx, vol, subs, appLabels(space, app, componentInit)); err != nil {
 		return nil, err
 	}
 	return volumes, nil
@@ -390,7 +390,7 @@ func (r *Runtime) appMounts(ctx context.Context, space, app string, spec runSpec
 // initVolumeDirs creates (and opens up) the volume's folders in a one-shot
 // helper. World-writable is deliberate: like the Kubernetes fsGroup, it is
 // what lets an image running as any user write to its own disk.
-func (r *Runtime) initVolumeDirs(ctx context.Context, vol string, subs []string) error {
+func (r *Runtime) initVolumeDirs(ctx context.Context, vol string, subs []string, labels map[string]string) error {
 	if err := r.pullImage(ctx, filesImage); err != nil {
 		return err
 	}
@@ -402,18 +402,19 @@ func (r *Runtime) initVolumeDirs(ctx context.Context, vol string, subs []string)
 	joined := strings.Join(paths, " ")
 	args[2] = "mkdir -p " + joined + " && chmod 777 " + joined
 	name := vol + ".init"
-	if err := r.removeContainer(ctx, name); err != nil {
+	if err := r.removeOwnedContainer(ctx, name, labels); err != nil {
 		return err
 	}
 	if _, err := r.cli.ContainerCreate(ctx, &container.Config{
 		Image:      filesImage,
 		Entrypoint: args,
+		Labels:     labels,
 	}, &container.HostConfig{
 		Mounts: []mount.Mount{{Type: mount.TypeVolume, Source: vol, Target: filesMount}},
 	}, nil, nil, name); err != nil {
 		return err
 	}
-	defer func() { _ = r.removeContainer(context.WithoutCancel(ctx), name) }()
+	defer func() { _ = r.removeOwnedContainer(context.WithoutCancel(ctx), name, labels) }()
 	if err := r.cli.ContainerStart(ctx, name, container.StartOptions{}); err != nil {
 		return err
 	}
@@ -477,7 +478,7 @@ func (r *Runtime) replaceContainer(ctx context.Context, name string, cfg runConf
 	if err := r.pullImage(ctx, cfg.Image); err != nil {
 		return err
 	}
-	if err := r.removeContainer(ctx, name); err != nil {
+	if err := r.removeOwnedContainer(ctx, name, cfg.Labels); err != nil {
 		return err
 	}
 
@@ -566,14 +567,18 @@ func (r *Runtime) Render(spec rt.DeploySpec) (string, error) {
 func (r *Runtime) Destroy(ctx context.Context, space, app string, keepData bool) error {
 	for _, name := range []string{
 		ctrName(space, app),
-		ctrName(space, app) + ".files",
+		filesHelperName(space, app),
 	} {
-		if err := r.removeContainer(ctx, name); err != nil {
+		component := componentWeb
+		if name == filesHelperName(space, app) {
+			component = componentFiles
+		}
+		if err := r.removeOwnedContainer(ctx, name, appLabels(space, app, component)); err != nil {
 			return err
 		}
 	}
 	if !keepData {
-		if err := r.cli.VolumeRemove(ctx, volName(space, app), false); err != nil && !cerrdefs.IsNotFound(err) {
+		if err := r.removeOwnedVolume(ctx, volName(space, app), appLabels(space, app, componentStorage)); err != nil {
 			return err
 		}
 	}

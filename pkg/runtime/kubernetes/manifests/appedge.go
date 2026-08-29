@@ -40,11 +40,9 @@ func AppGatewayObjects(in Input) []runtime.Object {
 	}
 
 	name := AppEdgeName(in.Name())
-	edgeLabels := Labels(in.Space, in.Name(), "edge")
-	// cert-manager copies secretTemplate labels to the generated TLS Secret;
-	// include the installation stamp because Client.stampInstance only sees
-	// the Certificate's top-level metadata.
-	edgeLabels[LabelInstance] = in.AppGateway.Namespace
+	edgeLabels := Labels(in.Space, in.App.Name, ComponentEdge)
+	// cert-manager copies secretTemplate labels to the generated TLS Secret.
+	// The apply/render boundary adds the installation label to both maps.
 	labels := toAnyMap(edgeLabels)
 	issuerKind := in.AppGateway.IssuerKind
 	if issuerKind == "" {

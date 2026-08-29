@@ -242,7 +242,7 @@ func (in SystemInput) serverConfigHash() string {
 
 func (in SystemInput) hashedTemplateMeta(name, hash string) metav1.ObjectMeta {
 	return metav1.ObjectMeta{
-		Labels:      systemLabels(name),
+		Labels:      SystemLabels(name),
 		Annotations: map[string]string{"donkey.dev/config-hash": hash},
 	}
 }
@@ -269,21 +269,12 @@ func systemSecurityContext() *corev1.SecurityContext {
 	}
 }
 
-func systemLabels(name string) map[string]string {
-	return map[string]string{
-		"app.kubernetes.io/name":       name,
-		"app.kubernetes.io/managed-by": ManagedByValue,
-		LabelApp:                       "donkey-system",
-		LabelComponent:                 name,
-	}
-}
-
 func systemNamespace(in SystemInput) *corev1.Namespace {
 	return &corev1.Namespace{
 		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Namespace"},
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        in.Namespace,
-			Labels:      systemLabels("donkey-system"),
+			Labels:      SystemLabels("donkey-system"),
 			Annotations: map[string]string{AnnotationManaged: "true"},
 		},
 	}
@@ -292,14 +283,14 @@ func systemNamespace(in SystemInput) *corev1.Namespace {
 func serverServiceAccount(in SystemInput) *corev1.ServiceAccount {
 	return &corev1.ServiceAccount{
 		TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "ServiceAccount"},
-		ObjectMeta: metav1.ObjectMeta{Name: ServerName, Namespace: in.Namespace, Labels: systemLabels(ServerName)},
+		ObjectMeta: metav1.ObjectMeta{Name: ServerName, Namespace: in.Namespace, Labels: SystemLabels(ServerName)},
 	}
 }
 
 func systemSecret(in SystemInput) *corev1.Secret {
 	return &corev1.Secret{
 		TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "Secret"},
-		ObjectMeta: metav1.ObjectMeta{Name: SystemConfigSecretName, Namespace: in.Namespace, Labels: systemLabels(ServerName)},
+		ObjectMeta: metav1.ObjectMeta{Name: SystemConfigSecretName, Namespace: in.Namespace, Labels: SystemLabels(ServerName)},
 		StringData: map[string]string{
 			"registry-password":  in.RegistryPassword,
 			"openai-api-key":     in.OpenAIAPIKey,
@@ -322,7 +313,7 @@ func systemSecret(in SystemInput) *corev1.Secret {
 func systemRegistryPullSecret(in SystemInput) *corev1.Secret {
 	return RegistryPullSecret(
 		SystemRegistrySecretName, in.Namespace,
-		systemLabels(ComponentRegistryAuth),
+		SystemLabels(ComponentRegistryAuth),
 		registryHostOf(in.RegistryURL), in.RegistryUsername, in.RegistryPassword,
 	)
 }
@@ -343,7 +334,7 @@ func hasSystemRegistryCredentials(in SystemInput) bool {
 const registryCAPath = "/etc/donkey/registry-ca"
 
 func serverDeployment(in SystemInput) *appsv1.Deployment {
-	labels := systemLabels(ServerName)
+	labels := SystemLabels(ServerName)
 	replicas := int32(1)
 	secretEnv := func(name, key string) corev1.EnvVar {
 		return corev1.EnvVar{Name: name, ValueFrom: &corev1.EnvVarSource{
@@ -454,7 +445,7 @@ func serverDeployment(in SystemInput) *appsv1.Deployment {
 		ObjectMeta: metav1.ObjectMeta{Name: ServerName, Namespace: in.Namespace, Labels: labels},
 		Spec: appsv1.DeploymentSpec{
 			Replicas: &replicas,
-			Selector: &metav1.LabelSelector{MatchLabels: labels},
+			Selector: &metav1.LabelSelector{MatchLabels: SystemSelector(ServerName)},
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: in.hashedTemplateMeta(ServerName, in.serverConfigHash()),
 				Spec:       spec,
@@ -518,10 +509,10 @@ func registryCAFile(in SystemInput) string {
 func systemService(in SystemInput, name string, port, targetPort int32) *corev1.Service {
 	return &corev1.Service{
 		TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "Service"},
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: in.Namespace, Labels: systemLabels(name)},
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: in.Namespace, Labels: SystemLabels(name)},
 		Spec: corev1.ServiceSpec{
 			Type:     corev1.ServiceTypeClusterIP,
-			Selector: systemLabels(name),
+			Selector: SystemSelector(name),
 			Ports:    []corev1.ServicePort{{Name: "http", Port: port, TargetPort: intstr.FromInt32(targetPort)}},
 		},
 	}
@@ -557,5 +548,5 @@ func consoleRoute(in SystemInput) *corev1.ConfigMap {
 	if a := adminsJSON(in); a != "" {
 		ann[AnnotationAccess] = a
 	}
-	return routeConfigMap(ServerName, in.Namespace, systemLabels(ServerName), ann)
+	return routeConfigMap(ServerName, in.Namespace, SystemLabels(ServerName), ann)
 }

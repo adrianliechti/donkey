@@ -247,11 +247,6 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, fmt.Errorf("%q is not a part of this app — use web, or addon-<service>", component))
 		return
 	}
-	// A space's services belong to the pseudo-app "shared", whatever app the
-	// caller came through — their pods carry that owner label, not the app's.
-	if strings.HasPrefix(component, "addon-") {
-		app = addons.SharedOwner
-	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	err = s.rt.Logs(r.Context(), space, app, runtime.LogOptions{

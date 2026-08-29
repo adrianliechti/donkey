@@ -605,10 +605,7 @@ CMD ["httpd", "-f", "-p", "8080", "-h", "/site"]
 
 	t.Run("remove-space", func(t *testing.T) {
 		// The space still holds its postgres (and its data) — removing the
-		// space takes them along.
-		if err := s.api.RemoveSpaceAddon(ctx, space, "postgres", false); err != nil {
-			t.Log(err) // the addon subtest may have been skipped
-		}
+		// space must take them along without a separate addon removal.
 		deadline := time.Now().Add(2 * time.Minute)
 		for {
 			var out struct {

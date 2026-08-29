@@ -2,22 +2,29 @@ package kubernetes
 
 import (
 	"context"
+	"strings"
 	"testing"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
 
 	"github.com/adrianliechti/donkey/pkg/runtime/kubernetes/manifests"
 )
 
-func nsWith(name string, managed bool, instance string) *corev1.Namespace {
+func nsWith(name string, managed bool, installation string) *corev1.Namespace {
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: name}}
 	if managed {
 		ns.Annotations = map[string]string{manifests.AnnotationManaged: "true"}
+		ns.Labels = manifests.SpaceLabels(strings.TrimPrefix(name, "donkey-"))
 	}
-	if instance != "" {
-		ns.Labels = map[string]string{manifests.LabelInstance: instance}
+	if installation != "" {
+		if ns.Labels == nil {
+			ns.Labels = map[string]string{}
+		}
+		ns.Labels[manifests.LabelInstallation] = installation
 	}
 	return ns
 }
@@ -28,11 +35,11 @@ func nsWith(name string, managed bool, instance string) *corev1.Namespace {
 // its labels and makes it deletable from here.
 func TestCheckNamespaceFreeAcrossInstallations(t *testing.T) {
 	cases := []struct {
-		name     string
-		ns       *corev1.Namespace // nil: doesn't exist
-		check    string            // the namespace the space maps onto
-		instance string            // "" is the default installation
-		wantFree bool
+		name         string
+		ns           *corev1.Namespace // nil: doesn't exist
+		check        string            // the namespace the space maps onto
+		installation string            // "" is the default installation
+		wantFree     bool
 	}{
 		{"missing is free", nil, "donkey-x", "", true},
 		{"own space namespace", nsWith("donkey-x", true, "donkey-system"), "donkey-x", "", true},
@@ -51,7 +58,11 @@ func TestCheckNamespaceFreeAcrossInstallations(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			err := (&Client{Clientset: cs}).ForInstance(tc.instance).CheckNamespaceFree(context.Background(), tc.check)
+			space := "x"
+			if tc.check == "donkey-system" {
+				space = "system"
+			}
+			err := (&Client{Clientset: cs}).WithInstallation(tc.installation).CheckNamespaceFree(context.Background(), tc.check, space)
 			if free := err == nil; free != tc.wantFree {
 				t.Fatalf("free = %v (%v), want %v", free, err, tc.wantFree)
 			}
@@ -67,11 +78,28 @@ func TestDeleteSpaceRefusesForeignNamespace(t *testing.T) {
 		nsWith("donkey-x", true, "bank-donkey-system"), metav1.CreateOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	c := (&Client{Clientset: cs}).ForInstance("")
-	if err := c.DeleteSpace(context.Background(), "donkey-x"); err == nil {
+	c := (&Client{Clientset: cs}).WithInstallation("")
+	if err := c.DeleteSpace(context.Background(), "donkey-x", "x"); err == nil {
 		t.Fatal("another installation's namespace was deleted")
 	}
 	if _, err := cs.CoreV1().Namespaces().Get(context.Background(), "donkey-x", metav1.GetOptions{}); err != nil {
 		t.Fatalf("the namespace should still be there: %v", err)
+	}
+}
+
+func TestDeleteSpaceDeletesOwnedNamespaceEvenWhenItContainsApps(t *testing.T) {
+	ctx := context.Background()
+	cs := fake.NewClientset(nsWith("donkey-team", true, "donkey-system"))
+	if _, err := cs.AppsV1().Deployments("donkey-team").Create(ctx, &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: "site"},
+	}, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	client := (&Client{Clientset: cs}).WithInstallation("")
+	if err := client.DeleteSpace(ctx, "donkey-team", "team"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cs.CoreV1().Namespaces().Get(ctx, "donkey-team", metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("owned space namespace remains after cascade request: %v", err)
 	}
 }

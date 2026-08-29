@@ -2,14 +2,21 @@ package telemetry
 
 import (
 	"context"
+	"io"
 	"math"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
 
 	collectormetricspb "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
 	metricspb "go.opentelemetry.io/proto/otlp/metrics/v1"
+	"google.golang.org/protobuf/proto"
 )
+
+type resourceRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f resourceRoundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
 func TestResourceMetricsUseOnlyOfficialContainerConventions(t *testing.T) {
 	at := time.Date(2026, 8, 28, 12, 34, 56, 0, time.UTC)
@@ -72,6 +79,40 @@ func TestResourceMetricsUseOnlyOfficialContainerConventions(t *testing.T) {
 		if strings.HasPrefix(metric.Name, "donkey.") {
 			t.Errorf("custom metric leaked into OTLP: %s", metric.Name)
 		}
+	}
+}
+
+func TestResourceExporterDoesNotDropValidPodsBesideInvalidSample(t *testing.T) {
+	var exported collectormetricspb.ExportMetricsServiceRequest
+	exporter := NewResourceExporter("http://telemetry.test", make([]byte, 32))
+	exporter.http = &http.Client{Transport: resourceRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		body, err := io.ReadAll(request.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := proto.Unmarshal(body, &exported); err != nil {
+			t.Fatal(err)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK, Status: "200 OK",
+			Body: io.NopCloser(strings.NewReader("")), Header: make(http.Header),
+		}, nil
+	})}
+
+	err := exporter.Export(context.Background(), []ResourceObservation{
+		{Space: "not valid", App: "site", Instance: "bad", CPUCores: 0.1, MemoryBytes: 1},
+		{Space: "team", App: "site", Instance: "pod-uid", CPUCores: 0.25, MemoryBytes: 64},
+	})
+	if err == nil || !strings.Contains(err.Error(), "invalid resource telemetry scope") {
+		t.Fatalf("invalid observation should be reported after exporting its valid peer: %v", err)
+	}
+	if len(exported.ResourceMetrics) != 1 {
+		t.Fatalf("exported %d resource records, want the one valid pod", len(exported.ResourceMetrics))
+	}
+	resources := resourceMap(exported.ResourceMetrics[0].Resource)
+	if resources["service.namespace"] != "team" || resources["service.name"] != "site" ||
+		resources["service.instance.id"] != "pod-uid" {
+		t.Fatalf("exported scope=%v", resources)
 	}
 }
 

@@ -28,6 +28,7 @@ func (r *Runtime) ResourceSamples(ctx context.Context) ([]rt.ResourceSample, err
 	containers, err := r.cli.ContainerList(ctx, container.ListOptions{
 		Filters: filters.NewArgs(
 			filters.Arg("label", labelManaged+"=true"),
+			filters.Arg("label", labelInstallation+"="+dockerInstallation),
 			filters.Arg("label", labelComponent+"="+componentWeb),
 		),
 	})

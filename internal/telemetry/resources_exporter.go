@@ -51,12 +51,17 @@ func (e *ResourceExporter) Export(ctx context.Context, observations []ResourceOb
 	request := &collectormetricspb.ExportMetricsServiceRequest{
 		ResourceMetrics: make([]*metricspb.ResourceMetrics, 0, len(observations)),
 	}
+	var invalid []error
 	for _, observation := range observations {
 		metrics, err := resourceMetrics(observation)
 		if err != nil {
-			return err
+			invalid = append(invalid, err)
+			continue
 		}
 		request.ResourceMetrics = append(request.ResourceMetrics, metrics)
+	}
+	if len(request.ResourceMetrics) == 0 {
+		return errors.Join(invalid...)
 	}
 	body, err := proto.Marshal(request)
 	if err != nil {
@@ -70,13 +75,13 @@ func (e *ResourceExporter) Export(ctx context.Context, observations []ResourceOb
 	req.Header.Set(TelemetryTokenHeader, e.token)
 	response, err := e.http.Do(req)
 	if err != nil {
-		return err
+		return errors.Join(append(invalid, err)...)
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return fmt.Errorf("telemetry OTLP endpoint returned %s", response.Status)
+		invalid = append(invalid, fmt.Errorf("telemetry OTLP endpoint returned %s", response.Status))
 	}
-	return nil
+	return errors.Join(invalid...)
 }
 
 func resourceMetrics(observation ResourceObservation) (*metricspb.ResourceMetrics, error) {

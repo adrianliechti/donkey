@@ -53,27 +53,42 @@ func filesHelperName(space, app string) string { return ctrName(space, app) + ".
 // filesHelper returns a running helper container for the app's disk,
 // starting one if needed.
 func (r *Runtime) filesHelper(ctx context.Context, space, app string) (string, error) {
-	if _, err := r.cli.VolumeInspect(ctx, volName(space, app)); err != nil {
+	volume, err := r.cli.VolumeInspect(ctx, volName(space, app))
+	if err != nil {
 		// Tell the two "nothing to browse" cases apart.
 		if _, cerr := r.cli.ContainerInspect(ctx, ctrName(space, app)); cerrdefs.IsNotFound(cerr) {
 			return "", rt.ErrNotDeployed
 		}
+		if !cerrdefs.IsNotFound(err) {
+			return "", err
+		}
 		return "", rt.ErrNoDisk
+	}
+	if err := requireIdentity("volume", volName(space, app), volume.Labels,
+		appLabels(space, app, componentStorage)); err != nil {
+		return "", err
 	}
 	name := filesHelperName(space, app)
 	info, err := r.cli.ContainerInspect(ctx, name)
 	if err == nil && info.State != nil && info.State.Running {
+		if info.Config == nil {
+			return "", fmt.Errorf("the Docker container %s has no inspectable configuration", name)
+		}
+		if err := requireIdentity("container", name, info.Config.Labels,
+			appLabels(space, app, componentFiles)); err != nil {
+			return "", err
+		}
 		return name, nil
 	}
 	if err == nil {
-		if err := r.removeContainer(ctx, name); err != nil {
+		if err := r.removeOwnedContainer(ctx, name, appLabels(space, app, componentFiles)); err != nil {
 			return "", err
 		}
 	}
 	if err := r.pullImage(ctx, filesImage); err != nil {
 		return "", err
 	}
-	labels := appLabels(space, app, "files")
+	labels := appLabels(space, app, componentFiles)
 	_, err = r.cli.ContainerCreate(ctx, &container.Config{
 		Image: filesImage,
 		// The helper stops by itself: browsing files once must not leave a

@@ -5,12 +5,14 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
 	"sigs.k8s.io/yaml"
 
 	"github.com/adrianliechti/donkey/internal/config"
+	runtimedocker "github.com/adrianliechti/donkey/pkg/runtime/docker"
 )
 
 func TestServerInitPrintsConciseRuntimeTemplates(t *testing.T) {
@@ -104,7 +106,7 @@ func TestKubernetesRenderOmitsEverySecretValue(t *testing.T) {
 	if strings.Contains(manifest, "kind: Secret") {
 		t.Fatal("Kubernetes bundle contains a Secret object")
 	}
-	if !strings.Contains(manifest, "donkey.dev/instance: donkey-system") {
+	if !strings.Contains(manifest, "donkey.dev/installation: donkey-system") {
 		t.Fatal("rendered objects do not carry the installation identity")
 	}
 	if !strings.Contains(manifest, "name: donkey-system-registry") {
@@ -161,6 +163,24 @@ func TestDockerRenderMatchesRuntimeTopologyWithoutSecrets(t *testing.T) {
 	var parsed map[string]any
 	if err := yaml.Unmarshal([]byte(compose), &parsed); err != nil {
 		t.Fatalf("compose.yaml is not YAML: %v", err)
+	}
+	var typed composeFile
+	if err := yaml.Unmarshal([]byte(compose), &typed); err != nil {
+		t.Fatalf("compose.yaml does not match the renderer schema: %v", err)
+	}
+	for component, service := range typed.Services {
+		if got := service.Labels; !reflect.DeepEqual(got, runtimedocker.SystemLabels(component)) {
+			t.Errorf("Compose service %s labels=%v", component, got)
+		}
+	}
+	if got := typed.Networks["donkey"].Labels; !reflect.DeepEqual(got, runtimedocker.SystemLabels("network")) {
+		t.Errorf("Compose network labels=%v", got)
+	}
+	for name, volume := range typed.Volumes {
+		if volume.Labels["dev.donkey.managed"] != "true" ||
+			volume.Labels["dev.donkey.installation"] != "donkey" || volume.Labels["dev.donkey.component"] == "" {
+			t.Errorf("Compose volume %s labels=%v", name, volume.Labels)
+		}
 	}
 }
 

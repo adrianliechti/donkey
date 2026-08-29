@@ -22,7 +22,7 @@ type Options struct {
 	// called: a namespace per space, or one namespace for the installation.
 	Placement manifests.Placement
 	// SystemNamespace is where the control plane lives. It is also this
-	// installation's identity — see manifests.LabelInstance.
+	// installation's identity — see manifests.LabelInstallation.
 	SystemNamespace string
 	// Domain serves apps as <app>.<space>.<domain>.
 	Domain string
@@ -74,10 +74,8 @@ func (r *Runtime) ns(space string) string { return r.opts.Placement.Namespace(sp
 // where the whole installation shares one — a namespace holds one Service
 // called "api" and no more.
 //
-// Object names and label values are qualified together, on purpose: every
-// selector donkey already writes (and every destructive DeleteCollection
-// among them) then addresses one space's objects without a single call site
-// having to remember to narrow it.
+// Labels stay logical; selectors include the space explicitly. Qualification
+// belongs only to object names.
 func (r *Runtime) name(space, name string) string { return r.opts.Placement.Name(space, name) }
 
 // unname is the inverse — what to show a person, and what they typed.
@@ -85,7 +83,8 @@ func (r *Runtime) unname(space, objectName string) string {
 	return r.opts.Placement.Unname(space, objectName)
 }
 
-// sharedOwner is the pseudo-app a space's shared services belong to.
+// sharedOwner qualifies the canonical binding Secret's object name. It is
+// object-name plumbing only; service labels use their logical addon identity.
 func (r *Runtime) sharedOwner(space string) string {
 	return r.name(space, addons.SharedOwner)
 }
@@ -131,7 +130,7 @@ func (r *Runtime) CheckSpaceFree(ctx context.Context, space string) error {
 	if r.opts.Placement.Shared() {
 		return nil
 	}
-	return r.c.CheckNamespaceFree(ctx, r.ns(space))
+	return r.c.CheckNamespaceFree(ctx, r.ns(space), space)
 }
 
 func (r *Runtime) ListSpaces(ctx context.Context) ([]string, error) {
@@ -172,10 +171,15 @@ func (r *Runtime) DeleteSpace(ctx context.Context, space string) error {
 	if err := r.ValidateSpace(space); err != nil {
 		return err
 	}
+	// Traffic and cross-namespace certificate objects go first, so a partial
+	// deletion never leaves a live edge pointing at a disappearing workload.
+	if err := r.c.DeleteSpaceEdges(ctx, r.opts.SystemNamespace, space); err != nil {
+		return fmt.Errorf("removing the space edge: %w", err)
+	}
 	if r.opts.Placement.Shared() {
 		return r.c.DeleteSpaceObjects(ctx, r.ns(space), space)
 	}
-	return r.c.DeleteSpace(ctx, r.ns(space))
+	return r.c.DeleteSpace(ctx, r.ns(space), space)
 }
 
 // --- Apps -----------------------------------------------------------------
@@ -191,7 +195,7 @@ func (r *Runtime) ListApps(ctx context.Context) ([]rt.AppRef, error) {
 		if space == "" {
 			space = r.opts.Placement.SpaceOf(ref.Namespace)
 		}
-		out = append(out, rt.AppRef{Space: space, App: r.unname(space, ref.App)})
+		out = append(out, rt.AppRef{Space: space, App: ref.App})
 	}
 	return out, nil
 }
@@ -209,7 +213,7 @@ func (r *Runtime) Restart(ctx context.Context, space, app string) (bool, error) 
 }
 
 func (r *Runtime) Logs(ctx context.Context, space, app string, opts rt.LogOptions, out io.Writer) error {
-	return r.c.StreamLogs(ctx, r.ns(space), r.name(space, app), opts, out)
+	return r.c.StreamLogs(ctx, r.ns(space), space, app, opts, out)
 }
 
 func (r *Runtime) Evidence(ctx context.Context, space, app string) rt.Evidence {
@@ -229,7 +233,7 @@ func (r *Runtime) SetEnv(ctx context.Context, space, app string, env map[string]
 	if err := r.ValidateApp(space, app); err != nil {
 		return rt.UserError{Err: err}
 	}
-	return r.c.SetEnv(ctx, r.ns(space), space, r.name(space, app), env)
+	return r.c.SetEnv(ctx, r.ns(space), space, app, r.name(space, app), env)
 }
 
 // --- App metadata ---------------------------------------------------------

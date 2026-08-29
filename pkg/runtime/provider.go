@@ -28,8 +28,8 @@ type Provider interface {
 	CheckSpaceFree(ctx context.Context, space string) error
 	ListSpaces(ctx context.Context) ([]string, error)
 	CreateSpace(ctx context.Context, space string) error
-	// DeleteSpace removes an app-less space with its services and their data;
-	// it refuses one that still holds apps.
+	// DeleteSpace removes the complete space boundary: apps, services,
+	// bindings, routes, runtime state, and data.
 	DeleteSpace(ctx context.Context, space string) error
 
 	// --- Apps -------------------------------------------------------------
@@ -52,8 +52,8 @@ type Provider interface {
 	// Render is what Deploy would create, as text, without touching the
 	// runtime. Credentials are left out: this lands in CI logs.
 	Render(spec DeploySpec) (string, error)
-	// Destroy removes the app and everything donkey created for it; keepData
-	// spares the disk (and the data of services only this app used).
+	// Destroy removes only the app and everything app-owned; keepData spares
+	// its disk. Space services have their own lifecycle.
 	Destroy(ctx context.Context, space, app string, keepData bool) error
 
 	// --- Env --------------------------------------------------------------
@@ -311,6 +311,9 @@ type Check struct {
 }
 
 // App metadata keys, stored with the deployed app and surviving deploys.
+// On Kubernetes they are Deployment annotations (the manifests package spells
+// MetaConsole and MetaDecisions as AnnotationConsole/AnnotationDecisions —
+// keep them equal); on Docker they are entries in the app's meta file.
 const (
 	// MetaConsole is written by the console endpoints only — a deploy must
 	// never wipe it.

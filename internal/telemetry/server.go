@@ -142,6 +142,7 @@ func (s *Service) apiHandler() http.Handler {
 	mux.HandleFunc("GET /readyz", s.health)
 	mux.HandleFunc("GET /v1/traffic", s.requireQueryToken(s.handleTraffic))
 	mux.HandleFunc("GET /v1/resources", s.requireQueryToken(s.handleResources))
+	mux.HandleFunc("DELETE /v1/spaces/{space}", s.requireQueryToken(s.handleDeleteSpace))
 	return mux
 }
 
@@ -308,6 +309,14 @@ func (s *Service) handleResources(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeServiceJSON(w, http.StatusOK, report)
+}
+
+func (s *Service) handleDeleteSpace(w http.ResponseWriter, r *http.Request) {
+	if err := s.store.PurgeSpace(r.Context(), r.PathValue("space")); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	writeServiceJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 func writeServiceJSON(w http.ResponseWriter, status int, value any) {

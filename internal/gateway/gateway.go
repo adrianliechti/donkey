@@ -469,8 +469,8 @@ func routeFromConfigMap(cm corev1.ConfigMap) (route, bool) {
 		return route{}, false
 	}
 	r := route{
-		Space:   ann[manifests.AnnotationSpaceName],
-		App:     ann[manifests.AnnotationAppName],
+		Space:   cm.Labels[manifests.LabelSpace],
+		App:     cm.Labels[manifests.LabelApp],
 		Host:    ann[manifests.AnnotationHost],
 		Path:    "/",
 		Backend: target,

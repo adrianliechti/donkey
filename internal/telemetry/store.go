@@ -104,6 +104,9 @@ CREATE INDEX IF NOT EXISTS http_rollups_scope_time
 
 CREATE TABLE IF NOT EXISTS metric_stream_state (
   stream_key TEXT PRIMARY KEY,
+  source TEXT NOT NULL,
+  space TEXT NOT NULL,
+  app TEXT NOT NULL,
   temporality INTEGER NOT NULL,
   start_nano BIGINT NOT NULL,
   time_nano BIGINT NOT NULL,
@@ -186,7 +189,48 @@ CREATE INDEX IF NOT EXISTS view_visitors_space_time
 	if _, err := s.db.ExecContext(ctx, schema); err != nil {
 		return fmt.Errorf("creating telemetry schema: %w", err)
 	}
+	// Early telemetry databases did not retain stream scope. Add it in place,
+	// then discard only those opaque baselines; rollups remain intact.
+	for _, q := range []string{
+		"ALTER TABLE metric_stream_state ADD COLUMN IF NOT EXISTS source TEXT DEFAULT ''",
+		"ALTER TABLE metric_stream_state ADD COLUMN IF NOT EXISTS space TEXT DEFAULT ''",
+		"ALTER TABLE metric_stream_state ADD COLUMN IF NOT EXISTS app TEXT DEFAULT ''",
+		"DELETE FROM metric_stream_state WHERE source = '' OR space = '' OR app = ''",
+		"CREATE INDEX IF NOT EXISTS metric_stream_state_scope ON metric_stream_state (space, app)",
+	} {
+		if _, err := s.db.ExecContext(ctx, q); err != nil {
+			return fmt.Errorf("updating telemetry stream scope: %w", err)
+		}
+	}
 	return nil
+}
+
+// PurgeSpace atomically removes every retained metric and normalization
+// baseline for a logical space. Reusing its name then starts with clean
+// reports rather than mixing a new application with up to 30 days of history.
+func (s *Store) PurgeSpace(ctx context.Context, space string) error {
+	if !config.ValidName(space) {
+		return fmt.Errorf("invalid telemetry space %q", space)
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, q := range []string{
+		"DELETE FROM http_rollups WHERE space = ?",
+		"DELETE FROM metric_stream_state WHERE space = ?",
+		"DELETE FROM resource_rollups WHERE space = ?",
+		"DELETE FROM resource_recent_rollups WHERE space = ?",
+		"DELETE FROM resource_sample_state WHERE space = ?",
+		"DELETE FROM view_rollups WHERE space = ?",
+		"DELETE FROM view_visitors WHERE space = ?",
+	} {
+		if _, err := tx.ExecContext(ctx, q, space); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (s *Store) Cleanup(ctx context.Context, now time.Time) error {
@@ -351,7 +395,7 @@ func (s *Store) ingestHTTPPoint(
 	}
 	streamKey := metricStreamKey(source, space, app, method, status, resources, attrs)
 	deltaCount, deltaSum, deltaBuckets, keep, err := normalizeTemporality(
-		ctx, tx, streamKey, histogram.AggregationTemporality,
+		ctx, tx, streamKey, source, space, app, histogram.AggregationTemporality,
 		point.StartTimeUnixNano, point.TimeUnixNano, count, sum, buckets, now.Unix(),
 	)
 	if err != nil || !keep {
@@ -445,7 +489,7 @@ type streamState struct {
 func normalizeTemporality(
 	ctx context.Context,
 	tx *sql.Tx,
-	key string,
+	key, source, space, app string,
 	temporality metricspb.AggregationTemporality,
 	start, end, count uint64,
 	sum float64,
@@ -466,7 +510,7 @@ func normalizeTemporality(
 		// monotonic for one writer, so this makes the retry idempotent.
 		return 0, 0, [httpDurationBucketCount]uint64{}, true, nil
 	}
-	if err := writeStreamState(ctx, tx, key, temporality, current, seen); err != nil {
+	if err := writeStreamState(ctx, tx, key, source, space, app, temporality, current, seen); err != nil {
 		return 0, 0, [httpDurationBucketCount]uint64{}, false, err
 	}
 	if temporality == metricspb.AggregationTemporality_AGGREGATION_TEMPORALITY_DELTA {
@@ -509,13 +553,14 @@ func readStreamState(ctx context.Context, tx *sql.Tx, key string) (streamState, 
 	return state, true, nil
 }
 
-func writeStreamState(ctx context.Context, tx *sql.Tx, key string, temporality metricspb.AggregationTemporality, state streamState, seen int64) error {
+func writeStreamState(ctx context.Context, tx *sql.Tx, key, source, space, app string, temporality metricspb.AggregationTemporality, state streamState, seen int64) error {
 	if state.start > math.MaxInt64 || state.time > math.MaxInt64 || state.count > math.MaxInt64 {
 		return errors.New("metric stream value exceeds DuckDB BIGINT range")
 	}
-	columns := "stream_key, temporality, start_nano, time_nano, request_count, duration_sum, " + bucketColumns(false) + ", last_seen"
-	placeholders := strings.TrimSuffix(strings.Repeat("?,", 6+httpDurationBucketCount+1), ",")
+	columns := "stream_key, source, space, app, temporality, start_nano, time_nano, request_count, duration_sum, " + bucketColumns(false) + ", last_seen"
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", 9+httpDurationBucketCount+1), ",")
 	updates := []string{
+		"source=excluded.source", "space=excluded.space", "app=excluded.app",
 		"temporality=excluded.temporality", "start_nano=excluded.start_nano", "time_nano=excluded.time_nano",
 		"request_count=excluded.request_count", "duration_sum=excluded.duration_sum", "last_seen=excluded.last_seen",
 	}
@@ -524,7 +569,7 @@ func writeStreamState(ctx context.Context, tx *sql.Tx, key string, temporality m
 	}
 	q := "INSERT INTO metric_stream_state (" + columns + ") VALUES (" + placeholders + ") " +
 		"ON CONFLICT(stream_key) DO UPDATE SET " + strings.Join(updates, ",")
-	args := []any{key, int(temporality), int64(state.start), int64(state.time), int64(state.count), state.sum}
+	args := []any{key, source, space, app, int(temporality), int64(state.start), int64(state.time), int64(state.count), state.sum}
 	for _, n := range state.buckets {
 		if n > math.MaxInt64 {
 			return errors.New("metric bucket exceeds DuckDB BIGINT range")

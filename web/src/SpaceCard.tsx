@@ -24,22 +24,19 @@ import { Button, ErrorNote, ExposureBadge, StatusDot, ago, errText, healthLine, 
 export function SpaceCard({
   space,
   apps,
-  onRemove,
   onChanged,
 }: {
   space: string
   apps: AppSummary[]
-  onRemove: (r: { space: string; apps: string[]; siblings: string[] }) => void
-  // The fleet's refresh — an empty space removing itself has no other way
-  // to disappear from the overview.
   onChanged: () => void
 }) {
   const [adding, setAdding] = useState(false)
   const [deletingSpace, setDeletingSpace] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const [typedSpace, setTypedSpace] = useState('')
 
-  const { data: services } = useSpaceServices(space)
+  const { data: services, error: servicesError } = useSpaceServices(space)
   const invalidate = useInvalidateServices()
 
   async function add(req: AddAddonRequest) {
@@ -85,25 +82,13 @@ export function SpaceCard({
           </button>
           <button
             type="button"
-            title={
-              apps.length === 0
-                ? `Remove the space ${space}`
-                : apps.length > 1
-                  ? `Remove all ${apps.length} apps in ${space}`
-                  : `Remove ${apps[0]?.name ?? space}`
-            }
-            aria-label={
-              apps.length === 0
-                ? `Remove the space ${space}`
-                : apps.length > 1
-                  ? `Remove all ${apps.length} apps in ${space}`
-                  : `Remove ${apps[0]?.name ?? space}`
-            }
-            onClick={() =>
-              apps.length === 0
-                ? setDeletingSpace(true)
-                : onRemove({ space, apps: apps.map((a) => a.name), siblings: [] })
-            }
+            title={`Remove the space ${space} and everything in it`}
+            aria-label={`Remove the space ${space} and everything in it`}
+            onClick={() => {
+              setError('')
+              setTypedSpace('')
+              setDeletingSpace(true)
+            }}
             className="rounded-md p-1.5 text-stone hover:bg-brick/10 hover:text-brick focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-hay-deep"
           >
             <Trash2 className="size-4" aria-hidden />
@@ -128,7 +113,16 @@ export function SpaceCard({
       </div>
 
       {deletingSpace && (
-        <Dialog open onClose={() => !busy && setDeletingSpace(false)} className="relative z-50">
+        <Dialog
+          open
+          onClose={() => {
+            if (!busy) {
+              setDeletingSpace(false)
+              setTypedSpace('')
+            }
+          }}
+          className="relative z-50"
+        >
           <DialogBackdrop className="fixed inset-0 bg-black/60" />
           <div className="fixed inset-0 flex items-start justify-center p-4 pt-[18vh]">
             <DialogPanel className="w-full max-w-md rounded-lg border border-line bg-card p-4 shadow-2xl">
@@ -137,30 +131,65 @@ export function SpaceCard({
               </DialogTitle>
               <ErrorNote message={error} />
               <div className="mt-3 space-y-2 text-sm text-ink-soft">
-                <p>It holds no apps.</p>
-                {(services ?? []).length > 0 ? (
+                <p>This permanently removes the space and every Donkey-managed resource in it.</p>
+                {apps.length > 0 ? (
                   <p className="text-brick">
-                    Its {(services ?? []).length === 1 ? 'service' : 'services'}{' '}
-                    <span className="font-mono">{(services ?? []).map((s) => s.name).join(', ')}</span>{' '}
+                    Its {apps.length === 1 ? 'app' : 'apps'}{' '}
+                    <span className="font-mono">{apps.map((app) => app.name).join(', ')}</span> will be deleted.
+                  </p>
+                ) : (
+                  <p className="text-stone">It holds no apps.</p>
+                )}
+                {services === null ? (
+                  <p className={servicesError ? 'text-brick' : 'text-stone'}>
+                    {servicesError
+                      ? 'The managed-service inventory could not be loaded. The server will still remove every owned service.'
+                      : 'Loading the managed-service inventory…'}
+                  </p>
+                ) : services.length > 0 ? (
+                  <p className="text-brick">
+                    Its {services.length === 1 ? 'service' : 'services'}{' '}
+                    <span className="font-mono">{services.map((s) => s.name).join(', ')}</span>{' '}
                     and all their data will be deleted with it.
                   </p>
                 ) : (
-                  <p className="text-stone">It holds no services either — nothing of value goes with it.</p>
+                  <p className="text-stone">It holds no managed services.</p>
                 )}
+                <p className="text-brick">
+                  All app disks and managed-service data will be deleted. This action has no keep-data option.
+                </p>
               </div>
+              <label className="mt-3 block text-sm text-ink-soft">
+                Type <span className="font-mono font-bold">{space}</span> to confirm
+                <input
+                  autoFocus
+                  value={typedSpace}
+                  onChange={(event) => setTypedSpace(event.target.value)}
+                  disabled={busy}
+                  className="mt-1 w-full rounded-md border border-line bg-canvas px-2 py-1 font-mono text-sm"
+                />
+              </label>
               <div className="mt-4 flex justify-end gap-2">
-                <Button kind="quiet" onClick={() => setDeletingSpace(false)} disabled={busy}>
+                <Button
+                  kind="quiet"
+                  onClick={() => {
+                    setDeletingSpace(false)
+                    setTypedSpace('')
+                  }}
+                  disabled={busy}
+                >
                   Cancel
                 </Button>
                 <Button
                   kind="danger"
-                  disabled={busy}
+                  disabled={busy || (services === null && !servicesError) || typedSpace.trim() !== space}
                   onClick={async () => {
                     setBusy(true)
                     setError('')
                     try {
                       await api.deleteSpace(space)
                       setDeletingSpace(false)
+                      setTypedSpace('')
                       onChanged()
                     } catch (err) {
                       setError(errText(err, 'Removing did not work.'))
@@ -195,9 +224,9 @@ export function SpaceCard({
 }
 
 /**
- * The space's services as a chip row. Removing one is the only place data
- * can go away, so that is where the confirmation lives — apps merely
- * disconnect, over on their own panel.
+ * The space's services as a chip row. Removing one has its own data-loss
+ * confirmation; removing the whole space above is the other explicit
+ * cascade. Apps merely disconnect services in their own panel.
  */
 function SpaceServices({
   space,

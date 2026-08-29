@@ -13,7 +13,6 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 
 	rt "github.com/adrianliechti/donkey/pkg/runtime"
-	"github.com/adrianliechti/donkey/pkg/runtime/kubernetes/manifests"
 )
 
 const rolloutTimeout = 5 * time.Minute
@@ -144,15 +143,6 @@ func (c *Client) rolloutError(ctx context.Context, namespace, app, reason string
 		}
 	}
 	return &rt.RolloutError{App: app, Evidence: ev, Reason: reason}
-}
-
-// appPods lists the pods of the app itself — not its addons, and not the
-// short-lived file-browser helper, which would otherwise show up in `donkey
-// status` and count towards the app's restarts.
-func (c *Client) appPods(ctx context.Context, namespace, app string) (*corev1.PodList, error) {
-	return c.Clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
-		LabelSelector: manifests.LabelApp + "=" + app + "," + manifests.LabelComponent + "=" + manifests.ComponentWeb,
-	})
 }
 
 func (c *Client) podLogs(ctx context.Context, namespace, pod string, lines int64) string {

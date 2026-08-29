@@ -27,7 +27,7 @@ func (c *Client) ListManagedRoutes(ctx context.Context) ([]corev1.ConfigMap, err
 	var out []corev1.ConfigMap
 	for _, ns := range c.sweep() {
 		list, err := c.Clientset.CoreV1().ConfigMaps(ns).List(ctx, metav1.ListOptions{
-			LabelSelector: fmt.Sprintf("%s=%s", manifests.LabelInstance, c.instance()),
+			LabelSelector: fmt.Sprintf("%s=%s", manifests.LabelInstallation, c.installation()),
 		})
 		if err != nil {
 			return nil, err
@@ -59,9 +59,9 @@ func routeState(cm *corev1.ConfigMap) rt.PathRouteState {
 	return entry
 }
 
-func (c *Client) AppNetwork(ctx context.Context, namespace, app string) (*rt.NetworkState, error) {
+func (c *Client) AppNetwork(ctx context.Context, namespace, objectName, space, app string) (*rt.NetworkState, error) {
 	st := &rt.NetworkState{}
-	cm, err := c.Clientset.CoreV1().ConfigMaps(namespace).Get(ctx, app, metav1.GetOptions{})
+	cm, err := c.Clientset.CoreV1().ConfigMaps(namespace).Get(ctx, objectName, metav1.GetOptions{})
 	switch {
 	case apierrors.IsNotFound(err):
 	case err != nil:
@@ -79,7 +79,9 @@ func (c *Client) AppNetwork(ctx context.Context, namespace, app string) (*rt.Net
 	}
 
 	routes, err := c.Clientset.CoreV1().ConfigMaps(namespace).List(ctx, metav1.ListOptions{
-		LabelSelector: manifests.LabelApp + "=" + app + "," + manifests.LabelComponent + "=" + manifests.ComponentRoute,
+		LabelSelector: fmt.Sprintf("%s=%s,%s=%s,%s=%s,%s=%s",
+			manifests.LabelInstallation, c.installation(), manifests.LabelSpace, space,
+			manifests.LabelApp, app, manifests.LabelComponent, manifests.ComponentPathRoute),
 	})
 	if err != nil {
 		return nil, err

@@ -37,7 +37,7 @@ func serverAccessObjects(in SystemInput) []runtime.Object {
 			TypeMeta: metav1.TypeMeta{APIVersion: "rbac.authorization.k8s.io/v1", Kind: "ClusterRoleBinding"},
 			ObjectMeta: metav1.ObjectMeta{
 				Name:   clusterScopedName(ServerName, in.Namespace),
-				Labels: systemLabels(ServerName),
+				Labels: SystemLabels(ServerName),
 			},
 			RoleRef:  rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "ClusterRole", Name: "cluster-admin"},
 			Subjects: []rbacv1.Subject{{Kind: "ServiceAccount", Name: ServerName, Namespace: in.Namespace}},
@@ -56,12 +56,12 @@ func serverAccessObjects(in SystemInput) []runtime.Object {
 		objs = append(objs,
 			&rbacv1.Role{
 				TypeMeta:   metav1.TypeMeta{APIVersion: "rbac.authorization.k8s.io/v1", Kind: "Role"},
-				ObjectMeta: metav1.ObjectMeta{Name: ServerName, Namespace: ns, Labels: systemLabels(ServerName)},
+				ObjectMeta: metav1.ObjectMeta{Name: ServerName, Namespace: ns, Labels: SystemLabels(ServerName)},
 				Rules:      rules,
 			},
 			&rbacv1.RoleBinding{
 				TypeMeta:   metav1.TypeMeta{APIVersion: "rbac.authorization.k8s.io/v1", Kind: "RoleBinding"},
-				ObjectMeta: metav1.ObjectMeta{Name: ServerName, Namespace: ns, Labels: systemLabels(ServerName)},
+				ObjectMeta: metav1.ObjectMeta{Name: ServerName, Namespace: ns, Labels: SystemLabels(ServerName)},
 				RoleRef:    rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "Role", Name: ServerName},
 				Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: ServerName, Namespace: in.Namespace}},
 			},
@@ -75,7 +75,9 @@ func serverAccessObjects(in SystemInput) []runtime.Object {
 // not read GatewayClasses or issuers, and it never receives rights in the
 // infrastructure namespace named by routeNamespace.
 func serverAppGatewayRoleRules() []rbacv1.PolicyRule {
-	writeNamed := []string{"get", "create", "update", "patch", "delete"}
+	// list/deletecollection are used only with the installation + space + edge
+	// selector when a whole space is removed.
+	writeNamed := []string{"get", "list", "create", "update", "patch", "delete", "deletecollection"}
 	return []rbacv1.PolicyRule{
 		{
 			APIGroups: []string{"gateway.networking.k8s.io"},
@@ -154,7 +156,7 @@ func donkeyGatewayRouteAccess(in SystemInput) []runtime.Object {
 				TypeMeta: metav1.TypeMeta{APIVersion: "rbac.authorization.k8s.io/v1", Kind: "ClusterRole"},
 				ObjectMeta: metav1.ObjectMeta{
 					Name:   clusterScopedName(GatewayAppName, in.Namespace),
-					Labels: systemLabels(GatewayAppName),
+					Labels: SystemLabels(GatewayAppName),
 				},
 				Rules: rules,
 			},
@@ -162,7 +164,7 @@ func donkeyGatewayRouteAccess(in SystemInput) []runtime.Object {
 				TypeMeta: metav1.TypeMeta{APIVersion: "rbac.authorization.k8s.io/v1", Kind: "ClusterRoleBinding"},
 				ObjectMeta: metav1.ObjectMeta{
 					Name:   clusterScopedName(GatewayAppName, in.Namespace),
-					Labels: systemLabels(GatewayAppName),
+					Labels: SystemLabels(GatewayAppName),
 				},
 				RoleRef: rbacv1.RoleRef{
 					APIGroup: "rbac.authorization.k8s.io", Kind: "ClusterRole",
@@ -178,12 +180,12 @@ func donkeyGatewayRouteAccess(in SystemInput) []runtime.Object {
 		objs = append(objs,
 			&rbacv1.Role{
 				TypeMeta:   metav1.TypeMeta{APIVersion: "rbac.authorization.k8s.io/v1", Kind: "Role"},
-				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns, Labels: systemLabels(GatewayAppName)},
+				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns, Labels: SystemLabels(GatewayAppName)},
 				Rules:      rules,
 			},
 			&rbacv1.RoleBinding{
 				TypeMeta:   metav1.TypeMeta{APIVersion: "rbac.authorization.k8s.io/v1", Kind: "RoleBinding"},
-				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns, Labels: systemLabels(GatewayAppName)},
+				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns, Labels: SystemLabels(GatewayAppName)},
 				RoleRef:    rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "Role", Name: name},
 				Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: GatewayAppName, Namespace: in.Namespace}},
 			},
@@ -198,7 +200,7 @@ func donkeyGatewayRouteAccess(in SystemInput) []runtime.Object {
 func donkeyGatewaySecretsRole(in SystemInput) *rbacv1.Role {
 	return &rbacv1.Role{
 		TypeMeta:   metav1.TypeMeta{APIVersion: "rbac.authorization.k8s.io/v1", Kind: "Role"},
-		ObjectMeta: metav1.ObjectMeta{Name: GatewayAppName, Namespace: in.Namespace, Labels: systemLabels(GatewayAppName)},
+		ObjectMeta: metav1.ObjectMeta{Name: GatewayAppName, Namespace: in.Namespace, Labels: SystemLabels(GatewayAppName)},
 		Rules: []rbacv1.PolicyRule{{
 			APIGroups: []string{""},
 			Resources: []string{"secrets"},
@@ -210,7 +212,7 @@ func donkeyGatewaySecretsRole(in SystemInput) *rbacv1.Role {
 func donkeyGatewaySecretsRoleBinding(in SystemInput) *rbacv1.RoleBinding {
 	return &rbacv1.RoleBinding{
 		TypeMeta:   metav1.TypeMeta{APIVersion: "rbac.authorization.k8s.io/v1", Kind: "RoleBinding"},
-		ObjectMeta: metav1.ObjectMeta{Name: GatewayAppName, Namespace: in.Namespace, Labels: systemLabels(GatewayAppName)},
+		ObjectMeta: metav1.ObjectMeta{Name: GatewayAppName, Namespace: in.Namespace, Labels: SystemLabels(GatewayAppName)},
 		RoleRef:    rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "Role", Name: GatewayAppName},
 		Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: GatewayAppName, Namespace: in.Namespace}},
 	}

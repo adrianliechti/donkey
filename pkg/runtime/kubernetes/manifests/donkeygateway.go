@@ -56,7 +56,7 @@ func donkeyGatewayObjects(in SystemInput) []runtime.Object {
 func donkeyGatewayServiceAccount(in SystemInput) *corev1.ServiceAccount {
 	return &corev1.ServiceAccount{
 		TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "ServiceAccount"},
-		ObjectMeta: metav1.ObjectMeta{Name: GatewayAppName, Namespace: in.Namespace, Labels: systemLabels(GatewayAppName)},
+		ObjectMeta: metav1.ObjectMeta{Name: GatewayAppName, Namespace: in.Namespace, Labels: SystemLabels(GatewayAppName)},
 	}
 }
 
@@ -67,7 +67,7 @@ func (in SystemInput) donkeyGatewayConfigHash() string {
 }
 
 func donkeyGatewayDeployment(in SystemInput) *appsv1.Deployment {
-	labels := systemLabels(GatewayAppName)
+	labels := SystemLabels(GatewayAppName)
 	replicas := int32(1)
 	secretEnv := func(name, key string) corev1.EnvVar {
 		return corev1.EnvVar{Name: name, ValueFrom: &corev1.EnvVarSource{
@@ -154,7 +154,7 @@ func donkeyGatewayDeployment(in SystemInput) *appsv1.Deployment {
 		ObjectMeta: metav1.ObjectMeta{Name: GatewayAppName, Namespace: in.Namespace, Labels: labels},
 		Spec: appsv1.DeploymentSpec{
 			Replicas: &replicas,
-			Selector: &metav1.LabelSelector{MatchLabels: labels},
+			Selector: &metav1.LabelSelector{MatchLabels: SystemSelector(GatewayAppName)},
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: in.hashedTemplateMeta(GatewayAppName, in.donkeyGatewayConfigHash()),
 				Spec:       spec,
@@ -181,10 +181,10 @@ func donkeyGatewayService(in SystemInput) *corev1.Service {
 	}
 	return &corev1.Service{
 		TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "Service"},
-		ObjectMeta: metav1.ObjectMeta{Name: GatewayAppName, Namespace: in.Namespace, Labels: systemLabels(GatewayAppName)},
+		ObjectMeta: metav1.ObjectMeta{Name: GatewayAppName, Namespace: in.Namespace, Labels: SystemLabels(GatewayAppName)},
 		Spec: corev1.ServiceSpec{
 			Type:     serviceType,
-			Selector: systemLabels(GatewayAppName),
+			Selector: SystemSelector(GatewayAppName),
 			Ports:    ports,
 		},
 	}
@@ -196,10 +196,10 @@ func donkeyGatewayService(in SystemInput) *corev1.Service {
 func donkeyGatewayHealthService(in SystemInput) *corev1.Service {
 	return &corev1.Service{
 		TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "Service"},
-		ObjectMeta: metav1.ObjectMeta{Name: GatewayHealthServiceName, Namespace: in.Namespace, Labels: systemLabels(GatewayAppName)},
+		ObjectMeta: metav1.ObjectMeta{Name: GatewayHealthServiceName, Namespace: in.Namespace, Labels: SystemLabels(GatewayAppName)},
 		Spec: corev1.ServiceSpec{
 			Type:     corev1.ServiceTypeClusterIP,
-			Selector: systemLabels(GatewayAppName),
+			Selector: SystemSelector(GatewayAppName),
 			Ports: []corev1.ServicePort{
 				{Name: "health", Port: GatewayHealthServicePort, TargetPort: intstr.FromInt32(donkeyGatewayHealthPort)},
 			},

@@ -22,10 +22,6 @@ const (
 	AnnotationHost = "donkey.dev/host"
 	// AnnotationPath is the route's path prefix; "/" for an app's own address.
 	AnnotationPath = "donkey.dev/path"
-	// AnnotationSpaceName/AnnotationAppName preserve donkey's logical scope
-	// when Kubernetes object names are qualified in a shared namespace.
-	AnnotationSpaceName = "donkey.dev/space-name"
-	AnnotationAppName   = "donkey.dev/app-name"
 	// AnnotationLogin marks a route whose visitors must sign in first. Its
 	// absence is what "public" means at the edge.
 	AnnotationLogin = "donkey.dev/login"
@@ -69,11 +65,9 @@ func backendURL(in Input) string {
 // and who may pass.
 func routeAnnotations(in Input, host, path string) map[string]string {
 	ann := map[string]string{
-		AnnotationBackend:   backendURL(in),
-		AnnotationHost:      host,
-		AnnotationPath:      path,
-		AnnotationSpaceName: in.Space,
-		AnnotationAppName:   in.App.Name,
+		AnnotationBackend: backendURL(in),
+		AnnotationHost:    host,
+		AnnotationPath:    path,
 	}
 	if protected(in) {
 		ann[AnnotationLogin] = LoginRequired
@@ -104,7 +98,7 @@ func routeConfigMap(name, namespace string, labels, annotations map[string]strin
 // apps over plain http was never right; its http listener redirects.
 func appRoute(in Input) *corev1.ConfigMap {
 	return routeConfigMap(in.Name(), in.Namespace,
-		Labels(in.Space, in.Name(), ComponentWeb),
+		Labels(in.Space, in.App.Name, ComponentRoute),
 		routeAnnotations(in, in.Domain, "/"))
 }
 

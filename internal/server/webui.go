@@ -88,8 +88,8 @@ func (s *Server) handleCreateSpace(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "name": req.Name})
 }
 
-// handleDeleteSpace removes a space that holds no apps — the console made
-// it, the console can unmake it. Its services and their data go with it.
+// handleDeleteSpace removes the whole lifecycle boundary: routes, apps,
+// bindings, managed services, disks, runtime space, and retained telemetry.
 func (s *Server) handleDeleteSpace(w http.ResponseWriter, r *http.Request) {
 	space, err := s.space(r)
 	if err != nil {
@@ -97,7 +97,14 @@ func (s *Server) handleDeleteSpace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.rt.DeleteSpace(r.Context(), space); err != nil {
-		writeErr(w, http.StatusConflict, err)
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	// Runtime deletion comes first. If telemetry is temporarily unavailable,
+	// retrying this endpoint is safe and completes the purge without reviving
+	// any runtime resource.
+	if err := s.traffic.PurgeSpace(r.Context(), space); err != nil {
+		writeErr(w, http.StatusBadGateway, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})

@@ -3,7 +3,6 @@ import { Dialog, DialogBackdrop, DialogPanel, DialogTitle } from '@headlessui/re
 import { FolderPlus, RefreshCw } from 'lucide-react'
 import { api, type AppSummary } from './api'
 import { useFleet } from './queries'
-import { RemoveApps } from './RemoveApps'
 import { SpaceCard } from './SpaceCard'
 import { Button, DonkeyLogo, ErrorNote, Skeleton, errText, healthOf, type Health } from './ui'
 
@@ -12,8 +11,6 @@ const healthRank: Record<Health, number> = { bad: 0, unknown: 1, ok: 2 }
 export function AppsList() {
   const { data, error, reload } = useFleet()
   const apps = data?.apps ?? null
-  // What the remove dialog is asking about: one app, or a whole space.
-  const [removing, setRemoving] = useState<{ space: string; apps: string[]; siblings: string[] } | null>(null)
   const [creating, setCreating] = useState(false)
 
   // Apps belong to a space; the paddock mirrors that hierarchy instead of
@@ -91,21 +88,8 @@ export function AppsList() {
       )}
 
       {spaces.map(([space, spaceApps]) => (
-        <SpaceCard key={space} space={space} apps={spaceApps} onRemove={setRemoving} onChanged={reload} />
+        <SpaceCard key={space} space={space} apps={spaceApps} onChanged={reload} />
       ))}
-
-      {removing && (
-        <RemoveApps
-          space={removing.space}
-          apps={removing.apps}
-          siblings={removing.siblings}
-          onDone={() => {
-            setRemoving(null)
-            reload()
-          }}
-          onCancel={() => setRemoving(null)}
-        />
-      )}
 
       <NewSpaceDialog
         open={creating}

@@ -13,28 +13,40 @@ const (
 	// AnnotationImage records the deployed image on the Deployment.
 	AnnotationImage = "donkey.dev/image"
 	// AnnotationDecisions records deploy-time analysis decisions on the
-	// Deployment (JSON), so no-build deploys can keep them.
+	// Deployment (JSON), so no-build deploys can keep them. It is read back
+	// through the provider's meta API — keep it equal to runtime.MetaDecisions.
 	AnnotationDecisions = "donkey.dev/decisions"
 	// AnnotationConsole is separate from decisions: a deploy rewrites those
 	// from donkey.yaml, while a console choice survives deploys — until
-	// donkey.yaml settles the matter, which always wins.
+	// donkey.yaml settles the matter, which always wins. It is written and
+	// read only through the provider's meta API — keep it equal to
+	// runtime.MetaConsole.
 	AnnotationConsole = "donkey.dev/console"
-	// LabelApp / LabelComponent identify donkey-owned resources;
-	// LabelSpace groups the apps of one space (one namespace holds them all).
+	// LabelSpace and LabelApp are logical donkey identities. Object names may
+	// be qualified when several spaces share a namespace; labels never are.
 	LabelApp       = "donkey.dev/app"
+	LabelAddon     = "donkey.dev/addon"
 	LabelComponent = "donkey.dev/component"
 	LabelSpace     = "donkey.dev/space"
-	// LabelInstance names the installation an object belongs to — the control
+	// LabelInstallation names the installation an object belongs to — the control
 	// plane's namespace. Several donkeys can share a cluster, and every
 	// cluster-wide sweep donkey does would otherwise match the others' objects
 	// too: managed-by=donkey says "a donkey wrote this", not "this one did".
-	LabelInstance = "donkey.dev/instance"
-	// LabelShared marks an app's binding Secret as a copy of a space-shared
-	// addon's — removing the shared addon has to find (only) these copies.
-	LabelShared = "donkey.dev/shared"
+	LabelInstallation = "donkey.dev/installation"
 
 	ComponentWeb          = "web"
+	ComponentAddon        = "addon"
+	ComponentBinding      = "binding"
+	ComponentConfig       = "config"
+	ComponentStorage      = "storage"
+	ComponentRoute        = "route"
+	ComponentPathRoute    = "path-route"
+	ComponentEdge         = "edge"
+	ComponentSpace        = "space"
 	ComponentRegistryAuth = "registry-auth"
+	// ComponentFiles is the short-lived file-browser helper pod. It carries
+	// the app's own space/app labels, so it is one of the app's objects.
+	ComponentFiles = "files"
 )
 
 // Labels marks one object as donkey's; callers that don't know the space pass
@@ -47,13 +59,41 @@ const (
 // Metadata only: the Deployment's selector is written separately from
 // donkey.dev/* alone, because a selector is immutable once created.
 func Labels(space, app, component string) map[string]string {
-	l := map[string]string{
-		"app.kubernetes.io/name":       app,
-		"app.kubernetes.io/managed-by": ManagedByValue,
-		LabelApp:                       app,
-		LabelComponent:                 component,
+	l := baseLabels(space, app, component)
+	if app != "" {
+		l[LabelApp] = app
+	}
+	return l
+}
+
+// AddonLabels identifies a space service independently of the app bindings
+// that consume it. Shared services deliberately have no pseudo-app label.
+func AddonLabels(space, addon, component string) map[string]string {
+	l := baseLabels(space, addon, component)
+	if addon != "" {
+		l[LabelAddon] = addon
+	}
+	return l
+}
+
+// SpaceLabels marks the namespace or marker that represents a logical space.
+func SpaceLabels(space string) map[string]string {
+	return baseLabels(space, space, ComponentSpace)
+}
+
+// SystemLabels marks one control-plane component. System workloads have no
+// tenant app or space identity.
+func SystemLabels(name string) map[string]string {
+	return baseLabels("", name, name)
+}
+
+func baseLabels(space, name, component string) map[string]string {
+	l := map[string]string{"app.kubernetes.io/managed-by": ManagedByValue}
+	if name != "" {
+		l["app.kubernetes.io/name"] = name
 	}
 	if component != "" {
+		l[LabelComponent] = component
 		l["app.kubernetes.io/component"] = component
 	}
 	if space != "" {
@@ -61,6 +101,24 @@ func Labels(space, app, component string) map[string]string {
 		l["app.kubernetes.io/part-of"] = space
 	}
 	return l
+}
+
+// AppSelector is the immutable identity shared by an app Deployment and
+// Service. Installation ownership is added at the apply/render boundary.
+func AppSelector(space, app, component string) map[string]string {
+	return map[string]string{LabelSpace: space, LabelApp: app, LabelComponent: component}
+}
+
+// AddonSelector is the immutable identity shared by an addon Deployment and
+// Service. Installation ownership is added at the apply/render boundary.
+func AddonSelector(space, addon string) map[string]string {
+	return map[string]string{LabelSpace: space, LabelAddon: addon, LabelComponent: ComponentAddon}
+}
+
+// SystemSelector is the small, stable selector for one control-plane
+// workload. Descriptive app.kubernetes.io labels stay out of selectors.
+func SystemSelector(name string) map[string]string {
+	return map[string]string{LabelComponent: name}
 }
 
 // labelValue matches what Kubernetes accepts as a label value.

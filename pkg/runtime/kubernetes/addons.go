@@ -27,9 +27,7 @@ type imagePullCredentials struct {
 	Password string
 }
 
-// bindingSecret wraps the env contract in the Secret the app's envFrom picks
-// up. Identical shape for provisioned and external addons.
-func bindingSecret(space, app, namespace, name string, data map[string]string) *corev1.Secret {
+func bindingSecret(objectOwner, namespace string, labels map[string]string, name string, data map[string]string) *corev1.Secret {
 	bytes := map[string][]byte{}
 	for k, v := range data {
 		bytes[k] = []byte(v)
@@ -37,36 +35,36 @@ func bindingSecret(space, app, namespace, name string, data map[string]string) *
 	return &corev1.Secret{
 		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Secret"},
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      addons.SecretName(app, name),
+			Name:      addons.SecretName(objectOwner, name),
 			Namespace: namespace,
-			Labels:    manifests.Labels(space, app, addons.Component(name)),
+			Labels:    labels,
 		},
 		Data: bytes,
 	}
 }
 
-// attachmentSecret is an app's copy of a space-shared addon's binding — the
-// same contract, pointing at the shared instance, marked so that removing
-// the shared addon can find its copies (and only them).
-func attachmentSecret(space, app, namespace, name string, data map[string]string) *corev1.Secret {
-	sec := bindingSecret(space, app, namespace, name, data)
-	sec.Labels[manifests.LabelShared] = "true"
-	return sec
+// spaceBindingSecret is the space's canonical service binding. It has addon
+// identity and deliberately no pseudo-app label.
+func spaceBindingSecret(space, objectOwner, namespace, name string, data map[string]string) *corev1.Secret {
+	return bindingSecret(objectOwner, namespace,
+		manifests.AddonLabels(space, name, manifests.ComponentBinding), name, data)
+}
+
+// attachmentSecret is an app's copy of a space service binding. App and addon
+// identity make it selectable without a boolean "shared" marker.
+func attachmentSecret(space, app, objectApp, namespace, name string, data map[string]string) *corev1.Secret {
+	labels := manifests.AddonLabels(space, name, manifests.ComponentBinding)
+	labels[manifests.LabelApp] = app
+	return bindingSecret(objectApp, namespace, labels, name, data)
 }
 
 // addonObjects renders one provisioned instance: its data volume, its
 // Deployment and its Service — named plainly after itself, so siblings in
 // the space reach it as e.g. "postgres" the same way they reach each other.
 func addonObjects(in addons.Input, w *addons.Workload, pull *imagePullCredentials, pullSecretNames []string) ([]k8sruntime.Object, error) {
-	// The objects carry the instance's own name; the component label keeps the
-	// plain one, so "addon-postgres" means the same thing in every space and
-	// the space label is what tells two of them apart.
 	name := in.HostName()
-	labels := manifests.Labels(in.Space, in.App, addons.Component(in.Name))
-	selector := map[string]string{
-		manifests.LabelApp:       in.App,
-		manifests.LabelComponent: addons.Component(in.Name),
-	}
+	labels := manifests.AddonLabels(in.Space, in.Name, manifests.ComponentAddon)
+	selector := manifests.AddonSelector(in.Space, in.Name)
 
 	storage, err := resource.ParseQuantity(in.Storage)
 	if err != nil {
@@ -77,7 +75,7 @@ func addonObjects(in addons.Input, w *addons.Workload, pull *imagePullCredential
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name + "-data",
 			Namespace: in.Namespace,
-			Labels:    labels,
+			Labels:    manifests.AddonLabels(in.Space, in.Name, manifests.ComponentStorage),
 		},
 		Spec: corev1.PersistentVolumeClaimSpec{
 			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
@@ -200,7 +198,7 @@ func addonObjects(in addons.Input, w *addons.Workload, pull *imagePullCredential
 	if pull != nil {
 		objs = append(objs, manifests.RegistryPullSecret(
 			manifests.PullSecretName(name), in.Namespace,
-			manifests.Labels(in.Space, in.App, manifests.ComponentRegistryAuth),
+			manifests.AddonLabels(in.Space, in.Name, manifests.ComponentRegistryAuth),
 			pull.Host, pull.Username, pull.Password,
 		))
 	}

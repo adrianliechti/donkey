@@ -9,6 +9,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	"github.com/adrianliechti/donkey/internal/config"
+	runtimedocker "github.com/adrianliechti/donkey/pkg/runtime/docker"
 	"github.com/adrianliechti/donkey/pkg/runtime/kubernetes/manifests"
 )
 
@@ -35,6 +36,7 @@ type composeService struct {
 	Healthcheck   *composeHealthcheck          `json:"healthcheck,omitempty"`
 	DependsOn     map[string]composeDependency `json:"depends_on,omitempty"`
 	Networks      any                          `json:"networks,omitempty"`
+	Labels        map[string]string            `json:"labels,omitempty"`
 }
 
 type composeHealthcheck struct {
@@ -49,8 +51,9 @@ type composeDependency struct {
 }
 
 type composeNetwork struct {
-	Name string             `json:"name"`
-	IPAM composeNetworkIPAM `json:"ipam"`
+	Name   string             `json:"name"`
+	IPAM   composeNetworkIPAM `json:"ipam"`
+	Labels map[string]string  `json:"labels,omitempty"`
 }
 
 type composeNetworkIPAM struct {
@@ -66,7 +69,8 @@ type composeServiceNetwork struct {
 }
 
 type composeVolume struct {
-	Name string `json:"name"`
+	Name   string            `json:"name"`
+	Labels map[string]string `json:"labels,omitempty"`
 }
 
 func renderDockerBundle(settings *config.InstallFile) (map[string]bundleFile, error) {
@@ -355,20 +359,25 @@ func dockerComposeFiles(settings *config.InstallFile, bundledRegistry bool) (map
 		server.DependsOn["registry"] = composeDependency{Condition: "service_started"}
 		services["server"] = server
 	}
+	for component, service := range services {
+		service.Labels = runtimedocker.SystemLabels(component)
+		services[component] = service
+	}
 
 	compose := composeFile{
 		Services: services,
 		Networks: map[string]composeNetwork{
 			"donkey": {
-				Name: dockerNetwork,
-				IPAM: composeNetworkIPAM{Config: []composeSubnet{{Subnet: "${DONKEY_NETWORK_SUBNET:-" + composeNetworkSubnet + "}"}}},
+				Name:   dockerNetwork,
+				IPAM:   composeNetworkIPAM{Config: []composeSubnet{{Subnet: "${DONKEY_NETWORK_SUBNET:-" + composeNetworkSubnet + "}"}}},
+				Labels: runtimedocker.SystemLabels("network"),
 			},
 		},
 		Volumes: map[string]composeVolume{
-			"data":      {Name: dockerDataVolume},
-			"buildkit":  {Name: dockerBuildkitVolume},
-			"telemetry": {Name: dockerTelemetryVolume},
-			"registry":  {Name: dockerRegistryVolume},
+			"data":      {Name: dockerDataVolume, Labels: runtimedocker.SystemLabels("state-storage")},
+			"buildkit":  {Name: dockerBuildkitVolume, Labels: runtimedocker.SystemLabels("buildkit-storage")},
+			"telemetry": {Name: dockerTelemetryVolume, Labels: runtimedocker.SystemLabels("telemetry-storage")},
+			"registry":  {Name: dockerRegistryVolume, Labels: runtimedocker.SystemLabels("registry-storage")},
 		},
 	}
 	if !bundledRegistry {

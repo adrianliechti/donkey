@@ -69,7 +69,7 @@ func (r *Runtime) Deploy(ctx context.Context, spec rt.DeploySpec, out rt.Progres
 		}
 		// The attachment copy is re-applied every deploy, so it stays current
 		// with the space's service.
-		if err := r.c.Apply(ctx, []k8sruntime.Object{attachmentSecret(space, obj, ns, a.Name, shared)}); err != nil {
+		if err := r.c.Apply(ctx, []k8sruntime.Object{attachmentSecret(space, app.Name, obj, ns, a.Name, shared)}); err != nil {
 			return err
 		}
 	}
@@ -78,7 +78,7 @@ func (r *Runtime) Deploy(ctx context.Context, spec rt.DeploySpec, out rt.Progres
 		return err
 	}
 	if in.Domain != "" {
-		if owner := r.hostOwner(ctx, space, in.Domain, obj); owner != "" {
+		if owner := r.hostOwner(ctx, space, in.Domain, app.Name); owner != "" {
 			return fmt.Errorf("%s already answers on %s — two apps cannot share one address (give one of them a different `host`)", owner, in.Domain)
 		}
 	}
@@ -86,7 +86,7 @@ func (r *Runtime) Deploy(ctx context.Context, spec rt.DeploySpec, out rt.Progres
 	// Addons added in the console aren't in this donkey.yaml; the cluster
 	// knows them by their binding secrets, and they keep working across
 	// deploys instead of silently losing their env.
-	if bindings, err := r.c.ListAddonBindings(ctx, ns, obj); err == nil {
+	if bindings, err := r.c.ListAddonBindings(ctx, ns, space, app.Name); err == nil {
 		known := map[string]bool{}
 		for _, n := range in.AddonSecretNames {
 			known[n] = true
@@ -169,7 +169,7 @@ func (r *Runtime) Render(spec rt.DeploySpec) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return manifests.Render(objs)
+	return manifests.RenderForInstallation(objs, r.opts.SystemNamespace)
 }
 
 func (r *Runtime) Destroy(ctx context.Context, space, app string, keepData bool) error {
@@ -182,7 +182,7 @@ func (r *Runtime) Destroy(ctx context.Context, space, app string, keepData bool)
 	if err := r.deleteAppGatewayObjects(ctx, obj); err != nil {
 		return err
 	}
-	return r.c.DeleteAppResources(ctx, ns, obj, keepData)
+	return r.c.DeleteAppResources(ctx, ns, space, app, keepData)
 }
 
 // deleteAppGatewayObjects retracts the namespaced external edge independently
@@ -266,7 +266,7 @@ func (r *Runtime) manifestInput(spec rt.DeploySpec, includeCreds bool) (manifest
 // yet keeps the assumption, which is what it will get when it is.
 func (r *Runtime) resolveRouteTargets(ctx context.Context, space string, in *manifests.Input) {
 	for i, target := range in.RouteTargets {
-		net, err := r.c.AppNetwork(ctx, r.ns(space), r.name(space, target.App))
+		net, err := r.c.AppNetwork(ctx, r.ns(space), r.name(space, target.App), space, target.App)
 		if err == nil && net.RouteFound && net.Host != "" {
 			in.RouteTargets[i].Host = net.Host
 		}
@@ -287,10 +287,14 @@ func (r *Runtime) hostOwner(ctx context.Context, space, host, self string) strin
 		if cm.Namespace != ns || cm.Annotations[manifests.AnnotationHost] != host {
 			continue
 		}
+		// Path routes share a hostname on purpose; only an app's own address
+		// (path "/") owns it. Without this, a sibling's `routes:` entry on
+		// this host would block the host's own app from deploying.
+		if p := cm.Annotations[manifests.AnnotationPath]; p != "" && p != "/" {
+			continue
+		}
 		if owner := cm.Labels[manifests.LabelApp]; owner != "" && owner != self {
-			// The label carries the object name; the answer goes into an
-			// error a person reads, so it carries the name they know.
-			return r.unname(space, owner)
+			return owner
 		}
 	}
 	return ""
@@ -305,7 +309,7 @@ func (r *Runtime) retractRemovedRoutes(ctx context.Context, ns string, in manife
 	for _, route := range in.RouteTargets {
 		keep[manifests.PathRouteName(in.Name(), route.App, route.Path)] = true
 	}
-	names, err := r.c.ListRouteNames(ctx, ns, in.Name())
+	names, err := r.c.ListRouteNames(ctx, ns, in.Space, in.App.Name)
 	if err != nil {
 		return err
 	}
@@ -331,7 +335,7 @@ func (r *Runtime) ApplyNetwork(ctx context.Context, cfg *config.AppConfig) (stri
 	if err != nil {
 		return "", err
 	}
-	net, err := r.c.AppNetwork(ctx, ns, obj)
+	net, err := r.c.AppNetwork(ctx, ns, obj, space, app)
 	if err != nil {
 		return "", err
 	}
@@ -343,7 +347,7 @@ func (r *Runtime) ApplyNetwork(ctx context.Context, cfg *config.AppConfig) (stri
 	// app an address another one already serves, and the gateway would answer
 	// with whichever it sorted first.
 	if in.Domain != "" {
-		if owner := r.hostOwner(ctx, space, in.Domain, obj); owner != "" {
+		if owner := r.hostOwner(ctx, space, in.Domain, app); owner != "" {
 			return "", rt.UserError{Err: fmt.Errorf("%s already answers on %s — two apps cannot share one address", owner, in.Domain)}
 		}
 	}
@@ -376,7 +380,7 @@ func (r *Runtime) ApplyNetwork(ctx context.Context, cfg *config.AppConfig) (stri
 }
 
 func (r *Runtime) Network(ctx context.Context, space, app string) (*rt.NetworkState, error) {
-	return r.c.AppNetwork(ctx, r.ns(space), r.name(space, app))
+	return r.c.AppNetwork(ctx, r.ns(space), r.name(space, app), space, app)
 }
 
 // SetAccess narrows (or reopens) who may open a login-protected app. It is
@@ -384,7 +388,7 @@ func (r *Runtime) Network(ctx context.Context, space, app string) (*rt.NetworkSt
 // seconds, no deploy, no restart.
 func (r *Runtime) SetAccess(ctx context.Context, space, app string, access *config.AccessConfig) error {
 	ns, obj := r.ns(space), r.name(space, app)
-	net, err := r.c.AppNetwork(ctx, ns, obj)
+	net, err := r.c.AppNetwork(ctx, ns, obj, space, app)
 	if err != nil {
 		return err
 	}

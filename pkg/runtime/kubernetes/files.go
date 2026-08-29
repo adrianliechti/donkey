@@ -19,6 +19,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/remotecommand"
 	utilexec "k8s.io/client-go/util/exec"
@@ -36,10 +37,6 @@ import (
 // (one per storage path, see config.StorageSubPath) is visible at once.
 
 const (
-	// FilesComponent labels the helper pod, so it is one of the app's objects
-	// (same donkey.dev/app label as everything else donkey owns for the app).
-	FilesComponent = "files"
-
 	filesMount     = "/data"
 	filesContainer = "files"
 
@@ -541,7 +538,11 @@ func (c *Client) filesHelper(ctx context.Context, namespace, app string) (string
 		}
 	}
 
-	pod := filesHelperPod(namespace, pvc.Labels[manifests.LabelSpace], app)
+	logicalApp := pvc.Labels[manifests.LabelApp]
+	if logicalApp == "" || !c.ours(pvc.Labels) {
+		return "", fmt.Errorf("the app disk is missing donkey ownership metadata")
+	}
+	pod := filesHelperPod(namespace, pvc.Labels[manifests.LabelSpace], logicalApp, app, c.installation())
 	c.pinToAppNode(ctx, namespace, app, pod)
 	if _, err := pods.Create(ctx, pod, metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
 		return "", fmt.Errorf("opening the app's disk: %w", err)
@@ -577,9 +578,12 @@ func helperUsable(pod *corev1.Pod) bool {
 // usual kind attaches to one machine at a time, so anywhere else it would
 // simply never start.
 func (c *Client) pinToAppNode(ctx context.Context, namespace, app string, pod *corev1.Pod) {
+	dep, err := c.Clientset.AppsV1().Deployments(namespace).Get(ctx, app, metav1.GetOptions{})
+	if err != nil {
+		return
+	}
 	list, err := c.Clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
-		LabelSelector: fmt.Sprintf("%s=%s,%s=%s",
-			manifests.LabelApp, app, manifests.LabelComponent, manifests.ComponentWeb),
+		LabelSelector: labels.Set(dep.Spec.Selector.MatchLabels).String(),
 	})
 	if err != nil {
 		return
@@ -603,7 +607,7 @@ func (c *Client) pinToAppNode(ctx context.Context, namespace, app string, pod *c
 	pod.Spec.Tolerations = chosen.Spec.Tolerations
 }
 
-func filesHelperPod(namespace, space, app string) *corev1.Pod {
+func filesHelperPod(namespace, space, app, objectName, installation string) *corev1.Pod {
 	nonRoot := true
 	user := int64(2000)
 	fsGroup := int64(2000)
@@ -613,12 +617,14 @@ func filesHelperPod(namespace, space, app string) *corev1.Pod {
 	grace := int64(2)
 	deadline := int64(filesHelperLifetime.Seconds()) + 60
 
+	podLabels := manifests.Labels(space, app, manifests.ComponentFiles)
+	podLabels[manifests.LabelInstallation] = installation
 	return &corev1.Pod{
 		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Pod"},
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      filesHelperName(app),
+			Name:      filesHelperName(objectName),
 			Namespace: namespace,
-			Labels:    manifests.Labels(space, app, FilesComponent),
+			Labels:    podLabels,
 			Annotations: map[string]string{
 				annotationFilesExpires: time.Now().Add(filesHelperLifetime).UTC().Format(time.RFC3339),
 			},
@@ -667,7 +673,7 @@ func filesHelperPod(namespace, space, app string) *corev1.Pod {
 				Name: "data",
 				VolumeSource: corev1.VolumeSource{
 					PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
-						ClaimName: manifests.DataClaimName(app),
+						ClaimName: manifests.DataClaimName(objectName),
 					},
 				},
 			}},

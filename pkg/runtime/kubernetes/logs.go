@@ -12,12 +12,20 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	rt "github.com/adrianliechti/donkey/pkg/runtime"
+	"github.com/adrianliechti/donkey/pkg/runtime/kubernetes/manifests"
 )
 
 // StreamLogs writes the logs of every pod of the selected component to out,
 // prefixed with the pod name when there is more than one.
-func (c *Client) StreamLogs(ctx context.Context, namespace, app string, opts rt.LogOptions, out io.Writer) error {
-	selector := fmt.Sprintf("donkey.dev/app=%s,donkey.dev/component=%s", app, opts.Component)
+func (c *Client) StreamLogs(ctx context.Context, namespace, space, app string, opts rt.LogOptions, out io.Writer) error {
+	selector := fmt.Sprintf("%s=%s,%s=%s,", manifests.LabelInstallation, c.installation(), manifests.LabelSpace, space)
+	if addon, ok := strings.CutPrefix(opts.Component, "addon-"); ok {
+		selector += fmt.Sprintf("%s=%s,%s=%s", manifests.LabelAddon, addon,
+			manifests.LabelComponent, manifests.ComponentAddon)
+	} else {
+		selector += fmt.Sprintf("%s=%s,%s=%s", manifests.LabelApp, app,
+			manifests.LabelComponent, manifests.ComponentWeb)
+	}
 	pods, err := c.Clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{LabelSelector: selector})
 	if err != nil {
 		return err

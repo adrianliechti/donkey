@@ -1,8 +1,10 @@
 package manifests
 
 import (
+	"fmt"
 	"strings"
 
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/yaml"
 )
@@ -14,41 +16,86 @@ func Render(objs []runtime.Object) (string, error) {
 	return render(objs, "")
 }
 
-// RenderForInstance renders objects meant to be applied outside donkey's
+// RenderForInstallation renders objects meant to be applied outside donkey's
 // Kubernetes client. Apply normally stamps this ownership label at the API
 // boundary; a generated manifest needs the same identity in the YAML itself.
-func RenderForInstance(objs []runtime.Object, instance string) (string, error) {
-	return render(objs, instance)
+func RenderForInstallation(objs []runtime.Object, installation string) (string, error) {
+	return render(objs, installation)
 }
 
-func render(objs []runtime.Object, instance string) (string, error) {
+func render(objs []runtime.Object, installation string) (string, error) {
 	var parts []string
 	for _, obj := range objs {
-		u, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
+		m, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 		if err != nil {
 			return "", err
 		}
-		if instance != "" {
-			metadata, _ := u["metadata"].(map[string]any)
-			if metadata == nil {
-				metadata = map[string]any{}
-				u["metadata"] = metadata
+		u := &unstructured.Unstructured{Object: m}
+		if installation != "" {
+			if err := StampInstallation(u, installation); err != nil {
+				return "", err
 			}
-			labels, _ := metadata["labels"].(map[string]any)
-			if labels == nil {
-				labels = map[string]any{}
-				metadata["labels"] = labels
-			}
-			labels[LabelInstance] = instance
 		}
-		prune(u)
-		b, err := yaml.Marshal(u)
+		prune(u.Object)
+		b, err := yaml.Marshal(u.Object)
 		if err != nil {
 			return "", err
 		}
 		parts = append(parts, string(b))
 	}
 	return strings.Join(parts, "---\n"), nil
+}
+
+// StampInstallation applies the ownership boundary to an object and to every
+// selector/template that creates or targets its pods. Apply and offline
+// rendering share this function so their manifests cannot drift apart.
+func StampInstallation(u *unstructured.Unstructured, installation string) error {
+	if installation == "" {
+		return fmt.Errorf("installation label cannot be empty")
+	}
+	labels := u.GetLabels()
+	if labels == nil {
+		labels = map[string]string{}
+	}
+	labels[LabelInstallation] = installation
+	u.SetLabels(labels)
+
+	var paths [][]string
+	switch u.GetKind() {
+	case "Deployment":
+		paths = append(paths,
+			[]string{"spec", "selector", "matchLabels"},
+			[]string{"spec", "template", "metadata", "labels"},
+		)
+	case "Job":
+		paths = append(paths, []string{"spec", "template", "metadata", "labels"})
+	case "Service":
+		// A selector-less Service is intentional (for example ExternalName).
+		if _, found, err := unstructured.NestedStringMap(u.Object, "spec", "selector"); err != nil {
+			return fmt.Errorf("reading Service %s selector: %w", u.GetName(), err)
+		} else if found {
+			paths = append(paths, []string{"spec", "selector"})
+		}
+	case "NetworkPolicy":
+		paths = append(paths, []string{"spec", "podSelector", "matchLabels"})
+	case "Certificate":
+		// cert-manager copies these labels to the generated TLS Secret.
+		paths = append(paths, []string{"spec", "secretTemplate", "labels"})
+	}
+	for _, path := range paths {
+		values, _, err := unstructured.NestedStringMap(u.Object, path...)
+		if err != nil {
+			return fmt.Errorf("reading %s %s %s: %w", u.GetKind(), u.GetName(), strings.Join(path, "."), err)
+		}
+		if values == nil {
+			values = map[string]string{}
+		}
+		values[LabelInstallation] = installation
+		if err := unstructured.SetNestedStringMap(u.Object, values, path...); err != nil {
+			return fmt.Errorf("stamping %s %s %s: %w", u.GetKind(), u.GetName(), strings.Join(path, "."), err)
+		}
+	}
+	return nil
 }
 
 // prune removes creationTimestamp: null (recursively) and empty status.

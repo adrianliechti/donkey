@@ -152,16 +152,32 @@ five ideas:
   that space, so they reach each other by plain service name — and that
   includes its services: a space's postgres is simply `postgres` to its
   siblings. The namespace is created with the first app (or ahead of time
-  in the console), and goes away with the last app unless kept data or
-  services still live there; a namespace donkey didn't create is never
-  taken over.
+  in the console). Removing an app never removes its space; removing the
+  space is the explicit cascade that deletes its routes, apps, services,
+  bindings, disks and retained telemetry. A namespace donkey didn't create
+  is never taken over or deleted.
 - **Per app** — Deployment (probes, `PORT`, `envFrom` secrets), Service, a
   route entry (`<app>.<space>.<domain>`, https only — the gateway's http
   listener redirects) — a ConfigMap carrying the app's backend, hostname,
   login and access rules as annotations — and Secrets for env vars,
-  registry pull auth and service bindings. Everything is labeled `donkey.dev/app` and
-  `donkey.dev/space`, so status, logs and destroy know exactly what donkey
-  owns.
+  registry pull auth and service bindings.
+
+Runtime metadata has one small identity vocabulary. On Kubernetes,
+`donkey.dev/installation` is the ownership boundary, `donkey.dev/space` is
+the lifecycle boundary, exactly one of `donkey.dev/app` or `donkey.dev/addon`
+is the logical workload identity, and `donkey.dev/component` is its role.
+The descriptive `app.kubernetes.io/*` labels are present for ecosystem tools,
+but destructive sweeps and workload selectors use only the stable
+`donkey.dev/*` identity. Deployment, Pod and Service selectors match exactly;
+object-name qualification in a shared namespace never leaks into logical
+labels. Non-identifying or potentially large configuration (host, backend,
+access policy, image and config hashes) stays in annotations.
+
+Docker uses the same dimensions as reverse-DNS labels:
+`dev.donkey.installation`, `dev.donkey.space`, `dev.donkey.app`,
+`dev.donkey.addon` and `dev.donkey.component`. Containers, networks and
+volumes — including the control plane rendered by Compose — carry ownership
+and component labels, and all list/delete filters include the installation.
 
 ## Traffic telemetry
 
@@ -606,13 +622,13 @@ HTTPRoute and Certificate CRDs before changing the cluster.
 
 Supported, with one requirement: **every installation needs its own
 `kubernetes.system.namespace`.** That namespace is the installation's
-identity — it is stamped on every object as `donkey.dev/instance`, every sweep
+identity — it is stamped on every object as `donkey.dev/installation`, every sweep
 donkey makes requires it, and every cluster-scoped object it applies is named
 after it. Without a distinct one the second install would apply the first's
 `ClusterRoleBinding`, and because server-side apply forces the subject list,
 the first installation would silently lose every permission it has.
 
-`kubectl get all -A -l donkey.dev/instance=bank-donkey-system` shows one
+`kubectl get all -A -l donkey.dev/installation=bank-donkey-system` shows one
 installation's objects.
 
 The rest is not enforceable from inside a single installation — donkey can
@@ -945,14 +961,14 @@ as they are while donkey-server restarts. A re-install also keeps every secret
 it isn't given again (registry password, OIDC client secret, AI key), so the
 same settings file is enough — rotating one thing must never blank the rest.
 
-Upgrading from a version that predates instance labelling (v0.3.1 and older,
-which stamped no installation on what they applied) adds one step the install
-does itself: it claims the space namespaces carrying this installation's
-prefix, and everything donkey put in them, so the apps stay visible to the
-console and served by the gateway. It reports what it claimed, finds nothing
-on the second run, and never touches a namespace another installation has
-stamped — if the `namespacePrefix` changed with the upgrade, the old
-namespaces are left alone and named in a warning.
+**Metadata v2 is a clean cutover.** It deliberately does not claim resources
+from versions that used the old ownership labels or selectors. Kubernetes
+Deployment selectors are immutable, so adopting only their top-level labels
+would create a half-migrated installation that cannot reconcile. At this
+early stage, remove the old app/control-plane resources and recreate them;
+new Deployments, Pods, Services, routes, services and Docker resources are
+then born with one consistent schema. Back up data first if an old PVC or
+Docker volume is not disposable — deleting a space intentionally deletes it.
 
 **What to back up.** Donkey state lives in Kubernetes objects and the telemetry
 PVC, and nearly

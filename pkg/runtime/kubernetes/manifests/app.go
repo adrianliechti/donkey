@@ -22,7 +22,9 @@ import (
 )
 
 const (
-	webContainerName = "web"
+	// WebContainerName is the app container in the pod. Exported because the
+	// runtime reads container status and metrics by this name.
+	WebContainerName = "web"
 
 	// storageVolumeName is the app's single volume; every configured path
 	// becomes a folder on it.
@@ -80,10 +82,8 @@ type RouteTarget struct {
 	Path string
 }
 
-// Name is what this app's objects are called, and the value its labels carry.
-// Object names and labels are qualified together on purpose: every selector
-// donkey writes then addresses one space's objects, without any call site
-// having to remember to narrow it.
+// Name is what this app's objects are called. Labels always keep App.Name as
+// the logical identity; selectors include the space separately.
 func (in Input) Name() string {
 	if in.ObjectName != "" {
 		return in.ObjectName
@@ -164,13 +164,12 @@ func Namespace(space, name string) *corev1.Namespace {
 		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Namespace"},
 		ObjectMeta: metav1.ObjectMeta{
 			Name: name,
-			Labels: map[string]string{
-				"app.kubernetes.io/name":             space,
-				"app.kubernetes.io/managed-by":       ManagedByValue,
-				LabelSpace:                           space,
-				"pod-security.kubernetes.io/enforce": "baseline",
-				"pod-security.kubernetes.io/warn":    "restricted",
-			},
+			Labels: func() map[string]string {
+				labels := SpaceLabels(space)
+				labels["pod-security.kubernetes.io/enforce"] = "baseline"
+				labels["pod-security.kubernetes.io/warn"] = "restricted"
+				return labels
+			}(),
 			Annotations: map[string]string{AnnotationManaged: "true"},
 		},
 	}
@@ -193,7 +192,7 @@ func dataClaim(in Input) (*corev1.PersistentVolumeClaim, error) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      DataClaimName(in.Name()),
 			Namespace: in.Namespace,
-			Labels:    Labels(in.Space, in.Name(), ComponentWeb),
+			Labels:    Labels(in.Space, in.App.Name, ComponentStorage),
 		},
 		Spec: corev1.PersistentVolumeClaimSpec{
 			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
@@ -226,7 +225,7 @@ func storageMounts(app *config.AppConfig) []corev1.VolumeMount {
 func pullSecret(in Input) *corev1.Secret {
 	return RegistryPullSecret(
 		PullSecretName(in.Name()), in.Namespace,
-		Labels(in.Space, in.Name(), ComponentRegistryAuth),
+		Labels(in.Space, in.App.Name, ComponentRegistryAuth),
 		in.RegistryHost, in.RegistryUsername, in.RegistryPassword,
 	)
 }
@@ -237,7 +236,7 @@ func telemetrySecret(in Input) *corev1.Secret {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      TelemetrySecretName(in.Name()),
 			Namespace: in.Namespace,
-			Labels:    Labels(in.Space, in.Name(), ComponentWeb),
+			Labels:    Labels(in.Space, in.App.Name, ComponentConfig),
 		},
 		StringData: map[string]string{
 			"OTEL_SERVICE_NAME":             in.App.Name,
@@ -344,7 +343,7 @@ func deployment(in Input) (*appsv1.Deployment, error) {
 	probe := &corev1.Probe{ProbeHandler: handler}
 
 	container := corev1.Container{
-		Name:           webContainerName,
+		Name:           WebContainerName,
 		Image:          in.ImageRef,
 		Command:        app.Command,
 		Ports:          []corev1.ContainerPort{{ContainerPort: int32(app.Port), Name: "http"}},
@@ -395,16 +394,14 @@ func deployment(in Input) (*appsv1.Deployment, error) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        in.Name(),
 			Namespace:   in.Namespace,
-			Labels:      withVersion(Labels(in.Space, in.Name(), ComponentWeb), in.ImageRef),
+			Labels:      withVersion(Labels(in.Space, in.App.Name, ComponentWeb), in.ImageRef),
 			Annotations: annotations,
 		},
 		Spec: appsv1.DeploymentSpec{
 			Replicas: app.Replicas,
-			Selector: &metav1.LabelSelector{
-				MatchLabels: map[string]string{LabelApp: in.Name(), LabelComponent: ComponentWeb},
-			},
+			Selector: &metav1.LabelSelector{MatchLabels: AppSelector(in.Space, in.App.Name, ComponentWeb)},
 			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{Labels: withVersion(Labels(in.Space, in.Name(), ComponentWeb), in.ImageRef)},
+				ObjectMeta: metav1.ObjectMeta{Labels: withVersion(Labels(in.Space, in.App.Name, ComponentWeb), in.ImageRef)},
 			},
 		},
 	}
@@ -446,11 +443,11 @@ func service(in Input) *corev1.Service {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      in.Name(),
 			Namespace: in.Namespace,
-			Labels:    Labels(in.Space, in.Name(), ComponentWeb),
+			Labels:    Labels(in.Space, in.App.Name, ComponentWeb),
 		},
 		Spec: corev1.ServiceSpec{
 			Type:     corev1.ServiceTypeClusterIP,
-			Selector: map[string]string{LabelApp: in.Name(), LabelComponent: ComponentWeb},
+			Selector: AppSelector(in.Space, in.App.Name, ComponentWeb),
 			Ports: []corev1.ServicePort{{
 				Name:       "http",
 				Port:       80,

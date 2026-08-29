@@ -44,7 +44,7 @@ func telemetryClaim(in SystemInput) *corev1.PersistentVolumeClaim {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      telemetryPVCName,
 			Namespace: in.Namespace,
-			Labels:    systemLabels(TelemetryAppName),
+			Labels:    SystemLabels(TelemetryAppName),
 		},
 		Spec: corev1.PersistentVolumeClaimSpec{
 			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
@@ -56,7 +56,7 @@ func telemetryClaim(in SystemInput) *corev1.PersistentVolumeClaim {
 }
 
 func telemetryDeployment(in SystemInput) *appsv1.Deployment {
-	labels := systemLabels(TelemetryAppName)
+	labels := SystemLabels(TelemetryAppName)
 	replicas := int32(1)
 	fsGroup := systemRunAsUser
 	fsPolicy := corev1.FSGroupChangeOnRootMismatch
@@ -69,7 +69,7 @@ func telemetryDeployment(in SystemInput) *appsv1.Deployment {
 			// DuckDB is embedded and one process owns its read-write file. Recreate
 			// prevents an upgrade from briefly starting two writers.
 			Strategy: appsv1.DeploymentStrategy{Type: appsv1.RecreateDeploymentStrategyType},
-			Selector: &metav1.LabelSelector{MatchLabels: labels},
+			Selector: &metav1.LabelSelector{MatchLabels: SystemSelector(TelemetryAppName)},
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: in.hashedTemplateMeta(TelemetryAppName, configHash(in.TelemetryKey)),
 				Spec: corev1.PodSpec{
@@ -132,10 +132,10 @@ func telemetryDeployment(in SystemInput) *appsv1.Deployment {
 func telemetryService(in SystemInput) *corev1.Service {
 	return &corev1.Service{
 		TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "Service"},
-		ObjectMeta: metav1.ObjectMeta{Name: TelemetryAppName, Namespace: in.Namespace, Labels: systemLabels(TelemetryAppName)},
+		ObjectMeta: metav1.ObjectMeta{Name: TelemetryAppName, Namespace: in.Namespace, Labels: SystemLabels(TelemetryAppName)},
 		Spec: corev1.ServiceSpec{
 			Type:     corev1.ServiceTypeClusterIP,
-			Selector: systemLabels(TelemetryAppName),
+			Selector: SystemSelector(TelemetryAppName),
 			Ports: []corev1.ServicePort{
 				{Name: "otlp-http", Port: telemetryOTLPPort, TargetPort: intstr.FromInt32(telemetryOTLPPort)},
 				{Name: "api", Port: telemetryAPIPort, TargetPort: intstr.FromInt32(telemetryAPIPort)},
@@ -157,10 +157,10 @@ func telemetryNetworkPolicy(in SystemInput) *networkPolicy {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      TelemetryAppName,
 			Namespace: in.Namespace,
-			Labels:    systemLabels(TelemetryAppName),
+			Labels:    SystemLabels(TelemetryAppName),
 		},
 		Spec: networkingv1.NetworkPolicySpec{
-			PodSelector: metav1.LabelSelector{MatchLabels: systemLabels(TelemetryAppName)},
+			PodSelector: metav1.LabelSelector{MatchLabels: SystemSelector(TelemetryAppName)},
 			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
 			Ingress: []networkingv1.NetworkPolicyIngressRule{
 				{From: metricPeers, Ports: []networkingv1.NetworkPolicyPort{{Protocol: &tcp, Port: &otlp}}},

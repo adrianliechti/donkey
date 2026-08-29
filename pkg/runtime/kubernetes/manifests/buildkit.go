@@ -171,13 +171,13 @@ func buildkitTOML(in SystemInput) string {
 func buildkitConfig(in SystemInput) *corev1.ConfigMap {
 	return &corev1.ConfigMap{
 		TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "ConfigMap"},
-		ObjectMeta: metav1.ObjectMeta{Name: buildkitName, Namespace: in.Namespace, Labels: systemLabels(buildkitName)},
+		ObjectMeta: metav1.ObjectMeta{Name: buildkitName, Namespace: in.Namespace, Labels: SystemLabels(buildkitName)},
 		Data:       map[string]string{"buildkitd.toml": buildkitTOML(in)},
 	}
 }
 
 func buildkitDeployment(in SystemInput) *appsv1.Deployment {
-	labels := systemLabels(buildkitName)
+	labels := SystemLabels(buildkitName)
 	replicas := int32(1)
 	privileged := true
 	return &appsv1.Deployment{
@@ -185,7 +185,7 @@ func buildkitDeployment(in SystemInput) *appsv1.Deployment {
 		ObjectMeta: metav1.ObjectMeta{Name: buildkitName, Namespace: in.Namespace, Labels: labels},
 		Spec: appsv1.DeploymentSpec{
 			Replicas: &replicas,
-			Selector: &metav1.LabelSelector{MatchLabels: labels},
+			Selector: &metav1.LabelSelector{MatchLabels: SystemSelector(buildkitName)},
 			Template: corev1.PodTemplateSpec{
 				// The config hash rolls buildkitd when the registry setup changes.
 				ObjectMeta: in.hashedTemplateMeta(buildkitName, in.buildkitConfigHash()),

@@ -176,10 +176,10 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 		return fmt.Errorf("the cluster (context %q) didn't answer — donkey installs into an existing cluster: %w", kubeContext, err)
 	}
 	// Everything applied from here carries this installation's identity. An
-	// unbound client would stamp the default instance — and the objects of a
+	// unbound client would stamp the default installation — and the objects of a
 	// second installation would then belong, as far as every sweep is
 	// concerned, to the first.
-	client = client.ForInstance(settings.Kubernetes.SystemNamespace())
+	client = client.WithInstallation(settings.Kubernetes.SystemNamespace())
 
 	// Keep existing secrets on re-installs: a re-run without the secret env
 	// vars must not blank what the installation depends on. A read error is
@@ -222,15 +222,6 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 	// every user out of every app and revokes every `donkey login`.
 	if len(existing) == 0 && nsPlan.SkipSystemNamespace {
 		u.Warn("No existing donkey installation in %s. This creates a new one — a new session key, so any installation elsewhere keeps its own and everyone signed in here would have to sign in again.", systemNamespace)
-	}
-	// Only an upgrade may claim what the previous version left unstamped. A
-	// new installation standing up beside an old one shares nothing with it,
-	// even when both map spaces onto the same names — the control plane it
-	// finds here is what makes the old resources this installation's.
-	if len(existing) > 0 {
-		if err := claimPrevious(ctx, u, client, settings.Kubernetes); err != nil {
-			return err
-		}
 	}
 	registryUsername, registryPassword, err := settings.Registry.Credentials()
 	if err != nil {

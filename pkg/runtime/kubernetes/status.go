@@ -4,10 +4,10 @@ import (
 	"context"
 	"fmt"
 	"sort"
-	"strings"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 
 	rt "github.com/adrianliechti/donkey/pkg/runtime"
 	"github.com/adrianliechti/donkey/pkg/runtime/kubernetes/manifests"
@@ -23,7 +23,7 @@ func (c *Client) AppStatus(ctx context.Context, namespace, app string) (*rt.AppS
 		return nil, err
 	}
 	st.Found = true
-	st.Image = dep.Annotations["donkey.dev/image"]
+	st.Image = dep.Annotations[manifests.AnnotationImage]
 	if st.Image == "" && len(dep.Spec.Template.Spec.Containers) > 0 {
 		st.Image = dep.Spec.Template.Spec.Containers[0].Image
 	}
@@ -39,7 +39,9 @@ func (c *Client) AppStatus(ctx context.Context, namespace, app string) (*rt.AppS
 		dep.Status.UpdatedReplicas == st.WantReplica &&
 		dep.Status.Replicas == st.WantReplica
 
-	if pods, err := c.appPods(ctx, namespace, app); err == nil {
+	if pods, err := c.Clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: labels.Set(dep.Spec.Selector.MatchLabels).String(),
+	}); err == nil {
 		for _, p := range pods.Items {
 			st.Instances = append(st.Instances, podSummary(&p))
 			for _, cs := range p.Status.ContainerStatuses {
@@ -89,34 +91,44 @@ func (c *Client) ServiceEndpoint(ctx context.Context, namespace, name string) (s
 	return fmt.Sprintf("%s.%s.svc", name, namespace), svc.Spec.Ports[0].Port, nil
 }
 
-// DeploymentComponent reports whether a Deployment of this name exists, and
-// which donkey component it belongs to ("" for an unlabeled one).
-func (c *Client) DeploymentComponent(ctx context.Context, namespace, name string) (string, bool, error) {
+// DeploymentIdentity reports the stable role of a named Deployment.
+func (c *Client) DeploymentIdentity(ctx context.Context, namespace, name string) (component, addon string, exists bool, err error) {
 	dep, err := c.Clientset.AppsV1().Deployments(namespace).Get(ctx, name, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
-		return "", false, nil
+		return "", "", false, nil
 	}
 	if err != nil {
-		return "", false, err
+		return "", "", false, err
 	}
-	return dep.Labels[manifests.LabelComponent], true, nil
+	return dep.Labels[manifests.LabelComponent], dep.Labels[manifests.LabelAddon], true, nil
 }
 
 // ListAddonBindings finds the app's addon binding Secrets.
-func (c *Client) ListAddonBindings(ctx context.Context, namespace, app string) ([]rt.ServiceBindingInfo, error) {
+// An empty app selects the space's canonical bindings, which deliberately
+// have no pseudo-app label.
+func (c *Client) ListAddonBindings(ctx context.Context, namespace, space, app string) ([]rt.ServiceBindingInfo, error) {
+	selector := fmt.Sprintf("%s=%s,%s=%s,%s=%s,%s",
+		manifests.LabelInstallation, c.installation(), manifests.LabelSpace, space,
+		manifests.LabelComponent, manifests.ComponentBinding, manifests.LabelAddon)
+	if app != "" {
+		selector += "," + manifests.LabelApp + "=" + app
+	}
 	secrets, err := c.Clientset.CoreV1().Secrets(namespace).List(ctx, metav1.ListOptions{
-		LabelSelector: manifests.LabelApp + "=" + app,
+		LabelSelector: selector,
 	})
 	if err != nil {
 		return nil, err
 	}
 	var out []rt.ServiceBindingInfo
 	for _, sec := range secrets.Items {
-		component := sec.Labels[manifests.LabelComponent]
-		if !strings.HasPrefix(component, "addon-") {
+		if !c.ours(sec.Labels) || (app == "") != (sec.Labels[manifests.LabelApp] == "") {
 			continue
 		}
-		b := rt.ServiceBindingInfo{Name: strings.TrimPrefix(component, "addon-")}
+		name := sec.Labels[manifests.LabelAddon]
+		if name == "" {
+			continue
+		}
+		b := rt.ServiceBindingInfo{Name: name}
 		for k := range sec.Data {
 			b.Keys = append(b.Keys, k)
 		}
@@ -127,21 +139,11 @@ func (c *Client) ListAddonBindings(ctx context.Context, namespace, app string) (
 	return out, nil
 }
 
-// SharedBindingValues collects one key's values across every space's shared
-// binding Secrets — the AI proxy's token list. owner is the pseudo-app the
-// shared bindings belong to.
-// The owner is matched by suffix rather than equality: where the whole
-// installation shares a namespace, object names and their labels carry the
-// space, so the shared owner reads "<space>--shared" and not "shared".
-func (c *Client) SharedBindingValues(ctx context.Context, owner, key string) ([]string, error) {
-	// Cluster-wide (a namespace per space) the owner label is the plain name
-	// and an equality selector keeps the sweep cheap. Confined to a shared
-	// namespace the labels carry each space, no one value matches them all —
-	// but the sweep is two namespaces, so listing donkey's secrets is fine.
-	selector := manifests.LabelApp + "=" + owner
-	if c.Confined() {
-		selector = manifests.LabelApp
-	}
+// SharedBindingValues collects one key across canonical space bindings.
+func (c *Client) SharedBindingValues(ctx context.Context, key string) ([]string, error) {
+	selector := fmt.Sprintf("%s=%s,%s=%s,%s",
+		manifests.LabelInstallation, c.installation(),
+		manifests.LabelComponent, manifests.ComponentBinding, manifests.LabelAddon)
 	var out []string
 	for _, ns := range c.sweep() {
 		secrets, err := c.Clientset.CoreV1().Secrets(ns).List(ctx, metav1.ListOptions{
@@ -151,10 +153,7 @@ func (c *Client) SharedBindingValues(ctx context.Context, owner, key string) ([]
 			return nil, err
 		}
 		for _, sec := range secrets.Items {
-			if !strings.HasPrefix(sec.Labels[manifests.LabelComponent], "addon-") || !c.ours(sec.Labels) {
-				continue
-			}
-			if !isOwner(sec.Labels[manifests.LabelApp], owner) {
+			if !c.ours(sec.Labels) || sec.Labels[manifests.LabelApp] != "" {
 				continue
 			}
 			if v, ok := sec.Data[key]; ok && len(v) > 0 {
@@ -165,29 +164,25 @@ func (c *Client) SharedBindingValues(ctx context.Context, owner, key string) ([]
 	return out, nil
 }
 
-// isOwner matches an object's owner label against a plain owner name, with or
-// without the space qualification a shared namespace adds.
-func isOwner(label, owner string) bool {
-	return label == owner || strings.HasSuffix(label, manifests.NameSeparator+owner)
-}
-
 // ListAddonAttachments names the apps holding a copy of the shared addon's
-// binding (the component carries the addon- prefix already).
+// binding.
 //
 // The space is part of the selector, not a nicety: where every space shares
 // one namespace, "addon-postgres" is a component several spaces have, and
 // without it removing one space's database would detach another's apps.
-func (c *Client) ListAddonAttachments(ctx context.Context, namespace, space, component string) ([]string, error) {
+func (c *Client) ListAddonAttachments(ctx context.Context, namespace, space, addon string) ([]string, error) {
 	secrets, err := c.Clientset.CoreV1().Secrets(namespace).List(ctx, metav1.ListOptions{
-		LabelSelector: fmt.Sprintf("%s=%s,%s=%s,%s=true",
-			manifests.LabelSpace, space, manifests.LabelComponent, component, manifests.LabelShared),
+		LabelSelector: fmt.Sprintf("%s=%s,%s=%s,%s=%s,%s=%s,%s",
+			manifests.LabelInstallation, c.installation(), manifests.LabelSpace, space,
+			manifests.LabelAddon, addon, manifests.LabelComponent, manifests.ComponentBinding,
+			manifests.LabelApp),
 	})
 	if err != nil {
 		return nil, err
 	}
 	var out []string
 	for _, sec := range secrets.Items {
-		if app := sec.Labels[manifests.LabelApp]; app != "" {
+		if app := sec.Labels[manifests.LabelApp]; app != "" && c.ours(sec.Labels) {
 			out = append(out, app)
 		}
 	}
@@ -204,9 +199,11 @@ func (c *Client) RolloutEvidenceFor(ctx context.Context, namespace, app string) 
 
 // ListRouteNames returns the shared-address routes an app currently owns —
 // the ones donkey renders from `routes:` in donkey.yaml.
-func (c *Client) ListRouteNames(ctx context.Context, namespace, app string) ([]string, error) {
+func (c *Client) ListRouteNames(ctx context.Context, namespace, space, app string) ([]string, error) {
 	routes, err := c.Clientset.CoreV1().ConfigMaps(namespace).List(ctx, metav1.ListOptions{
-		LabelSelector: manifests.LabelApp + "=" + app + "," + manifests.LabelComponent + "=" + manifests.ComponentRoute,
+		LabelSelector: fmt.Sprintf("%s=%s,%s=%s,%s=%s,%s=%s",
+			manifests.LabelInstallation, c.installation(), manifests.LabelSpace, space,
+			manifests.LabelApp, app, manifests.LabelComponent, manifests.ComponentPathRoute),
 	})
 	if err != nil {
 		return nil, err

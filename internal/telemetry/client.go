@@ -85,6 +85,27 @@ func (c *Client) Resources(ctx context.Context, space, app string, selected Reso
 	return report, nil
 }
 
+func (c *Client) PurgeSpace(ctx context.Context, space string) error {
+	if c == nil || c.baseURL == "" {
+		return errors.New("telemetry service is not configured")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete,
+		c.baseURL+"/v1/spaces/"+url.PathEscape(space), nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	response, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return fmt.Errorf("telemetry service returned %s", response.Status)
+	}
+	return nil
+}
+
 func (c *Client) Ready(ctx context.Context) error {
 	if c == nil || c.baseURL == "" {
 		return errors.New("telemetry service is not configured")
