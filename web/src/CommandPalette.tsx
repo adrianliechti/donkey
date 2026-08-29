@@ -99,9 +99,15 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
       }}
       className="relative z-[60]"
     >
-      <DialogBackdrop className="fixed inset-0 bg-black/60 transition-opacity duration-150 starting:opacity-0" />
+      <DialogBackdrop
+        transition
+        className="fixed inset-0 bg-black/60 transition-opacity duration-(--duration-base) ease-emphasized data-closed:opacity-0 data-leave:duration-(--duration-fast) data-leave:ease-exit"
+      />
       <div className="fixed inset-0 flex items-start justify-center p-4 pt-[12vh]">
-        <DialogPanel className="w-full max-w-xl overflow-hidden rounded-xl border border-line bg-card shadow-2xl transition-all duration-150 starting:scale-95 starting:opacity-0">
+        <DialogPanel
+          transition
+          className="w-full max-w-xl overflow-hidden rounded-xl border border-line bg-card shadow-2xl transition duration-(--duration-base) ease-emphasized data-closed:scale-95 data-closed:opacity-0 data-leave:duration-(--duration-fast) data-leave:ease-exit"
+        >
           <Combobox<Item | null>
             immediate
             onChange={(item) => item?.run()}

@@ -61,9 +61,15 @@ export function AddServiceDialog({
 }) {
   return (
     <Dialog open={open} onClose={() => !busy && onClose()} className="relative z-50">
-      <DialogBackdrop className="fixed inset-0 bg-black/60 transition-opacity duration-150 starting:opacity-0" />
+      <DialogBackdrop
+        transition
+        className="fixed inset-0 bg-black/60 transition-opacity duration-(--duration-base) ease-emphasized data-closed:opacity-0 data-leave:duration-(--duration-fast) data-leave:ease-exit"
+      />
       <div className="fixed inset-0 flex items-start justify-center p-4 pt-[14vh]">
-        <DialogPanel className="w-full max-w-lg rounded-lg border border-line bg-card p-4 shadow-2xl transition-all duration-150 starting:scale-95 starting:opacity-0">
+        <DialogPanel
+          transition
+          className="w-full max-w-lg rounded-lg border border-line bg-card p-4 shadow-2xl transition duration-(--duration-base) ease-emphasized data-closed:scale-95 data-closed:opacity-0 data-leave:duration-(--duration-fast) data-leave:ease-exit"
+        >
           <DialogTitle className="font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-muted">
             {title}
           </DialogTitle>

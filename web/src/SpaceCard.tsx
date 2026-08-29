@@ -19,7 +19,6 @@ import {
   Plus,
   Rocket,
   Sparkles,
-  Table2,
   Trash2,
 } from 'lucide-react'
 import { api, type AddAddonRequest, type AppSummary, type SpaceAddonEntry } from './api'
@@ -133,9 +132,15 @@ export function SpaceCard({
           }}
           className="relative z-50"
         >
-          <DialogBackdrop className="fixed inset-0 bg-black/60 transition-opacity duration-150 starting:opacity-0" />
+          <DialogBackdrop
+            transition
+            className="fixed inset-0 bg-black/60 transition-opacity duration-(--duration-base) ease-emphasized data-closed:opacity-0 data-leave:duration-(--duration-fast) data-leave:ease-exit"
+          />
           <div className="fixed inset-0 flex items-start justify-center p-4 pt-[18vh]">
-            <DialogPanel className="w-full max-w-md rounded-lg border border-line bg-card p-4 shadow-2xl transition duration-150 starting:opacity-0 starting:scale-95">
+            <DialogPanel
+              transition
+              className="w-full max-w-md rounded-lg border border-line bg-card p-4 shadow-2xl transition duration-(--duration-base) ease-emphasized data-closed:opacity-0 data-closed:scale-95 data-leave:duration-(--duration-fast) data-leave:ease-exit"
+            >
               <DialogTitle className="font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-muted">
                 Remove the space {space}
               </DialogTitle>
@@ -255,73 +260,93 @@ function SpaceServices({
 
   if (!services || services.length === 0) return null
 
+  // Each service opens one console, which is where it is managed and removed.
+  const consoleFor = (svc: SpaceAddonEntry) => {
+    if (svc.keys.includes('DATABASE_URL'))
+      return { Icon: Database, open: () => setBrowsing(svc), label: `Browse the ${svc.name} database` }
+    if (svc.keys.includes('AWS_ENDPOINT_URL_S3'))
+      return { Icon: Archive, open: () => setStoreBrowsing(svc), label: `Browse the ${svc.name} buckets` }
+    if (svc.keys.includes('OPENAI_BASE_URL'))
+      return { Icon: Sparkles, open: () => setChatting(svc), label: `Try ${svc.name} in a chat` }
+    return null
+  }
+  const chip =
+    'inline-flex items-center gap-1.5 rounded border border-line bg-raised px-2 py-1 font-mono text-xs text-ink-soft'
+
   return (
     <div className="mb-3">
       <div className="flex flex-wrap items-center gap-2">
-        {services.map((svc) => (
-          <span
-            key={svc.name}
-            className="inline-flex items-center gap-1.5 rounded border border-line bg-raised px-2 py-1 font-mono text-xs text-ink-soft"
-            title={
-              svc.attachedTo.length > 0
-                ? `Used by ${svc.attachedTo.join(', ')}`
-                : 'Not connected to any app yet'
-            }
-          >
-            <Database className="size-3" aria-hidden />
-            {svc.name}
-            {svc.keys.includes('OPENAI_BASE_URL') && (
-              <button
-                type="button"
-                title={`Try the ${svc.name} service in a chat`}
-                aria-label={`Try the ${svc.name} service in a chat`}
-                onClick={() => setChatting(svc)}
-                className="rounded p-0.5 text-muted hover:bg-line/50 hover:text-ink"
-              >
-                <Sparkles className="size-3" aria-hidden />
-              </button>
-            )}
-            {svc.keys.includes('AWS_ENDPOINT_URL_S3') && (
-              <button
-                type="button"
-                title={`Browse the ${svc.name} buckets`}
-                aria-label={`Browse the ${svc.name} buckets`}
-                onClick={() => setStoreBrowsing(svc)}
-                className="rounded p-0.5 text-muted hover:bg-line/50 hover:text-ink"
-              >
-                <Archive className="size-3" aria-hidden />
-              </button>
-            )}
-            {svc.keys.includes('DATABASE_URL') && (
-              <button
-                type="button"
-                title={`Browse the ${svc.name} database`}
-                aria-label={`Browse the ${svc.name} database`}
-                onClick={() => setBrowsing(svc)}
-                className="rounded p-0.5 text-muted hover:bg-line/50 hover:text-ink"
-              >
-                <Table2 className="size-3" aria-hidden />
-              </button>
-            )}
+        {services.map((svc) => {
+          const view = consoleFor(svc)
+          const used =
+            svc.attachedTo.length > 0
+              ? `Used by ${svc.attachedTo.join(', ')}`
+              : 'Not connected to any app yet'
+          // No console to hold a Remove: keep a direct one.
+          if (!view) {
+            return (
+              <span key={svc.name} className={chip} title={used}>
+                <Database className="size-3" aria-hidden />
+                {svc.name}
+                <button
+                  type="button"
+                  title={`Remove ${svc.name} from ${space}`}
+                  aria-label={`Remove ${svc.name} from ${space}`}
+                  onClick={() => setRemoving(svc)}
+                  className="rounded p-0.5 text-muted hover:bg-danger/10 hover:text-danger"
+                >
+                  <Trash2 className="size-3" aria-hidden />
+                </button>
+              </span>
+            )
+          }
+          return (
             <button
+              key={svc.name}
               type="button"
-              title={`Remove ${svc.name} from ${space}`}
-              aria-label={`Remove ${svc.name} from ${space}`}
-              onClick={() => setRemoving(svc)}
-              className="rounded p-0.5 text-muted hover:bg-danger/10 hover:text-danger"
+              onClick={view.open}
+              title={`${view.label} — ${used}`}
+              className={`${chip} transition-colors duration-(--duration-fast) hover:border-accent/70 hover:bg-accent-soft hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-strong`}
             >
-              <Trash2 className="size-3" aria-hidden />
+              <view.Icon className="size-3" aria-hidden />
+              {svc.name}
             </button>
-          </span>
-        ))}
+          )
+        })}
       </div>
       {browsing && (
-        <DatabaseDialog space={space} service={browsing.name} onClose={() => setBrowsing(null)} />
+        <DatabaseDialog
+          space={space}
+          service={browsing.name}
+          onClose={() => setBrowsing(null)}
+          onDelete={() => {
+            setRemoving(browsing)
+            setBrowsing(null)
+          }}
+        />
       )}
       {storeBrowsing && (
-        <S3Dialog space={space} service={storeBrowsing.name} onClose={() => setStoreBrowsing(null)} />
+        <S3Dialog
+          space={space}
+          service={storeBrowsing.name}
+          onClose={() => setStoreBrowsing(null)}
+          onDelete={() => {
+            setRemoving(storeBrowsing)
+            setStoreBrowsing(null)
+          }}
+        />
       )}
-      {chatting && <AiDialog space={space} service={chatting.name} onClose={() => setChatting(null)} />}
+      {chatting && (
+        <AiDialog
+          space={space}
+          service={chatting.name}
+          onClose={() => setChatting(null)}
+          onDelete={() => {
+            setRemoving(chatting)
+            setChatting(null)
+          }}
+        />
+      )}
       {removing && (
         <RemoveServiceDialog
           space={space}
@@ -372,9 +397,15 @@ function RemoveServiceDialog({
 
   return (
     <Dialog open onClose={() => !busy && onClose()} className="relative z-50">
-      <DialogBackdrop className="fixed inset-0 bg-black/60 transition-opacity duration-150 starting:opacity-0" />
+      <DialogBackdrop
+            transition
+            className="fixed inset-0 bg-black/60 transition-opacity duration-(--duration-base) ease-emphasized data-closed:opacity-0 data-leave:duration-(--duration-fast) data-leave:ease-exit"
+          />
       <div className="fixed inset-0 flex items-start justify-center p-4 pt-[18vh]">
-        <DialogPanel className="w-full max-w-md rounded-lg border border-line bg-card p-4 shadow-2xl transition duration-150 starting:opacity-0 starting:scale-95">
+        <DialogPanel
+              transition
+              className="w-full max-w-md rounded-lg border border-line bg-card p-4 shadow-2xl transition duration-(--duration-base) ease-emphasized data-closed:opacity-0 data-closed:scale-95 data-leave:duration-(--duration-fast) data-leave:ease-exit"
+            >
           <DialogTitle className="font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-muted">
             Remove {service.name} from {space}
           </DialogTitle>
@@ -525,7 +556,9 @@ function AppCard({ app }: { app: AppSummary }) {
         : 'border-line hover:border-line-strong'
 
   return (
-    <div className={`rounded-lg border bg-card transition-colors ${edge}`}>
+    <div
+      className={`rounded-lg border bg-card transition-[color,background-color,border-color,box-shadow,translate] duration-(--duration-fast) ease-emphasized hover:shadow-sm motion-safe:hover:-translate-y-px ${edge}`}
+    >
       {/* A real router Link: modifier clicks, middle clicks and copy-link
           behave like the web, with none of the hand-rolled handling. */}
       <Link

@@ -13,7 +13,7 @@ import {
   X,
 } from 'lucide-react'
 import { ApiError } from './api'
-import { Button, ErrorNote, Spinner, errText } from './ui'
+import { Button, ErrorNote, IconButton, Spinner, errText } from './ui'
 
 interface Bucket {
   name: string
@@ -84,10 +84,12 @@ export function S3Dialog({
   space,
   service,
   onClose,
+  onDelete,
 }: {
   space: string
   service: string
   onClose: () => void
+  onDelete: () => void
 }) {
   const [buckets, setBuckets] = useState<Bucket[] | null>(null)
   const [bucket, setBucket] = useState('')
@@ -259,20 +261,26 @@ export function S3Dialog({
 
   return (
     <Dialog open onClose={() => !busy && onClose()} className="relative z-50">
-      <DialogBackdrop className="fixed inset-0 bg-black/60 transition-opacity duration-150 starting:opacity-0" />
+      <DialogBackdrop
+        transition
+        className="fixed inset-0 bg-black/60 transition-opacity duration-(--duration-base) ease-emphasized data-closed:opacity-0 data-leave:duration-(--duration-fast) data-leave:ease-exit"
+      />
       <div className="fixed inset-0 flex items-start justify-center p-4 pt-[10vh]">
-        <DialogPanel className="flex h-[72vh] w-full max-w-3xl flex-col overflow-hidden rounded-lg border border-line bg-card shadow-2xl transition duration-150 starting:opacity-0 starting:scale-95">
-          <div className="flex items-center justify-between gap-2 border-b border-line px-4 py-3">
-            <DialogTitle className="font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-muted">
-              Buckets in {service}
-            </DialogTitle>
-            <button
-              onClick={onClose}
-              aria-label="Close the bucket browser"
-              className="rounded p-1 text-muted hover:bg-line/50 hover:text-ink focus-visible:outline-2 focus-visible:outline-accent-strong"
-            >
-              <X className="size-4" aria-hidden />
-            </button>
+        <DialogPanel
+          transition
+          className="flex h-[72vh] w-full max-w-3xl flex-col overflow-hidden rounded-lg border border-line bg-card shadow-2xl transition duration-(--duration-base) ease-emphasized data-closed:opacity-0 data-closed:scale-95 data-leave:duration-(--duration-fast) data-leave:ease-exit"
+        >
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-4 py-3">
+            <div className="flex items-center gap-3">
+              <DialogTitle className="flex items-center gap-2 font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-muted">
+                <Archive className="size-3.5" aria-hidden />
+                {service} · {space}
+              </DialogTitle>
+            </div>
+            <div className="flex items-center gap-1">
+              <IconButton icon={Trash2} label="Delete service" kind="danger" onClick={onDelete} />
+              <IconButton icon={X} label="Close" onClick={onClose} />
+            </div>
           </div>
 
           <div className="flex min-h-0 flex-1">

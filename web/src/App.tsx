@@ -221,21 +221,33 @@ function useEscapeToClose(close: () => void) {
   }, [])
 }
 
+// Navigating unmounts the panel on the spot, so the exit has to run first:
+// close() marks it closing and animationend commits the navigation. (View
+// transitions only fire when React commits inside the browser's snapshot
+// callback, which the router doesn't force — closing never animated.)
+function useDrawerClose() {
+  const navigate = useNavigate()
+  const [closing, setClosing] = useState(false)
+  const close = () => setClosing(true)
+  const onAnimationEnd = (e: React.AnimationEvent<HTMLElement>) => {
+    // currentTarget: not a spinner finishing inside the panel.
+    if (closing && e.target === e.currentTarget) navigate({ to: '/' })
+  }
+  return { closing, close, onAnimationEnd }
+}
+
 // The app panel slides over the fleet instead of replacing it — the canvas
 // behind it keeps saying how everything else is doing.
 function AppOverlay({ space, name, tab }: { space: string; name: string; tab: AppTab }) {
   const navigate = useNavigate()
-  const close = () => navigate({ to: '/' })
+  const { closing, close, onAnimationEnd } = useDrawerClose()
   useEscapeToClose(close)
 
   return (
     <>
-      {/* Enter motion via @starting-style (Tailwind's starting: variant): the
-          scrim fades and the panel slides in from the right the moment it
-          mounts. Reduced-motion users get neither — index.css zeroes every
-          transition under prefers-reduced-motion. */}
       <div
-        className="fixed inset-0 z-40 bg-black/50 transition-opacity duration-200 starting:opacity-0"
+        className="panel-scrim fixed inset-0 z-40 bg-black/50"
+        data-closing={closing || undefined}
         onClick={close}
         aria-hidden
       />
@@ -243,7 +255,9 @@ function AppOverlay({ space, name, tab }: { space: string; name: string; tab: Ap
         role="dialog"
         aria-modal="true"
         aria-label={`${name} — app details`}
-        className="fixed inset-y-0 right-0 z-50 flex w-full max-w-3xl flex-col overflow-y-auto border-l border-line bg-card shadow-[-24px_0_60px_rgba(0,0,0,.5)] transition-transform duration-200 ease-out will-change-transform starting:translate-x-full"
+        data-closing={closing || undefined}
+        onAnimationEnd={onAnimationEnd}
+        className="panel-drawer fixed inset-y-0 right-0 z-50 flex w-full max-w-3xl flex-col overflow-y-auto border-l border-line bg-card shadow-[-24px_0_60px_rgba(0,0,0,.5)]"
       >
         <AppDetail
           // A different app resets the panel; a different tab must not.
@@ -269,13 +283,14 @@ function AppOverlay({ space, name, tab }: { space: string; name: string; tab: Ap
 // app panel, to hold the live build's split view.
 function DeployOverlay({ space, name }: { space: string; name: string }) {
   const navigate = useNavigate()
-  const close = () => navigate({ to: '/' })
+  const { closing, close, onAnimationEnd } = useDrawerClose()
   useEscapeToClose(close)
 
   return (
     <>
       <div
-        className="fixed inset-0 z-40 bg-black/50 transition-opacity duration-200 starting:opacity-0"
+        className="panel-scrim fixed inset-0 z-40 bg-black/50"
+        data-closing={closing || undefined}
         onClick={close}
         aria-hidden
       />
@@ -283,7 +298,9 @@ function DeployOverlay({ space, name }: { space: string; name: string }) {
         role="dialog"
         aria-modal="true"
         aria-label="Deploy an app"
-        className="fixed inset-y-0 right-0 z-50 flex w-full max-w-4xl flex-col overflow-y-auto border-l border-line bg-card shadow-[-24px_0_60px_rgba(0,0,0,.5)] transition-transform duration-200 ease-out will-change-transform starting:translate-x-full"
+        data-closing={closing || undefined}
+        onAnimationEnd={onAnimationEnd}
+        className="panel-drawer fixed inset-y-0 right-0 z-50 flex w-full max-w-4xl flex-col overflow-y-auto border-l border-line bg-card shadow-[-24px_0_60px_rgba(0,0,0,.5)]"
       >
         <div className="flex items-center justify-end px-4 pt-4">
           <button

@@ -11,7 +11,7 @@ import {
 import { Check, ChevronLeft, ChevronRight, Plus, RefreshCw, Table2, Terminal, Trash2, X } from 'lucide-react'
 import { api, type DbCell, type DbDatabase, type DbRowsPage, type DbTable } from './api'
 import { DataGrid } from './DataGrid'
-import { Button, ErrorNote, Select, Spinner, errText } from './ui'
+import { Button, ErrorNote, IconButton, Select, Spinner, errText } from './ui'
 
 const inputStyle =
   'rounded border border-line bg-surface px-1.5 py-1 font-mono text-xs focus:outline-2 focus:outline-accent-strong'
@@ -91,10 +91,12 @@ export function DatabaseDialog({
   space,
   service,
   onClose,
+  onDelete,
 }: {
   space: string
   service: string
   onClose: () => void
+  onDelete: () => void
 }) {
   const [databases, setDatabases] = useState<DbDatabase[]>([])
   const [db, setDb] = useState('')
@@ -194,9 +196,15 @@ export function DatabaseDialog({
 
   return (
     <Dialog open onClose={onClose} className="relative z-50">
-      <DialogBackdrop className="fixed inset-0 bg-black/60 transition-opacity duration-150 starting:opacity-0" />
+      <DialogBackdrop
+        transition
+        className="fixed inset-0 bg-black/60 transition-opacity duration-(--duration-base) ease-emphasized data-closed:opacity-0 data-leave:duration-(--duration-fast) data-leave:ease-exit"
+      />
       <div className="fixed inset-0 flex items-center justify-center p-4">
-        <DialogPanel className="flex h-[85vh] w-full max-w-5xl flex-col rounded-lg border border-line bg-card shadow-2xl transition duration-150 starting:opacity-0 starting:scale-95">
+        <DialogPanel
+          transition
+          className="flex h-[85vh] w-full max-w-5xl flex-col rounded-lg border border-line bg-card shadow-2xl transition duration-(--duration-base) ease-emphasized data-closed:opacity-0 data-closed:scale-95 data-leave:duration-(--duration-fast) data-leave:ease-exit"
+        >
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-4 py-3">
             <div className="flex items-center gap-3">
               <DialogTitle className="flex items-center gap-2 font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-muted">
@@ -211,9 +219,12 @@ export function DatabaseDialog({
                   <Button kind="danger" onClick={dropDatabase} disabled={busy}>
                     {busy ? 'Deleting…' : `Delete ${db}`}
                   </Button>
-                  <Button kind="quiet" onClick={() => setDroppingDb(false)} disabled={busy}>
-                    ✕
-                  </Button>
+                  <IconButton
+                    icon={X}
+                    label="Keep the database"
+                    onClick={() => setDroppingDb(false)}
+                    disabled={busy}
+                  />
                 </div>
               ) : newDb === null ? (
                 <div className="flex items-center gap-1">
@@ -233,25 +244,14 @@ export function DatabaseDialog({
                       }))}
                     />
                   )}
-                  <button
-                    type="button"
-                    title="New database"
-                    aria-label="New database"
-                    onClick={() => setNewDb('')}
-                    className="rounded p-1.5 text-muted hover:bg-line/50 hover:text-ink"
-                  >
-                    <Plus className="size-3.5" aria-hidden />
-                  </button>
+                  <IconButton icon={Plus} label="New database" onClick={() => setNewDb('')} />
                   {db && db !== defaultDb && (
-                    <button
-                      type="button"
-                      title={`Delete the database ${db}`}
-                      aria-label={`Delete the database ${db}`}
+                    <IconButton
+                      icon={Trash2}
+                      label={`Delete the database ${db}`}
+                      kind="danger"
                       onClick={() => setDroppingDb(true)}
-                      className="rounded p-1.5 text-muted hover:bg-danger/10 hover:text-danger"
-                    >
-                      <Trash2 className="size-3.5" aria-hidden />
-                    </button>
+                    />
                   )}
                 </div>
               ) : (
@@ -273,29 +273,23 @@ export function DatabaseDialog({
                   <Button type="submit" disabled={busy || !newDb.trim()}>
                     {busy ? 'Creating…' : 'Create'}
                   </Button>
-                  <Button kind="quiet" onClick={() => setNewDb(null)} disabled={busy}>
-                    ✕
-                  </Button>
+                  <IconButton
+                    icon={X}
+                    label="Cancel"
+                    onClick={() => setNewDb(null)}
+                    disabled={busy}
+                  />
                 </form>
               )}
             </div>
-            <div className="flex items-center gap-2">
-              <Button kind="quiet" onClick={() => setView(view === 'sql' ? 'tables' : 'sql')}>
-                <span className="flex items-center gap-1.5">
-                  {view === 'sql' ? (
-                    <>
-                      <Table2 className="size-3.5" aria-hidden /> Tables
-                    </>
-                  ) : (
-                    <>
-                      <Terminal className="size-3.5" aria-hidden /> SQL
-                    </>
-                  )}
-                </span>
-              </Button>
-              <Button kind="quiet" onClick={onClose}>
-                Close
-              </Button>
+            <div className="flex items-center gap-1">
+              <IconButton
+                icon={view === 'sql' ? Table2 : Terminal}
+                label={view === 'sql' ? 'Browse tables' : 'Run SQL'}
+                onClick={() => setView(view === 'sql' ? 'tables' : 'sql')}
+              />
+              <IconButton icon={Trash2} label="Delete service" kind="danger" onClick={onDelete} />
+              <IconButton icon={X} label="Close" onClick={onClose} />
             </div>
           </div>
           <div className="px-4 pt-2 empty:hidden">
@@ -800,9 +794,7 @@ function TableView({
             >
               Delete
             </Button>
-            <Button kind="quiet" onClick={() => setDeleting(null)} disabled={busy}>
-              ✕
-            </Button>
+            <IconButton icon={X} label="Keep the row" onClick={() => setDeleting(null)} disabled={busy} />
           </div>
         ) : editable ? (
           // invisible, not hidden: the button keeps its space at all times,

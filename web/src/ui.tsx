@@ -1,7 +1,17 @@
 // Small shared pieces so every view speaks the same visual language.
 import { Component, type ReactNode, useSyncExternalStore } from 'react'
 import { Listbox, ListboxButton, ListboxOption, ListboxOptions } from '@headlessui/react'
-import { Check, ChevronDown, CircleAlert, CircleCheck, Globe, Loader2, Lock, Network } from 'lucide-react'
+import {
+  Check,
+  ChevronDown,
+  CircleAlert,
+  CircleCheck,
+  Globe,
+  Loader2,
+  Lock,
+  Network,
+  type LucideIcon,
+} from 'lucide-react'
 import type { Exposure } from './api'
 
 // useColorScheme follows the OS light/dark preference — the console has no
@@ -137,9 +147,40 @@ export function Button({
       type={type}
       onClick={onClick}
       disabled={disabled}
-      className={`rounded-md px-3 py-1.5 text-sm whitespace-nowrap transition-colors disabled:opacity-40 disabled:pointer-events-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-strong ${styles}`}
+      className={`rounded-md px-3 py-1.5 text-sm whitespace-nowrap transition-[color,background-color,border-color,scale] duration-(--duration-fast) ease-emphasized motion-safe:active:scale-[.97] disabled:opacity-40 disabled:pointer-events-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-strong ${styles}`}
     >
       {children}
+    </button>
+  )
+}
+
+// The icon-only counterpart, for toolbars: the app header and every dialog's
+// action row. The label is the tooltip and the accessible name.
+export function IconButton({
+  icon: Icon,
+  label,
+  onClick,
+  kind = 'quiet',
+  disabled = false,
+}: {
+  icon: LucideIcon
+  label: string
+  onClick?: () => void
+  kind?: 'quiet' | 'danger'
+  disabled?: boolean
+}) {
+  const tone =
+    kind === 'danger' ? 'hover:bg-danger/10 hover:text-danger' : 'hover:bg-line/60 hover:text-ink'
+  return (
+    <button
+      type="button"
+      title={label}
+      aria-label={label}
+      onClick={onClick}
+      disabled={disabled}
+      className={`flex items-center rounded-md p-1.5 text-muted transition-[color,background-color,scale] duration-(--duration-fast) ease-emphasized motion-safe:active:scale-[.97] disabled:opacity-40 disabled:pointer-events-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-strong ${tone}`}
+    >
+      <Icon className="size-4" aria-hidden />
     </button>
   )
 }

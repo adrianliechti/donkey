@@ -7,9 +7,9 @@ import { Markdown } from '@tanstack/markdown/react'
 import { highlightToHtml } from '@tanstack/highlight'
 import githubDarkTheme from '@tanstack/highlight/themes/github-dark'
 import githubLightTheme from '@tanstack/highlight/themes/github-light'
-import { Send, Sparkles, Square } from 'lucide-react'
+import { Send, Sparkles, Square, Trash2, X } from 'lucide-react'
 import { api } from './api'
-import { Button, ErrorNote, Select, Spinner, errText, useColorScheme } from './ui'
+import { Button, ErrorNote, IconButton, Select, Spinner, errText, useColorScheme } from './ui'
 
 // The highlighter emits `th-<token>` classes; the theme is a token→color
 // map. One generated stylesheet marries them — scoped under the dialog's own
@@ -43,10 +43,12 @@ export function AiDialog({
   space,
   service,
   onClose,
+  onDelete,
 }: {
   space: string
   service: string
   onClose: () => void
+  onDelete: () => void
 }) {
   const [token, setToken] = useState('')
   const [base, setBase] = useState('')
@@ -153,9 +155,15 @@ export function AiDialog({
   return (
     <Dialog open onClose={onClose} className="relative z-50">
       <style>{themeCss}</style>
-      <DialogBackdrop className="fixed inset-0 bg-black/60 transition-opacity duration-150 starting:opacity-0" />
+      <DialogBackdrop
+        transition
+        className="fixed inset-0 bg-black/60 transition-opacity duration-(--duration-base) ease-emphasized data-closed:opacity-0 data-leave:duration-(--duration-fast) data-leave:ease-exit"
+      />
       <div className="fixed inset-0 flex items-center justify-center p-4">
-        <DialogPanel className="flex h-[85vh] w-full max-w-3xl flex-col rounded-lg border border-line bg-card shadow-2xl transition duration-150 starting:opacity-0 starting:scale-95">
+        <DialogPanel
+          transition
+          className="flex h-[85vh] w-full max-w-3xl flex-col rounded-lg border border-line bg-card shadow-2xl transition duration-(--duration-base) ease-emphasized data-closed:opacity-0 data-closed:scale-95 data-leave:duration-(--duration-fast) data-leave:ease-exit"
+        >
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-4 py-3">
             <div className="flex items-center gap-3">
               <DialogTitle className="flex items-center gap-2 font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-muted">
@@ -175,9 +183,10 @@ export function AiDialog({
                 <span className="font-mono text-xs text-muted">{model}</span>
               )}
             </div>
-            <Button kind="quiet" onClick={onClose}>
-              Close
-            </Button>
+            <div className="flex items-center gap-1">
+              <IconButton icon={Trash2} label="Delete service" kind="danger" onClick={onDelete} />
+              <IconButton icon={X} label="Close" onClick={onClose} />
+            </div>
           </div>
 
           <div className="px-4 pt-2 empty:hidden">
