@@ -1,15 +1,35 @@
 import { useState } from 'react'
-import { Link } from '@tanstack/react-router'
-import { Dialog, DialogBackdrop, DialogPanel, DialogTitle } from '@headlessui/react'
-import { Archive, Database, HardDrive, Network, Plus, Sparkles, Table2, Trash2 } from 'lucide-react'
+import { Link, useNavigate } from '@tanstack/react-router'
+import {
+  Dialog,
+  DialogBackdrop,
+  DialogPanel,
+  DialogTitle,
+  Menu,
+  MenuButton,
+  MenuItem,
+  MenuItems,
+} from '@headlessui/react'
+import {
+  Archive,
+  Database,
+  EllipsisVertical,
+  HardDrive,
+  Network,
+  Plus,
+  Rocket,
+  Sparkles,
+  Table2,
+  Trash2,
+} from 'lucide-react'
 import { api, type AddAddonRequest, type AppSummary, type SpaceAddonEntry } from './api'
-import { AddServiceDialog } from './AddonForm'
+import { AddServiceDialog, typeIcons } from './AddonForm'
 import { AiDialog } from './AiDialog'
 import { DatabaseDialog } from './DatabaseDialog'
-import { useInvalidateServices, useSpaceServices } from './queries'
+import { useCatalog, useInvalidateServices, useSpaceServices } from './queries'
 import { S3Dialog } from './S3Dialog'
 import { SpaceTelemetry } from './TrafficPanel'
-import { Button, ErrorNote, ExposureBadge, StatusDot, ago, errText, healthLine, healthOf, type Health } from './ui'
+import { Button, ErrorNote, ExposureBadge, ago, errText, healthLine, healthOf } from './ui'
 
 /**
  * One section of the paddock per space.
@@ -24,27 +44,38 @@ import { Button, ErrorNote, ExposureBadge, StatusDot, ago, errText, healthLine, 
 export function SpaceCard({
   space,
   apps,
+  allApps,
   onChanged,
 }: {
   space: string
+  /** The apps to show in the grid — may be filtered (e.g. the fleet's
+   *  "Only problems" view). */
   apps: AppSummary[]
+  /** Every app in the space, filtered or not. The delete confirmation must
+   *  count from this, or it under-reports what a delete destroys. Defaults to
+   *  `apps` when the caller isn't filtering. */
+  allApps?: AppSummary[]
   onChanged: () => void
 }) {
-  const [adding, setAdding] = useState(false)
+  const everyApp = allApps ?? apps
+  // null = closed; a type name = the add-service dialog open on that service.
+  const [addingType, setAddingType] = useState<string | null>(null)
   const [deletingSpace, setDeletingSpace] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [typedSpace, setTypedSpace] = useState('')
 
   const { data: services, error: servicesError } = useSpaceServices(space)
+  const { data: catalog } = useCatalog()
   const invalidate = useInvalidateServices()
+  const addingTitle = catalog?.find((s) => s.type === addingType)?.title || addingType
 
   async function add(req: AddAddonRequest) {
     setBusy(true)
     setError('')
     try {
       await api.addSpaceAddon(space, req)
-      setAdding(false)
+      setAddingType(null)
       invalidate(space)
     } catch (err) {
       setError(errText(err, 'Adding did not work.'))
@@ -53,46 +84,24 @@ export function SpaceCard({
     }
   }
 
-  // The project's own health is the worst of its parts: a frontend that is
-  // up is not good news when the backend it calls is down.
-  const worst: Health = apps.some((a) => healthOf(a.healthy, a.ready) === 'bad')
-    ? 'bad'
-    : apps.some((a) => healthOf(a.healthy, a.ready) === 'unknown')
-      ? 'unknown'
-      : 'ok'
-
   return (
-    <section className="rounded-xl border border-line/70 bg-canvas/60 p-4">
+    <section className="py-6">
       <div className="mb-3 flex items-center justify-between gap-3">
         <div className="flex items-center gap-2.5">
-          <StatusDot health={worst} />
           <h2 className="font-mono text-base font-bold tracking-tight">{space}</h2>
         </div>
         <div className="flex items-center gap-0.5">
           <SpaceTelemetry space={space} />
           <span className="mx-1 h-4 w-px bg-line" aria-hidden />
-          <button
-            type="button"
-            title={`Add a service to ${space} (database & co.)`}
-            aria-label={`Add a service to ${space}`}
-            onClick={() => setAdding(true)}
-            className="rounded-md p-1.5 text-muted hover:bg-line/60 hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-strong"
-          >
-            <Plus className="size-4" aria-hidden />
-          </button>
-          <button
-            type="button"
-            title={`Remove the space ${space} and everything in it`}
-            aria-label={`Remove the space ${space} and everything in it`}
-            onClick={() => {
+          <AddMenu space={space} onAddService={(type) => setAddingType(type)} />
+          <SpaceMenu
+            space={space}
+            onDelete={() => {
               setError('')
               setTypedSpace('')
               setDeletingSpace(true)
             }}
-            className="rounded-md p-1.5 text-muted hover:bg-danger/10 hover:text-danger focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-strong"
-          >
-            <Trash2 className="size-4" aria-hidden />
-          </button>
+          />
         </div>
       </div>
 
@@ -100,9 +109,10 @@ export function SpaceCard({
 
       {apps.length === 0 && (
         <p className="text-sm text-muted">
-          No apps yet — deploy into this space with{' '}
+          No apps yet — add one with{' '}
+          <span className="font-medium text-ink-soft">+ → Application</span> above, or deploy with{' '}
           <code className="rounded bg-surface px-1.5 py-0.5 font-mono text-xs">space: {space}</code> in
-          donkey.yaml, or the Deploy button above.
+          donkey.yaml.
         </p>
       )}
 
@@ -123,19 +133,19 @@ export function SpaceCard({
           }}
           className="relative z-50"
         >
-          <DialogBackdrop className="fixed inset-0 bg-black/60" />
+          <DialogBackdrop className="fixed inset-0 bg-black/60 transition-opacity duration-150 starting:opacity-0" />
           <div className="fixed inset-0 flex items-start justify-center p-4 pt-[18vh]">
-            <DialogPanel className="w-full max-w-md rounded-lg border border-line bg-card p-4 shadow-2xl">
+            <DialogPanel className="w-full max-w-md rounded-lg border border-line bg-card p-4 shadow-2xl transition duration-150 starting:opacity-0 starting:scale-95">
               <DialogTitle className="font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-muted">
                 Remove the space {space}
               </DialogTitle>
               <ErrorNote message={error} />
               <div className="mt-3 space-y-2 text-sm text-ink-soft">
                 <p>This permanently removes the space and every Donkey-managed resource in it.</p>
-                {apps.length > 0 ? (
+                {everyApp.length > 0 ? (
                   <p className="text-danger">
-                    Its {apps.length === 1 ? 'app' : 'apps'}{' '}
-                    <span className="font-mono">{apps.map((app) => app.name).join(', ')}</span> will be deleted.
+                    Its {everyApp.length === 1 ? 'app' : 'apps'}{' '}
+                    <span className="font-mono">{everyApp.map((app) => app.name).join(', ')}</span> will be deleted.
                   </p>
                 ) : (
                   <p className="text-muted">It holds no apps.</p>
@@ -207,15 +217,16 @@ export function SpaceCard({
       )}
 
       <AddServiceDialog
-        open={adding}
-        title={`Add a service to ${space}`}
-        submitLabel="Add to the space"
+        open={addingType !== null}
+        title={addingType ? `Add ${addingTitle} to ${space}` : ''}
+        submitLabel="Add"
         busy={busy}
         error={error}
+        initialType={addingType ?? undefined}
         note={busy ? 'Setting up — the first time can take a minute while the cluster downloads the image.' : ''}
         onSubmit={add}
         onClose={() => {
-          setAdding(false)
+          setAddingType(null)
           setError('')
         }}
       />
@@ -361,9 +372,9 @@ function RemoveServiceDialog({
 
   return (
     <Dialog open onClose={() => !busy && onClose()} className="relative z-50">
-      <DialogBackdrop className="fixed inset-0 bg-black/60" />
+      <DialogBackdrop className="fixed inset-0 bg-black/60 transition-opacity duration-150 starting:opacity-0" />
       <div className="fixed inset-0 flex items-start justify-center p-4 pt-[18vh]">
-        <DialogPanel className="w-full max-w-md rounded-lg border border-line bg-card p-4 shadow-2xl">
+        <DialogPanel className="w-full max-w-md rounded-lg border border-line bg-card p-4 shadow-2xl transition duration-150 starting:opacity-0 starting:scale-95">
           <DialogTitle className="font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-muted">
             Remove {service.name} from {space}
           </DialogTitle>
@@ -413,10 +424,105 @@ function RemoveServiceDialog({
   )
 }
 
+// The space's "+" — everything you can add here, named. An app goes to the
+// deploy flow; each service in the catalog is its own entry, so a two-click
+// "pick from a grid" popup is gone: click the one you want and configure it.
+function AddMenu({ space, onAddService }: { space: string; onAddService: (type: string) => void }) {
+  const navigate = useNavigate()
+  const { data: catalog } = useCatalog()
+  const services = catalog ?? []
+  return (
+    <Menu>
+      <MenuButton
+        title={`Add to ${space}`}
+        aria-label={`Add to ${space}`}
+        className="flex items-center rounded-md p-1.5 text-muted hover:bg-line/60 hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-strong data-open:bg-line/60 data-open:text-ink"
+      >
+        <Plus className="size-4" aria-hidden />
+      </MenuButton>
+      <MenuItems
+        anchor="bottom end"
+        className="z-50 mt-1 w-72 overflow-hidden rounded-md border border-line bg-card py-1 shadow-lg focus:outline-none"
+      >
+        <MenuItem>
+          <button
+            type="button"
+            onClick={() => navigate({ to: '/deploy/$space', params: { space } })}
+            className="flex w-full items-start gap-2.5 px-3 py-2 text-left data-focus:bg-accent-soft"
+          >
+            <Rocket className="mt-0.5 size-4 shrink-0 text-muted" aria-hidden />
+            <span className="min-w-0">
+              <span className="block text-sm font-medium text-ink">Application</span>
+              <span className="block text-xs text-muted">Deploy a project folder into {space}.</span>
+            </span>
+          </button>
+        </MenuItem>
+        {services.length > 0 && <div className="my-1 h-px bg-line" aria-hidden />}
+        {services.map((svc) => {
+          const Icon = typeIcons[svc.type] ?? Database
+          return (
+            <MenuItem key={svc.type}>
+              <button
+                type="button"
+                onClick={() => onAddService(svc.type)}
+                className="flex w-full items-start gap-2.5 px-3 py-2 text-left data-focus:bg-accent-soft"
+              >
+                <Icon className="mt-0.5 size-4 shrink-0 text-muted" aria-hidden />
+                <span className="min-w-0">
+                  <span className="block text-sm font-medium text-ink">{svc.title || svc.type}</span>
+                  {svc.description && (
+                    <span className="block text-xs text-muted">{svc.description}</span>
+                  )}
+                </span>
+              </button>
+            </MenuItem>
+          )
+        })}
+      </MenuItems>
+    </Menu>
+  )
+}
+
+// The space's overflow menu. Deleting a space is the one destructive act here,
+// so it sits behind a kebab rather than a bare trash icon a mis-click reaches.
+function SpaceMenu({ space, onDelete }: { space: string; onDelete: () => void }) {
+  return (
+    <Menu>
+      <MenuButton
+        title={`More actions for ${space}`}
+        aria-label={`More actions for ${space}`}
+        className="flex items-center rounded-md p-1.5 text-muted hover:bg-line/60 hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-strong data-open:bg-line/60 data-open:text-ink"
+      >
+        <EllipsisVertical className="size-4" aria-hidden />
+      </MenuButton>
+      <MenuItems
+        anchor="bottom end"
+        className="z-50 mt-1 w-48 overflow-hidden rounded-md border border-line bg-card py-1 shadow-lg focus:outline-none"
+      >
+        <MenuItem>
+          <button
+            type="button"
+            onClick={onDelete}
+            className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-danger data-focus:bg-danger/10"
+          >
+            <Trash2 className="size-4" aria-hidden /> Delete space
+          </button>
+        </MenuItem>
+      </MenuItems>
+    </Menu>
+  )
+}
+
 function AppCard({ app }: { app: AppSummary }) {
   const h = healthOf(app.healthy, app.ready)
+  // The card's own border carries its health — no separate dot to scatter the
+  // eye. Healthy stays calm and neutral; a problem tints the whole edge.
   const edge =
-    h === 'bad' ? 'border-danger/50 hover:border-danger' : 'border-line hover:border-line-strong'
+    h === 'bad'
+      ? 'border-danger/60 hover:border-danger'
+      : h === 'unknown'
+        ? 'border-muted/40 hover:border-muted'
+        : 'border-line hover:border-line-strong'
 
   return (
     <div className={`rounded-lg border bg-card transition-colors ${edge}`}>
@@ -424,14 +530,11 @@ function AppCard({ app }: { app: AppSummary }) {
           behave like the web, with none of the hand-rolled handling. */}
       <Link
         to="/app/$space/$name/{-$tab}"
-        params={{ space: app.space, name: app.name, tab: undefined }}
+        params={{ space: app.space || 'default', name: app.name, tab: undefined }}
         className="block p-3.5 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent-strong"
       >
         <div className="flex items-center justify-between gap-2">
-          <span className="flex min-w-0 items-center gap-2">
-            <StatusDot health={h} />
-            <span className="truncate font-mono text-sm font-bold">{app.name}</span>
-          </span>
+          <span className="truncate font-mono text-sm font-bold">{app.name}</span>
           <ExposureBadge exposure={app.exposure} />
         </div>
 

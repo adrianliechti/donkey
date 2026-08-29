@@ -310,8 +310,8 @@ export function DeployView({
           })),
       )
       queryClient.invalidateQueries({ queryKey: fleetQuery.queryKey })
-      queryClient.invalidateQueries({ queryKey: ['status', result.space ?? settled.app.space, result.app] })
-      queryClient.invalidateQueries({ queryKey: ['release', result.space ?? settled.app.space, result.app] })
+      queryClient.invalidateQueries({ queryKey: ['status', result.space || settled.app.space, result.app] })
+      queryClient.invalidateQueries({ queryKey: ['builds', result.space || settled.app.space, result.app] })
       setPhase({ step: 'done', result, plan: settled, review })
     } catch (err) {
       // The plan and the packed project are both still here, so the way back
@@ -440,6 +440,7 @@ export function DeployView({
         <PlanReview
           plan={phase.plan}
           spaces={fleet.data?.spaces ?? []}
+          space={space || undefined}
           busy={busy}
           error={error}
           onRecheck={(edit) => recheck(phase, edit)}
@@ -467,7 +468,7 @@ export function DeployView({
           buildLog={buildLog}
           update={releaseUpdate}
           result={phase.result}
-          onOpen={() => onDeployed(phase.result.space ?? 'default', phase.result.app)}
+          onOpen={() => onDeployed(phase.result.space || 'default', phase.result.app)}
           onBackToReview={() => {
             setError('')
             setPhase(phase.review)

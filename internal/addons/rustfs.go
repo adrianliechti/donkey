@@ -23,7 +23,8 @@ const rfImage = "rustfs/rustfs"
 
 type rustfs struct{}
 
-func (rustfs) Type() string { return "rustfs" }
+func (rustfs) Type() string  { return "rustfs" }
+func (rustfs) Title() string { return "RustFS" }
 func (rustfs) Description() string {
 	return "S3-compatible object storage — buckets and files, in one small server."
 }

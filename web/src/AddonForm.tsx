@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from 'react'
-import { Dialog, DialogBackdrop, DialogPanel, DialogTitle, Radio, RadioGroup } from '@headlessui/react'
+import { Dialog, DialogBackdrop, DialogPanel, DialogTitle } from '@headlessui/react'
 import { Archive, ArrowLeft, Database, Server, Sparkles } from 'lucide-react'
 import { type AddAddonRequest } from './api'
 import { useCatalog } from './queries'
@@ -14,15 +14,10 @@ const diskSizes = ['1Gi', '2Gi', '5Gi', '10Gi', '20Gi', '50Gi']
 
 // Each catalog entry gets a face; unknown future types fall back to a
 // plain server glyph.
-const typeIcons: Record<string, typeof Database> = {
+export const typeIcons: Record<string, typeof Database> = {
   postgres: Database,
   rustfs: Archive,
   openai: Sparkles,
-}
-
-const addressExamples: Record<string, string> = {
-  postgres: 'postgres://user:password@host:5432/dbname',
-  openai: 'https://api.openai.com/v1',
 }
 
 function Eyebrow({ children }: { children: ReactNode }) {
@@ -34,10 +29,11 @@ function Eyebrow({ children }: { children: ReactNode }) {
 }
 
 /**
- * The add-service popup — the space card (create only) and the app page
- * (create and connect in one go) open the same one. Closing is blocked
- * while a request runs: provisioning holds the connection open, and an
- * abandoned dialog would look like nothing happened.
+ * The add-service popup. Two callers open it: a space's + menu, which already
+ * picked the type (initialType) and lands straight on its configuration, and
+ * the app page, which opens the small catalog first. Closing is blocked while
+ * a request runs: provisioning holds the connection open, and an abandoned
+ * dialog would look like nothing happened.
  */
 export function AddServiceDialog({
   open,
@@ -46,6 +42,7 @@ export function AddServiceDialog({
   busy,
   error,
   note,
+  initialType,
   onSubmit,
   onClose,
 }: {
@@ -55,21 +52,31 @@ export function AddServiceDialog({
   busy: boolean
   error?: string
   note?: string
+  /** When set, the dialog opens straight on that service's configuration —
+   *  the caller (a space's + menu) already chose the type, so the catalog
+   *  step is skipped. */
+  initialType?: string
   onSubmit: (req: AddAddonRequest) => void
   onClose: () => void
 }) {
   return (
     <Dialog open={open} onClose={() => !busy && onClose()} className="relative z-50">
-      <DialogBackdrop className="fixed inset-0 bg-black/60" />
+      <DialogBackdrop className="fixed inset-0 bg-black/60 transition-opacity duration-150 starting:opacity-0" />
       <div className="fixed inset-0 flex items-start justify-center p-4 pt-[14vh]">
-        <DialogPanel className="w-full max-w-xl rounded-lg border border-line bg-card p-4 shadow-2xl">
+        <DialogPanel className="w-full max-w-lg rounded-lg border border-line bg-card p-4 shadow-2xl transition-all duration-150 starting:scale-95 starting:opacity-0">
           <DialogTitle className="font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-muted">
             {title}
           </DialogTitle>
           <ErrorNote message={error ?? ''} />
           {note && <p className="mt-2 text-xs text-ink-soft">{note}</p>}
           <div className="mt-3">
-            <AddonForm busy={busy} submitLabel={submitLabel} onSubmit={onSubmit} onCancel={onClose} />
+            <AddonForm
+              busy={busy}
+              submitLabel={submitLabel}
+              initialType={initialType}
+              onSubmit={onSubmit}
+              onCancel={onClose}
+            />
           </div>
         </DialogPanel>
       </div>
@@ -78,19 +85,21 @@ export function AddServiceDialog({
 }
 
 /**
- * The catalog, in two steps: first pick the service, then say how it runs.
- * The contract strip on the second step shows the variable names connected
- * apps will receive — the promise that makes managed and external services
- * interchangeable.
+ * Configure a managed service before it is created. donkey runs it in the
+ * cluster and shares it across the space; the contract strip shows the
+ * variable names its apps will receive. (Attaching an external service by
+ * address is a CLI-only path — `donkey addon attach`.)
  */
 export function AddonForm({
   busy,
   submitLabel,
+  initialType,
   onSubmit,
   onCancel,
 }: {
   busy: boolean
   submitLabel: string
+  initialType?: string
   onSubmit: (req: AddAddonRequest) => void
   onCancel: () => void
 }) {
@@ -100,15 +109,12 @@ export function AddonForm({
   // to do, a spinner would just spin.
   const loaded = catalog !== null || catalogError !== ''
   // '' means the catalog step; a type name means its configuration step.
-  const [type, setType] = useState('')
+  const [type, setType] = useState(initialType ?? '')
   const [name, setName] = useState('')
   const [storage, setStorage] = useState('')
-  const [source, setSource] = useState<'cluster' | 'external'>('cluster')
-  const [url, setUrl] = useState('')
 
   const chosen = types.find((t) => t.type === type)
-  const external = source === 'external'
-  const needsDisk = !external && Boolean(chosen?.storage)
+  const needsDisk = Boolean(chosen?.storage)
   const disk = storage || chosen?.storage || ''
   const diskOptions = [...new Set([chosen?.storage ?? '', ...diskSizes])]
     .filter(Boolean)
@@ -123,8 +129,8 @@ export function AddonForm({
     )
   }
 
-  // Step 1 — the catalog. Picking a service moves on; there is nothing
-  // else to decide here.
+  // Step 1 — the catalog, shown only when the caller didn't preselect a type
+  // (the app page's "add a service"). A space's + menu skips straight past it.
   if (!chosen) {
     return (
       <div className="flex flex-col gap-3">
@@ -140,7 +146,7 @@ export function AddonForm({
               >
                 <div className="flex items-center gap-2">
                   <Icon className="size-4 text-muted" aria-hidden />
-                  <span className="font-mono text-sm font-bold">{t.type}</span>
+                  <span className="font-mono text-sm font-bold">{t.title || t.type}</span>
                   <span className="font-mono text-[11px] text-muted">{t.version}</span>
                 </div>
                 {t.description && (
@@ -159,46 +165,30 @@ export function AddonForm({
     )
   }
 
-  // Step 2 — how the chosen service runs.
+  // Step 2 — configure the chosen service. Always cluster-managed, so the only
+  // choices left are a name and (for the ones that store data) a disk size.
   const ChosenIcon = typeIcons[chosen.type] ?? Server
-  const sourceTile =
-    'cursor-pointer rounded-lg border border-line bg-surface px-3 py-2 transition-colors hover:border-line-strong focus:outline-2 focus:outline-accent-strong data-checked:border-accent/70 data-checked:bg-accent-soft'
 
   return (
     <div className="flex flex-col gap-4">
+      {/* The catalog caller can step back; the + menu caller has nowhere to
+          go back to, so it just names the type it opened on. */}
       <div className="flex items-center gap-2">
-        <button
-          type="button"
-          onClick={() => setType('')}
-          disabled={busy}
-          className="flex items-center gap-1 rounded-md px-1.5 py-1 text-xs text-muted hover:bg-line/50 hover:text-ink focus-visible:outline-2 focus-visible:outline-accent-strong"
-        >
-          <ArrowLeft className="size-3.5" aria-hidden /> All services
-        </button>
+        {!initialType && (
+          <button
+            type="button"
+            onClick={() => setType('')}
+            disabled={busy}
+            className="flex items-center gap-1 rounded-md px-1.5 py-1 text-xs text-muted hover:bg-line/50 hover:text-ink focus-visible:outline-2 focus-visible:outline-accent-strong"
+          >
+            <ArrowLeft className="size-3.5" aria-hidden /> All services
+          </button>
+        )}
         <span className="flex items-center gap-2 rounded-md border border-accent/40 bg-accent-soft px-2 py-1">
           <ChosenIcon className="size-3.5 text-accent" aria-hidden />
-          <span className="font-mono text-sm font-bold">{chosen.type}</span>
+          <span className="font-mono text-sm font-bold">{chosen.title || chosen.type}</span>
           <span className="font-mono text-[11px] text-muted">{chosen.version}</span>
         </span>
-      </div>
-
-      <div className="flex flex-col gap-1.5">
-        <Eyebrow>Where it runs</Eyebrow>
-        <RadioGroup
-          value={source}
-          onChange={setSource}
-          aria-label="Where it runs"
-          className="grid grid-cols-2 gap-2"
-        >
-          <Radio value="cluster" className={sourceTile}>
-            <span className="text-sm font-medium">In this cluster</span>
-            <span className="mt-0.5 block text-xs text-muted">donkey creates and runs it</span>
-          </Radio>
-          <Radio value="external" className={sourceTile}>
-            <span className="text-sm font-medium">Somewhere else</span>
-            <span className="mt-0.5 block text-xs text-muted">connect it by its address</span>
-          </Radio>
-        </RadioGroup>
       </div>
 
       <div className="flex flex-wrap items-end gap-3">
@@ -208,7 +198,7 @@ export function AddonForm({
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder={chosen.type}
-            className={`${inputStyle} w-40`}
+            className={`${inputStyle} w-44`}
           />
         </label>
         {needsDisk && (
@@ -217,42 +207,22 @@ export function AddonForm({
             <Select ariaLabel="Disk size" value={disk} onChange={setStorage} options={diskOptions} />
           </div>
         )}
-        {external && (
-          <label className="flex min-w-0 flex-1 flex-col gap-1.5">
-            <Eyebrow>Address</Eyebrow>
-            <input
-              value={url}
-              onChange={(e) => setUrl(e.target.value)}
-              placeholder={addressExamples[chosen.type] ?? 'https://service.example.com'}
-              className={inputStyle}
-            />
-          </label>
-        )}
       </div>
 
       <div className="rounded-md border border-line/60 bg-raised/60 px-3 py-2.5">
         <Eyebrow>Your apps will see</Eyebrow>
-        {external ? (
-          <p className="mt-1 text-xs text-ink-soft">
-            The same kind of variables, derived from the address you give — apps cannot tell it from
-            a donkey-managed {chosen.type}.
-          </p>
-        ) : (
-          <p className="mt-1 font-mono text-[11px] leading-5 text-ink-soft">
-            {(chosen.keys ?? []).join(' · ')}
-          </p>
-        )}
+        <p className="mt-1 font-mono text-[11px] leading-5 text-ink-soft">
+          {(chosen.keys ?? []).join(' · ')}
+        </p>
       </div>
 
-      <div className="flex items-center justify-between gap-2">
+      <div className="mt-1 flex flex-col gap-3 border-t border-line/60 pt-3">
         <p className="text-xs text-muted">
-          {external
-            ? 'Nothing runs in the cluster for this — only the connection is stored.'
-            : chosen.version
-              ? `${chosen.type} ${chosen.version}${needsDisk ? ` · ${disk} disk` : ''} · shared by the whole space`
-              : `${chosen.type} · provided by the platform — nothing runs in your space`}
+          {chosen.version
+            ? `Runs in the cluster${needsDisk ? ` on a ${disk} disk` : ''}, shared by every app in the space.`
+            : 'Provided by the platform — nothing runs in your space.'}
         </p>
-        <div className="flex gap-2">
+        <div className="flex justify-end gap-2">
           <Button kind="quiet" onClick={onCancel} disabled={busy}>
             Cancel
           </Button>
@@ -262,13 +232,13 @@ export function AddonForm({
                 type: chosen.type,
                 name: name.trim() || undefined,
                 storage: needsDisk && storage ? storage : undefined,
-                external,
-                url: external ? url.trim() : undefined,
+                external: false,
+                url: undefined,
               })
             }
-            disabled={busy || (external && url.trim() === '')}
+            disabled={busy}
           >
-            {busy ? 'Setting up…' : submitLabel}
+            {busy ? 'Adding…' : submitLabel}
           </Button>
         </div>
       </div>

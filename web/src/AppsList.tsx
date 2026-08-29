@@ -4,7 +4,7 @@ import { FolderPlus, RefreshCw } from 'lucide-react'
 import { api, type AppSummary } from './api'
 import { useFleet } from './queries'
 import { SpaceCard } from './SpaceCard'
-import { Button, DonkeyLogo, ErrorNote, Skeleton, errText, healthOf, type Health } from './ui'
+import { Button, DonkeyLogo, ErrorNote, Skeleton, StatusDot, errText, healthOf, type Health } from './ui'
 
 const healthRank: Record<Health, number> = { bad: 0, unknown: 1, ok: 2 }
 
@@ -12,6 +12,10 @@ export function AppsList() {
   const { data, error, reload } = useFleet()
   const apps = data?.apps ?? null
   const [creating, setCreating] = useState(false)
+  // Triage: the fleet is where an operator asks "is anything wrong?" — so it
+  // can narrow to just the apps that need attention rather than scanning every
+  // card. Off by default; the summary counts stay honest either way.
+  const [onlyProblems, setOnlyProblems] = useState(false)
 
   // Apps belong to a space; the paddock mirrors that hierarchy instead of
   // flattening everything into one wall of cards. Spaces without apps are
@@ -34,12 +38,42 @@ export function AppsList() {
     })
   }
 
+  // Fleet-wide health at a glance. "attention" is the triage bucket: down or
+  // status-unknown, the two an operator would want to look at.
+  const counts = { ok: 0, attention: 0 }
+  for (const app of apps ?? []) {
+    if (healthOf(app.healthy, app.ready) === 'ok') counts.ok++
+    else counts.attention++
+  }
+  const total = counts.ok + counts.attention
+
+  // With the filter on, keep only spaces that hold an app needing attention,
+  // and within them only those apps — everything healthy steps out of the way.
+  // The full per-space list is kept alongside so a space's delete confirmation
+  // still counts every app it would destroy, not just the ones on screen.
+  const fullBySpace = new Map(spaces)
+  const shownSpaces = onlyProblems
+    ? spaces
+        .map(([space, list]) => [space, list.filter((a) => healthOf(a.healthy, a.ready) !== 'ok')] as const)
+        .filter(([, list]) => list.length > 0)
+    : spaces
+
   return (
     <div className="space-y-5">
-      <div className="flex items-center justify-between">
-        <h1 className="font-mono text-[11px] font-semibold uppercase tracking-[0.18em] text-muted">
-          Fleet
-        </h1>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+          <h1 className="font-mono text-[11px] font-semibold uppercase tracking-[0.18em] text-muted">
+            Fleet
+          </h1>
+          {total > 0 && (
+            <FleetSummary
+              ok={counts.ok}
+              attention={counts.attention}
+              onlyProblems={onlyProblems}
+              onToggle={() => setOnlyProblems((v) => !v)}
+            />
+          )}
+        </div>
         <div className="flex items-center gap-0.5">
           <button
             type="button"
@@ -72,6 +106,21 @@ export function AppsList() {
         </div>
       )}
 
+      {onlyProblems && shownSpaces.length === 0 && (
+        <div className="rounded-xl border border-line bg-card p-8 text-center">
+          <p className="flex items-center justify-center gap-2 text-sm text-ink">
+            <StatusDot health="ok" /> Nothing needs attention — all {total} apps are running.
+          </p>
+          <button
+            type="button"
+            onClick={() => setOnlyProblems(false)}
+            className="mt-2 text-sm text-accent hover:text-accent-strong"
+          >
+            Show the whole fleet
+          </button>
+        </div>
+      )}
+
       {apps !== null && spaces.length === 0 && (
         <div className="rounded-xl border border-line bg-card p-12 text-center">
           <DonkeyLogo className="mx-auto size-10 text-muted" />
@@ -80,16 +129,30 @@ export function AppsList() {
             Deploy your first app from its project folder:{' '}
             <code className="rounded bg-surface px-2 py-0.5 font-mono text-sm">donkey deploy</code>
           </p>
-          <p className="mt-1 text-sm text-muted">
-            — or use <span className="font-medium text-ink">Deploy</span> above and drop the project
-            folder right here.
-          </p>
+          <p className="mt-1 text-sm text-muted">— or make a space, then add an app to it:</p>
+          <button
+            type="button"
+            onClick={() => setCreating(true)}
+            className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-line px-3 py-1.5 text-sm text-ink-soft transition-colors hover:bg-line/50 focus-visible:outline-2 focus-visible:outline-accent-strong"
+          >
+            <FolderPlus className="size-4" aria-hidden /> New space
+          </button>
         </div>
       )}
 
-      {spaces.map(([space, spaceApps]) => (
-        <SpaceCard key={space} space={space} apps={spaceApps} onChanged={reload} />
-      ))}
+      {shownSpaces.length > 0 && (
+        <div className="divide-y divide-line/70 border-t border-line/70">
+          {shownSpaces.map(([space, spaceApps]) => (
+            <SpaceCard
+              key={space}
+              space={space}
+              apps={spaceApps}
+              allApps={fullBySpace.get(space) ?? spaceApps}
+              onChanged={reload}
+            />
+          ))}
+        </div>
+      )}
 
       <NewSpaceDialog
         open={creating}
@@ -99,6 +162,53 @@ export function AppsList() {
           reload()
         }}
       />
+    </div>
+  )
+}
+
+/**
+ * The fleet's health in one line: how many apps are running, how many want a
+ * look, and a one-click switch to just those. When everything is up it reads
+ * as a calm all-clear rather than a wall of green.
+ */
+function FleetSummary({
+  ok,
+  attention,
+  onlyProblems,
+  onToggle,
+}: {
+  ok: number
+  attention: number
+  onlyProblems: boolean
+  onToggle: () => void
+}) {
+  // When everything is healthy, the fleet says nothing next to its title —
+  // the summary earns its place only when something needs a look.
+  if (attention === 0) return null
+  return (
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
+      <span className="flex items-center gap-1.5 font-medium text-danger">
+        <StatusDot health="bad" />
+        {attention} {attention === 1 ? 'app needs attention' : 'apps need attention'}
+      </span>
+      {ok > 0 && (
+        <span className="flex items-center gap-1.5 text-ink-soft">
+          <StatusDot health="ok" />
+          {ok} running
+        </span>
+      )}
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-pressed={onlyProblems}
+        className={`rounded-md border px-2 py-0.5 text-xs transition-colors focus-visible:outline-2 focus-visible:outline-accent-strong ${
+          onlyProblems
+            ? 'border-accent-strong bg-accent-soft text-accent-strong'
+            : 'border-line text-ink-soft hover:border-line-strong hover:text-ink'
+        }`}
+      >
+        {onlyProblems ? 'Showing problems' : 'Only problems'}
+      </button>
     </div>
   )
 }
@@ -136,9 +246,9 @@ function NewSpaceDialog({
 
   return (
     <Dialog open={open} onClose={() => !busy && onClose()} className="relative z-50">
-      <DialogBackdrop className="fixed inset-0 bg-black/60" />
+      <DialogBackdrop className="fixed inset-0 bg-black/60 transition-opacity duration-150 starting:opacity-0" />
       <div className="fixed inset-0 flex items-start justify-center p-4 pt-[18vh]">
-        <DialogPanel className="w-full max-w-sm rounded-lg border border-line bg-card p-4 shadow-2xl">
+        <DialogPanel className="w-full max-w-sm rounded-lg border border-line bg-card p-4 shadow-2xl transition duration-150 starting:opacity-0 starting:scale-95">
           <DialogTitle className="font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-muted">
             New space
           </DialogTitle>

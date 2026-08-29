@@ -56,9 +56,9 @@ export function SpaceTelemetry({ space }: { space: string }) {
       </button>
 
       <Dialog open={open} onClose={setOpen} className="relative z-50">
-        <DialogBackdrop className="fixed inset-0 bg-black/60" />
+        <DialogBackdrop className="fixed inset-0 bg-black/60 transition-opacity duration-150 starting:opacity-0" />
         <div className="fixed inset-0 flex justify-end">
-          <DialogPanel className="flex h-full w-full max-w-4xl flex-col border-l border-line bg-surface shadow-[-24px_0_60px_rgba(0,0,0,.5)]">
+          <DialogPanel className="flex h-full w-full max-w-4xl flex-col border-l border-line bg-surface transition-transform duration-200 ease-out will-change-transform starting:translate-x-full shadow-[-24px_0_60px_rgba(0,0,0,.5)]">
             <div className="flex items-center justify-between gap-3 border-b border-line bg-card px-5 py-4">
               <div className="min-w-0">
                 <div className="font-mono text-[10px] font-semibold uppercase tracking-[0.16em] text-muted">

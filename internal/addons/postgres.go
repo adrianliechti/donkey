@@ -14,7 +14,8 @@ const (
 
 type postgres struct{}
 
-func (postgres) Type() string { return "postgres" }
+func (postgres) Type() string  { return "postgres" }
+func (postgres) Title() string { return "PostgreSQL" }
 func (postgres) Description() string {
 	return "The relational database — most frameworks speak to it out of the box."
 }

@@ -113,12 +113,14 @@ export function AppDetail({
 
         {status?.found && (
           <div className="flex flex-wrap items-center gap-2 px-5 pt-3">
+            {/* An anchor (opens a new tab), dressed exactly like the quiet
+                Restart/Deploy buttons beside it so the action row is uniform. */}
             {status.url && (
               <a
                 href={status.url}
                 target="_blank"
                 rel="noreferrer"
-                className="flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-sm font-semibold text-on-accent transition-colors hover:bg-accent-strong focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-strong"
+                className="flex items-center gap-1.5 rounded-md border border-line bg-transparent px-3 py-1.5 text-sm text-ink-soft transition-colors hover:bg-line/50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-strong"
               >
                 Open app <ExternalLink className="size-3.5" aria-hidden />
               </a>

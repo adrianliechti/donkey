@@ -259,9 +259,9 @@ export function S3Dialog({
 
   return (
     <Dialog open onClose={() => !busy && onClose()} className="relative z-50">
-      <DialogBackdrop className="fixed inset-0 bg-black/60" />
+      <DialogBackdrop className="fixed inset-0 bg-black/60 transition-opacity duration-150 starting:opacity-0" />
       <div className="fixed inset-0 flex items-start justify-center p-4 pt-[10vh]">
-        <DialogPanel className="flex h-[72vh] w-full max-w-3xl flex-col overflow-hidden rounded-lg border border-line bg-card shadow-2xl">
+        <DialogPanel className="flex h-[72vh] w-full max-w-3xl flex-col overflow-hidden rounded-lg border border-line bg-card shadow-2xl transition duration-150 starting:opacity-0 starting:scale-95">
           <div className="flex items-center justify-between gap-2 border-b border-line px-4 py-3">
             <DialogTitle className="font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-muted">
               Buckets in {service}
