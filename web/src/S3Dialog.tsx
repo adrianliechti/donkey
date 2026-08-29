@@ -263,13 +263,13 @@ export function S3Dialog({
       <div className="fixed inset-0 flex items-start justify-center p-4 pt-[10vh]">
         <DialogPanel className="flex h-[72vh] w-full max-w-3xl flex-col overflow-hidden rounded-lg border border-line bg-card shadow-2xl">
           <div className="flex items-center justify-between gap-2 border-b border-line px-4 py-3">
-            <DialogTitle className="font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-stone">
+            <DialogTitle className="font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-muted">
               Buckets in {service}
             </DialogTitle>
             <button
               onClick={onClose}
               aria-label="Close the bucket browser"
-              className="rounded p-1 text-stone hover:bg-line/50 hover:text-ink focus-visible:outline-2 focus-visible:outline-hay-deep"
+              className="rounded p-1 text-muted hover:bg-line/50 hover:text-ink focus-visible:outline-2 focus-visible:outline-accent-strong"
             >
               <X className="size-4" aria-hidden />
             </button>
@@ -281,15 +281,15 @@ export function S3Dialog({
               <div className="min-h-0 flex-1 overflow-y-auto p-2">
                 {buckets === null && <Spinner label="Opening the store…" />}
                 {buckets !== null && buckets.length === 0 && (
-                  <p className="px-2 py-6 text-center text-sm text-stone">
+                  <p className="px-2 py-6 text-center text-sm text-muted">
                     No buckets yet — every object lives in one. Name your first below.
                   </p>
                 )}
                 <ul className="space-y-0.5">
                   {buckets?.map((b) =>
                     removingBucket?.name === b.name ? (
-                      <li key={b.name} className="rounded-md border border-brick/30 bg-brick/5 p-2">
-                        <p className="text-xs text-brick">
+                      <li key={b.name} className="rounded-md border border-danger/30 bg-danger/5 p-2">
+                        <p className="text-xs text-danger">
                           {removingBucket.forced
                             ? `${b.name} isn't empty — the console can't say how many objects it holds. Delete everything in it too?`
                             : `Delete the bucket ${b.name}?`}
@@ -317,17 +317,17 @@ export function S3Dialog({
                           title={`Created ${new Date(b.createdAt).toLocaleDateString()}`}
                           className={`flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1.5 text-left font-mono text-sm ${
                             bucket === b.name
-                              ? 'bg-hay-wash text-ink'
+                              ? 'bg-accent-soft text-ink'
                               : 'text-ink-soft hover:bg-line/50'
                           }`}
                         >
-                          <Archive className="size-3.5 shrink-0 text-hay-deep" aria-hidden />
+                          <Archive className="size-3.5 shrink-0 text-accent-strong" aria-hidden />
                           <span className="truncate">{b.name}</span>
                         </button>
                         <button
                           onClick={() => setRemovingBucket({ name: b.name, forced: false })}
                           aria-label={`Delete the bucket ${b.name}`}
-                          className="hidden rounded p-1 text-stone hover:bg-brick/10 hover:text-brick group-hover:block"
+                          className="hidden rounded p-1 text-muted hover:bg-danger/10 hover:text-danger group-hover:block"
                         >
                           <Trash2 className="size-3.5" aria-hidden />
                         </button>
@@ -348,13 +348,13 @@ export function S3Dialog({
                   onChange={(e) => setNewBucket(e.target.value)}
                   placeholder="new bucket"
                   aria-label="Name of the new bucket"
-                  className="w-full min-w-0 flex-1 rounded-md border border-line bg-surface px-2 py-1 font-mono text-xs focus:outline-2 focus:outline-hay-deep"
+                  className="w-full min-w-0 flex-1 rounded-md border border-line bg-surface px-2 py-1 font-mono text-xs focus:outline-2 focus:outline-accent-strong"
                 />
                 <button
                   type="submit"
                   disabled={newBucket.trim() === '' || busy !== ''}
                   aria-label="Create the bucket"
-                  className="rounded-md border border-line p-1 text-stone hover:bg-line/50 hover:text-ink disabled:pointer-events-none disabled:opacity-40"
+                  className="rounded-md border border-line p-1 text-muted hover:bg-line/50 hover:text-ink disabled:pointer-events-none disabled:opacity-40"
                 >
                   <Plus className="size-3.5" aria-hidden />
                 </button>
@@ -368,13 +368,13 @@ export function S3Dialog({
                   <button
                     onClick={() => setPrefix('')}
                     disabled={!bucket}
-                    className="flex items-center gap-1 rounded px-1 py-0.5 font-mono text-stone hover:bg-line/50 hover:text-ink"
+                    className="flex items-center gap-1 rounded px-1 py-0.5 font-mono text-muted hover:bg-line/50 hover:text-ink"
                   >
                     <Archive className="size-3.5" aria-hidden /> {bucket || '—'}
                   </button>
                   {crumbs.map((part, i) => (
                     <span key={i} className="flex items-center gap-1">
-                      <ChevronRight className="size-3 text-stone" aria-hidden />
+                      <ChevronRight className="size-3 text-muted" aria-hidden />
                       <button
                         onClick={() => setPrefix(crumbs.slice(0, i + 1).join('/') + '/')}
                         className="rounded px-1 py-0.5 font-mono hover:bg-line/50"
@@ -388,7 +388,7 @@ export function S3Dialog({
                   <button
                     onClick={() => fileInput.current?.click()}
                     disabled={!bucket}
-                    className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-stone hover:bg-line/50 disabled:pointer-events-none disabled:opacity-40 focus-visible:outline-2 focus-visible:outline-hay-deep"
+                    className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted hover:bg-line/50 disabled:pointer-events-none disabled:opacity-40 focus-visible:outline-2 focus-visible:outline-accent-strong"
                   >
                     <Upload className="size-3.5" aria-hidden /> Upload
                   </button>
@@ -396,7 +396,7 @@ export function S3Dialog({
                     onClick={loadObjects}
                     disabled={!bucket}
                     aria-label="Reload the objects"
-                    className="rounded-md px-2 py-1 text-xs text-stone hover:bg-line/50 disabled:pointer-events-none disabled:opacity-40 focus-visible:outline-2 focus-visible:outline-hay-deep"
+                    className="rounded-md px-2 py-1 text-xs text-muted hover:bg-line/50 disabled:pointer-events-none disabled:opacity-40 focus-visible:outline-2 focus-visible:outline-accent-strong"
                   >
                     <RefreshCw className={`size-3.5 ${busy ? 'animate-spin' : ''}`} aria-hidden />
                   </button>
@@ -415,16 +415,16 @@ export function S3Dialog({
 
               <div className="min-h-0 flex-1 overflow-y-auto p-2">
                 <ErrorNote message={error} />
-                {busy && <p className="px-2 py-1 text-xs text-stone">{busy}</p>}
+                {busy && <p className="px-2 py-1 text-xs text-muted">{busy}</p>}
 
                 {!bucket && buckets !== null && buckets.length > 0 && (
-                  <p className="px-2 py-6 text-center text-sm text-stone">
+                  <p className="px-2 py-6 text-center text-sm text-muted">
                     Pick a bucket on the left to look inside.
                   </p>
                 )}
                 {bucket && listing === null && !error && <Spinner label="Listing the objects…" />}
                 {listing && listing.prefixes.length === 0 && listing.objects.length === 0 && (
-                  <p className="px-2 py-6 text-center text-sm text-stone">
+                  <p className="px-2 py-6 text-center text-sm text-muted">
                     Nothing in here yet — upload a file to get things rolling.
                   </p>
                 )}
@@ -434,9 +434,9 @@ export function S3Dialog({
                     <li key={p}>
                       <button
                         onClick={() => setPrefix(p)}
-                        className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-hay-wash/60"
+                        className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-accent-soft/60"
                       >
-                        <Folder className="size-4 shrink-0 text-hay-deep" aria-hidden />
+                        <Folder className="size-4 shrink-0 text-accent-strong" aria-hidden />
                         <span className="truncate font-mono text-sm">{lastSegment(p)}/</span>
                       </button>
                     </li>
@@ -444,7 +444,7 @@ export function S3Dialog({
                   {listing?.objects.map((o) =>
                     deletingKey === o.key ? (
                       <li key={o.key} className="flex flex-wrap items-center gap-2 px-2 py-1.5">
-                        <span className="flex-1 truncate font-mono text-sm text-brick">
+                        <span className="flex-1 truncate font-mono text-sm text-danger">
                           Delete {lastSegment(o.key)}? Objects don't come back.
                         </span>
                         <Button
@@ -463,27 +463,27 @@ export function S3Dialog({
                     ) : (
                       <li key={o.key} className="flex items-center gap-2 px-2 py-1.5">
                         <span className="flex min-w-0 flex-1 items-center gap-2">
-                          <File className="size-4 shrink-0 text-stone" aria-hidden />
+                          <File className="size-4 shrink-0 text-muted" aria-hidden />
                           <span className="truncate font-mono text-sm" title={o.key}>
                             {lastSegment(o.key)}
                           </span>
                         </span>
-                        <span className="shrink-0 text-xs text-stone">{humanSize(o.size)}</span>
-                        <span className="hidden shrink-0 text-xs text-stone sm:inline">
+                        <span className="shrink-0 text-xs text-muted">{humanSize(o.size)}</span>
+                        <span className="hidden shrink-0 text-xs text-muted sm:inline">
                           {new Date(o.modified).toLocaleDateString()}
                         </span>
                         <span className="flex shrink-0 items-center gap-0.5">
                           <button
                             onClick={() => download(o.key)}
                             aria-label={`Download ${lastSegment(o.key)}`}
-                            className="rounded p-1 text-stone hover:bg-line/50 hover:text-ink"
+                            className="rounded p-1 text-muted hover:bg-line/50 hover:text-ink"
                           >
                             <Download className="size-4" aria-hidden />
                           </button>
                           <button
                             onClick={() => setDeletingKey(o.key)}
                             aria-label={`Delete ${lastSegment(o.key)}`}
-                            className="rounded p-1 text-stone hover:bg-brick/10 hover:text-brick"
+                            className="rounded p-1 text-muted hover:bg-danger/10 hover:text-danger"
                           >
                             <Trash2 className="size-4" aria-hidden />
                           </button>
@@ -494,7 +494,7 @@ export function S3Dialog({
                 </ul>
 
                 {listing?.truncated && (
-                  <p className="px-2 py-2 text-xs text-stone">
+                  <p className="px-2 py-2 text-xs text-muted">
                     This bucket holds more than the console lists at once — open a folder to see the
                     rest.
                   </p>

@@ -21,9 +21,6 @@ const NameSeparator = "--"
 // may — so a marker can never collide with an app's objects.
 const spaceMarkerPrefix = "donkey.space."
 
-// ComponentSpace marks the space marker object.
-const ComponentSpace = "space"
-
 // Placement decides where a space's objects live and what they are called.
 //
 // Two arrangements, one type. By default every space gets its own namespace
@@ -73,7 +70,7 @@ func (p Placement) Unname(space, objectName string) string {
 // SpaceOf recovers the space from a namespace — the inverse of Namespace for
 // the per-space arrangement, where the namespace name is the only record. In
 // the shared arrangement the namespace says nothing, so callers read the
-// donkey.dev/space label instead.
+// donkey.local/space label instead.
 func (p Placement) SpaceOf(namespace string) string {
 	if p.Shared() {
 		return ""
@@ -98,7 +95,7 @@ func SpaceMarker(space, namespace string) *corev1.ConfigMap {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      SpaceMarkerName(space),
 			Namespace: namespace,
-			Labels:    Labels(space, SpaceMarkerName(space), ComponentSpace),
+			Labels:    SpaceLabels(space),
 		},
 	}
 }

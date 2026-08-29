@@ -11,18 +11,20 @@ import (
 	"github.com/adrianliechti/donkey/pkg/runtime/kubernetes/manifests"
 )
 
-// An attachment is a marked copy: same name and shape as any binding, plus
-// the shared label that detach and cascade-remove select on.
+// An attachment carries both logical app and addon identity; the canonical
+// space binding carries only addon identity.
 func TestAttachmentSecret(t *testing.T) {
-	sec := attachmentSecret("prod", "shop", "donkey-prod", "db", map[string]string{"DATABASE_URL": "x"})
+	sec := attachmentSecret("prod", "shop", "shop", "donkey-prod", "db", map[string]string{"DATABASE_URL": "x"})
 	if sec.Name != addons.SecretName("shop", "db") {
 		t.Fatalf("name = %q", sec.Name)
 	}
-	if sec.Labels["donkey.dev/shared"] != "true" {
-		t.Fatalf("attachment must carry the shared label, got %v", sec.Labels)
+	if sec.Labels[manifests.LabelApp] != "shop" || sec.Labels[manifests.LabelAddon] != "db" ||
+		sec.Labels[manifests.LabelRole] != manifests.RoleBinding {
+		t.Fatalf("attachment identity = %v", sec.Labels)
 	}
-	if plain := bindingSecret("prod", "shop", "donkey-prod", "db", nil); plain.Labels["donkey.dev/shared"] != "" {
-		t.Fatalf("a plain binding must not carry the shared label")
+	plain := spaceBindingSecret("prod", "shared", "donkey-prod", "db", nil)
+	if plain.Labels[manifests.LabelApp] != "" || plain.Labels[manifests.LabelAddon] != "db" {
+		t.Fatalf("space binding must have addon identity without a pseudo-app: %v", plain.Labels)
 	}
 }
 

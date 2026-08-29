@@ -22,7 +22,9 @@ import (
 )
 
 const (
-	webContainerName = "web"
+	// WebContainerName is the app container in the pod. Exported because the
+	// runtime reads container status and metrics by this name.
+	WebContainerName = "web"
 
 	// storageVolumeName is the app's single volume; every configured path
 	// becomes a folder on it.
@@ -41,6 +43,13 @@ type Input struct {
 	// namespace donkey doesn't own: there is no namespace to render, and the
 	// space is recorded by a marker object instead.
 	SharedNamespace bool
+	// IsolateSpace renders the space's network fence next to its home — see
+	// SpaceIsolationPolicy. RestrictEgress adds the egress half. SystemNamespace
+	// is the control plane's namespace (the installation identity), which names
+	// the fence's admitted peers.
+	IsolateSpace    bool
+	RestrictEgress  bool
+	SystemNamespace string
 	// ObjectName is what this app's objects are called. It is App.Name unless
 	// the installation shares one namespace, where every name carries its
 	// space. Empty means the two are the same.
@@ -65,6 +74,11 @@ type Input struct {
 	// RouteTargets are the paths of other apps' addresses this app answers
 	// on. The server resolves the hostnames, so this package stays pure.
 	RouteTargets []RouteTarget
+
+	// TelemetryEndpoint and TelemetryToken configure a standard OTLP/HTTP
+	// metrics exporter without overriding values the app owner set explicitly.
+	TelemetryEndpoint string
+	TelemetryToken    string
 }
 
 // RouteTarget is one resolved entry of donkey.yaml's `routes`.
@@ -75,10 +89,8 @@ type RouteTarget struct {
 	Path string
 }
 
-// Name is what this app's objects are called, and the value its labels carry.
-// Object names and labels are qualified together on purpose: every selector
-// donkey writes then addresses one space's objects, without any call site
-// having to remember to narrow it.
+// Name is what this app's objects are called. Labels always keep App.Name as
+// the logical identity; selectors include the space separately.
 func (in Input) Name() string {
 	if in.ObjectName != "" {
 		return in.ObjectName
@@ -90,6 +102,8 @@ func PullSecretName(app string) string { return app + "-registry" }
 
 func EnvSecretName(app string) string { return app + "-env" }
 
+func TelemetrySecretName(app string) string { return app + "-telemetry" }
+
 func DataClaimName(app string) string { return app + "-data" }
 
 // AppObjects renders the namespace, optional pull secret, data volume,
@@ -97,9 +111,15 @@ func DataClaimName(app string) string { return app + "-data" }
 func AppObjects(in Input) ([]runtime.Object, error) {
 	app := in.App
 	objs := []runtime.Object{SpaceHome(in.Space, in.Namespace, in.SharedNamespace)}
+	if in.IsolateSpace {
+		objs = append(objs, SpaceIsolationPolicy(in.Space, in.Namespace, in.SystemNamespace, in.RestrictEgress))
+	}
 
 	if in.RegistryUsername != "" && in.RegistryPassword != "" {
 		objs = append(objs, pullSecret(in))
+	}
+	if in.TelemetryEndpoint != "" && in.TelemetryToken != "" {
+		objs = append(objs, telemetrySecret(in))
 	}
 	if app.HasStorage() {
 		pvc, err := dataClaim(in)
@@ -154,13 +174,12 @@ func Namespace(space, name string) *corev1.Namespace {
 		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Namespace"},
 		ObjectMeta: metav1.ObjectMeta{
 			Name: name,
-			Labels: map[string]string{
-				"app.kubernetes.io/name":             space,
-				"app.kubernetes.io/managed-by":       ManagedByValue,
-				LabelSpace:                           space,
-				"pod-security.kubernetes.io/enforce": "baseline",
-				"pod-security.kubernetes.io/warn":    "restricted",
-			},
+			Labels: func() map[string]string {
+				labels := SpaceLabels(space)
+				labels["pod-security.kubernetes.io/enforce"] = "baseline"
+				labels["pod-security.kubernetes.io/warn"] = "restricted"
+				return labels
+			}(),
 			Annotations: map[string]string{AnnotationManaged: "true"},
 		},
 	}
@@ -183,7 +202,7 @@ func dataClaim(in Input) (*corev1.PersistentVolumeClaim, error) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      DataClaimName(in.Name()),
 			Namespace: in.Namespace,
-			Labels:    Labels(in.Space, in.Name(), ComponentWeb),
+			Labels:    Labels(in.Space, in.App.Name, RoleStorage),
 		},
 		Spec: corev1.PersistentVolumeClaimSpec{
 			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
@@ -216,9 +235,31 @@ func storageMounts(app *config.AppConfig) []corev1.VolumeMount {
 func pullSecret(in Input) *corev1.Secret {
 	return RegistryPullSecret(
 		PullSecretName(in.Name()), in.Namespace,
-		Labels(in.Space, in.Name(), ComponentRegistryAuth),
+		Labels(in.Space, in.App.Name, RoleRegistryAuth),
 		in.RegistryHost, in.RegistryUsername, in.RegistryPassword,
 	)
+}
+
+func telemetrySecret(in Input) *corev1.Secret {
+	return &corev1.Secret{
+		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Secret"},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      TelemetrySecretName(in.Name()),
+			Namespace: in.Namespace,
+			Labels:    Labels(in.Space, in.App.Name, RoleConfig),
+		},
+		StringData: map[string]string{
+			"OTEL_SERVICE_NAME":             in.App.Name,
+			"OTEL_RESOURCE_ATTRIBUTES":      "service.namespace=" + in.Space,
+			"OTEL_EXPORTER_OTLP_ENDPOINT":   in.TelemetryEndpoint,
+			"OTEL_EXPORTER_OTLP_PROTOCOL":   "http/protobuf",
+			"OTEL_EXPORTER_OTLP_HEADERS":    "x-donkey-telemetry-token=" + in.TelemetryToken,
+			"OTEL_METRICS_EXPORTER":         "otlp",
+			"OTEL_TRACES_EXPORTER":          "none",
+			"OTEL_LOGS_EXPORTER":            "none",
+			"OTEL_SEMCONV_STABILITY_OPT_IN": "http",
+		},
+	}
 }
 
 // RegistryPullSecret creates the docker config used by app and addon pods.
@@ -254,12 +295,20 @@ func RegistryPullSecret(name, namespace string, labels map[string]string, host, 
 func appEnvironment(in Input) ([]corev1.EnvVar, []corev1.EnvFromSource) {
 	app := in.App
 	optional := true
-	envFrom := []corev1.EnvFromSource{{
+	var envFrom []corev1.EnvFromSource
+	if in.TelemetryEndpoint != "" && in.TelemetryToken != "" {
+		envFrom = append(envFrom, corev1.EnvFromSource{
+			SecretRef: &corev1.SecretEnvSource{
+				LocalObjectReference: corev1.LocalObjectReference{Name: TelemetrySecretName(in.Name())},
+			},
+		})
+	}
+	envFrom = append(envFrom, corev1.EnvFromSource{
 		SecretRef: &corev1.SecretEnvSource{
 			LocalObjectReference: corev1.LocalObjectReference{Name: EnvSecretName(in.Name())},
 			Optional:             &optional,
 		},
-	}}
+	})
 	for _, name := range in.AddonSecretNames {
 		envFrom = append(envFrom, corev1.EnvFromSource{
 			SecretRef: &corev1.SecretEnvSource{
@@ -304,7 +353,7 @@ func deployment(in Input) (*appsv1.Deployment, error) {
 	probe := &corev1.Probe{ProbeHandler: handler}
 
 	container := corev1.Container{
-		Name:           webContainerName,
+		Name:           WebContainerName,
 		Image:          in.ImageRef,
 		Command:        app.Command,
 		Ports:          []corev1.ContainerPort{{ContainerPort: int32(app.Port), Name: "http"}},
@@ -355,16 +404,14 @@ func deployment(in Input) (*appsv1.Deployment, error) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        in.Name(),
 			Namespace:   in.Namespace,
-			Labels:      withVersion(Labels(in.Space, in.Name(), ComponentWeb), in.ImageRef),
+			Labels:      withVersion(Labels(in.Space, in.App.Name, RoleWorkload), in.ImageRef),
 			Annotations: annotations,
 		},
 		Spec: appsv1.DeploymentSpec{
 			Replicas: app.Replicas,
-			Selector: &metav1.LabelSelector{
-				MatchLabels: map[string]string{LabelApp: in.Name(), LabelComponent: ComponentWeb},
-			},
+			Selector: &metav1.LabelSelector{MatchLabels: AppSelector(in.Space, in.App.Name, RoleWorkload)},
 			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{Labels: withVersion(Labels(in.Space, in.Name(), ComponentWeb), in.ImageRef)},
+				ObjectMeta: metav1.ObjectMeta{Labels: withVersion(Labels(in.Space, in.App.Name, RoleWorkload), in.ImageRef)},
 			},
 		},
 	}
@@ -406,11 +453,11 @@ func service(in Input) *corev1.Service {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      in.Name(),
 			Namespace: in.Namespace,
-			Labels:    Labels(in.Space, in.Name(), ComponentWeb),
+			Labels:    Labels(in.Space, in.App.Name, RoleWorkload),
 		},
 		Spec: corev1.ServiceSpec{
 			Type:     corev1.ServiceTypeClusterIP,
-			Selector: map[string]string{LabelApp: in.Name(), LabelComponent: ComponentWeb},
+			Selector: AppSelector(in.Space, in.App.Name, RoleWorkload),
 			Ports: []corev1.ServicePort{{
 				Name:       "http",
 				Port:       80,

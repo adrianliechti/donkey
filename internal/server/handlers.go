@@ -241,11 +241,6 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, fmt.Errorf("%q is not a part of this app — use web, or addon-<service>", component))
 		return
 	}
-	// A space's services belong to the pseudo-app "shared", whatever app the
-	// caller came through — their pods carry that owner label, not the app's.
-	if strings.HasPrefix(component, "addon-") {
-		app = addons.SharedOwner
-	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	err = s.rt.Logs(r.Context(), space, app, runtime.LogOptions{
@@ -729,6 +724,15 @@ func (s *Server) handleDoctor(w http.ResponseWriter, r *http.Request) {
 	for _, c := range s.rt.Checks(ctx) {
 		checks = append(checks, DoctorCheck{Name: c.Name, OK: c.OK, Detail: c.Detail})
 	}
+
+	telemetry := DoctorCheck{Name: "Telemetry (OTLP + DuckDB)"}
+	if err := s.telemetry.Ready(ctx); err == nil {
+		telemetry.OK = true
+		telemetry.Detail = "30-day traffic store answering"
+	} else {
+		telemetry.Detail = err.Error()
+	}
+	checks = append(checks, telemetry)
 
 	// donkey needs the assistant to read apps, so doctor checks it like any
 	// other dependency: does the configured model actually answer?

@@ -32,6 +32,10 @@ type Request struct {
 	// DockerfilePath is set for the dockerfile strategy (absolute or relative
 	// to ContextDir).
 	DockerfilePath string
+	// ImageLabels are stamped into the image's OCI config — the standard
+	// org.opencontainers.image.* vocabulary (revision, created), so any
+	// registry tool can answer where an image came from.
+	ImageLabels map[string]string
 	// Verify, when set, runs the built image and requires it to start before
 	// the image is published. Nil skips the check entirely.
 	Verify *VerifySpec

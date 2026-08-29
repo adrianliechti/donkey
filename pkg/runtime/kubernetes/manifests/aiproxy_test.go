@@ -6,6 +6,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // The point of the split: the endpoint tenant code reaches is not the
@@ -60,7 +61,7 @@ func TestAdminAPIIsGatewayOnly(t *testing.T) {
 		t.Fatalf("the admin API should admit exactly one peer, got %d", n)
 	}
 	if peer := server.Spec.Ingress[0].From[0]; peer.PodSelector == nil ||
-		peer.PodSelector.MatchLabels[LabelComponent] != GatewayAppName {
+		peer.PodSelector.MatchLabels[LabelRole] != SystemRole(GatewayAppName) {
 		t.Errorf("the admin API's only peer should be the gateway, got %+v", peer)
 	}
 
@@ -69,6 +70,11 @@ func TestAdminAPIIsGatewayOnly(t *testing.T) {
 	if peer.NamespaceSelector == nil ||
 		peer.NamespaceSelector.MatchLabels["kubernetes.io/metadata.name"] != "donkey-apps" {
 		t.Errorf("donkey-ai should admit the namespace apps live in, got %+v", peer)
+	}
+	if len(peer.PodSelector.MatchExpressions) != 1 ||
+		peer.PodSelector.MatchExpressions[0].Key != LabelSpace ||
+		peer.PodSelector.MatchExpressions[0].Operator != metav1.LabelSelectorOpExists {
+		t.Errorf("the tenant peer must require a logical space, got %+v", peer.PodSelector)
 	}
 }
 
@@ -94,7 +100,7 @@ func TestServerForwardsToTheAIEndpoint(t *testing.T) {
 	// And the server may actually reach it.
 	var reachesAI bool
 	for _, peer := range aiNetworkPolicy(in).Spec.Ingress[0].From {
-		if peer.PodSelector != nil && peer.PodSelector.MatchLabels[LabelComponent] == ServerName {
+		if peer.PodSelector != nil && peer.PodSelector.MatchLabels[LabelRole] == SystemRole(ServerName) {
 			reachesAI = true
 		}
 	}

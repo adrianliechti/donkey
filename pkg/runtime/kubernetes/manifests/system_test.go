@@ -12,11 +12,12 @@ import (
 
 func systemInput() SystemInput {
 	return SystemInput{
-		Namespace:   DefaultSystemNamespace,
-		ServerImage: "reg.example.com/donkey-server:test",
-		Domain:      "apps.example.com",
-		RegistryURL: "reg.example.com/donkey",
-		SessionKey:  "sessionkey",
+		Namespace:    DefaultSystemNamespace,
+		ServerImage:  "reg.example.com/donkey-server:test",
+		Domain:       "apps.example.com",
+		RegistryURL:  "reg.example.com/donkey",
+		SessionKey:   "sessionkey",
+		TelemetryKey: "telemetrykey",
 	}
 }
 
@@ -36,7 +37,7 @@ func TestSystemObjectsSelfContainedEdge(t *testing.T) {
 	in := systemInput()
 	in.OIDCIssuer = "https://login.microsoftonline.com/x/v2.0"
 	out := componentNames(in)
-	for _, want := range []string{"donkey-server", "donkey-buildkitd", "donkey-packages", "donkey-gateway", "DONKEY_TLS_MODE", "type: LoadBalancer"} {
+	for _, want := range []string{"donkey-server", "donkey-buildkitd", "donkey-packages", "donkey-gateway", "donkey-telemetry", "telemetry.duckdb", "DONKEY_TLS_MODE", "type: LoadBalancer"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("system objects should contain %s", want)
 		}
@@ -100,15 +101,15 @@ func TestRegistryCredentialsPullMirroredSystemImages(t *testing.T) {
 	in.RegistryPassword = "s3cret"
 	in.BuildkitImage = "reg.example.com/mirror/moby/buildkit:v0.31.2"
 	out := componentNames(in)
-	if !strings.Contains(out, "name: "+systemRegistrySecretName) || !strings.Contains(out, "imagePullSecrets") {
+	if !strings.Contains(out, "name: "+SystemRegistrySecretName) || !strings.Contains(out, "imagePullSecrets") {
 		t.Fatalf("credentialed registry should render and reference a system pull secret:\n%s", out)
 	}
-	if n := strings.Count(out, "name: "+systemRegistrySecretName); n != 6 {
-		t.Errorf("pull secret should be created once and referenced by five system deployments, found %d mentions", n)
+	if n := strings.Count(out, "name: "+SystemRegistrySecretName); n != 7 {
+		t.Errorf("pull secret should be created once and referenced by six system deployments, found %d mentions", n)
 	}
 
 	plain := componentNames(systemInput())
-	if strings.Contains(plain, systemRegistrySecretName) || strings.Contains(plain, "imagePullSecrets") {
+	if strings.Contains(plain, SystemRegistrySecretName) || strings.Contains(plain, "imagePullSecrets") {
 		t.Error("an anonymous installation should not render system image pull credentials")
 	}
 }
@@ -278,8 +279,8 @@ func TestConsoleBehindGateway(t *testing.T) {
 	in := systemInput()
 	out := componentNames(in)
 	for _, want := range []string{
-		"donkey.dev/backend: http://donkey-server.donkey-system.svc:80",
-		"donkey.dev/login: required",
+		"donkey.local/backend: http://donkey-server.donkey-system.svc:80",
+		"donkey.local/login: required",
 		"DONKEY_SESSION_KEY", // the server verifies CLI tokens itself
 	} {
 		if !strings.Contains(out, want) {
@@ -291,14 +292,14 @@ func TestConsoleBehindGateway(t *testing.T) {
 			t.Errorf("the static API token must be gone, found %q", forbidden)
 		}
 	}
-	if strings.Contains(out, "donkey.dev/access") {
+	if strings.Contains(out, "donkey.local/access") {
 		t.Error("empty admin rules must not render an access annotation")
 	}
 
 	restricted := systemInput()
 	restricted.Admins = &config.AccessConfig{Users: []string{"ada@example.com"}}
 	out = componentNames(restricted)
-	if !strings.Contains(out, "donkey.dev/access") || !strings.Contains(out, "ada@example.com") {
+	if !strings.Contains(out, "donkey.local/access") || !strings.Contains(out, "ada@example.com") {
 		t.Error("admin rules should reach the console route's access annotation")
 	}
 }
@@ -328,10 +329,10 @@ func TestImagePullPolicy(t *testing.T) {
 // an app handed a token could replay its visitors against the API.
 func TestOnlyTheAPIRouteCarriesAToken(t *testing.T) {
 	out := componentNames(systemInput())
-	if !strings.Contains(out, "donkey.dev/token: forward") {
+	if !strings.Contains(out, "donkey.local/token: forward") {
 		t.Error("the console route should be marked for token forwarding")
 	}
-	if n := strings.Count(out, "donkey.dev/token"); n != 1 {
+	if n := strings.Count(out, "donkey.local/token"); n != 1 {
 		t.Errorf("exactly one route may carry a credential, found %d", n)
 	}
 

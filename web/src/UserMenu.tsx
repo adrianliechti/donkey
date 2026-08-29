@@ -16,7 +16,7 @@ export function UserMenu({ onSignOut }: { onSignOut: () => void }) {
       <MenuButton
         title="Account"
         aria-label="Account"
-        className="flex items-center rounded-md p-1.5 text-stone hover:bg-line/60 hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-hay-deep data-open:bg-line/60 data-open:text-ink"
+        className="flex items-center rounded-md p-1.5 text-muted hover:bg-line/60 hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-strong data-open:bg-line/60 data-open:text-ink"
       >
         <UserRound className="size-5" aria-hidden />
       </MenuButton>
@@ -28,7 +28,7 @@ export function UserMenu({ onSignOut }: { onSignOut: () => void }) {
           <button
             type="button"
             onClick={onSignOut}
-            className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-ink-soft data-focus:bg-hay-wash data-focus:text-ink"
+            className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-ink-soft data-focus:bg-accent-soft data-focus:text-ink"
           >
             <LogOut className="size-4" aria-hidden /> Sign out
           </button>

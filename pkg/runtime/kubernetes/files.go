@@ -19,6 +19,8 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/remotecommand"
 	utilexec "k8s.io/client-go/util/exec"
@@ -36,10 +38,6 @@ import (
 // (one per storage path, see config.StorageSubPath) is visible at once.
 
 const (
-	// FilesComponent labels the helper pod, so it is one of the app's objects
-	// (same donkey.dev/app label as everything else donkey owns for the app).
-	FilesComponent = "files"
-
 	filesMount     = "/data"
 	filesContainer = "files"
 
@@ -61,7 +59,7 @@ const (
 	// survives names that contain the separator.
 	statFormat = "%f|%s|%Y|%n"
 
-	annotationFilesExpires = "donkey.dev/files-expires-at"
+	annotationFilesExpires = manifests.AnnotationFilesExpires
 )
 
 // File type bits of a Unix mode, spelled out so this file stays portable
@@ -84,19 +82,30 @@ var (
 	FilesHelperImage = "busybox:1.37"
 )
 
+// filesHelperRef binds every command to the exact helper that was checked.
+// Names are deterministic and can be reused after deletion; the UID prevents
+// a replacement Pod with that name from inheriting an already-authorized file
+// operation, while space/app keep the ownership check explicit at each hop.
+type filesHelperRef struct {
+	name  string
+	uid   types.UID
+	space string
+	app   string
+}
+
 // ListFiles returns the entries of one folder on the app's disk. An empty
 // subPath lists the root of the volume, where each app storage path has its
 // own folder.
-func (c *Client) ListFiles(ctx context.Context, namespace, app, subPath string) ([]rt.FileEntry, error) {
+func (c *Client) ListFiles(ctx context.Context, namespace, objectName, space, app, subPath string) ([]rt.FileEntry, error) {
 	rel, err := cleanRelPath(subPath)
 	if err != nil {
 		return nil, err
 	}
-	pod, err := c.filesHelper(ctx, namespace, app)
+	helper, err := c.filesHelper(ctx, namespace, objectName, space, app)
 	if err != nil {
 		return nil, err
 	}
-	dir, err := c.resolveInside(ctx, namespace, pod, volumePath(rel))
+	dir, err := c.resolveInside(ctx, namespace, helper, volumePath(rel))
 	if err != nil {
 		return nil, err
 	}
@@ -107,7 +116,7 @@ func (c *Client) ListFiles(ctx context.Context, namespace, app, subPath string) 
 	argv := []string{"find", dir, "-maxdepth", "1", "-exec", "stat", "-c", statFormat, "{}", ";"}
 	// A folder with a million files stops being listed once there is plainly
 	// enough: the command is cut short rather than streamed to its end.
-	if err := c.execInPod(ctx, namespace, pod, argv, nil, out); err != nil && !out.full() {
+	if err := c.execInPod(ctx, namespace, helper, argv, nil, out); err != nil && !out.full() {
 		return nil, err
 	}
 
@@ -149,7 +158,7 @@ func (c *Client) ListFiles(ctx context.Context, namespace, app, subPath string) 
 
 // ReadFile streams one file off the disk into w. Nothing is buffered, so a
 // large file costs the server no memory.
-func (c *Client) ReadFile(ctx context.Context, namespace, app, subPath string, w io.Writer) error {
+func (c *Client) ReadFile(ctx context.Context, namespace, objectName, space, app, subPath string, w io.Writer) error {
 	rel, err := cleanRelPath(subPath)
 	if err != nil {
 		return err
@@ -157,7 +166,7 @@ func (c *Client) ReadFile(ctx context.Context, namespace, app, subPath string, w
 	if rel == "" {
 		return fmt.Errorf("%w — name the file you want to download", rt.ErrBadPath)
 	}
-	pod, err := c.filesHelper(ctx, namespace, app)
+	helper, err := c.filesHelper(ctx, namespace, objectName, space, app)
 	if err != nil {
 		return err
 	}
@@ -165,17 +174,17 @@ func (c *Client) ReadFile(ctx context.Context, namespace, app, subPath string, w
 	// wrong — is this still on the app's disk. A missing file or a folder is
 	// caught by the read itself, which writes nothing before it fails, so the
 	// caller still gets a proper answer instead of half a download.
-	file, err := c.resolveInside(ctx, namespace, pod, volumePath(rel))
+	file, err := c.resolveInside(ctx, namespace, helper, volumePath(rel))
 	if err != nil {
 		return err
 	}
-	return c.execInPod(ctx, namespace, pod, []string{"cat", file}, nil, w)
+	return c.execInPod(ctx, namespace, helper, []string{"cat", file}, nil, w)
 }
 
 // WriteFile stores r at subPath, replacing whatever was there. The upload
 // lands in a temporary file next to the target and is moved into place only
 // once it arrived complete — a broken connection never destroys the old file.
-func (c *Client) WriteFile(ctx context.Context, namespace, app, subPath string, r io.Reader) error {
+func (c *Client) WriteFile(ctx context.Context, namespace, objectName, space, app, subPath string, r io.Reader) error {
 	rel, err := cleanRelPath(subPath)
 	if err != nil {
 		return err
@@ -183,14 +192,14 @@ func (c *Client) WriteFile(ctx context.Context, namespace, app, subPath string, 
 	if rel == "" {
 		return fmt.Errorf("%w — name the file you want to write", rt.ErrBadPath)
 	}
-	pod, err := c.filesHelper(ctx, namespace, app)
+	helper, err := c.filesHelper(ctx, namespace, objectName, space, app)
 	if err != nil {
 		return err
 	}
 	// Resolve the whole destination, not just its folder: a name that is
 	// already a symlink pointing off the disk would otherwise make `mv` write
 	// through it. A name that doesn't exist yet resolves to itself.
-	paths, err := c.resolveAll(ctx, namespace, pod,
+	paths, err := c.resolveAll(ctx, namespace, helper,
 		volumePath(parentRel(rel)), volumePath(rel))
 	if err != nil {
 		return err
@@ -201,9 +210,9 @@ func (c *Client) WriteFile(ctx context.Context, namespace, app, subPath string, 
 	limited := newLimitReader(r, rt.MaxUploadBytes)
 	// dd reads until stdin ends, so the file is written straight from the
 	// request body; 64K blocks keep the round trips down.
-	err = c.execInPod(ctx, namespace, pod, []string{"dd", "of=" + tmp, "bs=65536"}, limited, nil)
+	err = c.execInPod(ctx, namespace, helper, []string{"dd", "of=" + tmp, "bs=65536"}, limited, nil)
 	if err != nil || limited.exceeded() {
-		c.removeQuietly(ctx, namespace, pod, tmp)
+		c.removeQuietly(ctx, namespace, helper, tmp)
 		if limited.exceeded() {
 			return fmt.Errorf("%w — the limit is %d MB", rt.ErrTooLarge, rt.MaxUploadBytes>>20)
 		}
@@ -211,12 +220,12 @@ func (c *Client) WriteFile(ctx context.Context, namespace, app, subPath string, 
 	}
 	// The app runs as some other user and only shares the disk's group, so a
 	// file donkey wrote must be group-writable or the app can never replace it.
-	if err := c.execInPod(ctx, namespace, pod, []string{"chmod", "664", tmp}, nil, nil); err != nil {
-		c.removeQuietly(ctx, namespace, pod, tmp)
+	if err := c.execInPod(ctx, namespace, helper, []string{"chmod", "664", tmp}, nil, nil); err != nil {
+		c.removeQuietly(ctx, namespace, helper, tmp)
 		return err
 	}
-	if err := c.execInPod(ctx, namespace, pod, []string{"mv", tmp, target}, nil, nil); err != nil {
-		c.removeQuietly(ctx, namespace, pod, tmp)
+	if err := c.execInPod(ctx, namespace, helper, []string{"mv", tmp, target}, nil, nil); err != nil {
+		c.removeQuietly(ctx, namespace, helper, tmp)
 		return err
 	}
 	return nil
@@ -224,7 +233,7 @@ func (c *Client) WriteFile(ctx context.Context, namespace, app, subPath string, 
 
 // RemoveFile deletes a file or a whole folder. Deleting something that isn't
 // there is not an error — the point is that it is gone.
-func (c *Client) RemoveFile(ctx context.Context, namespace, app, subPath string) error {
+func (c *Client) RemoveFile(ctx context.Context, namespace, objectName, space, app, subPath string) error {
 	rel, err := cleanRelPath(subPath)
 	if err != nil {
 		return err
@@ -232,23 +241,23 @@ func (c *Client) RemoveFile(ctx context.Context, namespace, app, subPath string)
 	if rel == "" {
 		return fmt.Errorf("%w — the disk itself cannot be deleted here (use `donkey destroy`)", rt.ErrBadPath)
 	}
-	pod, err := c.filesHelper(ctx, namespace, app)
+	helper, err := c.filesHelper(ctx, namespace, objectName, space, app)
 	if err != nil {
 		return err
 	}
 	// Only the parent is resolved: rm removes a shortcut itself and never
 	// follows it, so a link pointing out of the volume cannot delete anything
 	// outside it.
-	dir, err := c.resolveInside(ctx, namespace, pod, volumePath(parentRel(rel)))
+	dir, err := c.resolveInside(ctx, namespace, helper, volumePath(parentRel(rel)))
 	if err != nil {
 		return err
 	}
-	return c.execInPod(ctx, namespace, pod, []string{"rm", "-rf", dir + "/" + path.Base(rel)}, nil, nil)
+	return c.execInPod(ctx, namespace, helper, []string{"rm", "-rf", dir + "/" + path.Base(rel)}, nil, nil)
 }
 
 // MoveFile renames or moves something on the disk. A destination that is an
 // existing folder means "move it in there", as everywhere else.
-func (c *Client) MoveFile(ctx context.Context, namespace, app, from, to string) error {
+func (c *Client) MoveFile(ctx context.Context, namespace, objectName, space, app, from, to string) error {
 	fromRel, err := cleanRelPath(from)
 	if err != nil {
 		return err
@@ -260,23 +269,23 @@ func (c *Client) MoveFile(ctx context.Context, namespace, app, from, to string) 
 	if fromRel == "" || toRel == "" {
 		return fmt.Errorf("%w — name what to move and where to", rt.ErrBadPath)
 	}
-	pod, err := c.filesHelper(ctx, namespace, app)
+	helper, err := c.filesHelper(ctx, namespace, objectName, space, app)
 	if err != nil {
 		return err
 	}
 	// Both ends are resolved in full: moving *onto* a symlink that leads off
 	// the disk would otherwise put the file outside the volume, where nothing
 	// can reach it again.
-	paths, err := c.resolveAll(ctx, namespace, pod, volumePath(fromRel), volumePath(toRel))
+	paths, err := c.resolveAll(ctx, namespace, helper, volumePath(fromRel), volumePath(toRel))
 	if err != nil {
 		return err
 	}
-	return c.execInPod(ctx, namespace, pod, []string{"mv", paths[0], paths[1]}, nil, nil)
+	return c.execInPod(ctx, namespace, helper, []string{"mv", paths[0], paths[1]}, nil, nil)
 }
 
 // MakeDir creates one folder. Its parent must already exist, so a typo makes
 // a folder in the wrong place impossible rather than merely unlikely.
-func (c *Client) MakeDir(ctx context.Context, namespace, app, subPath string) error {
+func (c *Client) MakeDir(ctx context.Context, namespace, objectName, space, app, subPath string) error {
 	rel, err := cleanRelPath(subPath)
 	if err != nil {
 		return err
@@ -284,34 +293,38 @@ func (c *Client) MakeDir(ctx context.Context, namespace, app, subPath string) er
 	if rel == "" {
 		return fmt.Errorf("%w — name the folder you want to create", rt.ErrBadPath)
 	}
-	pod, err := c.filesHelper(ctx, namespace, app)
+	helper, err := c.filesHelper(ctx, namespace, objectName, space, app)
 	if err != nil {
 		return err
 	}
-	dir, err := c.resolveInside(ctx, namespace, pod, volumePath(parentRel(rel)))
+	dir, err := c.resolveInside(ctx, namespace, helper, volumePath(parentRel(rel)))
 	if err != nil {
 		return err
 	}
 	// 775: the app shares the disk's group, so it can write in folders donkey
 	// created. -p makes creating an existing folder a no-op.
-	return c.execInPod(ctx, namespace, pod,
+	return c.execInPod(ctx, namespace, helper,
 		[]string{"mkdir", "-m", "775", "-p", dir + "/" + path.Base(rel)}, nil, nil)
 }
 
 // StorageFolders reports which folder of the disk belongs to which path
 // inside the app — the volume root is a list of subPath folders, and only the
 // Deployment knows that "app-data" is the app's /app/data.
-func (c *Client) StorageFolders(ctx context.Context, namespace, app string) ([]rt.StorageFolder, error) {
-	dep, err := c.Clientset.AppsV1().Deployments(namespace).Get(ctx, app, metav1.GetOptions{})
+func (c *Client) StorageFolders(ctx context.Context, namespace, objectName, space, app string) ([]rt.StorageFolder, error) {
+	dep, err := c.Clientset.AppsV1().Deployments(namespace).Get(ctx, objectName, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
+	if err := c.requireOwnedObject("Deployment", namespace, objectName, dep.Labels,
+		manifests.Labels(space, app, manifests.RoleWorkload)); err != nil {
+		return nil, err
+	}
 	volume := ""
 	for _, v := range dep.Spec.Template.Spec.Volumes {
-		if v.PersistentVolumeClaim != nil && v.PersistentVolumeClaim.ClaimName == manifests.DataClaimName(app) {
+		if v.PersistentVolumeClaim != nil && v.PersistentVolumeClaim.ClaimName == manifests.DataClaimName(objectName) {
 			volume = v.Name
 			break
 		}
@@ -337,15 +350,28 @@ func (c *Client) StorageFolders(ctx context.Context, namespace, app string) ([]r
 // RemoveFilesHelper stops the app's helper pod if one is running. Destroying
 // an app must call this: a pod still holding the volume keeps the disk from
 // being released.
-func (c *Client) RemoveFilesHelper(ctx context.Context, namespace, app string) error {
+func (c *Client) RemoveFilesHelper(ctx context.Context, namespace, objectName, space, app string) error {
 	// No grace period of its own: the pod's own short one applies, and the
 	// machine gets to release the disk properly instead of having the pod
 	// yanked out from under it.
-	err := c.Clientset.CoreV1().Pods(namespace).Delete(ctx, filesHelperName(app), metav1.DeleteOptions{})
-	if err != nil && !apierrors.IsNotFound(err) {
+	pods := c.Clientset.CoreV1().Pods(namespace)
+	name := filesHelperName(objectName)
+	pod, err := pods.Get(ctx, name, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
 		return err
 	}
-	return nil
+	if err := c.requireOwnedObject("Pod", namespace, name, pod.Labels,
+		manifests.Labels(space, app, manifests.RoleFiles)); err != nil {
+		return err
+	}
+	deleteOptions := metav1.DeleteOptions{}
+	if uid := pod.UID; uid != "" {
+		deleteOptions.Preconditions = &metav1.Preconditions{UID: &uid}
+	}
+	return pods.Delete(ctx, name, deleteOptions)
 }
 
 // filesHelperName is deterministic, so one pod serves every request for the
@@ -466,8 +492,8 @@ func modeText(raw uint32) string {
 // resolveInside resolves one path in the pod and refuses anything that left
 // the disk on the way — a shortcut on the volume must never become a way to
 // read the machine's own files.
-func (c *Client) resolveInside(ctx context.Context, namespace, pod, p string) (string, error) {
-	out, err := c.resolveAll(ctx, namespace, pod, p)
+func (c *Client) resolveInside(ctx context.Context, namespace string, helper filesHelperRef, p string) (string, error) {
+	out, err := c.resolveAll(ctx, namespace, helper, p)
 	if err != nil {
 		return "", err
 	}
@@ -478,9 +504,9 @@ func (c *Client) resolveInside(ctx context.Context, namespace, pod, p string) (s
 // exist yet resolves to itself with every existing part of it followed, which
 // is exactly what writing a new file needs: the folders leading to it are
 // checked, the new name is not.
-func (c *Client) resolveAll(ctx context.Context, namespace, pod string, paths ...string) ([]string, error) {
+func (c *Client) resolveAll(ctx context.Context, namespace string, helper filesHelperRef, paths ...string) ([]string, error) {
 	var out bytes.Buffer
-	if err := c.execInPod(ctx, namespace, pod, append([]string{"realpath"}, paths...), nil, &out); err != nil {
+	if err := c.execInPod(ctx, namespace, helper, append([]string{"realpath"}, paths...), nil, &out); err != nil {
 		return nil, err
 	}
 	lines := strings.Split(strings.TrimRight(out.String(), "\n"), "\n")
@@ -500,53 +526,82 @@ func (c *Client) resolveAll(ctx context.Context, namespace, pod string, paths ..
 // reporting a more interesting error. The usual reason to be here is a caller
 // who walked away mid-upload, so the cleanup gets a context of its own —
 // otherwise the half-written file would stay on the disk forever.
-func (c *Client) removeQuietly(ctx context.Context, namespace, pod, target string) {
+func (c *Client) removeQuietly(ctx context.Context, namespace string, helper filesHelperRef, target string) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	defer cancel()
-	_ = c.execInPod(ctx, namespace, pod, []string{"rm", "-f", target}, nil, nil)
+	_ = c.execInPod(ctx, namespace, helper, []string{"rm", "-f", target}, nil, nil)
 }
 
-// filesHelper returns the name of a running helper pod for the app, starting
-// one if needed.
-func (c *Client) filesHelper(ctx context.Context, namespace, app string) (string, error) {
+// filesHelper returns the exact running helper Pod for the app, starting one
+// if needed. Its UID follows the operation so a deleted-and-recreated Pod
+// cannot be substituted between path validation and a later command.
+func (c *Client) filesHelper(ctx context.Context, namespace, objectName, space, app string) (filesHelperRef, error) {
+	empty := filesHelperRef{}
 	pvcs := c.Clientset.CoreV1().PersistentVolumeClaims(namespace)
-	pvc, err := pvcs.Get(ctx, manifests.DataClaimName(app), metav1.GetOptions{})
+	pvc, err := pvcs.Get(ctx, manifests.DataClaimName(objectName), metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
 		// Tell the two "there is nothing to browse" cases apart: no app at all
 		// reads very differently from an app that simply has no disk.
-		if _, derr := c.Clientset.AppsV1().Deployments(namespace).Get(ctx, app, metav1.GetOptions{}); apierrors.IsNotFound(derr) {
-			return "", rt.ErrNotDeployed
+		dep, derr := c.Clientset.AppsV1().Deployments(namespace).Get(ctx, objectName, metav1.GetOptions{})
+		if apierrors.IsNotFound(derr) {
+			return empty, rt.ErrNotDeployed
 		}
-		return "", rt.ErrNoDisk
+		if derr != nil {
+			return empty, derr
+		}
+		if err := c.requireOwnedObject("Deployment", namespace, objectName, dep.Labels,
+			manifests.Labels(space, app, manifests.RoleWorkload)); err != nil {
+			return empty, err
+		}
+		return empty, rt.ErrNoDisk
 	}
 	if err != nil {
-		return "", err
+		return empty, err
+	}
+	if err := c.requireOwnedObject("PersistentVolumeClaim", namespace, pvc.Name, pvc.Labels,
+		manifests.Labels(space, app, manifests.RoleStorage)); err != nil {
+		return empty, err
 	}
 
-	name := filesHelperName(app)
+	name := filesHelperName(objectName)
 	pods := c.Clientset.CoreV1().Pods(namespace)
 	existing, err := pods.Get(ctx, name, metav1.GetOptions{})
+	expectedHelper := manifests.Labels(space, app, manifests.RoleFiles)
 	switch {
 	case err != nil && !apierrors.IsNotFound(err):
-		return "", err
+		return empty, err
+	case err == nil && c.requireOwnedObject("Pod", namespace, name, existing.Labels, expectedHelper) != nil:
+		return empty, c.requireOwnedObject("Pod", namespace, name, existing.Labels, expectedHelper)
 	case err == nil && helperUsable(existing):
-		return name, nil
+		return filesHelperRef{name: name, uid: existing.UID, space: space, app: app}, nil
 	case err == nil:
 		// Finished, expired or running the wrong image — clear it out first.
-		if err := c.RemoveFilesHelper(ctx, namespace, app); err != nil {
-			return "", err
+		if err := c.RemoveFilesHelper(ctx, namespace, objectName, space, app); err != nil {
+			return empty, err
 		}
 		if err := c.waitPodGone(ctx, namespace, name); err != nil {
-			return "", err
+			return empty, err
 		}
 	}
 
-	pod := filesHelperPod(namespace, pvc.Labels[manifests.LabelSpace], app)
-	c.pinToAppNode(ctx, namespace, app, pod)
-	if _, err := pods.Create(ctx, pod, metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
-		return "", fmt.Errorf("opening the app's disk: %w", err)
+	pod := filesHelperPod(namespace, space, app, objectName, c.installation())
+	c.pinToAppNode(ctx, namespace, objectName, space, app, pod)
+	created, err := pods.Create(ctx, pod, metav1.CreateOptions{})
+	if err != nil {
+		if !apierrors.IsAlreadyExists(err) {
+			return empty, fmt.Errorf("opening the app's disk: %w", err)
+		}
+		raced, inspectErr := pods.Get(ctx, name, metav1.GetOptions{})
+		if inspectErr != nil {
+			return empty, inspectErr
+		}
+		if err := c.requireOwnedObject("Pod", namespace, name, raced.Labels, expectedHelper); err != nil {
+			return empty, err
+		}
+		created = raced
 	}
-	return name, c.waitPodReady(ctx, namespace, name)
+	helper := filesHelperRef{name: name, uid: created.UID, space: space, app: app}
+	return helper, c.waitPodReady(ctx, namespace, helper)
 }
 
 // helperUsable reports whether an existing helper can serve another request.
@@ -576,10 +631,17 @@ func helperUsable(pod *corev1.Pod) bool {
 // pinToAppNode puts the helper on the same machine as the app. A disk of the
 // usual kind attaches to one machine at a time, so anywhere else it would
 // simply never start.
-func (c *Client) pinToAppNode(ctx context.Context, namespace, app string, pod *corev1.Pod) {
+func (c *Client) pinToAppNode(ctx context.Context, namespace, objectName, space, app string, pod *corev1.Pod) {
+	dep, err := c.Clientset.AppsV1().Deployments(namespace).Get(ctx, objectName, metav1.GetOptions{})
+	if err != nil {
+		return
+	}
+	if c.requireOwnedObject("Deployment", namespace, objectName, dep.Labels,
+		manifests.Labels(space, app, manifests.RoleWorkload)) != nil {
+		return
+	}
 	list, err := c.Clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
-		LabelSelector: fmt.Sprintf("%s=%s,%s=%s",
-			manifests.LabelApp, app, manifests.LabelComponent, manifests.ComponentWeb),
+		LabelSelector: labels.Set(dep.Spec.Selector.MatchLabels).String(),
 	})
 	if err != nil {
 		return
@@ -587,6 +649,10 @@ func (c *Client) pinToAppNode(ctx context.Context, namespace, app string, pod *c
 	var chosen *corev1.Pod
 	for i := range list.Items {
 		p := &list.Items[i]
+		if c.requireOwnedObject("Pod", namespace, p.Name, p.Labels,
+			manifests.Labels(space, app, manifests.RoleWorkload)) != nil {
+			continue
+		}
 		if p.DeletionTimestamp != nil || p.Spec.NodeName == "" {
 			continue
 		}
@@ -603,7 +669,7 @@ func (c *Client) pinToAppNode(ctx context.Context, namespace, app string, pod *c
 	pod.Spec.Tolerations = chosen.Spec.Tolerations
 }
 
-func filesHelperPod(namespace, space, app string) *corev1.Pod {
+func filesHelperPod(namespace, space, app, objectName, installation string) *corev1.Pod {
 	nonRoot := true
 	user := int64(2000)
 	fsGroup := int64(2000)
@@ -613,12 +679,14 @@ func filesHelperPod(namespace, space, app string) *corev1.Pod {
 	grace := int64(2)
 	deadline := int64(filesHelperLifetime.Seconds()) + 60
 
+	podLabels := manifests.Labels(space, app, manifests.RoleFiles)
+	podLabels[manifests.LabelInstallation] = installation
 	return &corev1.Pod{
 		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Pod"},
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      filesHelperName(app),
+			Name:      filesHelperName(objectName),
 			Namespace: namespace,
-			Labels:    manifests.Labels(space, app, FilesComponent),
+			Labels:    podLabels,
 			Annotations: map[string]string{
 				annotationFilesExpires: time.Now().Add(filesHelperLifetime).UTC().Format(time.RFC3339),
 			},
@@ -667,7 +735,7 @@ func filesHelperPod(namespace, space, app string) *corev1.Pod {
 				Name: "data",
 				VolumeSource: corev1.VolumeSource{
 					PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
-						ClaimName: manifests.DataClaimName(app),
+						ClaimName: manifests.DataClaimName(objectName),
 					},
 				},
 			}},
@@ -696,10 +764,10 @@ func (c *Client) waitPodGone(ctx context.Context, namespace, name string) error 
 	}
 }
 
-func (c *Client) waitPodReady(ctx context.Context, namespace, name string) error {
+func (c *Client) waitPodReady(ctx context.Context, namespace string, helper filesHelperRef) error {
 	deadline := time.Now().Add(filesReadyTimeout)
 	for {
-		pod, err := c.Clientset.CoreV1().Pods(namespace).Get(ctx, name, metav1.GetOptions{})
+		pod, err := c.requireFilesHelper(ctx, namespace, helper)
 		if err != nil {
 			return err
 		}
@@ -725,12 +793,33 @@ func (c *Client) waitPodReady(ctx context.Context, namespace, name string) error
 	}
 }
 
+// requireFilesHelper rechecks both ownership labels and Kubernetes object
+// identity immediately before every exec. The Pod name is deliberately not
+// enough: names become reusable as soon as an old helper is deleted.
+func (c *Client) requireFilesHelper(ctx context.Context, namespace string, helper filesHelperRef) (*corev1.Pod, error) {
+	pod, err := c.Clientset.CoreV1().Pods(namespace).Get(ctx, helper.name, metav1.GetOptions{})
+	if err != nil {
+		return nil, err
+	}
+	if err := c.requireOwnedObject("Pod", namespace, helper.name, pod.Labels,
+		manifests.Labels(helper.space, helper.app, manifests.RoleFiles)); err != nil {
+		return nil, err
+	}
+	if pod.UID != helper.uid {
+		return nil, fmt.Errorf("the file session for %s/%s was replaced while the operation was running — try again", helper.space, helper.app)
+	}
+	return pod, nil
+}
+
 // execInPod runs one command in the helper pod. The command is an argv slice
 // and never a shell line, so no caller-supplied name can turn into another
 // command.
-func (c *Client) execInPod(ctx context.Context, namespace, pod string, argv []string, stdin io.Reader, stdout io.Writer) error {
+func (c *Client) execInPod(ctx context.Context, namespace string, helper filesHelperRef, argv []string, stdin io.Reader, stdout io.Writer) error {
+	if _, err := c.requireFilesHelper(ctx, namespace, helper); err != nil {
+		return err
+	}
 	req := c.Clientset.CoreV1().RESTClient().Post().
-		Resource("pods").Name(pod).Namespace(namespace).SubResource("exec").
+		Resource("pods").Name(helper.name).Namespace(namespace).SubResource("exec").
 		VersionedParams(&corev1.PodExecOptions{
 			Container: filesContainer,
 			Command:   argv,

@@ -1,20 +1,16 @@
 import { useState } from 'react'
 import { Dialog, DialogBackdrop, DialogPanel, DialogTitle } from '@headlessui/react'
-import { Link } from '@tanstack/react-router'
 import { FolderPlus, RefreshCw } from 'lucide-react'
 import { api, type AppSummary } from './api'
 import { useFleet } from './queries'
-import { RemoveApps } from './RemoveApps'
 import { SpaceCard } from './SpaceCard'
-import { Button, ErrorNote, Skeleton, errText, healthLine, healthOf, type Health } from './ui'
+import { Button, DonkeyLogo, ErrorNote, Skeleton, errText, healthOf, type Health } from './ui'
 
 const healthRank: Record<Health, number> = { bad: 0, unknown: 1, ok: 2 }
 
 export function AppsList() {
   const { data, error, reload } = useFleet()
   const apps = data?.apps ?? null
-  // What the remove dialog is asking about: one app, or a whole space.
-  const [removing, setRemoving] = useState<{ space: string; apps: string[]; siblings: string[] } | null>(null)
   const [creating, setCreating] = useState(false)
 
   // Apps belong to a space; the paddock mirrors that hierarchy instead of
@@ -38,19 +34,10 @@ export function AppsList() {
     })
   }
 
-  const all = apps ?? []
-  const troubled = all.filter((a) => healthOf(a.healthy, a.ready) === 'bad')
-  const summary =
-    all.length === 0
-      ? ''
-      : troubled.length === 0
-        ? `${all.length} ${all.length === 1 ? 'app' : 'apps'} in ${spaces.length} ${spaces.length === 1 ? 'space' : 'spaces'} — all running.`
-        : `${troubled.length} of ${all.length} ${all.length === 1 ? 'app' : 'apps'} ${troubled.length === 1 ? 'needs' : 'need'} attention.`
-
   return (
     <div className="space-y-5">
       <div className="flex items-center justify-between">
-        <h1 className="font-mono text-[11px] font-semibold uppercase tracking-[0.18em] text-stone">
+        <h1 className="font-mono text-[11px] font-semibold uppercase tracking-[0.18em] text-muted">
           Fleet
         </h1>
         <div className="flex items-center gap-0.5">
@@ -59,7 +46,7 @@ export function AppsList() {
             onClick={() => setCreating(true)}
             title="New space"
             aria-label="New space"
-            className="rounded-md p-1.5 text-stone hover:bg-raised focus-visible:outline-2 focus-visible:outline-hay-deep"
+            className="rounded-md p-1.5 text-muted hover:bg-raised focus-visible:outline-2 focus-visible:outline-accent-strong"
           >
             <FolderPlus className="size-4" aria-hidden />
           </button>
@@ -68,42 +55,12 @@ export function AppsList() {
             onClick={reload}
             title="Refresh"
             aria-label="Refresh"
-            className="rounded-md p-1.5 text-stone hover:bg-raised focus-visible:outline-2 focus-visible:outline-hay-deep"
+            className="rounded-md p-1.5 text-muted hover:bg-raised focus-visible:outline-2 focus-visible:outline-accent-strong"
           >
             <RefreshCw className="size-4" aria-hidden />
           </button>
         </div>
       </div>
-
-      {/* The herd at a glance: one tick per app, colored by health. */}
-      {all.length > 0 && (
-        <div>
-          <div className="flex flex-wrap gap-1" role="list" aria-label="All apps by health">
-            {[...all]
-              .sort((a, b) => healthRank[healthOf(a.healthy, a.ready)] - healthRank[healthOf(b.healthy, b.ready)])
-              .map((app) => {
-                const h = healthOf(app.healthy, app.ready)
-                const tone =
-                  h === 'ok'
-                    ? 'bg-moss/70 hover:bg-moss'
-                    : h === 'bad'
-                      ? 'bg-brick shadow-[0_0_10px_1px] shadow-brick/40'
-                      : 'bg-stone/50'
-                return (
-                  <Link
-                    key={`${app.space}/${app.name}`}
-                    role="listitem"
-                    title={`${app.name} (${app.space}) — ${healthLine[h](app.ready)}`}
-                    to="/app/$space/$name/{-$tab}"
-                    params={{ space: app.space, name: app.name, tab: undefined }}
-                    className={`h-3.5 w-6 rounded-sm ${tone} transition-transform hover:scale-y-125 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-hay-deep`}
-                  />
-                )
-              })}
-          </div>
-          <p className="mt-1.5 text-sm text-ink-soft">{summary}</p>
-        </div>
-      )}
 
       <ErrorNote message={error} />
 
@@ -117,15 +74,13 @@ export function AppsList() {
 
       {apps !== null && spaces.length === 0 && (
         <div className="rounded-xl border border-line bg-card p-12 text-center">
-          <div className="text-4xl" aria-hidden>
-            🫏
-          </div>
-          <p className="mt-3 text-sm text-stone">The paddock is empty.</p>
+          <DonkeyLogo className="mx-auto size-10 text-muted" />
+          <p className="mt-3 text-sm text-muted">The paddock is empty.</p>
           <p className="mt-2 text-sm">
             Deploy your first app from its project folder:{' '}
             <code className="rounded bg-surface px-2 py-0.5 font-mono text-sm">donkey deploy</code>
           </p>
-          <p className="mt-1 text-sm text-stone">
+          <p className="mt-1 text-sm text-muted">
             — or use <span className="font-medium text-ink">Deploy</span> above and drop the project
             folder right here.
           </p>
@@ -133,21 +88,8 @@ export function AppsList() {
       )}
 
       {spaces.map(([space, spaceApps]) => (
-        <SpaceCard key={space} space={space} apps={spaceApps} onRemove={setRemoving} onChanged={reload} />
+        <SpaceCard key={space} space={space} apps={spaceApps} onChanged={reload} />
       ))}
-
-      {removing && (
-        <RemoveApps
-          space={removing.space}
-          apps={removing.apps}
-          siblings={removing.siblings}
-          onDone={() => {
-            setRemoving(null)
-            reload()
-          }}
-          onCancel={() => setRemoving(null)}
-        />
-      )}
 
       <NewSpaceDialog
         open={creating}
@@ -197,7 +139,7 @@ function NewSpaceDialog({
       <DialogBackdrop className="fixed inset-0 bg-black/60" />
       <div className="fixed inset-0 flex items-start justify-center p-4 pt-[18vh]">
         <DialogPanel className="w-full max-w-sm rounded-lg border border-line bg-card p-4 shadow-2xl">
-          <DialogTitle className="font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-stone">
+          <DialogTitle className="font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-muted">
             New space
           </DialogTitle>
           <ErrorNote message={error} />
@@ -214,9 +156,9 @@ function NewSpaceDialog({
               onChange={(e) => setName(e.target.value)}
               placeholder="my-project"
               aria-label="Space name"
-              className="rounded-md border border-line bg-surface px-2 py-1.5 font-mono text-sm focus:outline-2 focus:outline-hay-deep"
+              className="rounded-md border border-line bg-surface px-2 py-1.5 font-mono text-sm focus:outline-2 focus:outline-accent-strong"
             />
-            <p className="text-xs text-stone">
+            <p className="text-xs text-muted">
               A space groups apps that belong together — they reach each other by name and share its
               services.
             </p>

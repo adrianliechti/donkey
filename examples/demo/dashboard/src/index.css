@@ -1,32 +1,39 @@
 @import "tailwindcss";
 
 @theme {
-  /* A sales dashboard reading DuckDB: near-black ink on paper, one amber
-     data hue (validated ≥3:1 against both surfaces), status colors reserved. */
-  --color-ink: #1c1917;
-  --color-ink-soft: #44403c;
-  --color-muted: #78716c;
-  --color-line: #e7e5e4;
-  --color-surface: #fafaf9;
-  --color-card: #ffffff;
-  --color-data: #b45309;
-  --color-data-soft: #fef3c7;
-  --color-good: #0d9488;
+  /* A helpdesk: near-black ink on warm paper, one blue accent for data and
+     actions, and the status hues reserved for what they mean — priority and
+     sentiment — never decoration. Dark mode is its own selection below, not
+     an automatic flip. */
+  --color-ink: #0b0b0b;
+  --color-ink-soft: #52514e;
+  --color-muted: #898781;
+  --color-line: #e1e0d9;
+  --color-surface: #f9f9f7;
+  --color-card: #fcfcfb;
+  --color-accent: #2a78d6;
+  --color-accent-soft: #e9f1fb;
+  /* Status: good / warning / serious / critical. Sub-3:1 steps (warning,
+     serious on light) always travel with an icon or label — color never
+     carries a state alone. */
+  --color-good: #0ca30c;
+  --color-warn: #fab219;
+  --color-serious: #ec835a;
+  --color-critical: #d03b3b;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --color-ink: #f5f5f4;
-    --color-ink-soft: #d6d3d1;
-    --color-muted: #a8a29e;
-    --color-line: #292524;
-    --color-surface: #0c0a09;
-    --color-card: #1c1917;
-    /* Amber-500 carries the same weight on a dark surface that amber-700
-       does on paper. */
-    --color-data: #f59e0b;
-    --color-data-soft: #422006;
-    --color-good: #2dd4bf;
+    --color-ink: #ffffff;
+    --color-ink-soft: #c3c2b7;
+    --color-muted: #898781;
+    --color-line: #2c2c2a;
+    --color-surface: #0d0d0d;
+    --color-card: #1a1a19;
+    /* The accent steps up one notch so it carries the same weight on the
+       dark surface that the deeper blue does on paper. */
+    --color-accent: #3987e5;
+    --color-accent-soft: #17293f;
   }
 }
 

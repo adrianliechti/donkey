@@ -56,23 +56,23 @@ func donkeyGatewayObjects(in SystemInput) []runtime.Object {
 func donkeyGatewayServiceAccount(in SystemInput) *corev1.ServiceAccount {
 	return &corev1.ServiceAccount{
 		TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "ServiceAccount"},
-		ObjectMeta: metav1.ObjectMeta{Name: GatewayAppName, Namespace: in.Namespace, Labels: systemLabels(GatewayAppName)},
+		ObjectMeta: metav1.ObjectMeta{Name: GatewayAppName, Namespace: in.Namespace, Labels: SystemLabels(GatewayAppName)},
 	}
 }
 
 // donkeyGatewayConfigHash covers the secret-backed env vars (read only at pod
 // creation), so a rotated client secret or session key rolls the pod.
 func (in SystemInput) donkeyGatewayConfigHash() string {
-	return configHash(in.OIDCClientID, in.OIDCClientSecret, in.SessionKey)
+	return configHash(in.OIDCClientID, in.OIDCClientSecret, in.SessionKey, in.TelemetryKey)
 }
 
 func donkeyGatewayDeployment(in SystemInput) *appsv1.Deployment {
-	labels := systemLabels(GatewayAppName)
+	labels := SystemLabels(GatewayAppName)
 	replicas := int32(1)
 	secretEnv := func(name, key string) corev1.EnvVar {
 		return corev1.EnvVar{Name: name, ValueFrom: &corev1.EnvVarSource{
 			SecretKeyRef: &corev1.SecretKeySelector{
-				LocalObjectReference: corev1.LocalObjectReference{Name: "donkey-system-config"},
+				LocalObjectReference: corev1.LocalObjectReference{Name: SystemConfigSecretName},
 				Key:                  key,
 			},
 		}}
@@ -101,9 +101,11 @@ func donkeyGatewayDeployment(in SystemInput) *appsv1.Deployment {
 		// also what stops this gateway from serving another installation's
 		// apps, since both would otherwise match on managed-by=donkey.
 		{Name: "DONKEY_WORKLOAD_NAMESPACE", Value: in.WorkloadNamespace},
+		{Name: "DONKEY_TELEMETRY_OTLP_ENDPOINT", Value: TelemetryOTLPEndpoint(in.Namespace)},
 		secretEnv("DONKEY_OIDC_CLIENT_ID", "oidc-client-id"),
 		secretEnv("DONKEY_OIDC_CLIENT_SECRET", "oidc-client-secret"),
 		secretEnv("DONKEY_SESSION_KEY", "session-key"),
+		secretEnv("DONKEY_TELEMETRY_KEY", "telemetry-key"),
 	}
 	// The gateway reaches the outside world too — the OIDC token exchange
 	// and, in acme mode, Let's Encrypt. On a network whose only way out is a
@@ -152,9 +154,9 @@ func donkeyGatewayDeployment(in SystemInput) *appsv1.Deployment {
 		ObjectMeta: metav1.ObjectMeta{Name: GatewayAppName, Namespace: in.Namespace, Labels: labels},
 		Spec: appsv1.DeploymentSpec{
 			Replicas: &replicas,
-			Selector: &metav1.LabelSelector{MatchLabels: labels},
+			Selector: &metav1.LabelSelector{MatchLabels: SystemSelector(GatewayAppName)},
 			Template: corev1.PodTemplateSpec{
-				ObjectMeta: in.hashedTemplateMeta(GatewayAppName, in.donkeyGatewayConfigHash()),
+				ObjectMeta: in.hashedTemplateMeta(GatewayAppName, in.ServerImage, in.donkeyGatewayConfigHash()),
 				Spec:       spec,
 			},
 		},
@@ -179,10 +181,10 @@ func donkeyGatewayService(in SystemInput) *corev1.Service {
 	}
 	return &corev1.Service{
 		TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "Service"},
-		ObjectMeta: metav1.ObjectMeta{Name: GatewayAppName, Namespace: in.Namespace, Labels: systemLabels(GatewayAppName)},
+		ObjectMeta: metav1.ObjectMeta{Name: GatewayAppName, Namespace: in.Namespace, Labels: SystemLabels(GatewayAppName)},
 		Spec: corev1.ServiceSpec{
 			Type:     serviceType,
-			Selector: systemLabels(GatewayAppName),
+			Selector: SystemSelector(GatewayAppName),
 			Ports:    ports,
 		},
 	}
@@ -194,10 +196,10 @@ func donkeyGatewayService(in SystemInput) *corev1.Service {
 func donkeyGatewayHealthService(in SystemInput) *corev1.Service {
 	return &corev1.Service{
 		TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "Service"},
-		ObjectMeta: metav1.ObjectMeta{Name: GatewayHealthServiceName, Namespace: in.Namespace, Labels: systemLabels(GatewayAppName)},
+		ObjectMeta: metav1.ObjectMeta{Name: GatewayHealthServiceName, Namespace: in.Namespace, Labels: SystemLabels(GatewayAppName)},
 		Spec: corev1.ServiceSpec{
 			Type:     corev1.ServiceTypeClusterIP,
-			Selector: systemLabels(GatewayAppName),
+			Selector: SystemSelector(GatewayAppName),
 			Ports: []corev1.ServicePort{
 				{Name: "health", Port: GatewayHealthServicePort, TargetPort: intstr.FromInt32(donkeyGatewayHealthPort)},
 			},

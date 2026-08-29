@@ -25,7 +25,7 @@ func TestListManagedRoutesAcceptsExternalManagers(t *testing.T) {
 			Name:      name,
 			Namespace: namespace,
 			Labels: map[string]string{
-				manifests.LabelInstance:        owner,
+				manifests.LabelInstallation:    owner,
 				"app.kubernetes.io/managed-by": manager,
 			},
 			Annotations: map[string]string{manifests.AnnotationBackend: backend},
@@ -56,5 +56,54 @@ func TestListManagedRoutesAcceptsExternalManagers(t *testing.T) {
 		if !seen[want] {
 			t.Errorf("route %q was not discovered", want)
 		}
+	}
+}
+
+// A sibling's `routes:` entry sits on the target's hostname on purpose. It
+// shares the address; it must not be mistaken for the address's owner — that
+// would block the owning app's own deploy.
+func TestHostOwnerIgnoresPathRoutes(t *testing.T) {
+	const (
+		installation = "donkey-system"
+		namespace    = "donkey-team"
+		host         = "site.team.example.com"
+	)
+	cm := func(name, app, path string) *corev1.ConfigMap {
+		role := manifests.RoleRoute
+		if path != "/" {
+			role = manifests.RolePathRoute
+		}
+		return &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+			Labels: map[string]string{
+				manifests.LabelInstallation: installation,
+				manifests.LabelSpace:        "team",
+				manifests.LabelApp:          app,
+				manifests.LabelRole:         role,
+			},
+			Annotations: map[string]string{
+				manifests.AnnotationBackend: "http://" + app + "." + namespace + ".svc:80",
+				manifests.AnnotationHost:    host,
+				manifests.AnnotationPath:    path,
+			},
+		}}
+	}
+	objects := []runtime.Object{
+		cm("site", "site", "/"),
+		cm("api-on-site-api", "api", "/api"),
+	}
+	r := NewRuntime(&Client{Clientset: fake.NewSimpleClientset(objects...)}, Options{
+		Placement:       manifests.Placement{NamespacePrefix: "donkey-"},
+		SystemNamespace: installation,
+		Domain:          "example.com",
+	})
+	// The path route must not block site's own deploy…
+	if owner := r.hostOwner(context.Background(), "team", host, "site"); owner != "" {
+		t.Fatalf("the path route was mistaken for the address owner (%q)", owner)
+	}
+	// …while a second app claiming the address is still refused.
+	if owner := r.hostOwner(context.Background(), "team", host, "blog"); owner != "site" {
+		t.Fatalf("owner = %q, want %q", owner, "site")
 	}
 }

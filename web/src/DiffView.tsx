@@ -28,7 +28,7 @@ export function DiffView({ diff }: { diff: string }) {
               newNo = Number(hunk[2])
               return (
                 <tr key={i}>
-                  <td colSpan={3} className="px-2 py-1 text-stone select-none">
+                  <td colSpan={3} className="px-2 py-1 text-muted select-none">
                     {line}
                   </td>
                 </tr>
@@ -44,11 +44,11 @@ export function DiffView({ diff }: { diff: string }) {
               <tr
                 key={i}
                 className={
-                  added ? 'bg-moss/10 text-moss' : removed ? 'bg-brick/10 text-brick' : 'text-ink-soft'
+                  added ? 'bg-success/10 text-success' : removed ? 'bg-danger/10 text-danger' : 'text-ink-soft'
                 }
               >
-                <td className="w-10 select-none px-2 text-right text-stone">{left}</td>
-                <td className="w-10 select-none px-2 text-right text-stone">{right}</td>
+                <td className="w-10 select-none px-2 text-right text-muted">{left}</td>
+                <td className="w-10 select-none px-2 text-right text-muted">{right}</td>
                 <td className="whitespace-pre px-2">{line}</td>
               </tr>
             )

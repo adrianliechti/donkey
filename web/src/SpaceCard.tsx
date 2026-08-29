@@ -1,13 +1,14 @@
 import { useState } from 'react'
 import { Link } from '@tanstack/react-router'
 import { Dialog, DialogBackdrop, DialogPanel, DialogTitle } from '@headlessui/react'
-import { Archive, Database, ExternalLink, HardDrive, Network, Plus, Sparkles, Table2, Trash2 } from 'lucide-react'
+import { Archive, Database, HardDrive, Network, Plus, Sparkles, Table2, Trash2 } from 'lucide-react'
 import { api, type AddAddonRequest, type AppSummary, type SpaceAddonEntry } from './api'
 import { AddServiceDialog } from './AddonForm'
 import { AiDialog } from './AiDialog'
 import { DatabaseDialog } from './DatabaseDialog'
 import { useInvalidateServices, useSpaceServices } from './queries'
 import { S3Dialog } from './S3Dialog'
+import { SpaceTelemetry } from './TrafficPanel'
 import { Button, ErrorNote, ExposureBadge, StatusDot, ago, errText, healthLine, healthOf, type Health } from './ui'
 
 /**
@@ -23,22 +24,19 @@ import { Button, ErrorNote, ExposureBadge, StatusDot, ago, errText, healthLine, 
 export function SpaceCard({
   space,
   apps,
-  onRemove,
   onChanged,
 }: {
   space: string
   apps: AppSummary[]
-  onRemove: (r: { space: string; apps: string[]; siblings: string[] }) => void
-  // The fleet's refresh — an empty space removing itself has no other way
-  // to disappear from the overview.
   onChanged: () => void
 }) {
   const [adding, setAdding] = useState(false)
   const [deletingSpace, setDeletingSpace] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const [typedSpace, setTypedSpace] = useState('')
 
-  const { data: services } = useSpaceServices(space)
+  const { data: services, error: servicesError } = useSpaceServices(space)
   const invalidate = useInvalidateServices()
 
   async function add(req: AddAddonRequest) {
@@ -69,42 +67,29 @@ export function SpaceCard({
         <div className="flex items-center gap-2.5">
           <StatusDot health={worst} />
           <h2 className="font-mono text-base font-bold tracking-tight">{space}</h2>
-          <span className="text-xs text-stone">
-            {apps.length === 1 ? '1 app' : `${apps.length} apps`}
-          </span>
         </div>
         <div className="flex items-center gap-0.5">
+          <SpaceTelemetry space={space} />
+          <span className="mx-1 h-4 w-px bg-line" aria-hidden />
           <button
             type="button"
             title={`Add a service to ${space} (database & co.)`}
             aria-label={`Add a service to ${space}`}
             onClick={() => setAdding(true)}
-            className="rounded-md p-1.5 text-stone hover:bg-line/60 hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-hay-deep"
+            className="rounded-md p-1.5 text-muted hover:bg-line/60 hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-strong"
           >
             <Plus className="size-4" aria-hidden />
           </button>
           <button
             type="button"
-            title={
-              apps.length === 0
-                ? `Remove the space ${space}`
-                : apps.length > 1
-                  ? `Remove all ${apps.length} apps in ${space}`
-                  : `Remove ${apps[0]?.name ?? space}`
-            }
-            aria-label={
-              apps.length === 0
-                ? `Remove the space ${space}`
-                : apps.length > 1
-                  ? `Remove all ${apps.length} apps in ${space}`
-                  : `Remove ${apps[0]?.name ?? space}`
-            }
-            onClick={() =>
-              apps.length === 0
-                ? setDeletingSpace(true)
-                : onRemove({ space, apps: apps.map((a) => a.name), siblings: [] })
-            }
-            className="rounded-md p-1.5 text-stone hover:bg-brick/10 hover:text-brick focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-hay-deep"
+            title={`Remove the space ${space} and everything in it`}
+            aria-label={`Remove the space ${space} and everything in it`}
+            onClick={() => {
+              setError('')
+              setTypedSpace('')
+              setDeletingSpace(true)
+            }}
+            className="rounded-md p-1.5 text-muted hover:bg-danger/10 hover:text-danger focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-strong"
           >
             <Trash2 className="size-4" aria-hidden />
           </button>
@@ -114,7 +99,7 @@ export function SpaceCard({
       <SpaceServices space={space} services={services} onChanged={() => invalidate(space)} />
 
       {apps.length === 0 && (
-        <p className="text-sm text-stone">
+        <p className="text-sm text-muted">
           No apps yet — deploy into this space with{' '}
           <code className="rounded bg-surface px-1.5 py-0.5 font-mono text-xs">space: {space}</code> in
           donkey.yaml, or the Deploy button above.
@@ -123,44 +108,88 @@ export function SpaceCard({
 
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
         {apps.map((app) => (
-          <AppCard key={app.name} app={app} siblings={apps} onRemove={onRemove} />
+          <AppCard key={app.name} app={app} />
         ))}
       </div>
 
       {deletingSpace && (
-        <Dialog open onClose={() => !busy && setDeletingSpace(false)} className="relative z-50">
+        <Dialog
+          open
+          onClose={() => {
+            if (!busy) {
+              setDeletingSpace(false)
+              setTypedSpace('')
+            }
+          }}
+          className="relative z-50"
+        >
           <DialogBackdrop className="fixed inset-0 bg-black/60" />
           <div className="fixed inset-0 flex items-start justify-center p-4 pt-[18vh]">
             <DialogPanel className="w-full max-w-md rounded-lg border border-line bg-card p-4 shadow-2xl">
-              <DialogTitle className="font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-stone">
+              <DialogTitle className="font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-muted">
                 Remove the space {space}
               </DialogTitle>
               <ErrorNote message={error} />
               <div className="mt-3 space-y-2 text-sm text-ink-soft">
-                <p>It holds no apps.</p>
-                {(services ?? []).length > 0 ? (
-                  <p className="text-brick">
-                    Its {(services ?? []).length === 1 ? 'service' : 'services'}{' '}
-                    <span className="font-mono">{(services ?? []).map((s) => s.name).join(', ')}</span>{' '}
+                <p>This permanently removes the space and every Donkey-managed resource in it.</p>
+                {apps.length > 0 ? (
+                  <p className="text-danger">
+                    Its {apps.length === 1 ? 'app' : 'apps'}{' '}
+                    <span className="font-mono">{apps.map((app) => app.name).join(', ')}</span> will be deleted.
+                  </p>
+                ) : (
+                  <p className="text-muted">It holds no apps.</p>
+                )}
+                {services === null ? (
+                  <p className={servicesError ? 'text-danger' : 'text-muted'}>
+                    {servicesError
+                      ? 'The managed-service inventory could not be loaded. The server will still remove every owned service.'
+                      : 'Loading the managed-service inventory…'}
+                  </p>
+                ) : services.length > 0 ? (
+                  <p className="text-danger">
+                    Its {services.length === 1 ? 'service' : 'services'}{' '}
+                    <span className="font-mono">{services.map((s) => s.name).join(', ')}</span>{' '}
                     and all their data will be deleted with it.
                   </p>
                 ) : (
-                  <p className="text-stone">It holds no services either — nothing of value goes with it.</p>
+                  <p className="text-muted">It holds no managed services.</p>
                 )}
+                <p className="text-danger">
+                  All app disks and managed-service data will be deleted. This action has no keep-data option.
+                </p>
               </div>
+              <label className="mt-3 block text-sm text-ink-soft">
+                Type <span className="font-mono font-bold">{space}</span> to confirm
+                <input
+                  autoFocus
+                  value={typedSpace}
+                  onChange={(event) => setTypedSpace(event.target.value)}
+                  disabled={busy}
+                  className="mt-1 w-full rounded-md border border-line bg-canvas px-2 py-1 font-mono text-sm"
+                />
+              </label>
               <div className="mt-4 flex justify-end gap-2">
-                <Button kind="quiet" onClick={() => setDeletingSpace(false)} disabled={busy}>
+                <Button
+                  kind="quiet"
+                  onClick={() => {
+                    setDeletingSpace(false)
+                    setTypedSpace('')
+                  }}
+                  disabled={busy}
+                >
                   Cancel
                 </Button>
                 <Button
                   kind="danger"
-                  disabled={busy}
+                  disabled={busy || (services === null && !servicesError) || typedSpace.trim() !== space}
                   onClick={async () => {
                     setBusy(true)
                     setError('')
                     try {
                       await api.deleteSpace(space)
                       setDeletingSpace(false)
+                      setTypedSpace('')
                       onChanged()
                     } catch (err) {
                       setError(errText(err, 'Removing did not work.'))
@@ -195,9 +224,9 @@ export function SpaceCard({
 }
 
 /**
- * The space's services as a chip row. Removing one is the only place data
- * can go away, so that is where the confirmation lives — apps merely
- * disconnect, over on their own panel.
+ * The space's services as a chip row. Removing one has its own data-loss
+ * confirmation; removing the whole space above is the other explicit
+ * cascade. Apps merely disconnect services in their own panel.
  */
 function SpaceServices({
   space,
@@ -236,7 +265,7 @@ function SpaceServices({
                 title={`Try the ${svc.name} service in a chat`}
                 aria-label={`Try the ${svc.name} service in a chat`}
                 onClick={() => setChatting(svc)}
-                className="rounded p-0.5 text-stone hover:bg-line/50 hover:text-ink"
+                className="rounded p-0.5 text-muted hover:bg-line/50 hover:text-ink"
               >
                 <Sparkles className="size-3" aria-hidden />
               </button>
@@ -247,7 +276,7 @@ function SpaceServices({
                 title={`Browse the ${svc.name} buckets`}
                 aria-label={`Browse the ${svc.name} buckets`}
                 onClick={() => setStoreBrowsing(svc)}
-                className="rounded p-0.5 text-stone hover:bg-line/50 hover:text-ink"
+                className="rounded p-0.5 text-muted hover:bg-line/50 hover:text-ink"
               >
                 <Archive className="size-3" aria-hidden />
               </button>
@@ -258,7 +287,7 @@ function SpaceServices({
                 title={`Browse the ${svc.name} database`}
                 aria-label={`Browse the ${svc.name} database`}
                 onClick={() => setBrowsing(svc)}
-                className="rounded p-0.5 text-stone hover:bg-line/50 hover:text-ink"
+                className="rounded p-0.5 text-muted hover:bg-line/50 hover:text-ink"
               >
                 <Table2 className="size-3" aria-hidden />
               </button>
@@ -268,7 +297,7 @@ function SpaceServices({
               title={`Remove ${svc.name} from ${space}`}
               aria-label={`Remove ${svc.name} from ${space}`}
               onClick={() => setRemoving(svc)}
-              className="rounded p-0.5 text-stone hover:bg-brick/10 hover:text-brick"
+              className="rounded p-0.5 text-muted hover:bg-danger/10 hover:text-danger"
             >
               <Trash2 className="size-3" aria-hidden />
             </button>
@@ -335,7 +364,7 @@ function RemoveServiceDialog({
       <DialogBackdrop className="fixed inset-0 bg-black/60" />
       <div className="fixed inset-0 flex items-start justify-center p-4 pt-[18vh]">
         <DialogPanel className="w-full max-w-md rounded-lg border border-line bg-card p-4 shadow-2xl">
-          <DialogTitle className="font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-stone">
+          <DialogTitle className="font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-muted">
             Remove {service.name} from {space}
           </DialogTitle>
           <ErrorNote message={error} />
@@ -350,11 +379,11 @@ function RemoveServiceDialog({
               <p>No app is connected to it.</p>
             )}
             {keepData ? (
-              <p className="text-stone">
+              <p className="text-muted">
                 Its disk stays — adding a service with the same name later picks the data back up.
               </p>
             ) : (
-              <p className="text-brick">Its disk and everything on it will be deleted.</p>
+              <p className="text-danger">Its disk and everything on it will be deleted.</p>
             )}
           </div>
           <label className="mt-3 flex items-center gap-1.5 text-xs text-ink-soft">
@@ -362,7 +391,7 @@ function RemoveServiceDialog({
               type="checkbox"
               checked={keepData}
               onChange={(e) => setKeepData(e.target.checked)}
-              className="size-3.5 accent-hay-deep"
+              className="size-3.5 accent-accent-strong"
             />
             Keep its data
           </label>
@@ -384,29 +413,19 @@ function RemoveServiceDialog({
   )
 }
 
-function AppCard({
-  app,
-  siblings,
-  onRemove,
-}: {
-  app: AppSummary
-  siblings: AppSummary[]
-  onRemove: (r: { space: string; apps: string[]; siblings: string[] }) => void
-}) {
+function AppCard({ app }: { app: AppSummary }) {
   const h = healthOf(app.healthy, app.ready)
   const edge =
-    h === 'bad' ? 'border-brick/50 hover:border-brick' : 'border-line hover:border-line-bright'
+    h === 'bad' ? 'border-danger/50 hover:border-danger' : 'border-line hover:border-line-strong'
 
   return (
-    <div
-      className={`group relative rounded-lg border bg-card transition-colors ${edge}`}
-    >
+    <div className={`rounded-lg border bg-card transition-colors ${edge}`}>
       {/* A real router Link: modifier clicks, middle clicks and copy-link
           behave like the web, with none of the hand-rolled handling. */}
       <Link
         to="/app/$space/$name/{-$tab}"
         params={{ space: app.space, name: app.name, tab: undefined }}
-        className="block p-3.5 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-hay-deep"
+        className="block p-3.5 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent-strong"
       >
         <div className="flex items-center justify-between gap-2">
           <span className="flex min-w-0 items-center gap-2">
@@ -418,20 +437,20 @@ function AppCard({
 
         <div className="mt-2 space-y-1 text-xs">
           {app.url ? (
-            <div className="truncate font-mono text-stone">{app.url.replace(/^https?:\/\//, '')}</div>
+            <div className="truncate font-mono text-muted">{app.url.replace(/^https?:\/\//, '')}</div>
           ) : (
             <div
-              className="flex items-center gap-1 truncate font-mono text-stone"
+              className="flex items-center gap-1 truncate font-mono text-muted"
               title={`No address of its own — its siblings in ${app.space} reach it as http://${app.name}`}
             >
               <Network className="size-3 shrink-0" aria-hidden /> http://{app.name}
             </div>
           )}
-          <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-stone">
-            <span className={h === 'bad' ? 'text-brick' : ''}>{healthLine[h](app.ready)}</span>
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-muted">
+            <span className={h === 'bad' ? 'text-danger' : ''}>{healthLine[h](app.ready)}</span>
             {app.startedAt && <span>· up {ago(app.startedAt)}</span>}
             {(app.restarts ?? 0) > 0 && (
-              <span className="text-brick" title={`${app.restarts} restarts`}>
+              <span className="text-danger" title={`${app.restarts} restarts`}>
                 · {app.restarts}↻
               </span>
             )}
@@ -461,37 +480,6 @@ function AppCard({
         )}
       </Link>
 
-      {/* Quick actions surface on hover, out of the card's click target. */}
-      <div className="absolute right-2 top-2 hidden items-center gap-0.5 rounded-md bg-card group-hover:flex">
-        {app.url && (
-          <a
-            href={app.url}
-            target="_blank"
-            rel="noreferrer"
-            title={`Open ${app.url}`}
-            aria-label={`Open ${app.name} in a new tab`}
-            className="rounded p-1.5 text-stone hover:bg-raised hover:text-ink"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <ExternalLink className="size-3.5" aria-hidden />
-          </a>
-        )}
-        <button
-          type="button"
-          title={`Remove ${app.name}`}
-          aria-label={`Remove ${app.name}`}
-          onClick={() =>
-            onRemove({
-              space: app.space,
-              apps: [app.name],
-              siblings: siblings.filter((a) => a.name !== app.name).map((a) => a.name),
-            })
-          }
-          className="rounded p-1.5 text-stone hover:bg-brick/10 hover:text-brick"
-        >
-          <Trash2 className="size-3.5" aria-hidden />
-        </button>
-      </div>
     </div>
   )
 }

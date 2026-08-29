@@ -56,12 +56,12 @@ type Client struct {
 	Clientset k8sclient.Interface
 	Config    *rest.Config
 
-	// Instance is the installation this client speaks for — the control
+	// Installation is the installation this client speaks for — the control
 	// plane's namespace, which is unique per installation by construction.
 	// Everything applied is stamped with it and every cluster-wide sweep
 	// requires it, so two donkeys on one cluster stay out of each other's
 	// objects. Empty means the default installation.
-	Instance string
+	Installation string
 
 	// Namespaces narrows every sweep that would otherwise cross the whole
 	// cluster. Empty means the cluster, which is what an installation with a
@@ -72,12 +72,12 @@ type Client struct {
 	Namespaces []string
 }
 
-// ForInstance returns the client bound to one installation, sweeping only the
+// WithInstallation returns the client bound to one installation, sweeping only the
 // given namespaces (none means the whole cluster). The installer and the
 // server both call it once they know where the control plane lives.
-func (c *Client) ForInstance(instance string, namespaces ...string) *Client {
+func (c *Client) WithInstallation(installation string, namespaces ...string) *Client {
 	out := *c
-	out.Instance = instance
+	out.Installation = installation
 	out.Namespaces = nil
 	for _, ns := range namespaces {
 		if ns != "" {
@@ -87,15 +87,15 @@ func (c *Client) ForInstance(instance string, namespaces ...string) *Client {
 	return &out
 }
 
-// ForInstallation is ForInstance spelled from an installation's settings:
+// ForInstallation is WithInstallation spelled from an installation's settings:
 // confined to the two namespaces it was given when a workload namespace is
 // named, cluster-wide otherwise. The one rule the server and the gateway
 // must agree on, so it is written once.
 func (c *Client) ForInstallation(system, workload string) *Client {
 	if workload != "" {
-		return c.ForInstance(system, system, workload)
+		return c.WithInstallation(system, system, workload)
 	}
-	return c.ForInstance(system)
+	return c.WithInstallation(system)
 }
 
 // sweep is the namespaces a cluster-wide read must visit.
@@ -136,19 +136,19 @@ func (c *Client) HasResource(groupVersion, kind string) (bool, error) {
 	return false, nil
 }
 
-// instance is this client's installation, with the default filled in.
-func (c *Client) instance() string {
-	if c.Instance == "" {
+// installation is this client's installation, with the default filled in.
+func (c *Client) installation() string {
+	if c.Installation == "" {
 		return manifests.DefaultSystemNamespace
 	}
-	return c.Instance
+	return c.Installation
 }
 
 // ours reports whether an object belongs to this installation. Everything
-// donkey applies is stamped on its way out (see stampInstance), so a missing
+// donkey applies is stamped on its way out (see stampInstallation), so a missing
 // label means another writer — never this installation.
 func (c *Client) ours(labels map[string]string) bool {
-	return labels[manifests.LabelInstance] == c.instance()
+	return labels[manifests.LabelInstallation] == c.installation()
 }
 
 func New(kubeContext string) (*Client, error) {

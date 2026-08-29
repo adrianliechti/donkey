@@ -10,6 +10,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime"
 
 	"github.com/adrianliechti/donkey/internal/config"
@@ -104,7 +105,7 @@ func TestAccessAnnotation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out, `donkey.dev/access: '{"users":["ada@example.com"],"groups":["staff"]}'`) {
+	if !strings.Contains(out, `donkey.local/access: '{"users":["ada@example.com"],"groups":["staff"]}'`) {
 		t.Errorf("access rules should ride on the route, got:\n%s", out)
 	}
 
@@ -142,6 +143,36 @@ func TestAppObjectsGolden(t *testing.T) {
 	}
 	if got != string(want) {
 		t.Errorf("rendered manifests differ from golden file.\nRun `go test ./pkg/runtime/kubernetes/manifests -update` if the change is intended.\n--- got ---\n%s", got)
+	}
+}
+
+func TestAppTelemetryDefaultsAreScopedAndOverridable(t *testing.T) {
+	in := testInput(t)
+	in.TelemetryEndpoint = "http://donkey-telemetry.donkey-system.svc:4318"
+	in.TelemetryToken = "scoped-token"
+	objects, err := AppObjects(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rendered, err := Render(objects)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"name: shop-telemetry",
+		"OTEL_SERVICE_NAME: shop",
+		"OTEL_RESOURCE_ATTRIBUTES: service.namespace=acme",
+		"OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf",
+		"OTEL_METRICS_EXPORTER: otlp",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Errorf("telemetry defaults should contain %q", want)
+		}
+	}
+	_, envFrom := appEnvironment(in)
+	if len(envFrom) < 2 || envFrom[0].SecretRef == nil || envFrom[0].SecretRef.Name != TelemetrySecretName(in.Name()) ||
+		envFrom[1].SecretRef == nil || envFrom[1].SecretRef.Name != EnvSecretName(in.Name()) {
+		t.Fatalf("telemetry must load before the user env Secret so user values win: %+v", envFrom)
 	}
 }
 
@@ -276,7 +307,7 @@ func TestSpaceLabels(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out, "donkey.dev/space: acme") {
+	if !strings.Contains(out, "donkey.local/space: acme") {
 		t.Error("objects should carry the space label")
 	}
 	if !strings.Contains(out, "namespace: donkey-acme") {
@@ -383,43 +414,128 @@ func mustObjects(t *testing.T, in Input) []runtime.Object {
 }
 
 // The app.kubernetes.io/* labels exist so donkey's grouping is readable by
-// tools that never heard of donkey. `part-of` is the one that matters: it is
-// the standard spelling of the thing a space is.
+// tools that never heard of donkey. Name, instance, part-of and managed-by
+// describe apps and platform alike; architectural component is omitted because
+// donkey does not know it. Donkey's role label carries internal identity.
 func TestStandardLabels(t *testing.T) {
-	l := Labels("demo", "backend", ComponentWeb)
+	l := Labels("demo", "backend", RoleWorkload)
 	for k, want := range map[string]string{
-		"app.kubernetes.io/name":       "backend",
-		"app.kubernetes.io/part-of":    "demo",
-		"app.kubernetes.io/component":  ComponentWeb,
-		"app.kubernetes.io/managed-by": ManagedByValue,
-		LabelApp:                       "backend",
-		LabelSpace:                     "demo",
+		LabelName:      "backend",
+		LabelInstance:  "demo",
+		LabelPartOf:    "demo",
+		LabelRole:      RoleWorkload,
+		LabelManagedBy: ManagedByValue,
+		LabelApp:       "backend",
+		LabelSpace:     "demo",
 	} {
 		if l[k] != want {
 			t.Errorf("%s = %q, want %q", k, l[k], want)
 		}
 	}
-	// A caller with no space must not claim the app is part of one.
-	if _, ok := Labels("", "backend", ComponentWeb)["app.kubernetes.io/part-of"]; ok {
+	if _, ok := l["app.kubernetes.io/component"]; ok {
+		t.Error("architectural component must be omitted when donkey does not know it")
+	}
+	// A caller with no space must not claim the app is part of one, and has
+	// no instance to name.
+	noSpace := Labels("", "backend", RoleWorkload)
+	if _, ok := noSpace[LabelPartOf]; ok {
 		t.Error("part-of must be absent when the space is unknown")
+	}
+	if _, ok := noSpace[LabelInstance]; ok {
+		t.Error("instance must be absent when the space is unknown")
 	}
 }
 
-// A selector cannot be changed after the Deployment exists, so the labels the
-// pods are selected by must stay exactly what they always were — adding
-// metadata labels must never reach them.
-func TestDeploymentSelectorIsUnaffectedByLabels(t *testing.T) {
+func TestMaximumNamesKeepStandardLabelsValid(t *testing.T) {
+	long := strings.Repeat("a", 40)
+	for key, value := range Labels(long, long, RoleWorkload) {
+		if len(value) > 63 {
+			t.Errorf("%s value has %d characters, Kubernetes permits 63: %q", key, len(value), value)
+		}
+	}
+}
+
+// Platform workloads are part of the application called donkey; their
+// instance is the installation, stamped at the apply/render boundary.
+func TestSystemStandardLabels(t *testing.T) {
+	l := SystemLabels(ServerName)
+	for k, want := range map[string]string{
+		LabelName:      ServerName,
+		LabelPartOf:    ManagedByValue,
+		LabelRole:      SystemRole(ServerName),
+		LabelManagedBy: ManagedByValue,
+	} {
+		if l[k] != want {
+			t.Errorf("%s = %q, want %q", k, l[k], want)
+		}
+	}
+	if _, ok := l[LabelInstance]; ok {
+		t.Error("instance is the installation's to stamp, not SystemLabels'")
+	}
+	// The space itself is the unit, not a qualified copy of one.
+	if got := SpaceLabels("demo")[LabelInstance]; got != "demo" {
+		t.Errorf("space instance = %q, want the space itself", got)
+	}
+}
+
+func TestEveryAppAndSystemObjectUsesCanonicalMetadata(t *testing.T) {
+	appObjects, err := AppObjects(testInput(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for group, objects := range map[string][]runtime.Object{
+		"app":    appObjects,
+		"system": SystemObjects(systemInput()),
+	} {
+		for _, object := range objects {
+			accessor, err := meta.Accessor(object)
+			if err != nil {
+				t.Fatalf("%s object metadata: %v", group, err)
+			}
+			labels := accessor.GetLabels()
+			kind := object.GetObjectKind().GroupVersionKind().Kind
+			if labels[LabelManagedBy] != ManagedByValue || labels[LabelRole] == "" ||
+				labels["app.kubernetes.io/name"] == "" {
+				t.Errorf("%s %s/%s has incomplete canonical labels: %v", group, kind, accessor.GetName(), labels)
+			}
+			if _, component := labels["app.kubernetes.io/component"]; component {
+				t.Errorf("%s %s/%s invents a standard component", group, kind, accessor.GetName())
+			}
+			if _, legacy := labels["donkey.local/component"]; legacy {
+				t.Errorf("%s %s/%s carries the retired internal component label", group, kind, accessor.GetName())
+			}
+			if group == "app" && labels[LabelSpace] != "acme" {
+				t.Errorf("app %s/%s has space label %q", kind, accessor.GetName(), labels[LabelSpace])
+			}
+		}
+	}
+}
+
+// A selector cannot be changed after the Deployment exists, so it stays at
+// the minimum immutable identity. Descriptive name, part-of and version
+// labels must never leak into it.
+func TestAppSelectorsUseOnlyDonkeyIdentity(t *testing.T) {
 	in := testInput(t)
 	dep, err := deployment(in)
 	if err != nil {
 		t.Fatal(err)
 	}
-	sel := dep.Spec.Selector.MatchLabels
-	if len(sel) != 2 || sel[LabelApp] != in.App.Name || sel[LabelComponent] != ComponentWeb {
-		t.Fatalf("the selector must stay donkey.dev/app + donkey.dev/component only, got %v", sel)
+	selectors := map[string]map[string]string{
+		"Deployment": dep.Spec.Selector.MatchLabels,
+		"Service":    service(in).Spec.Selector,
+	}
+	for kind, sel := range selectors {
+		if len(sel) != 3 || sel[LabelSpace] != in.Space || sel[LabelApp] != in.App.Name || sel[LabelRole] != RoleWorkload {
+			t.Errorf("%s selector must be logical space + app + role, got %v", kind, sel)
+		}
+		for key := range sel {
+			if !strings.HasPrefix(key, "donkey.local/") {
+				t.Errorf("standard metadata label %q leaked into the %s selector", key, kind)
+			}
+		}
 	}
 	// The pod template still has to satisfy it.
-	for k, v := range sel {
+	for k, v := range dep.Spec.Selector.MatchLabels {
 		if dep.Spec.Template.Labels[k] != v {
 			t.Errorf("pod template is missing selector label %s=%s", k, v)
 		}

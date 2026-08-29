@@ -368,6 +368,38 @@ type BuildSettings struct {
 	VerifySeconds int   `json:"verifySeconds,omitempty"`
 	// Attempts is the first Dockerfile plus one revision per failure shown.
 	Attempts int `json:"attempts,omitempty"`
+
+	// Provenance selects the SLSA provenance attestation BuildKit attaches
+	// to every pushed image: "min" (the default — materials and build
+	// metadata, no sources), "max", or "off". Max additionally embeds the
+	// Dockerfile and every build-arg *value* into the pushed attestation —
+	// never choose it while build.env carries credentials.
+	Provenance string `json:"provenance,omitempty"`
+	// SBOM attaches an SPDX SBOM attestation to every pushed image. Off by
+	// default: it pulls a scanner image (covered by registryMirrors) and
+	// lengthens every build.
+	SBOM bool `json:"sbom,omitempty"`
+}
+
+// ProvenanceMode resolves the attestation tri-state: unset means "min",
+// "off" means none. Any other value is refused at validation.
+func (b BuildSettings) ProvenanceMode() string {
+	switch b.Provenance {
+	case "", "min":
+		return "min"
+	case "max":
+		return "max"
+	}
+	return ""
+}
+
+// ValidateProvenance refuses values ProvenanceMode would silently drop.
+func (b BuildSettings) ValidateProvenance() error {
+	switch b.Provenance {
+	case "", "min", "max", "off":
+		return nil
+	}
+	return fmt.Errorf("build.provenance must be min, max or off (got %q)", b.Provenance)
 }
 
 // InstallProxy is the forward proxy donkey's own processes use.
@@ -499,6 +531,33 @@ type InstallAuth struct {
 type InstallKubernetes struct {
 	System   InstallNamespace `json:"system,omitempty"`
 	Workload InstallNamespace `json:"workload,omitempty"`
+	// IsolateSpaces fences every space with a NetworkPolicy: a space's pods
+	// accept traffic only from their own space, the donkey gateway and
+	// donkey-server. Cross-space calls keep working through the gateway on an
+	// app's public hostname — where login and access rules apply — but stop
+	// working as direct pod-to-pod traffic. So does anything else the cluster
+	// runs (say, a Prometheus scraping pods across namespaces).
+	//
+	// A pointer so unset ≠ off: isolation is on by default, and only an
+	// explicit `isolateSpaces: false` opens the network between spaces.
+	//
+	// Enforcement is the CNI's business: on a network plugin that ignores
+	// NetworkPolicy the fences apply cleanly and change nothing.
+	IsolateSpaces *bool `json:"isolateSpaces,omitempty"`
+	// RestrictEgress adds the egress half of the fence: a space's pods reach
+	// only their own space, the platform services an app uses (donkey-ai,
+	// donkey-telemetry) and DNS — never the public internet or another space.
+	//
+	// Off by default and a plain bool, unlike IsolateSpaces: cutting outbound
+	// traffic breaks any app that calls a third-party API at runtime, so it is
+	// a deliberate choice, never a default. It needs IsolateSpaces on, since
+	// the egress rules ride the same per-space policy.
+	RestrictEgress bool `json:"restrictEgress,omitempty"`
+}
+
+// SpacesIsolated is on unless an installation turns it off.
+func (k InstallKubernetes) SpacesIsolated() bool {
+	return k.IsolateSpaces == nil || *k.IsolateSpaces
 }
 
 // InstallNamespace names a namespace donkey was given.
@@ -565,6 +624,11 @@ func (k InstallKubernetes) Validate() error {
 	// app namespaces — accepting it under system: would quietly do nothing.
 	if k.System.NamespacePrefix != "" {
 		return fmt.Errorf("kubernetes.system.namespacePrefix is not a setting — the prefix belongs under kubernetes.workload")
+	}
+	// Egress rules ride the space's isolation policy, so there is nowhere to
+	// put them when isolation is off.
+	if k.RestrictEgress && !k.SpacesIsolated() {
+		return fmt.Errorf("kubernetes.restrictEgress needs kubernetes.isolateSpaces — the egress limits ride the same per-space policy the fence creates")
 	}
 	return nil
 }

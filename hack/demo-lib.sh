@@ -25,8 +25,8 @@ esac
 # donkey reads every app with its assistant, and the demos need a real one:
 # donkey's own builder has the model WRITE each app's Dockerfile, so there is
 # nothing a stub could stand in for. Point OPENAI_BASE_URL / OPENAI_API_KEY at
-# a model, or run an OpenAI-compatible proxy on host port 8080.
-AI_BASE="${OPENAI_BASE_URL:-http://host.docker.internal:8080/v1}"
+# a model, or run an OpenAI-compatible proxy on host port 4242.
+AI_BASE="${OPENAI_BASE_URL:-http://host.docker.internal:4242/v1}"
 AI_KEY="${OPENAI_API_KEY:-local}"
 # Empty means "whatever the install defaults to". DONKEY_MODEL is the same
 # variable the live assistant tests read, so one export covers both.
@@ -46,16 +46,16 @@ say() { printf '\n%s== %s ==%s\n' "${C_BOLD}" "$*" "${C_OFF}"; }
 # Without a model nothing would deploy, so the phases that deploy stop early
 # rather than failing halfway through.
 require_ai() {
-  if [ -z "${OPENAI_BASE_URL:-}" ] && ! nc -z -w 2 127.0.0.1 8080 2>/dev/null; then
+  if [ -z "${OPENAI_BASE_URL:-}" ] && ! nc -z -w 2 127.0.0.1 4242 2>/dev/null; then
     cat >&2 <<'MSG'
-No OpenAI-compatible endpoint on host port 8080.
+No OpenAI-compatible endpoint on host port 4242.
 
 donkey reads every app with its assistant (ports, health routes, data folders),
 and with build.builder: ai the assistant writes the app's Dockerfile — so the
 demo cannot deploy without a real model. Two ways out:
 
   OPENAI_BASE_URL=https://api.openai.com/v1 OPENAI_API_KEY=sk-… task demo
-  … or run your own OpenAI-compatible proxy on port 8080
+  … or run your own OpenAI-compatible proxy on port 4242
 MSG
     exit 1
   fi

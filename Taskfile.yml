@@ -27,13 +27,13 @@ tasks:
     # build would silently keep an older binary. Go's own build cache already
     # makes the repeat cost small.
     cmds:
-      - go build -ldflags "{{.LDFLAGS}}" -o bin/{{.BINARY}} ./cmd/donkey
+      - CGO_ENABLED=0 go build -ldflags "{{.LDFLAGS}}" -o bin/{{.BINARY}} ./cmd/donkey
 
   install:
     desc: Install donkey into GOPATH/bin
     deps: [web-build]
     cmds:
-      - go install -ldflags "{{.LDFLAGS}}" ./cmd/donkey
+      - CGO_ENABLED=0 go install -ldflags "{{.LDFLAGS}}" ./cmd/donkey
 
   web-build:
     desc: Build the admin console (embedded into donkey-server)
@@ -56,10 +56,9 @@ tasks:
       - npm install --no-audit --no-fund
       - npm run dev
 
-  # image cross-compiles one command, wraps it in its Dockerfile and builds
-  # it into the local Docker daemon. The development images go through
-  # here; the kind flow additionally loads them into the cluster registry
-  # (server-image:kind, demo-idp-image:kind, private-packages-image:kind).
+  # image cross-compiles the small pure-Go helper commands and wraps them in
+  # their Dockerfiles. donkey-server has its own source-building Dockerfile
+  # below because embedded DuckDB needs a native CGO toolchain per platform.
   image:
     internal: true
     requires:
@@ -72,17 +71,8 @@ tasks:
 
   server-image:
     desc: Build the donkey-server image (into the local Docker daemon)
-    deps: [web-build]
     cmds:
-      - task: image
-        vars:
-          CMD: ./cmd/donkey-server
-          # Dockerfile.server picks the binary by TARGETARCH, which a plain
-          # build resolves to the daemon's own arch — this machine's.
-          BIN: donkey-server-{{.ARCH}}
-          IMAGE: '{{.IMAGE | default "donkey/donkey-server:dev"}}'
-          DOCKERFILE: hack/Dockerfile.server
-          CONTEXT: .build
+      - docker build -q -f hack/Dockerfile.server --build-arg VERSION={{.VERSION}} -t {{.IMAGE | default "donkey/donkey-server:dev"}} .
 
   server-image:kind:
     desc: Build the donkey-server image and load it into the kind cluster registry
@@ -102,12 +92,7 @@ tasks:
       IMAGE: '{{.IMAGE | default "ghcr.io/adrianliechti/donkey-server"}}'
     cmds:
       # Needs a prior `docker login ghcr.io` (token with write:packages).
-      - task: web-build
-      - mkdir -p .build/publish
-      - CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "{{.LDFLAGS}}" -o .build/publish/donkey-server-amd64 ./cmd/donkey-server
-      - CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags "{{.LDFLAGS}}" -o .build/publish/donkey-server-arm64 ./cmd/donkey-server
-      - cp hack/Dockerfile.server .build/publish/Dockerfile
-      - docker buildx build --platform linux/amd64,linux/arm64 -t {{.IMAGE}}:{{.VERSION}} --push .build/publish
+      - docker buildx build --platform linux/amd64,linux/arm64 -f hack/Dockerfile.server --build-arg VERSION={{.VERSION}} -t {{.IMAGE}}:{{.VERSION}} --push .
 
   demo-idp-image:
     desc: Build the DEMO fake identity provider image (into the local Docker daemon)

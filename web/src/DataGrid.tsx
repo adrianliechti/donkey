@@ -19,14 +19,14 @@ export function DataGrid<T>({ table, leadingRow }: { table: Table<T>; leadingRow
               return (
                 <th
                   key={header.id}
-                  className="border-b border-line bg-card px-2 py-1.5 text-left font-semibold text-stone"
+                  className="border-b border-line bg-card px-2 py-1.5 text-left font-semibold text-muted"
                 >
                   {header.column.getCanSort() ? (
                     <button
                       type="button"
                       onClick={header.column.getToggleSortingHandler()}
                       title={`Sort by ${header.column.id}`}
-                      className="inline-flex items-center gap-1 hover:text-ink focus-visible:outline-2 focus-visible:outline-hay-deep"
+                      className="inline-flex items-center gap-1 hover:text-ink focus-visible:outline-2 focus-visible:outline-accent-strong"
                     >
                       {flexRender(header.column.columnDef.header, header.getContext())}
                       {dir === 'asc' && <ChevronUp className="size-3" aria-hidden />}

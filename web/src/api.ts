@@ -32,6 +32,76 @@ export interface AppStatus {
   hasStorage?: boolean
   exposure?: Exposure
   port?: number
+  /** The latest deploy can be reopened from app details. */
+}
+
+export type TrafficSource = 'edge' | 'app'
+export type TrafficRange = '48h' | '7d' | '30d'
+export type ResourceRange = '1h' | '4h' | '48h' | '7d' | '30d'
+
+export interface TrafficTotals {
+  requests: number
+  successful: number
+  clientErrors: number
+  serverErrors: number
+  otherResponses?: number
+  averageLatencyMs: number
+  p50LatencyMs: number
+  p95LatencyMs: number
+  views: number
+  uniqueVisitors: number
+  identifiedViews: number
+  visitorCoveragePercent: number
+}
+
+export interface TrafficPoint extends TrafficTotals {
+  bucket: string
+}
+
+export interface TrafficReport {
+  space: string
+  app?: string
+  source: TrafficSource
+  range: TrafficRange
+  granularity: 'hour' | 'day'
+  from: string
+  to: string
+  totals: TrafficTotals
+  series: TrafficPoint[]
+  definitions: {
+    success: string
+    view: string
+    uniqueVisitors: string
+  }
+}
+
+export interface ResourceCurrent {
+  sampledAt: string
+  fresh: boolean
+  instances: number
+  cpuCores: number
+  memoryBytes: number
+}
+
+export interface ResourcePoint {
+  bucket: string
+  samples: number
+  averageCpuCores: number
+  peakCpuCores: number
+  averageMemoryBytes: number
+  peakMemoryBytes: number
+}
+
+export interface ResourceReport {
+  space: string
+  app: string
+  range: ResourceRange
+  granularity: 'minute' | '5m' | 'hour' | 'day'
+  from: string
+  to: string
+  available: boolean
+  current?: ResourceCurrent
+  series: ResourcePoint[]
 }
 
 /** Who may open a login-protected app; empty lists mean "everyone signed in". */
@@ -178,6 +248,23 @@ export interface PlanApp {
 export interface PlanBuild {
   summary: string
   strategy: string
+  runtimes?: PlanSignal[]
+  frameworks?: PlanSignal[]
+  versions?: PlanSignal[]
+  packageManagers?: PlanSignal[]
+  baseImages?: string[]
+  systemPackages?: PlanSystemPackage[]
+}
+
+export interface PlanSignal {
+  value: string
+  evidence?: string
+}
+
+export interface PlanSystemPackage {
+  dependency: string
+  build?: string[]
+  runtime?: string[]
 }
 
 export interface PlanVolume {
@@ -228,6 +315,37 @@ export interface PlanEdit {
   storage: string[]
   services: string[]
   exposure: Exposure
+}
+
+export type DeployStage = 'detecting' | 'building' | 'releasing'
+
+/** Structured facts that change while a release is running. The regular
+ * log remains the complete human-readable account. */
+export interface DeployUpdate {
+  stage?: DeployStage
+  baseImages?: string[]
+  dockerfile?: string
+}
+
+/** One versioned deploy record from the app's retained build history. */
+export interface AppRelease {
+  startedAt: string
+  finishedAt: string
+  plan?: Plan
+  update: DeployUpdate
+  lines: string[]
+  buildLog?: string
+  dockerfile?: string
+  result: DeployResult
+  truncated?: boolean
+}
+
+/** One line of an app's build history, newest first. */
+export interface BuildSummary {
+  sequence: number
+  created: string
+  image?: string
+  ok: boolean
 }
 
 export interface DoctorCheck {
@@ -344,6 +462,20 @@ export const api = {
     const st = await request<AppStatus>(appPath(space, app, '/status'))
     return { ...st, pods: st.pods ?? [] }
   },
+  builds: (space: string, app: string) =>
+    request<{ builds: BuildSummary[] }>(appPath(space, app, '/builds')),
+  build: (space: string, app: string, sequence: number) =>
+    request<AppRelease>(appPath(space, app, `/builds/${sequence}`)),
+  traffic: (space: string, app: string, source: TrafficSource = 'edge', range: TrafficRange = '30d') => {
+    const query = `?source=${source}&range=${range}`
+    return request<TrafficReport>(
+      app
+        ? `${appPath(space, app, '/traffic')}${query}`
+        : `/v1/spaces/${encodeURIComponent(space)}/traffic${query}`,
+    )
+  },
+  resources: (space: string, app: string, range: ResourceRange = '4h') =>
+    request<ResourceReport>(`${appPath(space, app, '/resources')}?range=${range}`),
   env: (space: string, app: string) =>
     request<{ env: Record<string, string> }>(appPath(space, app, '/env')),
   setEnv: (space: string, app: string, env: Record<string, string>, restart: boolean) =>
@@ -376,7 +508,7 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ name }),
     }),
-  // Only for spaces without apps — their services and data go with it.
+  // Removes the entire space boundary, including apps, services, and data.
   deleteSpace: (space: string) =>
     request<{ ok: boolean }>(`/v1/spaces/${encodeURIComponent(space)}`, { method: 'DELETE' }),
   addonTypes: () => request<{ types: AddonType[] }>('/v1/catalog'),
@@ -567,6 +699,7 @@ export const api = {
     opts: { space?: string; name?: string; port?: string; plan?: string },
     onLine: (line: string) => void,
     onProgress: (progress: string) => void,
+    onUpdate: (update: DeployUpdate) => void,
   ): Promise<DeployResult> => {
     const params = new URLSearchParams()
     if (opts.plan) params.set('plan', opts.plan)
@@ -594,6 +727,7 @@ export const api = {
         if (msg.result) result = msg.result
         else if (msg.line) onLine(msg.line)
         else if (msg.progress) onProgress(msg.progress)
+        else if (msg.update) onUpdate(msg.update)
       } catch {
         /* partial line — wait for more */
       }

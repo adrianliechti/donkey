@@ -64,6 +64,7 @@ five ideas:
                            │  ├─ donkey-buildkitd  image builds      │──▶ registry
                            │  ├─ donkey-packages  build package proxy│─▶ package registries
                            │  ├─ donkey-ai      openai addon endpoint│──▶ model API
+                           │  ├─ donkey-telemetry  OTLP + DuckDB     │
  browser ────80/443───────▶│  └─ donkey-gateway  TLS (ACME/CA/none)  │──OIDC──▶ Entra ID /
                            │       · routing by hostname and path    │        any IdP
      <app>.<space>.<domain>│       · OIDC login                      │
@@ -90,7 +91,7 @@ five ideas:
   the domain itself: open `https://<domain>` in a browser, sign in at your
   IdP (the gateway runs the login, like for any app — one sign-in covers
   console and apps), and you get the apps overview with health at a glance, live
-  logs, an env-var editor, restart, an AI "explain what's wrong" for
+  logs, selectable 48-hour/7-day/30-day traffic and latency, an env-var editor, restart, an AI "explain what's wrong" for
   unhealthy apps, remove-app, and the system checks. Spaces are managed
   here too — create one before any app exists, remove an empty one — and
   each space card carries its services: a catalog to add from, plus a
@@ -124,6 +125,14 @@ five ideas:
   requests to public registries by default or installation-wide enterprise upstreams.
   BuildKit is the only pod admitted by its NetworkPolicy, and upstream
   credentials stay in this process rather than becoming Docker build args.
+- **donkey-telemetry** — a dedicated `telemetry` process role of the single
+  `donkey-server` binary: a single-replica OTLP/HTTP metrics receiver with a
+  private query API backed by an embedded DuckDB file on its own 2 Gi PVC.
+  It keeps 30 days of hourly HTTP histograms, hourly view/visitor
+  rollups, and the versioned build records the console's Deployment tab
+  renders (a bounded history per app). Only this process opens the file; `Recreate` upgrades preserve
+  DuckDB's single-writer ownership. The server can query it, while the gateway
+  and apps can only ingest with scope-specific credentials.
 - **donkey-gateway** — donkey's own edge (same binary as the server,
   started with `gateway`): traffic enters the cluster here, on ports 80 and
   443. By default it terminates TLS and issues the certificates itself — one per
@@ -144,16 +153,78 @@ five ideas:
   that space, so they reach each other by plain service name — and that
   includes its services: a space's postgres is simply `postgres` to its
   siblings. The namespace is created with the first app (or ahead of time
-  in the console), and goes away with the last app unless kept data or
-  services still live there; a namespace donkey didn't create is never
-  taken over.
+  in the console). Removing an app never removes its space; removing the
+  space is the explicit cascade that deletes its routes, apps, services,
+  bindings, disks and retained telemetry. A namespace donkey didn't create
+  is never taken over or deleted.
 - **Per app** — Deployment (probes, `PORT`, `envFrom` secrets), Service, a
   route entry (`<app>.<space>.<domain>`, https only — the gateway's http
   listener redirects) — a ConfigMap carrying the app's backend, hostname,
   login and access rules as annotations — and Secrets for env vars,
-  registry pull auth and service bindings. Everything is labeled `donkey.dev/app` and
-  `donkey.dev/space`, so status, logs and destroy know exactly what donkey
-  owns.
+  registry pull auth and service bindings.
+
+Runtime metadata has one small identity vocabulary, spelled `donkey.local/*`
+on Kubernetes and `local.donkey.*` (reverse-DNS) on Docker: the installation
+is the ownership boundary, the space the lifecycle boundary, app and addon
+the logical workload identities, and role its immutable internal purpose. On
+Kubernetes every object additionally carries the applicable
+[recommended common labels](https://kubernetes.io/docs/concepts/overview/working-with-objects/common-labels/)
+(`app.kubernetes.io/name`, `instance`, `version`, `part-of`, `managed-by`) —
+on the platform's own workloads and on every deployed app — so donkey's
+grouping is legible to standard tooling. Architectural `component` is omitted
+because donkey does not know it. Destructive sweeps require the installation
+and exact logical scope; selectors and ownership use only `donkey.local/*`;
+non-identifying configuration stays in annotations. The
+complete reference, per runtime:
+[README_KUBERNETES.md](README_KUBERNETES.md#labels-annotations-and-selectors)
+and [README_DOCKER.md](README_DOCKER.md#labels).
+
+## Traffic telemetry
+
+Every app and space has a Traffic view in the console with **last 48 hours**,
+**last 7 days**, and **last 30 days** ranges. The 48-hour series uses hourly
+buckets; week and month series use daily buckets. The default
+source is **Gateway**: donkey-gateway records one stable OpenTelemetry
+`http.server.request.duration` histogram after an allowed request has been
+forwarded. The histogram count supplies request volume; status attributes split
+HTTP 200–399 successes, 4xx client errors and 5xx server errors; its standard
+explicit buckets supply average, p50 and p95 latency. Logical identity is kept
+as the bounded `donkey.space.name` and `donkey.app.name` attributes. This follows
+the [stable OTel HTTP metric semantic conventions](https://opentelemetry.io/docs/specs/semconv/http/http-metrics/).
+
+A **view** is a successful top-level HTML document load at the gateway. It does
+not pretend to see client-side SPA route transitions. Unique visitors are
+distinct signed-in subjects: the gateway HMAC-pseudonymizes them separately per
+app and per space before export. DuckDB never receives the subject, email, IP,
+user agent, path or query string, and anonymous visitors receive no tracking
+cookie. The report shows identification coverage alongside the unique count.
+
+Apps also receive standard exporter defaults:
+
+```text
+OTEL_SERVICE_NAME=<app>
+OTEL_RESOURCE_ATTRIBUTES=service.namespace=<space>
+OTEL_EXPORTER_OTLP_ENDPOINT=http://donkey-telemetry…:4318
+OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+OTEL_METRICS_EXPORTER=otlp
+```
+
+Explicit app environment values win over these defaults. The injected variables
+configure an OpenTelemetry SDK; they do not magically instrument application
+code. Use the language's HTTP auto-instrumentation or SDK and emit the stable
+HTTP server duration histogram. The console exposes this as **In-app OTEL** and
+keeps it separate from Gateway data, because adding both would count the same
+request twice. Each app's HMAC token is valid only for its own
+[`service.namespace` / `service.name` resource](https://opentelemetry.io/docs/specs/semconv/resource/service/),
+so it cannot write another app's series or the trusted edge series.
+
+No Collector is required: the purpose-built service already accepts standard
+OTLP/HTTP and owns retention/query semantics. A Collector remains useful when an
+installation needs external routing or processing, but it is a pipeline rather
+than the datastore. The embedded service uses the official
+[DuckDB Go client](https://duckdb.org/docs/current/clients/go) and one writer
+process; reports are analytical SQL over compact rollups rather than scans of
+gateway logs.
 - **Storage** — `storage.paths` in donkey.yaml (or what the assistant
   found) gives an app **one** PersistentVolumeClaim, with every path mounted
   as its own folder on it (`subPath`, derived from the path so data never
@@ -406,7 +477,7 @@ files on nodes, no admission webhooks, no StorageClasses, no required CRDs — e
 it applies is in `donkey-system`, in a `donkey-<space>` namespace, or is one of
 the few cluster-scoped RBAC objects it names after itself. A test asserts
 exactly that (`TestInstallTouchesOnlyItsOwnObjects`). Configured with a
-[workload namespace](#namespaces-and-restricted-clusters) it applies nothing
+[workload namespace](README_KUBERNETES.md#namespaces-and-restricted-clusters) it applies nothing
 cluster-scoped at all.
 
 What has to be there first (`donkey server install` checks these before it
@@ -414,7 +485,7 @@ applies anything, and `donkey doctor` keeps checking them after):
 
 | Requirement | Why | Notes |
 |---|---|---|
-| **Kubernetes cluster** with a default StorageClass | apps with `storage.paths` and provisioned services claim volumes | any conformant cluster; nothing donkey-specific. No ingress controller, no Gateway API, no cert-manager — donkey brings its own edge, and optionally attaches to a Gateway API gateway the cluster already runs (below). Traffic enters through the donkey-gateway `LoadBalancer` service; on clusters where nothing assigns those an address (kind), set `gateway.serviceType: NodePort` or `ClusterIP` |
+| **Kubernetes cluster** with a default StorageClass | donkey-telemetry always claims its 2 Gi DuckDB volume; apps with `storage.paths` and provisioned services claim their own | any conformant cluster; nothing donkey-specific. No ingress controller, no Gateway API, no cert-manager — donkey brings its own edge, and optionally attaches to a Gateway API gateway the cluster already runs (below). Traffic enters through the donkey-gateway `LoadBalancer` service; on clusters where nothing assigns those an address (kind), set `gateway.serviceType: NodePort` or `ClusterIP` |
 | **Container registry** the cluster can pull from | donkey pushes every build there | `registry.url` + credentials; `registry.caSecret` when its certificate comes from a private CA |
 | **DNS** for `*.<domain>` and `<domain>` → the gateway address | apps are served at `<app>.<space>.<domain>`, the API and login callback at `<domain>` | one wildcard covers every depth; the apex needs its own record |
 | **OIDC provider** (Pocket ID, Entra ID, Keycloak, …) | the one way in: console, CLI and protected apps all sign in against it | required — `auth.issuer` (+ client id/secret); `auth.admins` optionally narrows who may administer |
@@ -429,156 +500,31 @@ all — `runtime: docker` runs apps straight on the Docker engine).
 
 RBAC: by default donkey-server binds `cluster-admin`, because it creates and
 deletes namespaces and no Role can express that. Giving it a workload
-namespace instead drops it to two namespaced Roles — see below.
+namespace instead drops it to two namespaced Roles — see [README_KUBERNETES.md](README_KUBERNETES.md#namespaces-and-restricted-clusters).
 
-### Namespaces and restricted clusters
+### Installation modes (Kubernetes)
 
-By default every space gets a namespace of its own (`donkey-<space>`), created
-and deleted by donkey. That is the right shape on a cluster you own, and it is
-what makes an app's Service reachable as plain `api` from its siblings.
+Four arrangements change the shape of a Kubernetes installation, all
+documented in [README_KUBERNETES.md](README_KUBERNETES.md):
 
-Plenty of clusters don't work that way. Namespaces are handed out by a
-platform team, through a CRD or a GitOps pipeline, and `cluster-admin` is not
-something a review will approve. For those, name the namespaces donkey should
-use:
+- **[Namespaces and restricted clusters](README_KUBERNETES.md#namespaces-and-restricted-clusters)**
+  — a namespace per space (the default), or one workload namespace you were
+  given: qualified object names, and no cluster-scoped grant at all.
+- **[Isolating spaces from each other](README_KUBERNETES.md#isolating-spaces-from-each-other)**
+  — the per-space ingress NetworkPolicy fence (`kubernetes.isolateSpaces`,
+  on by default) and its opt-in egress half
+  (`kubernetes.restrictEgress`), which confines a space's pods to their own
+  space, the platform endpoints and DNS.
+- **[Using the cluster's edge](README_KUBERNETES.md#using-the-clusters-edge)**
+  — entering through a Gateway API gateway the cluster already runs, or
+  per-app managed edges via cert-manager.
+- **[Several donkeys on one cluster](README_KUBERNETES.md#several-donkeys-on-one-cluster)**
+  — what must differ per installation, and why the system namespace is the
+  installation's identity.
 
-```yaml
-kubernetes:
-  system:
-    namespace: bank-donkey-system   # where the control plane lives
-  workload:
-    namespace: bank-donkey-apps     # where every app of every space lives
-```
-
-One rule covers both fields: **name a namespace and it is yours.** donkey
-expects it to exist, applies its objects into it, and never creates, deletes
-or relabels it. Leave a field empty and donkey makes and manages that
-namespace itself.
-
-Setting `workload.namespace` changes three things:
-
-- **Every app lives in one namespace**, so object names carry their space:
-  the app `api` in space `shop` becomes `shop--api` on the cluster. The
-  separator is `--`, and neither a space nor an app name may contain it.
-- **Siblings are addressed by that name too.** Where an app in a namespace of
-  its own reaches a sibling at `http://api`, here it is `http://shop--api`.
-  Addon bindings (`DATABASE_URL` and friends) are generated, so they follow
-  automatically — only a hostname you hardcoded needs changing.
-- **donkey needs nothing above a namespace.** No ClusterRole, no
-  ClusterRoleBinding, no namespace permissions: namespaced Roles in the two
-  namespaces — the server's, spelled out in `serverRoleRules`, and the
-  gateway's read-only route access. This is the only arrangement that runs
-  with no cluster-scoped grant at all.
-
-Two limits to check before you commit to a name:
-
-- A Service name is a DNS label, so `<space>--<app>` must be **63 characters
-  or fewer**. donkey refuses the pair at deploy time rather than letting the
-  cluster reject it.
-- Both namespaces must **already exist**, and their Pod Security Standard has
-  to admit the pods that go in them. The install refuses up front rather than
-  letting admission fail silently later:
-  `donkey-system` runs a **privileged** BuildKit, so it needs
-  `pod-security.kubernetes.io/enforce=privileged` (or no enforcement); the
-  workload namespace must not be `restricted`, because most real application
-  images run as root. donkey sets `baseline` on namespaces it creates itself.
-
-### Using the cluster's edge
-
-donkey needs no Gateway API — but a cluster that standardizes on one can put
-its edge in front of donkey with one setting, checked at install: naming a
-gateway on a cluster that doesn't serve HTTPRoute is refused up front
-instead of failing mid-apply.
-
-**Enter through the cluster's Gateway API gateway** instead of exposing
-donkey's edge Service:
-
-```yaml
-gateway:
-  serviceType: ClusterIP
-  httpRoute:
-    name: shared-gateway      # the Gateway to attach to
-    namespace: infra
-tls:
-  mode: none                  # that gateway terminates TLS before routes match
-```
-
-donkey renders one HTTPRoute sending `<domain>` and `*.<domain>` (a Gateway
-API wildcard matches any depth) to the donkey gateway, which keeps doing what
-it always does — routing, login, access — one hop further in. Custom app
-hostnames outside the domain are not covered by this route.
-
-TLS in this arrangement is the platform's prerequisite, not donkey's job:
-the cluster gateway's listeners terminate it with certificates provisioned
-however the platform likes — cert-manager, a PKI process, a ReferenceGrant
-when the certificate Secrets live outside the gateway's namespace. Remember
-that a TLS certificate wildcard covers one label while apps live at
-`<app>.<space>.<domain>`, so the gateway wants a listener per
-`*.<space>.<domain>`.
-
-Managed platforms can also let donkey request a dedicated edge and
-certificate for every exposed app:
-
-```yaml
-gateway:
-  serviceType: ClusterIP
-  appGateway:
-    className: private-app-edge
-    issuerName: corporate-pki
-    # issuerKind: ClusterIssuer       # default
-    # issuerGroup: cert-manager.io    # default
-    # routeNamespace: gateway-infra   # only when the platform mirrors Gateways
-```
-
-This renders a cert-manager `Certificate`, Gateway API `Gateway`, and
-`HTTPRoute` per hostname. All three tenant-owned objects live in donkey's
-system namespace, where the route can reach the `donkey-gateway` Service
-without a cross-namespace backend grant. In the confined two-namespace setup,
-the server Role can manage those three resource kinds only in the system
-namespace; it receives no permission in `gateway-infra`.
-
-Leave `routeNamespace` empty when the configured GatewayClass watches tenant
-Gateways directly. Set it only for a platform that mirrors a tenant Gateway
-into its controller namespace. That platform must also make the generated TLS
-Secret available to the mirrored Gateway (by mirroring it, or by rewriting the
-certificate reference and arranging the appropriate `ReferenceGrant`). The
-mirrored listener must allow routes from donkey's system namespace. donkey
-puts that namespace selector on the source Gateway, but whether it is preserved
-is part of the platform's mirroring contract. Installation checks for Gateway,
-HTTPRoute and Certificate CRDs before changing the cluster.
-
-### Several donkeys on one cluster
-
-Supported, with one requirement: **every installation needs its own
-`kubernetes.system.namespace`.** That namespace is the installation's
-identity — it is stamped on every object as `donkey.dev/instance`, every sweep
-donkey makes requires it, and every cluster-scoped object it applies is named
-after it. Without a distinct one the second install would apply the first's
-`ClusterRoleBinding`, and because server-side apply forces the subject list,
-the first installation would silently lose every permission it has.
-
-`kubectl get all -A -l donkey.dev/instance=bank-donkey-system` shows one
-installation's objects.
-
-The rest is not enforceable from inside a single installation — donkey can
-only see its own configuration — so these are yours to get right:
-
-| Must differ per installation | Why |
-|---|---|
-| `kubernetes.system.namespace` | the installation's identity — every object is stamped and swept by it; the install warns when it finds no existing installation there |
-| `domain` | two gateways cannot divide one wildcard, and DNS resolves to one of them |
-| `kubernetes.workload.namespace`, or `kubernetes.workload.namespacePrefix` | otherwise both installations write into the same namespaces |
-| `gateway.httpNodePort` / `httpsNodePort` | node ports are cluster-wide |
-| `registry.url` | see below |
-
-The registry one is the subtlest. An image is pushed to
-`<registry.url>/<app>:<tag>`, and the repository path carries neither the
-space nor the installation. Two installations sharing a `registry.url`
-therefore share the repository for every app of the same name — and
-`--no-build --tag` only checks that an image sits under the configured
-registry prefix, which is what stops one app from being deployed with
-another's image. Sharing the prefix defeats that check across installations.
-Give each one its own.
+The Docker runtime's shape — per-space networks as the isolation model, the
+`local.donkey.*` labels, the Compose bundle — is described in
+[README_DOCKER.md](README_DOCKER.md).
 
 ### The builder
 
@@ -628,7 +574,27 @@ build:
   verify: true          # default; false skips running the image
   verifySeconds: 45     # how long the app gets to come up
   attempts: 3           # the first Dockerfile plus two revisions
+  provenance: min       # SLSA provenance attestation: min (default) | max | off
+  sbom: true            # attach an SPDX SBOM to every image (off by default)
 ```
+
+**Every image carries its paperwork.** BuildKit attaches a standard SLSA
+provenance attestation to every push (and an SPDX SBOM when opted in), and
+the image config carries the OCI `org.opencontainers.image.revision`/`created`
+labels — so any registry tool can answer where an image came from without
+knowing donkey. `provenance: max` additionally embeds the Dockerfile and
+every build-arg **value** into the pushed attestation; never choose it while
+`build.env` carries credentials, which is exactly why `min` is the default.
+The SBOM stays opt-in because it pulls a scanner image (covered by
+`registryMirrors`) and lengthens every build.
+
+**Every deploy leaves a versioned record.** The full release view — plan,
+findings, complete build log, the exact Dockerfile the image was built from,
+and the decisions the deploy settled — is stored per build in
+donkey-telemetry (bounded history per app), which is what the console's
+Deployment tab renders and lets you browse. A `--no-build --tag` rollback
+adopts the decisions recorded with that image, not whatever a newer analysis
+found.
 
 ### Restricted networks
 
@@ -777,12 +743,13 @@ engine asks through exactly these mirrors.
 
 ## Deployment model
 
-**Day 0 — admin installs the control plane** into an existing cluster.
-Settings live in a file
-([examples/server-install.yaml](examples/server-install.yaml)); flags
-override; secrets come from env:
+**Day 0 — admin deploys the control plane.** Start from the short generated
+settings file ([examples/server-install.yaml](examples/server-install.yaml));
+flags override it and secrets come from env:
 
 ```sh
+donkey server init --runtime kubernetes > server-install.yaml
+# edit image, registry, domain, OIDC and model settings
 donkey server install -f server-install.yaml
 ```
 
@@ -792,6 +759,20 @@ authenticate through the same OIDC login the apps use, and `auth.admins`
 administer; empty means everyone the IdP admits. Re-running with changed
 settings updates the installation idempotently (server-side apply; existing
 secrets and sessions survive; config changes roll the affected pods).
+
+For GitOps, review, or a machine where the CLI must not hold cluster access,
+render the same settings instead:
+
+```sh
+donkey server render -f server-install.yaml --output deploy/
+```
+
+Kubernetes output contains `manifests.yaml`, an apply helper, and a
+`secrets.env.example` containing names only — no Secret objects or credential
+values are written. `runtime: docker` renders `compose.yaml`,
+`buildkitd.toml`, and an equivalent `up.sh` bundle. The direct installer and
+both renderers share the install-file validation; Kubernetes uses the same
+canonical object generator in both paths.
 
 **One callback, one sign-in.** Every login under the domain rides through a
 single OAuth callback on the domain itself
@@ -875,27 +856,29 @@ as they are while donkey-server restarts. A re-install also keeps every secret
 it isn't given again (registry password, OIDC client secret, AI key), so the
 same settings file is enough — rotating one thing must never blank the rest.
 
-Upgrading from a version that predates instance labelling (v0.3.1 and older,
-which stamped no installation on what they applied) adds one step the install
-does itself: it claims the space namespaces carrying this installation's
-prefix, and everything donkey put in them, so the apps stay visible to the
-console and served by the gateway. It reports what it claimed, finds nothing
-on the second run, and never touches a namespace another installation has
-stamped — if the `namespacePrefix` changed with the upgrade, the old
-namespaces are left alone and named in a warning.
+**Metadata v2 is a clean cutover.** It deliberately does not claim resources
+from versions that used the old ownership labels or selectors. Kubernetes
+Deployment selectors are immutable, so adopting only their top-level labels
+would create a half-migrated installation that cannot reconcile. At this
+early stage, remove the old app/control-plane resources and recreate them;
+new Deployments, Pods, Services, routes, services and Docker resources are
+then born with one consistent schema. Back up data first if an old PVC or
+Docker volume is not disposable — deleting a space intentionally deletes it.
 
-**What to back up.** All donkey state lives in Kubernetes objects, and nearly
+**What to back up.** Donkey state lives in Kubernetes objects and the telemetry
+PVC, and nearly
 all of it is reproducible: images rebuild from the repositories, manifests
 re-render from `donkey.yaml`, namespaces and routes are re-created by the next
 deploy. What is *not* reproducible has to live outside the cluster:
 
 | Keep | Why |
 |---|---|
-| the install settings file (`server-install.yaml`) | every install and re-install needs it; it is the only written description of the installation |
+| the install settings file (`server-install.yaml`) | every install, re-install, or re-render needs it; it is the written description of the installation |
 | `DONKEY_REGISTRY_PASSWORD` | donkey stores it, but never invents it; without it the server can't push and apps can't pull |
 | `DONKEY_OIDC_CLIENT_SECRET` (with its client id) | belongs to a registration in your IdP — a new one means updating the IdP as well |
 | `OPENAI_API_KEY` | the assistant is required; no key, no deploys |
 | the `session-key` entry of `donkey-system-config` | a fresh install **generates a new one** and thereby invalidates every session and CLI token. Restoring it makes the rebuilt installation the same installation — everyone stays signed in |
+| the `telemetry-key` entry of `donkey-system-config` | existing app exporters carry credentials derived from it. Restoring it keeps those exporters valid and lets a restored telemetry database continue accepting them independently of login-session rotation |
 | the registry CA secret (`registry.caSecret`) | donkey only *references* that Secret in `donkey-system` — it never creates it. Whatever created it has to run again |
 | DNS for `*.<domain>` and `<domain>` | they point at the gateway address, which a rebuilt cluster changes |
 
@@ -904,10 +887,16 @@ set` (the ones in `donkey.yaml` come back with the app, the rest don't), and
 the generated credential of a provisioned service — which matters only as
 long as its data does.
 
+The `donkey-telemetry-data` PVC is cluster-only too; its database file is
+`/var/lib/donkey/telemetry.duckdb`. Losing it does not
+affect apps, but it erases the current 30-day traffic history and the
+retained build records; include it in volume snapshots when that history
+matters.
+
 **PVC data is the one thing that cannot be reconstructed.** Everything above
 is a copy of something you have; a volume is not. donkey never snapshots,
 exports or restores a PersistentVolumeClaim — neither an app's `storage.paths`
-volume nor a provisioned addon's data disk — and it has no restore command to
+volume, a provisioned addon's data disk, nor the telemetry DuckDB disk — and it has no restore command to
 add later in a hurry. `donkey destroy` without `--keep-data` deletes them
 (interactively it asks first, `--force` skips the question), and that is
 final: no donkey command brings that data back. Backing volumes up is your
@@ -1019,8 +1008,8 @@ pkg/
   cli/                public facade for embedding the donkey command tree
   runtime/            runtime implementations shared by the server and management CLI
 testdata/             deployable samples incl. a kitchen-sink monorepo; golden files
-examples/             what a finished project looks like: the demo (two apps, one
-                      address, three services) + server-install.yaml reference
+examples/             finished-project demos + the concise server-install.yaml
+                      emitted by `donkey server init`
 hack/                 dev/demo scaffolding only — never part of the product
                       (cluster.sh → devkube, demo-ca.sh, demo/fake-idp)
 ```

@@ -80,8 +80,9 @@ func planServer(rt runtime.Provider, analysis *ai.Analysis) *Server {
 func appUpload(t *testing.T, extra map[string]string) []byte {
 	t.Helper()
 	files := map[string]string{
-		"Dockerfile": "FROM node:22\nCOPY . .\nCMD [\"node\", \"server.js\"]\n",
-		"server.js":  "require('http').createServer().listen(4000)",
+		"Dockerfile":   "FROM node:22\nCOPY . .\nCMD [\"node\", \"server.js\"]\n",
+		"package.json": `{"dependencies":{"express":"^5.1.0"}}`,
+		"server.js":    "require('http').createServer().listen(4000)",
 	}
 	for k, v := range extra {
 		files[k] = v
@@ -139,7 +140,11 @@ func TestPlanAnswersEverything(t *testing.T) {
 		PortReason:      "server.js listens on 4000",
 		HealthcheckPath: "/healthz",
 		Volumes:         []ai.VolumeSuggestion{{Path: "/app/data", Reason: "writes uploads there"}},
-		Services:        []ai.ServiceSuggestion{{Type: "postgres", Reason: "pg import"}},
+		Services: []ai.ServiceSuggestion{
+			{Type: "postgres", Reason: "pg import"},
+			{Type: "rustfs", Reason: "boto3 creates an S3 client"},
+			{Type: "openai", Reason: "server.js creates an OpenAI client"},
+		},
 	})
 	plan := callPlan(t, s, appUpload(t, nil), "space=acme&name=My%20Cool%20App")
 
@@ -167,11 +172,25 @@ func TestPlanAnswersEverything(t *testing.T) {
 	if !strings.Contains(plan.Build.Summary, "Dockerfile") {
 		t.Errorf("the build summary should name the Dockerfile, got %q", plan.Build.Summary)
 	}
+	if !slices.Contains(plan.Build.BaseImages, "node:22") {
+		t.Errorf("the plan should report the Dockerfile's base image, got %v", plan.Build.BaseImages)
+	}
+	if len(plan.Build.Runtimes) == 0 || plan.Build.Runtimes[0].Value != "Node.js" {
+		t.Errorf("the plan should carry detected runtime evidence, got %+v", plan.Build.Runtimes)
+	}
+	if len(plan.Build.PackageManagers) == 0 || !strings.Contains(plan.Build.PackageManagers[0].Value, "npm") {
+		t.Errorf("the plan should carry package-manager evidence, got %+v", plan.Build.PackageManagers)
+	}
 	if len(plan.Volumes) != 1 || !plan.Volumes[0].Selected || plan.Volumes[0].Reason == "" {
 		t.Errorf("the data folder should be offered, ticked, with its reason: %+v", plan.Volumes)
 	}
-	if len(plan.Services) != 1 || !plan.Services[0].Selected || plan.Services[0].Exists {
-		t.Errorf("postgres should be offered as one to create: %+v", plan.Services)
+	if len(plan.Services) != 3 {
+		t.Fatalf("every detected catalog service should be offered: %+v", plan.Services)
+	}
+	for _, service := range plan.Services {
+		if !service.Selected || service.Exists || !service.Known {
+			t.Errorf("%s should be offered as one to create: %+v", service.Type, service)
+		}
 	}
 	if !strings.Contains(plan.Config, "storage:") || !strings.Contains(plan.Config, "port: 4000") {
 		t.Errorf("the rendered donkey.yaml should carry the decisions:\n%s", plan.Config)

@@ -40,17 +40,29 @@ type DeployResult struct {
 	Manifests string         `json:"manifests,omitempty"` // dry-run only
 }
 
-// lineStreamer writes progress lines to the client as they happen.
-type lineStreamer struct {
-	w http.ResponseWriter
-	f http.Flusher
+// DeployUpdate is structured release progress for clients that can render a
+// state panel beside the human-readable log. Unknown update fields are safe
+// for older clients to ignore.
+type DeployUpdate struct {
+	Stage      string   `json:"stage,omitempty"`
+	BaseImages []string `json:"baseImages,omitempty"`
+	// Dockerfile is the exact file this build used, reported once it is
+	// settled — the app's own, or the one the assistant wrote.
+	Dockerfile string `json:"dockerfile,omitempty"`
 }
 
-func newLineStreamer(w http.ResponseWriter) *lineStreamer {
+// lineStreamer writes progress lines to the client as they happen.
+type lineStreamer struct {
+	w       http.ResponseWriter
+	f       http.Flusher
+	release *releaseRecorder
+}
+
+func newLineStreamer(w http.ResponseWriter, release *releaseRecorder) *lineStreamer {
 	f, _ := w.(http.Flusher)
 	w.Header().Set("Content-Type", "application/x-ndjson")
 	w.WriteHeader(http.StatusOK)
-	return &lineStreamer{w: w, f: f}
+	return &lineStreamer{w: w, f: f, release: release}
 }
 
 func (l *lineStreamer) send(v map[string]any) {
@@ -62,17 +74,40 @@ func (l *lineStreamer) send(v map[string]any) {
 }
 
 func (l *lineStreamer) Line(format string, a ...any) {
-	l.send(map[string]any{"line": fmt.Sprintf(format, a...)})
+	line := fmt.Sprintf(format, a...)
+	if l.release != nil {
+		l.release.line(line)
+	}
+	l.send(map[string]any{"line": line})
 }
 
 // Write lets the streamer act as the build progress sink.
 func (l *lineStreamer) Write(p []byte) (int, error) {
+	if l.release != nil {
+		l.release.progress(string(p))
+	}
 	l.send(map[string]any{"progress": string(p)})
 	return len(p), nil
 }
 
 func (l *lineStreamer) Result(res DeployResult) {
+	if l.release != nil {
+		l.release.result(res)
+	}
 	l.send(map[string]any{"result": res})
+}
+
+func (l *lineStreamer) Update(update DeployUpdate) {
+	if l.release != nil {
+		l.release.update(update)
+	}
+	l.send(map[string]any{"update": update})
+}
+
+func (l *lineStreamer) Inspection(build PlanBuild, analysis *ai.Analysis) {
+	if l.release != nil {
+		l.release.inspection(build, analysis)
+	}
 }
 
 // handleDeploy: POST /v1/deploys?platform=&dryRun=&noWait=&buildOnly=&tag=
@@ -144,14 +179,19 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	out := newLineStreamer(w)
+	started := time.Now()
+	var reviewed *Plan
+	if planned != nil {
+		reviewed = s.renderPlan(context.WithoutCancel(r.Context()), r.URL.Query().Get("plan"), planned)
+	}
+	release := newReleaseRecorder(started, reviewed)
+	out := newLineStreamer(w, release)
 	if took != "" {
 		out.Line("· Building %s — that's the folder with the donkey.yaml.", took)
 	}
 	// The deploy itself must survive a dropped client connection: route
 	// changes can drain the very stream this response rides on. The CLI
 	// reconnects via status polling.
-	started := time.Now()
 	// A reviewed plan settles the space too — it is one of the things the
 	// review screen shows, so a query parameter left over from before the
 	// review must not quietly move the app somewhere else.
@@ -159,7 +199,7 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 	if planned != nil {
 		space = ""
 	}
-	res := s.deploy(context.WithoutCancel(r.Context()), out, dir, app, deployOpts{
+	opts := deployOpts{
 		Analysis:  planned.reading(),
 		Space:     space,
 		Platform:  r.URL.Query().Get("platform"),
@@ -169,7 +209,9 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 		BuildOnly: r.URL.Query().Get("buildOnly") == "true",
 		NoBuild:   r.URL.Query().Get("noBuild") == "true",
 		SHA:       r.URL.Query().Get("sha"),
-	})
+	}
+	deployCtx := context.WithoutCancel(r.Context())
+	res := s.deploy(deployCtx, out, dir, app, opts)
 	// The stream is the caller's record; this line is the server's. Without
 	// it nothing on the cluster remembers that a deploy ever happened.
 	outcome := "ok"
@@ -180,6 +222,9 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 		res.App, res.Space, res.ImageRef, r.URL.Query().Get("sha"),
 		time.Since(started).Round(time.Second), outcome)
 	out.Result(res)
+	if !opts.DryRun && !opts.BuildOnly {
+		s.persistRelease(deployCtx, res.Space, res.App, release.finish(s, deployCtx, app))
+	}
 }
 
 // appFromParams synthesizes the minimal app config a web deploy needs when
@@ -284,19 +329,26 @@ func (s *Server) deploy(ctx context.Context, out *lineStreamer, dir string, app 
 		if opts.Tag == "" {
 			return fail(fmt.Errorf("a no-build deploy needs the image tag to deploy"))
 		}
-		// No build means no analysis — keep what the last deploy decided
+		// No build means no analysis — keep what an earlier deploy decided
 		// (storage, health route) instead of silently rendering without it.
-		for _, line := range s.adoptStoredDecisions(ctx, space, app) {
+		// The tag's own build record wins: a rollback adopts the decisions
+		// that image was verified with, not whatever a newer analysis found.
+		for _, line := range s.adoptStoredDecisions(ctx, space, opts.Tag, app) {
 			out.Line("· %s", line)
 		}
 		if opts.DryRun {
 			return s.renderDryRun(app, opts.Tag)
 		}
+		out.Update(DeployUpdate{Stage: "releasing"})
 		return s.applyAndWait(ctx, out, app, dir, opts.Tag, opts.NoWait)
 	}
 
+	out.Update(DeployUpdate{Stage: "detecting"})
 	out.Line("Looking at your app…")
 	det, detErr := detect.Detect(dir, app)
+	if detErr == nil {
+		out.Inspection(describePlanBuild(dir, det, nil), nil)
+	}
 
 	// Runs alongside the build: a model call should not sit between the user
 	// and their deploy.
@@ -306,7 +358,10 @@ func (s *Server) deploy(ctx context.Context, out *lineStreamer, dir string, app 
 	}
 	analysisReady := make(chan analysisResult, 1)
 	run := func() {
-		analysis, err := s.analyzeApp(ctx, dir, det, detErr)
+		analysis, signals, err := s.analyzeApp(ctx, dir, det, detErr)
+		if detErr == nil {
+			out.Inspection(describePlanBuild(dir, det, signals), analysis)
+		}
 		analysisReady <- analysisResult{analysis, err}
 	}
 	switch {
@@ -326,6 +381,9 @@ func (s *Server) deploy(ctx context.Context, out *lineStreamer, dir string, app 
 		return fail(detErr)
 	}
 	out.Line("✓ %s will be built with %s", app.Name, det.Summary)
+	if det.DockerfilePath != "" {
+		out.Update(DeployUpdate{BaseImages: dockerfileBaseImagesAt(dir, det.DockerfilePath)})
+	}
 
 	// merge fills in what donkey.yaml left open, right before the app's
 	// objects are rendered. Exactly one of the paths below runs it, and it
@@ -377,12 +435,21 @@ func (s *Server) deploy(ctx context.Context, out *lineStreamer, dir string, app 
 	logFile.Close()
 	defer os.Remove(logFile.Name())
 
+	out.Update(DeployUpdate{Stage: "building"})
 	out.Line("Building the image…")
 	builder := &build.BuildKitBuilder{
 		Registry:     s.cfg.Registry,
 		BuildkitAddr: s.cfg.BuildkitAddr,
 		PackagesURL:  s.cfg.PackagesURL,
 		Settings:     s.cfg.Build,
+	}
+	// The standard OCI vocabulary, so any registry tool can answer where an
+	// image came from without knowing donkey.
+	imageLabels := map[string]string{
+		"org.opencontainers.image.created": time.Now().UTC().Format(time.RFC3339),
+	}
+	if opts.SHA != "" {
+		imageLabels["org.opencontainers.image.revision"] = opts.SHA
 	}
 	req := build.Request{
 		ContextDir:     dir,
@@ -392,6 +459,7 @@ func (s *Server) deploy(ctx context.Context, out *lineStreamer, dir string, app 
 		BuildEnv:       app.Build.Env,
 		Strategy:       det.Strategy,
 		DockerfilePath: det.DockerfilePath,
+		ImageLabels:    imageLabels,
 		Progress:       build.ProgressSink{LogPath: logFile.Name(), Writer: out},
 	}
 	var result *build.Result
@@ -415,10 +483,16 @@ func (s *Server) deploy(ctx context.Context, out *lineStreamer, dir string, app 
 			for _, line := range strings.Split(strings.TrimRight(outcome.Dockerfile, "\n"), "\n") {
 				out.Line("    %s", line)
 			}
+			out.Update(DeployUpdate{Dockerfile: outcome.Dockerfile})
 		} else {
 			err = aerr
 		}
 	} else {
+		// The recipe goes into the build record either way; for an app that
+		// brings its own file this is the only place it is read whole.
+		if content := readDockerfile(dir, det.DockerfilePath); content != "" {
+			out.Update(DeployUpdate{Dockerfile: content})
+		}
 		result, err = builder.Build(ctx, req)
 	}
 	if err != nil {
@@ -434,6 +508,7 @@ func (s *Server) deploy(ctx context.Context, out *lineStreamer, dir string, app 
 		return DeployResult{OK: true, App: app.Name, Space: space, ImageRef: result.ImageRef}
 	}
 
+	out.Update(DeployUpdate{Stage: "releasing"})
 	if err := merge(); err != nil {
 		// The image is already pushed — hand its reference back so a
 		// `--no-build --tag` retry doesn't have to rebuild.
@@ -531,13 +606,27 @@ func (s *Server) adoptConsoleChoices(ctx context.Context, space string, app *con
 	return lines
 }
 
-// adoptStoredDecisions fills what donkey.yaml leaves open from the running
-// Deployment's record, and says what it kept. An adopted value that no longer
-// fits is dropped again, and only ever the adopted values.
-func (s *Server) adoptStoredDecisions(ctx context.Context, space string, app *config.AppConfig) []string {
-	raw, err := s.rt.AppMeta(ctx, space, app.Name, runtime.MetaDecisions)
-	if err != nil || raw == "" {
-		return nil
+// adoptStoredDecisions fills what donkey.yaml leaves open, and says what it
+// kept. The deployed tag's own build record is asked first — its decisions
+// are the ones that image was verified with — and the running Deployment's
+// record answers for images that predate the build store or when telemetry
+// is unreachable. An adopted value that no longer fits is dropped again, and
+// only ever the adopted values.
+func (s *Server) adoptStoredDecisions(ctx context.Context, space, imageRef string, app *config.AppConfig) []string {
+	var raw string
+	if imageRef != "" {
+		if record, err := s.telemetry.BuildByImage(ctx, space, app.Name, imageRef); err == nil {
+			var release AppRelease
+			if json.Unmarshal(record, &release) == nil && len(release.Decisions) > 0 {
+				raw = string(release.Decisions)
+			}
+		}
+	}
+	if raw == "" {
+		var err error
+		if raw, err = s.rt.AppMeta(ctx, space, app.Name, runtime.MetaDecisions); err != nil || raw == "" {
+			return nil
+		}
 	}
 	var dec deployDecisions
 	if json.Unmarshal([]byte(raw), &dec) != nil {
@@ -711,4 +800,20 @@ func tailBytes(b []byte, n int) string {
 		b = b[len(b)-n:]
 	}
 	return string(b)
+}
+
+// readDockerfile returns the app's own Dockerfile for the build record,
+// bounded: the record stores the recipe, not an arbitrarily large file.
+func readDockerfile(dir, path string) string {
+	if path == "" {
+		return ""
+	}
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(dir, path)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil || len(raw) > 256<<10 {
+		return ""
+	}
+	return string(raw)
 }

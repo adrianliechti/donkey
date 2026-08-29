@@ -17,17 +17,17 @@ import (
 const (
 	// AnnotationBackend names the app Service the donkey gateway forwards
 	// to. Every route carries it — it is what makes a ConfigMap a route.
-	AnnotationBackend = "donkey.dev/backend"
+	AnnotationBackend = "donkey.local/backend"
 	// AnnotationHost is the hostname the route serves.
-	AnnotationHost = "donkey.dev/host"
+	AnnotationHost = "donkey.local/host"
 	// AnnotationPath is the route's path prefix; "/" for an app's own address.
-	AnnotationPath = "donkey.dev/path"
+	AnnotationPath = "donkey.local/path"
 	// AnnotationLogin marks a route whose visitors must sign in first. Its
 	// absence is what "public" means at the edge.
-	AnnotationLogin = "donkey.dev/login"
+	AnnotationLogin = "donkey.local/login"
 	// AnnotationAccess carries the app's access rules (AccessConfig as JSON)
 	// for the gateway to enforce. No secrets — emails and group names only.
-	AnnotationAccess = "donkey.dev/access"
+	AnnotationAccess = "donkey.local/access"
 
 	// LoginRequired is AnnotationLogin's one meaningful value.
 	LoginRequired = "required"
@@ -37,7 +37,7 @@ const (
 	// (X-Access-Token) minted from the login. Only donkey's own console/API
 	// route carries it — an app must never receive a credential its code
 	// could replay against the API.
-	AnnotationToken = "donkey.dev/token"
+	AnnotationToken = "donkey.local/token"
 	// TokenForward is AnnotationToken's one meaningful value.
 	TokenForward = "forward"
 )
@@ -98,7 +98,7 @@ func routeConfigMap(name, namespace string, labels, annotations map[string]strin
 // apps over plain http was never right; its http listener redirects.
 func appRoute(in Input) *corev1.ConfigMap {
 	return routeConfigMap(in.Name(), in.Namespace,
-		Labels(in.Space, in.Name(), ComponentWeb),
+		Labels(in.Space, in.App.Name, RoleRoute),
 		routeAnnotations(in, in.Domain, "/"))
 }
 

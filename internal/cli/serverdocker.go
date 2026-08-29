@@ -19,6 +19,7 @@ import (
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/api/types/network"
+	"github.com/docker/docker/api/types/volume"
 	dockerclient "github.com/docker/docker/client"
 	"github.com/docker/go-connections/nat"
 
@@ -50,18 +51,20 @@ const (
 	dockerBuildkitName   = "donkey-buildkitd"
 	dockerBuildkitVolume = "donkey-buildkit"
 
-	dockerServerName   = "donkey-server"
-	dockerGatewayName  = "donkey-gateway"
-	dockerAIName       = "donkey-ai"
-	dockerPackagesName = "donkey-packages"
-	dockerPackagesAuth = "/etc/donkey/package-auth"
+	dockerServerName      = "donkey-server"
+	dockerGatewayName     = "donkey-gateway"
+	dockerAIName          = "donkey-ai"
+	dockerTelemetryName   = "donkey-telemetry"
+	dockerTelemetryVolume = "donkey-telemetry"
+	dockerPackagesName    = "donkey-packages"
+	dockerPackagesAuth    = "/etc/donkey/package-auth"
 )
 
 // dockerNoProxy is what must never be sent to a forward proxy: donkey's own
 // containers, the Docker engine's socket and the loopback registry all live
 // on this machine, and no corporate proxy can route them.
 const dockerNoProxy = "localhost,127.0.0.1," +
-	dockerRegistryName + "," + dockerBuildkitName + "," + dockerServerName + "," + dockerGatewayName + "," + dockerAIName + "," + dockerPackagesName
+	dockerRegistryName + "," + dockerBuildkitName + "," + dockerServerName + "," + dockerGatewayName + "," + dockerAIName + "," + dockerTelemetryName + "," + dockerPackagesName
 
 // dockerInstallAction stands the whole control plane up on the local Docker
 // engine (or DOCKER_HOST).
@@ -73,27 +76,7 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 		settings.Registry.URL = dockerRegistryName + ":5000/donkey"
 		settings.Registry.Insecure = true
 	}
-	if missing := missingSettings(settings, false); len(missing) > 0 {
-		return fmt.Errorf("these settings are required (via -f file or flags): %v", missing)
-	}
-	if err := settings.Registry.Validate(); err != nil {
-		return err
-	}
-	if err := settings.Registry.ValidateRuntime("docker"); err != nil {
-		return err
-	}
-	switch settings.TLS.Mode {
-	case "", "acme", "ca":
-	default:
-		return fmt.Errorf("tls.mode must be acme or ca on the docker runtime, not %q", settings.TLS.Mode)
-	}
-	if err := settings.Build.Validate(); err != nil {
-		return err
-	}
-	if err := settings.Build.Packages.ValidateRuntime("docker"); err != nil {
-		return err
-	}
-	if err := settings.AddonImages.Validate(); err != nil {
+	if err := validateDockerSettings(settings); err != nil {
 		return err
 	}
 
@@ -104,11 +87,23 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 	if _, err := cli.Ping(ctx); err != nil {
 		return fmt.Errorf("the Docker engine didn't answer — is Docker running? (%w)", err)
 	}
+	if err := checkDockerInstallOwnership(ctx, cli, bundledRegistry); err != nil {
+		return err
+	}
 
 	// Keep the session key on re-installs — rotating it signs everyone out.
 	sessionKey := existingContainerEnv(ctx, cli, dockerServerName, "DONKEY_SESSION_KEY")
 	if sessionKey == "" {
 		if sessionKey, err = randomHexKey(); err != nil {
+			return err
+		}
+	}
+	telemetryKey := existingContainerEnv(ctx, cli, dockerTelemetryName, "DONKEY_TELEMETRY_KEY")
+	if telemetryKey == "" {
+		telemetryKey = existingContainerEnv(ctx, cli, dockerServerName, "DONKEY_TELEMETRY_KEY")
+	}
+	if telemetryKey == "" {
+		if telemetryKey, err = randomHexKey(); err != nil {
 			return err
 		}
 	}
@@ -157,6 +152,17 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 
 	if err := ensureDockerNetwork(ctx, cli); err != nil {
 		return err
+	}
+	for _, item := range dockerInstallVolumes(bundledRegistry) {
+		vol, err := cli.VolumeCreate(ctx, volume.CreateOptions{
+			Name: item.name, Labels: docker.SystemLabels(item.role),
+		})
+		if err != nil {
+			return err
+		}
+		if err := requireDockerSystemResource("volume", item.name, vol.Labels, item.role); err != nil {
+			return err
+		}
 	}
 	if bundledRegistry {
 		// The registry: no host port beyond the loopback, no credentials — it
@@ -236,6 +242,18 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 	}); err != nil {
 		return err
 	}
+	// BuildKit's OCI worker uses its container's network namespace, but strips
+	// Docker's loopback DNS server from build-step resolv.conf. The package
+	// proxy's Docker name therefore resolves in donkey-server and not inside a
+	// RUN instruction. Its network IP is reachable from both and remains tied
+	// to this container for its lifetime; every supported reinstall replaces
+	// the package proxy and server together, so the recorded endpoint follows
+	// a recreated container too.
+	packagesIP, err := dockerContainerIP(ctx, cli, dockerPackagesName)
+	if err != nil {
+		return err
+	}
+	packagesURL := "http://" + packagesIP + ":8090"
 
 	if err := replaceInfraContainer(ctx, cli, infraContainer{
 		Name:         dockerBuildkitName,
@@ -262,29 +280,32 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 	}
 
 	serverEnv := map[string]string{
-		"DONKEY_RUNTIME":            "docker",
-		"DONKEY_STATE_DIR":          dockerDataDir,
-		"DONKEY_LISTEN":             ":8088",
-		"DONKEY_DOMAIN":             settings.Domain,
-		"DONKEY_SERVER_HOST":        serverHost,
-		"DONKEY_REGISTRY_URL":       settings.Registry.URL,
-		"DONKEY_REGISTRY_USERNAME":  registryUsername,
-		"DONKEY_REGISTRY_INSECURE":  strconv.FormatBool(settings.Registry.Insecure),
-		"DONKEY_REGISTRY_IMMUTABLE": strconv.FormatBool(settings.Registry.Immutable),
-		"DONKEY_BUILDKIT_ADDR":      "tcp://" + dockerBuildkitName + ":1234",
-		"DONKEY_PACKAGES_URL":       "http://" + dockerPackagesName + ":8090",
-		"DONKEY_AI_URL":             "http://" + dockerAIName + ":8089",
-		"DONKEY_DEFAULT_PLATFORM":   settings.DefaultPlatform,
-		"DONKEY_POSTGRES_IMAGE":     settings.AddonImages.Postgres,
-		"DONKEY_RUSTFS_IMAGE":       settings.AddonImages.RustFS,
-		"DONKEY_OIDC_ISSUER":        settings.Auth.Issuer,
-		"DONKEY_OIDC_CLIENT_ID":     settings.Auth.ClientID,
-		"DONKEY_OIDC_CLIENT_SECRET": settings.Auth.ClientSecret,
-		"DONKEY_SESSION_KEY":        sessionKey,
-		"DONKEY_ADMINS":             adminsJSONString(settings.Auth.Admins),
-		"DONKEY_AI_MODEL":           settings.AI.Model,
-		"OPENAI_BASE_URL":           settings.AI.BaseURL,
-		"OPENAI_API_KEY":            settings.AI.APIKey,
+		"DONKEY_RUNTIME":                 "docker",
+		"DONKEY_STATE_DIR":               dockerDataDir,
+		"DONKEY_LISTEN":                  ":8088",
+		"DONKEY_DOMAIN":                  settings.Domain,
+		"DONKEY_SERVER_HOST":             serverHost,
+		"DONKEY_REGISTRY_URL":            settings.Registry.URL,
+		"DONKEY_REGISTRY_USERNAME":       registryUsername,
+		"DONKEY_REGISTRY_INSECURE":       strconv.FormatBool(settings.Registry.Insecure),
+		"DONKEY_REGISTRY_IMMUTABLE":      strconv.FormatBool(settings.Registry.Immutable),
+		"DONKEY_BUILDKIT_ADDR":           "tcp://" + dockerBuildkitName + ":1234",
+		"DONKEY_PACKAGES_URL":            packagesURL,
+		"DONKEY_AI_URL":                  "http://" + dockerAIName + ":8089",
+		"DONKEY_TELEMETRY_URL":           "http://" + dockerTelemetryName + ":9090",
+		"DONKEY_TELEMETRY_OTLP_ENDPOINT": "http://" + dockerTelemetryName + ":4318",
+		"DONKEY_DEFAULT_PLATFORM":        settings.DefaultPlatform,
+		"DONKEY_POSTGRES_IMAGE":          settings.AddonImages.Postgres,
+		"DONKEY_RUSTFS_IMAGE":            settings.AddonImages.RustFS,
+		"DONKEY_OIDC_ISSUER":             settings.Auth.Issuer,
+		"DONKEY_OIDC_CLIENT_ID":          settings.Auth.ClientID,
+		"DONKEY_OIDC_CLIENT_SECRET":      settings.Auth.ClientSecret,
+		"DONKEY_SESSION_KEY":             sessionKey,
+		"DONKEY_TELEMETRY_KEY":           telemetryKey,
+		"DONKEY_ADMINS":                  adminsJSONString(settings.Auth.Admins),
+		"DONKEY_AI_MODEL":                settings.AI.Model,
+		"OPENAI_BASE_URL":                settings.AI.BaseURL,
+		"OPENAI_API_KEY":                 settings.AI.APIKey,
 	}
 	if bundledRegistry {
 		serverEnv["DONKEY_PULL_REGISTRY"] = "127.0.0.1:" + dockerRegistryHostPort
@@ -320,6 +341,28 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 		serverEnv["DONKEY_REGISTRY_PASSWORD"] = registryPassword
 	}
 	if err := replaceInfraContainer(ctx, cli, infraContainer{
+		Name:         dockerTelemetryName,
+		Image:        settings.Image,
+		RegistryAuth: serverPullAuth,
+		Cmd:          []string{"telemetry"},
+		Env: map[string]string{
+			"DONKEY_TELEMETRY_LISTEN":     ":4318",
+			"DONKEY_TELEMETRY_API_LISTEN": ":9090",
+			"DONKEY_TELEMETRY_DB":         "/var/lib/donkey/telemetry.duckdb",
+			"DONKEY_TELEMETRY_KEY":        telemetryKey,
+		},
+		Mounts: []mount.Mount{{
+			Type: mount.TypeVolume, Source: dockerTelemetryVolume, Target: "/var/lib/donkey",
+		}},
+		Healthcheck: &container.HealthConfig{
+			Test:     []string{"CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9090/readyz"},
+			Interval: 2 * time.Second, Timeout: 6 * time.Second, Retries: 3,
+		},
+		PullAlways: true,
+	}); err != nil {
+		return err
+	}
+	if err := replaceInfraContainer(ctx, cli, infraContainer{
 		Name:         dockerServerName,
 		Image:        settings.Image,
 		RegistryAuth: serverPullAuth,
@@ -335,20 +378,22 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 	}
 
 	gatewayEnv := map[string]string{
-		"DONKEY_RUNTIME":            "docker",
-		"DONKEY_STATE_DIR":          dockerDataDir,
-		"DONKEY_LISTEN":             ":8090",
-		"DONKEY_TLS_LISTEN":         ":8443",
-		"DONKEY_HEALTH_LISTEN":      ":8091",
-		"DONKEY_DOMAIN":             settings.Domain,
-		"DONKEY_SERVER_HOST":        serverHost,
-		"DONKEY_TLS_MODE":           tlsMode,
-		"DONKEY_ACME_EMAIL":         settings.TLS.Email,
-		"DONKEY_ACME_DIRECTORY":     settings.TLS.Directory,
-		"DONKEY_OIDC_ISSUER":        settings.Auth.Issuer,
-		"DONKEY_OIDC_CLIENT_ID":     settings.Auth.ClientID,
-		"DONKEY_OIDC_CLIENT_SECRET": settings.Auth.ClientSecret,
-		"DONKEY_SESSION_KEY":        sessionKey,
+		"DONKEY_RUNTIME":                 "docker",
+		"DONKEY_STATE_DIR":               dockerDataDir,
+		"DONKEY_LISTEN":                  ":8090",
+		"DONKEY_TLS_LISTEN":              ":8443",
+		"DONKEY_HEALTH_LISTEN":           ":8091",
+		"DONKEY_DOMAIN":                  settings.Domain,
+		"DONKEY_SERVER_HOST":             serverHost,
+		"DONKEY_TLS_MODE":                tlsMode,
+		"DONKEY_ACME_EMAIL":              settings.TLS.Email,
+		"DONKEY_ACME_DIRECTORY":          settings.TLS.Directory,
+		"DONKEY_OIDC_ISSUER":             settings.Auth.Issuer,
+		"DONKEY_OIDC_CLIENT_ID":          settings.Auth.ClientID,
+		"DONKEY_OIDC_CLIENT_SECRET":      settings.Auth.ClientSecret,
+		"DONKEY_SESSION_KEY":             sessionKey,
+		"DONKEY_TELEMETRY_KEY":           telemetryKey,
+		"DONKEY_TELEMETRY_OTLP_ENDPOINT": "http://" + dockerTelemetryName + ":4318",
 	}
 	if err := replaceInfraContainer(ctx, cli, infraContainer{
 		Name:         dockerGatewayName,
@@ -400,6 +445,9 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 	if err := waitDockerHealthy(ctx, cli, dockerPackagesName, 90*time.Second); err != nil {
 		return err
 	}
+	if err := waitDockerHealthy(ctx, cli, dockerTelemetryName, 90*time.Second); err != nil {
+		return err
+	}
 	if err := waitDockerRunning(ctx, cli, dockerServerName, 90*time.Second); err != nil {
 		return err
 	}
@@ -412,7 +460,7 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 	// Both containers were just recreated, which dropped the space networks
 	// they were on. Re-attach them, or every app deployed before this install
 	// stays unreachable until it is redeployed.
-	if err := docker.AttachOwnContainers(ctx, cli, dockerServerName, dockerGatewayName, dockerAIName); err != nil {
+	if err := docker.AttachOwnContainers(ctx, cli, dockerServerName, dockerGatewayName, dockerAIName, dockerTelemetryName); err != nil {
 		return err
 	}
 	u.Success("Control plane is running.")
@@ -441,6 +489,36 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 	return nil
 }
 
+// validateDockerSettings is the engine-independent half of the Docker
+// installer. Compose rendering uses the same checks without opening a Docker
+// socket or resolving credentials from the host.
+func validateDockerSettings(settings *config.InstallFile) error {
+	if missing := missingSettings(settings, false); len(missing) > 0 {
+		return fmt.Errorf("these settings are required (via -f file or flags): %v", missing)
+	}
+	if err := settings.Registry.Validate(); err != nil {
+		return err
+	}
+	if err := settings.Registry.ValidateRuntime("docker"); err != nil {
+		return err
+	}
+	if err := settings.Build.ValidateProvenance(); err != nil {
+		return err
+	}
+	switch settings.TLS.Mode {
+	case "", "acme", "ca":
+	default:
+		return fmt.Errorf("tls.mode must be acme or ca on the docker runtime, not %q", settings.TLS.Mode)
+	}
+	if err := settings.Build.Validate(); err != nil {
+		return err
+	}
+	if err := settings.Build.Packages.ValidateRuntime("docker"); err != nil {
+		return err
+	}
+	return settings.AddonImages.Validate()
+}
+
 // builderEnvMap is the builder's settings; only what was chosen travels, so
 // the server keeps its defaults for everything else.
 func builderEnvMap(b config.BuildSettings) map[string]string {
@@ -456,6 +534,12 @@ func builderEnvMap(b config.BuildSettings) map[string]string {
 	}
 	if b.Attempts > 0 {
 		env["DONKEY_BUILDER_ATTEMPTS"] = strconv.Itoa(b.Attempts)
+	}
+	if b.Provenance != "" {
+		env["DONKEY_BUILDER_PROVENANCE"] = b.Provenance
+	}
+	if b.SBOM {
+		env["DONKEY_BUILDER_SBOM"] = "true"
 	}
 	return env
 }
@@ -495,12 +579,100 @@ func adminsJSONString(admins *config.AccessConfig) string {
 	return string(b)
 }
 
-func ensureDockerNetwork(ctx context.Context, cli *dockerclient.Client) error {
-	_, err := cli.NetworkInspect(ctx, dockerNetwork, network.InspectOptions{})
-	if cerrdefs.IsNotFound(err) {
-		_, err = cli.NetworkCreate(ctx, dockerNetwork, network.CreateOptions{})
+type dockerOwnedResource struct {
+	name string
+	role string
+}
+
+func dockerInstallVolumes(bundledRegistry bool) []dockerOwnedResource {
+	resources := []dockerOwnedResource{
+		{name: dockerDataVolume, role: docker.RoleStateStorage},
+		{name: dockerBuildkitVolume, role: docker.RoleBuildkitStorage},
+		{name: dockerTelemetryVolume, role: docker.RoleTelemetryStorage},
 	}
-	return err
+	if bundledRegistry {
+		resources = append(resources, dockerOwnedResource{name: dockerRegistryVolume, role: docker.RoleRegistryStorage})
+	}
+	return resources
+}
+
+func dockerInstallContainers(bundledRegistry bool) []dockerOwnedResource {
+	resources := []dockerOwnedResource{
+		{name: dockerPackagesName, role: docker.RolePackages},
+		{name: dockerBuildkitName, role: docker.RoleBuildkit},
+		{name: dockerTelemetryName, role: docker.RoleTelemetry},
+		{name: dockerServerName, role: docker.RoleServer},
+		{name: dockerGatewayName, role: docker.RoleGateway},
+		{name: dockerAIName, role: docker.RoleAI},
+	}
+	if bundledRegistry {
+		resources = append(resources, dockerOwnedResource{name: dockerRegistryName, role: docker.RoleRegistry})
+	}
+	return resources
+}
+
+func requireDockerSystemResource(kind, name string, labels map[string]string, role string) error {
+	if docker.MatchesSystemLabels(labels, role) {
+		return nil
+	}
+	return fmt.Errorf("the Docker %s %s exists but isn't this donkey installation's %s resource — remove or rename it before installing", kind, name, role)
+}
+
+// checkDockerInstallOwnership fails before reading secrets or replacing any
+// container. A direct install owns deterministic names, so an existing object
+// must carry the complete immutable system identity introduced by this schema.
+func checkDockerInstallOwnership(ctx context.Context, cli *dockerclient.Client, bundledRegistry bool) error {
+	if nw, err := cli.NetworkInspect(ctx, dockerNetwork, network.InspectOptions{}); err == nil {
+		if err := requireDockerSystemResource("network", dockerNetwork, nw.Labels, docker.RoleNetwork); err != nil {
+			return err
+		}
+	} else if !cerrdefs.IsNotFound(err) {
+		return err
+	}
+	for _, item := range dockerInstallVolumes(bundledRegistry) {
+		vol, err := cli.VolumeInspect(ctx, item.name)
+		if cerrdefs.IsNotFound(err) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if err := requireDockerSystemResource("volume", item.name, vol.Labels, item.role); err != nil {
+			return err
+		}
+	}
+	for _, item := range dockerInstallContainers(bundledRegistry) {
+		info, err := cli.ContainerInspect(ctx, item.name)
+		if cerrdefs.IsNotFound(err) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if info.Config == nil {
+			return fmt.Errorf("the Docker container %s has no inspectable configuration", item.name)
+		}
+		if err := requireDockerSystemResource("container", item.name, info.Config.Labels, item.role); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func ensureDockerNetwork(ctx context.Context, cli *dockerclient.Client) error {
+	nw, err := cli.NetworkInspect(ctx, dockerNetwork, network.InspectOptions{})
+	if cerrdefs.IsNotFound(err) {
+		if _, err = cli.NetworkCreate(ctx, dockerNetwork, network.CreateOptions{
+			Labels: docker.SystemLabels(docker.RoleNetwork),
+		}); err != nil {
+			return err
+		}
+		nw, err = cli.NetworkInspect(ctx, dockerNetwork, network.InspectOptions{})
+	}
+	if err != nil {
+		return err
+	}
+	return requireDockerSystemResource("network", dockerNetwork, nw.Labels, docker.RoleNetwork)
 }
 
 type infraContainer struct {
@@ -520,6 +692,19 @@ type infraContainer struct {
 // replaceInfraContainer recreates one of donkey's own containers — the
 // Docker spelling of an idempotent install: same name, fresh config.
 func replaceInfraContainer(ctx context.Context, cli *dockerclient.Client, spec infraContainer) error {
+	role := docker.SystemRoleOf(spec.Name)
+	info, err := cli.ContainerInspect(ctx, spec.Name)
+	switch {
+	case err == nil:
+		if info.Config == nil {
+			return fmt.Errorf("the Docker container %s has no inspectable configuration", spec.Name)
+		}
+		if err := requireDockerSystemResource("container", spec.Name, info.Config.Labels, role); err != nil {
+			return err
+		}
+	case !cerrdefs.IsNotFound(err):
+		return err
+	}
 	if err := pullInfraImage(ctx, cli, spec.Image, spec.RegistryAuth, spec.PullAlways); err != nil {
 		return err
 	}
@@ -548,6 +733,7 @@ func replaceInfraContainer(ctx context.Context, cli *dockerclient.Client, spec i
 		Env:          env,
 		ExposedPorts: exposed,
 		Healthcheck:  spec.Healthcheck,
+		Labels:       docker.SystemLabels(role),
 	}
 	hostCfg := &container.HostConfig{
 		Mounts:        spec.Mounts,
@@ -635,12 +821,28 @@ func existingContainerEnv(ctx context.Context, cli *dockerclient.Client, name, k
 	if err != nil || info.Config == nil {
 		return ""
 	}
+	if !docker.MatchesSystemLabels(info.Config.Labels, docker.SystemRoleOf(name)) {
+		return ""
+	}
 	for _, kv := range info.Config.Env {
 		if v, ok := strings.CutPrefix(kv, key+"="); ok {
 			return v
 		}
 	}
 	return ""
+}
+
+func dockerContainerIP(ctx context.Context, cli *dockerclient.Client, name string) (string, error) {
+	info, err := cli.ContainerInspect(ctx, name)
+	if err != nil {
+		return "", fmt.Errorf("inspecting %s's network address: %w", name, err)
+	}
+	if info.NetworkSettings != nil {
+		if endpoint := info.NetworkSettings.Networks[dockerNetwork]; endpoint != nil && endpoint.IPAddress != "" {
+			return endpoint.IPAddress, nil
+		}
+	}
+	return "", fmt.Errorf("%s has no address on the %s network", name, dockerNetwork)
 }
 
 func waitDockerRunning(ctx context.Context, cli *dockerclient.Client, name string, timeout time.Duration) error {

@@ -20,12 +20,14 @@ import { AppsList } from './AppsList'
 import { DeployView } from './DeployView'
 import { fleetQuery, statusQuery } from './queries'
 import { SystemView } from './SystemView'
+import { DonkeyLogo } from './ui'
 import { UserMenu } from './UserMenu'
 
 // The routes live in the hash (#/app/acme/shop/logs) so refresh keeps your
 // place, an unhealthy app can be linked to a teammate, and bookmarks from
 // the previous console keep working.
-const APP_TABS: AppTab[] = ['overview', 'logs', 'files', 'variables', 'settings']
+const APP_TABS: AppTab[] = ['overview', 'release', 'traffic', 'logs', 'files', 'variables', 'settings']
+const pageTitle = (page: string) => page + ' · Donkey'
 
 // One cache for the whole console. Short staleness keeps panels honest
 // while still letting a remounted view show what it knew instantly. The
@@ -45,27 +47,28 @@ function Shell() {
           <div className="flex min-w-0 items-center gap-3">
             <button
               onClick={() => navigate({ to: '/' })}
-              className="flex shrink-0 items-center gap-2 font-mono text-base font-bold tracking-tight focus-visible:outline-2 focus-visible:outline-hay-deep"
+              className="flex shrink-0 items-center gap-2 font-mono text-base font-bold tracking-tight focus-visible:outline-2 focus-visible:outline-accent-strong"
             >
-              <span className="text-xl" aria-hidden>
-                🫏
-              </span>
+              <DonkeyLogo className="size-5 text-ink" />
               Donkey
             </button>
             <Breadcrumb />
           </div>
           <div className="flex shrink-0 items-center gap-1.5">
             <button
-              onClick={() => navigate({ to: '/system' })}
-              className="flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-sm text-ink-soft transition-colors hover:bg-raised focus-visible:outline-2 focus-visible:outline-hay-deep"
-            >
-              <Activity className="size-4" aria-hidden /> System
-            </button>
-            <button
               onClick={() => navigate({ to: '/deploy' })}
-              className="flex items-center gap-1.5 rounded-md bg-hay px-3 py-1.5 text-sm font-semibold text-on-hay transition-colors hover:bg-hay-deep focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-hay-deep"
+              className="flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-semibold transition-colors bg-accent-soft/70 text-accent-strong hover:bg-accent-soft dark:bg-accent dark:text-on-accent dark:hover:bg-accent-strong focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-strong"
             >
               <UploadCloud className="size-4" aria-hidden /> Deploy
+            </button>
+            <button
+              type="button"
+              title="System health"
+              aria-label="System health"
+              onClick={() => navigate({ to: '/system' })}
+              className="flex items-center rounded-md p-1.5 text-muted hover:bg-line/60 hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-strong"
+            >
+              <Activity className="size-5" aria-hidden />
             </button>
             <UserMenu
               onSignOut={() => {
@@ -93,7 +96,7 @@ function Breadcrumb() {
   const params = useParams({ strict: false }) as { space?: string; name?: string }
   if (!params.space || !params.name) return null
   return (
-    <span className="flex min-w-0 items-center gap-1.5 font-mono text-sm text-stone">
+    <span className="flex min-w-0 items-center gap-1.5 font-mono text-sm text-muted">
       <span aria-hidden>/</span>
       <span className="truncate text-ink-soft">{params.space}</span>
       <span aria-hidden>/</span>
@@ -175,7 +178,7 @@ function DeployPage({ space, name }: { space: string; name: string }) {
 // query cache so a view opens with its data already there.
 const rootRoute = createRootRouteWithContext<{ queryClient: QueryClient }>()({
   component: Shell,
-  head: () => ({ meta: [{ title: 'Donkey — admin' }] }),
+  head: () => ({ meta: [{ title: pageTitle('Apps') }] }),
 })
 
 // Pathless layout: it has no path of its own, so it stays mounted for both
@@ -207,14 +210,14 @@ const systemRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/system',
   component: SystemView,
-  head: () => ({ meta: [{ title: 'System · Donkey' }] }),
+  head: () => ({ meta: [{ title: pageTitle('System') }] }),
 })
 
 const deployRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/deploy',
   component: () => <DeployPage space="" name="" />,
-  head: () => ({ meta: [{ title: 'Deploy · Donkey' }] }),
+  head: () => ({ meta: [{ title: pageTitle('Deploy') }] }),
 })
 
 const deployAppRoute = createRoute({
@@ -224,7 +227,7 @@ const deployAppRoute = createRoute({
     const { space, name } = deployAppRoute.useParams()
     return <DeployPage space={space} name={name} />
   },
-  head: () => ({ meta: [{ title: 'Deploy · Donkey' }] }),
+  head: () => ({ meta: [{ title: pageTitle('Deploy') }] }),
 })
 
 // One route for the panel and every one of its tabs ({-$tab} is optional,
@@ -235,7 +238,7 @@ const appRoute = createRoute({
   path: '/app/$space/$name/{-$tab}',
   loader: ({ context, params }) =>
     context.queryClient.ensureQueryData(statusQuery(params.space, params.name)),
-  head: ({ params }) => ({ meta: [{ title: `${params.name} · Donkey` }] }),
+  head: ({ params }) => ({ meta: [{ title: pageTitle(params.name) }] }),
   component: () => {
     const { space, name, tab } = appRoute.useParams()
     // The tab comes from the URL, so it can name something that doesn't

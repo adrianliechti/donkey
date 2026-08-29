@@ -94,6 +94,10 @@ type SystemInput struct {
 	// Generated at install, reused on re-installs — rotating it signs
 	// everyone out.
 	SessionKey string
+	// TelemetryKey authenticates OTLP ingestion and private queries. It is
+	// generated and persisted independently so session rotation cannot break
+	// exporters embedded in already-running apps.
+	TelemetryKey string
 
 	OpenAIBaseURL string
 	OpenAIAPIKey  string
@@ -126,6 +130,15 @@ type SystemInput struct {
 	// didn't create: applying one would take ownership of its labels and mark
 	// it deletable.
 	SkipNamespace bool
+	// IsolateSpaces fences every space with a NetworkPolicy — see
+	// SpaceIsolationPolicy. On by default; the installer resolves the
+	// settings file's tri-state (unset means on) before it reaches here.
+	// Needs a CNI that enforces NetworkPolicy.
+	IsolateSpaces bool
+	// RestrictEgress adds the egress half of that fence — a space's pods reach
+	// only their own space, donkey-ai, donkey-telemetry and DNS, never the
+	// internet. Off by default; only meaningful with IsolateSpaces.
+	RestrictEgress bool
 }
 
 const (
@@ -134,11 +147,14 @@ const (
 	DefaultSystemNamespace = config.DefaultSystemNamespace
 	// ServerName is donkey-server's Service — the openai addon points app
 	// bindings at its AI proxy path.
-	ServerName   = "donkey-server"
-	buildkitName = "donkey-buildkitd"
-	// systemRegistrySecretName lets the kubelet pull mirrored control-plane
-	// images from the same credentialed registry app builds are pushed to.
-	systemRegistrySecretName = "donkey-system-registry"
+	ServerName = "donkey-server"
+	// SystemConfigSecretName holds the installation credentials and the
+	// settings intentionally kept out of pod specs.
+	SystemConfigSecretName = "donkey-system-config"
+	// SystemRegistrySecretName lets Kubernetes pull credentialed control-plane
+	// images. It is exported for offline deployment bundle renderers.
+	SystemRegistrySecretName = "donkey-system-registry"
+	buildkitName             = "donkey-buildkitd"
 	registryDockerConfigPath = "/etc/donkey/registry-auth"
 	serverPort               = 8088
 	buildkitPort             = 1234
@@ -190,6 +206,9 @@ func SystemObjects(in SystemInput) []runtime.Object {
 	// Package traffic has its own unprivileged process and credentials. It is
 	// ready before builds are accepted by donkey-server.
 	objs = append(objs, packagesObjects(in)...)
+	// One replica owns the embedded DuckDB file and exposes OTLP/HTTP plus a
+	// separate control-plane query port.
+	objs = append(objs, telemetryObjects(in)...)
 	objs = append(objs,
 		buildkitDeployment(in),
 		systemService(in, buildkitName, buildkitPort, buildkitPort),
@@ -226,14 +245,17 @@ func configHash(values ...string) string {
 // serverConfigHash covers the secret-backed env vars of donkey-server
 // (secretKeyRef values are only read at pod creation).
 func (in SystemInput) serverConfigHash() string {
-	return configHash(in.SessionKey, in.OIDCClientID, in.OIDCClientSecret, in.RegistryPassword, in.OpenAIAPIKey,
+	return configHash(in.SessionKey, in.TelemetryKey, in.OIDCClientID, in.OIDCClientSecret, in.RegistryPassword, in.OpenAIAPIKey,
 		buildEnvJSON(in.Build), in.Build.Instructions, in.Build.Proxy.HTTP, in.Build.Proxy.HTTPS)
 }
 
-func (in SystemInput) hashedTemplateMeta(name, hash string) metav1.ObjectMeta {
+// hashedTemplateMeta is the pod template metadata of one control-plane
+// deployment: the full descriptive label set (version from the image that
+// actually runs in the pod) plus the config hash that rolls it.
+func (in SystemInput) hashedTemplateMeta(name, image, hash string) metav1.ObjectMeta {
 	return metav1.ObjectMeta{
-		Labels:      systemLabels(name),
-		Annotations: map[string]string{"donkey.dev/config-hash": hash},
+		Labels:      withVersion(SystemLabels(name), image),
+		Annotations: map[string]string{AnnotationConfigHash: hash},
 	}
 }
 
@@ -259,21 +281,12 @@ func systemSecurityContext() *corev1.SecurityContext {
 	}
 }
 
-func systemLabels(name string) map[string]string {
-	return map[string]string{
-		"app.kubernetes.io/name":       name,
-		"app.kubernetes.io/managed-by": ManagedByValue,
-		LabelApp:                       "donkey-system",
-		LabelComponent:                 name,
-	}
-}
-
 func systemNamespace(in SystemInput) *corev1.Namespace {
 	return &corev1.Namespace{
 		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Namespace"},
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        in.Namespace,
-			Labels:      systemLabels("donkey-system"),
+			Labels:      SystemLabels("donkey-system"),
 			Annotations: map[string]string{AnnotationManaged: "true"},
 		},
 	}
@@ -282,20 +295,21 @@ func systemNamespace(in SystemInput) *corev1.Namespace {
 func serverServiceAccount(in SystemInput) *corev1.ServiceAccount {
 	return &corev1.ServiceAccount{
 		TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "ServiceAccount"},
-		ObjectMeta: metav1.ObjectMeta{Name: ServerName, Namespace: in.Namespace, Labels: systemLabels(ServerName)},
+		ObjectMeta: metav1.ObjectMeta{Name: ServerName, Namespace: in.Namespace, Labels: SystemLabels(ServerName)},
 	}
 }
 
 func systemSecret(in SystemInput) *corev1.Secret {
 	return &corev1.Secret{
 		TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "Secret"},
-		ObjectMeta: metav1.ObjectMeta{Name: "donkey-system-config", Namespace: in.Namespace, Labels: systemLabels(ServerName)},
+		ObjectMeta: metav1.ObjectMeta{Name: SystemConfigSecretName, Namespace: in.Namespace, Labels: SystemLabels(ServerName)},
 		StringData: map[string]string{
 			"registry-password":  in.RegistryPassword,
 			"openai-api-key":     in.OpenAIAPIKey,
 			"oidc-client-id":     in.OIDCClientID,
 			"oidc-client-secret": in.OIDCClientSecret,
 			"session-key":        in.SessionKey,
+			"telemetry-key":      in.TelemetryKey,
 			// Build environment and proxy settings routinely carry credentials
 			// ("https://ci:token@jfrog.corp"); builder instructions can expose
 			// internal registry topology. Keep all three out of the Deployment.
@@ -310,8 +324,8 @@ func systemSecret(in SystemInput) *corev1.Secret {
 
 func systemRegistryPullSecret(in SystemInput) *corev1.Secret {
 	return RegistryPullSecret(
-		systemRegistrySecretName, in.Namespace,
-		systemLabels(ComponentRegistryAuth),
+		SystemRegistrySecretName, in.Namespace,
+		SystemLabels(RoleRegistryAuth),
 		registryHostOf(in.RegistryURL), in.RegistryUsername, in.RegistryPassword,
 	)
 }
@@ -320,7 +334,7 @@ func systemImagePullSecrets(in SystemInput) []corev1.LocalObjectReference {
 	if !hasSystemRegistryCredentials(in) {
 		return nil
 	}
-	return []corev1.LocalObjectReference{{Name: systemRegistrySecretName}}
+	return []corev1.LocalObjectReference{{Name: SystemRegistrySecretName}}
 }
 
 func hasSystemRegistryCredentials(in SystemInput) bool {
@@ -332,12 +346,12 @@ func hasSystemRegistryCredentials(in SystemInput) bool {
 const registryCAPath = "/etc/donkey/registry-ca"
 
 func serverDeployment(in SystemInput) *appsv1.Deployment {
-	labels := systemLabels(ServerName)
+	labels := withVersion(SystemLabels(ServerName), in.ServerImage)
 	replicas := int32(1)
 	secretEnv := func(name, key string) corev1.EnvVar {
 		return corev1.EnvVar{Name: name, ValueFrom: &corev1.EnvVarSource{
 			SecretKeyRef: &corev1.SecretKeySelector{
-				LocalObjectReference: corev1.LocalObjectReference{Name: "donkey-system-config"},
+				LocalObjectReference: corev1.LocalObjectReference{Name: SystemConfigSecretName},
 				Key:                  key,
 			},
 		}}
@@ -354,9 +368,13 @@ func serverDeployment(in SystemInput) *appsv1.Deployment {
 		{Name: "DONKEY_NAMESPACE_PREFIX", Value: in.NamespacePrefix},
 		{Name: "DONKEY_SYSTEM_NAMESPACE", Value: in.Namespace},
 		{Name: "DONKEY_WORKLOAD_NAMESPACE", Value: in.WorkloadNamespace},
+		{Name: "DONKEY_SPACE_ISOLATION", Value: strconv.FormatBool(in.IsolateSpaces)},
+		{Name: "DONKEY_RESTRICT_EGRESS", Value: strconv.FormatBool(in.RestrictEgress)},
 		// Where the console's /ai/v1 requests are forwarded. The address
 		// only — the path the console asks for is what gets proxied.
 		{Name: "DONKEY_AI_URL", Value: fmt.Sprintf("http://%s.%s.svc:80", AIAppName, in.Namespace)},
+		{Name: "DONKEY_TELEMETRY_URL", Value: TelemetryAPIEndpoint(in.Namespace)},
+		{Name: "DONKEY_TELEMETRY_OTLP_ENDPOINT", Value: TelemetryOTLPEndpoint(in.Namespace)},
 		{Name: "DONKEY_DEFAULT_PLATFORM", Value: in.DefaultPlatform},
 		{Name: "DONKEY_POSTGRES_IMAGE", Value: in.AddonImages.Postgres},
 		{Name: "DONKEY_RUSTFS_IMAGE", Value: in.AddonImages.RustFS},
@@ -375,6 +393,7 @@ func serverDeployment(in SystemInput) *appsv1.Deployment {
 		// The session key lets the server verify sealed CLI tokens itself —
 		// the direct (port-forwarded) path next to the gateway's headers.
 		secretEnv("DONKEY_SESSION_KEY", "session-key"),
+		secretEnv("DONKEY_TELEMETRY_KEY", "telemetry-key"),
 		{Name: "DONKEY_ADMINS", Value: adminsJSON(in)},
 		secretEnv("DONKEY_REGISTRY_PASSWORD", "registry-password"),
 		secretEnv("OPENAI_API_KEY", "openai-api-key"),
@@ -440,9 +459,9 @@ func serverDeployment(in SystemInput) *appsv1.Deployment {
 		ObjectMeta: metav1.ObjectMeta{Name: ServerName, Namespace: in.Namespace, Labels: labels},
 		Spec: appsv1.DeploymentSpec{
 			Replicas: &replicas,
-			Selector: &metav1.LabelSelector{MatchLabels: labels},
+			Selector: &metav1.LabelSelector{MatchLabels: SystemSelector(ServerName)},
 			Template: corev1.PodTemplateSpec{
-				ObjectMeta: in.hashedTemplateMeta(ServerName, in.serverConfigHash()),
+				ObjectMeta: in.hashedTemplateMeta(ServerName, in.ServerImage, in.serverConfigHash()),
 				Spec:       spec,
 			},
 		},
@@ -504,10 +523,10 @@ func registryCAFile(in SystemInput) string {
 func systemService(in SystemInput, name string, port, targetPort int32) *corev1.Service {
 	return &corev1.Service{
 		TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "Service"},
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: in.Namespace, Labels: systemLabels(name)},
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: in.Namespace, Labels: SystemLabels(name)},
 		Spec: corev1.ServiceSpec{
 			Type:     corev1.ServiceTypeClusterIP,
-			Selector: systemLabels(name),
+			Selector: SystemSelector(name),
 			Ports:    []corev1.ServicePort{{Name: "http", Port: port, TargetPort: intstr.FromInt32(targetPort)}},
 		},
 	}
@@ -543,5 +562,5 @@ func consoleRoute(in SystemInput) *corev1.ConfigMap {
 	if a := adminsJSON(in); a != "" {
 		ann[AnnotationAccess] = a
 	}
-	return routeConfigMap(ServerName, in.Namespace, systemLabels(ServerName), ann)
+	return routeConfigMap(ServerName, in.Namespace, SystemLabels(ServerName), ann)
 }

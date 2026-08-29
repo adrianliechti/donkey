@@ -2,6 +2,8 @@ package gateway
 
 import (
 	"bytes"
+	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -13,6 +15,7 @@ import (
 
 	"github.com/adrianliechti/donkey/internal/config"
 	"github.com/adrianliechti/donkey/internal/identity"
+	"github.com/adrianliechti/donkey/pkg/runtime/kubernetes/manifests"
 )
 
 var testKey = bytes.Repeat([]byte{7}, 32)
@@ -212,15 +215,28 @@ func TestCookieDomain(t *testing.T) {
 	}
 }
 
+func TestCanonicalHTTPMethodIncludesQuery(t *testing.T) {
+	if got := canonicalHTTPMethod("QUERY"); got != "QUERY" {
+		t.Fatalf("QUERY method=%q", got)
+	}
+	if got := canonicalHTTPMethod("BREW"); got != "_OTHER" {
+		t.Fatalf("unknown method=%q", got)
+	}
+}
+
 func TestRouteFromConfigMap(t *testing.T) {
 	cm := corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
+			Labels: map[string]string{
+				manifests.LabelSpace: "acme",
+				manifests.LabelApp:   "shop",
+			},
 			Annotations: map[string]string{
-				"donkey.dev/backend": "http://shop.donkey-acme.svc.cluster.local:80",
-				"donkey.dev/host":    "shop.example.com",
-				"donkey.dev/path":    "/api",
-				"donkey.dev/login":   "required",
-				"donkey.dev/access":  `{"users":["ada@example.com"],"roles":["developer"]}`,
+				"donkey.local/backend": "http://shop.donkey-acme.svc.cluster.local:80",
+				"donkey.local/host":    "shop.example.com",
+				"donkey.local/path":    "/api",
+				"donkey.local/login":   "required",
+				"donkey.local/access":  `{"users":["ada@example.com"],"roles":["developer"]}`,
 			},
 		},
 	}
@@ -231,6 +247,9 @@ func TestRouteFromConfigMap(t *testing.T) {
 	if rt.Host != "shop.example.com" || rt.Path != "/api" || !rt.Login {
 		t.Errorf("unexpected route: %+v", rt)
 	}
+	if rt.Space != "acme" || rt.App != "shop" {
+		t.Errorf("route telemetry scope = %q/%q", rt.Space, rt.App)
+	}
 	if rt.Access == nil || len(rt.Access.Users) != 1 || len(rt.Access.Roles) != 1 {
 		t.Errorf("access rules should be parsed: %+v", rt.Access)
 	}
@@ -239,18 +258,53 @@ func TestRouteFromConfigMap(t *testing.T) {
 	// ConfigMap that happens to carry donkey labels).
 	plain := corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
-			Annotations: map[string]string{"donkey.dev/host": "donkey.example.com"},
+			Annotations: map[string]string{"donkey.local/host": "donkey.example.com"},
 		},
 	}
 	if _, ok := routeFromConfigMap(plain); ok {
 		t.Error("routes without a backend annotation are not ours to serve")
 	}
 
+	// Scope is mandatory: without it the route would work while gateway
+	// request and view telemetry disappeared silently.
+	unscoped := cm.DeepCopy()
+	delete(unscoped.Labels, manifests.LabelApp)
+	if _, ok := routeFromConfigMap(*unscoped); ok {
+		t.Error("routes without a valid logical telemetry scope must not be served")
+	}
+	system := unscoped.DeepCopy()
+	delete(system.Labels, manifests.LabelSpace)
+	// Standard manager metadata is not routing authority; only Donkey identity
+	// may distinguish the intentional unscoped system route.
+	system.Labels[manifests.LabelManagedBy] = "Helm"
+	system.Labels[manifests.LabelRole] = manifests.SystemRole(manifests.ServerName)
+	system.Annotations[manifests.AnnotationToken] = manifests.TokenForward
+	if route, ok := routeFromConfigMap(*system); !ok || !route.Token || route.Space != "" || route.App != "" {
+		t.Errorf("the managed console route must remain system-scoped, got %+v, ok=%v", route, ok)
+	}
+	spoofedToken := cm.DeepCopy()
+	spoofedToken.Annotations[manifests.AnnotationToken] = manifests.TokenForward
+	if route, ok := routeFromConfigMap(*spoofedToken); !ok || route.Token {
+		t.Errorf("a tenant route must not opt into admin-token forwarding, got %+v, ok=%v", route, ok)
+	}
+
 	// A non-http backend must be refused, not proxied.
 	bad := cm.DeepCopy()
-	bad.Annotations["donkey.dev/backend"] = "https://evil.example.com"
+	bad.Annotations["donkey.local/backend"] = "https://evil.example.com"
 	if _, ok := routeFromConfigMap(*bad); ok {
 		t.Error("only in-cluster plain-http backends are proxied")
+	}
+}
+
+func TestProtocolVersionUsesOpenTelemetryValues(t *testing.T) {
+	for proto, want := range map[string]string{"HTTP/1.1": "1.1", "HTTP/2.0": "2", "HTTP/3.0": "3"} {
+		req := &http.Request{Proto: proto}
+		if _, err := fmt.Sscanf(proto, "HTTP/%d.%d", &req.ProtoMajor, &req.ProtoMinor); err != nil {
+			t.Fatal(err)
+		}
+		if got := protocolVersion(req); got != want {
+			t.Errorf("protocolVersion(%s) = %q, want %q", proto, got, want)
+		}
 	}
 }
 
@@ -306,5 +360,29 @@ func TestProxyIdentityAndToken(t *testing.T) {
 	send(route{Backend: target, Token: true}, nil)
 	if got.Get("X-Access-Token") != "" || got.Get("X-Auth-Request-User") != "" {
 		t.Error("no session, no identity — nothing may reach the backend")
+	}
+}
+
+// Shutting telemetry down must never panic a request that finishes at the
+// same moment: the view queue stays open forever; only the exporter stops
+// reading it. Before this held, a drain during shutdown was a send on a
+// closed channel — a crash of the whole edge.
+func TestTelemetryRecordAfterShutdownDoesNotPanic(t *testing.T) {
+	tel, err := newEdgeTelemetry(&Config{
+		TelemetryEndpoint: "http://127.0.0.1:1",
+		TelemetryKey:      testKey,
+		SystemNamespace:   "donkey-system",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_ = tel.Shutdown(ctx) // canceled context: closes the queue path, skips network flushes
+	r := httptest.NewRequest(http.MethodGet, "https://shop.acme.example.com/", nil)
+	r.Header.Set("Accept", "text/html")
+	// Past the queue size, so both the enqueue and the backpressure paths run.
+	for range viewQueueSize + 8 {
+		tel.Record(r, route{Space: "acme", App: "shop", Path: "/"}, nil, http.StatusOK, time.Millisecond, "text/html; charset=utf-8")
 	}
 }

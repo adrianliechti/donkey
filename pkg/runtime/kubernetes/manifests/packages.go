@@ -1,6 +1,7 @@
 package manifests
 
 import (
+	"fmt"
 	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -40,11 +41,11 @@ func (in SystemInput) packagesConfigHash() string {
 }
 
 func packagesDeployment(in SystemInput) *appsv1.Deployment {
-	labels := systemLabels(packagesName)
+	labels := SystemLabels(packagesName)
 	replicas := int32(1)
 	p := in.Build.Packages
 	env := []corev1.EnvVar{
-		{Name: "DONKEY_LISTEN", Value: ":8090"},
+		{Name: "DONKEY_LISTEN", Value: fmt.Sprintf(":%d", packagesPort)},
 		{Name: "DONKEY_PACKAGES_NPM_URL", Value: p.NPMUpstream()},
 		{Name: "DONKEY_PACKAGES_PYPI_URL", Value: p.PyPIUpstream()},
 		{Name: "DONKEY_PACKAGES_GO_URL", Value: p.GoUpstream()},
@@ -126,9 +127,9 @@ func packagesDeployment(in SystemInput) *appsv1.Deployment {
 		ObjectMeta: metav1.ObjectMeta{Name: packagesName, Namespace: in.Namespace, Labels: labels},
 		Spec: appsv1.DeploymentSpec{
 			Replicas: &replicas,
-			Selector: &metav1.LabelSelector{MatchLabels: labels},
+			Selector: &metav1.LabelSelector{MatchLabels: SystemSelector(packagesName)},
 			Template: corev1.PodTemplateSpec{
-				ObjectMeta: in.hashedTemplateMeta(packagesName, in.packagesConfigHash()),
+				ObjectMeta: in.hashedTemplateMeta(packagesName, in.ServerImage, in.packagesConfigHash()),
 				Spec:       spec,
 			},
 		},
@@ -137,6 +138,6 @@ func packagesDeployment(in SystemInput) *appsv1.Deployment {
 
 func packagesNetworkPolicy(in SystemInput) *networkPolicy {
 	return ingressPolicy(in, packagesName, packagesPort, []networkingv1.NetworkPolicyPeer{
-		systemPeer(in, buildkitName),
+		systemPeer(in.Namespace, buildkitName),
 	})
 }

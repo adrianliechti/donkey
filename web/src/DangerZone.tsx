@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Trash2, TriangleAlert } from 'lucide-react'
 import { api } from './api'
-import { Button, Card, ErrorNote, errText, SectionTitle } from './ui'
+import { Button, ErrorNote, errText, SectionTitle } from './ui'
 
 export function DangerZone({ space, app, onDestroyed }: { space: string; app: string; onDestroyed: () => void }) {
   const [confirming, setConfirming] = useState(false)
@@ -22,7 +22,7 @@ export function DangerZone({ space, app, onDestroyed }: { space: string; app: st
   }
 
   return (
-    <Card className="border-brick/30 p-4">
+    <section className="border-t border-danger/30 pt-5">
       <SectionTitle>Remove</SectionTitle>
       {!confirming ? (
         <div className="mt-2 flex items-center justify-between gap-4">
@@ -38,7 +38,7 @@ export function DangerZone({ space, app, onDestroyed }: { space: string; app: st
         </div>
       ) : (
         <div className="mt-2 space-y-3">
-          <p className="flex items-center gap-2 text-sm font-medium text-brick">
+          <p className="flex items-center gap-2 text-sm font-medium text-danger">
             <TriangleAlert className="size-4" aria-hidden />
             Remove {app} and everything donkey created for it?
           </p>
@@ -47,7 +47,7 @@ export function DangerZone({ space, app, onDestroyed }: { space: string; app: st
               type="checkbox"
               checked={keepData}
               onChange={(e) => setKeepData(e.target.checked)}
-              className="size-4 accent-hay-deep"
+              className="size-4 accent-accent-strong"
             />
             Keep its disk (the space's services are never touched)
           </label>
@@ -62,6 +62,6 @@ export function DangerZone({ space, app, onDestroyed }: { space: string; app: st
           <ErrorNote message={error} />
         </div>
       )}
-    </Card>
+    </section>
   )
 }

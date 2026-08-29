@@ -38,10 +38,21 @@ type Config struct {
 	// WorkloadNamespace, when set, is the single namespace every app lives
 	// in; donkey neither creates nor deletes it.
 	WorkloadNamespace string
+	// IsolateSpaces fences every space with a NetworkPolicy (Kubernetes
+	// runtime only — Docker spaces are separate networks and isolated as is).
+	IsolateSpaces bool
+	// RestrictEgress adds the egress half of that fence — a space's pods reach
+	// only their own space, donkey-ai, donkey-telemetry and DNS, never the
+	// internet. Off by default; only meaningful with IsolateSpaces.
+	RestrictEgress bool
 	// AIURL is donkey-ai's address — the console's /ai/v1 calls are
 	// forwarded there. The address only, no path: what the console asks for
 	// is what gets proxied.
 	AIURL string
+	// TelemetryURL is the private query listener of the traffic telemetry
+	// service. App exporters use a different port and credential.
+	TelemetryURL          string
+	TelemetryOTLPEndpoint string
 
 	OIDCIssuer       string
 	OIDCClientID     string
@@ -67,6 +78,9 @@ type Config struct {
 	// the CLI tokens the gateway mints with it (the direct, port-forwarded
 	// path next to the gateway's identity headers).
 	SessionKey []byte
+	// TelemetryKey authenticates the gateway, app exporters, and private query
+	// client independently of login-session rotation.
+	TelemetryKey []byte
 	// Admins narrows who may administer (users/groups/roles). Empty means
 	// everyone the IdP admits.
 	Admins  *config.AccessConfig
@@ -90,11 +104,19 @@ func FromEnv() (*Config, error) {
 		NamespacePrefix:   envOr("DONKEY_NAMESPACE_PREFIX", config.DefaultNamespacePrefix),
 		SystemNamespace:   envOr("DONKEY_SYSTEM_NAMESPACE", config.DefaultSystemNamespace),
 		WorkloadNamespace: os.Getenv("DONKEY_WORKLOAD_NAMESPACE"),
-		AIURL:             os.Getenv("DONKEY_AI_URL"),
-		OIDCIssuer:        os.Getenv("DONKEY_OIDC_ISSUER"),
-		OIDCClientID:      os.Getenv("DONKEY_OIDC_CLIENT_ID"),
-		OIDCClientSecret:  os.Getenv("DONKEY_OIDC_CLIENT_SECRET"),
-		DefaultPlatform:   envOr("DONKEY_DEFAULT_PLATFORM", "linux/amd64"),
+		// Isolation is on by default, so only an explicit "false" opens the
+		// network — including on manifests that predate the setting.
+		IsolateSpaces: os.Getenv("DONKEY_SPACE_ISOLATION") != "false",
+		// Egress restriction is opt-in — it can cut an app off from the
+		// internet, so it is on only when the installation asked for it.
+		RestrictEgress:        os.Getenv("DONKEY_RESTRICT_EGRESS") == "true",
+		AIURL:                 os.Getenv("DONKEY_AI_URL"),
+		TelemetryURL:          envOr("DONKEY_TELEMETRY_URL", "http://donkey-telemetry:9090"),
+		TelemetryOTLPEndpoint: envOr("DONKEY_TELEMETRY_OTLP_ENDPOINT", "http://donkey-telemetry:4318"),
+		OIDCIssuer:            os.Getenv("DONKEY_OIDC_ISSUER"),
+		OIDCClientID:          os.Getenv("DONKEY_OIDC_CLIENT_ID"),
+		OIDCClientSecret:      os.Getenv("DONKEY_OIDC_CLIENT_SECRET"),
+		DefaultPlatform:       envOr("DONKEY_DEFAULT_PLATFORM", "linux/amd64"),
 		AddonImages: config.InstallAddonImages{
 			Postgres: os.Getenv("DONKEY_POSTGRES_IMAGE"),
 			RustFS:   os.Getenv("DONKEY_RUSTFS_IMAGE"),
@@ -122,11 +144,21 @@ func FromEnv() (*Config, error) {
 	if v := os.Getenv("DONKEY_BUILDER_VERIFY"); v != "" {
 		c.Build.Verify = new(v == "true")
 	}
+	c.Build.Provenance = os.Getenv("DONKEY_BUILDER_PROVENANCE")
+	if err := c.Build.ValidateProvenance(); err != nil {
+		return nil, err
+	}
+	c.Build.SBOM = os.Getenv("DONKEY_BUILDER_SBOM") == "true"
 	key, err := hex.DecodeString(os.Getenv("DONKEY_SESSION_KEY"))
 	if err != nil || len(key) != 32 {
 		return nil, fmt.Errorf("DONKEY_SESSION_KEY must be 32 bytes of hex — `donkey server install` generates it")
 	}
 	c.SessionKey = key
+	telemetryKey, err := hex.DecodeString(os.Getenv("DONKEY_TELEMETRY_KEY"))
+	if err != nil || len(telemetryKey) != 32 {
+		return nil, fmt.Errorf("DONKEY_TELEMETRY_KEY must be 32 bytes of hex — `donkey server install` generates it")
+	}
+	c.TelemetryKey = telemetryKey
 	if raw := os.Getenv("DONKEY_ADMINS"); raw != "" {
 		var admins config.AccessConfig
 		if err := json.Unmarshal([]byte(raw), &admins); err != nil {

@@ -28,8 +28,8 @@ type Provider interface {
 	CheckSpaceFree(ctx context.Context, space string) error
 	ListSpaces(ctx context.Context) ([]string, error)
 	CreateSpace(ctx context.Context, space string) error
-	// DeleteSpace removes an app-less space with its services and their data;
-	// it refuses one that still holds apps.
+	// DeleteSpace removes the complete space boundary: apps, services,
+	// bindings, routes, runtime state, and data.
 	DeleteSpace(ctx context.Context, space string) error
 
 	// --- Apps -------------------------------------------------------------
@@ -52,8 +52,8 @@ type Provider interface {
 	// Render is what Deploy would create, as text, without touching the
 	// runtime. Credentials are left out: this lands in CI logs.
 	Render(spec DeploySpec) (string, error)
-	// Destroy removes the app and everything donkey created for it; keepData
-	// spares the disk (and the data of services only this app used).
+	// Destroy removes only the app and everything app-owned; keepData spares
+	// its disk. Space services have their own lifecycle.
 	Destroy(ctx context.Context, space, app string, keepData bool) error
 
 	// --- Env --------------------------------------------------------------
@@ -124,6 +124,38 @@ type Provider interface {
 
 	// Checks probes this runtime's own dependencies for doctor.
 	Checks(ctx context.Context) []Check
+}
+
+// ResourceSampler is an optional runtime capability. Runtime resource usage
+// is deliberately separate from Provider.Status: status is read frequently
+// by fleet views, while Docker stats and the Kubernetes Metrics API are
+// comparatively expensive. The server discovers this interface and samples
+// it on its own bounded cadence.
+type ResourceSampler interface {
+	ResourceSamples(ctx context.Context) ([]ResourceSample, error)
+}
+
+// ResourceSample is one installation-owned web container at one instant. The
+// telemetry wire format keeps that container identity (as the OpenTelemetry
+// semantic conventions require); retained app reports aggregate replicas.
+type ResourceSample struct {
+	Space string
+	App   string
+	// Instance is the stable identity used to distinguish replicas. Container
+	// metadata is carried through to OTLP's standard resource attributes.
+	Instance      string
+	ContainerID   string
+	ContainerName string
+	KubeNamespace string
+	KubePodName   string
+	KubePodUID    string
+	SampledAt     time.Time
+
+	CPUCores          float64
+	CPUUserCores      float64
+	CPUSystemCores    float64
+	CPUModesAvailable bool
+	MemoryBytes       int64
 }
 
 type AppRef struct {
@@ -279,12 +311,15 @@ type Check struct {
 }
 
 // App metadata keys, stored with the deployed app and surviving deploys.
+// On Kubernetes they are Deployment annotations (the manifests package spells
+// MetaConsole and MetaDecisions as AnnotationConsole/AnnotationDecisions —
+// keep them equal); on Docker they are entries in the app's meta file.
 const (
 	// MetaConsole is written by the console endpoints only — a deploy must
 	// never wipe it.
-	MetaConsole = "donkey.dev/console"
+	MetaConsole = "donkey.local/console"
 	// MetaDecisions is what deploy-time analysis settled.
-	MetaDecisions = "donkey.dev/decisions"
+	MetaDecisions = "donkey.local/decisions"
 )
 
 // File-browser limits, shared by every provider.

@@ -8,6 +8,7 @@ import (
 	bkclient "github.com/moby/buildkit/client"
 	"github.com/moby/buildkit/client/llb"
 	gateway "github.com/moby/buildkit/frontend/gateway/client"
+	ocispecs "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
 // buildVerified builds the image, proves it starts, and only then exports it.
@@ -39,14 +40,7 @@ func (b *BuildKitBuilder) buildVerified(ctx context.Context, c *bkclient.Client,
 		if err != nil {
 			return nil, err
 		}
-		ref, err := res.SingleRef()
-		if err != nil {
-			return nil, err
-		}
-		if ref == nil {
-			return nil, fmt.Errorf("the build produced no image to verify")
-		}
-		cfg, err := imageConfigOf(res.Metadata)
+		ref, cfg, err := builtImage(res, platform)
 		if err != nil {
 			return nil, err
 		}
@@ -84,4 +78,35 @@ func (b *BuildKitBuilder) buildVerified(ctx context.Context, c *bkclient.Client,
 		Digest:   resp.ExporterResponse["containerimage.digest"],
 		LogPath:  req.Progress.LogPath,
 	}, nil
+}
+
+// builtImage picks the built image's ref and configuration out of a frontend
+// result. With attestations enabled the frontend answers with a multi-ref
+// result — the image keyed by its platform, attestations alongside — where
+// SingleRef would refuse the very build it just made.
+func builtImage(res *gateway.Result, platform ocispecs.Platform) (gateway.Reference, ocispecs.Image, error) {
+	var cfg ocispecs.Image
+	if len(res.Refs) == 0 {
+		ref, err := res.SingleRef()
+		if err != nil {
+			return nil, cfg, err
+		}
+		if ref == nil {
+			return nil, cfg, fmt.Errorf("the build produced no image to verify")
+		}
+		cfg, err = imageConfig(res.Metadata["containerimage.config"])
+		return ref, cfg, err
+	}
+	id := platforms.Format(platforms.Normalize(platform))
+	ref, ok := res.Refs[id]
+	if !ok && len(res.Refs) == 1 {
+		for only, r := range res.Refs {
+			id, ref, ok = only, r, true
+		}
+	}
+	if !ok || ref == nil {
+		return nil, cfg, fmt.Errorf("the build produced no image for platform %s", id)
+	}
+	cfg, err := imageConfig(res.Metadata["containerimage.config/"+id])
+	return ref, cfg, err
 }

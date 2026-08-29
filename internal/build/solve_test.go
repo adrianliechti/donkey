@@ -114,3 +114,44 @@ func TestInjectPackageBuildArgsIntoEveryStage(t *testing.T) {
 		t.Fatal("the source Dockerfile was modified")
 	}
 }
+
+// Every image donkey publishes carries standard metadata: SLSA provenance by
+// default (min — max would embed build-arg values, which routinely hold
+// credentials), an SBOM only when the installation opted in, and OCI labels.
+func TestSolveOptAttestationsAndLabels(t *testing.T) {
+	base := func(settings config.BuildSettings) map[string]string {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte("FROM scratch\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		b := &BuildKitBuilder{Registry: config.Registry{URL: "reg.example.com/donkey"}, Settings: settings}
+		opt, err := b.solveOpt(Request{
+			ContextDir: dir, ImageRef: "reg.example.com/donkey/web:1",
+			Platform: "linux/amd64", Strategy: config.BuildDockerfile, DockerfilePath: "Dockerfile",
+			ImageLabels: map[string]string{"org.opencontainers.image.revision": "abc123"},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return opt.FrontendAttrs
+	}
+
+	attrs := base(config.BuildSettings{})
+	if attrs["attest:provenance"] != "mode=min" {
+		t.Errorf("provenance default = %q, want mode=min", attrs["attest:provenance"])
+	}
+	if _, ok := attrs["attest:sbom"]; ok {
+		t.Error("SBOM must stay opt-in")
+	}
+	if attrs["label:org.opencontainers.image.revision"] != "abc123" {
+		t.Error("OCI image labels should reach the frontend")
+	}
+
+	attrs = base(config.BuildSettings{Provenance: "off", SBOM: true})
+	if _, ok := attrs["attest:provenance"]; ok {
+		t.Error("provenance off must render no attestation attr")
+	}
+	if got, ok := attrs["attest:sbom"]; !ok || got != "" {
+		t.Errorf("SBOM opt-in should render the attr, got %q/%v", got, ok)
+	}
+}

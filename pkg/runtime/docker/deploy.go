@@ -13,14 +13,13 @@ import (
 	"strings"
 	"time"
 
-	cerrdefs "github.com/containerd/errdefs"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/api/types/network"
-	"github.com/docker/docker/api/types/volume"
 
 	"github.com/adrianliechti/donkey/internal/config"
+	"github.com/adrianliechti/donkey/internal/telemetry"
 	rt "github.com/adrianliechti/donkey/pkg/runtime"
 )
 
@@ -176,7 +175,7 @@ func (r *Runtime) applyRoutes(ctx context.Context, space string, app *config.App
 			return err
 		}
 	} else {
-		route := Route{Host: host, Path: "/", Backend: backend, Login: login}
+		route := Route{Space: space, App: app.Name, Host: host, Path: "/", Backend: backend, Login: login}
 		if login && !app.Access.Empty() {
 			route.Access = app.Access
 		}
@@ -190,6 +189,8 @@ func (r *Runtime) applyRoutes(ctx context.Context, space string, app *config.App
 		name := pathRouteName(app.Name, target.App, target.Path)
 		keep[name] = true
 		route := Route{
+			Space:   space,
+			App:     app.Name,
 			Host:    r.targetHost(space, target.App),
 			Path:    target.Path,
 			Backend: backend,
@@ -337,6 +338,24 @@ func (r *Runtime) appEnv(space, app string, port int) (map[string]string, error)
 			env[k] = v
 		}
 	}
+	if len(r.opts.TelemetryKey) > 0 {
+		defaults := map[string]string{
+			"OTEL_SERVICE_NAME":             app,
+			"OTEL_RESOURCE_ATTRIBUTES":      "service.namespace=" + space,
+			"OTEL_EXPORTER_OTLP_ENDPOINT":   "http://" + r.opts.TelemetryContainer + ":4318",
+			"OTEL_EXPORTER_OTLP_PROTOCOL":   "http/protobuf",
+			"OTEL_EXPORTER_OTLP_HEADERS":    "x-donkey-telemetry-token=" + telemetry.AppToken(r.opts.TelemetryKey, space, app),
+			"OTEL_METRICS_EXPORTER":         "otlp",
+			"OTEL_TRACES_EXPORTER":          "none",
+			"OTEL_LOGS_EXPORTER":            "none",
+			"OTEL_SEMCONV_STABILITY_OPT_IN": "http",
+		}
+		for key, value := range defaults {
+			if _, configured := env[key]; !configured {
+				env[key] = value
+			}
+		}
+	}
 	env["PORT"] = strconv.Itoa(port)
 	return env, nil
 }
@@ -349,8 +368,8 @@ func (r *Runtime) appMounts(ctx context.Context, space, app string, spec runSpec
 		return nil, nil
 	}
 	vol := volName(space, app)
-	labels := appLabels(space, app, componentWeb)
-	if _, err := r.cli.VolumeCreate(ctx, volume.CreateOptions{Name: vol, Labels: labels}); err != nil {
+	labels := appLabels(space, app, roleStorage)
+	if err := r.ensureOwnedVolume(ctx, vol, labels); err != nil {
 		return nil, err
 	}
 	volumes := map[string]volumeMount{}
@@ -360,7 +379,7 @@ func (r *Runtime) appMounts(ctx context.Context, space, app string, spec runSpec
 		volumes[p] = volumeMount{Volume: vol, Subpath: sub}
 		subs = append(subs, sub)
 	}
-	if err := r.initVolumeDirs(ctx, vol, subs); err != nil {
+	if err := r.initVolumeDirs(ctx, vol, subs, appLabels(space, app, roleInit)); err != nil {
 		return nil, err
 	}
 	return volumes, nil
@@ -369,7 +388,7 @@ func (r *Runtime) appMounts(ctx context.Context, space, app string, spec runSpec
 // initVolumeDirs creates (and opens up) the volume's folders in a one-shot
 // helper. World-writable is deliberate: like the Kubernetes fsGroup, it is
 // what lets an image running as any user write to its own disk.
-func (r *Runtime) initVolumeDirs(ctx context.Context, vol string, subs []string) error {
+func (r *Runtime) initVolumeDirs(ctx context.Context, vol string, subs []string, labels map[string]string) error {
 	if err := r.pullImage(ctx, filesImage); err != nil {
 		return err
 	}
@@ -381,18 +400,19 @@ func (r *Runtime) initVolumeDirs(ctx context.Context, vol string, subs []string)
 	joined := strings.Join(paths, " ")
 	args[2] = "mkdir -p " + joined + " && chmod 777 " + joined
 	name := vol + ".init"
-	if err := r.removeContainer(ctx, name); err != nil {
+	if err := r.removeOwnedContainer(ctx, name, labels); err != nil {
 		return err
 	}
 	if _, err := r.cli.ContainerCreate(ctx, &container.Config{
 		Image:      filesImage,
 		Entrypoint: args,
+		Labels:     labels,
 	}, &container.HostConfig{
 		Mounts: []mount.Mount{{Type: mount.TypeVolume, Source: vol, Target: filesMount}},
 	}, nil, nil, name); err != nil {
 		return err
 	}
-	defer func() { _ = r.removeContainer(context.WithoutCancel(ctx), name) }()
+	defer func() { _ = r.removeOwnedContainer(context.WithoutCancel(ctx), name, labels) }()
 	if err := r.cli.ContainerStart(ctx, name, container.StartOptions{}); err != nil {
 		return err
 	}
@@ -414,7 +434,7 @@ func (r *Runtime) runApp(ctx context.Context, space, app string, spec runSpec) e
 	if err != nil {
 		return err
 	}
-	labels := appLabels(space, app, componentWeb)
+	labels := appLabels(space, app, roleWorkload)
 	labels[labelImage] = spec.Image
 	labels[labelPort] = strconv.Itoa(spec.Port)
 
@@ -456,7 +476,7 @@ func (r *Runtime) replaceContainer(ctx context.Context, name string, cfg runConf
 	if err := r.pullImage(ctx, cfg.Image); err != nil {
 		return err
 	}
-	if err := r.removeContainer(ctx, name); err != nil {
+	if err := r.removeOwnedContainer(ctx, name, cfg.Labels); err != nil {
 		return err
 	}
 
@@ -543,16 +563,18 @@ func (r *Runtime) Render(spec rt.DeploySpec) (string, error) {
 }
 
 func (r *Runtime) Destroy(ctx context.Context, space, app string, keepData bool) error {
-	for _, name := range []string{
-		ctrName(space, app),
-		ctrName(space, app) + ".files",
+	for _, helper := range []struct{ name, role string }{
+		{ctrName(space, app), roleWorkload},
+		{filesHelperName(space, app), roleFiles},
+		{volName(space, app) + ".init", roleInit},
 	} {
-		if err := r.removeContainer(ctx, name); err != nil {
+		if err := r.removeOwnedContainer(ctx, helper.name,
+			appLabels(space, app, helper.role)); err != nil {
 			return err
 		}
 	}
 	if !keepData {
-		if err := r.cli.VolumeRemove(ctx, volName(space, app), false); err != nil && !cerrdefs.IsNotFound(err) {
+		if err := r.removeOwnedVolume(ctx, volName(space, app), appLabels(space, app, roleStorage)); err != nil {
 			return err
 		}
 	}
@@ -620,6 +642,8 @@ func (r *Runtime) ApplyNetwork(ctx context.Context, cfg *config.AppConfig) (stri
 			return "", rt.UserError{Err: fmt.Errorf("%s already answers on %s — two apps cannot share one address", owner, host)}
 		}
 		route := Route{
+			Space:   space,
+			App:     app,
 			Host:    host,
 			Path:    "/",
 			Backend: fmt.Sprintf("http://%s:%d", ctrName(space, app), port),

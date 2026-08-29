@@ -24,6 +24,8 @@ import (
 // Route is one routing-table entry as the gateway reads it from the state
 // directory (mirrors the annotations of the Kubernetes route ConfigMaps).
 type Route struct {
+	Space   string               `json:"space,omitempty"`
+	App     string               `json:"app,omitempty"`
 	Host    string               `json:"host"`
 	Path    string               `json:"path"`
 	Backend string               `json:"backend"`

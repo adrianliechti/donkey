@@ -26,10 +26,10 @@ func ingressPolicy(in SystemInput, name string, port int32, peers []networkingv1
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: in.Namespace,
-			Labels:    systemLabels(name),
+			Labels:    SystemLabels(name),
 		},
 		Spec: networkingv1.NetworkPolicySpec{
-			PodSelector: metav1.LabelSelector{MatchLabels: systemLabels(name)},
+			PodSelector: metav1.LabelSelector{MatchLabels: SystemSelector(name)},
 			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
 			Ingress: []networkingv1.NetworkPolicyIngressRule{{
 				From:  peers,
@@ -40,29 +40,42 @@ func ingressPolicy(in SystemInput, name string, port int32, peers []networkingv1
 }
 
 // systemPeer is one of donkey's own workloads, in the control plane's
-// namespace.
-func systemPeer(in SystemInput, name string) networkingv1.NetworkPolicyPeer {
+// namespace (which is also the installation identity — pinning the namespace
+// is what keeps a second installation's same-named pods out).
+func systemPeer(namespace, name string) networkingv1.NetworkPolicyPeer {
 	return networkingv1.NetworkPolicyPeer{
-		PodSelector:       &metav1.LabelSelector{MatchLabels: systemLabels(name)},
-		NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": in.Namespace}},
+		PodSelector:       &metav1.LabelSelector{MatchLabels: SystemPodSelector(namespace, name)},
+		NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{LabelNamespaceName: namespace}},
 	}
 }
 
 // appPeers is where this installation's apps run. With one namespace for
 // every app that is a single name; with a namespace per space it is the
-// instance label donkey stamps on each of them, which also keeps a second
-// installation's apps out.
+// installation label donkey stamps on each namespace. The pod selector is
+// retained in both modes: a manually-created workload in one of those
+// namespaces is not silently granted access to control-plane endpoints.
 func appPeers(in SystemInput) []networkingv1.NetworkPolicyPeer {
+	pods := &metav1.LabelSelector{
+		MatchLabels: map[string]string{LabelInstallation: in.Namespace},
+		// The system namespace carries the installation label too. Requiring a
+		// logical space keeps other control-plane pods out of the broad tenant
+		// peer and leaves only the explicitly named system peers below.
+		MatchExpressions: []metav1.LabelSelectorRequirement{{
+			Key: LabelSpace, Operator: metav1.LabelSelectorOpExists,
+		}},
+	}
 	if in.Shared() {
 		return []networkingv1.NetworkPolicyPeer{{
+			PodSelector: pods,
 			NamespaceSelector: &metav1.LabelSelector{
-				MatchLabels: map[string]string{"kubernetes.io/metadata.name": in.WorkloadNamespace},
+				MatchLabels: map[string]string{LabelNamespaceName: in.WorkloadNamespace},
 			},
 		}}
 	}
 	return []networkingv1.NetworkPolicyPeer{{
+		PodSelector: pods,
 		NamespaceSelector: &metav1.LabelSelector{
-			MatchLabels: map[string]string{LabelInstance: in.Namespace},
+			MatchLabels: map[string]string{LabelInstallation: in.Namespace},
 		},
 	}}
 }
@@ -76,7 +89,7 @@ func appPeers(in SystemInput) []networkingv1.NetworkPolicyPeer {
 // code; it now runs as donkey-ai, and nothing an app needs lives here.
 func serverNetworkPolicy(in SystemInput) *networkPolicy {
 	return ingressPolicy(in, ServerName, serverPort, []networkingv1.NetworkPolicyPeer{
-		systemPeer(in, GatewayAppName),
+		systemPeer(in.Namespace, GatewayAppName),
 	})
 }
 
@@ -85,6 +98,6 @@ func serverNetworkPolicy(in SystemInput) *networkPolicy {
 // can reach its port can run code on a node. Only donkey-server may.
 func buildkitNetworkPolicy(in SystemInput) *networkPolicy {
 	return ingressPolicy(in, buildkitName, buildkitPort, []networkingv1.NetworkPolicyPeer{
-		systemPeer(in, ServerName),
+		systemPeer(in.Namespace, ServerName),
 	})
 }

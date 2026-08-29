@@ -10,7 +10,7 @@ import {
   useQueryClient,
   type UseQueryResult,
 } from '@tanstack/react-query'
-import { api } from './api'
+import { api, type ResourceRange, type TrafficRange, type TrafficSource } from './api'
 import { errText } from './ui'
 
 export const fleetQuery = queryOptions({
@@ -27,6 +27,33 @@ export const statusQuery = (space: string, app: string) =>
     queryKey: ['status', space, app],
     queryFn: () => api.status(space, app),
     refetchInterval: 10_000,
+  })
+
+export const buildsQuery = (space: string, app: string) =>
+  queryOptions({
+    queryKey: ['builds', space, app],
+    queryFn: () => api.builds(space, app),
+  })
+
+export const buildQuery = (space: string, app: string, sequence: number) =>
+  queryOptions({
+    queryKey: ['build', space, app, sequence],
+    queryFn: () => api.build(space, app, sequence),
+    staleTime: Infinity, // a stored build never changes
+  })
+
+export const trafficQuery = (space: string, app = '', source: TrafficSource = 'edge', range: TrafficRange = '30d') =>
+  queryOptions({
+    queryKey: ['traffic', space, app, source, range],
+    queryFn: () => api.traffic(space, app, source, range),
+    refetchInterval: 30_000,
+  })
+
+export const resourcesQuery = (space: string, app: string, range: ResourceRange = '4h') =>
+  queryOptions({
+    queryKey: ['resources', space, app, range],
+    queryFn: () => api.resources(space, app, range),
+    refetchInterval: 30_000,
   })
 
 // Doctor probes everything (build engine, registry, gateway, assistant) and
@@ -77,6 +104,22 @@ export function useFleet() {
 
 export function useAppStatus(space: string, app: string) {
   return present(useQuery(statusQuery(space, app)))
+}
+
+export function useAppBuilds(space: string, app: string) {
+  return present(useQuery(buildsQuery(space, app)))
+}
+
+export function useAppBuild(space: string, app: string, sequence: number | null) {
+  return present(useQuery({ ...buildQuery(space, app, sequence ?? 0), enabled: sequence !== null }))
+}
+
+export function useTraffic(space: string, app = '', source: TrafficSource = 'edge', range: TrafficRange = '30d') {
+  return present(useQuery(trafficQuery(space, app, source, range)))
+}
+
+export function useResources(space: string, app: string, range: ResourceRange = '4h') {
+  return present(useQuery(resourcesQuery(space, app, range)))
 }
 
 export function useDoctor() {

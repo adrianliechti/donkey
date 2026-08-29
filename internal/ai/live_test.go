@@ -15,7 +15,7 @@ import (
 // the other never means anything. Without it they skip, so an ordinary
 // `go test ./...` needs neither a key nor a network.
 //
-//	OPENAI_BASE_URL=http://localhost:8080/v1 OPENAI_API_KEY=… \
+//	OPENAI_BASE_URL=http://localhost:4242/v1 OPENAI_API_KEY=… \
 //	DONKEY_MODEL=claude-sonnet-5 go test ./internal/ai -run TestLive -v
 //
 // `task builder:write` is the same thing with the flags already set.

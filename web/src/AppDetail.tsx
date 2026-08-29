@@ -1,9 +1,11 @@
 import { useState } from 'react'
 import {
+  Activity,
   ExternalLink,
   FileText,
   HardDrive,
   KeyRound,
+  Rocket,
   RotateCw,
   ScrollText,
   SlidersHorizontal,
@@ -18,6 +20,8 @@ import { EnvEditor } from './EnvEditor'
 import { FilesPanel } from './FilesPanel'
 import { LogsPanel } from './LogsPanel'
 import { NetworkCard } from './NetworkCard'
+import { StoredRelease } from './StoredRelease'
+import { TrafficPanel } from './TrafficPanel'
 import { useAppStatus } from './queries'
 import {
   ago,
@@ -32,16 +36,17 @@ import {
   Spinner,
   StateChip,
   StatusDot,
-  UpdatedAgo,
 } from './ui'
 
 // The app panel slides over the fleet. Each tab is one job — glance, read,
 // browse, configure, change how it's reached — and the header that answers
 // "is it up?" stays above all of them.
-export type AppTab = 'overview' | 'logs' | 'files' | 'variables' | 'settings'
+export type AppTab = 'overview' | 'release' | 'traffic' | 'logs' | 'files' | 'variables' | 'settings'
 
 const TABS: { id: AppTab; label: string; icon: React.ReactNode }[] = [
   { id: 'overview', label: 'Overview', icon: <FileText className="size-4" aria-hidden /> },
+  { id: 'release', label: 'Deployment', icon: <Rocket className="size-4" aria-hidden /> },
+  { id: 'traffic', label: 'Telemetry', icon: <Activity className="size-4" aria-hidden /> },
   { id: 'logs', label: 'Logs', icon: <ScrollText className="size-4" aria-hidden /> },
   { id: 'files', label: 'Files', icon: <HardDrive className="size-4" aria-hidden /> },
   { id: 'variables', label: 'Variables', icon: <KeyRound className="size-4" aria-hidden /> },
@@ -61,7 +66,7 @@ export function AppDetail({
   onTab: (tab: AppTab) => void
   onBack: () => void
 }) {
-  const { data: status, error, updatedAt, reload } = useAppStatus(space, app)
+  const { data: status, error, reload } = useAppStatus(space, app)
   // The tab also comes from the URL, so it can name one that is not offered:
   // .../files for an app with no disk. Fall back rather than leave the panel
   // blank with nothing selected.
@@ -82,12 +87,12 @@ export function AppDetail({
                   <StatusDot health={healthOf(status.healthy, status.ready)} />
                   {healthLine[healthOf(status.healthy, status.ready)](status.ready)}
                 </span>
-                {status.startedAt && <span className="text-xs text-stone">up {ago(status.startedAt)}</span>}
+                {status.startedAt && <span className="text-xs text-muted">up {ago(status.startedAt)}</span>}
                 {(status.restarts ?? 0) > 0 && (
-                  <span className="text-xs text-brick">{status.restarts} restarts</span>
+                  <span className="text-xs text-danger">{status.restarts} restarts</span>
                 )}
                 {status.image && (
-                  <span className="hidden font-mono text-xs text-stone sm:inline">
+                  <span className="hidden font-mono text-xs text-muted sm:inline">
                     {status.image.split('/').pop()}
                   </span>
                 )}
@@ -95,12 +100,11 @@ export function AppDetail({
             )}
           </div>
           <div className="flex shrink-0 items-center gap-1.5">
-            <UpdatedAgo at={updatedAt} />
             <button
               onClick={onBack}
               title="Close (Esc)"
               aria-label="Close the app panel"
-              className="rounded-md p-1.5 text-stone hover:bg-raised hover:text-ink focus-visible:outline-2 focus-visible:outline-hay-deep"
+              className="rounded-md p-1.5 text-muted hover:bg-raised hover:text-ink focus-visible:outline-2 focus-visible:outline-accent-strong"
             >
               <X className="size-4" aria-hidden />
             </button>
@@ -109,6 +113,17 @@ export function AppDetail({
 
         {status?.found && (
           <div className="flex flex-wrap items-center gap-2 px-5 pt-3">
+            {status.url && (
+              <a
+                href={status.url}
+                target="_blank"
+                rel="noreferrer"
+                className="flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-sm font-semibold text-on-accent transition-colors hover:bg-accent-strong focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-strong"
+              >
+                Open app <ExternalLink className="size-3.5" aria-hidden />
+              </a>
+            )}
+            <RestartButton space={space} app={app} onRestarted={reload} />
             <Button
               kind="quiet"
               onClick={() => {
@@ -116,20 +131,9 @@ export function AppDetail({
               }}
             >
               <span className="flex items-center gap-1.5">
-                <UploadCloud className="size-3.5" aria-hidden /> Deploy update
+                <UploadCloud className="size-3.5" aria-hidden /> Deploy
               </span>
             </Button>
-            <RestartButton space={space} app={app} onRestarted={reload} />
-            {status.url && (
-              <a
-                href={status.url}
-                target="_blank"
-                rel="noreferrer"
-                className="flex items-center gap-1.5 rounded-md bg-hay px-3 py-1.5 text-sm font-semibold text-on-hay transition-colors hover:bg-hay-deep focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-hay-deep"
-              >
-                Open app <ExternalLink className="size-3.5" aria-hidden />
-              </a>
-            )}
           </div>
         )}
 
@@ -143,10 +147,10 @@ export function AppDetail({
                 role="tab"
                 aria-selected={shown === t.id}
                 onClick={() => onTab(t.id)}
-                className={`-mb-px flex shrink-0 items-center gap-1.5 border-b-2 px-3 py-2 text-sm transition-colors focus-visible:outline-2 focus-visible:outline-hay-deep ${
+                className={`-mb-px flex shrink-0 items-center gap-1.5 border-b-2 px-3 py-2 text-sm transition-colors focus-visible:outline-2 focus-visible:outline-accent-strong ${
                   shown === t.id
-                    ? 'border-hay font-medium text-ink'
-                    : 'border-transparent text-stone hover:border-line hover:text-ink'
+                    ? 'border-accent font-medium text-ink'
+                    : 'border-transparent text-muted hover:border-line hover:text-ink'
                 }`}
               >
                 {t.icon}
@@ -164,7 +168,7 @@ export function AppDetail({
         {status && !status.found && (
           <Card className="p-8 text-center">
             <h2 className="font-mono text-xl font-bold tracking-tight">{app}</h2>
-            <p className="mt-2 text-sm text-stone">
+            <p className="mt-2 text-sm text-muted">
               Nothing with this name is deployed in the space <span className="font-mono">{space}</span>.
             </p>
             <p className="mt-1 text-sm">
@@ -185,7 +189,9 @@ export function AppDetail({
                 <AddonsCard space={space} app={app} />
               </>
             )}
+            {shown === 'release' && <StoredRelease space={space} app={app} />}
             {shown === 'logs' && <LogsPanel space={space} app={app} />}
+            {shown === 'traffic' && <TrafficPanel space={space} app={app} />}
             {shown === 'files' && <FilesPanel space={space} app={app} />}
             {shown === 'variables' && <EnvEditor space={space} app={app} onSaved={reload} />}
             {shown === 'settings' && (
@@ -203,10 +209,10 @@ export function AppDetail({
 
 function InstancesCard({ pods }: { pods: string[] }) {
   return (
-    <Card className="p-4">
+    <section>
       <SectionTitle>Instances</SectionTitle>
       {pods.length === 0 ? (
-        <p className="mt-2 text-sm text-stone">
+        <p className="mt-2 text-sm text-muted">
           No instances running — the app may be starting, or its rollout is stuck. The logs usually
           say why.
         </p>
@@ -227,7 +233,7 @@ function InstancesCard({ pods }: { pods: string[] }) {
           })}
         </ul>
       )}
-    </Card>
+    </section>
   )
 }
 
@@ -250,7 +256,7 @@ function RestartButton({ space, app, onRestarted }: { space: string; app: string
 
   return (
     <div className="flex items-center gap-2">
-      {error && <span className="text-xs text-brick">{error}</span>}
+      {error && <span className="text-xs text-danger">{error}</span>}
       <Button kind="quiet" onClick={restart} disabled={busy}>
         <span className="flex items-center gap-1.5">
           <RotateCw className={`size-3.5 ${busy ? 'animate-spin' : ''}`} aria-hidden />

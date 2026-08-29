@@ -22,13 +22,18 @@ type AppGatewayConfig struct {
 
 func (c AppGatewayConfig) Enabled() bool { return c.ClassName != "" }
 
-func AppEdgeName(app string) string { return "donkey-app-" + app }
+// AppEdgeName is globally unique inside an installation's system namespace.
+// App workload names are plain in the namespace-per-space placement, so an
+// edge name based on the app alone would make "shop" in two spaces overwrite
+// the same Certificate, Gateway and HTTPRoute. Dots are unambiguous here:
+// donkey's logical names may contain dashes, but never dots.
+func AppEdgeName(space, app string) string { return "donkey-app-" + space + "." + app }
 
-func AppGatewayName(namespace, app string) string {
-	return fmt.Sprintf("%s-%s-gw", namespace, app)
+func AppGatewayName(namespace, space, app string) string {
+	return fmt.Sprintf("%s.%s-gw", namespace, AppEdgeName(space, app))
 }
 
-func AppCertificateSecretName(app string) string { return AppEdgeName(app) + "-tls" }
+func AppCertificateSecretName(space, app string) string { return AppEdgeName(space, app) + "-tls" }
 
 // AppGatewayObjects returns the optional external edge for an app. It is
 // exported because both a deploy and a console network change render the same
@@ -39,12 +44,10 @@ func AppGatewayObjects(in Input) []runtime.Object {
 		return nil
 	}
 
-	name := AppEdgeName(in.Name())
-	edgeLabels := Labels(in.Space, in.Name(), "edge")
-	// cert-manager copies secretTemplate labels to the generated TLS Secret;
-	// include the installation stamp because Client.stampInstance only sees
-	// the Certificate's top-level metadata.
-	edgeLabels[LabelInstance] = in.AppGateway.Namespace
+	name := AppEdgeName(in.Space, in.App.Name)
+	edgeLabels := Labels(in.Space, in.App.Name, RoleEdge)
+	// cert-manager copies secretTemplate labels to the generated TLS Secret.
+	// The apply/render boundary adds the installation label to both maps.
 	labels := toAnyMap(edgeLabels)
 	issuerKind := in.AppGateway.IssuerKind
 	if issuerKind == "" {
@@ -57,7 +60,7 @@ func AppGatewayObjects(in Input) []runtime.Object {
 	parent := map[string]any{
 		"group": "gateway.networking.k8s.io",
 		"kind":  "Gateway",
-		"name":  AppGatewayName(in.AppGateway.Namespace, in.Name()),
+		"name":  AppGatewayName(in.AppGateway.Namespace, in.Space, in.App.Name),
 	}
 	if in.AppGateway.RouteNamespace != "" {
 		parent["namespace"] = in.AppGateway.RouteNamespace
@@ -72,7 +75,7 @@ func AppGatewayObjects(in Input) []runtime.Object {
 			"labels":    labels,
 		},
 		"spec": map[string]any{
-			"secretName": AppCertificateSecretName(in.Name()),
+			"secretName": AppCertificateSecretName(in.Space, in.App.Name),
 			"secretTemplate": map[string]any{
 				"labels": labels,
 			},
@@ -92,7 +95,7 @@ func AppGatewayObjects(in Input) []runtime.Object {
 		"apiVersion": "gateway.networking.k8s.io/v1",
 		"kind":       "Gateway",
 		"metadata": map[string]any{
-			"name":      AppGatewayName(in.AppGateway.Namespace, in.Name()),
+			"name":      AppGatewayName(in.AppGateway.Namespace, in.Space, in.App.Name),
 			"namespace": in.AppGateway.Namespace,
 			"labels":    labels,
 		},
@@ -110,7 +113,7 @@ func AppGatewayObjects(in Input) []runtime.Object {
 							map[string]any{
 								"group": "",
 								"kind":  "Secret",
-								"name":  AppCertificateSecretName(in.Name()),
+								"name":  AppCertificateSecretName(in.Space, in.App.Name),
 							},
 						},
 					},
@@ -122,7 +125,7 @@ func AppGatewayObjects(in Input) []runtime.Object {
 							"from": "Selector",
 							"selector": map[string]any{
 								"matchLabels": map[string]any{
-									"kubernetes.io/metadata.name": in.AppGateway.Namespace,
+									LabelNamespaceName: in.AppGateway.Namespace,
 								},
 							},
 						},

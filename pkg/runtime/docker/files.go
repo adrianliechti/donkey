@@ -53,27 +53,55 @@ func filesHelperName(space, app string) string { return ctrName(space, app) + ".
 // filesHelper returns a running helper container for the app's disk,
 // starting one if needed.
 func (r *Runtime) filesHelper(ctx context.Context, space, app string) (string, error) {
-	if _, err := r.cli.VolumeInspect(ctx, volName(space, app)); err != nil {
+	volume, err := r.cli.VolumeInspect(ctx, volName(space, app))
+	if err != nil {
 		// Tell the two "nothing to browse" cases apart.
-		if _, cerr := r.cli.ContainerInspect(ctx, ctrName(space, app)); cerrdefs.IsNotFound(cerr) {
+		appInfo, containerErr := r.cli.ContainerInspect(ctx, ctrName(space, app))
+		if cerrdefs.IsNotFound(containerErr) {
 			return "", rt.ErrNotDeployed
 		}
+		if !cerrdefs.IsNotFound(err) {
+			return "", err
+		}
+		if containerErr != nil {
+			return "", containerErr
+		}
+		if appInfo.Config == nil {
+			return "", fmt.Errorf("the Docker container %s has no inspectable configuration", ctrName(space, app))
+		}
+		if err := requireIdentity("container", ctrName(space, app), appInfo.Config.Labels,
+			appLabels(space, app, roleWorkload)); err != nil {
+			return "", err
+		}
 		return "", rt.ErrNoDisk
+	}
+	if err := requireIdentity("volume", volName(space, app), volume.Labels,
+		appLabels(space, app, roleStorage)); err != nil {
+		return "", err
 	}
 	name := filesHelperName(space, app)
 	info, err := r.cli.ContainerInspect(ctx, name)
 	if err == nil && info.State != nil && info.State.Running {
+		if info.Config == nil {
+			return "", fmt.Errorf("the Docker container %s has no inspectable configuration", name)
+		}
+		if err := requireIdentity("container", name, info.Config.Labels,
+			appLabels(space, app, roleFiles)); err != nil {
+			return "", err
+		}
 		return name, nil
 	}
 	if err == nil {
-		if err := r.removeContainer(ctx, name); err != nil {
+		if err := r.removeOwnedContainer(ctx, name, appLabels(space, app, roleFiles)); err != nil {
 			return "", err
 		}
+	} else if !cerrdefs.IsNotFound(err) {
+		return "", err
 	}
 	if err := r.pullImage(ctx, filesImage); err != nil {
 		return "", err
 	}
-	labels := appLabels(space, app, "files")
+	labels := appLabels(space, app, roleFiles)
 	_, err = r.cli.ContainerCreate(ctx, &container.Config{
 		Image: filesImage,
 		// The helper stops by itself: browsing files once must not leave a
@@ -86,8 +114,20 @@ func (r *Runtime) filesHelper(ctx context.Context, space, app string) (string, e
 			Type: mount.TypeVolume, Source: volName(space, app), Target: filesMount,
 		}},
 	}, nil, nil, name)
-	if err != nil && !strings.Contains(err.Error(), "already in use") {
-		return "", fmt.Errorf("opening the app's disk: %w", err)
+	if err != nil {
+		if !strings.Contains(err.Error(), "already in use") {
+			return "", fmt.Errorf("opening the app's disk: %w", err)
+		}
+		info, inspectErr := r.cli.ContainerInspect(ctx, name)
+		if inspectErr != nil {
+			return "", inspectErr
+		}
+		if info.Config == nil {
+			return "", fmt.Errorf("the Docker container %s has no inspectable configuration", name)
+		}
+		if err := requireIdentity("container", name, info.Config.Labels, labels); err != nil {
+			return "", err
+		}
 	}
 	if err := r.cli.ContainerStart(ctx, name, container.StartOptions{}); err != nil {
 		return "", err

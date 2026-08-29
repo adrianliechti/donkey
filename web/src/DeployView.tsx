@@ -10,12 +10,12 @@
 // read once.
 import { useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { CheckCircle2, ExternalLink, FileArchive, FolderUp, Loader2, UploadCloud } from 'lucide-react'
+import { FileArchive, FolderUp, Loader2, UploadCloud } from 'lucide-react'
 import { zipSync } from 'fflate'
-import { api, type DeployResult, type Plan, type PlanEdit } from './api'
-import { Button, Card, ErrorNote, errText, SectionTitle } from './ui'
-import { DiffView } from './DiffView'
+import { api, type DeployResult, type DeployUpdate, type Plan, type PlanEdit } from './api'
+import { Card, ErrorNote, errText, SectionTitle } from './ui'
 import { PlanReview } from './PlanReview'
+import { ReleaseView } from './ReleaseView'
 import { fleetQuery, useFleet } from './queries'
 
 // The same exclusions the CLI applies while packing — a browser upload
@@ -200,15 +200,17 @@ function zipUpload(file: File): Upload {
   }
 }
 
+type ReviewPhase = { step: 'review'; upload: Upload; blob: Blob; plan: Plan }
+
 type Phase =
   | { step: 'pick' }
   // Several apps in one drop: which one is a question only the person
   // dropping can answer, and it has to be answered before the upload.
   | { step: 'root'; upload: Upload }
   | { step: 'reading'; upload: Upload }
-  | { step: 'review'; upload: Upload; blob: Blob; plan: Plan }
+  | ReviewPhase
   | { step: 'deploying'; plan: Plan }
-  | { step: 'done'; result: DeployResult }
+  | { step: 'done'; result: DeployResult; plan: Plan; review: ReviewPhase }
 
 export function DeployView({
   space,
@@ -223,6 +225,7 @@ export function DeployView({
   const [dragOver, setDragOver] = useState(false)
   const [lines, setLines] = useState<string[]>([])
   const [buildLog, setBuildLog] = useState('')
+  const [releaseUpdate, setReleaseUpdate] = useState<DeployUpdate>({ stage: 'detecting' })
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const fileInput = useRef<HTMLInputElement>(null)
@@ -279,6 +282,7 @@ export function DeployView({
   async function deploy(at: Extract<Phase, { step: 'review' }>, edit: PlanEdit) {
     setBusy(true)
     setError('')
+    let review = at
     try {
       // The answers go up one last time, so what deploys is exactly what the
       // screen showed — including anything typed in the last 400ms.
@@ -288,30 +292,46 @@ export function DeployView({
         setError('Something still blocks this deploy — see the checks above.')
         return
       }
+      review = { ...at, plan: settled }
       setLines([])
       setBuildLog('')
+      setReleaseUpdate({ stage: 'detecting', baseImages: settled.build.baseImages })
       setPhase({ step: 'deploying', plan: settled })
       const result = await api.deployUpload(
         at.blob,
         { plan: settled.id },
         (line) => setLines((prev) => [...prev, line]),
         (progress) => setBuildLog((prev) => prev + progress),
+        (update) =>
+          setReleaseUpdate((prev) => ({
+            ...prev,
+            ...update,
+            baseImages: update.baseImages ?? prev.baseImages,
+          })),
       )
       queryClient.invalidateQueries({ queryKey: fleetQuery.queryKey })
-      setPhase({ step: 'done', result })
+      queryClient.invalidateQueries({ queryKey: ['status', result.space ?? settled.app.space, result.app] })
+      queryClient.invalidateQueries({ queryKey: ['release', result.space ?? settled.app.space, result.app] })
+      setPhase({ step: 'done', result, plan: settled, review })
     } catch (err) {
       // The plan and the packed project are both still here, so the way back
       // is the review screen — not the drop zone the folder came from.
       setError(errText(err, 'The deploy did not work.'))
-      setPhase(at)
+      setPhase(review)
     } finally {
       setBusy(false)
     }
   }
 
   return (
-    <div className="mx-auto max-w-2xl space-y-5">
-      <h1 className="text-lg font-semibold">Deploy</h1>
+    <div
+      className={`mx-auto space-y-5 ${phase.step === 'deploying' || phase.step === 'done' ? 'max-w-6xl' : 'max-w-2xl'}`}
+    >
+      <h1 className="text-lg font-semibold">
+        {phase.step === 'deploying' || phase.step === 'done'
+          ? `Release ${phase.plan.app.name}`
+          : 'Deploy'}
+      </h1>
 
       {(phase.step === 'pick' || phase.step === 'root') && (
         <>
@@ -334,24 +354,24 @@ export function DeployView({
               const items = e.dataTransfer.items
               if (items.length > 0) accept(() => uploadFromDrop(items, buffers.current))
             }}
-            className={`flex cursor-pointer flex-col items-center gap-2 rounded-lg border-2 border-dashed p-10 text-center transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-hay-deep ${
-              dragOver ? 'border-hay-deep bg-hay-wash' : 'border-line bg-card hover:bg-hay-wash/50'
+            className={`flex cursor-pointer flex-col items-center gap-2 rounded-lg border-2 border-dashed p-10 text-center transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-strong ${
+              dragOver ? 'border-accent-strong bg-accent-soft' : 'border-line bg-card hover:bg-accent-soft/50'
             }`}
           >
-            <UploadCloud className="size-8 text-hay-deep" aria-hidden />
+            <UploadCloud className="size-8 text-accent-strong" aria-hidden />
             {phase.step === 'root' ? (
               <p className="flex items-center gap-2 font-mono text-sm">
                 {/\.zip/.test(phase.upload.label) ? (
-                  <FileArchive className="size-4 text-stone" aria-hidden />
+                  <FileArchive className="size-4 text-muted" aria-hidden />
                 ) : (
-                  <FolderUp className="size-4 text-stone" aria-hidden />
+                  <FolderUp className="size-4 text-muted" aria-hidden />
                 )}
                 {phase.upload.label}
               </p>
             ) : (
               <>
                 <p className="text-sm font-medium">Drop your project folder or a .zip here</p>
-                <p className="text-xs text-stone">
+                <p className="text-xs text-muted">
                   Donkey reads the code first — the port, the folders that hold data, the services it
                   needs — and shows you what it found before anything is built.
                 </p>
@@ -373,7 +393,7 @@ export function DeployView({
           {phase.step === 'root' && (
             <Card className="p-4">
               <SectionTitle>Which app do you want to deploy?</SectionTitle>
-              <p className="mt-1 text-xs text-stone">
+              <p className="mt-1 text-xs text-muted">
                 This drop holds several. Only the chosen folder is uploaded and read.
               </p>
               <div className="mt-3 space-y-1.5">
@@ -381,10 +401,10 @@ export function DeployView({
                   <button
                     key={r.dir}
                     onClick={() => read(phase.upload, r.dir)}
-                    className="flex w-full items-center justify-between gap-2 rounded-md border border-line px-3 py-2 text-left text-sm hover:border-line-bright hover:bg-raised"
+                    className="flex w-full items-center justify-between gap-2 rounded-md border border-line px-3 py-2 text-left text-sm hover:border-line-strong hover:bg-raised"
                   >
                     <span className="font-mono">{r.dir === '' ? '/ (the whole drop)' : r.dir + '/'}</span>
-                    {r.hasConfig && <span className="text-xs text-stone">has donkey.yaml</span>}
+                    {r.hasConfig && <span className="text-xs text-muted">has donkey.yaml</span>}
                   </button>
                 ))}
               </div>
@@ -392,7 +412,7 @@ export function DeployView({
           )}
 
           {phase.step === 'root' && phase.upload.skipped.length > 0 && (
-            <p className="text-xs text-stone">
+            <p className="text-xs text-muted">
               Left behind (secret-shaped or excluded): {phase.upload.skipped.slice(0, 4).join(', ')}
               {phase.upload.skipped.length > 4 && ` and ${phase.upload.skipped.length - 4} more`}
             </p>
@@ -405,10 +425,10 @@ export function DeployView({
       {phase.step === 'reading' && (
         <Card className="space-y-2 p-6">
           <p className="flex items-center gap-2 text-sm">
-            <Loader2 className="size-4 animate-spin text-hay" aria-hidden />
+            <Loader2 className="size-4 animate-spin text-accent" aria-hidden />
             Reading <span className="font-mono">{phase.upload.label}</span>…
           </p>
-          <p className="text-xs text-stone">
+          <p className="text-xs text-muted">
             Donkey is detecting how to build it and reading the source for the things no detector can
             see — which port it listens on, which folders must survive a restart, which services it
             expects. This takes a moment.
@@ -432,82 +452,31 @@ export function DeployView({
       )}
 
       {phase.step === 'deploying' && (
-        <Card className="space-y-2 p-4">
-          <SectionTitle>Deploying {phase.plan.app.name}…</SectionTitle>
-          <ul className="space-y-1 text-sm">
-            {lines.map((line, i) => (
-              <li key={i}>{line}</li>
-            ))}
-          </ul>
-          {buildLog && (
-            <details className="text-xs">
-              <summary className="cursor-pointer text-stone">Build output</summary>
-              <pre className="mt-1 max-h-64 overflow-auto rounded bg-ink-well p-2 font-mono text-parchment whitespace-pre-wrap">
-                {buildLog}
-              </pre>
-            </details>
-          )}
-          <ErrorNote message={error} />
-        </Card>
+        <ReleaseView
+          plan={phase.plan}
+          lines={lines}
+          buildLog={buildLog}
+          update={releaseUpdate}
+        />
       )}
 
       {phase.step === 'done' && (
-        <Card className={`space-y-3 p-5 ${phase.result.ok ? 'border-moss/40' : 'border-brick/40'}`}>
-          {phase.result.ok ? (
-            <>
-              <p className="flex items-center gap-2 text-sm font-medium text-moss">
-                <CheckCircle2 className="size-4" aria-hidden />
-                {phase.result.app} is running.
-              </p>
-              {phase.result.url && (
-                <a
-                  href={phase.result.url}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="flex w-fit items-center gap-1.5 font-mono text-sm text-hay-deep hover:underline"
-                >
-                  {phase.result.url} <ExternalLink className="size-3.5" aria-hidden />
-                </a>
-              )}
-              <div className="flex gap-2">
-                <Button onClick={() => onDeployed(phase.result.space ?? 'default', phase.result.app)}>
-                  Open the app page
-                </Button>
-                <Button kind="quiet" onClick={() => setPhase({ step: 'pick' })}>
-                  Deploy another
-                </Button>
-              </div>
-            </>
-          ) : (
-            <>
-              <ErrorNote message={phase.result.error ?? 'The deploy did not work.'} />
-              {phase.result.diagnosis && (
-                <p className="text-sm">
-                  <span className="font-medium">What happened: </span>
-                  {phase.result.diagnosis}
-                </p>
-              )}
-              {/* The change itself, not a description of it. A browser deploy
-                  has no folder to write back to, so this is something to copy
-                  into the project — which only works if it is all here. */}
-              {(phase.result.proposals ?? []).map((p, i) => (
-                <div key={i} className="rounded-md border border-line bg-card px-3 py-2 text-sm">
-                  {p.type === 'set_env' && (
-                    <code className="font-mono text-xs">
-                      donkey env set {p.key}={p.value}
-                    </code>
-                  )}
-                  {p.type === 'edit_file' && <span className="font-mono text-xs">{p.path}</span>}
-                  <p className="mt-0.5 text-xs text-ink-soft">{p.explanation}</p>
-                  {p.diff && <DiffView diff={p.diff} />}
-                </div>
-              ))}
-              <Button kind="quiet" onClick={() => setPhase({ step: 'pick' })}>
-                Try again
-              </Button>
-            </>
-          )}
-        </Card>
+        <ReleaseView
+          plan={phase.plan}
+          lines={lines}
+          buildLog={buildLog}
+          update={releaseUpdate}
+          result={phase.result}
+          onOpen={() => onDeployed(phase.result.space ?? 'default', phase.result.app)}
+          onBackToReview={() => {
+            setError('')
+            setPhase(phase.review)
+          }}
+          onDeployAnother={() => {
+            setError('')
+            setPhase({ step: 'pick' })
+          }}
+        />
       )}
     </div>
   )

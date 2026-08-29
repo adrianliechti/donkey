@@ -22,8 +22,10 @@ import (
 func serverCommand() *cli.Command {
 	return &cli.Command{
 		Name:  "server",
-		Usage: "manage the donkey control plane in your cluster",
+		Usage: "configure and deploy the donkey control plane",
 		Commands: []*cli.Command{
+			serverInitCommand(),
+			serverRenderCommand(),
 			serverInstallCommand(),
 		},
 	}
@@ -35,41 +37,55 @@ func serverCommand() *cli.Command {
 // Re-running with changed settings updates the installation (server-side apply).
 func serverInstallCommand() *cli.Command {
 	return &cli.Command{
-		Name:  "install",
-		Usage: "install (or update) the donkey control plane into an existing cluster",
-		Flags: []cli.Flag{
-			&cli.StringFlag{Name: "file", Aliases: []string{"f"}, Usage: "settings file (see docs); flags override individual values"},
-			&cli.StringFlag{Name: "runtime", Usage: "where donkey runs apps: kubernetes (default) or docker (straight on a Docker engine, no cluster)"},
-			&cli.StringFlag{Name: "image", Usage: "donkey-server image reference (pullable by the cluster)"},
-			&cli.StringFlag{Name: "buildkit-image", Usage: "build engine image (default: a digest-pinned moby/buildkit)"},
-			&cli.StringFlag{Name: "registry-url", Usage: "registry prefix for app images, as reachable FROM the cluster"},
-			&cli.StringFlag{Name: "registry-username", Usage: "registry login"},
-			&cli.BoolFlag{Name: "registry-insecure", Usage: "registry is plain HTTP (local/testing)"},
-			&cli.BoolFlag{Name: "registry-immutable", Usage: "registry refuses to overwrite tags (ECR/GHCR/Harbor immutability) — donkey then makes every tag unique"},
-			&cli.StringFlag{Name: "registry-ca-secret", Usage: "secret in donkey-system holding ca.crt of the registry's certificate authority"},
-			&cli.StringFlag{Name: "domain", Usage: "apps become <app>.<space>.<domain>"},
-			&cli.StringFlag{Name: "server-host", Usage: "hostname of the API and console (default: the domain itself)"},
-			&cli.StringFlag{Name: "gateway-service-type", Usage: "service type traffic enters through: LoadBalancer (default), ClusterIP or NodePort (clusters without a load-balancer controller, e.g. kind)"},
-			&cli.StringFlag{Name: "default-platform", Usage: "build platform of the cluster nodes (default linux/amd64)"},
-			&cli.BoolFlag{Name: "no-verify", Usage: "skip running a freshly built image to check it starts"},
-			&cli.StringFlag{Name: "https-proxy", Usage: "forward proxy for donkey-server and the build engine"},
-			&cli.StringFlag{Name: "no-proxy", Usage: "hosts that bypass the forward proxy, comma-separated"},
-			&cli.StringFlag{Name: "tls-mode", Usage: "how the gateway gets certificates: acme (default), ca (built-in CA for local/internal installs) or none (behind a TLS-terminating cluster gateway)"},
-			&cli.StringFlag{Name: "acme-email", Usage: "ACME account contact for expiry warnings (tls-mode acme)"},
-			&cli.StringFlag{Name: "acme-directory", Usage: "ACME endpoint override, e.g. Let's Encrypt staging (tls-mode acme)"},
-			&cli.StringFlag{Name: "oidc-issuer", Usage: "OIDC issuer for the login gateway (e.g. Entra ID); empty = no gateway"},
-			&cli.StringFlag{Name: "oidc-client-id", Usage: "OIDC client id for the gateway"},
-			&cli.StringFlag{Name: "oidc-client-secret", Usage: "OIDC client secret (or $DONKEY_OIDC_CLIENT_SECRET)"},
-			&cli.StringFlag{Name: "openai-base-url", Usage: "OpenAI-compatible endpoint for AI assistance (as reachable FROM the cluster)"},
-			&cli.StringFlag{Name: "openai-api-key", Usage: "API key for AI assistance (or $OPENAI_API_KEY)"},
-			&cli.StringFlag{Name: "ai-model", Usage: "model for AI assistance"},
-		},
+		Name:   "install",
+		Usage:  "install (or update) the donkey control plane into an existing cluster",
+		Flags:  serverSettingsFlags(),
 		Action: serverInstallAction,
+	}
+}
+
+// serverSettingsFlags returns fresh flag values for every command which reads
+// an install file. urfave keeps parsing state on a Flag, so sharing the slice
+// itself between install and render would make one command affect the other.
+func serverSettingsFlags() []cli.Flag {
+	return []cli.Flag{
+		&cli.StringFlag{Name: "file", Aliases: []string{"f"}, Usage: "settings file (see docs); flags override individual values"},
+		&cli.StringFlag{Name: "runtime", Usage: "where donkey runs apps: kubernetes (default) or docker (straight on a Docker engine, no cluster)"},
+		&cli.StringFlag{Name: "image", Usage: "donkey-server image reference (pullable by the cluster)"},
+		&cli.StringFlag{Name: "buildkit-image", Usage: "build engine image (default: a digest-pinned moby/buildkit)"},
+		&cli.StringFlag{Name: "registry-url", Usage: "registry prefix for app images, as reachable FROM the cluster"},
+		&cli.StringFlag{Name: "registry-username", Usage: "registry login"},
+		&cli.BoolFlag{Name: "registry-insecure", Usage: "registry is plain HTTP (local/testing)"},
+		&cli.BoolFlag{Name: "registry-immutable", Usage: "registry refuses to overwrite tags (ECR/GHCR/Harbor immutability) — donkey then makes every tag unique"},
+		&cli.StringFlag{Name: "registry-ca-secret", Usage: "secret in donkey-system holding ca.crt of the registry's certificate authority"},
+		&cli.StringFlag{Name: "domain", Usage: "apps become <app>.<space>.<domain>"},
+		&cli.StringFlag{Name: "server-host", Usage: "hostname of the API and console (default: the domain itself)"},
+		&cli.StringFlag{Name: "gateway-service-type", Usage: "service type traffic enters through: LoadBalancer (default), ClusterIP or NodePort (clusters without a load-balancer controller, e.g. kind)"},
+		&cli.StringFlag{Name: "default-platform", Usage: "build platform of the cluster nodes (default linux/amd64)"},
+		&cli.BoolFlag{Name: "no-verify", Usage: "skip running a freshly built image to check it starts"},
+		&cli.StringFlag{Name: "https-proxy", Usage: "forward proxy for donkey-server and the build engine"},
+		&cli.StringFlag{Name: "no-proxy", Usage: "hosts that bypass the forward proxy, comma-separated"},
+		&cli.StringFlag{Name: "tls-mode", Usage: "how the gateway gets certificates: acme (default), ca (built-in CA for local/internal installs) or none (behind a TLS-terminating cluster gateway)"},
+		&cli.StringFlag{Name: "acme-email", Usage: "ACME account contact for expiry warnings (tls-mode acme)"},
+		&cli.StringFlag{Name: "acme-directory", Usage: "ACME endpoint override, e.g. Let's Encrypt staging (tls-mode acme)"},
+		&cli.StringFlag{Name: "oidc-issuer", Usage: "OIDC issuer for the login gateway (e.g. Entra ID); empty = no gateway"},
+		&cli.StringFlag{Name: "oidc-client-id", Usage: "OIDC client id for the gateway"},
+		&cli.StringFlag{Name: "oidc-client-secret", Usage: "OIDC client secret (or $DONKEY_OIDC_CLIENT_SECRET)"},
+		&cli.StringFlag{Name: "openai-base-url", Usage: "OpenAI-compatible endpoint for AI assistance (as reachable FROM the cluster)"},
+		&cli.StringFlag{Name: "openai-api-key", Usage: "API key for AI assistance (or $OPENAI_API_KEY)"},
+		&cli.StringFlag{Name: "ai-model", Usage: "model for AI assistance"},
 	}
 }
 
 // installSettings merges the settings file with flag overrides.
 func installSettings(cmd *cli.Command) (*config.InstallFile, error) {
+	return loadInstallSettings(cmd, true)
+}
+
+// loadInstallSettings can leave the process environment's secrets unresolved
+// for offline rendering. Explicit file/flag values are still parsed so they
+// can be validated, but the renderer replaces them before producing output.
+func loadInstallSettings(cmd *cli.Command, resolveSecretEnv bool) (*config.InstallFile, error) {
 	settings := &config.InstallFile{}
 	if path := cmd.String("file"); path != "" {
 		loaded, err := config.LoadInstallFile(path)
@@ -113,7 +129,10 @@ func installSettings(cmd *cli.Command) (*config.InstallFile, error) {
 	if cmd.Bool("registry-immutable") {
 		settings.Registry.Immutable = true
 	}
-	// Secrets may come from env instead of file/flags.
+	if !resolveSecretEnv {
+		return settings, nil
+	}
+	// Secrets may come from env instead of file/flags for a live install.
 	if settings.Auth.ClientSecret == "" {
 		settings.Auth.ClientSecret = os.Getenv("DONKEY_OIDC_CLIENT_SECRET")
 	}
@@ -144,53 +163,7 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 	default:
 		return fmt.Errorf("runtime must be kubernetes or docker, not %q", settings.Runtime)
 	}
-	// Everything checkable without the cluster is checked first — a missing
-	// kubeconfig must not hide the list of missing settings.
-	if missing := missingSettings(settings, false); len(missing) > 0 {
-		return fmt.Errorf("these settings are required (via -f file or flags): %v", missing)
-	}
-	if err := settings.Registry.Validate(); err != nil {
-		return err
-	}
-	if err := settings.Registry.ValidateRuntime("kubernetes"); err != nil {
-		return err
-	}
-	switch settings.Gateway.ServiceType {
-	case "", "LoadBalancer", "ClusterIP", "NodePort":
-	default:
-		return fmt.Errorf("gateway.serviceType must be LoadBalancer, ClusterIP or NodePort, not %q", settings.Gateway.ServiceType)
-	}
-	if err := settings.TLS.Validate(); err != nil {
-		return err
-	}
-	if err := settings.Gateway.HTTPRoute.Validate(); err != nil {
-		return err
-	}
-	if err := settings.Gateway.AppGateway.Validate(); err != nil {
-		return err
-	}
-	// The central login callback lives on the server host, and its session
-	// cookie's domain is the base domain — a server host outside it could
-	// never complete a login.
-	if h := settings.ServerHost; h != "" && h != settings.Domain && !strings.HasSuffix(h, "."+settings.Domain) {
-		return fmt.Errorf("serverHost %q must be the domain %q or a name under it", h, settings.Domain)
-	}
-	if err := settings.Auth.Admins.Validate(); err != nil {
-		return fmt.Errorf("auth.admins: %w", err)
-	}
-	if err := settings.Build.Validate(); err != nil {
-		return err
-	}
-	if err := settings.Build.Packages.ValidateRuntime("kubernetes"); err != nil {
-		return err
-	}
-	if err := settings.AddonImages.Validate(); err != nil {
-		return err
-	}
-	if err := config.ValidateAddonImagePullSecrets(settings.AddonImagePullSecrets); err != nil {
-		return err
-	}
-	if err := settings.Kubernetes.Validate(); err != nil {
+	if err := validateKubernetesSettings(settings); err != nil {
 		return err
 	}
 
@@ -203,10 +176,10 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 		return fmt.Errorf("the cluster (context %q) didn't answer — donkey installs into an existing cluster: %w", kubeContext, err)
 	}
 	// Everything applied from here carries this installation's identity. An
-	// unbound client would stamp the default instance — and the objects of a
+	// unbound client would stamp the default installation — and the objects of a
 	// second installation would then belong, as far as every sweep is
 	// concerned, to the first.
-	client = client.ForInstance(settings.Kubernetes.SystemNamespace())
+	client = client.WithInstallation(settings.Kubernetes.SystemNamespace())
 
 	// Keep existing secrets on re-installs: a re-run without the secret env
 	// vars must not blank what the installation depends on. A read error is
@@ -220,7 +193,8 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 	if err := checkOptionalCRDs(ctx, client, settings); err != nil {
 		return err
 	}
-	existing, err := client.GetSecretData(ctx, systemNamespace, "donkey-system-config")
+	existing, err := client.GetOwnedSecretData(ctx, systemNamespace, manifests.SystemConfigSecretName,
+		manifests.SystemLabels(manifests.ServerName))
 	if err != nil {
 		return fmt.Errorf("couldn't read the existing installation's secrets: %w", err)
 	}
@@ -249,15 +223,6 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 	// every user out of every app and revokes every `donkey login`.
 	if len(existing) == 0 && nsPlan.SkipSystemNamespace {
 		u.Warn("No existing donkey installation in %s. This creates a new one — a new session key, so any installation elsewhere keeps its own and everyone signed in here would have to sign in again.", systemNamespace)
-	}
-	// Only an upgrade may claim what the previous version left unstamped. A
-	// new installation standing up beside an old one shares nothing with it,
-	// even when both map spaces onto the same names — the control plane it
-	// finds here is what makes the old resources this installation's.
-	if len(existing) > 0 {
-		if err := claimPrevious(ctx, u, client, settings.Kubernetes); err != nil {
-			return err
-		}
 	}
 	registryUsername, registryPassword, err := settings.Registry.Credentials()
 	if err != nil {
@@ -308,59 +273,20 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 			return err
 		}
 	}
-	in := manifests.SystemInput{
-		Namespace:            systemNamespace,
-		SkipNamespace:        nsPlan.SkipSystemNamespace,
-		WorkloadNamespace:    settings.Kubernetes.Workload.Namespace,
-		NamespacePrefix:      settings.Kubernetes.NamespacePrefix(),
-		ServerImage:          settings.Image,
-		Domain:               settings.Domain,
-		ServerHostname:       settings.ServerHost,
-		GatewayServiceType:   settings.Gateway.ServiceType,
-		GatewayHTTPNodePort:  settings.Gateway.HTTPNodePort,
-		GatewayHTTPSNodePort: settings.Gateway.HTTPSNodePort,
-		TLSMode:              settings.TLS.Mode,
-		ACMEEmail:            settings.TLS.Email,
-		ACMEDirectory:        settings.TLS.Directory,
-		HTTPRouteGateway: manifests.GatewayRef{
-			Name:        settings.Gateway.HTTPRoute.Name,
-			Namespace:   settings.Gateway.HTTPRoute.Namespace,
-			SectionName: settings.Gateway.HTTPRoute.SectionName,
-		},
-		AppGateway:                 settings.Gateway.AppGateway,
-		RegistryURL:                settings.Registry.URL,
-		RegistryUsername:           registryUsername,
-		RegistryCASecret:           settings.Registry.CASecret,
-		RegistryDockerConfigSecret: settings.Registry.DockerConfigSecret,
-		RegistryPassword:           registryPassword,
-		RegistryInsecure:           settings.Registry.Insecure,
-		RegistryImmutable:          settings.Registry.Immutable,
-		Admins:                     settings.Auth.Admins,
-		OIDCIssuer:                 settings.Auth.Issuer,
-		OIDCClientID:               settings.Auth.ClientID,
-		OIDCClientSecret:           settings.Auth.ClientSecret,
-		SessionKey:                 sessionKey,
-		DefaultPlatform:            settings.DefaultPlatform,
-		OpenAIBaseURL:              settings.AI.BaseURL,
-		OpenAIAPIKey:               settings.AI.APIKey,
-		AIModel:                    settings.AI.Model,
-		Build:                      settings.Build,
-		AddonImages:                settings.AddonImages,
-		AddonImagePullSecrets:      settings.AddonImagePullSecrets,
-		BuildkitImage:              settings.BuildkitImage,
+	// Exporters live longer than login sessions. Keep their root credential
+	// stable across re-installs and separate from deliberate session rotation.
+	telemetryKey := existing["telemetry-key"]
+	if telemetryKey == "" {
+		if telemetryKey, err = randomHexKey(); err != nil {
+			return err
+		}
 	}
-	if in.BuildkitImage == "" {
-		in.BuildkitImage = config.DefaultBuildkitImage
-	}
-	if in.OIDCClientID == "" {
-		in.OIDCClientID = pendingOIDC
-		in.OIDCClientSecret = pendingOIDC
-	}
+	in := kubernetesSystemInput(settings, nsPlan.SkipSystemNamespace, registryUsername, registryPassword, sessionKey, telemetryKey)
 
-	// The one advisory preflight left: disks. Optional Gateway API and
-	// cert-manager machinery was checked above before any object was applied.
+	// DuckDB is system state, so unlike an app's optional disk the telemetry
+	// PVC must be provisionable before any control-plane objects are applied.
 	if hasDefault, err := client.HasDefaultStorageClass(ctx); err == nil && !hasDefault {
-		u.Warn("The cluster has no default StorageClass — apps with storage and provisioned addons won't get disks until one exists (or storage.class is set).")
+		return fmt.Errorf("the cluster has no default StorageClass — donkey-telemetry needs one for its 2 Gi DuckDB volume")
 	}
 
 	contextName := kubeContext
@@ -371,16 +297,38 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 	if err := client.Apply(ctx, manifests.SystemObjects(in)); err != nil {
 		return fmt.Errorf("the cluster refused the installation: %w", err)
 	}
+	// Fence (or unfence) the spaces that already exist, so toggling
+	// kubernetes.isolateSpaces takes effect now — not at each space's next
+	// deploy. New spaces get their fence when they are created.
+	rt := k8s.NewRuntime(client, k8s.Options{
+		Placement: manifests.Placement{
+			SharedNamespace: settings.Kubernetes.Workload.Namespace,
+			NamespacePrefix: settings.Kubernetes.NamespacePrefix(),
+		},
+		SystemNamespace: systemNamespace,
+		IsolateSpaces:   settings.Kubernetes.SpacesIsolated(),
+		RestrictEgress:  settings.Kubernetes.RestrictEgress,
+	})
+	if err := rt.ReconcileSpaceIsolation(ctx); err != nil {
+		return fmt.Errorf("updating space isolation: %w", err)
+	}
 	u.Info("Waiting for the server to come up…")
-	if err := client.WaitForRollout(ctx, in.Namespace, "donkey-packages"); err != nil {
+	if err := client.WaitForRollout(ctx, in.Namespace, "donkey-packages",
+		manifests.SystemLabels("donkey-packages")); err != nil {
 		return err
 	}
-	if err := client.WaitForRollout(ctx, in.Namespace, "donkey-server"); err != nil {
+	if err := client.WaitForRollout(ctx, in.Namespace, manifests.TelemetryAppName,
+		manifests.SystemLabels(manifests.TelemetryAppName)); err != nil {
+		return err
+	}
+	if err := client.WaitForRollout(ctx, in.Namespace, manifests.ServerName,
+		manifests.SystemLabels(manifests.ServerName)); err != nil {
 		return err
 	}
 	// Every app's traffic enters through the donkey gateway, so an install
 	// isn't done until it routes.
-	if err := client.WaitForRollout(ctx, in.Namespace, manifests.GatewayAppName); err != nil {
+	if err := client.WaitForRollout(ctx, in.Namespace, manifests.GatewayAppName,
+		manifests.SystemLabels(manifests.GatewayAppName)); err != nil {
 		return err
 	}
 	u.Success("Control plane is running.")
@@ -394,6 +342,14 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 		u.Printf("  Admins:     %s", u.Faint("everyone your identity provider signs in (narrow it with auth.admins)"))
 	default:
 		u.Printf("  Admins:     %s", u.Faint("per auth.admins"))
+	}
+	switch {
+	case in.IsolateSpaces && in.RestrictEgress:
+		u.Printf("  Spaces:     %s", u.Faint("fenced in and out — no cross-space or outbound traffic beyond DNS, donkey-ai and telemetry"))
+	case in.IsolateSpaces:
+		u.Printf("  Spaces:     %s", u.Faint("fenced from each other on the network (open them with kubernetes.isolateSpaces: false)"))
+	default:
+		u.Printf("  Spaces:     %s", u.Faint("share the cluster network (kubernetes.isolateSpaces: false)"))
 	}
 	u.Printf("")
 	u.Printf("Console:  open %s and sign in", u.Bold(serverURL))
@@ -424,6 +380,115 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 	}
 	u.Printf("  %s", u.Faint(fmt.Sprintf("Callback URL: %s — one sign-in covers the console and every app under %s. Custom domains outside it use https://<domain>/oauth2/callback (register each).", callback, in.Domain)))
 	return nil
+}
+
+// validateKubernetesSettings is the cluster-independent half of install. It
+// is shared by render so a bundle cannot encode configuration the direct
+// installer would reject later.
+func validateKubernetesSettings(settings *config.InstallFile) error {
+	if missing := missingSettings(settings, false); len(missing) > 0 {
+		return fmt.Errorf("these settings are required (via -f file or flags): %v", missing)
+	}
+	if err := settings.Registry.Validate(); err != nil {
+		return err
+	}
+	if err := settings.Registry.ValidateRuntime("kubernetes"); err != nil {
+		return err
+	}
+	switch settings.Gateway.ServiceType {
+	case "", "LoadBalancer", "ClusterIP", "NodePort":
+	default:
+		return fmt.Errorf("gateway.serviceType must be LoadBalancer, ClusterIP or NodePort, not %q", settings.Gateway.ServiceType)
+	}
+	if err := settings.TLS.Validate(); err != nil {
+		return err
+	}
+	if err := settings.Build.ValidateProvenance(); err != nil {
+		return err
+	}
+	if err := settings.Gateway.HTTPRoute.Validate(); err != nil {
+		return err
+	}
+	if err := settings.Gateway.AppGateway.Validate(); err != nil {
+		return err
+	}
+	if h := settings.ServerHost; h != "" && h != settings.Domain && !strings.HasSuffix(h, "."+settings.Domain) {
+		return fmt.Errorf("serverHost %q must be the domain %q or a name under it", h, settings.Domain)
+	}
+	if err := settings.Auth.Admins.Validate(); err != nil {
+		return fmt.Errorf("auth.admins: %w", err)
+	}
+	if err := settings.Build.Validate(); err != nil {
+		return err
+	}
+	if err := settings.Build.Packages.ValidateRuntime("kubernetes"); err != nil {
+		return err
+	}
+	if err := settings.AddonImages.Validate(); err != nil {
+		return err
+	}
+	if err := config.ValidateAddonImagePullSecrets(settings.AddonImagePullSecrets); err != nil {
+		return err
+	}
+	return settings.Kubernetes.Validate()
+}
+
+// kubernetesSystemInput is the single mapping from admin settings to the
+// canonical Kubernetes object generator. Cluster install supplies persisted
+// secrets; offline render supplies markers and removes Secret objects.
+func kubernetesSystemInput(settings *config.InstallFile, skipNamespace bool, registryUsername, registryPassword, sessionKey, telemetryKey string) manifests.SystemInput {
+	in := manifests.SystemInput{
+		Namespace:            settings.Kubernetes.SystemNamespace(),
+		SkipNamespace:        skipNamespace,
+		WorkloadNamespace:    settings.Kubernetes.Workload.Namespace,
+		NamespacePrefix:      settings.Kubernetes.NamespacePrefix(),
+		IsolateSpaces:        settings.Kubernetes.SpacesIsolated(),
+		RestrictEgress:       settings.Kubernetes.RestrictEgress,
+		ServerImage:          settings.Image,
+		Domain:               settings.Domain,
+		ServerHostname:       settings.ServerHost,
+		GatewayServiceType:   settings.Gateway.ServiceType,
+		GatewayHTTPNodePort:  settings.Gateway.HTTPNodePort,
+		GatewayHTTPSNodePort: settings.Gateway.HTTPSNodePort,
+		TLSMode:              settings.TLS.Mode,
+		ACMEEmail:            settings.TLS.Email,
+		ACMEDirectory:        settings.TLS.Directory,
+		HTTPRouteGateway: manifests.GatewayRef{
+			Name:        settings.Gateway.HTTPRoute.Name,
+			Namespace:   settings.Gateway.HTTPRoute.Namespace,
+			SectionName: settings.Gateway.HTTPRoute.SectionName,
+		},
+		AppGateway:                 settings.Gateway.AppGateway,
+		RegistryURL:                settings.Registry.URL,
+		RegistryUsername:           registryUsername,
+		RegistryCASecret:           settings.Registry.CASecret,
+		RegistryDockerConfigSecret: settings.Registry.DockerConfigSecret,
+		RegistryPassword:           registryPassword,
+		RegistryInsecure:           settings.Registry.Insecure,
+		RegistryImmutable:          settings.Registry.Immutable,
+		Admins:                     settings.Auth.Admins,
+		OIDCIssuer:                 settings.Auth.Issuer,
+		OIDCClientID:               settings.Auth.ClientID,
+		OIDCClientSecret:           settings.Auth.ClientSecret,
+		SessionKey:                 sessionKey,
+		TelemetryKey:               telemetryKey,
+		DefaultPlatform:            settings.DefaultPlatform,
+		OpenAIBaseURL:              settings.AI.BaseURL,
+		OpenAIAPIKey:               settings.AI.APIKey,
+		AIModel:                    settings.AI.Model,
+		Build:                      settings.Build,
+		AddonImages:                settings.AddonImages,
+		AddonImagePullSecrets:      settings.AddonImagePullSecrets,
+		BuildkitImage:              settings.BuildkitImage,
+	}
+	if in.BuildkitImage == "" {
+		in.BuildkitImage = config.DefaultBuildkitImage
+	}
+	if in.OIDCClientID == "" {
+		in.OIDCClientID = pendingOIDC
+		in.OIDCClientSecret = pendingOIDC
+	}
+	return in
 }
 
 // builderSummary says how apps that bring no Dockerfile will be built.
@@ -562,8 +627,8 @@ func missingSettings(settings *config.InstallFile, withSecrets bool) []string {
 	return missing
 }
 
-// randomHexKey is the installation's sealing key — every session cookie and
-// CLI token hangs off it: 32 bytes, hex-encoded.
+// randomHexKey makes a 32-byte installation secret, hex-encoded. Session and
+// telemetry credentials use separate generated values.
 func randomHexKey() (string, error) {
 	b := make([]byte, 32)
 	if _, err := rand.Read(b); err != nil {

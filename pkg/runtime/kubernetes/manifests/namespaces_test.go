@@ -228,22 +228,25 @@ func TestSharedNamespaceQualifiesEveryName(t *testing.T) {
 	}
 }
 
-// Labels are qualified with the names, so every selector donkey already
-// writes addresses one space — including the ones that delete.
-func TestSharedNamespaceQualifiesSelectors(t *testing.T) {
+// Object names are qualified; labels remain logical and selectors include
+// the space explicitly.
+func TestSharedNamespaceUsesLogicalSelectors(t *testing.T) {
 	in := sharedInput(t)
 	dep, err := deployment(in)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := dep.Spec.Selector.MatchLabels[LabelApp]; got != "acme--shop" {
-		t.Errorf("selector %s = %q, want acme--shop — an unqualified one would match another space's pods", LabelApp, got)
+	if got := dep.Spec.Selector.MatchLabels[LabelApp]; got != "shop" {
+		t.Errorf("selector %s = %q, want logical app shop", LabelApp, got)
+	}
+	if got := dep.Spec.Selector.MatchLabels[LabelSpace]; got != "acme" {
+		t.Errorf("selector %s = %q, want acme", LabelSpace, got)
 	}
 	if got := dep.Labels[LabelSpace]; got != "acme" {
 		t.Errorf("the space label stays the plain space, got %q", got)
 	}
-	if got := service(in).Spec.Selector[LabelApp]; got != "acme--shop" {
-		t.Errorf("the Service would send traffic to another space's pods: %q", got)
+	if got := service(in).Spec.Selector[LabelApp]; got != "shop" || service(in).Spec.Selector[LabelSpace] != "acme" {
+		t.Errorf("the Service selector must use logical app + space: %v", service(in).Spec.Selector)
 	}
 }
 

@@ -13,24 +13,26 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 
 	rt "github.com/adrianliechti/donkey/pkg/runtime"
-	"github.com/adrianliechti/donkey/pkg/runtime/kubernetes/manifests"
 )
 
 const rolloutTimeout = 5 * time.Minute
 
 // WaitForRollout polls the Deployment until the new generation is fully
 // available, or fails with collected evidence.
-func (c *Client) WaitForRollout(ctx context.Context, namespace, name string) error {
+func (c *Client) WaitForRollout(ctx context.Context, namespace, name string, identity map[string]string) error {
 	deadline := time.Now().Add(rolloutTimeout)
 	for {
 		if time.Now().After(deadline) {
-			return c.rolloutError(ctx, namespace, name, "it didn't finish starting within 5 minutes")
+			return c.rolloutError(ctx, namespace, name, identity, "it didn't finish starting within 5 minutes")
 		}
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
 		dep, err := c.Clientset.AppsV1().Deployments(namespace).Get(ctx, name, metav1.GetOptions{})
 		if err != nil {
+			return err
+		}
+		if err := c.requireOwnedObject("Deployment", namespace, name, dep.Labels, identity); err != nil {
 			return err
 		}
 		want := int32(1)
@@ -51,7 +53,7 @@ func (c *Client) WaitForRollout(ctx context.Context, namespace, name string) err
 		// pods of the generation being rolled out: an old copy still crashing
 		// must not condemn the fix that is replacing it.
 		if reason := stuckReason(c.rolloutPods(ctx, dep)); reason != "" {
-			return c.rolloutError(ctx, namespace, name, reason)
+			return c.rolloutError(ctx, namespace, name, identity, reason)
 		}
 		time.Sleep(2 * time.Second)
 	}
@@ -71,7 +73,7 @@ func (c *Client) rolloutPods(ctx context.Context, dep *appsv1.Deployment) []core
 	}
 	var out []corev1.Pod
 	for _, p := range pods.Items {
-		if p.DeletionTimestamp == nil {
+		if p.DeletionTimestamp == nil && sameObjectIdentity(p.Labels, dep.Labels) {
 			out = append(out, p)
 		}
 	}
@@ -92,7 +94,7 @@ func (c *Client) currentTemplateHash(ctx context.Context, dep *appsv1.Deployment
 		return ""
 	}
 	for _, rs := range rss.Items {
-		if rs.Annotations[revisionAnn] == dep.Annotations[revisionAnn] {
+		if metav1.IsControlledBy(&rs, dep) && rs.Annotations[revisionAnn] == dep.Annotations[revisionAnn] {
 			return rs.Labels["pod-template-hash"]
 		}
 	}
@@ -119,11 +121,13 @@ func stuckReason(pods []corev1.Pod) string {
 	return ""
 }
 
-func (c *Client) rolloutError(ctx context.Context, namespace, app, reason string) *rt.RolloutError {
+func (c *Client) rolloutError(ctx context.Context, namespace, app string, identity map[string]string, reason string) *rt.RolloutError {
 	ev := rt.Evidence{}
 	var pods []corev1.Pod
 	if dep, err := c.Clientset.AppsV1().Deployments(namespace).Get(ctx, app, metav1.GetOptions{}); err == nil {
-		pods = c.rolloutPods(ctx, dep)
+		if c.requireOwnedObject("Deployment", namespace, app, dep.Labels, identity) == nil {
+			pods = c.rolloutPods(ctx, dep)
+		}
 	}
 	for _, p := range pods {
 		ev.Summaries = append(ev.Summaries, podSummary(&p))
@@ -144,15 +148,6 @@ func (c *Client) rolloutError(ctx context.Context, namespace, app, reason string
 		}
 	}
 	return &rt.RolloutError{App: app, Evidence: ev, Reason: reason}
-}
-
-// appPods lists the pods of the app itself — not its addons, and not the
-// short-lived file-browser helper, which would otherwise show up in `donkey
-// status` and count towards the app's restarts.
-func (c *Client) appPods(ctx context.Context, namespace, app string) (*corev1.PodList, error) {
-	return c.Clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
-		LabelSelector: manifests.LabelApp + "=" + app + "," + manifests.LabelComponent + "=" + manifests.ComponentWeb,
-	})
 }
 
 func (c *Client) podLogs(ctx context.Context, namespace, pod string, lines int64) string {

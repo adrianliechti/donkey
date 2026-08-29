@@ -19,10 +19,10 @@ import (
 // A failure here fails the deploy: donkey would otherwise apply a half-read
 // app (no disk for the folder holding the database, say) without anyone
 // noticing.
-func (s *Server) analyzeApp(ctx context.Context, dir string, det *detect.Detection, detErr error) (*ai.Analysis, error) {
+func (s *Server) analyzeApp(ctx context.Context, dir string, det *detect.Detection, detErr error) (*ai.Analysis, *ai.Signals, error) {
 	sum, err := ai.Summarize(dir)
 	if err != nil {
-		return nil, fmt.Errorf("couldn't read the uploaded folder: %w", err)
+		return nil, nil, fmt.Errorf("couldn't read the uploaded folder: %w", err)
 	}
 	// The uploaded copy, not the user's working tree: the assistant reads the
 	// app itself rather than answering from a summary of it.
@@ -38,9 +38,9 @@ func (s *Server) analyzeApp(ctx context.Context, dir string, det *detect.Detecti
 	}
 	analysis, err := s.assistant.Analyze(ctx, in)
 	if err != nil {
-		return nil, fmt.Errorf("the assistant couldn't read this app: %w", err)
+		return nil, sum.Signals, fmt.Errorf("the assistant couldn't read this app: %w", err)
 	}
-	return analysis, nil
+	return analysis, sum.Signals, nil
 }
 
 // proposedPort works out which port the app will be given, and where that

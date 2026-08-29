@@ -85,6 +85,29 @@ type PlanBuild struct {
 	// Summary is the one-line description of how the app gets built.
 	Summary  string `json:"summary"`
 	Strategy string `json:"strategy"`
+	// The remaining fields are deterministic evidence from the uploaded
+	// files. They let review and release screens explain the build without
+	// scraping prose from the progress log.
+	Runtimes        []PlanSignal        `json:"runtimes,omitempty"`
+	Frameworks      []PlanSignal        `json:"frameworks,omitempty"`
+	Versions        []PlanSignal        `json:"versions,omitempty"`
+	PackageManagers []PlanSignal        `json:"packageManagers,omitempty"`
+	BaseImages      []string            `json:"baseImages,omitempty"`
+	SystemPackages  []PlanSystemPackage `json:"systemPackages,omitempty"`
+}
+
+// PlanSignal is one detected build fact and the file that proves it.
+type PlanSignal struct {
+	Value    string `json:"value"`
+	Evidence string `json:"evidence,omitempty"`
+}
+
+// PlanSystemPackage explains which application dependency needs native
+// packages, keeping build-only packages separate from final-image packages.
+type PlanSystemPackage struct {
+	Dependency string   `json:"dependency"`
+	Build      []string `json:"build,omitempty"`
+	Runtime    []string `json:"runtime,omitempty"`
 }
 
 // PlanVolume is one folder whose contents have to survive a restart.
@@ -323,7 +346,7 @@ type planInput struct {
 // to stop rather than deploy.
 func (s *Server) readApp(ctx context.Context, dir string, app *config.AppConfig, in planInput) (*storedPlan, error) {
 	det, detErr := detect.Detect(dir, app)
-	analysis, err := s.analyzeApp(ctx, dir, det, detErr)
+	analysis, signals, err := s.analyzeApp(ctx, dir, det, detErr)
 	if err != nil {
 		if detErr != nil {
 			return nil, fmt.Errorf("%w\n\n%s", detErr, err)
@@ -346,8 +369,7 @@ func (s *Server) readApp(ctx context.Context, dir string, app *config.AppConfig,
 	if detErr != nil {
 		return nil, detErr
 	}
-	sp.build.Summary = det.Summary
-	sp.build.Strategy = string(det.Strategy)
+	sp.build = describePlanBuild(dir, det, signals)
 
 	if app == nil {
 		// No donkey.yaml: the plan is the app's first one. The folder (or the
@@ -487,13 +509,15 @@ func applyPlanEdit(sp *storedPlan, edit PlanEdit) {
 		app.Addons = append(app.Addons, config.AddonConfig{Type: svc.Type, Name: svc.Name})
 	}
 
-	switch edit.Exposure {
-	case "public":
-		app.Public, app.Internal = true, false
-	case "internal":
-		app.Public, app.Internal = false, true
-	case "protected":
-		app.Public, app.Internal = false, false
+	if edit.Exposure != exposureOfConfig(app) {
+		switch edit.Exposure {
+		case "public":
+			app.Public, app.Internal = true, false
+		case "internal":
+			app.Public, app.Internal = false, true
+		case "protected":
+			app.Public, app.Internal = false, false
+		}
 	}
 	app.ApplyDefaults()
 }
@@ -509,6 +533,7 @@ func (s *Server) renderPlan(ctx context.Context, id string, sp *storedPlan) *Pla
 		AppType:   sp.appType,
 		Notes:     sp.notes,
 		Build:     sp.build,
+		Findings:  []Finding{},
 		Volumes:   sp.volumes,
 		Services:  sp.services,
 		Skipped:   sp.skipped,
