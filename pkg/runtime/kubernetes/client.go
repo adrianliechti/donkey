@@ -114,8 +114,8 @@ func (c *Client) Confined() bool { return len(c.Namespaces) > 0 }
 
 // HasResource reports whether the cluster serves a kind — how the installer
 // finds out, before applying anything, that a configuration names a CRD
-// (HTTPRoute, Certificate) whose operator isn't installed. An absent group
-// is an answer, not an error.
+// (HTTPRoute, HTTPProxy, Certificate) whose operator isn't installed. An
+// absent group is an answer, not an error.
 func (c *Client) HasResource(groupVersion, kind string) (bool, error) {
 	disco, err := discovery.NewDiscoveryClientForConfig(c.Config)
 	if err != nil {

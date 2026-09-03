@@ -238,7 +238,8 @@ func TestBuildConfigAbsentChangesNothing(t *testing.T) {
 	if strings.Contains(out, "DONKEY_BUILD_") {
 		t.Errorf("an unconfigured installation rendered build variables:\n%s", out)
 	}
-	if strings.Contains(out, "PROXY") {
+	if strings.Contains(out, "name: HTTP_PROXY") || strings.Contains(out, "name: HTTPS_PROXY") ||
+		strings.Contains(out, "name: http_proxy") || strings.Contains(out, "name: https_proxy") {
 		t.Error("an unconfigured installation rendered proxy variables")
 	}
 	if env := buildkitPodSpec(in, true).Containers[0].Env; len(env) != 0 {

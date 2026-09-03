@@ -51,7 +51,7 @@ func serverAccessObjects(in SystemInput) []runtime.Object {
 			// share a separate workload namespace. Keep these permissions out of
 			// the workload Role; they are retained when the feature is off so a
 			// later deploy can clean up objects from an earlier configuration.
-			rules = append(rules, serverAppGatewayRoleRules()...)
+			rules = append(rules, serverManagedEdgeRoleRules()...)
 		}
 		objs = append(objs,
 			&rbacv1.Role{
@@ -70,11 +70,11 @@ func serverAccessObjects(in SystemInput) []runtime.Object {
 	return objs
 }
 
-// serverAppGatewayRoleRules is the small additional surface needed to
+// serverManagedEdgeRoleRules is the small additional surface needed to
 // server-side apply and retract per-app managed edge objects. The server does
-// not read GatewayClasses or issuers, and it never receives rights in the
-// infrastructure namespace named by routeNamespace.
-func serverAppGatewayRoleRules() []rbacv1.PolicyRule {
+// not read GatewayClasses, IngressClasses or issuers, and it never receives
+// rights in the infrastructure namespace named by routeNamespace.
+func serverManagedEdgeRoleRules() []rbacv1.PolicyRule {
 	// list/deletecollection are used only with the installation + space + edge
 	// selector when a whole space is removed.
 	writeNamed := []string{"get", "list", "create", "update", "patch", "delete", "deletecollection"}
@@ -82,6 +82,11 @@ func serverAppGatewayRoleRules() []rbacv1.PolicyRule {
 		{
 			APIGroups: []string{"gateway.networking.k8s.io"},
 			Resources: []string{"gateways", "httproutes"},
+			Verbs:     writeNamed,
+		},
+		{
+			APIGroups: []string{"projectcontour.io"},
+			Resources: []string{"httpproxies"},
 			Verbs:     writeNamed,
 		},
 		{

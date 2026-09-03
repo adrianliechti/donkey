@@ -149,10 +149,8 @@ func (r *Runtime) Deploy(ctx context.Context, spec rt.DeploySpec, out rt.Progres
 	} else if !app.Public {
 		out.Line("· Login protection is in force.")
 	}
-	if in.Domain == "" || !in.AppGateway.Enabled() {
-		if err := r.deleteAppGatewayObjects(ctx, space, app.Name); err != nil {
-			return err
-		}
+	if err := r.reconcileAppEdgeMode(ctx, in); err != nil {
+		return err
 	}
 	if spec.NoWait {
 		return nil
@@ -186,19 +184,100 @@ func (r *Runtime) Destroy(ctx context.Context, space, app string, keepData bool)
 	if err := r.c.RemoveFilesHelper(ctx, ns, obj, space, app); err != nil {
 		return err
 	}
-	if err := r.deleteAppGatewayObjects(ctx, space, app); err != nil {
+	if err := r.deleteAppEdgeObjects(ctx, space, app); err != nil {
 		return err
 	}
 	return r.c.DeleteAppResources(ctx, ns, space, app, keepData)
 }
 
-// deleteAppGatewayObjects retracts the namespaced external edge independently
+// deleteAppEdgeObjects retracts the namespaced external edge independently
 // of the workload objects: the app may live in another namespace, while its
-// Certificate, TLS Secret, Gateway and HTTPRoute deliberately live with the
-// control plane. It is safe on clusters without either optional CRD.
-func (r *Runtime) deleteAppGatewayObjects(ctx context.Context, space, app string) error {
+// Certificate, TLS Secret and routing object deliberately live with the
+// control plane. It is safe on clusters without any optional CRD.
+func (r *Runtime) deleteAppEdgeObjects(ctx context.Context, space, app string) error {
 	if err := r.c.DeleteAppEdges(ctx, r.opts.SystemNamespace, space, app); err != nil {
 		return fmt.Errorf("removing the app's edge: %w", err)
+	}
+	return nil
+}
+
+// reconcileAppEdgeMode removes objects owned by the inactive strategy only
+// after the active objects have applied. This makes a configuration switch
+// converge without briefly deleting the shared Certificate and TLS Secret.
+func (r *Runtime) reconcileAppEdgeMode(ctx context.Context, in manifests.Input) error {
+	if in.Domain == "" || (!in.AppGateway.Enabled() && !in.ContourHTTPProxy.Enabled()) {
+		return r.deleteAppEdgeObjects(ctx, in.Space, in.App.Name)
+	}
+	var stale []string
+	if in.AppGateway.Enabled() {
+		stale = []string{"HTTPProxy"}
+	} else {
+		stale = []string{"HTTPRoute", "Gateway"}
+	}
+	if err := r.c.DeleteAppEdgeKinds(ctx, r.opts.SystemNamespace, in.Space, in.App.Name, stale...); err != nil {
+		return fmt.Errorf("removing the app's previous edge mode: %w", err)
+	}
+	return nil
+}
+
+// ReconcileAppEdges brings every deployed app's optional external edge in
+// line with the installation settings. The route ConfigMap is the source of
+// truth here: it records the exact hostname and whether the app is exposed,
+// so an install can switch edge strategies without reconstructing a
+// donkey.yaml or changing the app's own route.
+//
+// The installer calls this after applying the control plane. Ordinary deploy,
+// network and destroy operations reconcile the same objects for one app.
+func (r *Runtime) ReconcileAppEdges(ctx context.Context) error {
+	apps, err := r.c.ListApps(ctx)
+	if err != nil {
+		return err
+	}
+	for _, app := range apps {
+		net, err := r.c.AppNetwork(ctx, app.Namespace, r.name(app.Space, app.App), app.Space, app.App)
+		if err != nil {
+			return fmt.Errorf("reading the edge for %s/%s: %w", app.Space, app.App, err)
+		}
+		host := ""
+		if net.RouteFound {
+			host = net.Host
+		}
+		in := manifests.Input{
+			App:             &config.AppConfig{Name: app.App},
+			Space:           app.Space,
+			Namespace:       app.Namespace,
+			SystemNamespace: r.opts.SystemNamespace,
+			ObjectName:      r.name(app.Space, app.App),
+			Domain:          host,
+			AppGateway: manifests.AppGatewayConfig{
+				Namespace:      r.opts.SystemNamespace,
+				ClassName:      r.opts.AppGateway.ClassName,
+				NameTemplate:   r.opts.AppGateway.NameTemplate,
+				RouteNamespace: r.opts.AppGateway.RouteNamespace,
+				IssuerName:     r.opts.AppGateway.IssuerName,
+				IssuerKind:     r.opts.AppGateway.CertificateIssuerKind(),
+				IssuerGroup:    r.opts.AppGateway.CertificateIssuerGroup(),
+			},
+			ContourHTTPProxy: manifests.ContourHTTPProxyConfig{
+				Namespace:        r.opts.SystemNamespace,
+				IngressClassName: r.opts.ContourHTTPProxy.IngressClassName,
+				IssuerName:       r.opts.ContourHTTPProxy.IssuerName,
+				IssuerKind:       r.opts.ContourHTTPProxy.CertificateIssuerKind(),
+				IssuerGroup:      r.opts.ContourHTTPProxy.CertificateIssuerGroup(),
+			},
+		}
+		edge, err := manifests.AppEdgeObjects(in)
+		if err != nil {
+			return fmt.Errorf("rendering the edge for %s/%s: %w", app.Space, app.App, err)
+		}
+		// Apply the replacement before retracting the old strategy so a mode
+		// switch keeps the common Certificate and Secret alive throughout.
+		if err := r.c.Apply(ctx, edge); err != nil {
+			return fmt.Errorf("applying the edge for %s/%s: %w", app.Space, app.App, err)
+		}
+		if err := r.reconcileAppEdgeMode(ctx, in); err != nil {
+			return fmt.Errorf("reconciling the edge for %s/%s: %w", app.Space, app.App, err)
+		}
 	}
 	return nil
 }
@@ -231,6 +310,13 @@ func (r *Runtime) manifestInput(spec rt.DeploySpec, includeCreds bool) (manifest
 			IssuerName:     r.opts.AppGateway.IssuerName,
 			IssuerKind:     r.opts.AppGateway.CertificateIssuerKind(),
 			IssuerGroup:    r.opts.AppGateway.CertificateIssuerGroup(),
+		},
+		ContourHTTPProxy: manifests.ContourHTTPProxyConfig{
+			Namespace:        r.opts.SystemNamespace,
+			IngressClassName: r.opts.ContourHTTPProxy.IngressClassName,
+			IssuerName:       r.opts.ContourHTTPProxy.IssuerName,
+			IssuerKind:       r.opts.ContourHTTPProxy.CertificateIssuerKind(),
+			IssuerGroup:      r.opts.ContourHTTPProxy.CertificateIssuerGroup(),
 		},
 	}
 	if len(r.opts.TelemetryKey) > 0 {
@@ -359,7 +445,7 @@ func (r *Runtime) ApplyNetwork(ctx context.Context, cfg *config.AppConfig) (stri
 	var objs []k8sruntime.Object
 	if in.Domain != "" {
 		objs = append(objs, manifests.AppRoute(in))
-		edge, err := manifests.AppGatewayObjects(in)
+		edge, err := manifests.AppEdgeObjects(in)
 		if err != nil {
 			return "", err
 		}
@@ -377,10 +463,8 @@ func (r *Runtime) ApplyNetwork(ctx context.Context, cfg *config.AppConfig) (stri
 			return "", err
 		}
 	}
-	if in.Domain == "" || !in.AppGateway.Enabled() {
-		if err := r.deleteAppGatewayObjects(ctx, space, app); err != nil {
-			return "", err
-		}
+	if err := r.reconcileAppEdgeMode(ctx, in); err != nil {
+		return "", err
 	}
 	return "", nil
 }

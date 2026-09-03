@@ -73,6 +73,9 @@ type Config struct {
 	// AppGateway enables the optional per-app Gateway API and cert-manager
 	// edge in Kubernetes installations. Docker ignores it.
 	AppGateway config.InstallAppGateway
+	// ContourHTTPProxy enables the alternative per-host Certificate and root
+	// HTTPProxy edge on a shared Contour data plane.
+	ContourHTTPProxy config.InstallContourHTTPProxy
 
 	// SessionKey is the installation's sealing key — the server verifies
 	// the CLI tokens the gateway mints with it (the direct, port-forwarded
@@ -130,6 +133,12 @@ func FromEnv() (*Config, error) {
 			IssuerKind:     os.Getenv("DONKEY_APP_GATEWAY_ISSUER_KIND"),
 			IssuerGroup:    os.Getenv("DONKEY_APP_GATEWAY_ISSUER_GROUP"),
 		},
+		ContourHTTPProxy: config.InstallContourHTTPProxy{
+			IngressClassName: os.Getenv("DONKEY_CONTOUR_HTTP_PROXY_INGRESS_CLASS_NAME"),
+			IssuerName:       os.Getenv("DONKEY_CONTOUR_HTTP_PROXY_ISSUER_NAME"),
+			IssuerKind:       os.Getenv("DONKEY_CONTOUR_HTTP_PROXY_ISSUER_KIND"),
+			IssuerGroup:      os.Getenv("DONKEY_CONTOUR_HTTP_PROXY_ISSUER_GROUP"),
+		},
 		AIModel: envOr("DONKEY_AI_MODEL", config.DefaultAIModel),
 	}
 	// The build environment is a map, so it travels as JSON — the same way
@@ -179,7 +188,10 @@ func FromEnv() (*Config, error) {
 	if err := config.ValidateAddonImagePullSecrets(c.AddonImagePullSecrets); err != nil {
 		return nil, err
 	}
-	if err := c.AppGateway.Validate(); err != nil {
+	if err := (config.InstallGateway{
+		AppGateway:       c.AppGateway,
+		ContourHTTPProxy: c.ContourHTTPProxy,
+	}).Validate(); err != nil {
 		return nil, err
 	}
 	if err := (config.InstallBuild{BuildSettings: c.Build}).Validate(); err != nil {

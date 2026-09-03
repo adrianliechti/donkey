@@ -297,6 +297,20 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 	if err := client.Apply(ctx, manifests.SystemObjects(in)); err != nil {
 		return fmt.Errorf("the cluster refused the installation: %w", err)
 	}
+	// Applying a smaller object set never retracts resources from the previous
+	// install. Remove the Contour system edge when that mode is disabled, and
+	// remove its second proxy when serverHost moves back onto the base domain.
+	if !settings.Gateway.ContourHTTPProxy.Enabled() {
+		if err := client.DeleteSystemContourEdges(ctx, in.Namespace); err != nil {
+			return fmt.Errorf("removing the previous Contour edge: %w", err)
+		}
+	} else if in.ServerHost() == in.Domain {
+		if err := client.DeleteObject(ctx, "HTTPProxy", in.Namespace,
+			manifests.ContourSystemServerProxyName,
+			manifests.SystemLabels(manifests.ContourSystemEdgeName)); err != nil {
+			return fmt.Errorf("removing the obsolete Contour server host: %w", err)
+		}
+	}
 	// Fence (or unfence) the spaces that already exist, so toggling
 	// kubernetes.isolateSpaces takes effect now — not at each space's next
 	// deploy. New spaces get their fence when they are created.
@@ -305,12 +319,21 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 			SharedNamespace: settings.Kubernetes.Workload.Namespace,
 			NamespacePrefix: settings.Kubernetes.NamespacePrefix(),
 		},
-		SystemNamespace: systemNamespace,
-		IsolateSpaces:   settings.Kubernetes.SpacesIsolated(),
-		RestrictEgress:  settings.Kubernetes.RestrictEgress,
+		SystemNamespace:  systemNamespace,
+		Domain:           settings.Domain,
+		AppGateway:       settings.Gateway.AppGateway,
+		ContourHTTPProxy: settings.Gateway.ContourHTTPProxy,
+		IsolateSpaces:    settings.Kubernetes.SpacesIsolated(),
+		RestrictEgress:   settings.Kubernetes.RestrictEgress,
 	})
 	if err := rt.ReconcileSpaceIsolation(ctx); err != nil {
 		return fmt.Errorf("updating space isolation: %w", err)
+	}
+	// Edge mode is installation-wide. Reconcile every existing app now so a
+	// switch to or from a managed Gateway/Contour contract does not wait for
+	// each app's next deploy or network edit.
+	if err := rt.ReconcileAppEdges(ctx); err != nil {
+		return fmt.Errorf("updating existing app edges: %w", err)
 	}
 	u.Info("Waiting for the server to come up…")
 	if err := client.WaitForRollout(ctx, in.Namespace, "donkey-packages",
@@ -406,11 +429,11 @@ func validateKubernetesSettings(settings *config.InstallFile) error {
 	if err := settings.Build.ValidateProvenance(); err != nil {
 		return err
 	}
-	if err := settings.Gateway.HTTPRoute.Validate(); err != nil {
+	if err := settings.Gateway.Validate(); err != nil {
 		return err
 	}
-	if err := settings.Gateway.AppGateway.Validate(); err != nil {
-		return err
+	if settings.Gateway.UsesExternalTLS() && settings.TLS.Mode != "none" {
+		return fmt.Errorf("gateway.httpRoute, gateway.appGateway and gateway.contourHTTPProxy terminate TLS before donkey — configure tls.mode: none")
 	}
 	if h := settings.ServerHost; h != "" && h != settings.Domain && !strings.HasSuffix(h, "."+settings.Domain) {
 		return fmt.Errorf("serverHost %q must be the domain %q or a name under it", h, settings.Domain)
@@ -459,6 +482,7 @@ func kubernetesSystemInput(settings *config.InstallFile, skipNamespace bool, reg
 			SectionName: settings.Gateway.HTTPRoute.SectionName,
 		},
 		AppGateway:                 settings.Gateway.AppGateway,
+		ContourHTTPProxy:           settings.Gateway.ContourHTTPProxy,
 		RegistryURL:                settings.Registry.URL,
 		RegistryUsername:           registryUsername,
 		RegistryCASecret:           settings.Registry.CASecret,

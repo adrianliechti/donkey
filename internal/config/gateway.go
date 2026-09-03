@@ -39,13 +39,23 @@ func AppGatewayName(template, namespace, space, app, name string) (string, error
 	if unknown != "" {
 		return "", fmt.Errorf("gateway.appGateway.nameTemplate %q uses unknown parameter $%s — available parameters are $name, $namespace, $space, $app and $hash", template, unknown)
 	}
-	if rendered == "" || len(rendered) > 253 {
+	if !validKubernetesObjectName(rendered) {
 		return "", fmt.Errorf("gateway.appGateway.nameTemplate %q renders an invalid Kubernetes object name %q", template, rendered)
 	}
-	for _, label := range strings.Split(rendered, ".") {
+	return rendered, nil
+}
+
+// validKubernetesObjectName follows Kubernetes' DNS-subdomain object-name
+// shape. Keep it local to configuration validation: workload names use the
+// intentionally narrower ValidName rule instead.
+func validKubernetesObjectName(name string) bool {
+	if name == "" || len(name) > 253 {
+		return false
+	}
+	for _, label := range strings.Split(name, ".") {
 		if !ValidNamespace(label) {
-			return "", fmt.Errorf("gateway.appGateway.nameTemplate %q renders an invalid Kubernetes object name %q", template, rendered)
+			return false
 		}
 	}
-	return rendered, nil
+	return true
 }

@@ -188,6 +188,71 @@ func TestAppGatewaySettingsReachServer(t *testing.T) {
 	}
 }
 
+func TestContourHTTPProxySettingsReachServer(t *testing.T) {
+	in := systemInput()
+	in.ContourHTTPProxy = config.InstallContourHTTPProxy{
+		IngressClassName: "contour-private",
+		IssuerName:       "platform-ca",
+		IssuerKind:       "ClusterIssuer",
+		IssuerGroup:      "cert-manager.io",
+	}
+	out := componentNames(in)
+	for _, want := range []string{
+		"DONKEY_CONTOUR_HTTP_PROXY_INGRESS_CLASS_NAME", "contour-private",
+		"DONKEY_CONTOUR_HTTP_PROXY_ISSUER_NAME", "platform-ca",
+		"DONKEY_CONTOUR_HTTP_PROXY_ISSUER_KIND", "ClusterIssuer",
+		"DONKEY_CONTOUR_HTTP_PROXY_ISSUER_GROUP", "cert-manager.io",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("Contour edge setting did not reach donkey-server: missing %q", want)
+		}
+	}
+}
+
+func TestContourHTTPProxyIncludesControlPlaneAndCallback(t *testing.T) {
+	in := systemInput()
+	in.ContourHTTPProxy = config.InstallContourHTTPProxy{
+		IngressClassName: "contour-private",
+		IssuerName:       "platform-ca",
+	}
+
+	objects := SystemObjects(in)
+	if got := kindsOf(objects); got["Certificate"] != 1 || got["HTTPProxy"] != 1 || got["Gateway"] != 0 || got["HTTPRoute"] != 0 {
+		t.Fatalf("unexpected system edge objects: %v", got)
+	}
+	out, err := Render(objects)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"name: donkey-contour-edge",
+		"secretName: donkey-contour-edge-tls",
+		"fqdn: apps.example.com",
+		"ingressClassName: contour-private",
+		"kind: ClusterIssuer",
+		"group: cert-manager.io",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("Contour system edge should contain %q", want)
+		}
+	}
+
+	in.ServerHostname = "console.apps.example.com"
+	objects = SystemObjects(in)
+	if got := kindsOf(objects); got["Certificate"] != 1 || got["HTTPProxy"] != 2 {
+		t.Fatalf("a separate server host needs two proxies sharing one certificate: %v", got)
+	}
+	out, err = Render(objects)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, host := range []string{"apps.example.com", "console.apps.example.com"} {
+		if !strings.Contains(out, host) {
+			t.Errorf("Contour system certificate/proxies should include %q", host)
+		}
+	}
+}
+
 // Installing donkey must stay inside donkey's own house: no edits to cluster
 // services (CoreDNS and friends), no node-level changes, no webhooks that
 // could affect other workloads. Everything donkey applies is either in

@@ -147,8 +147,8 @@ five ideas:
   short-lived sealed token instead (`X-Access-Token`) and verifies it itself,
   so nothing in the cluster can reach it by typing a header. TLS and auth live here
   because no ingress vendor has a standard for the latter — donkey requires no
-  ingress controller, Gateway API, or cert-manager, but can use the latter two
-  for per-app managed edges.
+  ingress controller, Gateway API, or cert-manager, but can use platform
+  Gateway API infrastructure or a shared Contour/Envoy edge when configured.
 - **Per space** — one namespace (`donkey-<space>`) shared by the apps of
   that space, so they reach each other by plain service name — and that
   includes its services: a space's postgres is simply `postgres` to its
@@ -485,7 +485,7 @@ applies anything, and `donkey doctor` keeps checking them after):
 
 | Requirement | Why | Notes |
 |---|---|---|
-| **Kubernetes cluster** with a default StorageClass | donkey-telemetry always claims its 2 Gi DuckDB volume; apps with `storage.paths` and provisioned services claim their own | any conformant cluster; nothing donkey-specific. No ingress controller, no Gateway API, no cert-manager — donkey brings its own edge, and optionally attaches to a Gateway API gateway the cluster already runs (below). Traffic enters through the donkey-gateway `LoadBalancer` service; on clusters where nothing assigns those an address (kind), set `gateway.serviceType: NodePort` or `ClusterIP` |
+| **Kubernetes cluster** with a default StorageClass | donkey-telemetry always claims its 2 Gi DuckDB volume; apps with `storage.paths` and provisioned services claim their own | any conformant cluster; nothing donkey-specific. No ingress controller, Gateway API, Contour, or cert-manager is required for the default mode — donkey brings its own edge. Optional platform-edge modes are described below. Traffic normally enters through the donkey-gateway `LoadBalancer` service; on clusters where nothing assigns those an address (kind), set `gateway.serviceType: NodePort` or `ClusterIP` |
 | **Container registry** the cluster can pull from | donkey pushes every build there | `registry.url` + credentials; `registry.caSecret` when its certificate comes from a private CA |
 | **DNS** for `*.<domain>` and `<domain>` → the gateway address | apps are served at `<app>.<space>.<domain>`, the API and login callback at `<domain>` | one wildcard covers every depth; the apex needs its own record |
 | **OIDC provider** (Pocket ID, Entra ID, Keycloak, …) | the one way in: console, CLI and protected apps all sign in against it | required — `auth.issuer` (+ client id/secret); `auth.admins` optionally narrows who may administer |
@@ -517,7 +517,8 @@ documented in [README_KUBERNETES.md](README_KUBERNETES.md):
   space, the platform endpoints and DNS.
 - **[Using the cluster's edge](README_KUBERNETES.md#using-the-clusters-edge)**
   — entering through a Gateway API gateway the cluster already runs, or
-  per-app managed edges via cert-manager.
+  choosing exact per-host certificates through dedicated Gateways or one
+  shared Project Contour Gateway.
 - **[Several donkeys on one cluster](README_KUBERNETES.md#several-donkeys-on-one-cluster)**
   — what must differ per installation, and why the system namespace is the
   installation's identity.
@@ -796,7 +797,11 @@ app's certificate and creates its dedicated Gateway API edge. Its Gateway name
 defaults to the app's Kubernetes Deployment name. Managed platforms can set
 `gateway.appGateway.nameTemplate`; it accepts `$name`, `$namespace`, `$space`,
 `$app`, and the stable 10-character `$hash` (for example,
-`$namespace-$hash`). There is no
+`$namespace-$hash`). Project Contour installations can instead use
+`gateway.contourHTTPProxy`: donkey creates an exact-host Certificate and root
+HTTPProxy per app, plus the portal/OAuth callback edge, while every host rides
+one platform-owned Contour Gateway and Envoy data plane. The HTTPProxy names
+its generated TLS Secret; donkey never mutates the shared Gateway. There is no
 bring-your-own-file mode: a hand-provided
 wildcard covers one label while apps live two deep, which made it a trap. DNS is simpler than TLS here: one `*.<domain>` record
 covers every depth, because DNS wildcards match multiple labels (as long as
@@ -855,10 +860,13 @@ the Secret and re-run the install — a new key is generated, every cookie and
 every CLI token everywhere is invalid the moment the pods roll, and everyone
 signs in again through the browser. **There is no overlap window.**
 
-Running apps are not touched: their pods, disks, routes and certificates stay
-as they are while donkey-server restarts. A re-install also keeps every secret
-it isn't given again (registry password, OIDC client secret, AI key), so the
-same settings file is enough — rotating one thing must never blank the rest.
+Running app workloads are not rolled: their pods, disks and routes stay as
+they are while donkey-server restarts. A re-install does reconcile each app's
+external edge from its existing route, so an installation-wide Gateway mode
+change applies immediately; unchanged Certificates and proxies are idempotent
+server-side applies. A re-install also keeps every secret it isn't given again
+(registry password, OIDC client secret, AI key), so the same settings file is
+enough — rotating one thing must never blank the rest.
 
 **Metadata v2 is a clean cutover.** It deliberately does not claim resources
 from versions that used the old ownership labels or selectors. Kubernetes

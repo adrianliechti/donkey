@@ -655,6 +655,42 @@ type InstallGateway struct {
 	// platform arrangement where tenants may create namespaced edge objects,
 	// but cannot configure a shared cluster edge themselves.
 	AppGateway InstallAppGateway `json:"appGateway,omitempty"`
+	// ContourHTTPProxy provisions one Contour HTTPProxy for every exposed
+	// hostname and cert-manager Certificates for those hosts. All HTTPProxies
+	// share the one Contour/Envoy data plane selected by IngressClassName; its
+	// Gateway uses Contour's projectcontour.io/https listener protocol so TLS
+	// remains on the HTTPProxy rather than on the shared Gateway.
+	ContourHTTPProxy InstallContourHTTPProxy `json:"contourHTTPProxy,omitempty"`
+}
+
+// UsesExternalTLS reports whether Kubernetes infrastructure in front of
+// donkey terminates downstream TLS. It is also the complete set of gateway
+// blocks that the Docker runtime must reject.
+func (g InstallGateway) UsesExternalTLS() bool {
+	return g.HTTPRoute.Enabled() || g.AppGateway.Enabled() || g.ContourHTTPProxy.Enabled()
+}
+
+// Validate checks the optional attachment and per-host edge strategies as a
+// group. HTTPRoute may complement AppGateway (the former commonly exposes the
+// control-plane apex while the latter exposes app hosts), but the two per-host
+// strategies both claim the same hostnames and therefore cannot be combined.
+func (g InstallGateway) Validate() error {
+	if err := g.HTTPRoute.Validate(); err != nil {
+		return err
+	}
+	if err := g.AppGateway.Validate(); err != nil {
+		return err
+	}
+	if err := g.ContourHTTPProxy.Validate(); err != nil {
+		return err
+	}
+	if g.AppGateway.Enabled() && g.ContourHTTPProxy.Enabled() {
+		return fmt.Errorf("gateway.appGateway and gateway.contourHTTPProxy are alternative per-host edge modes — configure only one")
+	}
+	if g.HTTPRoute.Enabled() && g.ContourHTTPProxy.Enabled() {
+		return fmt.Errorf("gateway.httpRoute and gateway.contourHTTPProxy both expose the installation's hostnames — configure only one")
+	}
+	return nil
 }
 
 // InstallAppGateway describes the namespaced edge objects provisioned for
@@ -719,6 +755,56 @@ func (g InstallAppGateway) Validate() error {
 	return nil
 }
 
+// InstallContourHTTPProxy describes the Contour-native per-host edge. Unlike
+// AppGateway it does not create or mutate a Gateway: a platform-owned Contour
+// Gateway/Envoy instance is selected through the HTTPProxy ingress class.
+// Certificates and HTTPProxies live beside donkey's control plane, so their
+// Secret and backend Service references remain namespace-local.
+type InstallContourHTTPProxy struct {
+	// IngressClassName selects the shared Contour instance. Requiring it keeps
+	// a multi-Contour cluster from accepting these virtual hosts accidentally.
+	IngressClassName string `json:"ingressClassName,omitempty"`
+	IssuerName       string `json:"issuerName,omitempty"`
+	IssuerKind       string `json:"issuerKind,omitempty"`
+	IssuerGroup      string `json:"issuerGroup,omitempty"`
+}
+
+// Enabled reports whether Contour-native per-host edge provisioning is on.
+func (c InstallContourHTTPProxy) Enabled() bool { return c.IngressClassName != "" }
+
+// CertificateIssuerKind applies cert-manager's cluster-wide default.
+func (c InstallContourHTTPProxy) CertificateIssuerKind() string {
+	if c.IssuerKind != "" {
+		return c.IssuerKind
+	}
+	return "ClusterIssuer"
+}
+
+// CertificateIssuerGroup applies cert-manager's built-in issuer default.
+func (c InstallContourHTTPProxy) CertificateIssuerGroup() string {
+	if c.IssuerGroup != "" {
+		return c.IssuerGroup
+	}
+	return "cert-manager.io"
+}
+
+// Validate catches incomplete Contour edge settings before installation.
+func (c InstallContourHTTPProxy) Validate() error {
+	if c.IngressClassName == "" {
+		if c.IssuerName != "" || c.IssuerKind != "" || c.IssuerGroup != "" {
+			return fmt.Errorf("gateway.contourHTTPProxy needs `ingressClassName` — the shared Contour instance that serves these hosts")
+		}
+		return nil
+	}
+	if !validKubernetesObjectName(c.IngressClassName) {
+		return fmt.Errorf("gateway.contourHTTPProxy.ingressClassName %q is not a valid Kubernetes object name", c.IngressClassName)
+	}
+	if c.IssuerName == "" {
+		return fmt.Errorf("gateway.contourHTTPProxy needs `issuerName` — the cert-manager issuer used for each hostname")
+	}
+	return nil
+}
+
 // InstallHTTPRoute names the Gateway API gateway to attach to.
 type InstallHTTPRoute struct {
 	Name string `json:"name,omitempty"`
@@ -745,15 +831,15 @@ func (r InstallHTTPRoute) Validate() error {
 
 // InstallTLS is how donkey's own gateway gets its certificates. donkey always
 // serves apps over https — the login gateway's cookies require it. The
-// optional appGateway has its own cert-manager issuer settings.
+// optional appGateway and contourHTTPProxy edges have their own cert-manager
+// issuer settings.
 type InstallTLS struct {
 	// Mode is "acme" (one certificate per hostname from Let's Encrypt, the
 	// default — the gateway must be reachable on ports 80/443), "ca" (a
 	// self-signed CA minting per-hostname certificates — local and internal
 	// installs; trust its one CA certificate and every app is covered),
-	// or "none" (no TLS at donkey's edge — only sensible behind
-	// gateway.httpRoute, where the cluster's gateway terminates TLS with
-	// certificates the platform provides).
+	// or "none" (no TLS at donkey's edge — required behind any configured
+	// platform edge, where a Gateway listener or HTTPProxy terminates TLS).
 	Mode string `json:"mode,omitempty"`
 	// Email is the ACME account contact (expiry warnings); optional.
 	Email string `json:"email,omitempty"`

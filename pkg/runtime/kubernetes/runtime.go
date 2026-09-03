@@ -36,6 +36,9 @@ type Options struct {
 	// AppGateway enables namespaced Gateway API and cert-manager objects for
 	// every exposed app.
 	AppGateway config.InstallAppGateway
+	// ContourHTTPProxy enables exact-host HTTPProxy and Certificate objects on
+	// one shared Contour data plane.
+	ContourHTTPProxy config.InstallContourHTTPProxy
 	// TelemetryKey derives an app-scoped OTLP credential. It is the
 	// installation key already held by donkey-server, never exposed directly.
 	TelemetryKey []byte

@@ -52,6 +52,10 @@ type SystemInput struct {
 	// AppGateway asks donkey-server to create one namespaced Gateway,
 	// HTTPRoute and Certificate for every externally reachable app.
 	AppGateway config.InstallAppGateway
+	// ContourHTTPProxy asks donkey-server to create a Certificate and root
+	// HTTPProxy per app. SystemObjects also creates the equivalent edge for
+	// the console and central OAuth callback.
+	ContourHTTPProxy config.InstallContourHTTPProxy
 
 	// GatewayServiceType is the type of the service traffic enters the
 	// cluster through: LoadBalancer (the default), NodePort or ClusterIP.
@@ -222,6 +226,10 @@ func SystemObjects(in SystemInput) []runtime.Object {
 	// AI endpoint is the one workload apps reach, and runs apart from the
 	// admin API for exactly that reason.
 	objs = append(objs, donkeyGatewayObjects(in)...)
+	// Contour's shared-Gateway mode puts downstream TLS on root HTTPProxies.
+	// Include the control plane and callback here; app HTTPProxies arrive with
+	// their deploys through the same shared data plane.
+	objs = append(objs, contourSystemEdgeObjects(in)...)
 	objs = append(objs, aiObjects(in)...)
 	// The one optional attachment to machinery the cluster already runs —
 	// rendered only when named, so a plain installation stays CRD-free.
@@ -385,6 +393,10 @@ func serverDeployment(in SystemInput) *appsv1.Deployment {
 		{Name: "DONKEY_APP_GATEWAY_ISSUER_NAME", Value: in.AppGateway.IssuerName},
 		{Name: "DONKEY_APP_GATEWAY_ISSUER_KIND", Value: in.AppGateway.IssuerKind},
 		{Name: "DONKEY_APP_GATEWAY_ISSUER_GROUP", Value: in.AppGateway.IssuerGroup},
+		{Name: "DONKEY_CONTOUR_HTTP_PROXY_INGRESS_CLASS_NAME", Value: in.ContourHTTPProxy.IngressClassName},
+		{Name: "DONKEY_CONTOUR_HTTP_PROXY_ISSUER_NAME", Value: in.ContourHTTPProxy.IssuerName},
+		{Name: "DONKEY_CONTOUR_HTTP_PROXY_ISSUER_KIND", Value: in.ContourHTTPProxy.IssuerKind},
+		{Name: "DONKEY_CONTOUR_HTTP_PROXY_ISSUER_GROUP", Value: in.ContourHTTPProxy.IssuerGroup},
 		{Name: "DONKEY_OIDC_ISSUER", Value: in.OIDCIssuer},
 		secretEnv("DONKEY_OIDC_CLIENT_ID", "oidc-client-id"),
 		secretEnv("DONKEY_OIDC_CLIENT_SECRET", "oidc-client-secret"),

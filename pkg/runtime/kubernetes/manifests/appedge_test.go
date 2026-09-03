@@ -51,6 +51,55 @@ func TestAppGatewayObjects(t *testing.T) {
 	}
 }
 
+func TestContourHTTPProxyObjects(t *testing.T) {
+	in := testInput(t)
+	in.ContourHTTPProxy = ContourHTTPProxyConfig{
+		Namespace:        "donkey-system",
+		IngressClassName: "contour-private",
+		IssuerName:       "platform-ca",
+		IssuerKind:       "ClusterIssuer",
+		IssuerGroup:      "cert-manager.io",
+	}
+
+	objects, err := NetworkObjects(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := kindsOf(objects); got["ConfigMap"] != 1 || got["Certificate"] != 1 || got["HTTPProxy"] != 1 || got["Gateway"] != 0 || got["HTTPRoute"] != 0 {
+		t.Fatalf("unexpected Contour network objects: %v", got)
+	}
+	rendered, err := Render(objects)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"apiVersion: projectcontour.io/v1",
+		"kind: HTTPProxy",
+		"namespace: donkey-system",
+		"ingressClassName: contour-private",
+		"fqdn: shop.acme.apps.example.com",
+		"secretName: donkey-app-acme.shop-tls",
+		"enableWebsockets: true",
+		"response: 600s",
+		"idle: 600s",
+		"name: donkey-gateway",
+		"port: 80",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Errorf("Contour edge should contain %q:\n%s", want, rendered)
+		}
+	}
+}
+
+func TestAppEdgeStrategiesAreExclusive(t *testing.T) {
+	in := testInput(t)
+	in.AppGateway = AppGatewayConfig{Namespace: "donkey-system", ClassName: "platform", IssuerName: "platform-ca"}
+	in.ContourHTTPProxy = ContourHTTPProxyConfig{Namespace: "donkey-system", IngressClassName: "contour", IssuerName: "platform-ca"}
+	if _, err := NetworkObjects(in); err == nil || !strings.Contains(err.Error(), "cannot both expose") {
+		t.Fatalf("two per-host edge strategies should fail clearly, got %v", err)
+	}
+}
+
 func TestAppEdgeNamesIncludeLogicalSpace(t *testing.T) {
 	first := AppEdgeName("alpha", "shop")
 	second := AppEdgeName("beta", "shop")
@@ -70,7 +119,7 @@ func TestAppGatewayObjectsAreOptional(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := kindsOf(objects); got["Gateway"] != 0 || got["Certificate"] != 0 || got["HTTPRoute"] != 0 {
+	if got := kindsOf(objects); got["Gateway"] != 0 || got["Certificate"] != 0 || got["HTTPRoute"] != 0 || got["HTTPProxy"] != 0 {
 		t.Fatalf("an unconfigured installation must not render app edge objects: %v", got)
 	}
 
@@ -80,8 +129,18 @@ func TestAppGatewayObjectsAreOptional(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := kindsOf(objects); got["Gateway"] != 0 || got["Certificate"] != 0 || got["HTTPRoute"] != 0 {
+	if got := kindsOf(objects); got["Gateway"] != 0 || got["Certificate"] != 0 || got["HTTPRoute"] != 0 || got["HTTPProxy"] != 0 {
 		t.Fatalf("an internal app must not render app edge objects: %v", got)
+	}
+
+	in.AppGateway = AppGatewayConfig{}
+	in.ContourHTTPProxy = ContourHTTPProxyConfig{Namespace: "donkey-system", IngressClassName: "contour", IssuerName: "platform-ca"}
+	objects, err = NetworkObjects(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := kindsOf(objects); got["Certificate"] != 0 || got["HTTPProxy"] != 0 {
+		t.Fatalf("an internal app must not render a Contour edge: %v", got)
 	}
 }
 

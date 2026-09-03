@@ -158,6 +158,7 @@ func main() {
 			AddonImages:           cfg.AddonImages,
 			AddonImagePullSecrets: cfg.AddonImagePullSecrets,
 			AppGateway:            cfg.AppGateway,
+			ContourHTTPProxy:      cfg.ContourHTTPProxy,
 			TelemetryKey:          cfg.TelemetryKey,
 			IsolateSpaces:         cfg.IsolateSpaces,
 			RestrictEgress:        cfg.RestrictEgress,

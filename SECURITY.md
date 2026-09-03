@@ -87,6 +87,14 @@ reserved. Selectors and ownership checks use only immutable `donkey.local/*`
 identity labels; the descriptive `app.kubernetes.io/*` labels never grant
 authority.
 
+**Optional managed-edge authority stays namespaced.** In the confined
+two-namespace topology, donkey-server may write Gateway, HTTPRoute, HTTPProxy
+and Certificate objects only in its system namespace; it receives no access to
+the platform Gateway namespace. A Contour operator admitting root HTTPProxies
+from that namespace is explicitly delegating virtual-host authority and should
+constrain allowed hostnames and issuer policy at admission when the shared
+edge serves unrelated tenants.
+
 **Cryptography.** All randomness is `crypto/rand` (no `math/rand`, no
 `rand.Seed`). No `InsecureSkipVerify` anywhere; `--ca-file` *adds* to the
 system pool rather than replacing it, an unreadable file is a hard error, and

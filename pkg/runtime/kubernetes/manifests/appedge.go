@@ -1,6 +1,8 @@
 package manifests
 
 import (
+	"fmt"
+
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 
@@ -32,6 +34,19 @@ func AppEdgeName(space, app string) string { return "donkey-app-" + space + "." 
 
 func AppCertificateSecretName(space, app string) string { return AppEdgeName(space, app) + "-tls" }
 
+// AppEdgeObjects renders the configured per-host edge. The two strategies are
+// intentionally exclusive: otherwise two independent proxies would claim the
+// same hostname and DNS would decide which configuration happened to answer.
+func AppEdgeObjects(in Input) ([]runtime.Object, error) {
+	if in.AppGateway.Enabled() && in.ContourHTTPProxy.Enabled() {
+		return nil, fmt.Errorf("appGateway and contourHTTPProxy cannot both expose %s", in.Domain)
+	}
+	if in.ContourHTTPProxy.Enabled() {
+		return ContourHTTPProxyObjects(in), nil
+	}
+	return AppGatewayObjects(in)
+}
+
 // AppGatewayObjects returns the optional external edge for an app. It is
 // exported because both a deploy and a console network change render the same
 // objects; neither path should be able to leave the certificate or Gateway
@@ -47,17 +62,6 @@ func AppGatewayObjects(in Input) ([]runtime.Object, error) {
 		return nil, err
 	}
 	edgeLabels := Labels(in.Space, in.App.Name, RoleEdge)
-	// cert-manager copies secretTemplate labels to the generated TLS Secret.
-	// The apply/render boundary adds the installation label to both maps.
-	labels := toAnyMap(edgeLabels)
-	issuerKind := in.AppGateway.IssuerKind
-	if issuerKind == "" {
-		issuerKind = "ClusterIssuer"
-	}
-	issuerGroup := in.AppGateway.IssuerGroup
-	if issuerGroup == "" {
-		issuerGroup = "cert-manager.io"
-	}
 	parent := map[string]any{
 		"group": "gateway.networking.k8s.io",
 		"kind":  "Gateway",
@@ -67,30 +71,9 @@ func AppGatewayObjects(in Input) ([]runtime.Object, error) {
 		parent["namespace"] = in.AppGateway.RouteNamespace
 	}
 
-	certificate := &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": "cert-manager.io/v1",
-		"kind":       "Certificate",
-		"metadata": map[string]any{
-			"name":      name,
-			"namespace": in.AppGateway.Namespace,
-			"labels":    labels,
-		},
-		"spec": map[string]any{
-			"secretName": AppCertificateSecretName(in.Space, in.App.Name),
-			"secretTemplate": map[string]any{
-				"labels": labels,
-			},
-			// Key type, lifetime, renewal window and usages are deliberately
-			// left to cert-manager and the configured issuer. Enterprise PKI
-			// policies commonly constrain them more tightly than public CAs.
-			"dnsNames": []any{in.Domain},
-			"issuerRef": map[string]any{
-				"name":  in.AppGateway.IssuerName,
-				"kind":  issuerKind,
-				"group": issuerGroup,
-			},
-		},
-	}}
+	certificate := managedCertificate(name, in.AppGateway.Namespace,
+		AppCertificateSecretName(in.Space, in.App.Name), []string{in.Domain}, edgeLabels,
+		in.AppGateway.IssuerName, in.AppGateway.IssuerKind, in.AppGateway.IssuerGroup)
 
 	gateway := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "gateway.networking.k8s.io/v1",
@@ -98,7 +81,7 @@ func AppGatewayObjects(in Input) ([]runtime.Object, error) {
 		"metadata": map[string]any{
 			"name":      gatewayName,
 			"namespace": in.AppGateway.Namespace,
-			"labels":    labels,
+			"labels":    toAnyMap(edgeLabels),
 		},
 		"spec": map[string]any{
 			"gatewayClassName": in.AppGateway.ClassName,
@@ -142,7 +125,7 @@ func AppGatewayObjects(in Input) ([]runtime.Object, error) {
 		"metadata": map[string]any{
 			"name":      name,
 			"namespace": in.AppGateway.Namespace,
-			"labels":    labels,
+			"labels":    toAnyMap(edgeLabels),
 		},
 		"spec": map[string]any{
 			"parentRefs": []any{parent},
@@ -166,4 +149,49 @@ func AppGatewayObjects(in Input) ([]runtime.Object, error) {
 	}}
 
 	return []runtime.Object{certificate, gateway, route}, nil
+}
+
+// managedCertificate is shared by both external-edge strategies and the
+// Contour control-plane edge. cert-manager copies secretTemplate labels to
+// the generated TLS Secret; the apply/render boundary adds the installation
+// label to both maps.
+func managedCertificate(name, namespace, secretName string, dnsNames []string, objectLabels map[string]string,
+	issuerName, issuerKind, issuerGroup string,
+) *unstructured.Unstructured {
+	if issuerKind == "" {
+		issuerKind = "ClusterIssuer"
+	}
+	if issuerGroup == "" {
+		issuerGroup = "cert-manager.io"
+	}
+	names := make([]any, 0, len(dnsNames))
+	for _, host := range dnsNames {
+		if host != "" {
+			names = append(names, host)
+		}
+	}
+	return &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "cert-manager.io/v1",
+		"kind":       "Certificate",
+		"metadata": map[string]any{
+			"name":      name,
+			"namespace": namespace,
+			"labels":    toAnyMap(objectLabels),
+		},
+		"spec": map[string]any{
+			"secretName": secretName,
+			"secretTemplate": map[string]any{
+				"labels": toAnyMap(objectLabels),
+			},
+			// Key type, lifetime, renewal window and usages are deliberately
+			// left to cert-manager and the configured issuer. Enterprise PKI
+			// policies commonly constrain them more tightly than public CAs.
+			"dnsNames": names,
+			"issuerRef": map[string]any{
+				"name":  issuerName,
+				"kind":  issuerKind,
+				"group": issuerGroup,
+			},
+		},
+	}}
 }

@@ -471,6 +471,69 @@ func TestInstallAttachmentValidation(t *testing.T) {
 	if err := appGateway.Validate(); err != nil {
 		t.Errorf("documented app Gateway name template should be valid: %v", err)
 	}
+
+	var contour InstallContourHTTPProxy
+	if err := contour.Validate(); err != nil {
+		t.Errorf("no contourHTTPProxy block is the default: %v", err)
+	}
+	contour.IssuerName = "platform-ca"
+	if err := contour.Validate(); err == nil {
+		t.Error("a Contour issuer without an ingress class cannot select a data plane")
+	}
+	contour.IngressClassName = "contour.private"
+	if err := contour.Validate(); err != nil {
+		t.Errorf("ingress class and issuer are the intended Contour setup: %v", err)
+	}
+	if !contour.Enabled() || contour.CertificateIssuerKind() != "ClusterIssuer" || contour.CertificateIssuerGroup() != "cert-manager.io" {
+		t.Errorf("Contour edge defaults not applied: %+v", contour)
+	}
+	contour.IngressClassName = "Not A Class"
+	if err := contour.Validate(); err == nil {
+		t.Error("an invalid Contour ingress class should be rejected")
+	}
+
+	contour.IngressClassName = "contour"
+	modes := InstallGateway{AppGateway: appGateway, ContourHTTPProxy: contour}
+	if !modes.UsesExternalTLS() {
+		t.Error("a configured managed edge must report external TLS")
+	}
+	if err := modes.Validate(); err == nil || !strings.Contains(err.Error(), "alternative") {
+		t.Errorf("two per-host edge modes should be rejected, got %v", err)
+	}
+	modes.AppGateway = InstallAppGateway{}
+	modes.HTTPRoute = InstallHTTPRoute{Name: "shared"}
+	if err := modes.Validate(); err == nil || !strings.Contains(err.Error(), "both expose") {
+		t.Errorf("aggregate HTTPRoute and Contour hosts should be rejected, got %v", err)
+	}
+}
+
+func TestContourHTTPProxyInstallFileRoundTrip(t *testing.T) {
+	const input = `
+gateway:
+  contourHTTPProxy:
+    ingressClassName: contour-private
+    issuerName: company-pki
+    issuerKind: ClusterIssuer
+    issuerGroup: cert-manager.io
+`
+	var f InstallFile
+	if err := yaml.UnmarshalStrict([]byte(input), &f); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.Gateway.ContourHTTPProxy; got.IngressClassName != "contour-private" || got.IssuerName != "company-pki" {
+		t.Fatalf("gateway.contourHTTPProxy = %+v", got)
+	}
+	out, err := yaml.Marshal(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var again InstallFile
+	if err := yaml.UnmarshalStrict(out, &again); err != nil {
+		t.Fatalf("round trip: %v\n%s", err, out)
+	}
+	if again.Gateway.ContourHTTPProxy != f.Gateway.ContourHTTPProxy {
+		t.Fatalf("round trip changed Contour settings: %+v", again.Gateway.ContourHTTPProxy)
+	}
 }
 
 // The example install files are the first thing a person copies — they have
@@ -492,10 +555,7 @@ func TestExampleInstallFilesLoad(t *testing.T) {
 		if err := f.Kubernetes.Validate(); err != nil {
 			t.Errorf("%s: %v", m, err)
 		}
-		if err := f.Gateway.HTTPRoute.Validate(); err != nil {
-			t.Errorf("%s: %v", m, err)
-		}
-		if err := f.Gateway.AppGateway.Validate(); err != nil {
+		if err := f.Gateway.Validate(); err != nil {
 			t.Errorf("%s: %v", m, err)
 		}
 		if err := f.Build.Validate(); err != nil {

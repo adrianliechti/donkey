@@ -67,6 +67,9 @@ type Input struct {
 	// AppGateway provisions an external Gateway API entrypoint for Domain.
 	// Empty leaves edge provisioning to the installation.
 	AppGateway AppGatewayConfig
+	// ContourHTTPProxy provisions the same exact-host certificate through a
+	// root Contour HTTPProxy on one shared Contour/Envoy data plane.
+	ContourHTTPProxy ContourHTTPProxyConfig
 	// Decisions records what deploy-time analysis filled in (storage,
 	// healthcheck) as an annotation on the Deployment, so later no-build
 	// deploys can keep those decisions instead of silently dropping them.
@@ -143,12 +146,12 @@ func AppObjects(in Input) ([]runtime.Object, error) {
 // NetworkObjects renders the gateway's routing entries. None of it depends on
 // the image, which is what lets the console change exposure without a deploy.
 // donkey's own edge issues certificates itself; an optional managed edge adds
-// its namespaced Gateway API and cert-manager objects here.
+// either portable Gateway API objects or Contour's shared-edge objects here.
 func NetworkObjects(in Input) ([]runtime.Object, error) {
 	var objs []runtime.Object
 	if in.Domain != "" {
 		objs = append(objs, appRoute(in))
-		edge, err := AppGatewayObjects(in)
+		edge, err := AppEdgeObjects(in)
 		if err != nil {
 			return nil, err
 		}

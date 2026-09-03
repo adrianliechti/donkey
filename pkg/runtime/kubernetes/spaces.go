@@ -74,12 +74,13 @@ func (c *Client) DeleteSpaceIsolation(ctx context.Context, namespace, space stri
 	}, false)
 }
 
-// DeleteSpaceEdges retracts cross-namespace Gateway API and cert-manager
-// objects before their workload namespace disappears. The generated TLS
-// Secret receives the same labels through Certificate.spec.secretTemplate.
+// DeleteSpaceEdges retracts Gateway API/Contour and cert-manager objects from
+// the system namespace before their workload namespace disappears. The
+// generated TLS Secret receives the same labels through
+// Certificate.spec.secretTemplate.
 func (c *Client) DeleteSpaceEdges(ctx context.Context, namespace, space string) error {
 	return c.deleteKindsBySelector(ctx, namespace,
-		[]string{"HTTPRoute", "Gateway", "Certificate", "Secret"},
+		[]string{"HTTPRoute", "Gateway", "HTTPProxy", "Certificate", "Secret"},
 		map[string]string{
 			manifests.LabelSpace: space,
 			manifests.LabelRole:  manifests.RoleEdge,
@@ -92,11 +93,34 @@ func (c *Client) DeleteSpaceEdges(ctx context.Context, namespace, space string) 
 // cleanup.
 func (c *Client) DeleteAppEdges(ctx context.Context, namespace, space, app string) error {
 	return c.deleteKindsBySelector(ctx, namespace,
-		[]string{"HTTPRoute", "Gateway", "Certificate", "Secret"},
+		[]string{"HTTPRoute", "Gateway", "HTTPProxy", "Certificate", "Secret"},
 		map[string]string{
 			manifests.LabelSpace: space,
 			manifests.LabelApp:   app,
 			manifests.LabelRole:  manifests.RoleEdge,
+		}, false)
+}
+
+// DeleteAppEdgeKinds retracts stale objects when an installation switches
+// between its dedicated-Gateway and shared-Contour strategies. The active
+// Certificate and generated Secret are common to both and are deliberately
+// left alone.
+func (c *Client) DeleteAppEdgeKinds(ctx context.Context, namespace, space, app string, kinds ...string) error {
+	return c.deleteKindsBySelector(ctx, namespace, kinds,
+		map[string]string{
+			manifests.LabelSpace: space,
+			manifests.LabelApp:   app,
+			manifests.LabelRole:  manifests.RoleEdge,
+		}, false)
+}
+
+// DeleteSystemContourEdges removes the optional control-plane Certificate,
+// generated Secret and HTTPProxies when an installation leaves Contour mode.
+func (c *Client) DeleteSystemContourEdges(ctx context.Context, namespace string) error {
+	return c.deleteKindsBySelector(ctx, namespace,
+		[]string{"HTTPProxy", "Certificate", "Secret"},
+		map[string]string{
+			manifests.LabelRole: manifests.SystemRole(manifests.ContourSystemEdgeName),
 		}, false)
 }
 

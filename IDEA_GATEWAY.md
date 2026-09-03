@@ -1,250 +1,247 @@
-# Incoming traffic and managed Gateway design
+# Incoming traffic and managed edge design
 
-Status: reviewed design; the dynamic per-app edge exists, but the production
-mode still needs the control-plane edge, configuration invariants, and status
-diagnostics described below.
+Status: implemented, including the Project Contour shared-Gateway fallback.
+Gateway/Certificate readiness and DNS diagnostics remain future work.
 
-## Goal
+## One application boundary, several TLS owners
 
-Keep one application-level security boundary across every runtime while
-supporting two very different operational environments:
+Every request still passes through `donkey-gateway`. External infrastructure
+may terminate TLS, but it does not replace donkey's hostname/path routing,
+OIDC flow, access rules, identity-header sanitization, or the sealed token used
+for `donkey-server`.
 
-- Small standalone Docker installations use donkey's own edge and ACME.
-- Managed Kubernetes installations use platform Gateway API infrastructure
-  and cert-manager, with one Gateway and exact certificate per exposed app.
+The configuration names the resource contract instead of using a generic
+`mode` string:
 
-In every mode, traffic passes through `donkey-gateway`. It remains responsible
-for hostname/path routing, OIDC, access rules, identity-header sanitization,
-and minting a short-lived sealed token for `donkey-server` only.
-
-## Incoming traffic modes
-
-| Mode | Public entry | TLS owner | Coverage | Intended use |
+| Configuration | Public entry | Objects owned by donkey | Host coverage | TLS owner |
 |---|---|---|---|---|
-| Docker + ACME | Host ports 80/443 | donkey/ACME | Portal and apps | Small standalone public server |
-| Docker + CA | Host ports 80/443 | donkey's private CA | Portal and apps | Internal or local development |
-| Kubernetes native | LoadBalancer or NodePort | donkey ACME/CA | Portal and apps | Self-managed cluster |
-| Shared platform Gateway | Existing Gateway plus one HTTPRoute | Platform | Portal and all domain apps | Centrally managed cluster edge |
-| Dynamic per-app Gateway | One Gateway, Certificate and HTTPRoute per app | cert-manager/platform | Apps only currently | Managed production environment |
+| no edge block | `donkey-gateway` Service | no external-edge CRDs | portal and apps | donkey ACME/CA |
+| `gateway.httpRoute` | existing Gateway | one aggregate `HTTPRoute` | portal and all domain apps | platform listeners |
+| `gateway.appGateway` | GatewayClass | `Certificate`, `Gateway`, `HTTPRoute` per app | apps | cert-manager + app Gateway |
+| `gateway.contourHTTPProxy` | one existing Contour Gateway/Envoy | root `HTTPProxy` per host, app Certificates, one system Certificate | portal and apps | cert-manager + HTTPProxy |
 
-Docker ACME requires public DNS and inbound ports 80 and 443. For a laptop or
-an environment ACME cannot reach, `tls.mode: ca` is the appropriate local mode.
+This keeps the meaning visible in YAML and avoids pretending that a
+vendor-specific resource is portable Gateway API. The blocks also hold only
+the settings that their resource needs.
 
-## Common request path
+Compatibility rules are enforced before cluster access:
 
-The Kubernetes modes differ only in how a request reaches donkey's gateway:
+- Every external-TLS block requires `tls.mode: none`; otherwise the plain
+  upstream hop redirects back to the same public HTTPS URL forever.
+- `appGateway` and `contourHTTPProxy` are alternative per-host strategies.
+- `httpRoute` and `contourHTTPProxy` both expose the complete installation and
+  cannot be combined.
+- `httpRoute` and `appGateway` may be combined: the first can own the exact
+  portal/OAuth callback host while the second owns application hosts.
+- Docker rejects all Kubernetes edge blocks.
 
-```text
-Native:
-browser -> donkey-gateway:443 -> OIDC/access/routing -> app or portal
+`gateway.serviceType: ClusterIP` is recommended for all external modes. It is
+not mandatory because some installations intentionally keep a second private
+entry to the service.
 
-Shared platform:
-browser -> platform Gateway:443
-        -> HTTPRoute -> donkey-gateway:80
-        -> OIDC/access/routing -> app or portal
+## Why not ListenerSet on Project Contour?
 
-Dynamic per-app:
-browser -> per-app Gateway:443
-        -> per-app HTTPRoute -> donkey-gateway:80
-        -> OIDC/access/routing -> app
-```
+Gateway API `ListenerSet` is the portable resource intended for this ownership
+split: a tenant attaches hostname/TLS listeners to a platform-owned Gateway.
+It became Standard-channel GA in Gateway API v1.5. Project Contour's current
+main line still consumes Gateway API v1.3 and does not advertise ListenerSet
+support, so emitting one would create an unhandled resource.
 
-The hop from a platform Gateway to `donkey-gateway` is deliberately plain
-HTTP. TLS is already terminated, and `donkey-gateway` remains the
-application-level security boundary. It removes forged identity and access
-token headers, preserves the visitor's host, and forwards a sealed token only
-on the control-plane route. See `internal/gateway/proxy.go`.
+A certificate cannot move to an `HTTPRoute` as a workaround. HTTPRoute begins
+after TLS is terminated; its API has no downstream certificate field. In
+portable Gateway API, the certificate belongs to a listener on a `Gateway` or
+`ListenerSet`.
 
-## Production review
+Contour already has a supported native equivalent. A Gateway listener using
+`protocol: projectcontour.io/https` carries no TLS details; root HTTPProxy
+objects define `spec.virtualhost.fqdn` and
+`spec.virtualhost.tls.secretName`. This adds SNI virtual hosts to one Envoy
+data plane without adding Gateways or load balancers.
 
-### 1. The dynamic mode does not expose the portal or central callback
+## Contour shared-Gateway contract
 
-Dynamic edge objects are generated only while rendering an application in
-`pkg/runtime/kubernetes/manifests/appedge.go`. The portal remains an internal
-donkey route ConfigMap rendered by
-`pkg/runtime/kubernetes/manifests/system.go`.
-
-An `appGateway`-only installation therefore has:
-
-- Per-app Gateways and certificates.
-- No external Gateway or certificate for `https://<domain>`.
-- No external path to `/oauth2/callback` on the base domain.
-
-The base-domain callback is required even when login starts from
-`<app>.<space>.<domain>`. Until the dynamic mode provisions its own system
-edge, production should combine an exact-apex shared Gateway attachment with
-the dynamic per-app edge:
+The platform owns a single Gateway using Contour's documented hybrid listener
+shape:
 
 ```yaml
-domain: apps.bank.example
-# Keep serverHost unset: portal and callback then share the exact apex.
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: main
+  namespace: gateway-infra
+spec:
+  gatewayClassName: contour
+  listeners:
+    - name: http
+      protocol: HTTP
+      port: 80
+      allowedRoutes:
+        namespaces:
+          from: All
+    - name: https
+      protocol: projectcontour.io/https
+      port: 443
+      allowedRoutes:
+        namespaces:
+          from: All
+```
 
+`from: All` is part of Contour's documented Gateway/HTTPProxy hybrid contract.
+Contain who can claim root virtual hosts through Contour's restricted root
+namespaces and Kubernetes RBAC. The allowed list must include `donkey-system`
+(or the chosen system namespace), and that Contour instance must accept a
+distinct ingress class for HTTPProxy.
+
+This is a real delegation of virtual-host authority. The broad custom HTTPS
+listener does not constrain HTTPProxy hostnames, so a platform that needs a
+hard domain boundary should pair the namespace restriction with cert-manager
+issuer policy and admission validation of `spec.virtualhost.fqdn`.
+
+Donkey selects it as follows:
+
+```yaml
 gateway:
   serviceType: ClusterIP
-
-  # The platform-owned, exact-host listener for portal/API/OIDC callback.
-  httpRoute:
-    name: donkey-control-plane
-    namespace: infra
-    sectionName: donkey-apex
-
-  # A dedicated edge and exact certificate for every exposed app.
-  appGateway:
-    className: platform
-    nameTemplate: "$namespace-$hash"
-    routeNamespace: projectcontour
-    issuerName: platform-ca
+  contourHTTPProxy:
+    ingressClassName: contour-main
+    issuerName: corporate-pki
     # issuerKind: ClusterIssuer
     # issuerGroup: cert-manager.io
-
 tls:
   mode: none
 ```
 
-The `donkey-apex` listener must use the exact hostname
-`apps.bank.example`. Donkey's shared HTTPRoute also carries
-`*.apps.bank.example`, but Gateway hostname intersection limits the effective
-attachment to the exact listener hostname. The per-app Gateways then own the
-application hostnames.
-
-Gateway API route wildcards match one or more DNS labels, unlike TLS
-certificate wildcards, which cover only one label. This is why a static route
-can describe all app hostnames while the production certificates must be
-exact per-app certificates (or listener/certificate sets per space).
-
-Longer term, `appGateway` should also render a control-plane Certificate,
-Gateway and HTTPRoute for the base domain and, when distinct, `serverHost`.
-
-### 2. `tls.mode: none` is mandatory but is not enforced
-
-Both platform Gateway modes use the plain HTTP port of the
-`donkey-gateway` Service. If donkey remains in `acme` or `ca` mode, that
-listener redirects to the same public HTTPS URL:
+Per exposed app, donkey creates in its system namespace:
 
 ```text
-platform HTTPS -> donkey HTTP -> redirect to HTTPS
-                              <- repeated request
+Certificate -> generated kubernetes.io/tls Secret
+                         |
+root HTTPProxy (exact fqdn + secretName)
+                         |
+                         +-> donkey-gateway Service :80
 ```
 
-The installer currently validates each field independently. It should enforce
-these cross-field rules:
+The control plane is not an afterthought in this mode. Install creates one SAN
+Certificate and a root HTTPProxy for the base `domain`, where the central
+`/oauth2/callback` lives. When `serverHost` differs, a second HTTPProxy uses the
+same Certificate and Secret. Internal apps have no hostname and create no
+external edge.
 
-- `gateway.httpRoute` or `gateway.appGateway` requires `tls.mode: none`.
-- A platform Gateway mode should normally require
-  `gateway.serviceType: ClusterIP` so no second public edge is exposed.
-- `appGateway` without a control-plane edge should be rejected until it can
-  provision one itself.
-- Docker should reject Kubernetes-only Gateway settings instead of silently
-  ignoring them.
+The HTTPProxy and Service share a namespace, as do the HTTPProxy and TLS
+Secret. No Contour TLS delegation or cross-namespace backend permission is
+needed. A namespaced cert-manager `Issuer` must therefore exist in the system
+namespace; a `ClusterIssuer` is the usual platform contract.
 
-Until those rules exist, production configuration must explicitly set
-`tls.mode: none` and `gateway.serviceType: ClusterIP`.
+## Other platform contracts
 
-### 3. Gateway and certificate readiness is not checked
+### Aggregate HTTPRoute
 
-Install checks that the necessary CRDs exist, but deploy does not inspect:
+```yaml
+gateway:
+  serviceType: ClusterIP
+  httpRoute:
+    name: shared-gateway
+    namespace: gateway-infra
+    sectionName: donkey
+tls:
+  mode: none
+```
 
-- `Certificate` Ready status.
-- `Gateway` Accepted and Programmed status.
-- `HTTPRoute` Accepted and ResolvedRefs status.
+Donkey creates one HTTPRoute for `<domain>` and `*.<domain>`. The platform owns
+listeners, Certificates, Secrets, DNS, and route admission. A route wildcard
+can match app names at several depths, but an X.509 wildcard covers only one
+label; the listener certificate plan must account for that difference.
+
+### Dedicated app Gateways
+
+```yaml
+gateway:
+  serviceType: ClusterIP
+  httpRoute:                         # portal and OAuth callback
+    name: donkey-control-plane
+    namespace: gateway-infra
+    sectionName: donkey-apex
+  appGateway:
+    className: platform
+    nameTemplate: "$namespace-$hash"
+    routeNamespace: projectcontour   # only for a mirroring platform
+    issuerName: platform-ca
+tls:
+  mode: none
+```
+
+The per-app Certificate, source Gateway, TLS Secret, and HTTPRoute live in
+donkey's system namespace. `routeNamespace` is for platforms that mirror the
+Gateway into a controller namespace; that platform must also mirror/rewrite
+the Secret reference and retain route admission from donkey's namespace.
+Donkey receives no write permission in that infrastructure namespace.
+
+`appGateway` currently covers applications only, so an installation needs the
+aggregate HTTPRoute (or another platform-owned exact-apex route) for the portal
+and central OAuth callback.
+
+## Lifecycle and authority
+
+- Install preflight checks the exact optional APIs a selected contract needs:
+  Gateway/HTTPRoute, Certificate, or HTTPProxy/Certificate.
+- Managed edge objects and generated TLS Secrets carry the installation,
+  logical space/app, and edge-role labels used for guarded cleanup.
+- Write permissions for Gateway, HTTPRoute, HTTPProxy, and Certificate stay in
+  the system namespace in the restricted two-namespace topology.
+- Deploy and network updates apply the active edge first, then remove only the
+  inactive strategy. The common Certificate/Secret survives a switch.
+- Making an app internal or destroying it retracts every edge kind and its
+  generated Secret. Removing Contour mode retracts its system edge.
+- Re-installing with a different mode reconciles every already-deployed app
+  from its route ConfigMap: the replacement is applied before the inactive
+  strategy is removed. Deploy and network updates keep reconciling one app at
+  a time afterward.
+- This is event-driven reconciliation, not a second always-running operator.
+  cert-manager continuously owns Certificate/Secret issuance and renewal, and
+  Contour continuously consumes HTTPProxy/Secret changes. Deleting a donkey-
+  owned top-level object is repaired by the next install, deploy, or network
+  update rather than by a polling loop.
+
+## Common request paths
+
+```text
+Native:
+browser -> donkey-gateway:443 -> OIDC/access/routing -> portal or app
+
+Aggregate Gateway API:
+browser -> platform Gateway:443 -> HTTPRoute -> donkey-gateway:80
+        -> OIDC/access/routing -> portal or app
+
+Dedicated app Gateway:
+browser -> app Gateway:443 -> app HTTPRoute -> donkey-gateway:80
+        -> OIDC/access/routing -> app
+
+Shared Contour:
+browser -> main Envoy:443 -> root HTTPProxy -> donkey-gateway:80
+        -> OIDC/access/routing -> portal or app
+```
+
+The internal hop is deliberately plain HTTP after platform TLS termination.
+The external proxy must preserve the original Host header; donkey-gateway uses
+it as the routing and login boundary.
+
+## Remaining production diagnostics
+
+Object creation is supported, but deploy and `donkey doctor` do not yet read:
+
+- cert-manager `Certificate` Ready status;
+- Gateway Accepted/Programmed conditions;
+- HTTPRoute Accepted/ResolvedRefs conditions;
+- HTTPProxy validity status;
 - Gateway address or DNS readiness.
 
-`donkey doctor` currently probes only the internal `donkey-gateway` health
-Service. A Certificate or Route can therefore be rejected while deploy and
-doctor still describe the internal gateway as healthy.
-
-The managed edge needs status diagnostics in deploy and doctor. Deploy should
-either wait for the edge or return a clear note that certificate/Gateway
-provisioning is still in progress. The provider interface already permits
-such a note.
-
-### 4. `routeNamespace` is a platform contract
-
-With `routeNamespace: projectcontour`:
-
-- Donkey creates the source Gateway, Certificate, TLS Secret and HTTPRoute in
-  its system namespace.
-- The HTTPRoute points at the expected mirrored Gateway in
-  `projectcontour`.
-- The platform must mirror the Gateway and TLS Secret, or rewrite the
-  certificate reference and arrange an appropriate `ReferenceGrant`.
-- The mirrored listener must retain the `allowedRoutes` selector admitting
-  donkey's system namespace.
-
-Cross-namespace Route-to-Gateway attachment is authorized by the target
-listener's `allowedRoutes`. Cross-namespace Gateway-to-Secret references are
-authorized with a `ReferenceGrant` in the Secret namespace.
-
-DNS is another part of this contract. Either every mirrored Gateway uses a
-shared platform VIP reachable through wildcard DNS, or the platform must
-create/update DNS from each Gateway's assigned address. Donkey does not
-currently manage DNS or verify it.
+A rejected certificate or route can therefore coexist with a healthy internal
+donkey-gateway. Status checks should be the next managed-edge increment.
 
 References:
 
-- <https://gateway-api.sigs.k8s.io/docs/concepts/hostnames/>
-- <https://gateway-api.sigs.k8s.io/docs/concepts/security/>
+- <https://gateway-api.sigs.k8s.io/reference/api-types/listenerset/>
 - <https://gateway-api.sigs.k8s.io/guides/user-guides/tls/>
+- <https://projectcontour.io/docs/main/config/gateway-api/>
+- <https://projectcontour.io/docs/main/config/tls-termination/>
 - <https://cert-manager.io/docs/usage/certificate/>
-
-### 5. Production NetworkPolicies must remain narrow
-
-Workload pods must not receive ingress to system port 8088: that is
-`donkey-server`. The separated `donkey-ai` endpoint listens on 8089. A broad
-policy selecting every system pod would weaken the rendered gateway-only
-policy protecting the admin API.
-
-The relevant traffic is:
-
-```text
-platform dataplane namespace -> donkey-gateway pod :8090
-donkey-gateway pod            -> workload app pods :application ports
-workload app pods             -> donkey-ai pod :8089
-donkey-gateway pod            -> donkey-server pod :8088
-donkey-server pod             -> donkey-ai pod :8089
-```
-
-Donkey already renders narrow policies for server, BuildKit and AI traffic.
-A platform policy should add only the environment-specific flows, selecting
-`donkey-gateway` rather than every pod in the system namespace. A workload
-namespace with blanket default-deny also needs a narrow rule allowing the
-Donkey gateway to reach application pods.
-
-## What is already in good shape
-
-- Every mode still uses `donkey-gateway` for application-level routing and
-  authentication.
-- The external Gateway never receives direct access to `donkey-server` or
-  app routing configuration; it forwards to one ClusterIP Service.
-- Per-app Gateway, HTTPRoute and Certificate write permissions are confined
-  to donkey's system namespace in the two-namespace deployment.
-- The server receives no permission in the infrastructure namespace named by
-  `routeNamespace`.
-- The per-app Certificate follows the enterprise issuer's key, lifetime,
-  renewal and usage policy instead of hard-coding public-CA defaults.
-- Internal apps create no dynamic edge objects, and destroy/network changes
-  clean up the Gateway, Route, Certificate and TLS Secret.
-- The generated listener restricts route attachment to donkey's system
-  namespace with the standard immutable namespace-name label.
-
-## Recommended implementation order
-
-1. Render the control-plane Gateway, Certificate and HTTPRoute in dynamic
-   mode, covering the base callback domain and `serverHost`.
-2. Add cross-field validation for TLS mode, Service type and incompatible or
-   incomplete edge combinations.
-3. Read Gateway API and cert-manager status conditions during deploy and in
-   `donkey doctor`.
-4. Document the narrow platform NetworkPolicies alongside the final mode.
-5. Add an end-to-end managed-edge test covering portal login, central OAuth
-   callback, protected app traffic, public app traffic and cleanup.
-
-The intended end state is one explicit production mode, not an accidental
-combination of independent knobs:
-
-```text
-platform TLS/Gateway/cert-manager
-        -> donkey-gateway (plain HTTP inside the cluster)
-        -> OIDC, access policy and hostname/path routing
-        -> portal or application Service
-```

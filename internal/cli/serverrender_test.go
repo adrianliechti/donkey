@@ -121,6 +121,44 @@ func TestKubernetesRenderOmitsEverySecretValue(t *testing.T) {
 	}
 }
 
+func TestManagedEdgesRequireExternalTLSMode(t *testing.T) {
+	settings := &config.InstallFile{
+		Image:  "registry.example.com/donkey/server:test",
+		Domain: "apps.example.com",
+		Registry: config.InstallRegistry{Registry: config.Registry{
+			URL: "registry.example.com/donkey",
+		}},
+		Auth: config.InstallAuth{Issuer: "https://id.example.com"},
+		Gateway: config.InstallGateway{ContourHTTPProxy: config.InstallContourHTTPProxy{
+			IngressClassName: "contour-main",
+			IssuerName:       "platform-ca",
+		}},
+	}
+	if err := validateKubernetesSettings(settings); err == nil || !strings.Contains(err.Error(), "tls.mode: none") {
+		t.Fatalf("Contour edge with donkey TLS should be rejected clearly, got %v", err)
+	}
+	settings.TLS.Mode = "none"
+	if err := validateKubernetesSettings(settings); err != nil {
+		t.Fatalf("Contour edge with external TLS should validate: %v", err)
+	}
+	files, err := renderKubernetesBundle(settings)
+	if err != nil {
+		t.Fatalf("rendering Contour edge: %v", err)
+	}
+	manifest := string(files["manifests.yaml"].Data)
+	for _, want := range []string{"kind: HTTPProxy", "kind: Certificate", "fqdn: apps.example.com", "secretName: donkey-contour-edge-tls"} {
+		if !strings.Contains(manifest, want) {
+			t.Errorf("rendered Contour installation is missing %q", want)
+		}
+	}
+	if strings.Contains(manifest, "kind: Gateway\n") {
+		t.Error("Contour mode must not create or mutate the shared Gateway")
+	}
+	if err := validateDockerSettings(settings); err == nil || !strings.Contains(err.Error(), "Kubernetes-only") {
+		t.Fatalf("Docker should reject the Contour edge block, got %v", err)
+	}
+}
+
 func TestDockerRenderMatchesRuntimeTopologyWithoutSecrets(t *testing.T) {
 	settings := &config.InstallFile{
 		Runtime: "docker",

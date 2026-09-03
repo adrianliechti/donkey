@@ -209,10 +209,33 @@ same per-space policy.
 
 ## Using the cluster's edge
 
-donkey needs no Gateway API — but a cluster that standardizes on one can put
-its edge in front of donkey with one setting, checked at install: naming a
-gateway on a cluster that doesn't serve HTTPRoute is refused up front
-instead of failing mid-apply.
+donkey needs no ingress CRD — its own gateway is the default — but it can sit
+behind platform edge infrastructure. The configured block names the ownership
+contract; there is deliberately no ambiguous generic `mode` value:
+
+| Configuration | Shared platform data plane? | Objects donkey creates | TLS certificate owner |
+|---|---:|---|---|
+| no edge block | no | none | donkey (`tls.mode: acme` or `ca`) |
+| `gateway.httpRoute` | yes | one aggregate `HTTPRoute` | platform Gateway listeners |
+| `gateway.appGateway` | implementation-dependent | `Certificate`, `Gateway`, and `HTTPRoute` per app | cert-manager + each Gateway listener |
+| `gateway.contourHTTPProxy` | yes, one Contour/Envoy | root `HTTPProxy` per exact host, `Certificate` per app, and one control-plane certificate | cert-manager + each HTTPProxy virtual host |
+
+All three external-TLS arrangements require `tls.mode: none`; the installer
+rejects a redirect-loop-producing combination. `appGateway` may be combined
+with `httpRoute`: the former exposes apps and the latter commonly exposes the
+portal and central OAuth callback. `contourHTTPProxy` already covers both, so
+it is mutually exclusive with either block. Docker rejects all three as
+Kubernetes-only settings.
+
+Installation also checks the optional CRDs before applying anything, rather
+than failing halfway through an install. Re-running the installer reconciles
+the selected per-app edge for every deployed app, so changing between native,
+dedicated-Gateway, and Contour modes does not wait for each app's next deploy.
+Deploy, network, internal, and destroy operations reconcile their app's edge
+as well. cert-manager and the selected ingress controller continuously handle
+the Certificate/Secret and proxy data-plane state after those desired objects
+exist; donkey itself is event-driven rather than a polling Kubernetes
+operator.
 
 **Enter through the cluster's Gateway API gateway** instead of exposing
 donkey's edge Service:
@@ -270,6 +293,80 @@ mirrored listener must allow routes from donkey's system namespace. donkey
 puts that namespace selector on the source Gateway, but whether it is preserved
 is part of the platform's mirroring contract. Installation checks for Gateway,
 HTTPRoute and Certificate CRDs before changing the cluster.
+
+### One shared Project Contour Gateway with exact per-host certificates
+
+Gateway API `ListenerSet` expresses the ideal portable ownership split, but
+Project Contour does not currently implement it. A TLS certificate also cannot
+be placed on an `HTTPRoute`: downstream TLS belongs to a Gateway listener.
+
+Contour has a native fallback designed for mixing Gateway API with its
+`HTTPProxy` API. The platform owns one Gateway and one Contour/Envoy data plane;
+its HTTPS listener uses Contour's custom protocol and leaves TLS details to
+root HTTPProxies:
+
+```yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: main
+  namespace: gateway-infra
+spec:
+  gatewayClassName: contour
+  listeners:
+    - name: http
+      protocol: HTTP
+      port: 80
+      allowedRoutes:
+        namespaces:
+          from: All
+    - name: https
+      protocol: projectcontour.io/https
+      port: 443
+      allowedRoutes:
+        namespaces:
+          from: All
+```
+
+`from: All` is Contour's documented hybrid-mode listener contract. Contain
+who can claim virtual hosts with Contour's restricted root HTTPProxy
+namespaces and Kubernetes RBAC; the allowed root list must include donkey's
+system namespace. The Contour instance serving `main` must also accept a
+unique ingress class for these HTTPProxies. Configure donkey with the ingress
+class and cert-manager issuer:
+
+```yaml
+gateway:
+  serviceType: ClusterIP
+  contourHTTPProxy:
+    ingressClassName: contour-main
+    issuerName: corporate-pki
+    # issuerKind: ClusterIssuer       # default
+    # issuerGroup: cert-manager.io    # default
+tls:
+  mode: none
+```
+
+For each exposed app, donkey creates an exact-host cert-manager `Certificate`
+and a root `HTTPProxy` in its system namespace. The HTTPProxy sets
+`spec.virtualhost.tls.secretName` to the generated Secret and forwards to the
+same namespace's `donkey-gateway` Service. It also creates the equivalent
+control-plane edge for `<domain>` (the OAuth callback) and, when different,
+`serverHost`; those two hosts share one SAN certificate. Internal apps create
+neither object.
+
+This has ListenerSet's useful operational shape without pretending to use the
+unsupported API: adding an app adds a virtual host and certificate to the
+existing Envoy instance, not another Gateway, load balancer, Contour process,
+or listener. The platform Gateway is a prerequisite and is never mutated by
+donkey. The installer verifies both `projectcontour.io/v1` `HTTPProxy` and
+`cert-manager.io/v1` `Certificate` support.
+
+If `issuerKind` is a namespaced `Issuer`, that Issuer must live in donkey's
+system namespace. A `ClusterIssuer` is usually the simpler platform contract.
+Admitting root HTTPProxies delegates virtual-host authority to that namespace;
+the platform should constrain the issuer and, where required, use admission
+policy to limit `spec.virtualhost.fqdn` to donkey's domains.
 
 ## Several donkeys on one cluster
 

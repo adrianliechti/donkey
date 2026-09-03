@@ -43,6 +43,7 @@ var gvrFor = map[string]schema.GroupVersionResource{
 	// cluster that doesn't serve them.
 	"HTTPRoute":   {Group: "gateway.networking.k8s.io", Version: "v1", Resource: "httproutes"},
 	"Gateway":     {Group: "gateway.networking.k8s.io", Version: "v1", Resource: "gateways"},
+	"HTTPProxy":   {Group: "projectcontour.io", Version: "v1", Resource: "httpproxies"},
 	"Certificate": {Group: "cert-manager.io", Version: "v1", Resource: "certificates"},
 }
 

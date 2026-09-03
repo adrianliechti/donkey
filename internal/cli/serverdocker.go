@@ -502,6 +502,12 @@ func validateDockerSettings(settings *config.InstallFile) error {
 	if err := settings.Registry.ValidateRuntime("docker"); err != nil {
 		return err
 	}
+	if err := settings.Gateway.Validate(); err != nil {
+		return err
+	}
+	if settings.Gateway.UsesExternalTLS() {
+		return fmt.Errorf("gateway.httpRoute, gateway.appGateway and gateway.contourHTTPProxy are Kubernetes-only edge modes")
+	}
 	if err := settings.Build.ValidateProvenance(); err != nil {
 		return err
 	}

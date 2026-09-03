@@ -267,7 +267,7 @@ func TestDestructiveSelectorsAlwaysIncludeInstallationAndLogicalScope(t *testing
 		t.Fatal(err)
 	}
 	assertDeleteActions(t, dynamic.Actions(), []string{
-		"httproutes", "gateways", "certificates", "secrets",
+		"httproutes", "gateways", "httpproxies", "certificates", "secrets",
 	}, map[string]string{
 		manifests.LabelInstallation: "bank-donkey-system",
 		manifests.LabelSpace:        "team",
@@ -280,11 +280,31 @@ func TestDestructiveSelectorsAlwaysIncludeInstallationAndLogicalScope(t *testing
 		t.Fatal(err)
 	}
 	assertDeleteActions(t, dynamic.Actions(), []string{
-		"httproutes", "gateways", "certificates", "secrets",
+		"httproutes", "gateways", "httpproxies", "certificates", "secrets",
 	}, map[string]string{
 		manifests.LabelInstallation: "bank-donkey-system",
 		manifests.LabelSpace:        "team",
 		manifests.LabelRole:         manifests.RoleEdge,
+	})
+
+	dynamic.ClearActions()
+	if err := client.DeleteAppEdgeKinds(ctx, "bank-donkey-system", "team", "site", "HTTPProxy"); err != nil {
+		t.Fatal(err)
+	}
+	assertDeleteActions(t, dynamic.Actions(), []string{"httpproxies"}, map[string]string{
+		manifests.LabelInstallation: "bank-donkey-system",
+		manifests.LabelSpace:        "team",
+		manifests.LabelApp:          "site",
+		manifests.LabelRole:         manifests.RoleEdge,
+	})
+
+	dynamic.ClearActions()
+	if err := client.DeleteSystemContourEdges(ctx, "bank-donkey-system"); err != nil {
+		t.Fatal(err)
+	}
+	assertDeleteActions(t, dynamic.Actions(), []string{"httpproxies", "certificates", "secrets"}, map[string]string{
+		manifests.LabelInstallation: "bank-donkey-system",
+		manifests.LabelRole:         manifests.SystemRole(manifests.ContourSystemEdgeName),
 	})
 }
 
