@@ -26,6 +26,7 @@ addonImagePullSecrets:
 gateway:
   appGateway:
     className: private-edge
+    nameTemplate: "$namespace-$hash"
     routeNamespace: gateway-infra
     issuerName: company-pki
 build:
@@ -76,6 +77,7 @@ build:
 		t.Errorf("addonImagePullSecrets = %v", f.AddonImagePullSecrets)
 	}
 	if f.Gateway.AppGateway.ClassName != "private-edge" ||
+		f.Gateway.AppGateway.NameTemplate != "$namespace-$hash" ||
 		f.Gateway.AppGateway.RouteNamespace != "gateway-infra" ||
 		f.Gateway.AppGateway.IssuerName != "company-pki" {
 		t.Errorf("gateway.appGateway = %+v", f.Gateway.AppGateway)
@@ -460,6 +462,14 @@ func TestInstallAttachmentValidation(t *testing.T) {
 	}
 	if !appGateway.Enabled() || appGateway.CertificateIssuerKind() != "ClusterIssuer" || appGateway.CertificateIssuerGroup() != "cert-manager.io" {
 		t.Errorf("appGateway defaults not applied: %+v", appGateway)
+	}
+	appGateway.NameTemplate = "$unknown"
+	if err := appGateway.Validate(); err == nil {
+		t.Error("an unknown app Gateway name parameter should be rejected")
+	}
+	appGateway.NameTemplate = "$namespace-$hash"
+	if err := appGateway.Validate(); err != nil {
+		t.Errorf("documented app Gateway name template should be valid: %v", err)
 	}
 }
 

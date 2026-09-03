@@ -91,6 +91,7 @@ gateway:
   # A dedicated edge and exact certificate for every exposed app.
   appGateway:
     className: platform
+    nameTemplate: "$namespace-$hash"
     routeNamespace: projectcontour
     issuerName: platform-ca
     # issuerKind: ClusterIssuer

@@ -124,6 +124,7 @@ func FromEnv() (*Config, error) {
 		AddonImagePullSecrets: splitCommaSeparated(os.Getenv("DONKEY_ADDON_IMAGE_PULL_SECRETS")),
 		AppGateway: config.InstallAppGateway{
 			ClassName:      os.Getenv("DONKEY_APP_GATEWAY_CLASS_NAME"),
+			NameTemplate:   os.Getenv("DONKEY_APP_GATEWAY_NAME_TEMPLATE"),
 			RouteNamespace: os.Getenv("DONKEY_APP_GATEWAY_ROUTE_NAMESPACE"),
 			IssuerName:     os.Getenv("DONKEY_APP_GATEWAY_ISSUER_NAME"),
 			IssuerKind:     os.Getenv("DONKEY_APP_GATEWAY_ISSUER_KIND"),

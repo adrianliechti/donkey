@@ -14,7 +14,10 @@ func TestAppGatewayObjects(t *testing.T) {
 		IssuerName:     "platform-ca",
 	}
 
-	objects := NetworkObjects(in)
+	objects, err := NetworkObjects(in)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if got := kindsOf(objects); got["ConfigMap"] != 1 || got["Certificate"] != 1 || got["Gateway"] != 1 || got["HTTPRoute"] != 1 {
 		t.Fatalf("unexpected network objects: %v", got)
 	}
@@ -30,7 +33,7 @@ func TestAppGatewayObjects(t *testing.T) {
 		"kind: ClusterIssuer",
 		"group: cert-manager.io",
 		"gatewayClassName: platform",
-		"name: donkey-system.donkey-app-acme.shop-gw",
+		"name: shop",
 		"namespace: projectcontour",
 		"kubernetes.io/metadata.name: donkey-system",
 		"- shop.acme.apps.example.com",
@@ -63,13 +66,21 @@ func TestAppEdgeNamesIncludeLogicalSpace(t *testing.T) {
 
 func TestAppGatewayObjectsAreOptional(t *testing.T) {
 	in := testInput(t)
-	if got := kindsOf(NetworkObjects(in)); got["Gateway"] != 0 || got["Certificate"] != 0 || got["HTTPRoute"] != 0 {
+	objects, err := NetworkObjects(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := kindsOf(objects); got["Gateway"] != 0 || got["Certificate"] != 0 || got["HTTPRoute"] != 0 {
 		t.Fatalf("an unconfigured installation must not render app edge objects: %v", got)
 	}
 
 	in.AppGateway = AppGatewayConfig{Namespace: "donkey-system", ClassName: "platform", IssuerName: "platform-ca"}
 	in.Domain = ""
-	if got := kindsOf(NetworkObjects(in)); got["Gateway"] != 0 || got["Certificate"] != 0 || got["HTTPRoute"] != 0 {
+	objects, err = NetworkObjects(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := kindsOf(objects); got["Gateway"] != 0 || got["Certificate"] != 0 || got["HTTPRoute"] != 0 {
 		t.Fatalf("an internal app must not render app edge objects: %v", got)
 	}
 }
@@ -83,7 +94,11 @@ func TestAppGatewayIssuerCanBeExternal(t *testing.T) {
 		IssuerKind:  "VaultClusterIssuer",
 		IssuerGroup: "pki.example.com",
 	}
-	rendered, err := Render(AppGatewayObjects(in))
+	objects, err := AppGatewayObjects(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rendered, err := Render(objects)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,5 +106,30 @@ func TestAppGatewayIssuerCanBeExternal(t *testing.T) {
 		if !strings.Contains(rendered, want) {
 			t.Errorf("external issuer setting %q did not survive:\n%s", want, rendered)
 		}
+	}
+}
+
+func TestAppGatewayNameTemplate(t *testing.T) {
+	in := testInput(t)
+	in.AppGateway = AppGatewayConfig{
+		Namespace:    "lgt-donkey-platform",
+		ClassName:    "platform",
+		NameTemplate: "$namespace-$hash",
+		IssuerName:   "platform-ca",
+	}
+
+	objects, err := AppGatewayObjects(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rendered, err := Render(objects)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(rendered, "name: lgt-donkey-platform-") {
+		t.Fatalf("configured Gateway name template was not expanded:\n%s", rendered)
+	}
+	if strings.Contains(rendered, "lgt-donkey-platform.donkey-app-") {
+		t.Fatalf("legacy dotted Gateway name survived:\n%s", rendered)
 	}
 }

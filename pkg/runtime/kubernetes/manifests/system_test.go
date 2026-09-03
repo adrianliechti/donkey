@@ -167,6 +167,7 @@ func TestAppGatewaySettingsReachServer(t *testing.T) {
 	in := systemInput()
 	in.AppGateway = config.InstallAppGateway{
 		ClassName:      "platform",
+		NameTemplate:   "$namespace-$hash",
 		RouteNamespace: "projectcontour",
 		IssuerName:     "platform-ca",
 		IssuerKind:     "ClusterIssuer",
@@ -175,6 +176,7 @@ func TestAppGatewaySettingsReachServer(t *testing.T) {
 	out := componentNames(in)
 	for _, want := range []string{
 		"DONKEY_APP_GATEWAY_CLASS_NAME", "platform",
+		"DONKEY_APP_GATEWAY_NAME_TEMPLATE", "$namespace-$hash",
 		"DONKEY_APP_GATEWAY_ROUTE_NAMESPACE", "projectcontour",
 		"DONKEY_APP_GATEWAY_ISSUER_NAME", "platform-ca",
 		"DONKEY_APP_GATEWAY_ISSUER_KIND", "ClusterIssuer",
@@ -337,7 +339,11 @@ func TestOnlyTheAPIRouteCarriesAToken(t *testing.T) {
 	}
 
 	in := testInput(t)
-	for _, obj := range NetworkObjects(in) {
+	objects, err := NetworkObjects(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, obj := range objects {
 		cm, ok := obj.(*corev1.ConfigMap)
 		if !ok {
 			continue

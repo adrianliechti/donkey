@@ -133,18 +133,26 @@ func AppObjects(in Input) ([]runtime.Object, error) {
 		return nil, err
 	}
 	objs = append(objs, dep, service(in))
-	return append(objs, NetworkObjects(in)...), nil
+	network, err := NetworkObjects(in)
+	if err != nil {
+		return nil, err
+	}
+	return append(objs, network...), nil
 }
 
 // NetworkObjects renders the gateway's routing entries. None of it depends on
 // the image, which is what lets the console change exposure without a deploy.
 // donkey's own edge issues certificates itself; an optional managed edge adds
 // its namespaced Gateway API and cert-manager objects here.
-func NetworkObjects(in Input) []runtime.Object {
+func NetworkObjects(in Input) ([]runtime.Object, error) {
 	var objs []runtime.Object
 	if in.Domain != "" {
 		objs = append(objs, appRoute(in))
-		objs = append(objs, AppGatewayObjects(in)...)
+		edge, err := AppGatewayObjects(in)
+		if err != nil {
+			return nil, err
+		}
+		objs = append(objs, edge...)
 	}
 	// Paths this app answers on somebody else's address. The hostname
 	// belongs to the app that owns it, but each route carries its own login
@@ -152,7 +160,7 @@ func NetworkObjects(in Input) []runtime.Object {
 	for _, r := range in.RouteTargets {
 		objs = append(objs, PathRoute(in, r))
 	}
-	return objs
+	return objs, nil
 }
 
 // SpaceHome is the object that has to exist before anything of the space

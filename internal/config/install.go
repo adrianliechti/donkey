@@ -667,7 +667,11 @@ type InstallGateway struct {
 // a tenant-owned Gateway into the namespace where the data-plane controller
 // runs; in that arrangement the HTTPRoute attaches to the mirrored object.
 type InstallAppGateway struct {
-	ClassName      string `json:"className,omitempty"`
+	ClassName string `json:"className,omitempty"`
+	// NameTemplate controls Gateway metadata.name. It accepts $name (the app's
+	// Kubernetes Deployment name), $namespace, $space, $app and $hash. The
+	// default is $name; $hash is a stable, opaque 10-character suffix.
+	NameTemplate   string `json:"nameTemplate,omitempty"`
 	RouteNamespace string `json:"routeNamespace,omitempty"`
 	IssuerName     string `json:"issuerName,omitempty"`
 	IssuerKind     string `json:"issuerKind,omitempty"`
@@ -698,7 +702,7 @@ func (g InstallAppGateway) CertificateIssuerGroup() string {
 // cert-manager issuers deliberately use their own values.
 func (g InstallAppGateway) Validate() error {
 	if g.ClassName == "" {
-		if g.RouteNamespace != "" || g.IssuerName != "" || g.IssuerKind != "" || g.IssuerGroup != "" {
+		if g.NameTemplate != "" || g.RouteNamespace != "" || g.IssuerName != "" || g.IssuerKind != "" || g.IssuerGroup != "" {
 			return fmt.Errorf("gateway.appGateway needs `className` — the GatewayClass used for each app")
 		}
 		return nil
@@ -708,6 +712,9 @@ func (g InstallAppGateway) Validate() error {
 	}
 	if g.RouteNamespace != "" && !ValidNamespace(g.RouteNamespace) {
 		return fmt.Errorf("gateway.appGateway.routeNamespace %q is not a valid namespace name", g.RouteNamespace)
+	}
+	if _, err := AppGatewayName(g.NameTemplate, "donkey-system", "space", "app", "app"); err != nil {
+		return err
 	}
 	return nil
 }

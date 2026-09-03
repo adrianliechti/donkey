@@ -792,7 +792,11 @@ own CA for installs with no issuing infrastructure at all (trust that one
 CA certificate and every app is covered); `tls.mode: none` hands TLS to a
 cluster gateway in front (`gateway.httpRoute`), where certificates are the
 platform's concern. `gateway.appGateway` instead asks cert-manager for each
-app's certificate and creates its dedicated Gateway API edge. There is no
+app's certificate and creates its dedicated Gateway API edge. Its Gateway name
+defaults to the app's Kubernetes Deployment name. Managed platforms can set
+`gateway.appGateway.nameTemplate`; it accepts `$name`, `$namespace`, `$space`,
+`$app`, and the stable 10-character `$hash` (for example,
+`$namespace-$hash`). There is no
 bring-your-own-file mode: a hand-provided
 wildcard covers one label while apps live two deep, which made it a trap. DNS is simpler than TLS here: one `*.<domain>` record
 covers every depth, because DNS wildcards match multiple labels (as long as

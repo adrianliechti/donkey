@@ -1,10 +1,10 @@
 package manifests
 
 import (
-	"fmt"
-
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+
+	"github.com/adrianliechti/donkey/internal/config"
 )
 
 // AppGatewayConfig provisions one standard Gateway API entrypoint per app.
@@ -14,6 +14,7 @@ import (
 type AppGatewayConfig struct {
 	Namespace      string
 	ClassName      string
+	NameTemplate   string
 	RouteNamespace string
 	IssuerName     string
 	IssuerKind     string
@@ -29,22 +30,22 @@ func (c AppGatewayConfig) Enabled() bool { return c.ClassName != "" }
 // donkey's logical names may contain dashes, but never dots.
 func AppEdgeName(space, app string) string { return "donkey-app-" + space + "." + app }
 
-func AppGatewayName(namespace, space, app string) string {
-	return fmt.Sprintf("%s.%s-gw", namespace, AppEdgeName(space, app))
-}
-
 func AppCertificateSecretName(space, app string) string { return AppEdgeName(space, app) + "-tls" }
 
 // AppGatewayObjects returns the optional external edge for an app. It is
 // exported because both a deploy and a console network change render the same
 // objects; neither path should be able to leave the certificate or Gateway
 // behind.
-func AppGatewayObjects(in Input) []runtime.Object {
+func AppGatewayObjects(in Input) ([]runtime.Object, error) {
 	if !in.AppGateway.Enabled() || in.Domain == "" {
-		return nil
+		return nil, nil
 	}
 
 	name := AppEdgeName(in.Space, in.App.Name)
+	gatewayName, err := config.AppGatewayName(in.AppGateway.NameTemplate, in.AppGateway.Namespace, in.Space, in.App.Name, in.Name())
+	if err != nil {
+		return nil, err
+	}
 	edgeLabels := Labels(in.Space, in.App.Name, RoleEdge)
 	// cert-manager copies secretTemplate labels to the generated TLS Secret.
 	// The apply/render boundary adds the installation label to both maps.
@@ -60,7 +61,7 @@ func AppGatewayObjects(in Input) []runtime.Object {
 	parent := map[string]any{
 		"group": "gateway.networking.k8s.io",
 		"kind":  "Gateway",
-		"name":  AppGatewayName(in.AppGateway.Namespace, in.Space, in.App.Name),
+		"name":  gatewayName,
 	}
 	if in.AppGateway.RouteNamespace != "" {
 		parent["namespace"] = in.AppGateway.RouteNamespace
@@ -95,7 +96,7 @@ func AppGatewayObjects(in Input) []runtime.Object {
 		"apiVersion": "gateway.networking.k8s.io/v1",
 		"kind":       "Gateway",
 		"metadata": map[string]any{
-			"name":      AppGatewayName(in.AppGateway.Namespace, in.Space, in.App.Name),
+			"name":      gatewayName,
 			"namespace": in.AppGateway.Namespace,
 			"labels":    labels,
 		},
@@ -164,5 +165,5 @@ func AppGatewayObjects(in Input) []runtime.Object {
 		},
 	}}
 
-	return []runtime.Object{certificate, gateway, route}
+	return []runtime.Object{certificate, gateway, route}, nil
 }

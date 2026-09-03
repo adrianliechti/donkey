@@ -380,6 +380,7 @@ func serverDeployment(in SystemInput) *appsv1.Deployment {
 		{Name: "DONKEY_RUSTFS_IMAGE", Value: in.AddonImages.RustFS},
 		{Name: "DONKEY_ADDON_IMAGE_PULL_SECRETS", Value: strings.Join(in.AddonImagePullSecrets, ",")},
 		{Name: "DONKEY_APP_GATEWAY_CLASS_NAME", Value: in.AppGateway.ClassName},
+		{Name: "DONKEY_APP_GATEWAY_NAME_TEMPLATE", Value: in.AppGateway.NameTemplate},
 		{Name: "DONKEY_APP_GATEWAY_ROUTE_NAMESPACE", Value: in.AppGateway.RouteNamespace},
 		{Name: "DONKEY_APP_GATEWAY_ISSUER_NAME", Value: in.AppGateway.IssuerName},
 		{Name: "DONKEY_APP_GATEWAY_ISSUER_KIND", Value: in.AppGateway.IssuerKind},

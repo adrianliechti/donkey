@@ -226,6 +226,7 @@ func (r *Runtime) manifestInput(spec rt.DeploySpec, includeCreds bool) (manifest
 		AppGateway: manifests.AppGatewayConfig{
 			Namespace:      r.opts.SystemNamespace,
 			ClassName:      r.opts.AppGateway.ClassName,
+			NameTemplate:   r.opts.AppGateway.NameTemplate,
 			RouteNamespace: r.opts.AppGateway.RouteNamespace,
 			IssuerName:     r.opts.AppGateway.IssuerName,
 			IssuerKind:     r.opts.AppGateway.CertificateIssuerKind(),
@@ -358,7 +359,11 @@ func (r *Runtime) ApplyNetwork(ctx context.Context, cfg *config.AppConfig) (stri
 	var objs []k8sruntime.Object
 	if in.Domain != "" {
 		objs = append(objs, manifests.AppRoute(in))
-		objs = append(objs, manifests.AppGatewayObjects(in)...)
+		edge, err := manifests.AppGatewayObjects(in)
+		if err != nil {
+			return "", err
+		}
+		objs = append(objs, edge...)
 	}
 	for _, pr := range net.Routes {
 		objs = append(objs, manifests.PathRouteNamed(in, pr.Name, manifests.RouteTarget{Host: pr.Host, Path: pr.Path}))
