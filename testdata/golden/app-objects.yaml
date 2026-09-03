@@ -115,6 +115,7 @@ spec:
             path: /healthz
             port: 8000
           periodSeconds: 5
+      enableServiceLinks: false
       imagePullSecrets:
       - name: shop-registry
 ---

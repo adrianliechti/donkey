@@ -128,8 +128,10 @@ func addonObjects(in addons.Input, w *addons.Workload, pull *imagePullCredential
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: labels},
 				Spec: corev1.PodSpec{
-					// A backing service needs no Kubernetes credential.
+					// A backing service needs no Kubernetes credential, and
+					// no service-link variables for its namespace either.
 					AutomountServiceAccountToken: new(false),
+					EnableServiceLinks:           new(false),
 					SecurityContext: &corev1.PodSecurityContext{
 						RunAsNonRoot: new(true),
 						RunAsUser:    new(w.RunAsUser),
