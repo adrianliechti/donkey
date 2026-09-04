@@ -1,15 +1,13 @@
-// Package gateway is donkey's edge: it terminates TLS (issuing the
-// certificates itself), routes hostnames to apps, runs the OIDC login, checks
+// Package gateway is donkey's edge: it terminates TLS, routes hostnames to
+// apps, runs the OIDC login, checks
 // each route's access rules and forwards with identity headers.
 //
-// Login and TLS live here rather than in an ingress vendor's CRDs because no
-// proxy stack has a standard auth story — this is the only auth donkey can
-// promise on every runtime it supports.
+// Keeping login, TLS and routing together gives every supported runtime the
+// same authentication boundary.
 package gateway
 
 import (
 	"context"
-	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -50,17 +48,16 @@ type Config struct {
 	TLSListen    string
 	HealthListen string
 
-	// TLSMode is how the gateway gets certificates: "acme" (on-demand per
-	// hostname, Let's Encrypt by default), "ca" (a self-signed CA minting
-	// per-hostname certificates — local and internal installs), or "none"
-	// (plain http only — behind a TLS-terminating edge, or local development).
+	// TLSMode is how the gateway gets certificates: "cert-manager" (Secrets
+	// issued for exact hostnames), "acme" (on-demand), or "ca" (a built-in
+	// private CA).
 	TLSMode string
 	// ACMEEmail is the ACME account contact; ACMEDirectory overrides the
 	// ACME endpoint (staging, or an internal CA speaking ACME).
 	ACMEEmail     string
 	ACMEDirectory string
-	// SystemNamespace is where the gateway keeps its certificates (the
-	// issued-certs cache, the ACME account, the built-in CA).
+	// SystemNamespace is where cert-manager Secrets and the gateway's ACME/CA
+	// state live.
 	SystemNamespace string
 	// WorkloadNamespace, when set, is the single namespace apps live in.
 	// Together with SystemNamespace it is the whole of what this gateway may
@@ -100,7 +97,7 @@ func FromEnv() (*Config, error) {
 		Listen:            envOr("DONKEY_LISTEN", ":8090"),
 		TLSListen:         envOr("DONKEY_TLS_LISTEN", ":8443"),
 		HealthListen:      envOr("DONKEY_HEALTH_LISTEN", ":8091"),
-		TLSMode:           os.Getenv("DONKEY_TLS_MODE"),
+		TLSMode:           envOr("DONKEY_TLS_MODE", "acme"),
 		ACMEEmail:         os.Getenv("DONKEY_ACME_EMAIL"),
 		ACMEDirectory:     os.Getenv("DONKEY_ACME_DIRECTORY"),
 		SystemNamespace:   envOr("DONKEY_SYSTEM_NAMESPACE", manifests.DefaultSystemNamespace),
@@ -113,12 +110,9 @@ func FromEnv() (*Config, error) {
 		TelemetryEndpoint: os.Getenv("DONKEY_TELEMETRY_OTLP_ENDPOINT"),
 	}
 	switch c.TLSMode {
-	case "", "none", "acme", "ca":
+	case "acme", "ca", "cert-manager":
 	default:
-		return nil, fmt.Errorf("DONKEY_TLS_MODE must be acme, ca or none, not %q", c.TLSMode)
-	}
-	if c.TLSMode == "none" {
-		c.TLSMode = ""
+		return nil, fmt.Errorf("DONKEY_TLS_MODE must be acme, ca or cert-manager, not %q", c.TLSMode)
 	}
 	// No issuer is a legal installation: the gateway still routes every
 	// app, it just has no login to offer — and it fails closed if a route
@@ -204,7 +198,7 @@ type Server struct {
 	// unknown-host burst must not fan out to the API server.
 	refresh singleflight.Group
 
-	// warmed remembers which hostnames this process already asked a
+	// warmed remembers which hostnames this process already asked an ACME
 	// certificate for, so route syncs don't re-kick issuance forever.
 	warmed sync.Map
 	// warm pre-issues a certificate for a hostname (set in acme mode).
@@ -299,13 +293,9 @@ func (s *Server) Run(ctx context.Context) error {
 	// TLS first: edgeTLS installs s.warm, and route syncs read it — setting
 	// it up before the first sync (and the poller goroutine) means the
 	// initial routes get their certificates pre-issued too, without a race.
-	var tlsCfg *tls.Config
-	var httpHandler http.Handler
-	if s.cfg.TLSMode != "" {
-		var err error
-		if tlsCfg, httpHandler, err = s.edgeTLS(ctx); err != nil {
-			return err
-		}
+	tlsCfg, httpHandler, err := s.edgeTLS(ctx)
+	if err != nil {
+		return err
 	}
 	if err := s.refreshRoutes(ctx); err != nil {
 		// Not fatal: the API server may still be warming up; requests miss
@@ -321,58 +311,36 @@ func (s *Server) Run(ctx context.Context) error {
 		}
 	}()
 
-	errs := make(chan error, 2)
-	servers := []*http.Server{}
-	if s.cfg.TLSMode == "" {
-		// No TLS: one plain listener — local development, or an edge in
-		// front that terminates for us.
-		srv := &http.Server{
-			Addr:    s.cfg.Listen,
-			Handler: s.handler(),
-			// App responses stream (SSE, downloads) — no write timeout.
-			// Headers must still arrive promptly.
-			ReadHeaderTimeout: 10 * time.Second,
-		}
-		servers = append(servers, srv)
-		go func() {
-			log.Printf("donkey-gateway listening on %s (no TLS; issuer %s)", s.cfg.Listen, s.cfg.OIDCIssuer)
-			if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-				errs <- err
-				return
-			}
-			errs <- nil
-		}()
-	} else {
-		httpsSrv := &http.Server{
-			Addr:              s.cfg.TLSListen,
-			Handler:           s.handler(),
-			TLSConfig:         tlsCfg,
-			ReadHeaderTimeout: 10 * time.Second,
-		}
-		// The plain listener redirects to https — and in acme mode it also
-		// answers the HTTP-01 challenges (edgeTLS wrapped that in).
-		httpSrv := &http.Server{
-			Addr:              s.cfg.Listen,
-			Handler:           httpHandler,
-			ReadHeaderTimeout: 10 * time.Second,
-		}
-		servers = append(servers, httpsSrv, httpSrv)
-		go func() {
-			log.Printf("donkey-gateway serving https on %s (tls %s; issuer %s)", s.cfg.TLSListen, s.cfg.TLSMode, s.cfg.OIDCIssuer)
-			if err := httpsSrv.ListenAndServeTLS("", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
-				errs <- err
-				return
-			}
-			errs <- nil
-		}()
-		go func() {
-			if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-				errs <- err
-				return
-			}
-			errs <- nil
-		}()
+	httpsSrv := &http.Server{
+		Addr:              s.cfg.TLSListen,
+		Handler:           s.handler(),
+		TLSConfig:         tlsCfg,
+		ReadHeaderTimeout: 10 * time.Second,
 	}
+	// The plain listener redirects to https — and in acme mode it also
+	// answers the HTTP-01 challenges (edgeTLS wrapped that in).
+	httpSrv := &http.Server{
+		Addr:              s.cfg.Listen,
+		Handler:           httpHandler,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+	errs := make(chan error, 2)
+	servers := []*http.Server{httpsSrv, httpSrv}
+	go func() {
+		log.Printf("donkey-gateway serving https on %s (tls %s; issuer %s)", s.cfg.TLSListen, s.cfg.TLSMode, s.cfg.OIDCIssuer)
+		if err := httpsSrv.ListenAndServeTLS("", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errs <- err
+			return
+		}
+		errs <- nil
+	}()
+	go func() {
+		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errs <- err
+			return
+		}
+		errs <- nil
+	}()
 	select {
 	case err := <-errs:
 		return err
@@ -381,13 +349,13 @@ func (s *Server) Run(ctx context.Context) error {
 	shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	defer cancel()
 	_ = health.Shutdown(shutdownCtx)
-	var err error
+	var shutdownErr error
 	for _, srv := range servers {
 		if serr := srv.Shutdown(shutdownCtx); serr != nil {
-			err = serr
+			shutdownErr = serr
 		}
 	}
-	return err
+	return shutdownErr
 }
 
 func healthMux() *http.ServeMux {

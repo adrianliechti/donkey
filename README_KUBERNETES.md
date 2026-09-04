@@ -46,7 +46,7 @@ cannot be a legal label value.
 Donkey roles: `workload` (Deployment, Service, pods), `route` and `path-route`
 (the gateway's routing entries), `config` (env and telemetry Secrets),
 `registry-auth` (pull secret), `storage` (the data claim), `binding` (a
-service connection), `edge` (optional per-app managed edge objects), `files`
+service connection), `edge` (per-app certificate and DNS objects), `files`
 (the short-lived file-browser helper pod). Spaces are `space`, services
 `addon`; control-plane roles are `server`, `gateway`, `ai`, `telemetry`,
 `packages` and `buildkitd`, aligned with Docker while their standard `name`
@@ -207,166 +207,93 @@ edge). Turn it on for spaces whose apps only talk to their own database and
 the platform. It needs `isolateSpaces` on, since the egress rules ride the
 same per-space policy.
 
-## Using the cluster's edge
+## Incoming traffic, certificates and DNS
 
-donkey needs no ingress CRD — its own gateway is the default — but it can sit
-behind platform edge infrastructure. The configured block names the ownership
-contract; there is deliberately no ambiguous generic `mode` value:
+Kubernetes has one incoming traffic path:
 
-| Configuration | Shared platform data plane? | Objects donkey creates | TLS certificate owner |
-|---|---:|---|---|
-| no edge block | no | none | donkey (`tls.mode: acme` or `ca`) |
-| `gateway.httpRoute` | yes | one aggregate `HTTPRoute` | platform Gateway listeners |
-| `gateway.appGateway` | implementation-dependent | `Certificate`, `Gateway`, and `HTTPRoute` per app | cert-manager + each Gateway listener |
-| `gateway.contourHTTPProxy` | yes, one Contour/Envoy | root `HTTPProxy` per exact host, `Certificate` per app, and one control-plane certificate | cert-manager + each HTTPProxy virtual host |
+```text
+one load-balancer VIP :80/:443
+             |
+             v
+      donkey-gateway Service
+             |
+             +-- <domain> and serverHost --> donkey control plane
+             +-- exact app hostname ------> app Service
+```
 
-All three external-TLS arrangements require `tls.mode: none`; the installer
-rejects a redirect-loop-producing combination. `appGateway` may be combined
-with `httpRoute`: the former exposes apps and the latter commonly exposes the
-portal and central OAuth callback. `contourHTTPProxy` already covers both, so
-it is mutually exclusive with either block. Docker rejects all three as
-Kubernetes-only settings.
+`donkey-gateway` is the edge. It terminates TLS, redirects HTTP to HTTPS,
+routes by host and path, and enforces login and access rules. The default
+`gateway.serviceType: LoadBalancer` exposes it directly on ports 80 and 443.
+`NodePort` remains useful for local clusters and `ClusterIP` when another
+explicitly managed network path reaches the Service.
 
-Installation also checks the optional CRDs before applying anything, rather
-than failing halfway through an install. Re-running the installer reconciles
-the selected per-app edge for every deployed app, so changing between native,
-dedicated-Gateway, and Contour modes does not wait for each app's next deploy.
-Deploy, network, internal, and destroy operations reconcile their app's edge
-as well. cert-manager and the selected ingress controller continuously handle
-the Certificate/Secret and proxy data-plane state after those desired objects
-exist; donkey itself is event-driven rather than a polling Kubernetes
-operator.
+Certificate issuance is independent from the traffic path. Choose one source:
 
-**Enter through the cluster's Gateway API gateway** instead of exposing
-donkey's edge Service:
+| `tls.mode` | Certificate source | Kubernetes objects |
+|---|---|---|
+| `acme` (default) | Let's Encrypt or `tls.directory` | gateway-managed Secret |
+| `ca` | donkey's built-in CA | gateway-managed CA Secret |
+| `cert-manager` | a Kubernetes Issuer or ClusterIssuer | one `Certificate` per app plus one for the control plane |
+
+ACME and CA modes are intentionally available on Kubernetes as well as Docker.
+They are useful when a cluster has no cert-manager installation, when an
+internal ACME service already exists, or for private environments where
+trusting donkey's generated CA is the simplest contract.
+
+To use the cluster's cert-manager:
 
 ```yaml
-gateway:
-  serviceType: ClusterIP
-  httpRoute:
-    name: shared-gateway      # the Gateway to attach to
-    namespace: infra
 tls:
-  mode: none                  # that gateway terminates TLS before routes match
+  mode: cert-manager
+  issuerName: corporate-pki
+  # issuerKind: ClusterIssuer       # default
+  # issuerGroup: cert-manager.io    # default
 ```
 
-donkey renders one HTTPRoute sending `<domain>` and `*.<domain>` (a Gateway
-API wildcard matches any depth) to the donkey gateway, which keeps doing what
-it always does — routing, login, access — one hop further in. Custom app
-hostnames outside the domain are not covered by this route.
+The installer verifies `cert-manager.io/v1` `Certificate` support before
+changing the cluster. It creates an exact-host Certificate for each public app
+in donkey's system namespace. A single SAN Certificate covers `<domain>` and
+a distinct `serverHost`. cert-manager writes the referenced TLS Secrets;
+`donkey-gateway` reads the Secrets directly and reloads renewed certificates
+without a restart. A namespaced `Issuer` must live in the system namespace;
+a `ClusterIssuer` is normally the simpler platform contract.
 
-TLS in this arrangement is the platform's prerequisite, not donkey's job:
-the cluster gateway's listeners terminate it with certificates provisioned
-however the platform likes — cert-manager, a PKI process, a ReferenceGrant
-when the certificate Secrets live outside the gateway's namespace. Remember
-that a TLS certificate wildcard covers one label while apps live at
-`<app>.<space>.<domain>`, so the gateway wants a listener per
-`*.<space>.<domain>`.
-
-Managed platforms can also let donkey request a dedicated edge and
-certificate for every exposed app:
+DNS publication is optional and orthogonal. If external-dns runs with its CRD
+source, donkey can create exact `externaldns.k8s.io/v1alpha1` `DNSEndpoint`
+objects for the same hosts:
 
 ```yaml
 gateway:
-  serviceType: ClusterIP
-  appGateway:
-    className: private-app-edge
-    issuerName: corporate-pki
-    # issuerKind: ClusterIssuer       # default
-    # issuerGroup: cert-manager.io    # default
-    # routeNamespace: gateway-infra   # only when the platform mirrors Gateways
+  externalDNS:
+    targets: [10.204.166.5]  # stable load-balancer VIP
+    # recordType: A          # inferred as A, AAAA, or CNAME
+    # ttl: 300
 ```
 
-This renders a cert-manager `Certificate`, Gateway API `Gateway`, and
-`HTTPRoute` per hostname. All three tenant-owned objects live in donkey's
-system namespace, where the route can reach the `donkey-gateway` Service
-without a cross-namespace backend grant. In the confined two-namespace setup,
-the server Role can manage those three resource kinds only in the system
-namespace; it receives no permission in `gateway-infra`.
+The external-dns deployment must include `--source=crd`. Its `--domain-filter`
+must cover donkey's domain—for example,
+`az.lgt.services` covers both `donkey.az.lgt.services` and
+`donkey-test.az.lgt.services`. A compatible Azure private DNS controller might
+include:
 
-Leave `routeNamespace` empty when the configured GatewayClass watches tenant
-Gateways directly. Set it only for a platform that mirrors a tenant Gateway
-into its controller namespace. That platform must also make the generated TLS
-Secret available to the mirrored Gateway (by mirroring it, or by rewriting the
-certificate reference and arranging the appropriate `ReferenceGrant`). The
-mirrored listener must allow routes from donkey's system namespace. donkey
-puts that namespace selector on the source Gateway, but whether it is preserved
-is part of the platform's mirroring contract. Installation checks for Gateway,
-HTTPRoute and Certificate CRDs before changing the cluster.
-
-### One shared Project Contour Gateway with exact per-host certificates
-
-Gateway API `ListenerSet` expresses the ideal portable ownership split, but
-Project Contour does not currently implement it. A TLS certificate also cannot
-be placed on an `HTTPRoute`: downstream TLS belongs to a Gateway listener.
-
-Contour has a native fallback designed for mixing Gateway API with its
-`HTTPProxy` API. The platform owns one Gateway and one Contour/Envoy data plane;
-its HTTPS listener uses Contour's custom protocol and leaves TLS details to
-root HTTPProxies:
-
-```yaml
-apiVersion: gateway.networking.k8s.io/v1
-kind: Gateway
-metadata:
-  name: main
-  namespace: gateway-infra
-spec:
-  gatewayClassName: contour
-  listeners:
-    - name: http
-      protocol: HTTP
-      port: 80
-      allowedRoutes:
-        namespaces:
-          from: All
-    - name: https
-      protocol: projectcontour.io/https
-      port: 443
-      allowedRoutes:
-        namespaces:
-          from: All
+```text
+--source=crd
+--domain-filter=az.lgt.services
+--provider=azure-private-dns
+--policy=sync
+--registry=txt
+--txt-owner-id=<cluster-owner-id>
 ```
 
-`from: All` is Contour's documented hybrid-mode listener contract. Contain
-who can claim virtual hosts with Contour's restricted root HTTPProxy
-namespaces and Kubernetes RBAC; the allowed root list must include donkey's
-system namespace. The Contour instance serving `main` must also accept a
-unique ingress class for these HTTPProxies. Configure donkey with the ingress
-class and cert-manager issuer:
+Provider, policy, registry, and TXT owner ID remain external-dns concerns. The
+target is explicit because a DNSEndpoint cannot refer to a Service's eventual
+status address. For an Azure private DNS setup this will normally be the
+private load-balancer VIP.
 
-```yaml
-gateway:
-  serviceType: ClusterIP
-  contourHTTPProxy:
-    ingressClassName: contour-main
-    issuerName: corporate-pki
-    # issuerKind: ClusterIssuer       # default
-    # issuerGroup: cert-manager.io    # default
-tls:
-  mode: none
-```
-
-For each exposed app, donkey creates an exact-host cert-manager `Certificate`
-and a root `HTTPProxy` in its system namespace. The HTTPProxy sets
-`spec.virtualhost.tls.secretName` to the generated Secret and forwards to the
-same namespace's `donkey-gateway` Service. It also creates the equivalent
-control-plane edge for `<domain>` (the OAuth callback) and, when different,
-`serverHost`; those two hosts share one SAN certificate. Internal apps create
-neither object.
-
-This has ListenerSet's useful operational shape without pretending to use the
-unsupported API: adding an app adds a virtual host and certificate to the
-existing Envoy instance, not another Gateway, load balancer, Contour process,
-or listener. The platform Gateway is a prerequisite and is never mutated by
-donkey. The installer verifies both `projectcontour.io/v1` `HTTPProxy` and
-`cert-manager.io/v1` `Certificate` support.
-
-If `issuerKind` is a namespaced `Issuer`, that Issuer must live in donkey's
-system namespace. A `ClusterIssuer` is usually the simpler platform contract.
-Admitting root HTTPProxies delegates virtual-host authority to that namespace;
-the platform should constrain the issuer and, where required, use admission
-policy to limit `spec.virtualhost.fqdn` to donkey's domains.
+With no `gateway.externalDNS` block, donkey creates no DNS CRDs; existing
+wildcard/apex records or another external-dns source continue to work. During
+install, deploy, network changes, and destroy, donkey reconciles only the
+Certificate and DNSEndpoint objects belonging to the affected hosts.
 
 ## Several donkeys on one cluster
 

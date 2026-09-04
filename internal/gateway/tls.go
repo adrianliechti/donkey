@@ -31,16 +31,17 @@ import (
 	"github.com/adrianliechti/donkey/pkg/runtime/kubernetes/manifests"
 )
 
-// The gateway is its own certificate authority: no cert-manager, no ingress
-// vendor. Three ways to a certificate —
+// The gateway has three ways to a certificate —
 //
+//   - cert-manager: exact-host certificates arrive as labelled TLS Secrets.
 //   - acme:   one per hostname, issued on demand and pre-issued when a route
 //     appears. The routing table doubles as the issuance allowlist.
 //   - ca:     a self-signed CA kept in a Secret, signing per-hostname
 //     certificates on the fly — for installs ACME cannot reach.
 //
-// Issued certificates and the ACME account live in a Secret, so they survive
-// restarts and are shared by replicas.
+// ACME certificates/account state and the built-in CA live in Secrets, so
+// they survive restarts and are shared by replicas. cert-manager owns its
+// generated Secrets in the same namespace.
 
 // edgeTLS builds the https listener's TLS config and the plain listener's
 // handler (the https redirect — wrapped to also answer ACME HTTP-01
@@ -48,6 +49,8 @@ import (
 func (s *Server) edgeTLS(ctx context.Context) (*tls.Config, http.Handler, error) {
 	redirect := http.HandlerFunc(redirectHTTPS)
 	switch s.cfg.TLSMode {
+	case "cert-manager":
+		return s.managedCertificateTLS(ctx)
 	case "acme":
 		m := &autocert.Manager{
 			Prompt:     autocert.AcceptTOS,
@@ -445,5 +448,3 @@ func (i *caIssuer) mint(host string) (*tls.Certificate, error) {
 		Leaf:        leaf,
 	}, nil
 }
-
-// --- Static certificate ---------------------------------------------------

@@ -33,7 +33,7 @@ func serverCommand() *cli.Command {
 
 // serverInstallCommand is the one command that talks to Kubernetes directly
 // (via kubeconfig): it bootstraps the control plane the CLI then talks to.
-// The cluster (and its ingress controller) must already exist.
+// The cluster and any selected certificate/DNS controllers must already exist.
 // Re-running with changed settings updates the installation (server-side apply).
 func serverInstallCommand() *cli.Command {
 	return &cli.Command{
@@ -65,9 +65,12 @@ func serverSettingsFlags() []cli.Flag {
 		&cli.BoolFlag{Name: "no-verify", Usage: "skip running a freshly built image to check it starts"},
 		&cli.StringFlag{Name: "https-proxy", Usage: "forward proxy for donkey-server and the build engine"},
 		&cli.StringFlag{Name: "no-proxy", Usage: "hosts that bypass the forward proxy, comma-separated"},
-		&cli.StringFlag{Name: "tls-mode", Usage: "how the gateway gets certificates: acme (default), ca (built-in CA for local/internal installs) or none (behind a TLS-terminating cluster gateway)"},
+		&cli.StringFlag{Name: "tls-mode", Usage: "how the gateway gets certificates: acme (default), ca (built-in CA), or cert-manager (Kubernetes)"},
 		&cli.StringFlag{Name: "acme-email", Usage: "ACME account contact for expiry warnings (tls-mode acme)"},
 		&cli.StringFlag{Name: "acme-directory", Usage: "ACME endpoint override, e.g. Let's Encrypt staging (tls-mode acme)"},
+		&cli.StringFlag{Name: "tls-issuer-name", Usage: "cert-manager Issuer or ClusterIssuer name (with tls-mode cert-manager)"},
+		&cli.StringFlag{Name: "tls-issuer-kind", Usage: "cert-manager issuer kind (default ClusterIssuer)"},
+		&cli.StringFlag{Name: "tls-issuer-group", Usage: "cert-manager issuer API group (default cert-manager.io)"},
 		&cli.StringFlag{Name: "oidc-issuer", Usage: "OIDC issuer for the login gateway (e.g. Entra ID); empty = no gateway"},
 		&cli.StringFlag{Name: "oidc-client-id", Usage: "OIDC client id for the gateway"},
 		&cli.StringFlag{Name: "oidc-client-secret", Usage: "OIDC client secret (or $DONKEY_OIDC_CLIENT_SECRET)"},
@@ -123,6 +126,9 @@ func loadInstallSettings(cmd *cli.Command, resolveSecretEnv bool) (*config.Insta
 	strOver(&settings.TLS.Mode, "tls-mode")
 	strOver(&settings.TLS.Email, "acme-email")
 	strOver(&settings.TLS.Directory, "acme-directory")
+	strOver(&settings.TLS.IssuerName, "tls-issuer-name")
+	strOver(&settings.TLS.IssuerKind, "tls-issuer-kind")
+	strOver(&settings.TLS.IssuerGroup, "tls-issuer-group")
 	if cmd.Bool("registry-insecure") {
 		settings.Registry.Insecure = true
 	}
@@ -297,19 +303,9 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 	if err := client.Apply(ctx, manifests.SystemObjects(in)); err != nil {
 		return fmt.Errorf("the cluster refused the installation: %w", err)
 	}
-	// Applying a smaller object set never retracts resources from the previous
-	// install. Remove the Contour system edge when that mode is disabled, and
-	// remove its second proxy when serverHost moves back onto the base domain.
-	if !settings.Gateway.ContourHTTPProxy.Enabled() {
-		if err := client.DeleteSystemContourEdges(ctx, in.Namespace); err != nil {
-			return fmt.Errorf("removing the previous Contour edge: %w", err)
-		}
-	} else if in.ServerHost() == in.Domain {
-		if err := client.DeleteObject(ctx, "HTTPProxy", in.Namespace,
-			manifests.ContourSystemServerProxyName,
-			manifests.SystemLabels(manifests.ContourSystemEdgeName)); err != nil {
-			return fmt.Errorf("removing the obsolete Contour server host: %w", err)
-		}
+	if err := client.DeleteObsoleteSystemTraffic(ctx, in.Namespace,
+		settings.TLS.UsesCertManager(), settings.Gateway.ExternalDNS.Enabled()); err != nil {
+		return fmt.Errorf("removing obsolete control-plane traffic objects: %w", err)
 	}
 	// Fence (or unfence) the spaces that already exist, so toggling
 	// kubernetes.isolateSpaces takes effect now — not at each space's next
@@ -319,21 +315,20 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 			SharedNamespace: settings.Kubernetes.Workload.Namespace,
 			NamespacePrefix: settings.Kubernetes.NamespacePrefix(),
 		},
-		SystemNamespace:  systemNamespace,
-		Domain:           settings.Domain,
-		AppGateway:       settings.Gateway.AppGateway,
-		ContourHTTPProxy: settings.Gateway.ContourHTTPProxy,
-		IsolateSpaces:    settings.Kubernetes.SpacesIsolated(),
-		RestrictEgress:   settings.Kubernetes.RestrictEgress,
+		SystemNamespace: systemNamespace,
+		Domain:          settings.Domain,
+		TLS:             settings.TLS,
+		ExternalDNS:     settings.Gateway.ExternalDNS,
+		IsolateSpaces:   settings.Kubernetes.SpacesIsolated(),
+		RestrictEgress:  settings.Kubernetes.RestrictEgress,
 	})
 	if err := rt.ReconcileSpaceIsolation(ctx); err != nil {
 		return fmt.Errorf("updating space isolation: %w", err)
 	}
-	// Edge mode is installation-wide. Reconcile every existing app now so a
-	// switch to or from a managed Gateway/Contour contract does not wait for
-	// each app's next deploy or network edit.
-	if err := rt.ReconcileAppEdges(ctx); err != nil {
-		return fmt.Errorf("updating existing app edges: %w", err)
+	// Certificate source and DNS publication are installation-wide. Reconcile
+	// every existing app now rather than waiting for its next deploy.
+	if err := rt.ReconcileAppTraffic(ctx); err != nil {
+		return fmt.Errorf("updating existing app traffic: %w", err)
 	}
 	u.Info("Waiting for the server to come up…")
 	if err := client.WaitForRollout(ctx, in.Namespace, "donkey-packages",
@@ -381,18 +376,22 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 
 	u.Printf("")
 	u.Info("Apps are served at https://<app>.<space>.%s.", in.Domain)
-	u.Printf("  %s", u.Faint(fmt.Sprintf(
-		"Point *.%s and %s itself at the donkey-gateway service — one wildcard DNS record covers every depth, but never the apex.",
-		in.Domain, in.Domain)))
-	switch in.TLSMode {
-	case "", "acme":
+	if settings.Gateway.ExternalDNS.Enabled() {
+		u.Printf("  %s", u.Faint(fmt.Sprintf("DNS: external-dns DNSEndpoints publish each exact hostname as %s to %s.", settings.Gateway.ExternalDNS.EffectiveRecordType(), strings.Join(settings.Gateway.ExternalDNS.Targets, ", "))))
+	} else {
+		u.Printf("  %s", u.Faint(fmt.Sprintf(
+			"Point *.%s and %s itself at the donkey-gateway service — one wildcard DNS record covers every depth, but never the apex.",
+			in.Domain, in.Domain)))
+	}
+	switch in.TLS.EffectiveMode() {
+	case "acme":
 		u.Printf("  %s", u.Faint("TLS: the gateway requests one certificate per hostname via ACME (Let's Encrypt) — it must be reachable from the internet on ports 80 and 443."))
 	case "ca":
 		u.Printf("  %s", u.Faint(fmt.Sprintf(
 			"TLS: the gateway signs certificates with its own CA. Export it once and trust it: kubectl -n %s get secret %s -o jsonpath='{.data.ca\\.crt}' | base64 -d",
 			in.Namespace, manifests.GatewayCASecret)))
-	case "none":
-		u.Printf("  %s", u.Faint("TLS: none at donkey's edge — the cluster gateway in front of it terminates TLS."))
+	case "cert-manager":
+		u.Printf("  %s", u.Faint(fmt.Sprintf("TLS: the gateway serves exact-host certificates issued by cert-manager through %s %s.", settings.TLS.CertificateIssuerKind(), settings.TLS.IssuerName)))
 	}
 
 	callback := fmt.Sprintf("%s://%s/oauth2/callback", in.Scheme(), in.Domain)
@@ -429,11 +428,8 @@ func validateKubernetesSettings(settings *config.InstallFile) error {
 	if err := settings.Build.ValidateProvenance(); err != nil {
 		return err
 	}
-	if err := settings.Gateway.Validate(); err != nil {
+	if err := settings.Gateway.ExternalDNS.Validate(); err != nil {
 		return err
-	}
-	if settings.Gateway.UsesExternalTLS() && settings.TLS.Mode != "none" {
-		return fmt.Errorf("gateway.httpRoute, gateway.appGateway and gateway.contourHTTPProxy terminate TLS before donkey — configure tls.mode: none")
 	}
 	if h := settings.ServerHost; h != "" && h != settings.Domain && !strings.HasSuffix(h, "."+settings.Domain) {
 		return fmt.Errorf("serverHost %q must be the domain %q or a name under it", h, settings.Domain)
@@ -461,28 +457,20 @@ func validateKubernetesSettings(settings *config.InstallFile) error {
 // secrets; offline render supplies markers and removes Secret objects.
 func kubernetesSystemInput(settings *config.InstallFile, skipNamespace bool, registryUsername, registryPassword, sessionKey, telemetryKey string) manifests.SystemInput {
 	in := manifests.SystemInput{
-		Namespace:            settings.Kubernetes.SystemNamespace(),
-		SkipNamespace:        skipNamespace,
-		WorkloadNamespace:    settings.Kubernetes.Workload.Namespace,
-		NamespacePrefix:      settings.Kubernetes.NamespacePrefix(),
-		IsolateSpaces:        settings.Kubernetes.SpacesIsolated(),
-		RestrictEgress:       settings.Kubernetes.RestrictEgress,
-		ServerImage:          settings.Image,
-		Domain:               settings.Domain,
-		ServerHostname:       settings.ServerHost,
-		GatewayServiceType:   settings.Gateway.ServiceType,
-		GatewayHTTPNodePort:  settings.Gateway.HTTPNodePort,
-		GatewayHTTPSNodePort: settings.Gateway.HTTPSNodePort,
-		TLSMode:              settings.TLS.Mode,
-		ACMEEmail:            settings.TLS.Email,
-		ACMEDirectory:        settings.TLS.Directory,
-		HTTPRouteGateway: manifests.GatewayRef{
-			Name:        settings.Gateway.HTTPRoute.Name,
-			Namespace:   settings.Gateway.HTTPRoute.Namespace,
-			SectionName: settings.Gateway.HTTPRoute.SectionName,
-		},
-		AppGateway:                 settings.Gateway.AppGateway,
-		ContourHTTPProxy:           settings.Gateway.ContourHTTPProxy,
+		Namespace:                  settings.Kubernetes.SystemNamespace(),
+		SkipNamespace:              skipNamespace,
+		WorkloadNamespace:          settings.Kubernetes.Workload.Namespace,
+		NamespacePrefix:            settings.Kubernetes.NamespacePrefix(),
+		IsolateSpaces:              settings.Kubernetes.SpacesIsolated(),
+		RestrictEgress:             settings.Kubernetes.RestrictEgress,
+		ServerImage:                settings.Image,
+		Domain:                     settings.Domain,
+		ServerHostname:             settings.ServerHost,
+		GatewayServiceType:         settings.Gateway.ServiceType,
+		GatewayHTTPNodePort:        settings.Gateway.HTTPNodePort,
+		GatewayHTTPSNodePort:       settings.Gateway.HTTPSNodePort,
+		TLS:                        settings.TLS,
+		ExternalDNS:                settings.Gateway.ExternalDNS,
 		RegistryURL:                settings.Registry.URL,
 		RegistryUsername:           registryUsername,
 		RegistryCASecret:           settings.Registry.CASecret,

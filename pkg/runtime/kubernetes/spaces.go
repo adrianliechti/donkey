@@ -74,26 +74,23 @@ func (c *Client) DeleteSpaceIsolation(ctx context.Context, namespace, space stri
 	}, false)
 }
 
-// DeleteSpaceEdges retracts Gateway API/Contour and cert-manager objects from
-// the system namespace before their workload namespace disappears. The
-// generated TLS Secret receives the same labels through
-// Certificate.spec.secretTemplate.
-func (c *Client) DeleteSpaceEdges(ctx context.Context, namespace, space string) error {
+// DeleteSpaceTraffic retracts Certificates, generated TLS Secrets and DNS
+// records from the system namespace before their workload namespace
+// disappears.
+func (c *Client) DeleteSpaceTraffic(ctx context.Context, namespace, space string) error {
 	return c.deleteKindsBySelector(ctx, namespace,
-		[]string{"HTTPRoute", "Gateway", "HTTPProxy", "Certificate", "Secret"},
+		[]string{"Certificate", "DNSEndpoint", "Secret"},
 		map[string]string{
 			manifests.LabelSpace: space,
 			manifests.LabelRole:  manifests.RoleEdge,
 		}, false)
 }
 
-// DeleteAppEdges retracts one app's cross-namespace edge. Labels, rather than
-// deterministic names, are the deletion authority: a collision with an
-// object written by somebody else must be reported by apply, never erased by
-// cleanup.
-func (c *Client) DeleteAppEdges(ctx context.Context, namespace, space, app string) error {
+// DeleteAppTraffic retracts one app's system-namespace traffic objects.
+// Labels, rather than deterministic names, are the deletion authority.
+func (c *Client) DeleteAppTraffic(ctx context.Context, namespace, space, app string) error {
 	return c.deleteKindsBySelector(ctx, namespace,
-		[]string{"HTTPRoute", "Gateway", "HTTPProxy", "Certificate", "Secret"},
+		[]string{"Certificate", "DNSEndpoint", "Secret"},
 		map[string]string{
 			manifests.LabelSpace: space,
 			manifests.LabelApp:   app,
@@ -101,11 +98,16 @@ func (c *Client) DeleteAppEdges(ctx context.Context, namespace, space, app strin
 		}, false)
 }
 
-// DeleteAppEdgeKinds retracts stale objects when an installation switches
-// between its dedicated-Gateway and shared-Contour strategies. The active
-// Certificate and generated Secret are common to both and are deliberately
-// left alone.
-func (c *Client) DeleteAppEdgeKinds(ctx context.Context, namespace, space, app string, kinds ...string) error {
+// DeleteObsoleteAppTraffic retracts objects omitted by the active certificate
+// and DNS settings after their replacements have been applied.
+func (c *Client) DeleteObsoleteAppTraffic(ctx context.Context, namespace, space, app string, keepCertificate, keepDNS bool) error {
+	var kinds []string
+	if !keepCertificate {
+		kinds = append(kinds, "Certificate", "Secret")
+	}
+	if !keepDNS {
+		kinds = append(kinds, "DNSEndpoint")
+	}
 	return c.deleteKindsBySelector(ctx, namespace, kinds,
 		map[string]string{
 			manifests.LabelSpace: space,
@@ -114,14 +116,29 @@ func (c *Client) DeleteAppEdgeKinds(ctx context.Context, namespace, space, app s
 		}, false)
 }
 
-// DeleteSystemContourEdges removes the optional control-plane Certificate,
-// generated Secret and HTTPProxies when an installation leaves Contour mode.
-func (c *Client) DeleteSystemContourEdges(ctx context.Context, namespace string) error {
-	return c.deleteKindsBySelector(ctx, namespace,
-		[]string{"HTTPProxy", "Certificate", "Secret"},
-		map[string]string{
-			manifests.LabelRole: manifests.SystemRole(manifests.ContourSystemEdgeName),
-		}, false)
+// DeleteObsoleteSystemTraffic retracts installation-host objects omitted by
+// the active certificate and DNS settings. Named, ownership-checked deletes
+// avoid touching the gateway's separate ACME cache or built-in CA Secrets,
+// which carry the same system role.
+func (c *Client) DeleteObsoleteSystemTraffic(ctx context.Context, namespace string, keepCertificate, keepDNS bool) error {
+	identity := manifests.SystemLabels(manifests.GatewayAppName)
+	if !keepCertificate {
+		for _, object := range []struct {
+			kind string
+			name string
+		}{
+			{kind: "Certificate", name: manifests.SystemCertificateName},
+			{kind: "Secret", name: manifests.SystemCertificateSecretName},
+		} {
+			if err := c.DeleteObject(ctx, object.kind, namespace, object.name, identity); err != nil {
+				return err
+			}
+		}
+	}
+	if !keepDNS {
+		return c.DeleteObject(ctx, "DNSEndpoint", namespace, manifests.SystemDNSName, identity)
+	}
+	return nil
 }
 
 // ListSpaces finds every donkey space namespace, including ones holding no

@@ -519,7 +519,7 @@ func (r *Runtime) Status(ctx context.Context, space, app string) (*rt.AppStatus,
 		st.Instances = append(st.Instances, containerSummary(info))
 	}
 	if route, err := r.state.route(space, app); err == nil && route != nil {
-		st.IngressHost = route.Host
+		st.PublicHost = route.Host
 		st.Protected = route.Login
 	}
 	return st, nil

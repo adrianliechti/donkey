@@ -38,13 +38,9 @@ var gvrFor = map[string]schema.GroupVersionResource{
 	"RoleBinding":           {Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "rolebindings"},
 	"ClusterRole":           {Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "clusterroles"},
 	"ClusterRoleBinding":    {Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "clusterrolebindings"},
-	// Optional managed edges. Their CRDs are not donkey's to install: the
-	// installer preflight refuses a configuration that names them on a
-	// cluster that doesn't serve them.
-	"HTTPRoute":   {Group: "gateway.networking.k8s.io", Version: "v1", Resource: "httproutes"},
-	"Gateway":     {Group: "gateway.networking.k8s.io", Version: "v1", Resource: "gateways"},
-	"HTTPProxy":   {Group: "projectcontour.io", Version: "v1", Resource: "httpproxies"},
+	// Optional traffic APIs. Their CRDs are not donkey's to install.
 	"Certificate": {Group: "cert-manager.io", Version: "v1", Resource: "certificates"},
+	"DNSEndpoint": {Group: "externaldns.k8s.io", Version: "v1alpha1", Resource: "dnsendpoints"},
 }
 
 var clusterScoped = map[string]bool{"Namespace": true, "ClusterRole": true, "ClusterRoleBinding": true}
@@ -161,8 +157,8 @@ func (c *Client) stampInstallation(u *unstructured.Unstructured) error {
 }
 
 // applyWithRetry rides out transient control-plane hiccups — most commonly
-// an admission webhook (ingress controller) that is briefly unreachable
-// while restarting. Permanent errors return immediately.
+// an admission webhook that is briefly unreachable while restarting.
+// Permanent errors return immediately.
 func applyWithRetry(ctx context.Context, ri dynamic.ResourceInterface, u *unstructured.Unstructured) error {
 	var lastErr error
 	for range 10 {

@@ -30,8 +30,14 @@ registry:
 domain: apps.example.com
 
 tls:
-  mode: acme
-  email: you@example.com
+  mode: cert-manager
+  issuerName: platform-ca
+
+# Optional when external-dns runs with --source=crd and the gateway has a
+# stable load-balancer VIP:
+# gateway:
+#   externalDNS:
+#     targets: [10.0.0.10]
 
 auth:
   issuer: https://id.example.com
@@ -222,8 +228,8 @@ func renderKubernetesBundle(settings *config.InstallFile) (map[string]bundleFile
 	packagePassword := renderSettings.Build.Packages.NeedsPassword()
 	buildEnvironment := len(renderSettings.Build.Env) > 0
 	builderInstructions := renderSettings.Build.Instructions != ""
-	httpProxy := renderSettings.Build.Proxy.HTTP != ""
-	httpsProxy := renderSettings.Build.Proxy.HTTPS != ""
+	httpForwardProxy := renderSettings.Build.Proxy.HTTP != ""
+	httpsForwardProxy := renderSettings.Build.Proxy.HTTPS != ""
 
 	renderSettings.Auth.ClientSecret = configured
 	renderSettings.AI.APIKey = configured
@@ -240,10 +246,10 @@ func renderKubernetesBundle(settings *config.InstallFile) (map[string]bundleFile
 	if builderInstructions {
 		renderSettings.Build.Instructions = configured
 	}
-	if httpProxy {
+	if httpForwardProxy {
 		renderSettings.Build.Proxy.HTTP = configured
 	}
-	if httpsProxy {
+	if httpsForwardProxy {
 		renderSettings.Build.Proxy.HTTPS = configured
 	}
 
@@ -266,8 +272,8 @@ func renderKubernetesBundle(settings *config.InstallFile) (map[string]bundleFile
 		PackagePassword:     packagePassword,
 		BuildEnvironment:    buildEnvironment,
 		BuilderInstructions: builderInstructions,
-		HTTPProxy:           httpProxy,
-		HTTPSProxy:          httpsProxy,
+		HTTPForwardProxy:    httpForwardProxy,
+		HTTPSForwardProxy:   httpsForwardProxy,
 	}
 	return map[string]bundleFile{
 		"manifests.yaml":      {Data: []byte(manifestYAML)},
@@ -328,8 +334,8 @@ type kubernetesSecretFeatures struct {
 	PackagePassword     bool
 	BuildEnvironment    bool
 	BuilderInstructions bool
-	HTTPProxy           bool
-	HTTPSProxy          bool
+	HTTPForwardProxy    bool
+	HTTPSForwardProxy   bool
 }
 
 func renderKubernetesApplyScript(settings *config.InstallFile, features kubernetesSecretFeatures) string {
@@ -390,10 +396,10 @@ https_proxy="${HTTPS_PROXY:-$(existing https-proxy)}"
 	if features.BuilderInstructions {
 		b.WriteString("[ -n \"$builder_instructions\" ] || { echo 'DONKEY_BUILDER_INSTRUCTIONS is required because build.instructions is secret-backed' >&2; exit 1; }\n")
 	}
-	if features.HTTPProxy {
+	if features.HTTPForwardProxy {
 		b.WriteString("[ -n \"$http_proxy\" ] || { echo 'HTTP_PROXY is required because build.proxy.http is secret-backed' >&2; exit 1; }\n")
 	}
-	if features.HTTPSProxy {
+	if features.HTTPSForwardProxy {
 		b.WriteString("[ -n \"$https_proxy\" ] || { echo 'HTTPS_PROXY is required because build.proxy.https is secret-backed' >&2; exit 1; }\n")
 	}
 	b.WriteString(`if [ -z "$session_key" ]; then session_key=$(openssl rand -hex 32); fi

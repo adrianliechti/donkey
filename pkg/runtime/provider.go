@@ -174,8 +174,8 @@ type AppStatus struct {
 	UpToDate bool
 	// Instances are the app's running units, by name.
 	Instances []string
-	// IngressHost is the hostname the app serves on; empty for internal.
-	IngressHost string
+	// PublicHost is the hostname the app serves on; empty for internal.
+	PublicHost string
 	// Protected says traffic reaches the app through the login gateway.
 	Protected bool
 	// Port the app listens on (donkey.yaml's `port`).

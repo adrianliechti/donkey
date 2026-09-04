@@ -3,7 +3,15 @@ package gateway
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"fmt"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -12,9 +20,11 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes/fake"
 
 	"github.com/adrianliechti/donkey/internal/config"
 	"github.com/adrianliechti/donkey/internal/identity"
+	k8s "github.com/adrianliechti/donkey/pkg/runtime/kubernetes"
 	"github.com/adrianliechti/donkey/pkg/runtime/kubernetes/manifests"
 )
 
@@ -22,6 +32,19 @@ var testKey = bytes.Repeat([]byte{7}, 32)
 
 func testServer() *Server {
 	return &Server{cfg: &Config{SessionKey: testKey}}
+}
+
+func TestTLSModeDefaultsToACME(t *testing.T) {
+	t.Setenv("DONKEY_TLS_MODE", "")
+	t.Setenv("DONKEY_SESSION_KEY", fmt.Sprintf("%x", testKey))
+	t.Setenv("DONKEY_TELEMETRY_OTLP_ENDPOINT", "")
+	cfg, err := FromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.TLSMode != "acme" {
+		t.Fatalf("default TLS mode = %q, want acme", cfg.TLSMode)
+	}
 }
 
 // Both cookies are sealed with the same key, so the only thing keeping one
@@ -293,6 +316,69 @@ func TestRouteFromConfigMap(t *testing.T) {
 	bad.Annotations["donkey.local/backend"] = "https://evil.example.com"
 	if _, ok := routeFromConfigMap(*bad); ok {
 		t.Error("only in-cluster plain-http backends are proxied")
+	}
+}
+
+func TestManagedCertificatesLoadOnlyOwnedGatewaySecrets(t *testing.T) {
+	owned := tlsSecret(t, "shop.example.com", map[string]string{
+		manifests.LabelInstallation: "donkey-system",
+		manifests.LabelRole:         manifests.RoleEdge,
+	})
+	owned.Name, owned.Namespace = "shop-tls", "donkey-system"
+	foreign := tlsSecret(t, "evil.example.com", map[string]string{
+		manifests.LabelInstallation: "another-donkey",
+		manifests.LabelRole:         manifests.RoleEdge,
+	})
+	foreign.Name, foreign.Namespace = "evil-tls", "donkey-system"
+	unrelated := tlsSecret(t, "config.example.com", map[string]string{
+		manifests.LabelInstallation: "donkey-system",
+		manifests.LabelRole:         manifests.RoleConfig,
+	})
+	unrelated.Name, unrelated.Namespace = "unrelated-tls", "donkey-system"
+
+	s := &Server{
+		cfg: &Config{SystemNamespace: "donkey-system"},
+		k8s: &k8s.Client{Clientset: fake.NewSimpleClientset(owned, foreign, unrelated)},
+	}
+	certificates := &managedCertificates{server: s, byHost: map[string]*tls.Certificate{}}
+	if err := certificates.reload(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if cert, err := certificates.getCertificate(&tls.ClientHelloInfo{ServerName: "SHOP.EXAMPLE.COM"}); err != nil || cert == nil {
+		t.Fatalf("owned app certificate was not loaded: cert=%v err=%v", cert != nil, err)
+	}
+	for _, host := range []string{"evil.example.com", "config.example.com"} {
+		if cert := certificates.find(host); cert != nil {
+			t.Errorf("certificate for %s crossed the ownership/role boundary", host)
+		}
+	}
+}
+
+func tlsSecret(t *testing.T, host string, labels map[string]string) *corev1.Secret {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: host}, DNSNames: []string{host},
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour),
+		KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Labels: labels},
+		Data: map[string][]byte{
+			"tls.crt": pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}),
+			"tls.key": pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}),
+		},
 	}
 }
 

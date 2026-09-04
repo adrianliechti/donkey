@@ -38,6 +38,7 @@ func testInput(t *testing.T) Input {
 		App:              app,
 		Space:            "acme",
 		Namespace:        "donkey-acme",
+		SystemNamespace:  "donkey-system",
 		ImageRef:         "reg.example.com/donkey/shop:abc123-20260101000000",
 		RegistryHost:     "reg.example.com",
 		RegistryUsername: "bob",
@@ -67,12 +68,9 @@ func TestProtectionRendering(t *testing.T) {
 			t.Errorf("protected app should render %s", want)
 		}
 	}
-	// Routing, login and TLS live in donkey-gateway, not in ingress-vendor
-	// CRDs.
-	for _, forbidden := range []string{"kind: Ingress", "kind: SecurityPolicy", "kind: HTTPRoute", "kind: ReferenceGrant", "kind: Certificate", "shop-oidc"} {
-		if strings.Contains(out, forbidden) {
-			t.Errorf("%s must not be rendered anymore", forbidden)
-		}
+	// ACME mode keeps certificate issuance inside donkey-gateway.
+	if strings.Contains(out, "kind: Certificate") {
+		t.Error("ACME mode must not render a cert-manager Certificate")
 	}
 
 	// public: true drops the login mark but keeps riding the gateway.
@@ -331,7 +329,7 @@ func TestNoCertificateObjects(t *testing.T) {
 		t.Fatal(err)
 	}
 	if strings.Contains(out, "kind: Certificate") {
-		t.Error("apps must not render cert-manager Certificates anymore")
+		t.Error("default ACME mode must not render a cert-manager Certificate")
 	}
 }
 
@@ -357,7 +355,7 @@ func TestInternalAppIsNotExposed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, forbidden := range []string{AnnotationHost + ":", AnnotationBackend + ":", "kind: Certificate", "kind: SecurityPolicy", "client-secret"} {
+	for _, forbidden := range []string{AnnotationHost + ":", AnnotationBackend + ":", "kind: Certificate", "client-secret"} {
 		if strings.Contains(rendered, forbidden) {
 			t.Errorf("an internal app must not render %q", forbidden)
 		}

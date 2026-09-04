@@ -19,68 +19,41 @@ import (
 	"github.com/adrianliechti/donkey/pkg/runtime/kubernetes/manifests"
 )
 
-func TestDeleteAppEdgeObjectsIsSafeWithoutCRDs(t *testing.T) {
-	dyn := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme())
-	r := NewRuntime(&Client{Dynamic: dyn}, Options{SystemNamespace: "donkey-system"})
-	if err := r.deleteAppEdgeObjects(context.Background(), "acme", "shop"); err != nil {
-		t.Fatalf("a cluster with no app-edge objects should be a no-op: %v", err)
-	}
-}
-
-func TestDeleteAppEdgeObjectsUsesSystemNamespace(t *testing.T) {
+func TestDeleteAppTrafficUsesSystemNamespace(t *testing.T) {
 	ctx := context.Background()
 	dyn := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme())
 	r := NewRuntime(&Client{Dynamic: dyn}, Options{SystemNamespace: "bank-donkey-system"})
-	if err := r.deleteAppEdgeObjects(ctx, "acme", "shop"); err != nil {
+	if err := r.deleteAppTrafficObjects(ctx, "acme", "shop"); err != nil {
 		t.Fatal(err)
 	}
-	actions := dyn.Actions()
-	assertDeleteActions(t, actions,
-		[]string{"httproutes", "gateways", "httpproxies", "certificates", "secrets"},
+	assertDeleteActions(t, dyn.Actions(),
+		[]string{"certificates", "dnsendpoints", "secrets"},
 		map[string]string{
 			manifests.LabelInstallation: "bank-donkey-system",
 			manifests.LabelSpace:        "acme",
 			manifests.LabelApp:          "shop",
 			manifests.LabelRole:         manifests.RoleEdge,
 		})
-	for _, action := range actions {
+	for _, action := range dyn.Actions() {
 		if action.GetVerb() == "delete-collection" && action.GetNamespace() != "bank-donkey-system" {
 			t.Errorf("%s deletion used namespace %q", action.GetResource().Resource, action.GetNamespace())
 		}
 	}
 }
 
-func TestReconcileAppEdgeModeRemovesOnlyInactiveStrategy(t *testing.T) {
+func TestReconcileAppTrafficRemovesOnlyOmittedKinds(t *testing.T) {
 	ctx := context.Background()
 	dyn := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme())
 	r := NewRuntime(&Client{Dynamic: dyn}, Options{SystemNamespace: "bank-donkey-system"})
 	in := manifests.Input{
-		App:    &config.AppConfig{Name: "shop"},
-		Space:  "acme",
+		App: &config.AppConfig{Name: "shop"}, Space: "acme",
 		Domain: "shop.acme.apps.example.com",
-		ContourHTTPProxy: manifests.ContourHTTPProxyConfig{
-			Namespace:        "bank-donkey-system",
-			IngressClassName: "contour",
-			IssuerName:       "platform-ca",
-		},
+		TLS:    config.InstallTLS{Mode: "cert-manager", IssuerName: "platform-ca"},
 	}
-	if err := r.reconcileAppEdgeMode(ctx, in); err != nil {
+	if err := r.reconcileAppTraffic(ctx, in); err != nil {
 		t.Fatal(err)
 	}
-	assertDeleteActions(t, dyn.Actions(), []string{"httproutes", "gateways"}, map[string]string{
-		manifests.LabelInstallation: "bank-donkey-system",
-		manifests.LabelSpace:        "acme",
-		manifests.LabelApp:          "shop",
-		manifests.LabelRole:         manifests.RoleEdge,
-	})
-
-	dyn.ClearActions()
-	in.ContourHTTPProxy = manifests.ContourHTTPProxyConfig{}
-	in.AppGateway = manifests.AppGatewayConfig{Namespace: "bank-donkey-system", ClassName: "platform", IssuerName: "platform-ca"}
-	if err := r.reconcileAppEdgeMode(ctx, in); err != nil {
-		t.Fatal(err)
-	}
-	assertDeleteActions(t, dyn.Actions(), []string{"httpproxies"}, map[string]string{
+	assertDeleteActions(t, dyn.Actions(), []string{"dnsendpoints"}, map[string]string{
 		manifests.LabelInstallation: "bank-donkey-system",
 		manifests.LabelSpace:        "acme",
 		manifests.LabelApp:          "shop",
@@ -88,7 +61,7 @@ func TestReconcileAppEdgeModeRemovesOnlyInactiveStrategy(t *testing.T) {
 	})
 }
 
-func TestReconcileAppEdgesSwitchesEveryExistingAppFromActualRouteState(t *testing.T) {
+func TestReconcileAppTrafficUsesExistingRouteHostname(t *testing.T) {
 	const (
 		installation = "bank-donkey-system"
 		workloads    = "bank-apps"
@@ -96,9 +69,9 @@ func TestReconcileAppEdgesSwitchesEveryExistingAppFromActualRouteState(t *testin
 	)
 	placement := manifests.Placement{SharedNamespace: workloads}
 	owned := func(app, role string) map[string]string {
-		labels := manifests.Labels(space, app, role)
-		labels[manifests.LabelInstallation] = installation
-		return labels
+		values := manifests.Labels(space, app, role)
+		values[manifests.LabelInstallation] = installation
+		return values
 	}
 	deployment := func(app string) *appsv1.Deployment {
 		return &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{
@@ -106,7 +79,7 @@ func TestReconcileAppEdgesSwitchesEveryExistingAppFromActualRouteState(t *testin
 			Labels: owned(app, manifests.RoleWorkload),
 		}}
 	}
-	siteRoute := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{
+	route := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{
 		Name: placement.Name(space, "site"), Namespace: workloads,
 		Labels: owned("site", manifests.RoleRoute),
 		Annotations: map[string]string{
@@ -116,9 +89,6 @@ func TestReconcileAppEdgesSwitchesEveryExistingAppFromActualRouteState(t *testin
 	}}
 
 	dynamic := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme())
-	// The dynamic fake records apply patches but does not create an object for
-	// an apply-on-missing request. Return the submitted object so the test can
-	// exercise Client.Apply's real action path.
 	dynamic.PrependReactor("patch", "*", func(action k8stesting.Action) (bool, runtime.Object, error) {
 		patch := action.(k8stesting.PatchAction)
 		var object map[string]any
@@ -128,17 +98,17 @@ func TestReconcileAppEdgesSwitchesEveryExistingAppFromActualRouteState(t *testin
 		return true, &unstructured.Unstructured{Object: object}, nil
 	})
 	r := NewRuntime(&Client{
-		Clientset: fake.NewSimpleClientset(deployment("site"), deployment("worker"), siteRoute),
+		Clientset: fake.NewSimpleClientset(deployment("site"), deployment("worker"), route),
 		Dynamic:   dynamic,
 	}, Options{
 		Placement:       placement,
 		SystemNamespace: installation,
-		ContourHTTPProxy: config.InstallContourHTTPProxy{
-			IngressClassName: "contour-main",
-			IssuerName:       "platform-ca",
+		TLS: config.InstallTLS{
+			Mode: "cert-manager", IssuerName: "platform-ca",
 		},
+		ExternalDNS: config.InstallExternalDNS{Targets: []string{"10.204.166.5"}},
 	})
-	if err := r.ReconcileAppEdges(context.Background()); err != nil {
+	if err := r.ReconcileAppTraffic(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -149,20 +119,21 @@ func TestReconcileAppEdgesSwitchesEveryExistingAppFromActualRouteState(t *testin
 		}
 	}
 	if len(patches) != 2 {
-		t.Fatalf("applied %d objects, want site Certificate and HTTPProxy: %v", len(patches), dynamic.Actions())
+		t.Fatalf("applied %d objects, want site Certificate and DNSEndpoint: %v", len(patches), dynamic.Actions())
 	}
 	if got := patches[0].GetResource().Resource; got != "certificates" {
 		t.Errorf("first applied resource = %q, want certificates", got)
 	}
-	if got := patches[1].GetResource().Resource; got != "httpproxies" {
-		t.Errorf("second applied resource = %q, want httpproxies", got)
+	if got := patches[1].GetResource().Resource; got != "dnsendpoints" {
+		t.Errorf("second applied resource = %q, want dnsendpoints", got)
 	}
-	var proxy map[string]any
-	if err := json.Unmarshal(patches[1].GetPatch(), &proxy); err != nil {
+	var certificate map[string]any
+	if err := json.Unmarshal(patches[0].GetPatch(), &certificate); err != nil {
 		t.Fatal(err)
 	}
-	if host, _, _ := unstructured.NestedString(proxy, "spec", "virtualhost", "fqdn"); host != "shop.example.test" {
-		t.Errorf("HTTPProxy host = %q, want the existing route's exact hostname", host)
+	dnsNames, _, _ := unstructured.NestedStringSlice(certificate, "spec", "dnsNames")
+	if len(dnsNames) != 1 || dnsNames[0] != "shop.example.test" {
+		t.Errorf("Certificate DNS names = %v, want existing route hostname", dnsNames)
 	}
 
 	edgeSelector := func(app string) string {
@@ -173,12 +144,10 @@ func TestReconcileAppEdgesSwitchesEveryExistingAppFromActualRouteState(t *testin
 			manifests.LabelRole:         manifests.RoleEdge,
 		}).String()
 	}
+	// The internal worker has no route, so all traffic objects are retracted.
 	assertDeleteActionsWithSelectors(t, dynamic.Actions(), []string{
-		"httproutes", "gateways",
-		"httproutes", "gateways", "httpproxies", "certificates", "secrets",
+		"certificates", "dnsendpoints", "secrets",
 	}, []string{
-		edgeSelector("site"), edgeSelector("site"),
 		edgeSelector("worker"), edgeSelector("worker"), edgeSelector("worker"),
-		edgeSelector("worker"), edgeSelector("worker"),
 	})
 }

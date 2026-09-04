@@ -12,8 +12,14 @@ registry:
 domain: apps.example.com
 
 tls:
-  mode: acme
-  email: you@example.com
+  mode: cert-manager
+  issuerName: platform-ca
+
+# Optional when external-dns runs with --source=crd and the gateway has a
+# stable load-balancer VIP:
+# gateway:
+#   externalDNS:
+#     targets: [10.0.0.10]
 
 auth:
   issuer: https://id.example.com

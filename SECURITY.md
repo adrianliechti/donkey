@@ -87,13 +87,12 @@ reserved. Selectors and ownership checks use only immutable `donkey.local/*`
 identity labels; the descriptive `app.kubernetes.io/*` labels never grant
 authority.
 
-**Optional managed-edge authority stays namespaced.** In the confined
-two-namespace topology, donkey-server may write Gateway, HTTPRoute, HTTPProxy
-and Certificate objects only in its system namespace; it receives no access to
-the platform Gateway namespace. A Contour operator admitting root HTTPProxies
-from that namespace is explicitly delegating virtual-host authority and should
-constrain allowed hostnames and issuer policy at admission when the shared
-edge serves unrelated tenants.
+**Optional certificate and DNS authority stays namespaced.** In the confined
+two-namespace topology, donkey-server may write cert-manager Certificate and
+external-dns DNSEndpoint objects only in its system namespace. It receives no
+access outside the namespaces assigned to the installation. Cluster operators
+should still constrain issuer and DNS policy when the selected controllers
+serve unrelated tenants.
 
 **Cryptography.** All randomness is `crypto/rand` (no `math/rand`, no
 `rand.Seed`). No `InsecureSkipVerify` anywhere; `--ca-file` *adds* to the
@@ -189,15 +188,18 @@ where an app needs a low port.*
 
 **`donkey-gateway`'s Role covers every Secret in `donkey-system`.**
 `donkeyGatewaySecretsRole` grants `get/list/create/update` on `secrets` with no
-`resourceNames`, though the gateway uses three named certificate secrets and
-never lists. The grant also covers `donkey-system-config` (registry password,
-OpenAI key, OIDC client secret, session key). The gateway is the most exposed
-component donkey runs, so any RCE/SSRF in it becomes one API call for the
-registry *push* credential — write access to the path every app is built from.
-Its ClusterRole also reads every ConfigMap cluster-wide (RBAC cannot filter by
-label; `ListManagedRoutes` filters client-side). *Fix: split into unrestricted
-`create` and `get/update` with `resourceNames` on the three certificate
-secrets; drop `list`.*
+`resourceNames`. ACME and CA modes create or update named state Secrets;
+cert-manager mode lists Secrets and filters installation and edge labels in
+the client because Kubernetes RBAC cannot constrain a list by label. The grant
+also covers `donkey-system-config` (registry password, OpenAI key, OIDC client
+secret, session key). The gateway is the most exposed component donkey runs,
+so any RCE/SSRF in it becomes one API call for the registry *push* credential
+— write access to the path every app is built from. Its ClusterRole also reads
+every ConfigMap cluster-wide (RBAC cannot filter by label;
+`ListManagedRoutes` filters client-side). *Fix: put gateway-readable TLS state
+in a dedicated namespace or mount a controller-maintained certificate bundle;
+then restrict ACME/CA state by `resourceNames` and remove broad Secret access
+from the system namespace.*
 
 **Access allowlists match an unverified `email` claim.** The OIDC claims struct
 decodes `email` but not `email_verified`, and `AccessConfig.Allows` compares it
@@ -320,7 +322,7 @@ A batch worth clearing together.
    is an operator" is a surprising default; refuse to start, or set one.
 2. **Docker runtime parity** — `CapDrop`, `SecurityOpt`, `User` in
    `replaceContainer`. Three lines, closes the highest Docker-side risk.
-3. **Small and self-contained** — `resourceNames` on the gateway secrets Role;
+3. **Small and self-contained** — isolate gateway-readable TLS Secrets;
    `email_verified` in the claims struct; a `state` on the CLI login callback;
    reject `http://` for non-loopback; `os.Chmod` the token file.
 4. **Redaction on the analyze path** — reuse `redact()`, extend `deniedFile`,

@@ -274,10 +274,7 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 	if serverHost == "" {
 		serverHost = settings.Domain
 	}
-	tlsMode := settings.TLS.Mode
-	if tlsMode == "" {
-		tlsMode = "acme"
-	}
+	tlsMode := settings.TLS.EffectiveMode()
 
 	serverEnv := map[string]string{
 		"DONKEY_RUNTIME":                 "docker",
@@ -502,19 +499,20 @@ func validateDockerSettings(settings *config.InstallFile) error {
 	if err := settings.Registry.ValidateRuntime("docker"); err != nil {
 		return err
 	}
-	if err := settings.Gateway.Validate(); err != nil {
+	if err := settings.Gateway.ExternalDNS.Validate(); err != nil {
 		return err
 	}
-	if settings.Gateway.UsesExternalTLS() {
-		return fmt.Errorf("gateway.httpRoute, gateway.appGateway and gateway.contourHTTPProxy are Kubernetes-only edge modes")
+	if settings.Gateway.ExternalDNS.Enabled() {
+		return fmt.Errorf("gateway.externalDNS is Kubernetes-only")
+	}
+	if err := settings.TLS.Validate(); err != nil {
+		return err
+	}
+	if settings.TLS.UsesCertManager() {
+		return fmt.Errorf("tls.mode cert-manager is Kubernetes-only; use acme or ca with Docker")
 	}
 	if err := settings.Build.ValidateProvenance(); err != nil {
 		return err
-	}
-	switch settings.TLS.Mode {
-	case "", "acme", "ca":
-	default:
-		return fmt.Errorf("tls.mode must be acme or ca on the docker runtime, not %q", settings.TLS.Mode)
 	}
 	if err := settings.Build.Validate(); err != nil {
 		return err

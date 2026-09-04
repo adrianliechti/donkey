@@ -64,12 +64,11 @@ type Input struct {
 	AddonSecretNames []string
 	// Domain is the hostname the app is served on; empty skips the route.
 	Domain string
-	// AppGateway provisions an external Gateway API entrypoint for Domain.
-	// Empty leaves edge provisioning to the installation.
-	AppGateway AppGatewayConfig
-	// ContourHTTPProxy provisions the same exact-host certificate through a
-	// root Contour HTTPProxy on one shared Contour/Envoy data plane.
-	ContourHTTPProxy ContourHTTPProxyConfig
+	// TLS provisions the app's exact-host Certificate in cert-manager mode.
+	// The generated Secret lives with the gateway, which consumes it directly.
+	TLS config.InstallTLS
+	// ExternalDNS optionally publishes the same hostname at the gateway VIP.
+	ExternalDNS config.InstallExternalDNS
 	// Decisions records what deploy-time analysis filled in (storage,
 	// healthcheck) as an annotation on the Deployment, so later no-build
 	// deploys can keep those decisions instead of silently dropping them.
@@ -136,26 +135,17 @@ func AppObjects(in Input) ([]runtime.Object, error) {
 		return nil, err
 	}
 	objs = append(objs, dep, service(in))
-	network, err := NetworkObjects(in)
-	if err != nil {
-		return nil, err
-	}
-	return append(objs, network...), nil
+	return append(objs, NetworkObjects(in)...), nil
 }
 
-// NetworkObjects renders the gateway's routing entries. None of it depends on
-// the image, which is what lets the console change exposure without a deploy.
-// donkey's own edge issues certificates itself; an optional managed edge adds
-// either portable Gateway API objects or Contour's shared-edge objects here.
-func NetworkObjects(in Input) ([]runtime.Object, error) {
+// NetworkObjects renders the gateway's routing entries and, when configured,
+// the exact-host Certificate and DNSEndpoint. None depends on the image, which
+// lets the console change exposure without a deploy.
+func NetworkObjects(in Input) []runtime.Object {
 	var objs []runtime.Object
 	if in.Domain != "" {
 		objs = append(objs, appRoute(in))
-		edge, err := AppEdgeObjects(in)
-		if err != nil {
-			return nil, err
-		}
-		objs = append(objs, edge...)
+		objs = append(objs, AppTrafficObjects(in)...)
 	}
 	// Paths this app answers on somebody else's address. The hostname
 	// belongs to the app that owns it, but each route carries its own login
@@ -163,7 +153,7 @@ func NetworkObjects(in Input) ([]runtime.Object, error) {
 	for _, r := range in.RouteTargets {
 		objs = append(objs, PathRoute(in, r))
 	}
-	return objs, nil
+	return objs
 }
 
 // SpaceHome is the object that has to exist before anything of the space

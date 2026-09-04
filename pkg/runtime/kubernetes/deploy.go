@@ -149,7 +149,7 @@ func (r *Runtime) Deploy(ctx context.Context, spec rt.DeploySpec, out rt.Progres
 	} else if !app.Public {
 		out.Line("· Login protection is in force.")
 	}
-	if err := r.reconcileAppEdgeMode(ctx, in); err != nil {
+	if err := r.reconcileAppTraffic(ctx, in); err != nil {
 		return err
 	}
 	if spec.NoWait {
@@ -184,51 +184,43 @@ func (r *Runtime) Destroy(ctx context.Context, space, app string, keepData bool)
 	if err := r.c.RemoveFilesHelper(ctx, ns, obj, space, app); err != nil {
 		return err
 	}
-	if err := r.deleteAppEdgeObjects(ctx, space, app); err != nil {
+	if err := r.deleteAppTrafficObjects(ctx, space, app); err != nil {
 		return err
 	}
 	return r.c.DeleteAppResources(ctx, ns, space, app, keepData)
 }
 
-// deleteAppEdgeObjects retracts the namespaced external edge independently
-// of the workload objects: the app may live in another namespace, while its
-// Certificate, TLS Secret and routing object deliberately live with the
-// control plane. It is safe on clusters without any optional CRD.
-func (r *Runtime) deleteAppEdgeObjects(ctx context.Context, space, app string) error {
-	if err := r.c.DeleteAppEdges(ctx, r.opts.SystemNamespace, space, app); err != nil {
-		return fmt.Errorf("removing the app's edge: %w", err)
+// deleteAppTrafficObjects retracts the namespaced Certificate, generated TLS
+// Secret and optional DNSEndpoint independently of workload objects. They
+// live with the gateway even when the app lives in another namespace.
+func (r *Runtime) deleteAppTrafficObjects(ctx context.Context, space, app string) error {
+	if err := r.c.DeleteAppTraffic(ctx, r.opts.SystemNamespace, space, app); err != nil {
+		return fmt.Errorf("removing the app's public traffic objects: %w", err)
 	}
 	return nil
 }
 
-// reconcileAppEdgeMode removes objects owned by the inactive strategy only
-// after the active objects have applied. This makes a configuration switch
-// converge without briefly deleting the shared Certificate and TLS Secret.
-func (r *Runtime) reconcileAppEdgeMode(ctx context.Context, in manifests.Input) error {
-	if in.Domain == "" || (!in.AppGateway.Enabled() && !in.ContourHTTPProxy.Enabled()) {
-		return r.deleteAppEdgeObjects(ctx, in.Space, in.App.Name)
+// reconcileAppTraffic removes resources omitted by the active certificate or
+// DNS choice after their replacements have applied.
+func (r *Runtime) reconcileAppTraffic(ctx context.Context, in manifests.Input) error {
+	if in.Domain == "" {
+		return r.deleteAppTrafficObjects(ctx, in.Space, in.App.Name)
 	}
-	var stale []string
-	if in.AppGateway.Enabled() {
-		stale = []string{"HTTPProxy"}
-	} else {
-		stale = []string{"HTTPRoute", "Gateway"}
-	}
-	if err := r.c.DeleteAppEdgeKinds(ctx, r.opts.SystemNamespace, in.Space, in.App.Name, stale...); err != nil {
-		return fmt.Errorf("removing the app's previous edge mode: %w", err)
+	if err := r.c.DeleteObsoleteAppTraffic(ctx, r.opts.SystemNamespace, in.Space, in.App.Name,
+		in.TLS.UsesCertManager(), in.ExternalDNS.Enabled()); err != nil {
+		return fmt.Errorf("removing obsolete public traffic objects: %w", err)
 	}
 	return nil
 }
 
-// ReconcileAppEdges brings every deployed app's optional external edge in
-// line with the installation settings. The route ConfigMap is the source of
-// truth here: it records the exact hostname and whether the app is exposed,
-// so an install can switch edge strategies without reconstructing a
-// donkey.yaml or changing the app's own route.
+// ReconcileAppTraffic brings every deployed app's Certificate and optional
+// DNSEndpoint in line with installation settings. The route ConfigMap records
+// the exact hostname, so an install can change certificate source or DNS
+// publication without reconstructing donkey.yaml.
 //
 // The installer calls this after applying the control plane. Ordinary deploy,
 // network and destroy operations reconcile the same objects for one app.
-func (r *Runtime) ReconcileAppEdges(ctx context.Context) error {
+func (r *Runtime) ReconcileAppTraffic(ctx context.Context) error {
 	apps, err := r.c.ListApps(ctx)
 	if err != nil {
 		return err
@@ -249,34 +241,15 @@ func (r *Runtime) ReconcileAppEdges(ctx context.Context) error {
 			SystemNamespace: r.opts.SystemNamespace,
 			ObjectName:      r.name(app.Space, app.App),
 			Domain:          host,
-			AppGateway: manifests.AppGatewayConfig{
-				Namespace:      r.opts.SystemNamespace,
-				ClassName:      r.opts.AppGateway.ClassName,
-				NameTemplate:   r.opts.AppGateway.NameTemplate,
-				RouteNamespace: r.opts.AppGateway.RouteNamespace,
-				IssuerName:     r.opts.AppGateway.IssuerName,
-				IssuerKind:     r.opts.AppGateway.CertificateIssuerKind(),
-				IssuerGroup:    r.opts.AppGateway.CertificateIssuerGroup(),
-			},
-			ContourHTTPProxy: manifests.ContourHTTPProxyConfig{
-				Namespace:        r.opts.SystemNamespace,
-				IngressClassName: r.opts.ContourHTTPProxy.IngressClassName,
-				IssuerName:       r.opts.ContourHTTPProxy.IssuerName,
-				IssuerKind:       r.opts.ContourHTTPProxy.CertificateIssuerKind(),
-				IssuerGroup:      r.opts.ContourHTTPProxy.CertificateIssuerGroup(),
-			},
+			TLS:             r.opts.TLS,
+			ExternalDNS:     r.opts.ExternalDNS,
 		}
-		edge, err := manifests.AppEdgeObjects(in)
-		if err != nil {
-			return fmt.Errorf("rendering the edge for %s/%s: %w", app.Space, app.App, err)
+		objects := manifests.AppTrafficObjects(in)
+		if err := r.c.Apply(ctx, objects); err != nil {
+			return fmt.Errorf("applying public traffic for %s/%s: %w", app.Space, app.App, err)
 		}
-		// Apply the replacement before retracting the old strategy so a mode
-		// switch keeps the common Certificate and Secret alive throughout.
-		if err := r.c.Apply(ctx, edge); err != nil {
-			return fmt.Errorf("applying the edge for %s/%s: %w", app.Space, app.App, err)
-		}
-		if err := r.reconcileAppEdgeMode(ctx, in); err != nil {
-			return fmt.Errorf("reconciling the edge for %s/%s: %w", app.Space, app.App, err)
+		if err := r.reconcileAppTraffic(ctx, in); err != nil {
+			return fmt.Errorf("reconciling public traffic for %s/%s: %w", app.Space, app.App, err)
 		}
 	}
 	return nil
@@ -302,22 +275,8 @@ func (r *Runtime) manifestInput(spec rt.DeploySpec, includeCreds bool) (manifest
 		Decisions:       spec.Decisions,
 		RegistryHost:    r.opts.Registry.Host(),
 		Domain:          r.appHost(space, app),
-		AppGateway: manifests.AppGatewayConfig{
-			Namespace:      r.opts.SystemNamespace,
-			ClassName:      r.opts.AppGateway.ClassName,
-			NameTemplate:   r.opts.AppGateway.NameTemplate,
-			RouteNamespace: r.opts.AppGateway.RouteNamespace,
-			IssuerName:     r.opts.AppGateway.IssuerName,
-			IssuerKind:     r.opts.AppGateway.CertificateIssuerKind(),
-			IssuerGroup:    r.opts.AppGateway.CertificateIssuerGroup(),
-		},
-		ContourHTTPProxy: manifests.ContourHTTPProxyConfig{
-			Namespace:        r.opts.SystemNamespace,
-			IngressClassName: r.opts.ContourHTTPProxy.IngressClassName,
-			IssuerName:       r.opts.ContourHTTPProxy.IssuerName,
-			IssuerKind:       r.opts.ContourHTTPProxy.CertificateIssuerKind(),
-			IssuerGroup:      r.opts.ContourHTTPProxy.CertificateIssuerGroup(),
-		},
+		TLS:             r.opts.TLS,
+		ExternalDNS:     r.opts.ExternalDNS,
 	}
 	if len(r.opts.TelemetryKey) > 0 {
 		in.TelemetryEndpoint = manifests.TelemetryOTLPEndpoint(r.opts.SystemNamespace)
@@ -413,9 +372,8 @@ func (r *Runtime) retractRemovedRoutes(ctx context.Context, ns string, in manife
 }
 
 // ApplyNetwork changes how the app is reached — without a deploy. The route
-// and optional managed Gateway/Certificate edge are re-rendered from cluster
-// state; existing shared-address routes keep serving under their existing
-// names (their exposure follows the app's).
+// and optional Certificate/DNSEndpoint are re-rendered from cluster state;
+// existing shared-address routes keep serving under their existing names.
 func (r *Runtime) ApplyNetwork(ctx context.Context, cfg *config.AppConfig) (string, error) {
 	space, app := cfg.Space, cfg.Name
 	ns, obj := r.ns(space), r.name(space, app)
@@ -440,16 +398,12 @@ func (r *Runtime) ApplyNetwork(ctx context.Context, cfg *config.AppConfig) (stri
 		}
 	}
 
-	// Re-render: the app's own route and optional external edge unless
+	// Re-render: the app's own route and public traffic objects unless
 	// internal, and every existing path route under its existing name.
 	var objs []k8sruntime.Object
 	if in.Domain != "" {
 		objs = append(objs, manifests.AppRoute(in))
-		edge, err := manifests.AppEdgeObjects(in)
-		if err != nil {
-			return "", err
-		}
-		objs = append(objs, edge...)
+		objs = append(objs, manifests.AppTrafficObjects(in)...)
 	}
 	for _, pr := range net.Routes {
 		objs = append(objs, manifests.PathRouteNamed(in, pr.Name, manifests.RouteTarget{Host: pr.Host, Path: pr.Path}))
@@ -463,7 +417,7 @@ func (r *Runtime) ApplyNetwork(ctx context.Context, cfg *config.AppConfig) (stri
 			return "", err
 		}
 	}
-	if err := r.reconcileAppEdgeMode(ctx, in); err != nil {
+	if err := r.reconcileAppTraffic(ctx, in); err != nil {
 		return "", err
 	}
 	return "", nil

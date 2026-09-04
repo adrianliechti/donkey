@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -24,11 +25,12 @@ addonImages:
 addonImagePullSecrets:
   - registry-example-com
 gateway:
-  appGateway:
-    className: private-edge
-    nameTemplate: "$namespace-$hash"
-    routeNamespace: gateway-infra
-    issuerName: company-pki
+  externalDNS:
+    targets: [10.204.166.5]
+    ttl: 120
+tls:
+  mode: cert-manager
+  issuerName: company-pki
 build:
   instructions: |
     Use base images under registry.example.com/mirror only.
@@ -76,11 +78,12 @@ build:
 	if len(f.AddonImagePullSecrets) != 1 || f.AddonImagePullSecrets[0] != "registry-example-com" {
 		t.Errorf("addonImagePullSecrets = %v", f.AddonImagePullSecrets)
 	}
-	if f.Gateway.AppGateway.ClassName != "private-edge" ||
-		f.Gateway.AppGateway.NameTemplate != "$namespace-$hash" ||
-		f.Gateway.AppGateway.RouteNamespace != "gateway-infra" ||
-		f.Gateway.AppGateway.IssuerName != "company-pki" {
-		t.Errorf("gateway.appGateway = %+v", f.Gateway.AppGateway)
+	if !f.TLS.UsesCertManager() || f.TLS.IssuerName != "company-pki" {
+		t.Errorf("tls = %+v", f.TLS)
+	}
+	if !slices.Equal(f.Gateway.ExternalDNS.Targets, []string{"10.204.166.5"}) ||
+		f.Gateway.ExternalDNS.EffectiveRecordType() != "A" || f.Gateway.ExternalDNS.TTL != 120 {
+		t.Errorf("gateway.externalDNS = %+v", f.Gateway.ExternalDNS)
 	}
 	if got := f.Build.Env["CGO_ENABLED"]; got != "0" {
 		t.Errorf("env[CGO_ENABLED] = %q", got)
@@ -404,124 +407,77 @@ func TestInstallKubernetesRejectsUnworkableCombinations(t *testing.T) {
 	}
 }
 
-// The optional attachment and the TLS block: naming half a gateway or an
-// unknown mode are configurations that could only fail later and worse.
-func TestInstallAttachmentValidation(t *testing.T) {
+func TestInstallTrafficValidation(t *testing.T) {
 	var tls InstallTLS
 	if err := tls.Validate(); err != nil {
 		t.Errorf("an empty TLS block is the default installation: %v", err)
 	}
-	tls.Mode = "none"
-	if err := tls.Validate(); err != nil {
-		t.Errorf("none is the mode behind a TLS-terminating cluster gateway: %v", err)
+	if tls.EffectiveMode() != "acme" {
+		t.Errorf("empty TLS mode = %q, want acme", tls.EffectiveMode())
 	}
-	// YAML 1.1 reads a bare `off` as a boolean, arriving here as "false" —
-	// both spellings get pointed at the real name.
-	for _, mode := range []string{"off", "false"} {
-		tls.Mode = mode
-		if err := tls.Validate(); err == nil || !strings.Contains(err.Error(), "none") {
-			t.Errorf("mode %q should point at none, got %v", mode, err)
+	tls = InstallTLS{Mode: "cert-manager"}
+	if err := tls.Validate(); err == nil || !strings.Contains(err.Error(), "issuerName") {
+		t.Errorf("cert-manager without an issuer should fail clearly, got %v", err)
+	}
+	tls.IssuerName = "platform-ca"
+	if err := tls.Validate(); err != nil {
+		t.Errorf("cert-manager issuer should validate: %v", err)
+	}
+	if tls.CertificateIssuerKind() != "ClusterIssuer" || tls.CertificateIssuerGroup() != "cert-manager.io" {
+		t.Errorf("cert-manager defaults not applied: %+v", tls)
+	}
+	for _, invalid := range []InstallTLS{
+		{Mode: "none"},
+		{Mode: "letsencrypt"},
+		{IssuerName: "platform-ca"},
+		{Mode: "ca", IssuerName: "platform-ca"},
+		{Mode: "ca", Email: "ops@example.com"},
+		{Mode: "cert-manager", IssuerName: "Not Valid"},
+	} {
+		if err := invalid.Validate(); err == nil {
+			t.Errorf("invalid TLS settings passed: %+v", invalid)
 		}
 	}
-	tls = InstallTLS{Mode: "letsencrypt"}
-	if err := tls.Validate(); err == nil {
-		t.Error("an unknown tls.mode must be refused")
-	}
 
-	var route InstallHTTPRoute
-	if err := route.Validate(); err != nil {
-		t.Errorf("no httpRoute block is the default: %v", err)
+	var dns InstallExternalDNS
+	if err := dns.Validate(); err != nil {
+		t.Errorf("external DNS is optional: %v", err)
 	}
-	route.Namespace = "infra"
-	if err := route.Validate(); err == nil {
-		t.Error("a namespace without a gateway name points at nothing")
+	dns = InstallExternalDNS{Targets: []string{"10.204.166.5"}, TTL: 60}
+	if err := dns.Validate(); err != nil || dns.EffectiveRecordType() != "A" {
+		t.Errorf("IPv4 VIP should infer an A record: type=%q err=%v", dns.EffectiveRecordType(), err)
 	}
-	route.Name = "shared-gateway"
-	if err := route.Validate(); err != nil {
-		t.Errorf("name and namespace are the intended setup: %v", err)
+	dns = InstallExternalDNS{Targets: []string{"gateway.example.com."}}
+	if err := dns.Validate(); err != nil || dns.EffectiveRecordType() != "CNAME" {
+		t.Errorf("hostname should infer a CNAME: type=%q err=%v", dns.EffectiveRecordType(), err)
 	}
-	if !route.Enabled() {
-		t.Error("a named gateway means the attachment is on")
-	}
-
-	var appGateway InstallAppGateway
-	if err := appGateway.Validate(); err != nil {
-		t.Errorf("no appGateway block is the default: %v", err)
-	}
-	appGateway.RouteNamespace = "projectcontour"
-	if err := appGateway.Validate(); err == nil {
-		t.Error("a route namespace without a GatewayClass points at nothing")
-	}
-	appGateway.ClassName = "platform"
-	if err := appGateway.Validate(); err == nil {
-		t.Error("a GatewayClass without an issuer cannot provision TLS")
-	}
-	appGateway.IssuerName = "platform-ca"
-	if err := appGateway.Validate(); err != nil {
-		t.Errorf("class, parent namespace and issuer are the intended setup: %v", err)
-	}
-	if !appGateway.Enabled() || appGateway.CertificateIssuerKind() != "ClusterIssuer" || appGateway.CertificateIssuerGroup() != "cert-manager.io" {
-		t.Errorf("appGateway defaults not applied: %+v", appGateway)
-	}
-	appGateway.NameTemplate = "$unknown"
-	if err := appGateway.Validate(); err == nil {
-		t.Error("an unknown app Gateway name parameter should be rejected")
-	}
-	appGateway.NameTemplate = "$namespace-$hash"
-	if err := appGateway.Validate(); err != nil {
-		t.Errorf("documented app Gateway name template should be valid: %v", err)
-	}
-
-	var contour InstallContourHTTPProxy
-	if err := contour.Validate(); err != nil {
-		t.Errorf("no contourHTTPProxy block is the default: %v", err)
-	}
-	contour.IssuerName = "platform-ca"
-	if err := contour.Validate(); err == nil {
-		t.Error("a Contour issuer without an ingress class cannot select a data plane")
-	}
-	contour.IngressClassName = "contour.private"
-	if err := contour.Validate(); err != nil {
-		t.Errorf("ingress class and issuer are the intended Contour setup: %v", err)
-	}
-	if !contour.Enabled() || contour.CertificateIssuerKind() != "ClusterIssuer" || contour.CertificateIssuerGroup() != "cert-manager.io" {
-		t.Errorf("Contour edge defaults not applied: %+v", contour)
-	}
-	contour.IngressClassName = "Not A Class"
-	if err := contour.Validate(); err == nil {
-		t.Error("an invalid Contour ingress class should be rejected")
-	}
-
-	contour.IngressClassName = "contour"
-	modes := InstallGateway{AppGateway: appGateway, ContourHTTPProxy: contour}
-	if !modes.UsesExternalTLS() {
-		t.Error("a configured managed edge must report external TLS")
-	}
-	if err := modes.Validate(); err == nil || !strings.Contains(err.Error(), "alternative") {
-		t.Errorf("two per-host edge modes should be rejected, got %v", err)
-	}
-	modes.AppGateway = InstallAppGateway{}
-	modes.HTTPRoute = InstallHTTPRoute{Name: "shared"}
-	if err := modes.Validate(); err == nil || !strings.Contains(err.Error(), "both expose") {
-		t.Errorf("aggregate HTTPRoute and Contour hosts should be rejected, got %v", err)
+	for _, invalid := range []InstallExternalDNS{
+		{RecordType: "A"},
+		{Targets: []string{"gateway.example.com"}, RecordType: "A"},
+		{Targets: []string{"10.0.0.1"}, RecordType: "CNAME"},
+		{Targets: []string{"10.0.0.1"}, TTL: -1},
+	} {
+		if err := invalid.Validate(); err == nil {
+			t.Errorf("invalid external DNS settings passed: %+v", invalid)
+		}
 	}
 }
 
-func TestContourHTTPProxyInstallFileRoundTrip(t *testing.T) {
+func TestExternalDNSInstallFileRoundTrip(t *testing.T) {
 	const input = `
 gateway:
-  contourHTTPProxy:
-    ingressClassName: contour-private
-    issuerName: company-pki
-    issuerKind: ClusterIssuer
-    issuerGroup: cert-manager.io
+  externalDNS:
+    targets:
+      - 10.204.166.5
+    recordType: A
+    ttl: 300
 `
 	var f InstallFile
 	if err := yaml.UnmarshalStrict([]byte(input), &f); err != nil {
 		t.Fatal(err)
 	}
-	if got := f.Gateway.ContourHTTPProxy; got.IngressClassName != "contour-private" || got.IssuerName != "company-pki" {
-		t.Fatalf("gateway.contourHTTPProxy = %+v", got)
+	if got := f.Gateway.ExternalDNS; !slices.Equal(got.Targets, []string{"10.204.166.5"}) || got.RecordType != "A" || got.TTL != 300 {
+		t.Fatalf("gateway.externalDNS = %+v", got)
 	}
 	out, err := yaml.Marshal(f)
 	if err != nil {
@@ -531,8 +487,8 @@ gateway:
 	if err := yaml.UnmarshalStrict(out, &again); err != nil {
 		t.Fatalf("round trip: %v\n%s", err, out)
 	}
-	if again.Gateway.ContourHTTPProxy != f.Gateway.ContourHTTPProxy {
-		t.Fatalf("round trip changed Contour settings: %+v", again.Gateway.ContourHTTPProxy)
+	if got := again.Gateway.ExternalDNS; !slices.Equal(got.Targets, f.Gateway.ExternalDNS.Targets) || got.RecordType != "A" || got.TTL != 300 {
+		t.Fatalf("round trip changed external DNS settings: %+v", got)
 	}
 }
 
@@ -555,7 +511,7 @@ func TestExampleInstallFilesLoad(t *testing.T) {
 		if err := f.Kubernetes.Validate(); err != nil {
 			t.Errorf("%s: %v", m, err)
 		}
-		if err := f.Gateway.Validate(); err != nil {
+		if err := f.Gateway.ExternalDNS.Validate(); err != nil {
 			t.Errorf("%s: %v", m, err)
 		}
 		if err := f.Build.Validate(); err != nil {
@@ -564,8 +520,8 @@ func TestExampleInstallFilesLoad(t *testing.T) {
 		if err := f.AddonImages.Validate(); err != nil {
 			t.Errorf("%s: %v", m, err)
 		}
-		t.Logf("%s: tls=%q httpRoute=%v system=%q workload=%q",
-			filepath.Base(m), f.TLS.Mode, f.Gateway.HTTPRoute.Enabled(),
+		t.Logf("%s: tls=%q externalDNS=%v system=%q workload=%q",
+			filepath.Base(m), f.TLS.EffectiveMode(), f.Gateway.ExternalDNS.Enabled(),
 			f.Kubernetes.System.Namespace, f.Kubernetes.Workload.Namespace)
 	}
 }

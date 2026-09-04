@@ -1,50 +1,32 @@
 package config
 
-import (
-	"strings"
-	"testing"
-)
+import "testing"
 
-func TestAppGatewayNameDefaultsToDeploymentName(t *testing.T) {
-	got, err := AppGatewayName("", "donkey-system", "acme", "shop", "shop")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got != "shop" {
-		t.Fatalf("default app Gateway name = %q, want Deployment name shop", got)
+func TestExternalDNSRecordTypeInference(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		targets []string
+		want    string
+	}{
+		{name: "disabled", want: ""},
+		{name: "IPv4 VIP", targets: []string{"10.204.166.5"}, want: "A"},
+		{name: "IPv6 VIP", targets: []string{"2001:db8::5"}, want: "AAAA"},
+		{name: "load balancer hostname", targets: []string{"gateway.example.com"}, want: "CNAME"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := (InstallExternalDNS{Targets: tc.targets}).EffectiveRecordType(); got != tc.want {
+				t.Errorf("record type = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 
-func TestAppGatewayNameExpandsParameters(t *testing.T) {
-	const template = "$namespace-${space}-$app-$name-$hash"
-	first, err := AppGatewayName(template, "donkey-system", "acme", "shop", "shop")
-	if err != nil {
+func TestExternalDNSExplicitRecordTypeIsNormalized(t *testing.T) {
+	dns := InstallExternalDNS{Targets: []string{"10.204.166.5"}, RecordType: "a"}
+	if err := dns.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	second, err := AppGatewayName(template, "donkey-system", "acme", "shop", "shop")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if first != second {
-		t.Fatalf("stable template rendered %q then %q", first, second)
-	}
-	if !strings.HasPrefix(first, "donkey-system-acme-shop-shop-") || len(strings.TrimPrefix(first, "donkey-system-acme-shop-shop-")) != 10 {
-		t.Fatalf("template parameters rendered unexpectedly: %q", first)
-	}
-
-	other, err := AppGatewayName(template, "donkey-system", "other", "shop", "shop")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if other == first {
-		t.Fatal("$hash should distinguish the same app name in different spaces")
-	}
-}
-
-func TestAppGatewayNameRejectsInvalidTemplates(t *testing.T) {
-	for _, template := range []string{"$unknown", "UPPER-$name", "$name-"} {
-		if _, err := AppGatewayName(template, "donkey-system", "acme", "shop", "shop"); err == nil {
-			t.Errorf("AppGatewayName(%q) should fail", template)
-		}
+	if got := dns.EffectiveRecordType(); got != "A" {
+		t.Fatalf("record type = %q, want A", got)
 	}
 }

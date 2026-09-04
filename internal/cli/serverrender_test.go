@@ -121,7 +121,7 @@ func TestKubernetesRenderOmitsEverySecretValue(t *testing.T) {
 	}
 }
 
-func TestManagedEdgesRequireExternalTLSMode(t *testing.T) {
+func TestKubernetesCertManagerAndExternalDNSRenderDirectGateway(t *testing.T) {
 	settings := &config.InstallFile{
 		Image:  "registry.example.com/donkey/server:test",
 		Domain: "apps.example.com",
@@ -129,33 +129,26 @@ func TestManagedEdgesRequireExternalTLSMode(t *testing.T) {
 			URL: "registry.example.com/donkey",
 		}},
 		Auth: config.InstallAuth{Issuer: "https://id.example.com"},
-		Gateway: config.InstallGateway{ContourHTTPProxy: config.InstallContourHTTPProxy{
-			IngressClassName: "contour-main",
-			IssuerName:       "platform-ca",
+		TLS:  config.InstallTLS{Mode: "cert-manager", IssuerName: "platform-ca"},
+		Gateway: config.InstallGateway{ExternalDNS: config.InstallExternalDNS{
+			Targets: []string{"10.204.166.5"},
 		}},
 	}
-	if err := validateKubernetesSettings(settings); err == nil || !strings.Contains(err.Error(), "tls.mode: none") {
-		t.Fatalf("Contour edge with donkey TLS should be rejected clearly, got %v", err)
-	}
-	settings.TLS.Mode = "none"
 	if err := validateKubernetesSettings(settings); err != nil {
-		t.Fatalf("Contour edge with external TLS should validate: %v", err)
+		t.Fatalf("direct cert-manager gateway should validate: %v", err)
 	}
 	files, err := renderKubernetesBundle(settings)
 	if err != nil {
-		t.Fatalf("rendering Contour edge: %v", err)
+		t.Fatalf("rendering direct gateway: %v", err)
 	}
 	manifest := string(files["manifests.yaml"].Data)
-	for _, want := range []string{"kind: HTTPProxy", "kind: Certificate", "fqdn: apps.example.com", "secretName: donkey-contour-edge-tls"} {
+	for _, want := range []string{"kind: Certificate", "kind: DNSEndpoint", "dnsName: apps.example.com", "secretName: donkey-gateway-tls", "type: LoadBalancer"} {
 		if !strings.Contains(manifest, want) {
-			t.Errorf("rendered Contour installation is missing %q", want)
+			t.Errorf("rendered direct gateway installation is missing %q", want)
 		}
 	}
-	if strings.Contains(manifest, "kind: Gateway\n") {
-		t.Error("Contour mode must not create or mutate the shared Gateway")
-	}
 	if err := validateDockerSettings(settings); err == nil || !strings.Contains(err.Error(), "Kubernetes-only") {
-		t.Fatalf("Docker should reject the Contour edge block, got %v", err)
+		t.Fatalf("Docker should reject cert-manager/DNSEndpoint settings, got %v", err)
 	}
 }
 

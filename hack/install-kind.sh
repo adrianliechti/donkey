@@ -59,8 +59,8 @@ running:
   sudo devkube --cluster donkey connect
 
 It keeps donkey's hostnames in your /etc/hosts while it runs. (NOTE: devkube
-needs a loop version that reads donkey's route ConfigMaps — older versions
-watched the HTTPRoutes donkey no longer creates.) Then deploy the demo app:
+needs a loop version that discovers donkey's hostnames from route ConfigMaps.)
+Then deploy the demo app:
 
   task demo:app
 

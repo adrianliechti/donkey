@@ -645,219 +645,71 @@ type InstallGateway struct {
 	// so port mappings (kind) or firewall rules can rely on them.
 	HTTPNodePort  int32 `json:"httpNodePort,omitempty"`
 	HTTPSNodePort int32 `json:"httpsNodePort,omitempty"`
-	// HTTPRoute attaches donkey's edge to a Gateway API gateway the cluster
-	// already runs (one HTTPRoute for the domain and everything under it),
-	// instead of exposing the edge Service directly. That gateway terminates
-	// TLS before routes match, so this pairs with tls.mode "none".
-	HTTPRoute InstallHTTPRoute `json:"httpRoute,omitempty"`
-	// AppGateway provisions one Gateway API Gateway, HTTPRoute and
-	// cert-manager Certificate for every exposed app. This is the managed
-	// platform arrangement where tenants may create namespaced edge objects,
-	// but cannot configure a shared cluster edge themselves.
-	AppGateway InstallAppGateway `json:"appGateway,omitempty"`
-	// ContourHTTPProxy provisions one Contour HTTPProxy for every exposed
-	// hostname and cert-manager Certificates for those hosts. All HTTPProxies
-	// share the one Contour/Envoy data plane selected by IngressClassName; its
-	// Gateway uses Contour's projectcontour.io/https listener protocol so TLS
-	// remains on the HTTPProxy rather than on the shared Gateway.
-	ContourHTTPProxy InstallContourHTTPProxy `json:"contourHTTPProxy,omitempty"`
+	// ExternalDNS optionally publishes one exact DNSEndpoint per public
+	// hostname. Its targets are normally the static VIP assigned to the
+	// donkey-gateway LoadBalancer Service.
+	ExternalDNS InstallExternalDNS `json:"externalDNS,omitempty"`
 }
 
-// UsesExternalTLS reports whether Kubernetes infrastructure in front of
-// donkey terminates downstream TLS. It is also the complete set of gateway
-// blocks that the Docker runtime must reject.
-func (g InstallGateway) UsesExternalTLS() bool {
-	return g.HTTPRoute.Enabled() || g.AppGateway.Enabled() || g.ContourHTTPProxy.Enabled()
-}
-
-// Validate checks the optional attachment and per-host edge strategies as a
-// group. HTTPRoute may complement AppGateway (the former commonly exposes the
-// control-plane apex while the latter exposes app hosts), but the two per-host
-// strategies both claim the same hostnames and therefore cannot be combined.
-func (g InstallGateway) Validate() error {
-	if err := g.HTTPRoute.Validate(); err != nil {
-		return err
-	}
-	if err := g.AppGateway.Validate(); err != nil {
-		return err
-	}
-	if err := g.ContourHTTPProxy.Validate(); err != nil {
-		return err
-	}
-	if g.AppGateway.Enabled() && g.ContourHTTPProxy.Enabled() {
-		return fmt.Errorf("gateway.appGateway and gateway.contourHTTPProxy are alternative per-host edge modes — configure only one")
-	}
-	if g.HTTPRoute.Enabled() && g.ContourHTTPProxy.Enabled() {
-		return fmt.Errorf("gateway.httpRoute and gateway.contourHTTPProxy both expose the installation's hostnames — configure only one")
-	}
-	return nil
-}
-
-// InstallAppGateway describes the namespaced edge objects provisioned for
-// every exposed app. The objects live in donkey's system namespace: the
-// HTTPRoute can therefore reach donkey-gateway without a cross-namespace
-// backend grant, and the server needs no permission in an infrastructure
-// namespace.
-//
-// RouteNamespace is intentionally independent. Some managed platforms mirror
-// a tenant-owned Gateway into the namespace where the data-plane controller
-// runs; in that arrangement the HTTPRoute attaches to the mirrored object.
-type InstallAppGateway struct {
-	ClassName string `json:"className,omitempty"`
-	// NameTemplate controls Gateway metadata.name. It accepts $name (the app's
-	// Kubernetes Deployment name), $namespace, $space, $app and $hash. The
-	// default is $name; $hash is a stable, opaque 10-character suffix.
-	NameTemplate   string `json:"nameTemplate,omitempty"`
-	RouteNamespace string `json:"routeNamespace,omitempty"`
-	IssuerName     string `json:"issuerName,omitempty"`
-	IssuerKind     string `json:"issuerKind,omitempty"`
-	IssuerGroup    string `json:"issuerGroup,omitempty"`
-}
-
-// Enabled reports whether per-app edge provisioning is configured.
-func (g InstallAppGateway) Enabled() bool { return g.ClassName != "" }
-
-// CertificateIssuerKind applies cert-manager's cluster-wide default.
-func (g InstallAppGateway) CertificateIssuerKind() string {
-	if g.IssuerKind != "" {
-		return g.IssuerKind
-	}
-	return "ClusterIssuer"
-}
-
-// CertificateIssuerGroup applies cert-manager's built-in issuer default.
-func (g InstallAppGateway) CertificateIssuerGroup() string {
-	if g.IssuerGroup != "" {
-		return g.IssuerGroup
-	}
-	return "cert-manager.io"
-}
-
-// Validate catches incomplete dynamic-edge settings before the server is
-// installed. Issuer kinds and groups remain open strings because external
-// cert-manager issuers deliberately use their own values.
-func (g InstallAppGateway) Validate() error {
-	if g.ClassName == "" {
-		if g.NameTemplate != "" || g.RouteNamespace != "" || g.IssuerName != "" || g.IssuerKind != "" || g.IssuerGroup != "" {
-			return fmt.Errorf("gateway.appGateway needs `className` — the GatewayClass used for each app")
-		}
-		return nil
-	}
-	if g.IssuerName == "" {
-		return fmt.Errorf("gateway.appGateway needs `issuerName` — the cert-manager issuer used for each app")
-	}
-	if g.RouteNamespace != "" && !ValidNamespace(g.RouteNamespace) {
-		return fmt.Errorf("gateway.appGateway.routeNamespace %q is not a valid namespace name", g.RouteNamespace)
-	}
-	if _, err := AppGatewayName(g.NameTemplate, "donkey-system", "space", "app", "app"); err != nil {
-		return err
-	}
-	return nil
-}
-
-// InstallContourHTTPProxy describes the Contour-native per-host edge. Unlike
-// AppGateway it does not create or mutate a Gateway: a platform-owned Contour
-// Gateway/Envoy instance is selected through the HTTPProxy ingress class.
-// Certificates and HTTPProxies live beside donkey's control plane, so their
-// Secret and backend Service references remain namespace-local.
-type InstallContourHTTPProxy struct {
-	// IngressClassName selects the shared Contour instance. Requiring it keeps
-	// a multi-Contour cluster from accepting these virtual hosts accidentally.
-	IngressClassName string `json:"ingressClassName,omitempty"`
-	IssuerName       string `json:"issuerName,omitempty"`
-	IssuerKind       string `json:"issuerKind,omitempty"`
-	IssuerGroup      string `json:"issuerGroup,omitempty"`
-}
-
-// Enabled reports whether Contour-native per-host edge provisioning is on.
-func (c InstallContourHTTPProxy) Enabled() bool { return c.IngressClassName != "" }
-
-// CertificateIssuerKind applies cert-manager's cluster-wide default.
-func (c InstallContourHTTPProxy) CertificateIssuerKind() string {
-	if c.IssuerKind != "" {
-		return c.IssuerKind
-	}
-	return "ClusterIssuer"
-}
-
-// CertificateIssuerGroup applies cert-manager's built-in issuer default.
-func (c InstallContourHTTPProxy) CertificateIssuerGroup() string {
-	if c.IssuerGroup != "" {
-		return c.IssuerGroup
-	}
-	return "cert-manager.io"
-}
-
-// Validate catches incomplete Contour edge settings before installation.
-func (c InstallContourHTTPProxy) Validate() error {
-	if c.IngressClassName == "" {
-		if c.IssuerName != "" || c.IssuerKind != "" || c.IssuerGroup != "" {
-			return fmt.Errorf("gateway.contourHTTPProxy needs `ingressClassName` — the shared Contour instance that serves these hosts")
-		}
-		return nil
-	}
-	if !validKubernetesObjectName(c.IngressClassName) {
-		return fmt.Errorf("gateway.contourHTTPProxy.ingressClassName %q is not a valid Kubernetes object name", c.IngressClassName)
-	}
-	if c.IssuerName == "" {
-		return fmt.Errorf("gateway.contourHTTPProxy needs `issuerName` — the cert-manager issuer used for each hostname")
-	}
-	return nil
-}
-
-// InstallHTTPRoute names the Gateway API gateway to attach to.
-type InstallHTTPRoute struct {
-	Name string `json:"name,omitempty"`
-	// Namespace is where that gateway lives; empty means donkey's own system
-	// namespace (the Gateway API reading of an unqualified parentRef).
-	Namespace string `json:"namespace,omitempty"`
-	// SectionName narrows the attachment to one listener of the gateway.
-	SectionName string `json:"sectionName,omitempty"`
-}
-
-// Enabled reports whether the installation attaches to a cluster gateway.
-func (r InstallHTTPRoute) Enabled() bool { return r.Name != "" }
-
-// Validate checks what can be wrong without consulting the cluster.
-func (r InstallHTTPRoute) Validate() error {
-	if r.Name == "" && (r.Namespace != "" || r.SectionName != "") {
-		return fmt.Errorf("gateway.httpRoute needs `name` — the Gateway API gateway to attach to")
-	}
-	if r.Namespace != "" && !ValidNamespace(r.Namespace) {
-		return fmt.Errorf("gateway.httpRoute.namespace %q is not a valid namespace name", r.Namespace)
-	}
-	return nil
-}
-
-// InstallTLS is how donkey's own gateway gets its certificates. donkey always
-// serves apps over https — the login gateway's cookies require it. The
-// optional appGateway and contourHTTPProxy edges have their own cert-manager
-// issuer settings.
+// InstallTLS selects where the gateway gets certificates. All modes terminate
+// TLS in donkey-gateway and therefore share the same incoming traffic path.
+// cert-manager is Kubernetes-only; ACME and the built-in CA work on both
+// runtimes.
 type InstallTLS struct {
-	// Mode is "acme" (one certificate per hostname from Let's Encrypt, the
-	// default — the gateway must be reachable on ports 80/443), "ca" (a
-	// self-signed CA minting per-hostname certificates — local and internal
-	// installs; trust its one CA certificate and every app is covered),
-	// or "none" (no TLS at donkey's edge — required behind any configured
-	// platform edge, where a Gateway listener or HTTPProxy terminates TLS).
+	// Mode is "acme" (the default), "ca", or "cert-manager".
 	Mode string `json:"mode,omitempty"`
-	// Email is the ACME account contact (expiry warnings); optional.
-	Email string `json:"email,omitempty"`
-	// Directory overrides the ACME endpoint — Let's Encrypt staging, or an
-	// internal CA speaking ACME.
+	// Email and Directory tune ACME issuance.
+	Email     string `json:"email,omitempty"`
 	Directory string `json:"directory,omitempty"`
+	// IssuerName names the cert-manager Issuer or ClusterIssuer used for the
+	// control plane and every exposed app.
+	IssuerName  string `json:"issuerName,omitempty"`
+	IssuerKind  string `json:"issuerKind,omitempty"`
+	IssuerGroup string `json:"issuerGroup,omitempty"`
+}
+
+// EffectiveMode fills the public ACME default.
+func (t InstallTLS) EffectiveMode() string {
+	if t.Mode != "" {
+		return t.Mode
+	}
+	return "acme"
+}
+
+func (t InstallTLS) UsesCertManager() bool { return t.EffectiveMode() == "cert-manager" }
+
+func (t InstallTLS) CertificateIssuerKind() string {
+	if t.IssuerKind != "" {
+		return t.IssuerKind
+	}
+	return "ClusterIssuer"
+}
+
+func (t InstallTLS) CertificateIssuerGroup() string {
+	if t.IssuerGroup != "" {
+		return t.IssuerGroup
+	}
+	return "cert-manager.io"
 }
 
 // Validate checks the TLS block without consulting the cluster.
 func (t InstallTLS) Validate() error {
 	switch t.Mode {
-	case "", "acme", "ca", "none":
-	// "off" is what people try first — and bare, YAML 1.1 reads it as a
-	// boolean and hands us "false". Both spellings deserve the real name.
-	case "off", "false":
-		return fmt.Errorf(`tls.mode %q is not a mode — "none" turns TLS off at donkey's edge`, t.Mode)
+	case "", "acme", "ca", "cert-manager":
 	default:
-		return fmt.Errorf("tls.mode must be acme, ca or none, not %q", t.Mode)
+		return fmt.Errorf("tls.mode must be acme, ca or cert-manager, not %q", t.Mode)
+	}
+	if t.UsesCertManager() && t.IssuerName == "" {
+		return fmt.Errorf("tls.mode cert-manager needs tls.issuerName")
+	}
+	if !t.UsesCertManager() && (t.IssuerName != "" || t.IssuerKind != "" || t.IssuerGroup != "") {
+		return fmt.Errorf("tls issuer settings require tls.mode cert-manager")
+	}
+	if t.IssuerName != "" && !validKubernetesObjectName(t.IssuerName) {
+		return fmt.Errorf("tls.issuerName %q is not a valid Kubernetes object name", t.IssuerName)
+	}
+	if t.EffectiveMode() != "acme" && (t.Email != "" || t.Directory != "") {
+		return fmt.Errorf("tls.email and tls.directory apply only to tls.mode acme")
 	}
 	return nil
 }

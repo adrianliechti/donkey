@@ -12,15 +12,13 @@ import (
 )
 
 // The donkey gateway is donkey's own edge: traffic enters the cluster here.
-// It terminates TLS (issuing certificates itself — ACME, a built-in CA, or
-// a provided one), routes by hostname and path, runs the OIDC login where a
-// route demands one, and forwards to the app. Auth and TLS live here because
-// neither needs an ingress vendor: this is the piece that keeps donkey
-// self-contained.
+// It terminates TLS (from cert-manager Secrets, ACME, or its built-in CA),
+// routes by hostname and path, runs the OIDC login where a route demands one,
+// and forwards to the app.
 const (
 	GatewayAppName = "donkey-gateway"
-	// donkeyGatewayPort serves plain http (the https redirect and ACME
-	// HTTP-01 challenges); donkeyGatewayTLSPort terminates TLS. The health
+	// donkeyGatewayPort serves plain http (the https redirect and optional
+	// ACME HTTP-01 challenges); donkeyGatewayTLSPort terminates TLS. The health
 	// port serves probes — separate, because /healthz on a traffic port
 	// would shadow every app's own /healthz.
 	donkeyGatewayPort       = 8090
@@ -77,10 +75,6 @@ func donkeyGatewayDeployment(in SystemInput) *appsv1.Deployment {
 			},
 		}}
 	}
-	tlsMode := in.TLSMode
-	if tlsMode == "" {
-		tlsMode = "acme"
-	}
 	env := []corev1.EnvVar{
 		{Name: "DONKEY_LISTEN", Value: fmt.Sprintf(":%d", donkeyGatewayPort)},
 		{Name: "DONKEY_TLS_LISTEN", Value: fmt.Sprintf(":%d", donkeyGatewayTLSPort)},
@@ -91,10 +85,11 @@ func donkeyGatewayDeployment(in SystemInput) *appsv1.Deployment {
 		// outside keep per-host callbacks.
 		{Name: "DONKEY_DOMAIN", Value: in.Domain},
 		{Name: "DONKEY_SERVER_HOST", Value: in.ServerHost()},
-		// Where the gateway keeps and issues certificates.
-		{Name: "DONKEY_TLS_MODE", Value: tlsMode},
-		{Name: "DONKEY_ACME_EMAIL", Value: in.ACMEEmail},
-		{Name: "DONKEY_ACME_DIRECTORY", Value: in.ACMEDirectory},
+		// Where the gateway obtains certificates. In cert-manager mode it reads
+		// the generated TLS Secrets in the system namespace.
+		{Name: "DONKEY_TLS_MODE", Value: in.TLS.EffectiveMode()},
+		{Name: "DONKEY_ACME_EMAIL", Value: in.TLS.Email},
+		{Name: "DONKEY_ACME_DIRECTORY", Value: in.TLS.Directory},
 		{Name: "DONKEY_SYSTEM_NAMESPACE", Value: in.Namespace},
 		// Which namespaces hold routes. Empty means "every namespace", the
 		// arrangement where each space has one of its own; a value here is

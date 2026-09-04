@@ -108,50 +108,22 @@ donkey enforces "baseline" on namespaces it creates itself. To match it:
 // doesn't serve — without this, the apply fails with a bare "no matches for
 // kind".
 func checkOptionalCRDs(ctx context.Context, client *k8s.Client, settings *config.InstallFile) error {
-	if settings.Gateway.HTTPRoute.Enabled() {
-		ok, err := client.HasResource("gateway.networking.k8s.io/v1", "HTTPRoute")
+	if settings.TLS.UsesCertManager() {
+		ok, err := client.HasResource("cert-manager.io/v1", "Certificate")
 		if err != nil {
-			return fmt.Errorf("couldn't ask the cluster about Gateway API support: %w", err)
+			return fmt.Errorf("couldn't ask the cluster about Certificate support: %w", err)
 		}
 		if !ok {
-			return fmt.Errorf("gateway.httpRoute is set, but the cluster doesn't serve HTTPRoute (gateway.networking.k8s.io/v1) — install a Gateway API implementation first, or drop the setting")
+			return fmt.Errorf("tls.mode is cert-manager, but the cluster doesn't serve Certificate (cert-manager.io/v1) — install cert-manager first, or choose tls.mode acme or ca")
 		}
 	}
-	if settings.Gateway.AppGateway.Enabled() {
-		for _, required := range []struct {
-			groupVersion string
-			kind         string
-			setting      string
-		}{
-			{groupVersion: "gateway.networking.k8s.io/v1", kind: "Gateway", setting: "a Gateway API implementation"},
-			{groupVersion: "gateway.networking.k8s.io/v1", kind: "HTTPRoute", setting: "a Gateway API implementation"},
-			{groupVersion: "cert-manager.io/v1", kind: "Certificate", setting: "cert-manager"},
-		} {
-			ok, err := client.HasResource(required.groupVersion, required.kind)
-			if err != nil {
-				return fmt.Errorf("couldn't ask the cluster about %s support: %w", required.kind, err)
-			}
-			if !ok {
-				return fmt.Errorf("gateway.appGateway is set, but the cluster doesn't serve %s (%s) — install %s first, or drop the setting", required.kind, required.groupVersion, required.setting)
-			}
+	if settings.Gateway.ExternalDNS.Enabled() {
+		ok, err := client.HasResource("externaldns.k8s.io/v1alpha1", "DNSEndpoint")
+		if err != nil {
+			return fmt.Errorf("couldn't ask the cluster about DNSEndpoint support: %w", err)
 		}
-	}
-	if settings.Gateway.ContourHTTPProxy.Enabled() {
-		for _, required := range []struct {
-			groupVersion string
-			kind         string
-			setting      string
-		}{
-			{groupVersion: "projectcontour.io/v1", kind: "HTTPProxy", setting: "Project Contour"},
-			{groupVersion: "cert-manager.io/v1", kind: "Certificate", setting: "cert-manager"},
-		} {
-			ok, err := client.HasResource(required.groupVersion, required.kind)
-			if err != nil {
-				return fmt.Errorf("couldn't ask the cluster about %s support: %w", required.kind, err)
-			}
-			if !ok {
-				return fmt.Errorf("gateway.contourHTTPProxy is set, but the cluster doesn't serve %s (%s) — install %s first, or drop the setting", required.kind, required.groupVersion, required.setting)
-			}
+		if !ok {
+			return fmt.Errorf("gateway.externalDNS is set, but the cluster doesn't serve DNSEndpoint (externaldns.k8s.io/v1alpha1) — install external-dns with --source=crd first, or drop the setting")
 		}
 	}
 	return nil

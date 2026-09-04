@@ -146,9 +146,9 @@ five ideas:
   information for the app, never authorization: donkey's own API is handed a
   short-lived sealed token instead (`X-Access-Token`) and verifies it itself,
   so nothing in the cluster can reach it by typing a header. TLS and auth live here
-  because no ingress vendor has a standard for the latter — donkey requires no
-  ingress controller, Gateway API, or cert-manager, but can use platform
-  Gateway API infrastructure or a shared Contour/Envoy edge when configured.
+  because the load-balancer Service sends HTTP and HTTPS straight to it.
+  Certificates can come from ACME, donkey's built-in CA, or cert-manager
+  Secrets.
 - **Per space** — one namespace (`donkey-<space>`) shared by the apps of
   that space, so they reach each other by plain service name — and that
   includes its services: a space's postgres is simply `postgres` to its
@@ -473,7 +473,8 @@ using the very token and proxy an app would.
 
 donkey installs into a cluster you already run, and stays inside its own
 namespaces. It **never modifies cluster-wide settings**: no CoreDNS edits, no
-files on nodes, no admission webhooks, no StorageClasses, no required CRDs — everything
+files on nodes, no admission webhooks, no StorageClasses, and no CRDs unless
+the configured certificate or DNS source needs them — everything
 it applies is in `donkey-system`, in a `donkey-<space>` namespace, or is one of
 the few cluster-scoped RBAC objects it names after itself. A test asserts
 exactly that (`TestInstallTouchesOnlyItsOwnObjects`). Configured with a
@@ -485,9 +486,9 @@ applies anything, and `donkey doctor` keeps checking them after):
 
 | Requirement | Why | Notes |
 |---|---|---|
-| **Kubernetes cluster** with a default StorageClass | donkey-telemetry always claims its 2 Gi DuckDB volume; apps with `storage.paths` and provisioned services claim their own | any conformant cluster; nothing donkey-specific. No ingress controller, Gateway API, Contour, or cert-manager is required for the default mode — donkey brings its own edge. Optional platform-edge modes are described below. Traffic normally enters through the donkey-gateway `LoadBalancer` service; on clusters where nothing assigns those an address (kind), set `gateway.serviceType: NodePort` or `ClusterIP` |
+| **Kubernetes cluster** with a default StorageClass | donkey-telemetry always claims its 2 Gi DuckDB volume; apps with `storage.paths` and provisioned services claim their own | any conformant cluster; nothing donkey-specific. Donkey brings its own edge, normally as a `LoadBalancer` Service; on clusters where nothing assigns those an address (kind), set `gateway.serviceType: NodePort` or `ClusterIP`. cert-manager is required only for `tls.mode: cert-manager`; external-dns with `--source=crd` only when `gateway.externalDNS` is set |
 | **Container registry** the cluster can pull from | donkey pushes every build there | `registry.url` + credentials; `registry.caSecret` when its certificate comes from a private CA |
-| **DNS** for `*.<domain>` and `<domain>` → the gateway address | apps are served at `<app>.<space>.<domain>`, the API and login callback at `<domain>` | one wildcard covers every depth; the apex needs its own record |
+| **DNS** pointing public hostnames to the gateway address | apps are served at `<app>.<space>.<domain>`, the API and login callback at `<domain>` | configure a wildcard plus apex yourself, or let `gateway.externalDNS` publish exact records |
 | **OIDC provider** (Pocket ID, Entra ID, Keycloak, …) | the one way in: console, CLI and protected apps all sign in against it | required — `auth.issuer` (+ client id/secret); `auth.admins` optionally narrows who may administer |
 | **OpenAI-compatible endpoint** | donkey reads every app with it (ports, health routes, data folders) | required — the server refuses to start without one. Point it at a model you control: source summaries go there |
 
@@ -515,10 +516,9 @@ documented in [README_KUBERNETES.md](README_KUBERNETES.md):
   on by default) and its opt-in egress half
   (`kubernetes.restrictEgress`), which confines a space's pods to their own
   space, the platform endpoints and DNS.
-- **[Using the cluster's edge](README_KUBERNETES.md#using-the-clusters-edge)**
-  — entering through a Gateway API gateway the cluster already runs, or
-  choosing exact per-host certificates through dedicated Gateways or one
-  shared Project Contour Gateway.
+- **[Incoming traffic, certificates and DNS](README_KUBERNETES.md#incoming-traffic-certificates-and-dns)**
+  — one load-balancer VIP into donkey-gateway, with ACME, built-in CA, or
+  cert-manager as its certificate source and optional external-dns records.
 - **[Several donkeys on one cluster](README_KUBERNETES.md#several-donkeys-on-one-cluster)**
   — what must differ per installation, and why the system namespace is the
   installation's identity.
@@ -784,30 +784,17 @@ with a `host:` outside the installation's domain keep a per-host
 callback (`https://<their-domain>/oauth2/callback`) — register those
 individually.
 
-**Certificates and DNS.** By default the gateway issues one certificate per
-app hostname — a TLS wildcard covers only one level, so no single certificate
-could. `tls.mode: acme` requests them from Let's Encrypt on demand (the
-gateway answers its own HTTP-01 challenges), or from any internal CA that
-speaks ACME (`tls.directory`); `tls.mode: ca` mints them from the gateway's
-own CA for installs with no issuing infrastructure at all (trust that one
-CA certificate and every app is covered); `tls.mode: none` hands TLS to a
-cluster gateway in front (`gateway.httpRoute`), where certificates are the
-platform's concern. `gateway.appGateway` instead asks cert-manager for each
-app's certificate and creates its dedicated Gateway API edge. Its Gateway name
-defaults to the app's Kubernetes Deployment name. Managed platforms can set
-`gateway.appGateway.nameTemplate`; it accepts `$name`, `$namespace`, `$space`,
-`$app`, and the stable 10-character `$hash` (for example,
-`$namespace-$hash`). Project Contour installations can instead use
-`gateway.contourHTTPProxy`: donkey creates an exact-host Certificate and root
-HTTPProxy per app, plus the portal/OAuth callback edge, while every host rides
-one platform-owned Contour Gateway and Envoy data plane. The HTTPProxy names
-its generated TLS Secret; donkey never mutates the shared Gateway. There is no
-bring-your-own-file mode: a hand-provided
-wildcard covers one label while apps live two deep, which made it a trap. DNS is simpler than TLS here: one `*.<domain>` record
-covers every depth, because DNS wildcards match multiple labels (as long as
-no explicit record sits at an intermediate name). Only the apex is never
-covered by the wildcard — and the API, console and login callback live
-there, so give `<domain>` a record of its own.
+**Certificates and DNS.** Every request reaches donkey-gateway directly;
+`tls.mode` changes its certificate source, not the traffic path. `acme`
+requests exact-host certificates from Let's Encrypt or an internal ACME
+directory, while `ca` mints them from donkey's own CA for private installs.
+On Kubernetes, `cert-manager` creates one Certificate per public app and one
+for the control-plane hosts; the gateway consumes and reloads the generated
+TLS Secrets directly. This keeps both ACME and CA useful in Kubernetes without
+requiring cert-manager. DNS can remain external, or `gateway.externalDNS` can
+emit exact `externaldns.k8s.io/v1alpha1` DNSEndpoint records aimed at the
+gateway's stable load-balancer VIP. See the
+[Kubernetes traffic contract](README_KUBERNETES.md#incoming-traffic-certificates-and-dns).
 
 **Day 1 — everyone deploys:**
 
@@ -861,10 +848,11 @@ every CLI token everywhere is invalid the moment the pods roll, and everyone
 signs in again through the browser. **There is no overlap window.**
 
 Running app workloads are not rolled: their pods, disks and routes stay as
-they are while donkey-server restarts. A re-install does reconcile each app's
-external edge from its existing route, so an installation-wide Gateway mode
-change applies immediately; unchanged Certificates and proxies are idempotent
-server-side applies. A re-install also keeps every secret it isn't given again
+they are while donkey-server restarts. A re-install reconciles each app's
+Certificate and optional DNS record from its existing route, so changing the
+certificate source or DNS publication applies immediately; unchanged objects
+are idempotent server-side applies. A re-install also keeps every secret it
+isn't given again
 (registry password, OIDC client secret, AI key), so the same settings file is
 enough — rotating one thing must never blank the rest.
 
@@ -1111,8 +1099,7 @@ Hostnames resolve through `sudo devkube connect`, which keeps donkey's
 hostnames in `/etc/hosts` while it runs. That is why this repo no longer
 patches CoreDNS, pins NodePorts or writes registry files on nodes — the demo
 cluster is left as unmodified as a real one. (devkube/loop needs a version
-that discovers donkey's hostnames from its route ConfigMaps — earlier
-versions read the HTTPRoutes donkey no longer creates.)
+that discovers donkey's hostnames from its route ConfigMaps.)
 
 The demo's certificates come from the cluster's own CA, so the CLI is pointed
 at it with `donkey login --ca-file .build/platform-ca.crt` — the same flag a

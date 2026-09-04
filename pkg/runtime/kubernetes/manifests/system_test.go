@@ -6,6 +6,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	"github.com/adrianliechti/donkey/internal/config"
 )
@@ -30,9 +31,8 @@ func componentNames(in SystemInput) string {
 	return rendered
 }
 
-// The control plane is self-contained: donkey-gateway is the edge (TLS,
-// routing, login) — no Gateway API, no Envoy, no cert-manager, no Ingress,
-// no bundled auth components.
+// The control plane is self-contained: donkey-gateway owns TLS, routing and
+// login. The default ACME setup needs only built-in Kubernetes resources.
 func TestSystemObjectsSelfContainedEdge(t *testing.T) {
 	in := systemInput()
 	in.OIDCIssuer = "https://login.microsoftonline.com/x/v2.0"
@@ -47,13 +47,9 @@ func TestSystemObjectsSelfContainedEdge(t *testing.T) {
 	if out := componentNames(local); !strings.Contains(out, "type: ClusterIP") {
 		t.Error("gateway.serviceType must reach the donkey-gateway Service")
 	}
-	for _, forbidden := range []string{
-		"kind: Ingress", "oauth2-proxy", "pocket-id", "nginx",
-		"kind: Gateway", "kind: GatewayClass", "kind: HTTPRoute",
-		"kind: EnvoyProxy", "kind: Certificate", "cert-manager",
-	} {
-		if strings.Contains(out, forbidden) {
-			t.Errorf("system objects must not contain %s", forbidden)
+	for _, object := range SystemObjects(in) {
+		if _, optionalAPI := object.(*unstructured.Unstructured); optionalAPI {
+			t.Errorf("default installation unexpectedly rendered optional API object %s", object.GetObjectKind().GroupVersionKind().Kind)
 		}
 	}
 	// The OIDC settings reach the server and the gateway.
@@ -163,92 +159,48 @@ func TestAddonImageOverridesReachServer(t *testing.T) {
 	}
 }
 
-func TestAppGatewaySettingsReachServer(t *testing.T) {
+func TestCertificateAndDNSSettingsReachServer(t *testing.T) {
 	in := systemInput()
-	in.AppGateway = config.InstallAppGateway{
-		ClassName:      "platform",
-		NameTemplate:   "$namespace-$hash",
-		RouteNamespace: "projectcontour",
-		IssuerName:     "platform-ca",
-		IssuerKind:     "ClusterIssuer",
-		IssuerGroup:    "cert-manager.io",
+	in.TLS = config.InstallTLS{
+		Mode:       "cert-manager",
+		IssuerName: "platform-ca",
+		IssuerKind: "ClusterIssuer", IssuerGroup: "cert-manager.io",
+	}
+	in.ExternalDNS = config.InstallExternalDNS{
+		Targets: []string{"10.204.166.5"}, RecordType: "A", TTL: 300,
 	}
 	out := componentNames(in)
 	for _, want := range []string{
-		"DONKEY_APP_GATEWAY_CLASS_NAME", "platform",
-		"DONKEY_APP_GATEWAY_NAME_TEMPLATE", "$namespace-$hash",
-		"DONKEY_APP_GATEWAY_ROUTE_NAMESPACE", "projectcontour",
-		"DONKEY_APP_GATEWAY_ISSUER_NAME", "platform-ca",
-		"DONKEY_APP_GATEWAY_ISSUER_KIND", "ClusterIssuer",
-		"DONKEY_APP_GATEWAY_ISSUER_GROUP", "cert-manager.io",
+		"DONKEY_TLS_MODE", "cert-manager",
+		"DONKEY_TLS_ISSUER_NAME", "platform-ca",
+		"DONKEY_TLS_ISSUER_KIND", "ClusterIssuer",
+		"DONKEY_TLS_ISSUER_GROUP", "cert-manager.io",
+		"DONKEY_EXTERNAL_DNS_TARGETS", "10.204.166.5",
+		"DONKEY_EXTERNAL_DNS_RECORD_TYPE", "DONKEY_EXTERNAL_DNS_TTL",
 	} {
 		if !strings.Contains(out, want) {
-			t.Errorf("per-app gateway setting did not reach donkey-server: missing %q", want)
+			t.Errorf("traffic setting did not reach donkey-server: missing %q", want)
 		}
-	}
-}
-
-func TestContourHTTPProxySettingsReachServer(t *testing.T) {
-	in := systemInput()
-	in.ContourHTTPProxy = config.InstallContourHTTPProxy{
-		IngressClassName: "contour-private",
-		IssuerName:       "platform-ca",
-		IssuerKind:       "ClusterIssuer",
-		IssuerGroup:      "cert-manager.io",
-	}
-	out := componentNames(in)
-	for _, want := range []string{
-		"DONKEY_CONTOUR_HTTP_PROXY_INGRESS_CLASS_NAME", "contour-private",
-		"DONKEY_CONTOUR_HTTP_PROXY_ISSUER_NAME", "platform-ca",
-		"DONKEY_CONTOUR_HTTP_PROXY_ISSUER_KIND", "ClusterIssuer",
-		"DONKEY_CONTOUR_HTTP_PROXY_ISSUER_GROUP", "cert-manager.io",
-	} {
-		if !strings.Contains(out, want) {
-			t.Errorf("Contour edge setting did not reach donkey-server: missing %q", want)
-		}
-	}
-}
-
-func TestContourHTTPProxyIncludesControlPlaneAndCallback(t *testing.T) {
-	in := systemInput()
-	in.ContourHTTPProxy = config.InstallContourHTTPProxy{
-		IngressClassName: "contour-private",
-		IssuerName:       "platform-ca",
 	}
 
 	objects := SystemObjects(in)
-	if got := kindsOf(objects); got["Certificate"] != 1 || got["HTTPProxy"] != 1 || got["Gateway"] != 0 || got["HTTPRoute"] != 0 {
-		t.Fatalf("unexpected system edge objects: %v", got)
+	if got := kindsOf(objects); got["Certificate"] != 1 || got["DNSEndpoint"] != 1 {
+		t.Fatalf("unexpected system traffic objects: %v", got)
 	}
 	out, err := Render(objects)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		"name: donkey-contour-edge",
-		"secretName: donkey-contour-edge-tls",
-		"fqdn: apps.example.com",
-		"ingressClassName: contour-private",
+		"name: donkey-gateway",
+		"secretName: donkey-gateway-tls",
+		"dnsName: apps.example.com",
+		"recordType: A",
 		"kind: ClusterIssuer",
 		"group: cert-manager.io",
 	} {
 		if !strings.Contains(out, want) {
-			t.Errorf("Contour system edge should contain %q", want)
-		}
-	}
-
-	in.ServerHostname = "console.apps.example.com"
-	objects = SystemObjects(in)
-	if got := kindsOf(objects); got["Certificate"] != 1 || got["HTTPProxy"] != 2 {
-		t.Fatalf("a separate server host needs two proxies sharing one certificate: %v", got)
-	}
-	out, err = Render(objects)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, host := range []string{"apps.example.com", "console.apps.example.com"} {
-		if !strings.Contains(out, host) {
-			t.Errorf("Contour system certificate/proxies should include %q", host)
+			t.Errorf("system traffic objects should contain %q", want)
 		}
 	}
 }
@@ -404,10 +356,7 @@ func TestOnlyTheAPIRouteCarriesAToken(t *testing.T) {
 	}
 
 	in := testInput(t)
-	objects, err := NetworkObjects(in)
-	if err != nil {
-		t.Fatal(err)
-	}
+	objects := NetworkObjects(in)
 	for _, obj := range objects {
 		cm, ok := obj.(*corev1.ConfigMap)
 		if !ok {

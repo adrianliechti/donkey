@@ -55,7 +55,7 @@ func TestSharedNamespaceNeedsNothingClusterScoped(t *testing.T) {
 	}
 }
 
-func TestManagedEdgePermissionsStayInSystemNamespace(t *testing.T) {
+func TestManagedTrafficPermissionsStayInSystemNamespace(t *testing.T) {
 	in := systemInput()
 	in.WorkloadNamespace = "donkey-apps"
 	in.SkipNamespace = true
@@ -68,7 +68,7 @@ func TestManagedEdgePermissionsStayInSystemNamespace(t *testing.T) {
 		}
 		hasEdge := false
 		for _, rule := range role.Rules {
-			if slices.Contains(rule.Resources, "gateways") || slices.Contains(rule.Resources, "httpproxies") || slices.Contains(rule.Resources, "certificates") {
+			if slices.Contains(rule.Resources, "certificates") || slices.Contains(rule.Resources, "dnsendpoints") {
 				hasEdge = true
 			}
 		}
@@ -77,12 +77,12 @@ func TestManagedEdgePermissionsStayInSystemNamespace(t *testing.T) {
 			foundSystemEdge = hasEdge
 		case in.WorkloadNamespace:
 			if hasEdge {
-				t.Error("the workload Role must not grant Gateway, HTTPProxy or Certificate writes")
+				t.Error("the workload Role must not grant Certificate or DNSEndpoint writes")
 			}
 		}
 	}
 	if !foundSystemEdge {
-		t.Error("the system Role must let donkey-server manage namespaced edge objects and Certificates")
+		t.Error("the system Role must let donkey-server manage Certificates and DNSEndpoints")
 	}
 }
 

@@ -16,7 +16,7 @@ import (
 
 // Options is what the Kubernetes runtime needs to know about the
 // installation — how spaces map to namespaces, where apps are served, and
-// which shared pieces (gateway, issuer) their objects reference.
+// which certificate and DNS settings their public hostnames use.
 type Options struct {
 	// Placement decides where a space's objects live and what they are
 	// called: a namespace per space, or one namespace for the installation.
@@ -33,12 +33,12 @@ type Options struct {
 	// AddonImagePullSecrets are existing secrets referenced by managed service
 	// pods when Kubernetes pulls their images.
 	AddonImagePullSecrets []string
-	// AppGateway enables namespaced Gateway API and cert-manager objects for
-	// every exposed app.
-	AppGateway config.InstallAppGateway
-	// ContourHTTPProxy enables exact-host HTTPProxy and Certificate objects on
-	// one shared Contour data plane.
-	ContourHTTPProxy config.InstallContourHTTPProxy
+	// TLS selects the certificate source. cert-manager mode creates one
+	// exact-host Certificate per exposed app.
+	TLS config.InstallTLS
+	// ExternalDNS optionally creates exact-host DNSEndpoints at the gateway
+	// LoadBalancer's configured target.
+	ExternalDNS config.InstallExternalDNS
 	// TelemetryKey derives an app-scoped OTLP credential. It is the
 	// installation key already held by donkey-server, never exposed directly.
 	TelemetryKey []byte
@@ -227,9 +227,9 @@ func (r *Runtime) DeleteSpace(ctx context.Context, space string) error {
 	if err := r.ValidateSpace(space); err != nil {
 		return err
 	}
-	// Traffic and cross-namespace certificate objects go first, so a partial
-	// deletion never leaves a live edge pointing at a disappearing workload.
-	if err := r.c.DeleteSpaceEdges(ctx, r.opts.SystemNamespace, space); err != nil {
+	// Public traffic objects go first, so a partial deletion never leaves the
+	// gateway pointing at a disappearing workload.
+	if err := r.c.DeleteSpaceTraffic(ctx, r.opts.SystemNamespace, space); err != nil {
 		return fmt.Errorf("removing the space edge: %w", err)
 	}
 	if r.opts.Placement.Shared() {

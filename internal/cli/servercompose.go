@@ -105,8 +105,8 @@ type composeSecretFeatures struct {
 	PackagePassword     bool
 	BuildEnvironment    bool
 	BuilderInstructions bool
-	HTTPProxy           bool
-	HTTPSProxy          bool
+	HTTPForwardProxy    bool
+	HTTPSForwardProxy   bool
 }
 
 func dockerComposeFiles(settings *config.InstallFile, bundledRegistry bool) (map[string]bundleFile, composeSecretFeatures, error) {
@@ -115,8 +115,8 @@ func dockerComposeFiles(settings *config.InstallFile, bundledRegistry bool) (map
 		PackagePassword:     settings.Build.Packages.NeedsPassword(),
 		BuildEnvironment:    len(settings.Build.Env) > 0,
 		BuilderInstructions: settings.Build.Instructions != "",
-		HTTPProxy:           settings.Build.Proxy.HTTP != "",
-		HTTPSProxy:          settings.Build.Proxy.HTTPS != "",
+		HTTPForwardProxy:    settings.Build.Proxy.HTTP != "",
+		HTTPSForwardProxy:   settings.Build.Proxy.HTTPS != "",
 	}
 
 	buildkitImage := settings.BuildkitImage
@@ -145,10 +145,7 @@ func dockerComposeFiles(settings *config.InstallFile, bundledRegistry bool) (map
 	if serverHost == "" {
 		serverHost = settings.Domain
 	}
-	tlsMode := settings.TLS.Mode
-	if tlsMode == "" {
-		tlsMode = "acme"
-	}
+	tlsMode := settings.TLS.EffectiveMode()
 	clientID := settings.Auth.ClientID
 	clientSecret := "${DONKEY_OIDC_CLIENT_SECRET:-}"
 	if clientID == "" {
@@ -533,10 +530,10 @@ HTTPS_PROXY="${HTTPS_PROXY:-$(existing donkey-server HTTPS_PROXY)}"
 	if features.BuilderInstructions {
 		b.WriteString("[ -n \"$DONKEY_BUILDER_INSTRUCTIONS\" ] || { echo 'DONKEY_BUILDER_INSTRUCTIONS is required because build.instructions is secret-backed' >&2; exit 1; }\n")
 	}
-	if features.HTTPProxy {
+	if features.HTTPForwardProxy {
 		b.WriteString("[ -n \"$HTTP_PROXY\" ] || { echo 'HTTP_PROXY is required because build.proxy.http is secret-backed' >&2; exit 1; }\n")
 	}
-	if features.HTTPSProxy {
+	if features.HTTPSForwardProxy {
 		b.WriteString("[ -n \"$HTTPS_PROXY\" ] || { echo 'HTTPS_PROXY is required because build.proxy.https is secret-backed' >&2; exit 1; }\n")
 	}
 	b.WriteString(`if [ -z "$DONKEY_SESSION_KEY" ]; then DONKEY_SESSION_KEY=$(openssl rand -hex 32); fi

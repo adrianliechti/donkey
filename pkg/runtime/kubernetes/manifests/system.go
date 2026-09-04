@@ -32,30 +32,11 @@ type SystemInput struct {
 	// cookie's domain has to cover it.
 	ServerHostname string
 
-	// TLSMode is how the gateway gets its certificates: "acme" (Let's
-	// Encrypt, the default), "ca" (a self-signed CA the gateway mints and
-	// signs per-hostname certificates with — local and internal installs),
-	// or "none" (no TLS at donkey's edge — behind a TLS-terminating cluster
-	// gateway, whose certificates are the platform's prerequisite).
-	TLSMode string
-	// ACMEEmail is the ACME account's contact (expiry warnings); optional.
-	ACMEEmail string
-	// ACMEDirectory overrides the ACME endpoint (default: Let's Encrypt
-	// production) — staging, or an internal ACME CA.
-	ACMEDirectory string
-	// HTTPRouteGateway, when named, attaches the donkey gateway to a Gateway
-	// API gateway the cluster already runs instead of relying on the edge
-	// Service being reachable — the arrangement for clusters whose traffic
-	// must enter through a standard edge. Pairs with TLS mode "none": the
-	// cluster gateway terminates TLS before an HTTPRoute matches.
-	HTTPRouteGateway GatewayRef
-	// AppGateway asks donkey-server to create one namespaced Gateway,
-	// HTTPRoute and Certificate for every externally reachable app.
-	AppGateway config.InstallAppGateway
-	// ContourHTTPProxy asks donkey-server to create a Certificate and root
-	// HTTPProxy per app. SystemObjects also creates the equivalent edge for
-	// the console and central OAuth callback.
-	ContourHTTPProxy config.InstallContourHTTPProxy
+	// TLS selects ACME, the built-in CA, or exact-host cert-manager
+	// Certificates whose Secrets are read by donkey-gateway.
+	TLS config.InstallTLS
+	// ExternalDNS optionally publishes exact records at the gateway VIP.
+	ExternalDNS config.InstallExternalDNS
 
 	// GatewayServiceType is the type of the service traffic enters the
 	// cluster through: LoadBalancer (the default), NodePort or ClusterIP.
@@ -222,20 +203,15 @@ func SystemObjects(in SystemInput) []runtime.Object {
 		systemService(in, ServerName, 80, serverPort),
 		consoleRoute(in),
 	)
+	// In cert-manager mode the control-plane Certificate must exist before
+	// the gateway starts looking for its Secret. DNS is adjacent because it
+	// describes the same public hostnames.
+	objs = append(objs, systemTrafficObjects(in)...)
 	// The donkey gateway is the app edge — always there, login or not; the
 	// AI endpoint is the one workload apps reach, and runs apart from the
 	// admin API for exactly that reason.
 	objs = append(objs, donkeyGatewayObjects(in)...)
-	// Contour's shared-Gateway mode puts downstream TLS on root HTTPProxies.
-	// Include the control plane and callback here; app HTTPProxies arrive with
-	// their deploys through the same shared data plane.
-	objs = append(objs, contourSystemEdgeObjects(in)...)
 	objs = append(objs, aiObjects(in)...)
-	// The one optional attachment to machinery the cluster already runs —
-	// rendered only when named, so a plain installation stays CRD-free.
-	if in.HTTPRouteGateway.Attached() {
-		objs = append(objs, httpRoute(in))
-	}
 	return objs
 }
 
@@ -387,16 +363,13 @@ func serverDeployment(in SystemInput) *appsv1.Deployment {
 		{Name: "DONKEY_POSTGRES_IMAGE", Value: in.AddonImages.Postgres},
 		{Name: "DONKEY_RUSTFS_IMAGE", Value: in.AddonImages.RustFS},
 		{Name: "DONKEY_ADDON_IMAGE_PULL_SECRETS", Value: strings.Join(in.AddonImagePullSecrets, ",")},
-		{Name: "DONKEY_APP_GATEWAY_CLASS_NAME", Value: in.AppGateway.ClassName},
-		{Name: "DONKEY_APP_GATEWAY_NAME_TEMPLATE", Value: in.AppGateway.NameTemplate},
-		{Name: "DONKEY_APP_GATEWAY_ROUTE_NAMESPACE", Value: in.AppGateway.RouteNamespace},
-		{Name: "DONKEY_APP_GATEWAY_ISSUER_NAME", Value: in.AppGateway.IssuerName},
-		{Name: "DONKEY_APP_GATEWAY_ISSUER_KIND", Value: in.AppGateway.IssuerKind},
-		{Name: "DONKEY_APP_GATEWAY_ISSUER_GROUP", Value: in.AppGateway.IssuerGroup},
-		{Name: "DONKEY_CONTOUR_HTTP_PROXY_INGRESS_CLASS_NAME", Value: in.ContourHTTPProxy.IngressClassName},
-		{Name: "DONKEY_CONTOUR_HTTP_PROXY_ISSUER_NAME", Value: in.ContourHTTPProxy.IssuerName},
-		{Name: "DONKEY_CONTOUR_HTTP_PROXY_ISSUER_KIND", Value: in.ContourHTTPProxy.IssuerKind},
-		{Name: "DONKEY_CONTOUR_HTTP_PROXY_ISSUER_GROUP", Value: in.ContourHTTPProxy.IssuerGroup},
+		{Name: "DONKEY_TLS_MODE", Value: in.TLS.EffectiveMode()},
+		{Name: "DONKEY_TLS_ISSUER_NAME", Value: in.TLS.IssuerName},
+		{Name: "DONKEY_TLS_ISSUER_KIND", Value: in.TLS.IssuerKind},
+		{Name: "DONKEY_TLS_ISSUER_GROUP", Value: in.TLS.IssuerGroup},
+		{Name: "DONKEY_EXTERNAL_DNS_TARGETS", Value: strings.Join(in.ExternalDNS.Targets, ",")},
+		{Name: "DONKEY_EXTERNAL_DNS_RECORD_TYPE", Value: in.ExternalDNS.EffectiveRecordType()},
+		{Name: "DONKEY_EXTERNAL_DNS_TTL", Value: strconv.FormatInt(in.ExternalDNS.TTL, 10)},
 		{Name: "DONKEY_OIDC_ISSUER", Value: in.OIDCIssuer},
 		secretEnv("DONKEY_OIDC_CLIENT_ID", "oidc-client-id"),
 		secretEnv("DONKEY_OIDC_CLIENT_SECRET", "oidc-client-secret"),

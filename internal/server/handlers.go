@@ -96,8 +96,8 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	if !st.StartedAt.IsZero() {
 		resp.StartedAt = st.StartedAt.UTC().Format(time.RFC3339)
 	}
-	if st.IngressHost != "" {
-		resp.URL = s.cfg.Scheme() + "://" + st.IngressHost
+	if st.PublicHost != "" {
+		resp.URL = s.cfg.Scheme() + "://" + st.PublicHost
 	}
 	if st.Found {
 		resp.Exposure = exposureOf(st)
@@ -109,7 +109,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 // exposureOf derives the console's exposure word from runtime state.
 func exposureOf(st *runtime.AppStatus) string {
 	switch {
-	case st.IngressHost == "":
+	case st.PublicHost == "":
 		return "internal"
 	case st.Protected:
 		return "protected"

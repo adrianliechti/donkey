@@ -84,6 +84,51 @@ func TestDeleteObjectPreconditionsOnValidatedUID(t *testing.T) {
 	t.Fatal("no delete action recorded")
 }
 
+func TestDeleteObsoleteSystemTrafficUsesExactOwnedNames(t *testing.T) {
+	ctx := context.Background()
+	installation := "bank-donkey-system"
+	labels := manifests.SystemLabels(manifests.GatewayAppName)
+	labels[manifests.LabelInstallation] = installation
+	object := func(apiVersion, kind, name string) *unstructured.Unstructured {
+		return &unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": apiVersion,
+			"kind":       kind,
+			"metadata": map[string]any{
+				"name": name, "namespace": installation, "labels": mapStringAny(labels),
+			},
+		}}
+	}
+	dynamic := dynamicfake.NewSimpleDynamicClient(k8sruntime.NewScheme(),
+		object("cert-manager.io/v1", "Certificate", manifests.SystemCertificateName),
+		object("v1", "Secret", manifests.SystemCertificateSecretName),
+		object("externaldns.k8s.io/v1alpha1", "DNSEndpoint", manifests.SystemDNSName),
+	)
+	client := (&Client{Dynamic: dynamic}).WithInstallation(installation)
+	if err := client.DeleteObsoleteSystemTraffic(ctx, installation, false, false); err != nil {
+		t.Fatal(err)
+	}
+
+	want := map[string]string{
+		"certificates": manifests.SystemCertificateName,
+		"secrets":      manifests.SystemCertificateSecretName,
+		"dnsendpoints": manifests.SystemDNSName,
+	}
+	for _, action := range dynamic.Actions() {
+		deleted, ok := action.(k8stesting.DeleteAction)
+		if !ok {
+			continue
+		}
+		resource := deleted.GetResource().Resource
+		if got, ok := want[resource]; !ok || got != deleted.GetName() {
+			t.Fatalf("unexpected system traffic delete %s/%s", resource, deleted.GetName())
+		}
+		delete(want, resource)
+	}
+	if len(want) != 0 {
+		t.Fatalf("system traffic objects not deleted: %v", want)
+	}
+}
+
 func mapStringAny(values map[string]string) map[string]any {
 	out := make(map[string]any, len(values))
 	for key, value := range values {
@@ -263,11 +308,11 @@ func TestDestructiveSelectorsAlwaysIncludeInstallationAndLogicalScope(t *testing
 	})
 
 	dynamic.ClearActions()
-	if err := client.DeleteAppEdges(ctx, "bank-donkey-system", "team", "site"); err != nil {
+	if err := client.DeleteAppTraffic(ctx, "bank-donkey-system", "team", "site"); err != nil {
 		t.Fatal(err)
 	}
 	assertDeleteActions(t, dynamic.Actions(), []string{
-		"httproutes", "gateways", "httpproxies", "certificates", "secrets",
+		"certificates", "dnsendpoints", "secrets",
 	}, map[string]string{
 		manifests.LabelInstallation: "bank-donkey-system",
 		manifests.LabelSpace:        "team",
@@ -276,11 +321,11 @@ func TestDestructiveSelectorsAlwaysIncludeInstallationAndLogicalScope(t *testing
 	})
 
 	dynamic.ClearActions()
-	if err := client.DeleteSpaceEdges(ctx, "bank-donkey-system", "team"); err != nil {
+	if err := client.DeleteSpaceTraffic(ctx, "bank-donkey-system", "team"); err != nil {
 		t.Fatal(err)
 	}
 	assertDeleteActions(t, dynamic.Actions(), []string{
-		"httproutes", "gateways", "httpproxies", "certificates", "secrets",
+		"certificates", "dnsendpoints", "secrets",
 	}, map[string]string{
 		manifests.LabelInstallation: "bank-donkey-system",
 		manifests.LabelSpace:        "team",
@@ -288,23 +333,14 @@ func TestDestructiveSelectorsAlwaysIncludeInstallationAndLogicalScope(t *testing
 	})
 
 	dynamic.ClearActions()
-	if err := client.DeleteAppEdgeKinds(ctx, "bank-donkey-system", "team", "site", "HTTPProxy"); err != nil {
+	if err := client.DeleteObsoleteAppTraffic(ctx, "bank-donkey-system", "team", "site", true, false); err != nil {
 		t.Fatal(err)
 	}
-	assertDeleteActions(t, dynamic.Actions(), []string{"httpproxies"}, map[string]string{
+	assertDeleteActions(t, dynamic.Actions(), []string{"dnsendpoints"}, map[string]string{
 		manifests.LabelInstallation: "bank-donkey-system",
 		manifests.LabelSpace:        "team",
 		manifests.LabelApp:          "site",
 		manifests.LabelRole:         manifests.RoleEdge,
-	})
-
-	dynamic.ClearActions()
-	if err := client.DeleteSystemContourEdges(ctx, "bank-donkey-system"); err != nil {
-		t.Fatal(err)
-	}
-	assertDeleteActions(t, dynamic.Actions(), []string{"httpproxies", "certificates", "secrets"}, map[string]string{
-		manifests.LabelInstallation: "bank-donkey-system",
-		manifests.LabelRole:         manifests.SystemRole(manifests.ContourSystemEdgeName),
 	})
 }
 

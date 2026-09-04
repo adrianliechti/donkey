@@ -161,8 +161,8 @@ func (s *Server) handleListApps(w http.ResponseWriter, r *http.Request) {
 		if !st.StartedAt.IsZero() {
 			entry.StartedAt = st.StartedAt.UTC().Format(time.RFC3339)
 		}
-		if st.IngressHost != "" {
-			entry.URL = s.cfg.Scheme() + "://" + st.IngressHost
+		if st.PublicHost != "" {
+			entry.URL = s.cfg.Scheme() + "://" + st.PublicHost
 		}
 		if bindings, err := s.rt.ListServices(r.Context(), ref.Space, ref.App); err == nil {
 			for _, b := range bindings {

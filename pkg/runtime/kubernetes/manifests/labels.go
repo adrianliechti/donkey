@@ -56,8 +56,7 @@ const (
 	// too: managed-by=donkey says "a donkey wrote this", not "this one did".
 	LabelInstallation = "donkey.local/installation"
 	// LabelNamespaceName is the well-known label the API server keeps equal to
-	// a namespace's name — how NetworkPolicy peers and Gateway listeners pin
-	// an exact namespace.
+	// a namespace's name, used to pin NetworkPolicy peers to one namespace.
 	LabelNamespaceName = "kubernetes.io/metadata.name"
 
 	RoleWorkload     = "workload"

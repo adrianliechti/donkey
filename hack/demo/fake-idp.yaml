@@ -4,7 +4,7 @@
 #
 # Its issuer is its own Kubernetes service name — auth.donkey-identity — and
 # that single choice is what lets the demo run without touching cluster DNS:
-# Envoy resolves the issuer natively from inside the cluster, while
+# donkey-gateway resolves the issuer natively from inside the cluster, while
 # `devkube connect` puts the very same name into your hosts file, so the
 # browser follows the same URL.
 #

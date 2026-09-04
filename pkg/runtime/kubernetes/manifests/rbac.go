@@ -47,10 +47,8 @@ func serverAccessObjects(in SystemInput) []runtime.Object {
 	for _, ns := range []string{in.Namespace, in.WorkloadNamespace} {
 		rules := serverRoleRules()
 		if ns == in.Namespace {
-			// Per-app edge objects live beside the control plane even when apps
-			// share a separate workload namespace. Keep these permissions out of
-			// the workload Role; they are retained when the feature is off so a
-			// later deploy can clean up objects from an earlier configuration.
+			// Per-app Certificates and DNS records live beside the gateway even
+			// when apps share a separate workload namespace.
 			rules = append(rules, serverManagedEdgeRoleRules()...)
 		}
 		objs = append(objs,
@@ -70,28 +68,21 @@ func serverAccessObjects(in SystemInput) []runtime.Object {
 	return objs
 }
 
-// serverManagedEdgeRoleRules is the small additional surface needed to
-// server-side apply and retract per-app managed edge objects. The server does
-// not read GatewayClasses, IngressClasses or issuers, and it never receives
-// rights in the infrastructure namespace named by routeNamespace.
+// serverManagedEdgeRoleRules is the small additional surface needed to apply
+// and retract exact-host Certificates and optional DNS records.
 func serverManagedEdgeRoleRules() []rbacv1.PolicyRule {
 	// list/deletecollection are used only with the installation + space + edge
 	// selector when a whole space is removed.
 	writeNamed := []string{"get", "list", "create", "update", "patch", "delete", "deletecollection"}
 	return []rbacv1.PolicyRule{
 		{
-			APIGroups: []string{"gateway.networking.k8s.io"},
-			Resources: []string{"gateways", "httproutes"},
-			Verbs:     writeNamed,
-		},
-		{
-			APIGroups: []string{"projectcontour.io"},
-			Resources: []string{"httpproxies"},
-			Verbs:     writeNamed,
-		},
-		{
 			APIGroups: []string{"cert-manager.io"},
 			Resources: []string{"certificates"},
+			Verbs:     writeNamed,
+		},
+		{
+			APIGroups: []string{"externaldns.k8s.io"},
+			Resources: []string{"dnsendpoints"},
 			Verbs:     writeNamed,
 		},
 	}

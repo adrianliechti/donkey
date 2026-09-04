@@ -63,7 +63,7 @@ func (c *Client) AppStatus(ctx context.Context, namespace, objectName, space, ap
 	if cm, err := c.Clientset.CoreV1().ConfigMaps(namespace).Get(ctx, objectName, metav1.GetOptions{}); err == nil {
 		if c.requireOwnedObject("ConfigMap", namespace, objectName, cm.Labels,
 			manifests.Labels(space, app, manifests.RoleRoute)) == nil && cm.Annotations[manifests.AnnotationBackend] != "" {
-			st.IngressHost = cm.Annotations[manifests.AnnotationHost]
+			st.PublicHost = cm.Annotations[manifests.AnnotationHost]
 			st.Protected = cm.Annotations[manifests.AnnotationLogin] == manifests.LoginRequired
 		}
 	}

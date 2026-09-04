@@ -70,12 +70,12 @@ type Config struct {
 	// AddonImagePullSecrets names existing secrets in each workload namespace
 	// that Kubernetes should use when pulling managed service images.
 	AddonImagePullSecrets []string
-	// AppGateway enables the optional per-app Gateway API and cert-manager
-	// edge in Kubernetes installations. Docker ignores it.
-	AppGateway config.InstallAppGateway
-	// ContourHTTPProxy enables the alternative per-host Certificate and root
-	// HTTPProxy edge on a shared Contour data plane.
-	ContourHTTPProxy config.InstallContourHTTPProxy
+	// TLS carries the cert-manager issuer used for exact-host Certificates in
+	// Kubernetes. Docker's gateway issues certificates independently.
+	TLS config.InstallTLS
+	// ExternalDNS publishes optional exact-host DNSEndpoints at the gateway
+	// VIP as apps are exposed.
+	ExternalDNS config.InstallExternalDNS
 
 	// SessionKey is the installation's sealing key — the server verifies
 	// the CLI tokens the gateway mints with it (the direct, port-forwarded
@@ -125,19 +125,16 @@ func FromEnv() (*Config, error) {
 			RustFS:   os.Getenv("DONKEY_RUSTFS_IMAGE"),
 		},
 		AddonImagePullSecrets: splitCommaSeparated(os.Getenv("DONKEY_ADDON_IMAGE_PULL_SECRETS")),
-		AppGateway: config.InstallAppGateway{
-			ClassName:      os.Getenv("DONKEY_APP_GATEWAY_CLASS_NAME"),
-			NameTemplate:   os.Getenv("DONKEY_APP_GATEWAY_NAME_TEMPLATE"),
-			RouteNamespace: os.Getenv("DONKEY_APP_GATEWAY_ROUTE_NAMESPACE"),
-			IssuerName:     os.Getenv("DONKEY_APP_GATEWAY_ISSUER_NAME"),
-			IssuerKind:     os.Getenv("DONKEY_APP_GATEWAY_ISSUER_KIND"),
-			IssuerGroup:    os.Getenv("DONKEY_APP_GATEWAY_ISSUER_GROUP"),
+		TLS: config.InstallTLS{
+			Mode:        os.Getenv("DONKEY_TLS_MODE"),
+			IssuerName:  os.Getenv("DONKEY_TLS_ISSUER_NAME"),
+			IssuerKind:  os.Getenv("DONKEY_TLS_ISSUER_KIND"),
+			IssuerGroup: os.Getenv("DONKEY_TLS_ISSUER_GROUP"),
 		},
-		ContourHTTPProxy: config.InstallContourHTTPProxy{
-			IngressClassName: os.Getenv("DONKEY_CONTOUR_HTTP_PROXY_INGRESS_CLASS_NAME"),
-			IssuerName:       os.Getenv("DONKEY_CONTOUR_HTTP_PROXY_ISSUER_NAME"),
-			IssuerKind:       os.Getenv("DONKEY_CONTOUR_HTTP_PROXY_ISSUER_KIND"),
-			IssuerGroup:      os.Getenv("DONKEY_CONTOUR_HTTP_PROXY_ISSUER_GROUP"),
+		ExternalDNS: config.InstallExternalDNS{
+			Targets:    splitCommaSeparated(os.Getenv("DONKEY_EXTERNAL_DNS_TARGETS")),
+			RecordType: os.Getenv("DONKEY_EXTERNAL_DNS_RECORD_TYPE"),
+			TTL:        int64(envInt("DONKEY_EXTERNAL_DNS_TTL")),
 		},
 		AIModel: envOr("DONKEY_AI_MODEL", config.DefaultAIModel),
 	}
@@ -188,10 +185,10 @@ func FromEnv() (*Config, error) {
 	if err := config.ValidateAddonImagePullSecrets(c.AddonImagePullSecrets); err != nil {
 		return nil, err
 	}
-	if err := (config.InstallGateway{
-		AppGateway:       c.AppGateway,
-		ContourHTTPProxy: c.ContourHTTPProxy,
-	}).Validate(); err != nil {
+	if err := c.TLS.Validate(); err != nil {
+		return nil, err
+	}
+	if err := c.ExternalDNS.Validate(); err != nil {
 		return nil, err
 	}
 	if err := (config.InstallBuild{BuildSettings: c.Build}).Validate(); err != nil {
