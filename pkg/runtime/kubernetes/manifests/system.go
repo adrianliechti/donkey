@@ -50,10 +50,13 @@ type SystemInput struct {
 	GatewayHTTPNodePort  int32
 	GatewayHTTPSNodePort int32
 
-	// RegistryCASecret names a secret in donkey-system holding ca.crt — the
-	// certificate authority the enterprise registry and package upstreams
-	// come from. The server, build engine and package proxy trust it.
+	// RegistryCASecret names a Secret in the control-plane namespace holding
+	// ca.crt — the certificate authority the enterprise registry and package
+	// upstreams come from. The server, build engine and package proxy trust it.
 	RegistryCASecret string
+	// RegistryCAFingerprint rolls the startup readers when an operator updates
+	// ca.crt in that same Secret and reruns the installer.
+	RegistryCAFingerprint string
 	// RegistryDockerConfigSecret contains per-host auths entries for
 	// separately hosted BuildKit mirrors and is read dynamically by the
 	// server's BuildKit session auth provider.
@@ -139,7 +142,10 @@ const (
 	// SystemRegistrySecretName lets Kubernetes pull credentialed control-plane
 	// images. It is exported for offline deployment bundle renderers.
 	SystemRegistrySecretName = "donkey-system-registry"
-	buildkitName             = "donkey-buildkitd"
+	// BuildkitAppName is the build engine Deployment and Service. Installers
+	// wait for this exact generation before accepting an AI build.
+	BuildkitAppName          = "donkey-buildkitd"
+	buildkitName             = BuildkitAppName
 	registryDockerConfigPath = "/etc/donkey/registry-auth"
 	serverPort               = 8088
 	buildkitPort             = 1234
@@ -230,7 +236,7 @@ func configHash(values ...string) string {
 // (secretKeyRef values are only read at pod creation).
 func (in SystemInput) serverConfigHash() string {
 	return configHash(in.SessionKey, in.TelemetryKey, in.OIDCClientID, in.OIDCClientSecret, in.RegistryPassword, in.OpenAIAPIKey,
-		buildEnvJSON(in.Build), in.Build.Instructions, in.Build.Proxy.HTTP, in.Build.Proxy.HTTPS)
+		buildEnvJSON(in.Build), in.Build.Instructions, in.Build.Proxy.HTTP, in.Build.Proxy.HTTPS, in.RegistryCAFingerprint)
 }
 
 // hashedTemplateMeta is the pod template metadata of one control-plane

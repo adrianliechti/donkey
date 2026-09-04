@@ -24,10 +24,13 @@ var Version = "dev"
 type Config struct {
 	Listen string
 
-	Registry     config.Registry
-	Domain       string
-	BuildkitAddr string
-	PackagesURL  string
+	Registry config.Registry
+	// RegistryMirrors lets the solve-session token client apply Registry's
+	// private CA to the exact mirror hosts configured in buildkitd.
+	RegistryMirrors map[string]string
+	Domain          string
+	BuildkitAddr    string
+	PackagesURL     string
 	// NamespacePrefix maps a space onto its own namespace; ignored when
 	// WorkloadNamespace names one namespace for the whole installation.
 	NamespacePrefix string
@@ -138,6 +141,11 @@ func FromEnv() (*Config, error) {
 		},
 		AIModel: envOr("DONKEY_AI_MODEL", config.DefaultAIModel),
 	}
+	if raw := os.Getenv("DONKEY_REGISTRY_MIRRORS"); raw != "" {
+		if err := json.Unmarshal([]byte(raw), &c.RegistryMirrors); err != nil {
+			return nil, fmt.Errorf("DONKEY_REGISTRY_MIRRORS is not a JSON object of registry-to-mirror mappings: %w", err)
+		}
+	}
 	// The build environment is a map, so it travels as JSON — the same way
 	// DONKEY_ADMINS does.
 	if raw := os.Getenv("DONKEY_BUILD_ENV"); raw != "" {
@@ -191,7 +199,7 @@ func FromEnv() (*Config, error) {
 	if err := c.ExternalDNS.Validate(); err != nil {
 		return nil, err
 	}
-	if err := (config.InstallBuild{BuildSettings: c.Build}).Validate(); err != nil {
+	if err := (config.InstallBuild{BuildSettings: c.Build, RegistryMirrors: c.RegistryMirrors}).Validate(); err != nil {
 		return nil, err
 	}
 	if c.Domain == "" {

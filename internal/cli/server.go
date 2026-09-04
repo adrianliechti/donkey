@@ -3,6 +3,8 @@ package cli
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	"crypto/x509"
 	"encoding/hex"
 	"fmt"
 	"net"
@@ -57,7 +59,7 @@ func serverSettingsFlags() []cli.Flag {
 		&cli.StringFlag{Name: "registry-username", Usage: "registry login"},
 		&cli.BoolFlag{Name: "registry-insecure", Usage: "registry is plain HTTP (local/testing)"},
 		&cli.BoolFlag{Name: "registry-immutable", Usage: "registry refuses to overwrite tags (ECR/GHCR/Harbor immutability) — donkey then makes every tag unique"},
-		&cli.StringFlag{Name: "registry-ca-secret", Usage: "secret in donkey-system holding ca.crt of the registry's certificate authority"},
+		&cli.StringFlag{Name: "registry-ca-secret", Usage: "secret in the control-plane namespace holding ca.crt of the registry's certificate authority"},
 		&cli.StringFlag{Name: "domain", Usage: "apps become <app>.<space>.<domain>"},
 		&cli.StringFlag{Name: "server-host", Usage: "hostname of the API and console (default: the domain itself)"},
 		&cli.StringFlag{Name: "gateway-service-type", Usage: "service type traffic enters through: LoadBalancer (default), ClusterIP or NodePort (clusters without a load-balancer controller, e.g. kind)"},
@@ -204,6 +206,17 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 	if err != nil {
 		return fmt.Errorf("couldn't read the existing installation's secrets: %w", err)
 	}
+	registryCAFingerprint := ""
+	if name := settings.Registry.CASecret; name != "" {
+		data, err := client.GetSecretData(ctx, systemNamespace, name)
+		if err != nil {
+			return fmt.Errorf("couldn't read registry.caSecret %q: %w", name, err)
+		}
+		if err := validateRegistryCASecretData(name, data); err != nil {
+			return err
+		}
+		registryCAFingerprint = fingerprintRegistryCA(data["ca.crt"])
+	}
 	for _, source := range []struct {
 		name  string
 		host  string
@@ -288,6 +301,7 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 		}
 	}
 	in := kubernetesSystemInput(settings, nsPlan.SkipSystemNamespace, registryUsername, registryPassword, sessionKey, telemetryKey)
+	in.RegistryCAFingerprint = registryCAFingerprint
 
 	// DuckDB is system state, so unlike an app's optional disk the telemetry
 	// PVC must be provisionable before any control-plane objects are applied.
@@ -330,7 +344,14 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 	if err := rt.ReconcileAppTraffic(ctx); err != nil {
 		return fmt.Errorf("updating existing app traffic: %w", err)
 	}
-	u.Info("Waiting for the server to come up…")
+	u.Info("Waiting for the control plane to come up…")
+	// A mirror or CA change rolls buildkitd. Do not let an immediate deploy
+	// race the old generation, which would bypass the new mirror config and
+	// fall back to the source registry.
+	if err := client.WaitForRollout(ctx, in.Namespace, manifests.BuildkitAppName,
+		manifests.SystemLabels(manifests.BuildkitAppName)); err != nil {
+		return err
+	}
 	if err := client.WaitForRollout(ctx, in.Namespace, "donkey-packages",
 		manifests.SystemLabels("donkey-packages")); err != nil {
 		return err
@@ -612,6 +633,22 @@ func validateDockerConfigSecretData(field, name string, data map[string]string, 
 		}
 	}
 	return fmt.Errorf("%s %q has no credentials for %s", field, name, host)
+}
+
+func validateRegistryCASecretData(name string, data map[string]string) error {
+	pem := data["ca.crt"]
+	if strings.TrimSpace(pem) == "" {
+		return fmt.Errorf("registry.caSecret %q must contain a non-empty ca.crt key", name)
+	}
+	if !x509.NewCertPool().AppendCertsFromPEM([]byte(pem)) {
+		return fmt.Errorf("registry.caSecret %q key ca.crt does not contain a usable PEM certificate", name)
+	}
+	return nil
+}
+
+func fingerprintRegistryCA(pem string) string {
+	sum := sha256.Sum256([]byte(pem))
+	return hex.EncodeToString(sum[:])
 }
 
 func missingSettings(settings *config.InstallFile, withSecrets bool) []string {

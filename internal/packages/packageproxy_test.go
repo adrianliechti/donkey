@@ -2,6 +2,7 @@ package packages
 
 import (
 	"encoding/base64"
+	"encoding/pem"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +15,31 @@ import (
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestTransportTrustsConfiguredPrivateCA(t *testing.T) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer upstream.Close()
+
+	caFile := filepath.Join(t.TempDir(), "ca.crt")
+	certificate := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: upstream.Certificate().Raw})
+	if err := os.WriteFile(caFile, certificate, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	configured, err := transport(caFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := (&http.Client{Transport: configured}).Get(upstream.URL)
+	if err != nil {
+		t.Fatalf("package transport rejected its configured private CA: %v", err)
+	}
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusNoContent {
+		t.Fatalf("package upstream status = %d", response.StatusCode)
+	}
+}
 
 func TestHandlerRoutesPackagesAndScopesCurrentCredentials(t *testing.T) {
 	var requests []string

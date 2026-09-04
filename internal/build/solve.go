@@ -21,9 +21,12 @@ import (
 // BuildKitBuilder drives any BuildKit daemon over gRPC — for donkey-server
 // that's the in-cluster buildkitd service.
 type BuildKitBuilder struct {
-	Registry     config.Registry
-	BuildkitAddr string
-	PackagesURL  string
+	Registry config.Registry
+	// RegistryMirrors are also needed on the client side because BuildKit
+	// delegates token exchange to the solve session.
+	RegistryMirrors map[string]string
+	BuildkitAddr    string
+	PackagesURL     string
 	// Settings carries the environment every build is handed on top of the
 	// app's own.
 	Settings config.BuildSettings
@@ -107,7 +110,7 @@ func (b *BuildKitBuilder) solveOpt(req Request) (*bkclient.SolveOpt, error) {
 	if req.Strategy != config.BuildDockerfile {
 		return nil, fmt.Errorf("build strategy %q is not supported", req.Strategy)
 	}
-	auth, err := registryAuth(b.Registry)
+	auth, err := registryAuth(b.Registry, b.RegistryMirrors)
 	if err != nil {
 		return nil, err
 	}

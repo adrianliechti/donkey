@@ -133,12 +133,43 @@ func TestInstallBuildValidate(t *testing.T) {
 		{"instructions too long", InstallBuild{BuildSettings: BuildSettings{Instructions: strings.Repeat("x", MaxBuilderInstructionsBytes+1)}}, true},
 		{"mirror with no host", InstallBuild{RegistryMirrors: map[string]string{"": "https://mirror"}}, true},
 		{"mirror with no address", InstallBuild{RegistryMirrors: map[string]string{"docker.io": ""}}, true},
+		{"source repository path", InstallBuild{RegistryMirrors: map[string]string{"docker.io/library": "mirror.example.com/docker"}}, true},
+		{"mirror credentials", InstallBuild{RegistryMirrors: map[string]string{"docker.io": "https://user:token@mirror.example.com/docker"}}, true},
+		{"mirror query", InstallBuild{RegistryMirrors: map[string]string{"docker.io": "https://mirror.example.com/docker?token=secret"}}, true},
+		{"unsupported mirror scheme", InstallBuild{RegistryMirrors: map[string]string{"docker.io": "ftp://mirror.example.com/docker"}}, true},
+		{"url source tolerated", InstallBuild{RegistryMirrors: map[string]string{"https://docker.io/": "https://mirror.example.com/docker"}}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if err := tc.build.Validate(); (err != nil) != tc.wantErr {
 				t.Errorf("Validate() err=%v, wantErr=%v", err, tc.wantErr)
 			}
 		})
+	}
+}
+
+func TestRegistryMirrorNormalization(t *testing.T) {
+	for raw, want := range map[string]string{
+		"https://jfrog.corp/docker-remote": "jfrog.corp/docker-remote",
+		"https://JFROG.CORP/docker-remote": "jfrog.corp/docker-remote",
+		"jfrog.corp/docker-remote":         "jfrog.corp/docker-remote",
+		"http://mirror.internal:5000":      "mirror.internal:5000",
+		"  jfrog.corp/x/  ":                "jfrog.corp/x",
+	} {
+		got, err := ParseRegistryMirror(raw)
+		if err != nil || got.Address != want {
+			t.Errorf("ParseRegistryMirror(%q) = %+v, %v; want address %q", raw, got, err, want)
+		}
+	}
+	httpMirror, _ := ParseRegistryMirror("http://mirror.internal:5000")
+	if !httpMirror.PlainHTTP {
+		t.Error("an http:// mirror was not recognized as plain http")
+	}
+	httpsMirror, _ := ParseRegistryMirror("https://jfrog.corp/x")
+	if httpsMirror.PlainHTTP {
+		t.Error("an https:// mirror was treated as plain http")
+	}
+	if source, err := NormalizeRegistrySource("https://DOCKER.IO/"); err != nil || source != "docker.io" {
+		t.Errorf("Docker Hub source = %q, %v", source, err)
 	}
 }
 
@@ -267,11 +298,11 @@ func TestValidateAddonImagePullSecrets(t *testing.T) {
 }
 
 func TestInstallRegistryCredentialSourceMatchesRuntime(t *testing.T) {
-	kubernetes := InstallRegistry{DockerConfigSecret: "registry-mirror-auth"}
+	kubernetes := InstallRegistry{CASecret: "registry-enterprise-ca", DockerConfigSecret: "registry-mirror-auth"}
 	if err := kubernetes.ValidateRuntime("kubernetes"); err != nil {
 		t.Fatal(err)
 	}
-	docker := InstallRegistry{Registry: Registry{DockerConfigDir: "/run/registry-auth"}}
+	docker := InstallRegistry{Registry: Registry{CAFile: "/run/enterprise-ca.crt", DockerConfigDir: "/run/registry-auth"}}
 	if err := docker.ValidateRuntime("docker"); err != nil {
 		t.Fatal(err)
 	}
@@ -283,6 +314,9 @@ func TestInstallRegistryCredentialSourceMatchesRuntime(t *testing.T) {
 		{docker, "kubernetes"},
 		{InstallRegistry{Registry: Registry{DockerConfigDir: "relative"}}, "docker"},
 		{InstallRegistry{DockerConfigSecret: "Bad_Name"}, "kubernetes"},
+		{InstallRegistry{CASecret: "Bad_Name"}, "kubernetes"},
+		{InstallRegistry{CASecret: "enterprise-ca"}, "docker"},
+		{InstallRegistry{Registry: Registry{CAFile: "/run/enterprise-ca.crt"}}, "kubernetes"},
 	} {
 		if err := invalid.registry.ValidateRuntime(invalid.runtime); err == nil {
 			t.Errorf("invalid %s registry credential source passed: %+v", invalid.runtime, invalid.registry)

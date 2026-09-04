@@ -37,6 +37,7 @@ func (in SystemInput) packagesConfigHash() string {
 		strings.Join(p.ResourceHosts, ","), strings.Join(p.CredentialHosts, ","),
 		p.Username, p.Password, p.DockerConfigSecret, p.DockerConfigHost,
 		in.Build.Proxy.HTTP, in.Build.Proxy.HTTPS, in.Build.Proxy.NoProxy,
+		in.RegistryCAFingerprint,
 	)
 }
 

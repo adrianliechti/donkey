@@ -1,11 +1,18 @@
 package build
 
 import (
+	"context"
+	"encoding/pem"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/adrianliechti/donkey/internal/config"
+	sessionauth "github.com/moby/buildkit/session/auth"
 )
 
 func TestRegistryAuthUsesPrefixHostForPushesAndSameHostMirrors(t *testing.T) {
@@ -27,6 +34,65 @@ func TestRegistryAuthUsesPrefixHostForPushesAndSameHostMirrors(t *testing.T) {
 	}
 	if got.Username != "" || got.Password != "" {
 		t.Fatalf("enterprise credentials leaked to a public registry: %+v", got)
+	}
+}
+
+func TestRegistryAuthTLSConfigsCoverPushAndMirrorTokenRequests(t *testing.T) {
+	reg := config.Registry{URL: "push.example.com/platform/donkey", CAFile: "/etc/donkey/registry-ca/ca.crt"}
+	got := registryAuthTLSConfigs(reg, map[string]string{
+		"docker.io": "https://mirror.example.com:5443/dockerhub",
+		"ghcr.io":   "mirror.example.com:5443/ghcr",
+	})
+	want := map[string][]string{
+		"push.example.com":        {reg.CAFile},
+		"mirror.example.com:5443": {reg.CAFile},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("TLS hosts = %v, want %v", got, want)
+	}
+	for host, roots := range want {
+		if got[host] == nil || !reflect.DeepEqual(got[host].RootCAs, roots) {
+			t.Errorf("TLS config for %s = %+v, want roots %v", host, got[host], roots)
+		}
+	}
+	if configs := registryAuthTLSConfigs(config.Registry{URL: reg.URL}, map[string]string{"docker.io": "mirror.example.com"}); configs != nil {
+		t.Fatalf("publicly trusted registries should not create TLS overrides: %v", configs)
+	}
+}
+
+func TestRegistryAuthFetchesMirrorTokenThroughPrivateCA(t *testing.T) {
+	mirror := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"token":"mirror-token","expires_in":300}`))
+	}))
+	defer mirror.Close()
+
+	caFile := filepath.Join(t.TempDir(), "ca.crt")
+	certificate := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: mirror.Certificate().Raw})
+	if err := os.WriteFile(caFile, certificate, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	host := strings.TrimPrefix(mirror.URL, "https://")
+	attachable, err := registryAuth(config.Registry{
+		URL: "push.example.com/donkey", CAFile: caFile,
+	}, map[string]string{"docker.io": mirror.URL + "/dockerhub"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fetcher, ok := attachable.(interface {
+		FetchToken(context.Context, *sessionauth.FetchTokenRequest) (*sessionauth.FetchTokenResponse, error)
+	})
+	if !ok {
+		t.Fatalf("BuildKit auth provider does not expose token exchange: %T", attachable)
+	}
+	response, err := fetcher.FetchToken(t.Context(), &sessionauth.FetchTokenRequest{
+		Host: host, Realm: mirror.URL, Service: "mirror",
+	})
+	if err != nil {
+		t.Fatalf("private-CA mirror token exchange failed: %v", err)
+	}
+	if response.Token != "mirror-token" {
+		t.Fatalf("token = %q", response.Token)
 	}
 }
 

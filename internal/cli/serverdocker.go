@@ -66,6 +66,14 @@ const (
 const dockerNoProxy = "localhost,127.0.0.1," +
 	dockerRegistryName + "," + dockerBuildkitName + "," + dockerServerName + "," + dockerGatewayName + "," + dockerAIName + "," + dockerTelemetryName + "," + dockerPackagesName
 
+func registryMirrorsJSON(mirrors map[string]string) string {
+	raw, err := json.Marshal(mirrors)
+	if err != nil {
+		return ""
+	}
+	return string(raw)
+}
+
 // dockerInstallAction stands the whole control plane up on the local Docker
 // engine (or DOCKER_HOST).
 func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.InstallFile) error {
@@ -304,6 +312,9 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 		"OPENAI_BASE_URL":                settings.AI.BaseURL,
 		"OPENAI_API_KEY":                 settings.AI.APIKey,
 	}
+	if len(settings.Build.RegistryMirrors) > 0 {
+		serverEnv["DONKEY_REGISTRY_MIRRORS"] = registryMirrorsJSON(settings.Build.RegistryMirrors)
+	}
 	if bundledRegistry {
 		serverEnv["DONKEY_PULL_REGISTRY"] = "127.0.0.1:" + dockerRegistryHostPort
 	}
@@ -497,6 +508,9 @@ func validateDockerSettings(settings *config.InstallFile) error {
 		return err
 	}
 	if err := settings.Registry.ValidateRuntime("docker"); err != nil {
+		return err
+	}
+	if _, err := settings.Registry.TLSConfig(); err != nil {
 		return err
 	}
 	if err := settings.Gateway.ExternalDNS.Validate(); err != nil {

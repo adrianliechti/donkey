@@ -1,9 +1,15 @@
 package cli
 
 import (
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
+	"math/big"
 	"testing"
+	"time"
 
 	"github.com/adrianliechti/donkey/internal/config"
 	runtimedocker "github.com/adrianliechti/donkey/pkg/runtime/docker"
@@ -22,6 +28,37 @@ func TestDockerInstallerRequiresExactSystemIdentity(t *testing.T) {
 	labels["local.donkey.space"] = "team"
 	if err := requireDockerSystemResource("container", dockerServerName, labels, "server"); err == nil {
 		t.Fatal("a tenant resource was accepted as control-plane infrastructure")
+	}
+}
+
+func TestValidateRegistryCASecretDataRequiresCACrtPEM(t *testing.T) {
+	if err := validateRegistryCASecretData("enterprise-ca", nil); err == nil {
+		t.Fatal("a missing CA Secret was accepted")
+	}
+	if err := validateRegistryCASecretData("enterprise-ca", map[string]string{"tls.crt": "not the requested key"}); err == nil {
+		t.Fatal("a Secret without ca.crt was accepted")
+	}
+	if err := validateRegistryCASecretData("enterprise-ca", map[string]string{"ca.crt": "not pem"}); err == nil {
+		t.Fatal("invalid PEM was accepted")
+	}
+	key, err := rsa.GenerateKey(rand.Reader, 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(1), NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour),
+		IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	valid := string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))
+	if err := validateRegistryCASecretData("enterprise-ca", map[string]string{"ca.crt": valid}); err != nil {
+		t.Fatalf("PEM certificate was rejected: %v", err)
+	}
+	if fingerprintRegistryCA(valid) == fingerprintRegistryCA(valid+"\n") {
+		t.Fatal("different CA Secret contents produced the same rollout fingerprint")
 	}
 }
 

@@ -11,11 +11,14 @@ import (
 )
 
 // buildEnv is the installation's build configuration as donkey-server reads
-// it. Only the settings the server acts on travel here: the mirrors are the
-// build engine's business, and the proxy is spelled the way every tool
-// already expects (see proxyEnv).
+// it. The mirror hosts let its BuildKit session authenticate private-CA token
+// endpoints; the proxy is spelled the way every tool already expects (see
+// proxyEnv).
 func buildEnv(b config.InstallBuild) []corev1.EnvVar {
 	var env []corev1.EnvVar
+	if len(b.RegistryMirrors) > 0 {
+		env = append(env, corev1.EnvVar{Name: "DONKEY_REGISTRY_MIRRORS", Value: registryMirrorsJSON(b.RegistryMirrors)})
+	}
 	// Only what was configured: an installation that says nothing about
 	// builds renders the deployment it always did.
 	for _, e := range []corev1.EnvVar{
@@ -35,6 +38,14 @@ func buildEnv(b config.InstallBuild) []corev1.EnvVar {
 		env = append(env, secretEnvVar("DONKEY_BUILD_ENV", "build-env"))
 	}
 	return env
+}
+
+func registryMirrorsJSON(mirrors map[string]string) string {
+	raw, err := json.Marshal(mirrors)
+	if err != nil {
+		return ""
+	}
+	return string(raw)
 }
 
 // verifyValue renders the tri-state startup-verification setting: empty

@@ -165,8 +165,9 @@ func TestDockerRenderMatchesRuntimeTopologyWithoutSecrets(t *testing.T) {
 			BaseURL: "https://api.openai.com/v1", Model: "gpt-5.5", APIKey: "docker-openai-key-must-not-render",
 		},
 		Build: config.InstallBuild{
-			BuildSettings: config.BuildSettings{Env: map[string]string{"TOKEN": "docker-build-secret-must-not-render"}},
-			Proxy:         config.InstallProxy{HTTPS: "http://proxy-secret-must-not-render@example.com:3128"},
+			BuildSettings:   config.BuildSettings{Env: map[string]string{"TOKEN": "docker-build-secret-must-not-render"}},
+			RegistryMirrors: map[string]string{"docker.io": "https://mirror.example.com/dockerhub"},
+			Proxy:           config.InstallProxy{HTTPS: "http://proxy-secret-must-not-render@example.com:3128"},
 		},
 	}
 	files, err := renderDockerBundle(settings)
@@ -219,6 +220,12 @@ func TestDockerRenderMatchesRuntimeTopologyWithoutSecrets(t *testing.T) {
 	}
 	if got := typed.Networks["donkey"].Labels; !reflect.DeepEqual(got, runtimedocker.SystemLabels(runtimedocker.RoleNetwork)) {
 		t.Errorf("Compose network labels=%v", got)
+	}
+	if got := typed.Services["server"].Environment["DONKEY_REGISTRY_MIRRORS"]; got != `{"docker.io":"https://mirror.example.com/dockerhub"}` {
+		t.Errorf("server mirror map = %q", got)
+	}
+	if got := string(files["buildkitd.toml"].Data); !strings.Contains(got, `mirrors = ["mirror.example.com/dockerhub"]`) {
+		t.Errorf("BuildKit mirror config is missing from Docker bundle:\n%s", got)
 	}
 	for name, volume := range typed.Volumes {
 		if volume.Labels["local.donkey.managed"] != "true" ||

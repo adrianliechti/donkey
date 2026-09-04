@@ -8,10 +8,12 @@ import (
 	"fmt"
 	"io/fs"
 	"log"
+	"maps"
 	"net/http"
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -437,11 +439,18 @@ func (s *Server) deploy(ctx context.Context, out *lineStreamer, dir string, app 
 
 	out.Update(DeployUpdate{Stage: "building"})
 	out.Line("Building the image…")
+	if mirrors := registryMirrorSummary(s.cfg.RegistryMirrors); mirrors != "" {
+		// BuildKit progress retains the source image name even when its requests
+		// use a mirror. Print the effective mapping first so a later
+		// "docker.io/..." progress line is not mistaken for a bypass.
+		out.Line("· BuildKit mirrors: %s", mirrors)
+	}
 	builder := &build.BuildKitBuilder{
-		Registry:     s.cfg.Registry,
-		BuildkitAddr: s.cfg.BuildkitAddr,
-		PackagesURL:  s.cfg.PackagesURL,
-		Settings:     s.cfg.Build,
+		Registry:        s.cfg.Registry,
+		RegistryMirrors: s.cfg.RegistryMirrors,
+		BuildkitAddr:    s.cfg.BuildkitAddr,
+		PackagesURL:     s.cfg.PackagesURL,
+		Settings:        s.cfg.Build,
 	}
 	// The standard OCI vocabulary, so any registry tool can answer where an
 	// image came from without knowing donkey.
@@ -517,6 +526,19 @@ func (s *Server) deploy(ctx context.Context, out *lineStreamer, dir string, app 
 		return res
 	}
 	return s.applyAndWait(ctx, out, app, dir, result.ImageRef, opts.NoWait)
+}
+
+func registryMirrorSummary(mirrors map[string]string) string {
+	entries := make([]string, 0, len(mirrors))
+	for _, source := range slices.Sorted(maps.Keys(mirrors)) {
+		normalizedSource, sourceErr := config.NormalizeRegistrySource(source)
+		target, targetErr := config.ParseRegistryMirror(mirrors[source])
+		if sourceErr == nil && targetErr == nil {
+			entries = append(entries, normalizedSource+" → "+target.Address)
+		}
+	}
+	slices.Sort(entries)
+	return strings.Join(entries, ", ")
 }
 
 // renderDryRun renders the app's objects without touching the runtime.

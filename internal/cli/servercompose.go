@@ -217,6 +217,9 @@ func dockerComposeFiles(settings *config.InstallFile, bundledRegistry bool) (map
 		"OPENAI_BASE_URL":                settings.AI.BaseURL,
 		"OPENAI_API_KEY":                 "${OPENAI_API_KEY:-}",
 	}
+	if len(settings.Build.RegistryMirrors) > 0 {
+		serverEnv["DONKEY_REGISTRY_MIRRORS"] = registryMirrorsJSON(settings.Build.RegistryMirrors)
+	}
 	if bundledRegistry {
 		serverEnv["DONKEY_PULL_REGISTRY"] = "127.0.0.1:" + dockerRegistryHostPort
 	}

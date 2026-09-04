@@ -122,14 +122,16 @@ func ValidateAddonImagePullSecrets(names []string) error {
 }
 
 // InstallBuild is how apps are built and how a build reaches the outside
-// world. BuildSettings travels to donkey-server as environment; the fields
-// below are consumed where the installation is written — mirrors into the
-// build engine's config, the proxy into both pods.
+// world. BuildSettings travels to donkey-server as environment; mirrors go to
+// both the engine config and the server-side session auth provider, and the
+// proxy goes to both pods.
 type InstallBuild struct {
 	BuildSettings `json:",inline"`
 
-	// RegistryMirrors maps an upstream registry host to its mirror. Written
-	// into the build engine's config, so it covers every FROM a build pulls.
+	// RegistryMirrors maps an upstream registry host to its mirror. It is
+	// written into the build engine's config and shared with its session auth
+	// provider, so it covers every FROM a build pulls, including private-CA
+	// authenticated mirrors.
 	RegistryMirrors map[string]string `json:"registryMirrors,omitempty"`
 
 	// Proxy is a forward proxy for donkey-server and the build engine
@@ -439,8 +441,69 @@ func (b InstallBuild) Validate() error {
 		if mirror == "" {
 			return fmt.Errorf("build.registryMirrors[%q] has no mirror address", host)
 		}
+		if _, err := NormalizeRegistrySource(host); err != nil {
+			return fmt.Errorf("build.registryMirrors source %q is invalid: %w", host, err)
+		}
+		if _, err := ParseRegistryMirror(mirror); err != nil {
+			return fmt.Errorf("build.registryMirrors[%q] mirror %q is invalid: %w", host, mirror, err)
+		}
 	}
 	return b.Packages.Validate()
+}
+
+// RegistryMirror is the canonical endpoint used by BuildKit: Address retains
+// an optional repository prefix, Host is the host[:port] used for TLS/auth.
+type RegistryMirror struct {
+	Address   string
+	Host      string
+	PlainHTTP bool
+}
+
+// ParseRegistryMirror accepts the two spellings BuildKit users commonly have
+// at hand: host[/repository] and an http(s) URL. Credentials belong in Docker
+// config, never in the ConfigMap that holds buildkitd.toml.
+func ParseRegistryMirror(raw string) (RegistryMirror, error) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return RegistryMirror{}, fmt.Errorf("address is empty")
+	}
+	if !strings.Contains(value, "://") {
+		value = "https://" + strings.TrimLeft(value, "/")
+	}
+	u, err := url.Parse(value)
+	if err != nil || u.Host == "" || u.Hostname() == "" {
+		return RegistryMirror{}, fmt.Errorf("expected host[:port] or an http(s) URL")
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return RegistryMirror{}, fmt.Errorf("scheme must be http or https")
+	}
+	if u.User != nil {
+		return RegistryMirror{}, fmt.Errorf("embedded credentials are not allowed")
+	}
+	if u.RawQuery != "" || u.Fragment != "" {
+		return RegistryMirror{}, fmt.Errorf("query strings and fragments are not allowed")
+	}
+	host := strings.ToLower(u.Host)
+	path := strings.Trim(u.EscapedPath(), "/")
+	address := host
+	if path != "" {
+		address += "/" + path
+	}
+	return RegistryMirror{Address: address, Host: host, PlainHTTP: u.Scheme == "http"}, nil
+}
+
+// NormalizeRegistrySource returns the exact key BuildKit uses to look up an
+// image's source registry. A source is a host only; repository paths belong on
+// the mirror side of the mapping.
+func NormalizeRegistrySource(raw string) (string, error) {
+	endpoint, err := ParseRegistryMirror(raw)
+	if err != nil {
+		return "", err
+	}
+	if endpoint.Address != endpoint.Host {
+		return "", fmt.Errorf("the source must be a registry host, without a repository path")
+	}
+	return endpoint.Host, nil
 }
 
 // VerifyStartup is on unless an installation turns it off.
@@ -480,7 +543,7 @@ func (b BuildSettings) MergeEnv(appEnv map[string]string) map[string]string {
 // the cluster's own CA, which the server and the build engine must trust.
 type InstallRegistry struct {
 	Registry
-	// CASecret is a secret in donkey-system holding ca.crt.
+	// CASecret is a Secret in the control-plane namespace holding ca.crt.
 	CASecret string `json:"caSecret,omitempty"`
 	// DockerConfigSecret is an existing Secret whose Docker config entries
 	// authenticate separately hosted BuildKit mirrors. The push registry's
@@ -490,6 +553,9 @@ type InstallRegistry struct {
 
 func (r InstallRegistry) ValidateRuntime(runtime string) error {
 	if runtime == "docker" {
+		if r.CASecret != "" {
+			return fmt.Errorf("registry.caSecret is for Kubernetes; use registry.caFile with the Docker runtime")
+		}
 		if r.DockerConfigSecret != "" {
 			return fmt.Errorf("registry.dockerConfigSecret is for Kubernetes; use dockerConfigDir with the Docker runtime")
 		}
@@ -498,12 +564,20 @@ func (r InstallRegistry) ValidateRuntime(runtime string) error {
 		}
 		return nil
 	}
+	if r.CAFile != "" {
+		return fmt.Errorf("registry.caFile is for the Docker runtime; use registry.caSecret with Kubernetes")
+	}
 	if r.DockerConfigDir != "" {
 		return fmt.Errorf("registry.dockerConfigDir is for the Docker runtime; use dockerConfigSecret with Kubernetes")
 	}
 	if r.DockerConfigSecret != "" {
 		if err := ValidateAddonImagePullSecrets([]string{r.DockerConfigSecret}); err != nil {
 			return fmt.Errorf("registry.dockerConfigSecret: %w", err)
+		}
+	}
+	if r.CASecret != "" {
+		if err := ValidateAddonImagePullSecrets([]string{r.CASecret}); err != nil {
+			return fmt.Errorf("registry.caSecret: %w", err)
 		}
 	}
 	return nil

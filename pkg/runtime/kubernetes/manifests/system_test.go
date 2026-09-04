@@ -91,6 +91,24 @@ func TestRegistryCAReachesBuildEngineAndServer(t *testing.T) {
 	}
 }
 
+func TestRegistryCARotationRollsEveryTrustReader(t *testing.T) {
+	first := systemInput()
+	first.RegistryCASecret = "donkey-registry-ca"
+	first.RegistryCAFingerprint = "first-ca"
+	second := first
+	second.RegistryCAFingerprint = "rotated-ca"
+
+	for name, hashes := range map[string][2]string{
+		"buildkit": {first.buildkitConfigHash(), second.buildkitConfigHash()},
+		"packages": {first.packagesConfigHash(), second.packagesConfigHash()},
+		"server":   {first.serverConfigHash(), second.serverConfigHash()},
+	} {
+		if hashes[0] == hashes[1] {
+			t.Errorf("%s did not roll when ca.crt changed", name)
+		}
+	}
+}
+
 func TestRegistryCredentialsPullMirroredSystemImages(t *testing.T) {
 	in := systemInput()
 	in.RegistryUsername = "builder"

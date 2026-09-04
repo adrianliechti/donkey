@@ -601,7 +601,12 @@ found.
 
 `build.registryMirrors` is written into the build engine's own configuration,
 so it covers every image a build pulls — every `FROM` in a Dockerfile,
-generated or not.
+generated or not. Dockerfiles and BuildKit progress keep the canonical source
+name (for example `docker.io/library/node`) even while the registry requests go
+to the configured mirror; donkey prints the effective mapping immediately
+before that progress. As in BuildKit itself, an unavailable mirror falls back
+to the source registry; a restricted network may then show Docker Hub in the
+final error even though the mirror was tried first.
 
 Every installation also runs `donkey-packages`. donkey declares its internal
 npm, pip, Go, Maven and NuGet settings after every `FROM` in an in-memory
@@ -691,9 +696,10 @@ win for those names.
 `build.instructions` extends the Dockerfile-writing assistant's built-in
 instructions with installation-specific constraints or hints—the available
 image prefixes, required base-image families, or internal build conventions.
-It is sent to the configured model, so keep credentials out of it. BuildKit
-still enforces the actual network path through `registryMirrors`; the text is
-guidance for choosing references in generated Dockerfiles.
+It is sent to the configured model, so keep credentials out of it. Use it when
+the saved generated Dockerfile itself must name an internal image prefix.
+`registryMirrors` is the transparent transport mapping and also covers
+hand-written Dockerfiles.
 
 One image is **not** covered by those mirrors: `buildkitImage`, which the
 cluster pulls itself. Mirror it by setting it directly. Managed PostgreSQL
@@ -736,11 +742,14 @@ image prefix: builds are pushed as
 `registry.example.com/platform/donkey` keeps every pushed app image below that
 enterprise folder.
 
-Mirror hosts inherit `registry.caSecret`, so an in-house Artifactory behind a
-private CA needs nothing further. There is no builder image for `donkey
-doctor` to resolve — a generated Dockerfile names its own bases, and whether
-those resolve is a question only the finished file can ask, which the build
-engine asks through exactly these mirrors.
+Mirror hosts inherit `registry.caSecret`, including the separate Bearer-token
+request made by donkey-server on BuildKit's behalf, so an in-house Artifactory
+behind a private CA needs nothing further. The referenced Secret must be in the
+control-plane namespace and contain the trust bundle under exactly `ca.crt`;
+the installer checks it before applying changes. There is no builder image for
+`donkey doctor` to resolve — a generated Dockerfile names its own bases, and
+whether those resolve is a question only the finished file can ask, which the
+build engine asks through exactly these mirrors.
 
 ## Deployment model
 
@@ -879,7 +888,7 @@ deploy. What is *not* reproducible has to live outside the cluster:
 | `OPENAI_API_KEY` | the assistant is required; no key, no deploys |
 | the `session-key` entry of `donkey-system-config` | a fresh install **generates a new one** and thereby invalidates every session and CLI token. Restoring it makes the rebuilt installation the same installation — everyone stays signed in |
 | the `telemetry-key` entry of `donkey-system-config` | existing app exporters carry credentials derived from it. Restoring it keeps those exporters valid and lets a restored telemetry database continue accepting them independently of login-session rotation |
-| the registry CA secret (`registry.caSecret`) | donkey only *references* that Secret in `donkey-system` — it never creates it. Whatever created it has to run again |
+| the registry CA secret (`registry.caSecret`) | donkey only *references* that Secret in the configured control-plane namespace — it never creates it. Whatever created it has to run again |
 | DNS for `*.<domain>` and `<domain>` | they point at the gateway address, which a rebuilt cluster changes |
 
 Two more things exist only in the cluster: env values set with `donkey env

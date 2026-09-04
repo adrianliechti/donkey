@@ -2,6 +2,7 @@ package build
 
 import (
 	"context"
+	"strings"
 
 	clitypes "github.com/docker/cli/cli/config/types"
 	"github.com/moby/buildkit/session"
@@ -12,12 +13,37 @@ import (
 
 // registryAuth builds an in-process BuildKit auth provider from donkey's own
 // registry settings — no `docker login`, no ~/.docker/config.json.
-func registryAuth(reg config.Registry) (session.Attachable, error) {
+func registryAuth(reg config.Registry, mirrors map[string]string) (session.Attachable, error) {
 	return authprovider.NewDockerAuthProvider(authprovider.DockerAuthProviderConfig{
 		AuthConfigProvider: func(ctx context.Context, h string, scope []string, _ authprovider.ExpireCachedAuthCheck) (clitypes.AuthConfig, error) {
 			return registryAuthConfig(reg, h)
 		},
+		// buildkitd performs the registry request, but delegates Bearer token
+		// requests back to this session provider. The daemon's buildkitd.toml CA
+		// therefore is not enough: this client must trust it for the push
+		// registry and every configured mirror host too.
+		TLSConfigs: registryAuthTLSConfigs(reg, mirrors),
 	}), nil
+}
+
+func registryAuthTLSConfigs(reg config.Registry, mirrors map[string]string) map[string]*authprovider.AuthTLSConfig {
+	if reg.CAFile == "" {
+		return nil
+	}
+	configs := map[string]*authprovider.AuthTLSConfig{}
+	add := func(host string) {
+		host = strings.ToLower(strings.TrimSpace(host))
+		if host != "" {
+			configs[host] = &authprovider.AuthTLSConfig{RootCAs: []string{reg.CAFile}}
+		}
+	}
+	add(reg.Host())
+	for _, mirror := range mirrors {
+		if endpoint, err := config.ParseRegistryMirror(mirror); err == nil {
+			add(endpoint.Host)
+		}
+	}
+	return configs
 }
 
 func registryAuthConfig(reg config.Registry, host string) (clitypes.AuthConfig, error) {

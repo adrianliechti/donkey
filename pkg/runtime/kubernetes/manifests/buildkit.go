@@ -12,14 +12,16 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
+
+	"github.com/adrianliechti/donkey/internal/config"
 )
 
-// buildkitConfigHash covers what buildkitd reads at startup: the config file
-// itself, which it reads once and never again.
+// buildkitConfigHash covers what buildkitd reads from its startup pod: the
+// config file, proxy environment, and mounted CA bundle generation.
 func (in SystemInput) buildkitConfigHash() string {
 	// The proxy is secret-backed env, which a pod also only reads at
 	// creation — so it belongs in the same hash as the config file.
-	return configHash(buildkitTOML(in), in.Build.Proxy.HTTP, in.Build.Proxy.HTTPS, in.Build.Proxy.NoProxy)
+	return configHash(buildkitTOML(in), in.Build.Proxy.HTTP, in.Build.Proxy.HTTPS, in.Build.Proxy.NoProxy, in.RegistryCAFingerprint)
 }
 
 const (
@@ -77,28 +79,24 @@ func BuildkitTOML(c BuildkitConfig) string {
 		return s
 	}
 	if c.RegistryHost != "" && (c.RegistryCAFile != "" || c.RegistryPlainHTTP) {
-		s := at(c.RegistryHost)
+		s := at(strings.ToLower(c.RegistryHost))
 		s.caFile = c.RegistryCAFile
 		s.plainHTTP = c.RegistryPlainHTTP
 	}
 	for upstream, mirror := range c.Mirrors {
-		host, plainHTTP := mirrorHost(mirror)
-		// A bare hostname, never a URL: BuildKit looks it up by host, so a URL
-		// key matches nothing and every pull quietly goes to the real
-		// registry — the one thing a mirrored installation cannot reach.
-		upstream, _ = mirrorHost(upstream)
-		upstream = mirrorHostOnly(upstream)
-		if upstream == "" || host == "" {
+		target, targetErr := config.ParseRegistryMirror(mirror)
+		source, sourceErr := config.NormalizeRegistrySource(upstream)
+		if sourceErr != nil || targetErr != nil {
 			continue
 		}
-		up := at(upstream)
-		up.mirrors = append(up.mirrors, host)
+		up := at(source)
+		up.mirrors = append(up.mirrors, target.Address)
 		// The mirror is a registry in its own right: donkey reaches it over
 		// the scheme it was given, and an in-house one usually sits behind
 		// the same private CA as donkey's registry.
-		m := at(mirrorHostOnly(host))
-		m.plainHTTP = m.plainHTTP || plainHTTP
-		if c.RegistryCAFile != "" && !plainHTTP {
+		m := at(target.Host)
+		m.plainHTTP = m.plainHTTP || target.PlainHTTP
+		if c.RegistryCAFile != "" && !target.PlainHTTP {
 			m.caFile = c.RegistryCAFile
 		}
 	}
@@ -127,38 +125,18 @@ func BuildkitTOML(c BuildkitConfig) string {
 	return b.String()
 }
 
-// mirrorHost yields what BuildKit's `mirrors` list wants: a host with an
-// optional path prefix, never a URL. A scheme is accepted (JFrog's UI hands
-// out URLs) and answers a different question — whether to use plain http.
-func mirrorHost(mirror string) (host string, plainHTTP bool) {
-	rest := strings.TrimSpace(mirror)
-	if s, after, ok := strings.Cut(rest, "://"); ok {
-		plainHTTP = strings.EqualFold(s, "http")
-		rest = after
-	}
-	return strings.Trim(rest, "/"), plainHTTP
-}
-
-// mirrorHostOnly drops the path prefix: TLS and CA settings belong to the
-// host, not to the repository path under it.
-func mirrorHostOnly(hostAndPath string) string {
-	host, _, _ := strings.Cut(hostAndPath, "/")
-	return host
-}
-
 // registryHostOf is the host part of donkey's registry setting, which is a
 // prefix ("registry.example.com/donkey") rather than a bare host.
 func registryHostOf(registryURL string) string {
-	host, _ := mirrorHost(registryURL)
-	return mirrorHostOnly(host)
+	host, _, _ := strings.Cut(registryURL, "/")
+	return strings.ToLower(host)
 }
 
 func buildkitTOML(in SystemInput) string {
-	host, _, _ := strings.Cut(in.RegistryURL, "/")
 	// Declared here and not only on the export: the engine also *pulls* from
 	// donkey's own registry, and a pull carries no per-solve attribute.
 	c := BuildkitConfig{
-		RegistryHost:      host,
+		RegistryHost:      registryHostOf(in.RegistryURL),
 		RegistryPlainHTTP: in.RegistryInsecure,
 		Mirrors:           in.Build.RegistryMirrors,
 	}

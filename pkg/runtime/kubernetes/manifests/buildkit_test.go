@@ -143,25 +143,6 @@ func TestBuildkitTOMLWithoutMirrors(t *testing.T) {
 	}
 }
 
-func TestMirrorHost(t *testing.T) {
-	for mirror, want := range map[string]string{
-		"https://jfrog.corp/docker-remote": "jfrog.corp/docker-remote",
-		"jfrog.corp/docker-remote":         "jfrog.corp/docker-remote",
-		"http://mirror.internal:5000":      "mirror.internal:5000",
-		"  jfrog.corp/x/  ":                "jfrog.corp/x",
-	} {
-		if got, _ := mirrorHost(mirror); got != want {
-			t.Errorf("mirrorHost(%q) = %q, want %q", mirror, got, want)
-		}
-	}
-	if _, plain := mirrorHost("http://mirror.internal:5000"); !plain {
-		t.Error("an http:// mirror was not recognized as plain http")
-	}
-	if _, plain := mirrorHost("https://jfrog.corp/x"); plain {
-		t.Error("an https:// mirror was treated as plain http")
-	}
-}
-
 // The build configuration has to land on both pods, in the shape each one
 // reads it: donkey-server hands the build environment to every RUN, the build
 // engine resolves images through the mirrors — and only the proxy is common
@@ -188,6 +169,7 @@ func TestBuildConfigReachesBothPods(t *testing.T) {
 		"registry.example.com/mirror/<image>",
 		// The mirrors are the build engine's business, and live in its config.
 		`mirrors = ["mirror.example.com/docker"]`,
+		"DONKEY_REGISTRY_MIRRORS", // the session auth client gets the same hosts
 		// Both pods get the proxy, in both spellings.
 		"HTTPS_PROXY",
 		"https_proxy",
