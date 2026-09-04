@@ -32,7 +32,35 @@ export interface AppStatus {
   hasStorage?: boolean
   exposure?: Exposure
   port?: number
-  /** The latest deploy can be reopened from app details. */
+  endpoint?: EndpointStatus
+}
+
+export type EndpointState = 'ready' | 'issuing' | 'propagating' | 'error' | 'unknown' | 'unmanaged'
+
+export interface CertificateStatus {
+  state: EndpointState
+  mode: 'acme' | 'ca' | 'cert-manager'
+  issuer?: string
+  reason?: string
+  message?: string
+  expiresAt?: string
+  renewalTime?: string
+  renewing?: boolean
+}
+
+export interface DNSStatus {
+  state: EndpointState
+  /** True once external-dns has read the current DNSEndpoint generation. */
+  observed: boolean
+  recordType?: 'A' | 'AAAA' | 'CNAME'
+  expected?: string[]
+  message?: string
+}
+
+export interface EndpointStatus {
+  host: string
+  certificate: CertificateStatus
+  dns: DNSStatus
 }
 
 export type TrafficSource = 'edge' | 'app'

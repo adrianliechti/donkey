@@ -135,6 +135,19 @@ type ResourceSampler interface {
 	ResourceSamples(ctx context.Context) ([]ResourceSample, error)
 }
 
+// EndpointStatusProvider is an optional runtime capability for the slower,
+// edge-specific checks shown on one app's detail page. Keeping it separate
+// from Provider.Status matters: the fleet view reads Status for every app,
+// whereas certificate objects and live DNS answers only need checking for the
+// app somebody is looking at.
+type EndpointStatusProvider interface {
+	// EndpointStatus receives the hostname read from the runtime's live route,
+	// never stored deploy intent. Individual check failures are represented as
+	// an unknown/error state so a DNS timeout cannot hide otherwise useful app
+	// status.
+	EndpointStatus(ctx context.Context, space, app, host string) EndpointStatus
+}
+
 // ResourceSample is one installation-owned web container at one instant. The
 // telemetry wire format keeps that container identity (as the OpenTelemetry
 // semantic conventions require); retained app reports aggregate replicas.
@@ -156,6 +169,48 @@ type ResourceSample struct {
 	CPUSystemCores    float64
 	CPUModesAvailable bool
 	MemoryBytes       int64
+}
+
+// EndpointState is the small common vocabulary the control plane and console
+// use for asynchronous edge setup.
+type EndpointState string
+
+const (
+	EndpointReady       EndpointState = "ready"
+	EndpointIssuing     EndpointState = "issuing"
+	EndpointPropagating EndpointState = "propagating"
+	EndpointError       EndpointState = "error"
+	EndpointUnknown     EndpointState = "unknown"
+	EndpointUnmanaged   EndpointState = "unmanaged"
+)
+
+// EndpointStatus describes whether an exposed hostname is ready beyond the
+// workload itself. Certificate and DNS are deliberately independent: DNS can
+// resolve while a certificate is still issuing, and vice versa.
+type EndpointStatus struct {
+	Certificate CertificateStatus
+	DNS         DNSStatus
+}
+
+type CertificateStatus struct {
+	State       EndpointState
+	Mode        string
+	Issuer      string
+	Reason      string
+	Message     string
+	ExpiresAt   time.Time
+	RenewalTime time.Time
+	// Renewing means a usable current certificate remains ready while its
+	// replacement is being issued.
+	Renewing bool
+}
+
+type DNSStatus struct {
+	State      EndpointState
+	Observed   bool
+	RecordType string
+	Expected   []string
+	Message    string
 }
 
 type AppRef struct {

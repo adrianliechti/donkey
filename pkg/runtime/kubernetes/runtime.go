@@ -55,11 +55,13 @@ type Options struct {
 // a namespace, and an inherited method with the wrong meaning would satisfy
 // the interface silently.
 type Runtime struct {
-	c    *Client
-	opts Options
+	c        *Client
+	opts     Options
+	resolver dnsResolver
 }
 
 var _ rt.Provider = (*Runtime)(nil)
+var _ rt.EndpointStatusProvider = (*Runtime)(nil)
 
 func NewRuntime(client *Client, opts Options) *Runtime {
 	if opts.SystemNamespace == "" {

@@ -65,8 +65,9 @@ five ideas:
                            │  ├─ donkey-packages  build package proxy│─▶ package registries
                            │  ├─ donkey-ai      openai addon endpoint│──▶ model API
                            │  ├─ donkey-telemetry  OTLP + DuckDB     │
- browser ────80/443───────▶│  └─ donkey-gateway  TLS (ACME/CA/none)  │──OIDC──▶ Entra ID /
-                           │       · routing by hostname and path    │        any IdP
+ browser ────80/443───────▶│  └─ donkey-gateway  TLS termination     │──OIDC──▶ Entra ID /
+                           │       · ACME / CA / cert-manager        │        any IdP
+                           │       · routing by hostname and path    │
      <app>.<space>.<domain>│       · OIDC login                      │
                            │       · access (users/groups/roles) ──▶ app
                            ├─────────────────────────────────────────┤
@@ -90,10 +91,12 @@ five ideas:
   serves the **admin console** (React/Tailwind, embedded in the binary) on
   the domain itself: open `https://<domain>` in a browser, sign in at your
   IdP (the gateway runs the login, like for any app — one sign-in covers
-  console and apps), and you get the apps overview with health at a glance, live
-  logs, selectable 48-hour/7-day/30-day traffic and latency, an env-var editor, restart, an AI "explain what's wrong" for
-  unhealthy apps, remove-app, and the system checks. Spaces are managed
-  here too — create one before any app exists, remove an empty one — and
+  console and apps), and you get the apps overview with health at a glance,
+  Kubernetes certificate issuance and DNS propagation state, live logs,
+  selectable 48-hour/7-day/30-day traffic and latency, an env-var editor,
+  restart, an AI "explain what's wrong" for unhealthy apps, remove-app, and
+  the system checks. Spaces are managed here too — create one before any app
+  exists, remove an empty one — and
   each space card carries its services: a catalog to add from, plus a
   browser per capability (tables, rows and SQL for a database; buckets and
   objects for storage; a streaming chat for the AI — see

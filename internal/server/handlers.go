@@ -68,6 +68,34 @@ type StatusResponse struct {
 	Exposure string `json:"exposure,omitempty"`
 	// Port the app listens on (donkey.yaml's `port`).
 	Port int `json:"port,omitempty"`
+	// Endpoint is the asynchronously prepared edge behind URL. It is omitted
+	// for internal apps and runtimes without endpoint diagnostics.
+	Endpoint *EndpointStatusResponse `json:"endpoint,omitempty"`
+}
+
+type EndpointStatusResponse struct {
+	Host        string                    `json:"host"`
+	Certificate CertificateStatusResponse `json:"certificate"`
+	DNS         DNSStatusResponse         `json:"dns"`
+}
+
+type CertificateStatusResponse struct {
+	State       string `json:"state"`
+	Mode        string `json:"mode"`
+	Issuer      string `json:"issuer,omitempty"`
+	Reason      string `json:"reason,omitempty"`
+	Message     string `json:"message,omitempty"`
+	ExpiresAt   string `json:"expiresAt,omitempty"`
+	RenewalTime string `json:"renewalTime,omitempty"`
+	Renewing    bool   `json:"renewing,omitempty"`
+}
+
+type DNSStatusResponse struct {
+	State      string   `json:"state"`
+	Observed   bool     `json:"observed"`
+	RecordType string   `json:"recordType,omitempty"`
+	Expected   []string `json:"expected,omitempty"`
+	Message    string   `json:"message,omitempty"`
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
@@ -98,12 +126,47 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	if st.PublicHost != "" {
 		resp.URL = s.cfg.Scheme() + "://" + st.PublicHost
+		if provider, ok := s.rt.(runtime.EndpointStatusProvider); ok {
+			resp.Endpoint = endpointStatusResponse(st.PublicHost, provider.EndpointStatus(
+				r.Context(), space, app, st.PublicHost,
+			))
+		}
 	}
 	if st.Found {
 		resp.Exposure = exposureOf(st)
 		resp.Port = int(st.Port)
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+func endpointStatusResponse(host string, status runtime.EndpointStatus) *EndpointStatusResponse {
+	certificate := status.Certificate
+	dns := status.DNS
+	resp := &EndpointStatusResponse{
+		Host: host,
+		Certificate: CertificateStatusResponse{
+			State:    string(certificate.State),
+			Mode:     certificate.Mode,
+			Issuer:   certificate.Issuer,
+			Reason:   certificate.Reason,
+			Message:  certificate.Message,
+			Renewing: certificate.Renewing,
+		},
+		DNS: DNSStatusResponse{
+			State:      string(dns.State),
+			Observed:   dns.Observed,
+			RecordType: dns.RecordType,
+			Expected:   dns.Expected,
+			Message:    dns.Message,
+		},
+	}
+	if !certificate.ExpiresAt.IsZero() {
+		resp.Certificate.ExpiresAt = certificate.ExpiresAt.UTC().Format(time.RFC3339)
+	}
+	if !certificate.RenewalTime.IsZero() {
+		resp.Certificate.RenewalTime = certificate.RenewalTime.UTC().Format(time.RFC3339)
+	}
+	return resp
 }
 
 // exposureOf derives the console's exposure word from runtime state.

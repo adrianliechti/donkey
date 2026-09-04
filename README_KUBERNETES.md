@@ -295,6 +295,13 @@ wildcard/apex records or another external-dns source continue to work. During
 install, deploy, network changes, and destroy, donkey reconciles only the
 Certificate and DNSEndpoint objects belonging to the affected hosts.
 
+An exposed app's **Overview** in the admin console follows this setup every
+ten seconds. It shows cert-manager's Ready/Issuing reason and renewal dates (or
+the gateway's ACME/CA readiness), whether external-dns observed the current
+DNSEndpoint generation, and the A/AAAA/CNAME answer actually returned to the
+control plane. That last check intentionally reflects the cluster—including
+private DNS zones—not every recursive resolver on the internet.
+
 ## Several donkeys on one cluster
 
 Supported, with one requirement: **every installation needs its own

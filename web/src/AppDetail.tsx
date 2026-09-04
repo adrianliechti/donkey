@@ -1,8 +1,10 @@
 import { useState } from 'react'
 import {
   Activity,
+  BadgeCheck,
   ExternalLink,
   FileText,
+  Globe2,
   HardDrive,
   KeyRound,
   Rocket,
@@ -12,7 +14,7 @@ import {
   UploadCloud,
   X,
 } from 'lucide-react'
-import { api } from './api'
+import { api, type EndpointState, type EndpointStatus } from './api'
 import { AddonsCard } from './AddonsCard'
 import { DangerZone } from './DangerZone'
 import { DiagnoseCard } from './DiagnoseCard'
@@ -188,6 +190,7 @@ export function AppDetail({
             {shown === 'overview' && (
               <>
                 <InstancesCard pods={status.pods} />
+                {status.endpoint && <EndpointCard endpoint={status.endpoint} />}
                 <AddonsCard space={space} app={app} />
               </>
             )}
@@ -206,6 +209,104 @@ export function AppDetail({
         )}
       </div>
     </div>
+  )
+}
+
+const endpointStyle: Record<EndpointState, { chip: string; icon: string }> = {
+  ready: { chip: 'border-success/30 bg-success/10 text-success', icon: 'text-success' },
+  issuing: { chip: 'border-accent/30 bg-accent-soft text-accent', icon: 'text-accent' },
+  propagating: { chip: 'border-accent/30 bg-accent-soft text-accent', icon: 'text-accent' },
+  error: { chip: 'border-danger/30 bg-danger/10 text-danger', icon: 'text-danger' },
+  unknown: { chip: 'border-line bg-line/50 text-ink-soft', icon: 'text-muted' },
+  unmanaged: { chip: 'border-line bg-line/50 text-muted', icon: 'text-muted' },
+}
+
+function EndpointStateChip({
+  state,
+  renewing = false,
+}: {
+  state: EndpointState
+  renewing?: boolean
+}) {
+  return (
+    <span className={`rounded border px-1.5 py-0.5 font-mono text-[11px] leading-4 ${endpointStyle[state].chip}`}>
+      {renewing && state === 'ready' ? 'ready · renewing' : state}
+    </span>
+  )
+}
+
+function readableDate(value: string): string {
+  return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(new Date(value))
+}
+
+function EndpointCard({ endpoint }: { endpoint: EndpointStatus }) {
+  const certificate = endpoint.certificate
+  const dns = endpoint.dns
+
+  return (
+    <section>
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <SectionTitle>Address readiness</SectionTitle>
+        <span className="break-all font-mono text-xs text-ink-soft">{endpoint.host}</span>
+      </div>
+      <div className="mt-2 divide-y divide-line/70 rounded-lg border border-line" aria-live="polite">
+        <div className="grid grid-cols-[1.25rem_minmax(0,1fr)] gap-2.5 px-3 py-3">
+          <BadgeCheck
+            className={`mt-0.5 size-4 ${endpointStyle[certificate.state].icon}`}
+            aria-hidden
+          />
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-sm font-medium">TLS certificate</span>
+              <EndpointStateChip state={certificate.state} renewing={certificate.renewing} />
+              <span className="font-mono text-[11px] text-muted">
+                {certificate.mode}
+                {certificate.issuer ? ` · ${certificate.issuer}` : ''}
+                {certificate.reason && certificate.reason.toLowerCase() !== certificate.state
+                  ? ` · ${certificate.reason}`
+                  : ''}
+              </span>
+            </div>
+            {certificate.message && (
+              <p className="mt-1 text-xs leading-relaxed text-ink-soft">{certificate.message}</p>
+            )}
+            {(certificate.expiresAt || certificate.renewalTime) && (
+              <p className="mt-1 text-xs text-muted">
+                {certificate.expiresAt && `expires ${readableDate(certificate.expiresAt)}`}
+                {certificate.expiresAt && certificate.renewalTime && ' · '}
+                {certificate.renewalTime && `renewal ${readableDate(certificate.renewalTime)}`}
+              </p>
+            )}
+          </div>
+        </div>
+        <div className="grid grid-cols-[1.25rem_minmax(0,1fr)] gap-2.5 px-3 py-3">
+          <Globe2 className={`mt-0.5 size-4 ${endpointStyle[dns.state].icon}`} aria-hidden />
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-sm font-medium">DNS</span>
+              <EndpointStateChip state={dns.state} />
+              {dns.recordType && dns.expected && dns.expected.length > 0 && (
+                <span className="font-mono text-[11px] text-muted">
+                  {dns.recordType} → {dns.expected.join(', ')}
+                </span>
+              )}
+              {dns.state !== 'unmanaged' && (
+                <span className="font-mono text-[11px] text-muted">
+                  DNSEndpoint {dns.observed ? 'observed' : 'waiting'}
+                </span>
+              )}
+            </div>
+            {dns.message && (
+              <p className="mt-1 text-xs leading-relaxed text-ink-soft">{dns.message}</p>
+            )}
+          </div>
+        </div>
+      </div>
+      <p className="mt-1.5 text-xs text-muted">
+        Refreshed with app status. Managed DNS answers are checked from the control plane, including
+        private zones.
+      </p>
+    </section>
   )
 }
 

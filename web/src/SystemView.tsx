@@ -42,7 +42,8 @@ export function SystemView() {
               {'<app>'}.{'<space>'}.{report.domain}
             </p>
             <p className="mt-1 text-xs text-muted">
-              One *.{report.domain} record covers every app — plus {report.domain} itself for the console and login.
+              Every exposed app gets an exact hostname at the shared gateway. When external-dns is
+              configured, donkey publishes a matching DNSEndpoint for each one.
             </p>
           </Card>
         </>
