@@ -18,6 +18,7 @@ import (
 	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/api/types/network"
 
+	"github.com/adrianliechti/donkey/internal/addons"
 	"github.com/adrianliechti/donkey/internal/config"
 	"github.com/adrianliechti/donkey/internal/telemetry"
 	rt "github.com/adrianliechti/donkey/pkg/runtime"
@@ -83,6 +84,10 @@ func (r *Runtime) Deploy(ctx context.Context, spec rt.DeploySpec, out rt.Progres
 			}
 			out.Line("✓ %s is ready.", a.Name)
 		}
+		if err := addons.BindEnvironment(app, a.Name, shared); err != nil {
+			return err
+		}
+
 		if err := r.state.setBinding(space, app.Name, a.Name, shared); err != nil {
 			return err
 		}
@@ -132,7 +137,7 @@ func (r *Runtime) Deploy(ctx context.Context, spec rt.DeploySpec, out rt.Progres
 
 	// The routing table: the app's own hostname, and the paths it answers
 	// on other apps' addresses.
-	if err := r.applyRoutes(ctx, space, app, run.Port); err != nil {
+	if err := r.applyRoutes(ctx, space, app, run.Port, spec.Hosts); err != nil {
 		return err
 	}
 	for _, route := range app.Routes {
@@ -158,6 +163,29 @@ func optional(v string) *string {
 	return &v
 }
 
+func (r *Runtime) InternalURL(space, app string, port int) string {
+	return fmt.Sprintf("http://%s:%d", app, port)
+}
+
+func (r *Runtime) resolveEnv(space, app string, env map[string]string) error {
+	for key, raw := range env {
+		service, bindingKey, ref := config.ParseEnvRef(raw)
+		if !ref {
+			continue
+		}
+		binding, err := r.state.binding(space, app, service)
+		if err != nil {
+			return err
+		}
+		value, ok := binding[bindingKey]
+		if !ok {
+			return fmt.Errorf("service %s has no binding key %s for %s", service, bindingKey, key)
+		}
+		env[key] = value
+	}
+	return nil
+}
+
 // appHost is the address of an app — see config.AppHost for the rule.
 func (r *Runtime) appHost(space string, app *config.AppConfig) string {
 	return config.AppHost(app, space, r.opts.Domain)
@@ -165,7 +193,7 @@ func (r *Runtime) appHost(space string, app *config.AppConfig) string {
 
 // applyRoutes writes the app's routing table entries and retracts the ones
 // it no longer claims.
-func (r *Runtime) applyRoutes(ctx context.Context, space string, app *config.AppConfig, port int) error {
+func (r *Runtime) applyRoutes(ctx context.Context, space string, app *config.AppConfig, port int, hosts ...map[string]string) error {
 	backend := fmt.Sprintf("http://%s:%d", ctrName(space, app.Name), port)
 	login := !app.Public
 
@@ -189,12 +217,16 @@ func (r *Runtime) applyRoutes(ctx context.Context, space string, app *config.App
 		name := pathRouteName(app.Name, target.App, target.Path)
 		keep[name] = true
 		route := Route{
-			Space:   space,
-			App:     app.Name,
-			Host:    r.targetHost(space, target.App),
-			Path:    target.Path,
-			Backend: backend,
-			Login:   login,
+			Space:       space,
+			App:         app.Name,
+			Host:        r.targetHost(space, target.App),
+			Path:        target.Path,
+			StripPrefix: target.StripPrefix,
+			Backend:     backend,
+			Login:       login,
+		}
+		if len(hosts) > 0 && hosts[0][target.App] != "" {
+			route.Host = hosts[0][target.App]
 		}
 		if login && !app.Access.Empty() {
 			route.Access = app.Access
@@ -335,6 +367,9 @@ func (r *Runtime) appEnv(space, app string, port int) (map[string]string, error)
 			return nil, err
 		}
 		for k, v := range data {
+			if _, _, ref := config.ParseEnvRef(env[k]); ref {
+				continue
+			}
 			env[k] = v
 		}
 	}
@@ -432,6 +467,9 @@ func (r *Runtime) initVolumeDirs(ctx context.Context, vol string, subs []string,
 func (r *Runtime) runApp(ctx context.Context, space, app string, spec runSpec) error {
 	env, err := r.appEnv(space, app, spec.Port)
 	if err != nil {
+		return err
+	}
+	if err := r.resolveEnv(space, app, env); err != nil {
 		return err
 	}
 	labels := appLabels(space, app, roleWorkload)
@@ -609,7 +647,7 @@ func (r *Runtime) Network(ctx context.Context, space, app string) (*rt.NetworkSt
 			continue
 		}
 		st.Routes = append(st.Routes, rt.PathRouteState{
-			Name: name, Host: route.Host, Path: route.Path, Protected: route.Login,
+			Name: name, Host: route.Host, Path: route.Path, Protected: route.Login, StripPrefix: route.StripPrefix,
 		})
 	}
 	return st, nil

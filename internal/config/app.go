@@ -195,6 +195,9 @@ const (
 
 type BuildConfig struct {
 	Type BuildStrategy `json:"type,omitempty"`
+	// Context is relative to this app's folder; uploads may use a parent
+	// workspace directory, but never a directory outside the upload.
+	Context string `json:"context,omitempty"`
 	// Dockerfile is the path (relative to the app dir) used when Type is "dockerfile".
 	Dockerfile   string            `json:"dockerfile,omitempty"`
 	Platform     string            `json:"platform,omitempty"`
@@ -217,8 +220,22 @@ type RouteConfig struct {
 	// same space.
 	App string `json:"app"`
 	// Path is the prefix that reaches this app, e.g. "/api".
-	Path string `json:"path"`
+	Path        string `json:"path"`
+	StripPrefix bool   `json:"stripPrefix,omitempty"`
 }
+
+// EnvRef names a live service binding without copying its credential into config.
+func EnvRef(service, key string) string { return "${" + service + "." + key + "}" }
+
+func ParseEnvRef(value string) (service, key string, ok bool) {
+	m := envRefRE.FindStringSubmatch(value)
+	if m == nil {
+		return "", "", false
+	}
+	return m[1], m[2], true
+}
+
+var envRefRE = regexp.MustCompile(`^\$\{([a-z0-9][a-z0-9-]*)\.([A-Za-z_][A-Za-z0-9_]*)\}$`)
 
 type AddonConfig struct {
 	// Name is optional in donkey.yaml (it defaults to the type), so Save
@@ -402,7 +419,37 @@ func (c *AppConfig) Validate() error {
 		}
 		seen[a.Name] = true
 	}
+	for key, value := range c.Env {
+		if service, _, ref := ParseEnvRef(value); ref && (!envNameRE.MatchString(key) || !seen[service]) {
+			return fmt.Errorf("env.%s references undeclared addon %s", key, service)
+		}
+		if _, _, ref := ParseEnvRef(value); ref {
+			if _, baked := c.Build.Env[key]; baked {
+				return fmt.Errorf("remove service variable %s from build.env; it is resolved at runtime", key)
+			}
+			if PublicEnv(key) {
+				return fmt.Errorf("env.%s cannot expose a service binding to the browser", key)
+			}
+		}
+	}
+	for key, value := range c.Build.Env {
+		if _, _, ref := ParseEnvRef(value); ref {
+			return fmt.Errorf("build.env.%s cannot contain a runtime service reference", key)
+		}
+	}
 	return nil
+}
+
+var envNameRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// PublicEnv identifies framework variables that are exposed to browser code.
+func PublicEnv(key string) bool {
+	for _, prefix := range []string{"VITE_", "NEXT_PUBLIC_", "PUBLIC_", "REACT_APP_", "NUXT_PUBLIC_"} {
+		if strings.HasPrefix(key, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // HasStorage reports whether the app asked for persistent disk.

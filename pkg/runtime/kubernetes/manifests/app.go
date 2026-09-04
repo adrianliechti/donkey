@@ -18,6 +18,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
 
+	"github.com/adrianliechti/donkey/internal/addons"
 	"github.com/adrianliechti/donkey/internal/config"
 )
 
@@ -86,9 +87,10 @@ type Input struct {
 // RouteTarget is one resolved entry of donkey.yaml's `routes`.
 type RouteTarget struct {
 	// App is the app whose address is shared, Host its resolved hostname.
-	App  string
-	Host string
-	Path string
+	App         string
+	Host        string
+	Path        string
+	StripPrefix bool
 }
 
 // Name is what this app's objects are called. Labels always keep App.Name as
@@ -324,7 +326,17 @@ func appEnvironment(in Input) ([]corev1.EnvVar, []corev1.EnvFromSource) {
 		env = append(env, corev1.EnvVar{Name: "PORT", Value: fmt.Sprintf("%d", app.Port)})
 	}
 	for _, k := range slices.Sorted(maps.Keys(app.Env)) {
-		env = append(env, corev1.EnvVar{Name: k, Value: app.Env[k]})
+		service, key, ref := config.ParseEnvRef(app.Env[k])
+		if !ref {
+			env = append(env, corev1.EnvVar{Name: k, Value: app.Env[k]})
+			continue
+		}
+		env = append(env, corev1.EnvVar{Name: k, ValueFrom: &corev1.EnvVarSource{
+			SecretKeyRef: &corev1.SecretKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{Name: addons.SecretName(in.Name(), service)},
+				Key:                  key,
+			},
+		}})
 	}
 	return env, envFrom
 }

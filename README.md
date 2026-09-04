@@ -107,6 +107,12 @@ five ideas:
   asked before the upload: the port comes out of the code, the disks out of
   the folders the app writes to, the services out of its imports. A dropped
   folder is packed client-side with the CLI's exclusion rules.
+  Monorepos are reviewed as a project: every runnable app gets its own
+  deployment in the same space, while workspace packages and lockfiles stay
+  available to builds. Browser-to-backend calls use a shared-origin route;
+  server calls use the runtime's internal address. Connection variables and
+  source fixes are shown before deployment, and each app reports its own
+  progress and result.
   Views are linkable (`#/app/<space>/<name>`) and follow your light/dark
   preference.
 - **donkey-ai** — the openai addon's endpoint (same image, `ai`
@@ -361,6 +367,7 @@ healthcheck:
 
 env:                          # non-secret values; `donkey env set` for the rest
   GREETING: hello
+  DB_URL: ${db.DATABASE_URL}   # resolve a service binding when the app starts
 
 storage:                      # one disk, each path its own folder on it
   size: 5Gi
@@ -381,6 +388,7 @@ build:
                               # ai: write a fresh one even if a Dockerfile
                               # is sitting in the folder
   dockerfile: Dockerfile
+  context: .                  # relative to the app; .. for an uploaded workspace
   platform: linux/arm64
   env:                        # build-time values (VITE_*, build args)
     VITE_API_URL: https://api.example.com
@@ -394,6 +402,14 @@ resources:
   requests: { cpu: 100m, memory: 128Mi }
   limits:   { memory: 512Mi }
 ```
+
+Environment values such as `${db.DATABASE_URL}` reference an addon by name
+and binding key. They are resolved at runtime, so the config contains no
+copied credential. Selecting a managed PostgreSQL, OpenAI or RustFS service
+also replaces stale values under its standard variable names with binding
+references. Custom variable names can reference those same keys. Runtime
+service references cannot be used in `build.env`; browser URL variables are
+passed as build arguments and declared in each Dockerfile stage.
 
 **How an app is reached.** By default it gets `<app>.<space>.<domain>` behind
 the login gateway. `host:` moves it: `"@"` puts it at the space's own address

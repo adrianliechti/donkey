@@ -48,10 +48,11 @@ func (c *Client) ListManagedRoutes(ctx context.Context) ([]corev1.ConfigMap, err
 // routeState reads one route ConfigMap's annotations.
 func routeState(cm *corev1.ConfigMap) rt.PathRouteState {
 	entry := rt.PathRouteState{
-		Name:      cm.Name,
-		Host:      cm.Annotations[manifests.AnnotationHost],
-		Path:      cm.Annotations[manifests.AnnotationPath],
-		Protected: cm.Annotations[manifests.AnnotationLogin] == manifests.LoginRequired,
+		Name:        cm.Name,
+		Host:        cm.Annotations[manifests.AnnotationHost],
+		Path:        cm.Annotations[manifests.AnnotationPath],
+		StripPrefix: cm.Annotations[manifests.AnnotationStripPrefix] == "true",
+		Protected:   cm.Annotations[manifests.AnnotationLogin] == manifests.LoginRequired,
 	}
 	if entry.Path == "" {
 		entry.Path = "/"

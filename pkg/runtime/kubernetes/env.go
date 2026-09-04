@@ -3,6 +3,7 @@ package kubernetes
 import (
 	"context"
 	"fmt"
+	"slices"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -77,7 +78,7 @@ func (c *Client) SetEnv(ctx context.Context, namespace, space, app, objectName s
 }
 
 // SetAddonEnvFrom adds or removes an addon's binding secret on the app
-// Deployment's envFrom, so a change made in the console reaches the running
+// Deployment's envFrom and removes aliases when detached, so a change reaches the running
 // app without a deploy (the template change triggers the rollout). Returns
 // false when the app isn't deployed yet — the next deploy wires it instead.
 func (c *Client) SetAddonEnvFrom(ctx context.Context, namespace, objectName, space, app, secret string, add bool) (bool, error) {
@@ -103,17 +104,27 @@ func (c *Client) SetAddonEnvFrom(ctx context.Context, namespace, objectName, spa
 			idx = i
 		}
 	}
-	if add == (idx >= 0) {
-		return true, nil // already as wanted — no pointless rollout
-	}
-	if add {
+	changed := false
+	if add && idx < 0 {
 		container.EnvFrom = append(container.EnvFrom, corev1.EnvFromSource{
 			SecretRef: &corev1.SecretEnvSource{
 				LocalObjectReference: corev1.LocalObjectReference{Name: secret},
 			},
 		})
-	} else {
-		container.EnvFrom = append(container.EnvFrom[:idx], container.EnvFrom[idx+1:]...)
+		changed = true
+	} else if !add {
+		if idx >= 0 {
+			container.EnvFrom = slices.Delete(container.EnvFrom, idx, idx+1)
+			changed = true
+		}
+		before := len(container.Env)
+		container.Env = slices.DeleteFunc(container.Env, func(env corev1.EnvVar) bool {
+			return env.ValueFrom != nil && env.ValueFrom.SecretKeyRef != nil && env.ValueFrom.SecretKeyRef.Name == secret
+		})
+		changed = changed || len(container.Env) != before
+	}
+	if !changed {
+		return true, nil // already as wanted — no pointless rollout
 	}
 	if _, err := deps.Update(ctx, dep, metav1.UpdateOptions{}); err != nil {
 		return false, err

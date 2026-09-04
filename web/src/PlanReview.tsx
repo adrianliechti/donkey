@@ -1,38 +1,8 @@
-// The review screen: what donkey read out of the upload, as something to
-// check rather than a form to fill in.
-//
-// Everything here is already answered — the port comes from the code, the
-// disks from the folders the app writes to, the services from its imports.
-// What the screen adds is the chance to disagree, and the checks that only
-// the cluster can answer (is this name free, does the space exist, what is
-// running there now). The only question it asks outright is "yes?".
-import { useEffect, useRef, useState } from 'react'
-import {
-  ArrowRight,
-  Check,
-  Copy,
-  Database,
-  FileCode2,
-  HardDrive,
-  Loader2,
-} from 'lucide-react'
-import type { Exposure, Plan, PlanEdit, PortSource } from './api'
+import { useId, useState } from 'react'
+import { Check, Copy, Database, FileCode2, HardDrive } from 'lucide-react'
+import { type Exposure, type Plan, type PlanEdit, type PortSource } from './api'
 import { FindingsList } from './FindingsList'
-import { Button, Card, ErrorNote, SectionTitle } from './ui'
-
-// editFrom is the plan as an answer sheet: the server already decided every
-// value, so the screen starts from its decisions rather than from blanks.
-function editFrom(plan: Plan): PlanEdit {
-  return {
-    name: plan.app.name,
-    space: plan.app.space,
-    port: plan.app.port,
-    healthcheck: plan.app.healthcheck ?? '',
-    storage: [...plan.app.storage],
-    services: plan.services.filter((s) => s.selected).map((s) => s.name),
-    exposure: plan.app.exposure,
-  }
-}
+import { Button, Card, SectionTitle } from './ui'
 
 const PORT_SOURCE: Record<PortSource, string> = {
   config: 'from donkey.yaml',
@@ -42,9 +12,17 @@ const PORT_SOURCE: Record<PortSource, string> = {
 }
 
 const EXPOSURE: { value: Exposure; label: string; hint: string }[] = [
-  { value: 'protected', label: 'Behind the login', hint: 'Visitors sign in through your identity provider.' },
+  {
+    value: 'protected',
+    label: 'Behind the login',
+    hint: 'Visitors sign in through your identity provider.',
+  },
   { value: 'public', label: 'Public', hint: 'Anyone with the address can open it.' },
-  { value: 'internal', label: 'Internal', hint: 'No address of its own; only apps in this space reach it, by name.' },
+  {
+    value: 'internal',
+    label: 'Internal',
+    hint: 'No address of its own; only apps in this space reach it, by name.',
+  },
 ]
 
 function Field({
@@ -100,61 +78,27 @@ function Choice({
   )
 }
 
+// The project owns the edits and review actions; each app only edits its fields.
 export function PlanReview({
   plan,
-  spaces,
-  space,
-  onRecheck,
-  onDeploy,
-  busy,
-  error,
-  onStartOver,
+  edit,
+  onEdit,
 }: {
   plan: Plan
-  /** Existing spaces, offered as completions — a new name is still allowed. */
-  spaces: string[]
-  /** When the deploy already targets a space (from a space's Add menu), the
-   *  space is settled — the screen states it rather than asking for it. */
-  space?: string
-  /** Sends the answers to the server, which re-checks them and returns the
-   *  plan as it now stands. Settles either way — a check that failed must not
-   *  leave the screen waiting for an answer that is never coming. */
-  onRecheck: (edit: PlanEdit) => Promise<void>
-  onDeploy: (edit: PlanEdit) => void
-  busy: boolean
-  error: string
-  onStartOver: () => void
+  edit: PlanEdit
+  onEdit: (edit: PlanEdit) => void
 }) {
-  const [edit, setEdit] = useState<PlanEdit>(() => editFrom(plan))
-  const [checking, setChecking] = useState(false)
   const [showConfig, setShowConfig] = useState(false)
   const [copied, setCopied] = useState(false)
-  const first = useRef(true)
-
-  // Every change is re-checked, because half of what matters here is only
-  // true at this instant: a free name, a space that exists, a service already
-  // running. Debounced, so typing a name doesn't ask ten times.
-  useEffect(() => {
-    if (first.current) {
-      first.current = false
-      return
-    }
-    setChecking(true)
-    const timer = setTimeout(() => {
-      onRecheck(edit).finally(() => setChecking(false))
-    }, 400)
-    return () => clearTimeout(timer)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [edit])
-
+  const exposureId = useId()
   const set = <K extends keyof PlanEdit>(key: K, value: PlanEdit[K]) =>
-    setEdit((prev) => ({ ...prev, [key]: value }))
+    onEdit({ ...edit, [key]: value })
 
   const toggle = (key: 'storage' | 'services', value: string, on: boolean) =>
-    setEdit((prev) => ({
-      ...prev,
-      [key]: on ? [...prev[key], value] : prev[key].filter((v) => v !== value),
-    }))
+    onEdit({
+      ...edit,
+      [key]: on ? [...edit[key], value] : edit[key].filter((v) => v !== value),
+    })
 
   const offered = plan.services.filter((s) => s.known)
   const blocked = plan.findings.filter((f) => f.level === 'block')
@@ -180,22 +124,15 @@ export function PlanReview({
         )}
         {plan.root && (
           <p className="text-xs text-muted">
-            The app is in <span className="font-mono">{plan.root}/</span> — only that folder was read.
+            App folder: <span className="font-mono">{plan.root}/</span>
           </p>
         )}
       </Card>
 
       {/* How it runs. Answers, not blanks. */}
       <Card className="space-y-4 p-4">
-        <div className="flex items-center justify-between gap-2">
-          <SectionTitle>How it will run</SectionTitle>
-          {checking && (
-            <span className="flex items-center gap-1.5 text-xs text-muted">
-              <Loader2 className="size-3 animate-spin" aria-hidden /> checking
-            </span>
-          )}
-        </div>
-        <div className={`grid gap-3 ${space ? 'sm:grid-cols-2' : 'sm:grid-cols-3'}`}>
+        <SectionTitle>How it will run</SectionTitle>
+        <div className="grid gap-3 sm:grid-cols-2">
           <Field label="Name">
             <input
               value={edit.name}
@@ -204,22 +141,6 @@ export function PlanReview({
               spellCheck={false}
             />
           </Field>
-          {!space && (
-            <Field label="Space" hint={plan.hasConfig ? 'from donkey.yaml' : undefined}>
-              <input
-                value={edit.space}
-                onChange={(e) => set('space', e.target.value)}
-                list="donkey-spaces"
-                className={inputClass}
-                spellCheck={false}
-              />
-              <datalist id="donkey-spaces">
-                {spaces.map((s) => (
-                  <option key={s} value={s} />
-                ))}
-              </datalist>
-            </Field>
-          )}
           <Field label="Port" hint={PORT_SOURCE[plan.app.portSource]}>
             <input
               value={edit.port || ''}
@@ -229,11 +150,6 @@ export function PlanReview({
             />
           </Field>
         </div>
-        {space && (
-          <p className="text-xs text-muted">
-            Deploying into the space <span className="font-mono text-ink-soft">{space}</span>.
-          </p>
-        )}
         {plan.app.portReason && plan.app.portSource === 'code' && (
           <p className="text-xs text-muted">{plan.app.portReason}</p>
         )}
@@ -258,7 +174,7 @@ export function PlanReview({
               <label key={o.value} className="flex cursor-pointer items-start gap-2.5 text-sm">
                 <input
                   type="radio"
-                  name="exposure"
+                  name={exposureId}
                   checked={edit.exposure === o.value}
                   onChange={() => set('exposure', o.value)}
                   className="mt-1 accent-accent-strong"
@@ -378,35 +294,13 @@ export function PlanReview({
                 </span>
               </Button>
               <span className="text-xs text-muted">
-                Put this in your project so <span className="font-mono">donkey deploy</span> does the
-                same thing from your machine.
+                Save this as <span className="font-mono">donkey.yaml</span> in the app folder to
+                keep these settings for future uploads.
               </span>
             </div>
           </>
         )}
       </Card>
-
-      <ErrorNote message={error} />
-      <div className="flex items-center justify-between gap-3">
-        <Button kind="quiet" onClick={onStartOver}>
-          Pick something else
-        </Button>
-        <div className="flex items-center gap-3">
-          {!plan.ready && (
-            <span className="text-xs text-danger">Fix what's blocked above to deploy.</span>
-          )}
-          <Button onClick={() => onDeploy(edit)} disabled={busy || checking || !plan.ready}>
-            <span className="flex items-center gap-1.5">
-              {busy ? (
-                <Loader2 className="size-3.5 animate-spin" aria-hidden />
-              ) : (
-                <ArrowRight className="size-3.5" aria-hidden />
-              )}
-              Deploy {edit.name || 'this app'}
-            </span>
-          </Button>
-        </div>
-      </div>
     </div>
   )
 }

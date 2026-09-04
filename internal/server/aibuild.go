@@ -34,7 +34,7 @@ type buildOutcome struct {
 func (s *Server) buildGenerated(ctx context.Context, out *lineStreamer, builder *build.BuildKitBuilder,
 	dir string, app *config.AppConfig, req build.Request,
 ) (*buildOutcome, error) {
-	summary, err := ai.Summarize(dir)
+	summary, err := ai.Summarize(req.ContextDir)
 	if err != nil {
 		return nil, fmt.Errorf("couldn't read the uploaded folder: %w", err)
 	}
@@ -61,9 +61,9 @@ func (s *Server) buildGenerated(ctx context.Context, out *lineStreamer, builder 
 			// The uploaded copy, never the user's working tree: the assistant
 			// reads it directly, so what it writes is based on the app rather
 			// than on a summary of it.
-			Root:         dir,
+			Root:         req.ContextDir,
 			Port:         int(app.Port),
-			Instructions: s.cfg.Build.Instructions,
+			Instructions: s.cfg.Build.Instructions + buildScope(req.ContextDir, dir),
 			Attempts:     history,
 		})
 		if err != nil {
@@ -84,13 +84,21 @@ func (s *Server) buildGenerated(ctx context.Context, out *lineStreamer, builder 
 		if err := writeGeneratedFile(dir, detect.AIDockerfilePath, result.Dockerfile); err != nil {
 			return nil, err
 		}
-		if err := writeGeneratedDockerignore(dir, result.Dockerignore); err != nil {
+		ignore := result.Dockerignore
+		if req.ContextDir != dir {
+			ignore = ""
+		} // one app must not exclude its siblings
+		if err := writeGeneratedDockerignore(req.ContextDir, ignore); err != nil {
 			return nil, err
 		}
 
 		attemptReq := req
 		attemptReq.Strategy = config.BuildDockerfile
-		attemptReq.DockerfilePath = detect.AIDockerfilePath
+		attemptReq.DockerfilePath, err = filepath.Rel(req.ContextDir, filepath.Join(dir, detect.AIDockerfilePath))
+		if err != nil {
+			return nil, err
+		}
+		attemptReq.DockerfilePath = filepath.ToSlash(attemptReq.DockerfilePath)
 		buildResult, buildErr := builder.Build(ctx, attemptReq)
 		if buildErr == nil {
 			outcome := &buildOutcome{Result: buildResult, Dockerfile: result.Dockerfile, Attempts: attempt}
@@ -168,7 +176,7 @@ func failureText(err error, logPath string) string {
 // verifySpec is what a freshly built image has to prove, or nil when the
 // installation turned that off.
 func (s *Server) verifySpec(app *config.AppConfig) *build.VerifySpec {
-	if !s.cfg.Build.VerifyStartup() {
+	if !s.cfg.Build.VerifyStartup() || len(app.Addons) > 0 {
 		return nil
 	}
 	return &build.VerifySpec{

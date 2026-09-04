@@ -1,6 +1,7 @@
 package server
 
 import (
+	"cmp"
 	"context"
 	"encoding/hex"
 	"encoding/json"
@@ -30,12 +31,13 @@ import (
 
 // DeployResult is the final JSON line of a deploy stream.
 type DeployResult struct {
-	OK       bool   `json:"ok"`
-	App      string `json:"app"`
-	Space    string `json:"space,omitempty"`
-	ImageRef string `json:"imageRef,omitempty"`
-	URL      string `json:"url,omitempty"`
-	Error    string `json:"error,omitempty"`
+	Apps     []DeployResult `json:"apps,omitempty"`
+	OK       bool           `json:"ok"`
+	App      string         `json:"app"`
+	Space    string         `json:"space,omitempty"`
+	ImageRef string         `json:"imageRef,omitempty"`
+	URL      string         `json:"url,omitempty"`
+	Error    string         `json:"error,omitempty"`
 	// Diagnosis carries the AI failure analysis when a deploy failed.
 	Diagnosis string         `json:"diagnosis,omitempty"`
 	Proposals []ai.FixAction `json:"proposals,omitempty"`
@@ -46,8 +48,10 @@ type DeployResult struct {
 // state panel beside the human-readable log. Unknown update fields are safe
 // for older clients to ignore.
 type DeployUpdate struct {
-	Stage      string   `json:"stage,omitempty"`
-	BaseImages []string `json:"baseImages,omitempty"`
+	App        string        `json:"app,omitempty"`
+	Result     *DeployResult `json:"result,omitempty"`
+	Stage      string        `json:"stage,omitempty"`
+	BaseImages []string      `json:"baseImages,omitempty"`
 	// Dockerfile is the exact file this build used, reported once it is
 	// settled — the app's own, or the one the assistant wrote.
 	Dockerfile string `json:"dockerfile,omitempty"`
@@ -130,7 +134,7 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 	var planned *storedPlan
 	if id := r.URL.Query().Get("plan"); id != "" {
 		p, ok := s.plans.get(id)
-		if !ok {
+		if !ok || p.project != nil {
 			writeErr(w, http.StatusGone,
 				fmt.Errorf("this deploy's plan has expired — upload the app again"))
 			return
@@ -150,7 +154,12 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 	}
 	// The app is not always at the top of the upload (a monorepo, a folder
 	// dragged from one level up) — find the folder that holds it.
-	dir, took, err := contextRoot(dir, r.URL.Query().Get("path"))
+	uploadRoot := dir
+	appPath := r.URL.Query().Get("path")
+	if planned != nil {
+		appPath = planned.root
+	}
+	dir, took, err := contextRoot(dir, appPath)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
@@ -202,6 +211,7 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 		space = ""
 	}
 	opts := deployOpts{
+		Root:      uploadRoot,
 		Analysis:  planned.reading(),
 		Space:     space,
 		Platform:  r.URL.Query().Get("platform"),
@@ -252,6 +262,10 @@ func appFromParams(name, portStr string) (*config.AppConfig, error) {
 const analysisDeadline = 5 * time.Minute
 
 type deployOpts struct {
+	Root      string // the uploaded repository, bounding build.context
+	Hosts     map[string]string
+	Reviewed  bool
+	NoVerify  bool // startup needs the live services or sibling apps
 	Space     string
 	Platform  string
 	Tag       string
@@ -266,6 +280,14 @@ type deployOpts struct {
 }
 
 func (s *Server) deploy(ctx context.Context, out *lineStreamer, dir string, app *config.AppConfig, opts deployOpts) DeployResult {
+	unlock := s.lockApp(cmp.Or(opts.Space, app.Space, config.DefaultSpace), app.Name)
+	defer unlock()
+	return s.deployApp(ctx, out, dir, app, opts)
+}
+
+// deployApp requires the caller to hold the app's lock through its health
+// checks. A project holds every sibling's lock until all rollouts finish.
+func (s *Server) deployApp(ctx context.Context, out *lineStreamer, dir string, app *config.AppConfig, opts deployOpts) DeployResult {
 	// The space decides namespace and address, so it is settled first.
 	// Validation failures return plainly — diagnosing a self-explanatory
 	// message only delays the answer.
@@ -281,6 +303,10 @@ func (s *Server) deploy(ctx context.Context, out *lineStreamer, dir string, app 
 	fail := func(err error) DeployResult {
 		return DeployResult{App: app.Name, Space: space, Error: err.Error()}
 	}
+	buildDir, err := buildContext(opts.Root, dir, app.Build.Context)
+	if err != nil {
+		return fail(err)
+	}
 
 	if err := s.rt.ValidateSpace(space); err != nil {
 		return fail(err)
@@ -289,15 +315,12 @@ func (s *Server) deploy(ctx context.Context, out *lineStreamer, dir string, app 
 		return fail(err)
 	}
 
-	// One deploy per app at a time: concurrent deploys would interleave their
-	// applies and race their rollout waits, leaving the live image undefined.
-	unlock := s.lockApp(space, app.Name)
-	defer unlock()
-
 	// Network choices made in the console hold as long as donkey.yaml
 	// doesn't say otherwise — an explicit setting there always wins.
-	for _, line := range s.adoptConsoleChoices(ctx, space, app) {
-		out.Line("· %s", line)
+	if !opts.Reviewed {
+		for _, line := range s.adoptConsoleChoices(ctx, space, app) {
+			out.Line("· %s", line)
+		}
 	}
 
 	if app.Name == addons.SharedOwner {
@@ -314,6 +337,10 @@ func (s *Server) deploy(ctx context.Context, out *lineStreamer, dir string, app 
 		if _, err := addons.Get(a.Type); err != nil {
 			return fail(err)
 		}
+	}
+
+	if err := s.bindEnvironment(ctx, app); err != nil {
+		return fail(err)
 	}
 
 	imageRef := opts.Tag
@@ -339,10 +366,10 @@ func (s *Server) deploy(ctx context.Context, out *lineStreamer, dir string, app 
 			out.Line("· %s", line)
 		}
 		if opts.DryRun {
-			return s.renderDryRun(app, opts.Tag)
+			return s.renderDryRun(app, opts.Tag, opts.Hosts)
 		}
 		out.Update(DeployUpdate{Stage: "releasing"})
-		return s.applyAndWait(ctx, out, app, dir, opts.Tag, opts.NoWait)
+		return s.applyAndWait(ctx, out, app, dir, opts.Tag, opts.NoWait, opts.Hosts)
 	}
 
 	out.Update(DeployUpdate{Stage: "detecting"})
@@ -417,7 +444,7 @@ func (s *Server) deploy(ctx context.Context, out *lineStreamer, dir string, app 
 		if err := merge(); err != nil {
 			return fail(err)
 		}
-		return s.renderDryRun(app, imageRef)
+		return s.renderDryRun(app, imageRef, opts.Hosts)
 	}
 
 	// Platform precedence: --platform flag > donkey.yaml > the server's
@@ -461,7 +488,7 @@ func (s *Server) deploy(ctx context.Context, out *lineStreamer, dir string, app 
 		imageLabels["org.opencontainers.image.revision"] = opts.SHA
 	}
 	req := build.Request{
-		ContextDir:     dir,
+		ContextDir:     buildDir,
 		ImageRef:       imageRef,
 		Platform:       platform,
 		Push:           true,
@@ -471,11 +498,24 @@ func (s *Server) deploy(ctx context.Context, out *lineStreamer, dir string, app 
 		ImageLabels:    imageLabels,
 		Progress:       build.ProgressSink{LogPath: logFile.Name(), Writer: out},
 	}
+	if det.DockerfilePath != "" {
+		req.DockerfilePath, err = filepath.Rel(buildDir, filepath.Join(dir, det.DockerfilePath))
+		if err != nil {
+			return fail(err)
+		}
+		req.DockerfilePath = filepath.ToSlash(req.DockerfilePath)
+	}
 	var result *build.Result
 	if det.Strategy == config.BuildAI {
 		// donkey's own builder writes the Dockerfile, and gets more than one
 		// go at it — every failure is something the assistant can be shown.
 		req.Verify = s.verifySpec(app)
+		if opts.NoVerify {
+			req.Verify = nil
+		}
+		if req.Verify == nil && s.cfg.Build.VerifyStartup() {
+			out.Line("· Startup will be checked during deployment, with the app's connections available.")
+		}
 		outcome, aerr := s.buildGenerated(ctx, out, builder, dir, app, req)
 		if aerr == nil {
 			result, err = outcome.Result, nil
@@ -525,7 +565,7 @@ func (s *Server) deploy(ctx context.Context, out *lineStreamer, dir string, app 
 		res.ImageRef = result.ImageRef
 		return res
 	}
-	return s.applyAndWait(ctx, out, app, dir, result.ImageRef, opts.NoWait)
+	return s.applyAndWait(ctx, out, app, dir, result.ImageRef, opts.NoWait, opts.Hosts)
 }
 
 func registryMirrorSummary(mirrors map[string]string) string {
@@ -542,10 +582,10 @@ func registryMirrorSummary(mirrors map[string]string) string {
 }
 
 // renderDryRun renders the app's objects without touching the runtime.
-func (s *Server) renderDryRun(app *config.AppConfig, imageRef string) DeployResult {
+func (s *Server) renderDryRun(app *config.AppConfig, imageRef string, hosts map[string]string) DeployResult {
 	res := DeployResult{App: app.Name, Space: app.Space, ImageRef: imageRef}
 	rendered, err := s.rt.Render(runtime.DeploySpec{
-		App: app, Space: app.Space, ImageRef: imageRef, Decisions: decisionsJSON(app),
+		App: app, Space: app.Space, ImageRef: imageRef, Decisions: decisionsJSON(app), Hosts: hosts,
 	})
 	if err != nil {
 		res.Error = err.Error()
@@ -684,7 +724,7 @@ func (s *Server) adoptStoredDecisions(ctx context.Context, space, imageRef strin
 // whole go-live choreography (storage, declared services, routes, waiting),
 // and turns its typed failures into the deploy's result — with the AI
 // diagnosis attached where there is real evidence.
-func (s *Server) applyAndWait(ctx context.Context, out *lineStreamer, app *config.AppConfig, root, imageRef string, noWait bool) DeployResult {
+func (s *Server) applyAndWait(ctx context.Context, out *lineStreamer, app *config.AppConfig, root, imageRef string, noWait bool, hosts map[string]string) DeployResult {
 	space := app.Space
 	err := s.rt.Deploy(ctx, runtime.DeploySpec{
 		App:       app,
@@ -692,6 +732,7 @@ func (s *Server) applyAndWait(ctx context.Context, out *lineStreamer, app *confi
 		ImageRef:  imageRef,
 		Decisions: decisionsJSON(app),
 		NoWait:    noWait,
+		Hosts:     hosts,
 	}, out)
 	if err != nil {
 		res := DeployResult{App: app.Name, Space: space, ImageRef: imageRef, Error: err.Error()}

@@ -147,23 +147,43 @@ type PlanEdit struct {
 	Exposure string `json:"exposure"`
 }
 
+func (e PlanEdit) validate() error {
+	if !config.ValidName(strings.TrimSpace(e.Name)) {
+		return fmt.Errorf("app name must use lowercase letters, digits and dashes (max 40 chars)")
+	}
+	if !config.ValidName(strings.TrimSpace(e.Space)) {
+		return fmt.Errorf("space must use lowercase letters, digits and dashes (max 40 chars)")
+	}
+	if e.Port < 1 || e.Port > 65535 {
+		return fmt.Errorf("port must be between 1 and 65535")
+	}
+	if e.Exposure != "public" && e.Exposure != "protected" && e.Exposure != "internal" {
+		return fmt.Errorf("exposure must be public, protected or internal")
+	}
+	return nil
+}
+
 // planTTL bounds how long a plan stays valid. It has to outlast a careful
 // read of the review screen and a slow upload, and nothing more.
 const planTTL = 2 * time.Hour
 
-// maxPlans caps the store. Plans are small (no build context, no source), so
-// this is generous — it exists to bound memory, not to ration reviews.
+// maxPlans caps metadata-only plans. Projects additionally retain bounded
+// source snippets for reviewing edits, so at most 16 of those are retained.
 const maxPlans = 256
 
 // storedPlan is a plan as the server keeps it: the config it settled on, and
 // the assistant's reading of the app that produced it.
 type storedPlan struct {
+	project *projectState
 	// mu guards the config and the choices, which every edit rewrites. The
 	// console can have a debounced re-check in flight when the deploy's final
 	// one starts, so two requests really do write this at once.
 	mu       sync.Mutex
 	app      *config.AppConfig
 	analysis *ai.Analysis
+	// Keep declared service options and aliases when a choice is unticked
+	// and selected again during review.
+	original *config.AppConfig
 
 	volumes  []PlanVolume
 	services []PlanService
@@ -185,14 +205,14 @@ type storedPlan struct {
 func (p *storedPlan) appCopy() *config.AppConfig {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	b, err := json.Marshal(p.app)
-	if err != nil {
-		return p.app
-	}
+	return cloneApp(p.app)
+}
+
+func cloneApp(app *config.AppConfig) *config.AppConfig {
+	// AppConfig contains only JSON-compatible values.
+	b, _ := json.Marshal(app)
 	var out config.AppConfig
-	if json.Unmarshal(b, &out) != nil {
-		return p.app
-	}
+	_ = json.Unmarshal(b, &out)
 	out.ApplyDefaults()
 	return &out
 }
@@ -222,6 +242,21 @@ func (s *planStore) put(p *storedPlan) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.sweep()
+	if p.project != nil {
+		count, oldest, at := 0, "", time.Now()
+		for key, item := range s.items {
+			if item.project == nil {
+				continue
+			}
+			count++
+			if item.created.Before(at) {
+				oldest, at = key, item.created
+			}
+		}
+		if count >= 16 {
+			delete(s.items, oldest)
+		}
+	}
 	s.items[id] = p
 	return id
 }
@@ -312,12 +347,16 @@ func (s *Server) handlePlan(w http.ResponseWriter, r *http.Request) {
 // the same reading, re-decided.
 func (s *Server) handlePlanUpdate(w http.ResponseWriter, r *http.Request) {
 	sp, ok := s.plans.get(r.PathValue("id"))
-	if !ok {
+	if !ok || sp.project != nil {
 		writeErr(w, http.StatusGone, fmt.Errorf("this plan has expired — upload the app again"))
 		return
 	}
 	var edit PlanEdit
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&edit); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := edit.validate(); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
@@ -462,21 +501,19 @@ func (s *Server) planServices(ctx context.Context, app *config.AppConfig, analys
 // user saying no disk, not the user saying nothing.
 func applyPlanEdit(sp *storedPlan, edit PlanEdit) {
 	app := sp.app
-	if name := strings.TrimSpace(edit.Name); name != "" {
-		app.Name = name
+	if sp.original == nil {
+		sp.original = cloneApp(app)
 	}
-	if space := strings.TrimSpace(edit.Space); space != "" {
-		app.Space = space
-	}
-	if edit.Port > 0 && edit.Port != app.Port {
+	app.Name = strings.TrimSpace(edit.Name)
+	app.Space = strings.TrimSpace(edit.Space)
+	if edit.Port != app.Port {
 		app.Port = edit.Port
 		sp.portSource = PortFromConfig
 	}
 	app.Healthcheck.Path = strings.TrimSpace(edit.Healthcheck)
 
-	size := config.DefaultStorage
-	if app.Storage != nil && app.Storage.Size != "" {
-		size = app.Storage.Size
+	if app.Storage == nil {
+		app.Storage = &config.StorageConfig{Size: config.DefaultStorage}
 	}
 	paths := []string{}
 	for _, p := range edit.Storage {
@@ -484,7 +521,7 @@ func applyPlanEdit(sp *storedPlan, edit PlanEdit) {
 			paths = append(paths, p)
 		}
 	}
-	app.Storage = &config.StorageConfig{Size: size, Paths: paths}
+	app.Storage.Paths = paths
 	for i := range sp.volumes {
 		sp.volumes[i].Selected = slices.Contains(paths, sp.volumes[i].Path)
 	}
@@ -492,7 +529,7 @@ func applyPlanEdit(sp *storedPlan, edit PlanEdit) {
 	// Services: keep what donkey.yaml said about the ones that stay (its
 	// version and size are the user's, not the plan's), and drop the rest.
 	declared := map[string]config.AddonConfig{}
-	for _, a := range app.Addons {
+	for _, a := range sp.original.Addons {
 		declared[a.Name] = a
 	}
 	app.Addons = nil
@@ -520,12 +557,25 @@ func applyPlanEdit(sp *storedPlan, edit PlanEdit) {
 		}
 	}
 	app.ApplyDefaults()
+	for key, value := range app.Env {
+		if service, _, ref := config.ParseEnvRef(value); ref && !slices.Contains(edit.Services, service) {
+			delete(app.Env, key)
+		}
+	}
+	for key, value := range sp.original.Env {
+		if service, _, ref := config.ParseEnvRef(value); ref && slices.Contains(edit.Services, service) {
+			if app.Env == nil {
+				app.Env = map[string]string{}
+			}
+			app.Env[key] = value
+		}
+	}
 }
 
 // renderPlan recomputes findings every time: a name free a minute ago may not
 // be, and a plan reporting yesterday's checks is worse than no checks.
 func (s *Server) renderPlan(ctx context.Context, id string, sp *storedPlan) *Plan {
-	app := sp.app
+	app := cloneApp(sp.app)
 	p := &Plan{
 		ID:        id,
 		Root:      sp.root,
@@ -555,6 +605,9 @@ func (s *Server) renderPlan(ctx context.Context, id string, sp *storedPlan) *Pla
 		p.App.StorageSize = app.Storage.Size
 	}
 	p.Findings = analysisWarnings(app, sp.analysis)
+	if err := s.bindEnvironment(ctx, app); err != nil {
+		p.Findings = append(p.Findings, Finding{Level: LevelBlock, Code: "service-env", Title: err.Error()})
+	}
 	p.Findings = append(p.Findings, s.clusterFindings(ctx, app, sp.services)...)
 	if !sp.hasConfig {
 		p.Findings = append(p.Findings, Finding{
@@ -681,4 +734,29 @@ func exposureOfConfig(app *config.AppConfig) string {
 	default:
 		return "protected"
 	}
+}
+
+// Planning uses the existing binding when present, or the recipe's keys for
+// a service that will be created. Values remain references in reviewed config.
+func (s *Server) bindEnvironment(ctx context.Context, app *config.AppConfig) error {
+	for _, service := range app.Addons {
+		recipe, err := addons.Get(service.Type)
+		if err != nil {
+			return err
+		}
+		values, err := s.rt.ServiceBinding(ctx, app.Space, addons.SharedOwner, service.Name)
+		if err != nil {
+			return fmt.Errorf("cannot read service %s: %w", service.Name, err)
+		}
+		if len(values) == 0 {
+			if service.External {
+				return fmt.Errorf("external service %s must be attached to this space before deploying", service.Name)
+			}
+			values = recipe.Binding(addons.Input{})
+		}
+		if err := addons.BindEnvironment(app, service.Name, values); err != nil {
+			return err
+		}
+	}
+	return nil
 }

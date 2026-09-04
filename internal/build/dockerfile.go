@@ -7,6 +7,7 @@ import (
 	"io"
 	"io/fs"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/moby/buildkit/frontend/dockerfile/parser"
@@ -62,7 +63,7 @@ func (fs *dockerfileOverlay) Open(path string) (io.ReadCloser, error) {
 	return fs.FS.Open(path)
 }
 
-func packageDockerfileFS(path string) (fsutil.FS, error) {
+func packageDockerfileFS(path string, args ...string) (fsutil.FS, error) {
 	base, err := fsutil.NewFS(filepath.Dir(path))
 	if err != nil {
 		return nil, err
@@ -76,7 +77,7 @@ func packageDockerfileFS(path string) (fsutil.FS, error) {
 	if err != nil {
 		return nil, err
 	}
-	contents, err = injectPackageBuildArgs(contents)
+	contents, err = injectPackageBuildArgs(contents, args...)
 	if err != nil {
 		return nil, fmt.Errorf("reading Dockerfile for package configuration: %w", err)
 	}
@@ -87,7 +88,12 @@ func packageDockerfileFS(path string) (fsutil.FS, error) {
 // every stage. Dockerfile build args do not otherwise exist inside RUN, even
 // when the frontend received --build-arg; doing this in an overlay leaves the
 // app's Dockerfile byte-for-byte untouched on disk.
-func injectPackageBuildArgs(source []byte) ([]byte, error) {
+func injectPackageBuildArgs(source []byte, args ...string) ([]byte, error) {
+	for _, key := range args {
+		if !buildArgRE.MatchString(key) {
+			return nil, fmt.Errorf("invalid build variable %q", key)
+		}
+	}
 	result, err := parser.Parse(bytes.NewReader(source))
 	if err != nil {
 		return nil, err
@@ -111,9 +117,16 @@ func injectPackageBuildArgs(source []byte) ([]byte, error) {
 		if len(line) > 0 && !bytes.HasSuffix(line, []byte("\n")) {
 			out.WriteByte('\n')
 		}
-		for _, name := range packageBuildArgs {
+		seen := map[string]bool{}
+		for _, name := range append(append([]string{}, packageBuildArgs...), args...) {
+			if seen[name] {
+				continue
+			}
+			seen[name] = true
 			fmt.Fprintf(&out, "ARG %s\n", name)
 		}
 	}
 	return out.Bytes(), nil
 }
+
+var buildArgRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)

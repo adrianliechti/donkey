@@ -843,10 +843,22 @@ func (r *Runtime) AttachService(ctx context.Context, space, app, name string, bi
 }
 
 func (r *Runtime) DetachService(ctx context.Context, space, app, name string) error {
+	env, err := r.state.env(space, app)
+	if err != nil {
+		return err
+	}
+	for key, value := range env {
+		if service, _, ref := config.ParseEnvRef(value); ref && service == name {
+			delete(env, key)
+		}
+	}
+	if err := r.state.setEnv(space, app, env); err != nil {
+		return err
+	}
 	if err := r.state.removeBinding(space, app, name); err != nil {
 		return err
 	}
-	_, err := r.Restart(ctx, space, app)
+	_, err = r.Restart(ctx, space, app)
 	return err
 }
 

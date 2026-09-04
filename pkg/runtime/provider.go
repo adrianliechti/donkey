@@ -35,6 +35,7 @@ type Provider interface {
 	// --- Apps -------------------------------------------------------------
 
 	ListApps(ctx context.Context) ([]AppRef, error)
+	InternalURL(space, app string, port int) string
 	Status(ctx context.Context, space, app string) (*AppStatus, error)
 	// HasData is true even while the app is stopped or crash-looping — which
 	// is exactly when someone needs to look at the disk.
@@ -260,6 +261,8 @@ type LogOptions struct {
 
 // DeploySpec is everything Deploy and Render need.
 type DeploySpec struct {
+	// Hosts are reviewed sibling addresses, including apps not deployed yet.
+	Hosts    map[string]string
 	App      *config.AppConfig
 	Space    string
 	ImageRef string
@@ -304,9 +307,10 @@ func (e UserError) Unwrap() error { return e.Err }
 
 // PathRouteState is one shared-address route as it exists in the runtime.
 type PathRouteState struct {
-	Name string
-	Host string
-	Path string
+	Name        string
+	Host        string
+	Path        string
+	StripPrefix bool
 	// Protected says the route sends its traffic through the login gateway.
 	Protected bool
 }

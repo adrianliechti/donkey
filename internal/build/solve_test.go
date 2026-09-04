@@ -115,6 +115,22 @@ func TestInjectPackageBuildArgsIntoEveryStage(t *testing.T) {
 	}
 }
 
+func TestBrowserURLBuildArgsReachEveryStage(t *testing.T) {
+	source := []byte("FROM node:22 AS build\nRUN npm run build\nFROM nginx:alpine\nCOPY --from=build /app/dist /usr/share/nginx/html\n")
+	got, err := injectPackageBuildArgs(source, "VITE_API_URL", "NEXT_PUBLIC_API_URL")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"VITE_API_URL", "NEXT_PUBLIC_API_URL"} {
+		if strings.Count(string(got), "ARG "+key+"\n") != 2 {
+			t.Fatalf("missing browser build variable %s:\n%s", key, got)
+		}
+	}
+	if _, err := injectPackageBuildArgs(source, "X\nRUN injected"); err == nil {
+		t.Fatal("invalid build variable accepted")
+	}
+}
+
 // Every image donkey publishes carries standard metadata: SLSA provenance by
 // default (min — max would embed build-arg values, which routinely hold
 // credentials), an SBOM only when the installation opted in, and OCI labels.

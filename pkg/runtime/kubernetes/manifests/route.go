@@ -21,7 +21,8 @@ const (
 	// AnnotationHost is the hostname the route serves.
 	AnnotationHost = "donkey.local/host"
 	// AnnotationPath is the route's path prefix; "/" for an app's own address.
-	AnnotationPath = "donkey.local/path"
+	AnnotationPath        = "donkey.local/path"
+	AnnotationStripPrefix = "donkey.local/strip-prefix"
 	// AnnotationLogin marks a route whose visitors must sign in first. Its
 	// absence is what "public" means at the edge.
 	AnnotationLogin = "donkey.local/login"

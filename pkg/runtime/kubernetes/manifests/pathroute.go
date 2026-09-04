@@ -34,7 +34,11 @@ func PathRoute(in Input, r RouteTarget) *corev1.ConfigMap {
 // the cluster (whose name encodes a target app the cluster no longer spells
 // out).
 func PathRouteNamed(in Input, name string, r RouteTarget) *corev1.ConfigMap {
+	ann := routeAnnotations(in, r.Host, r.Path)
+	if r.StripPrefix {
+		ann[AnnotationStripPrefix] = "true"
+	}
 	return routeConfigMap(name, in.Namespace,
 		Labels(in.Space, in.App.Name, RolePathRoute),
-		routeAnnotations(in, r.Host, r.Path))
+		ann)
 }

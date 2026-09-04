@@ -68,6 +68,10 @@ func (r *Runtime) Deploy(ctx context.Context, spec rt.DeploySpec, out rt.Progres
 			}
 			out.Line("✓ %s is ready.", a.Name)
 		}
+		if err := addons.BindEnvironment(app, a.Name, shared); err != nil {
+			return err
+		}
+
 		// The attachment copy is re-applied every deploy, so it stays current
 		// with the space's service.
 		if err := r.c.Apply(ctx, []k8sruntime.Object{attachmentSecret(space, app.Name, obj, ns, a.Name, shared)}); err != nil {
@@ -84,6 +88,11 @@ func (r *Runtime) Deploy(ctx context.Context, spec rt.DeploySpec, out rt.Progres
 		}
 	}
 	r.resolveRouteTargets(ctx, space, &in)
+	for i := range in.RouteTargets {
+		if host := spec.Hosts[in.RouteTargets[i].App]; host != "" {
+			in.RouteTargets[i].Host = host
+		}
+	}
 	// Addons added in the console aren't in this donkey.yaml; the cluster
 	// knows them by their binding secrets, and they keep working across
 	// deploys instead of silently losing their env.
@@ -297,10 +306,15 @@ func (r *Runtime) manifestInput(spec rt.DeploySpec, includeCreds bool) (manifest
 	// assumption; resolveRouteTargets corrects it against what that app
 	// actually serves on, which it alone knows.
 	for _, route := range app.Routes {
+		host := spec.Hosts[route.App]
+		if host == "" {
+			host = route.App + "." + space + "." + r.opts.Domain
+		}
 		in.RouteTargets = append(in.RouteTargets, manifests.RouteTarget{
-			App:  route.App,
-			Host: route.App + "." + space + "." + r.opts.Domain,
-			Path: route.Path,
+			App:         route.App,
+			Host:        host,
+			Path:        route.Path,
+			StripPrefix: route.StripPrefix,
 		})
 	}
 	return in, nil
@@ -406,7 +420,7 @@ func (r *Runtime) ApplyNetwork(ctx context.Context, cfg *config.AppConfig) (stri
 		objs = append(objs, manifests.AppTrafficObjects(in)...)
 	}
 	for _, pr := range net.Routes {
-		objs = append(objs, manifests.PathRouteNamed(in, pr.Name, manifests.RouteTarget{Host: pr.Host, Path: pr.Path}))
+		objs = append(objs, manifests.PathRouteNamed(in, pr.Name, manifests.RouteTarget{Host: pr.Host, Path: pr.Path, StripPrefix: pr.StripPrefix}))
 	}
 	if err := r.c.Apply(ctx, objs); err != nil {
 		return "", err

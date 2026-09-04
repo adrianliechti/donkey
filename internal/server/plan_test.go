@@ -1,10 +1,13 @@
 package server
 
 import (
+	"bytes"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"testing"
 	"time"
@@ -13,6 +16,58 @@ import (
 	"github.com/adrianliechti/donkey/internal/config"
 	"github.com/adrianliechti/donkey/internal/detect"
 )
+
+func TestPlanReviewKeepsOptionsAfterReselecting(t *testing.T) {
+	sp := planned()
+	service := config.AddonConfig{Type: "postgres", Name: "postgres", Version: "16", Storage: "20Gi", External: true}
+	sp.app.Addons = []config.AddonConfig{service}
+	sp.app.Storage.Class = "fast"
+	sp.app.Storage.Size = "10Gi"
+	sp.app.Env = map[string]string{"DB_URL": "${postgres.DATABASE_URL}", "MODE": "production"}
+	edit := PlanEdit{Name: "web", Space: "acme", Port: 8000, Exposure: "protected"}
+	applyPlanEdit(sp, edit)
+	if _, exists := sp.app.Env["DB_URL"]; exists {
+		t.Fatal("an unselected service left a dangling reference")
+	}
+	edit.Services, edit.Storage = []string{"postgres"}, []string{"/app/data"}
+	applyPlanEdit(sp, edit)
+	if !reflect.DeepEqual(sp.app.Addons, []config.AddonConfig{service}) || sp.app.Env["DB_URL"] != "${postgres.DATABASE_URL}" {
+		t.Fatalf("reselection lost service options or aliases: %+v", sp.app)
+	}
+	if sp.app.Storage.Class != "fast" || sp.app.Storage.Size != "10Gi" || sp.app.Env["MODE"] != "production" {
+		t.Fatal("review changed unrelated settings")
+	}
+}
+
+func TestPlanUpdateRejectsInvalidFields(t *testing.T) {
+	for _, field := range []string{"name", "space", "port", "exposure"} {
+		t.Run(field, func(t *testing.T) {
+			s := planServer(planRuntime{}, &ai.Analysis{})
+			sp := planned()
+			id := s.plans.put(sp)
+			before := cloneApp(sp.app)
+			edit := PlanEdit{Name: "web", Space: "acme", Port: 8000, Exposure: "protected"}
+			switch field {
+			case "name":
+				edit.Name = " "
+			case "space":
+				edit.Space = " "
+			case "port":
+				edit.Port = 0
+			case "exposure":
+				edit.Exposure = "unknown"
+			}
+			body, _ := json.Marshal(edit)
+			req := httptest.NewRequest(http.MethodPut, "/v1/plans/"+id, bytes.NewReader(body))
+			asAdmin(t, req)
+			rec := httptest.NewRecorder()
+			s.routes().ServeHTTP(rec, req)
+			if rec.Code != http.StatusBadRequest || !reflect.DeepEqual(before, sp.app) {
+				t.Fatalf("invalid edit was silently accepted or applied: %d %s", rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
 
 func planned() *storedPlan {
 	app := &config.AppConfig{Name: "web", Space: "acme", Port: 8000}

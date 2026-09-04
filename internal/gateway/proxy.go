@@ -4,6 +4,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httputil"
+	"net/url"
 	"strings"
 	"time"
 
@@ -111,6 +112,28 @@ func (s *Server) proxy(rt route, sess *session, fromToken bool) *httputil.Revers
 				pr.Out.Header.Del("Authorization")
 			}
 			pr.SetURL(rt.Backend)
+			pr.Out.Header.Del("X-Forwarded-Prefix")
+			if rt.StripPrefix {
+				pr.Out.URL.Path = strings.TrimPrefix(pr.In.URL.Path, rt.Path)
+				if pr.Out.URL.Path == "" {
+					pr.Out.URL.Path = "/"
+				}
+				// Count decoded bytes so an escaped prefix does not discard
+				// meaningful escapes (such as %2F) in the remaining API path.
+				escaped, cut := pr.In.URL.EscapedPath(), 0
+				for n := 0; n < len(rt.Path) && cut < len(escaped); n++ {
+					if escaped[cut] == '%' {
+						cut += 3
+					} else {
+						cut++
+					}
+				}
+				pr.Out.URL.RawPath = escaped[cut:]
+				if pr.Out.URL.RawPath == "" {
+					pr.Out.URL.RawPath = "/"
+				}
+				pr.Out.Header.Set("X-Forwarded-Prefix", rt.Path)
+			}
 			// The app sees the address the visitor used — links, redirects
 			// and host-based routing inside the app keep working.
 			pr.Out.Host = pr.In.Host
@@ -155,6 +178,19 @@ func (s *Server) proxy(rt route, sess *session, fromToken bool) *httputil.Revers
 					}
 				}
 			}
+		},
+		ModifyResponse: func(res *http.Response) error {
+			// An API mounted under a proxy prefix may redirect to /login or
+			// add a trailing slash. Keep that redirect on the API's route.
+			location := res.Header.Get("Location")
+			u, err := url.Parse(location)
+			if !rt.StripPrefix || err != nil || u.IsAbs() || u.Host != "" || !strings.HasPrefix(location, "/") {
+				return nil
+			}
+			if u.Path != rt.Path && !strings.HasPrefix(u.Path, rt.Path+"/") {
+				res.Header.Set("Location", rt.Path+location)
+			}
+			return nil
 		},
 		Transport: transport,
 		// Flush as bytes arrive: SSE and long-running responses must not sit

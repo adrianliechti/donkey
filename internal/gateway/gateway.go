@@ -165,8 +165,9 @@ type route struct {
 	App   string
 	Host  string
 	// Path is the route's prefix; "/" for an app's own address.
-	Path    string
-	Backend *url.URL
+	Path        string
+	StripPrefix bool
+	Backend     *url.URL
 	// Login says visitors must sign in before this route forwards.
 	Login  bool
 	Access *config.AccessConfig
@@ -268,7 +269,7 @@ func (f fileRoutes) list(ctx context.Context) ([]route, error) {
 		if err != nil || target.Scheme != "http" || target.Host == "" || rec.Host == "" {
 			continue
 		}
-		r := route{Space: rec.Space, App: rec.App, Host: rec.Host, Path: rec.Path, Backend: target, Login: rec.Login, Access: rec.Access, Token: rec.Token}
+		r := route{Space: rec.Space, App: rec.App, Host: rec.Host, Path: rec.Path, Backend: target, Login: rec.Login, Access: rec.Access, Token: rec.Token, StripPrefix: rec.StripPrefix}
 		if r.Path == "" {
 			r.Path = "/"
 		}
@@ -449,13 +450,14 @@ func routeFromConfigMap(cm corev1.ConfigMap) (route, bool) {
 		return route{}, false
 	}
 	r := route{
-		Space:   space,
-		App:     app,
-		Host:    ann[manifests.AnnotationHost],
-		Path:    "/",
-		Backend: target,
-		Login:   ann[manifests.AnnotationLogin] == manifests.LoginRequired,
-		Token:   systemRoute,
+		Space:       space,
+		App:         app,
+		Host:        ann[manifests.AnnotationHost],
+		Path:        "/",
+		Backend:     target,
+		Login:       ann[manifests.AnnotationLogin] == manifests.LoginRequired,
+		Token:       systemRoute,
+		StripPrefix: ann[manifests.AnnotationStripPrefix] == "true",
 	}
 	if p := ann[manifests.AnnotationPath]; p != "" {
 		r.Path = p

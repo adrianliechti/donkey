@@ -80,6 +80,10 @@ func (r *Runtime) Client() *Client { return r.c }
 // ns is where a space lives: all its apps share the namespace.
 func (r *Runtime) ns(space string) string { return r.opts.Placement.Namespace(space) }
 
+func (r *Runtime) InternalURL(space, app string, port int) string {
+	return fmt.Sprintf("http://%s.%s.svc", r.name(space, app), r.ns(space))
+}
+
 // name is what one of the space's things is called on the cluster. It is the
 // plain name where the space has a namespace to itself, and carries the space
 // where the whole installation shares one — a namespace holds one Service
