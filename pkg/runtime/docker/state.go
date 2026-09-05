@@ -24,13 +24,16 @@ import (
 // Route is one routing-table entry as the gateway reads it from the state
 // directory (mirrors the annotations of the Kubernetes route ConfigMaps).
 type Route struct {
-	Space   string               `json:"space,omitempty"`
-	App     string               `json:"app,omitempty"`
-	Host    string               `json:"host"`
-	Path    string               `json:"path"`
-	Backend string               `json:"backend"`
-	Login   bool                 `json:"login,omitempty"`
-	Access  *config.AccessConfig `json:"access,omitempty"`
+	Space       string               `json:"space,omitempty"`
+	App         string               `json:"app,omitempty"`
+	Host        string               `json:"host"`
+	Path        string               `json:"path"`
+	StripPrefix bool                 `json:"stripPrefix,omitempty"`
+	Backend     string               `json:"backend"`
+	Login       bool                 `json:"login,omitempty"`
+	Mode        string               `json:"mode,omitempty"`
+	CORS        string               `json:"cors,omitempty"`
+	Access      *config.AccessConfig `json:"access,omitempty"`
 	// Token forwards a sealed credential to the backend — set only on the
 	// console route, whose backend verifies identity itself.
 	Token bool `json:"token,omitempty"`

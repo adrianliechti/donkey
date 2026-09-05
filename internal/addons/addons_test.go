@@ -48,6 +48,7 @@ func TestRegistryDefaultsProvision(t *testing.T) {
 func TestManagedAddonDefaultVersions(t *testing.T) {
 	for typ, want := range map[string]string{
 		"postgres": "18.6",
+		"redis":    "7.4.11",
 		"rustfs":   "1.0.0-rc.3",
 	} {
 		if got := Registry[typ].DefaultVersion(); got != want {
@@ -77,6 +78,7 @@ func TestPostgresBindingContract(t *testing.T) {
 func TestManagedAddonImageRepositoryOverride(t *testing.T) {
 	for typ, repository := range map[string]string{
 		"postgres": "registry.example.com/mirror/library/postgres",
+		"redis":    "registry.example.com/mirror/library/redis",
 		"rustfs":   "registry.example.com/mirror/rustfs/rustfs",
 	} {
 		a := Registry[typ]

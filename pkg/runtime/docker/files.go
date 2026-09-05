@@ -350,15 +350,9 @@ func (r *Runtime) WriteFile(ctx context.Context, space, app, subPath string, in 
 	dir, target := paths[0], paths[1]
 	tmp := dir + "/.donkey-upload-" + strings.ToLower(rand.Text()[:12])
 
-	limited := io.LimitReader(in, rt.MaxUploadBytes+1)
-	counted := &countingReader{r: limited}
-	if err := r.execFiles(ctx, helper, []string{"dd", "of=" + tmp, "bs=65536"}, counted, nil); err != nil {
+	if err := r.execFiles(ctx, helper, []string{"dd", "of=" + tmp, "bs=65536"}, in, nil); err != nil {
 		r.removeQuietly(ctx, helper, tmp)
 		return err
-	}
-	if counted.n > rt.MaxUploadBytes {
-		r.removeQuietly(ctx, helper, tmp)
-		return fmt.Errorf("%w — the limit is %d MB", rt.ErrTooLarge, rt.MaxUploadBytes>>20)
 	}
 	// The app runs as some other user and only shares the disk's group, so a
 	// file donkey wrote must be group-writable or the app can never replace it.
@@ -453,22 +447,6 @@ func (r *Runtime) removeQuietly(ctx context.Context, helper, target string) {
 	_ = r.execFiles(ctx, helper, []string{"rm", "-f", target}, nil, nil)
 }
 
-type countingReader struct {
-	r io.Reader
-	n int64
-}
-
-func (c *countingReader) Read(p []byte) (int, error) {
-	n, err := c.r.Read(p)
-	c.n += int64(n)
-	return n, err
-}
-
-// --- Path rules and stat parsing (shared vocabulary with Kubernetes) ------
-
-// cleanRelPath turns a caller-supplied path into a path relative to the
-// disk. Everything here is attacker-controlled, so it is checked before any
-// command is built: no absolute paths, no ".." escapes, no NUL bytes.
 func cleanRelPath(p string) (string, error) {
 	if strings.TrimSpace(p) == "" {
 		return "", nil

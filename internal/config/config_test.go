@@ -210,6 +210,13 @@ func TestAppValidate(t *testing.T) {
 		{"host: leading dash", func(c *AppConfig) { c.Host = "-shop.example.com" }, true},
 		{"host: uppercase label", func(c *AppConfig) { c.Host = "Shop" }, true},
 		{"host: on internal app", func(c *AppConfig) { c.Internal, c.Host = true, "@" }, true},
+		{"web mode", func(c *AppConfig) { c.Mode = AppModeWeb }, false},
+		{"api mode", func(c *AppConfig) { c.Mode = AppModeAPI }, false},
+		{"bad mode", func(c *AppConfig) { c.Mode = "grpc" }, true},
+		{"api public", func(c *AppConfig) { c.Mode, c.Public = AppModeAPI, true }, false},
+		{"api internal", func(c *AppConfig) { c.Mode, c.Internal = AppModeAPI, true }, false},
+		{"allow all origins", func(c *AppConfig) { c.CORS = CORSAllowAll }, false},
+		{"bad cors policy", func(c *AppConfig) { c.CORS = "sometimes" }, true},
 		// Access refines the login gateway — it cannot exist where there is
 		// no login (public) or no address to guard (internal, no routes).
 		{"access", func(c *AppConfig) { c.Access = &AccessConfig{Users: []string{"ada@example.com"}} }, false},
@@ -227,6 +234,12 @@ func TestAppValidate(t *testing.T) {
 			c.Routes = []RouteConfig{{App: "web", Path: "/api"}}
 			c.Access = &AccessConfig{Groups: []string{"staff"}}
 		}, false},
+		{"access on internal API with routes", func(c *AppConfig) {
+			c.Internal = true
+			c.Mode = AppModeAPI
+			c.Routes = []RouteConfig{{App: "web", Path: "/api"}}
+			c.Access = &AccessConfig{Groups: []string{"staff"}}
+		}, true},
 		{"access entry with spaces", func(c *AppConfig) {
 			c.Access = &AccessConfig{Users: []string{"ada lovelace"}}
 		}, true},

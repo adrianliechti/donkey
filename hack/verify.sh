@@ -11,6 +11,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 RUNTIME="${1:-kind}"
+if [ "$#" -gt 0 ]; then shift; fi
 
 say() { printf '\n\033[1m== %s ==\033[0m\n' "$*"; }
 
@@ -28,6 +29,15 @@ wait_port() {
     sleep 1
   done
   echo "FAIL: nothing answering on 127.0.0.1:$1" >&2
+  return 1
+}
+
+wait_http() {
+  for _ in $(seq 1 30); do
+    curl --fail --silent --show-error "$1" >/dev/null 2>&1 && return 0
+    sleep 1
+  done
+  echo "FAIL: no healthy HTTP response from $1" >&2
   return 1
 }
 
@@ -53,8 +63,14 @@ kind)
   FORWARD_PIDS+=($!)
   kubectl --context "${CTX}" -n donkey-system port-forward svc/donkey-gateway 18443:443 >/dev/null 2>&1 &
   FORWARD_PIDS+=($!)
-  wait_port 18088
+	if kubectl --context "${CTX}" -n donkey-identity get service auth >/dev/null 2>&1; then
+	  kubectl --context "${CTX}" -n donkey-identity port-forward svc/auth 18089:80 >/dev/null 2>&1 &
+	  FORWARD_PIDS+=($!)
+	  export DONKEY_E2E_IDP="127.0.0.1:18089"
+	fi
+  wait_http http://127.0.0.1:18088/readyz
   wait_port 18443
+	if [ -n "${DONKEY_E2E_IDP:-}" ]; then wait_port 18089; fi
   export DONKEY_E2E_SERVER="http://127.0.0.1:18088"
   export DONKEY_E2E_GATEWAY="127.0.0.1:18443"
   ;;
@@ -86,7 +102,7 @@ docker)
   # unreachable until it is redeployed. The suite itself cannot catch that:
   # it deploys after installing, and deploying re-attaches.
   say "donkey's own containers are on every space network"
-  for net in $(docker network ls --filter label=donkey.managed=true --format '{{.Name}}'); do
+  for net in $(docker network ls --filter label=local.donkey.managed=true --filter label=local.donkey.installation=donkey --filter label=local.donkey.role=space --format '{{.Name}}'); do
     for own in donkey-gateway donkey-server; do
       if ! docker network inspect "${net}" --format '{{range .Containers}}{{.Name}} {{end}}' | grep -qw "${own}"; then
         echo "FAIL: ${own} is not attached to ${net} — apps in that space cannot be reached" >&2
@@ -108,4 +124,4 @@ esac
 
 say "e2e suite (${RUNTIME})"
 cd "${ROOT}"
-go test -tags e2e -count=1 -timeout 30m -v ./e2e
+go test -tags e2e -count=1 -timeout 60m -v "$@" ./e2e

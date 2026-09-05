@@ -22,6 +22,13 @@ type AppConfig struct {
 	Port  int    `json:"port"`
 	// Public opts the app out of the login gateway: anyone can reach it.
 	Public bool `json:"public,omitempty"`
+	// Mode describes the app's traffic. Empty is web; api enables API-aware
+	// gateway behavior when the app also uses protected exposure.
+	Mode string `json:"mode,omitempty"`
+	// CORS selects the cross-origin policy at the gateway. Empty disables
+	// cross-origin access; allowAll answers preflights and emits
+	// Access-Control-Allow-Origin: *.
+	CORS string `json:"cors,omitempty"`
 	// Internal keeps the app off the gateway entirely — no hostname, no
 	// certificate, no login. What a backend behind a frontend wants.
 	Internal bool        `json:"internal,omitempty"`
@@ -48,6 +55,27 @@ type AppConfig struct {
 // convention. Legal as neither an app name nor a hostname, so it can never be
 // mistaken for either.
 const RootHost = "@"
+
+const (
+	AppModeWeb   = "web"
+	AppModeAPI   = "api"
+	CORSAllowAll = "allowAll"
+)
+
+func (a *AppConfig) IsAPI() bool { return a.Mode == AppModeAPI }
+
+// UsesOAuth is true only when an API has an authenticated public address.
+// Public APIs proxy directly, and internal APIs have no address of their own.
+func (a *AppConfig) UsesOAuth() bool { return a.IsAPI() && !a.Public && !a.Internal }
+
+func (a *AppConfig) GatewayMode() string {
+	if a.Mode == "" {
+		return AppModeWeb
+	}
+	return a.Mode
+}
+
+func (a *AppConfig) AllowsAllOrigins() bool { return a.CORS == CORSAllowAll }
 
 // AppHost is the address an app is served at, and the one place the rule
 // lives — the control plane and every runtime provider ask here, so they
@@ -195,6 +223,9 @@ const (
 
 type BuildConfig struct {
 	Type BuildStrategy `json:"type,omitempty"`
+	// Context is relative to this app's folder; uploads may use a parent
+	// workspace directory, but never a directory outside the upload.
+	Context string `json:"context,omitempty"`
 	// Dockerfile is the path (relative to the app dir) used when Type is "dockerfile".
 	Dockerfile   string            `json:"dockerfile,omitempty"`
 	Platform     string            `json:"platform,omitempty"`
@@ -217,8 +248,22 @@ type RouteConfig struct {
 	// same space.
 	App string `json:"app"`
 	// Path is the prefix that reaches this app, e.g. "/api".
-	Path string `json:"path"`
+	Path        string `json:"path"`
+	StripPrefix bool   `json:"stripPrefix,omitempty"`
 }
+
+// EnvRef names a live service binding without copying its credential into config.
+func EnvRef(service, key string) string { return "${" + service + "." + key + "}" }
+
+func ParseEnvRef(value string) (service, key string, ok bool) {
+	m := envRefRE.FindStringSubmatch(value)
+	if m == nil {
+		return "", "", false
+	}
+	return m[1], m[2], true
+}
+
+var envRefRE = regexp.MustCompile(`^\$\{([a-z0-9][a-z0-9-]*)\.([A-Za-z_][A-Za-z0-9_]*)\}$`)
 
 type AddonConfig struct {
 	// Name is optional in donkey.yaml (it defaults to the type), so Save
@@ -244,7 +289,6 @@ const (
 	DefaultSpace      = "default"
 	defaultCPURequest = "100m"
 	defaultMemRequest = "128Mi"
-	defaultMemLimit   = "512Mi"
 )
 
 // nameRE follows RFC 1123 DNS labels: app and space names become part of
@@ -309,7 +353,6 @@ func (c *AppConfig) ApplyDefaults() {
 	if c.Resources == nil {
 		c.Resources = &Resources{
 			Requests: map[string]string{"cpu": defaultCPURequest, "memory": defaultMemRequest},
-			Limits:   map[string]string{"memory": defaultMemLimit},
 		}
 	}
 	for i := range c.Addons {
@@ -338,12 +381,18 @@ func (c *AppConfig) Validate() error {
 	if c.Internal && c.Public && len(c.Routes) == 0 {
 		return fmt.Errorf("an internal app has no address, so `public: true` has nothing to open — drop it, or give the app a `routes:` entry on another app's address")
 	}
+	if c.Mode != "" && c.Mode != AppModeWeb && c.Mode != AppModeAPI {
+		return fmt.Errorf("mode must be web or api")
+	}
+	if c.CORS != "" && c.CORS != CORSAllowAll {
+		return fmt.Errorf("cors must be allowAll when set")
+	}
 	if c.Internal && c.Host != "" {
 		return fmt.Errorf("an internal app has no address, so `host` has no effect — drop one of the two")
 	}
 	if !c.Access.Empty() {
-		if c.Public {
-			return fmt.Errorf("`access` needs the login gateway, which `public: true` turns off — drop one of the two")
+		if c.Public || (c.Internal && c.IsAPI()) {
+			return fmt.Errorf("`access` needs a login-protected route, which this exposure turns off")
 		}
 		if c.Internal && len(c.Routes) == 0 {
 			return fmt.Errorf("an internal app has no address, so `access` has nobody to let in — drop it, or give the app a `routes:` entry")
@@ -402,7 +451,37 @@ func (c *AppConfig) Validate() error {
 		}
 		seen[a.Name] = true
 	}
+	for key, value := range c.Env {
+		if service, _, ref := ParseEnvRef(value); ref && (!envNameRE.MatchString(key) || !seen[service]) {
+			return fmt.Errorf("env.%s references undeclared addon %s", key, service)
+		}
+		if _, _, ref := ParseEnvRef(value); ref {
+			if _, baked := c.Build.Env[key]; baked {
+				return fmt.Errorf("remove service variable %s from build.env; it is resolved at runtime", key)
+			}
+			if PublicEnv(key) {
+				return fmt.Errorf("env.%s cannot expose a service binding to the browser", key)
+			}
+		}
+	}
+	for key, value := range c.Build.Env {
+		if _, _, ref := ParseEnvRef(value); ref {
+			return fmt.Errorf("build.env.%s cannot contain a runtime service reference", key)
+		}
+	}
 	return nil
+}
+
+var envNameRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// PublicEnv identifies framework variables that are exposed to browser code.
+func PublicEnv(key string) bool {
+	for _, prefix := range []string{"VITE_", "NEXT_PUBLIC_", "PUBLIC_", "REACT_APP_", "NUXT_PUBLIC_"} {
+		if strings.HasPrefix(key, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // HasStorage reports whether the app asked for persistent disk.
@@ -480,8 +559,7 @@ func (c *AppConfig) Render() ([]byte, error) {
 		len(out.Resources.Requests) == 2 &&
 		out.Resources.Requests["cpu"] == defaultCPURequest &&
 		out.Resources.Requests["memory"] == defaultMemRequest &&
-		len(out.Resources.Limits) == 1 &&
-		out.Resources.Limits["memory"] == defaultMemLimit {
+		len(out.Resources.Limits) == 0 {
 		out.Resources = nil
 	}
 	out.Addons = make([]AddonConfig, len(c.Addons))

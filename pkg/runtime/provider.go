@@ -35,6 +35,7 @@ type Provider interface {
 	// --- Apps -------------------------------------------------------------
 
 	ListApps(ctx context.Context) ([]AppRef, error)
+	InternalURL(space, app string, port int) string
 	Status(ctx context.Context, space, app string) (*AppStatus, error)
 	// HasData is true even while the app is stopped or crash-looping — which
 	// is exactly when someone needs to look at the disk.
@@ -233,6 +234,10 @@ type AppStatus struct {
 	PublicHost string
 	// Protected says traffic reaches the app through the login gateway.
 	Protected bool
+	// Mode is web or api at the gateway.
+	Mode string
+	// CORS is the gateway's cross-origin policy; empty disables it.
+	CORS string
 	// Port the app listens on (donkey.yaml's `port`).
 	Port int32
 	// Restarts sums restarts across instances — what separates "quietly
@@ -260,6 +265,8 @@ type LogOptions struct {
 
 // DeploySpec is everything Deploy and Render need.
 type DeploySpec struct {
+	// Hosts are reviewed sibling addresses, including apps not deployed yet.
+	Hosts    map[string]string
 	App      *config.AppConfig
 	Space    string
 	ImageRef string
@@ -304,11 +311,14 @@ func (e UserError) Unwrap() error { return e.Err }
 
 // PathRouteState is one shared-address route as it exists in the runtime.
 type PathRouteState struct {
-	Name string
-	Host string
-	Path string
+	Name        string
+	Host        string
+	Path        string
+	StripPrefix bool
 	// Protected says the route sends its traffic through the login gateway.
 	Protected bool
+	Mode      string
+	CORS      string
 }
 
 // NetworkState is how an app is reached, read from actual state.
@@ -317,6 +327,8 @@ type NetworkState struct {
 	RouteFound bool
 	Host       string
 	Protected  bool
+	Mode       string
+	CORS       string
 	// Access are the rules the gateway enforces on the app's own route.
 	Access *config.AccessConfig
 	Routes []PathRouteState
@@ -377,11 +389,8 @@ const (
 	MetaDecisions = "donkey.local/decisions"
 )
 
-// File-browser limits, shared by every provider.
-var (
-	MaxUploadBytes int64 = 200 << 20
-	MaxListEntries       = 2000
-)
+// File-browser page size, shared by every provider.
+var MaxListEntries = 2000
 
 // File-browser errors, shared so handlers can map them to honest statuses.
 var (
@@ -391,5 +400,4 @@ var (
 	ErrNotFound    = errors.New("there is nothing at that path on the disk")
 	ErrNotAFile    = errors.New("that is a folder, not a file")
 	ErrNotAFolder  = errors.New("that is a file, not a folder")
-	ErrTooLarge    = errors.New("that file is too large to upload")
 )

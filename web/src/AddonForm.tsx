@@ -16,6 +16,7 @@ const diskSizes = ['1Gi', '2Gi', '5Gi', '10Gi', '20Gi', '50Gi']
 // plain server glyph.
 export const typeIcons: Record<string, typeof Database> = {
   postgres: Database,
+  redis: Database,
   rustfs: Archive,
   openai: Sparkles,
 }

@@ -2,6 +2,7 @@ package packages
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"encoding/pem"
 	"io"
 	"net/http"
@@ -232,6 +233,65 @@ func TestHandlerKeepsNuGetV3ResourcesOnTheInternalProxy(t *testing.T) {
 	}
 	if got, want := strings.Join(paths, "\n"), "/v3/index.json\n/v3-flatcontainer/example/index.json"; got != want {
 		t.Fatalf("NuGet upstream paths = %q, want %q", got, want)
+	}
+}
+
+func TestHandlerOmitsNuGetSigningResourcesOverHTTP(t *testing.T) {
+	const upstream = "https://api.nuget.example"
+	const signing = upstream + "/v3-index/repository-signatures/5.0.0/index.json"
+	transport := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		body := `{"resources":[{"@id":"` + signing + `","@type":"RepositorySignatures/5.0.0"},{"@id":"` + upstream + `/v3-flatcontainer/","@type":"PackageBaseAddress/3.0.0"},{"@id":"` + signing + `","@type":["RepositorySignatures/4.9.0","RepositorySignatures/5.0.0"]}]}`
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
+	})
+	cfg := Config{NPMUpstream: upstream, PyPIUpstream: upstream, GoUpstream: upstream, MavenUpstream: upstream, NuGetUpstream: upstream + "/v3/index.json"}
+	proxy, err := handler(cfg, func(string) (string, string, bool, error) { return "", "", false, nil }, transport)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, scheme := range []string{"http", "https"} {
+		t.Run(scheme, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			proxy.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, scheme+"://donkey-packages/nuget/index.json", nil))
+			var index struct {
+				Resources []struct {
+					ID string `json:"@id"`
+				} `json:"resources"`
+			}
+			want := 1
+			if scheme == "https" {
+				want = 3
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &index); err != nil || len(index.Resources) != want {
+				t.Fatalf("invalid service index: %s", rec.Body.String())
+			}
+			if scheme == "http" && !strings.HasSuffix(index.Resources[0].ID, "/v3-flatcontainer/") {
+				t.Fatalf("package resource was removed: %s", rec.Body.String())
+			}
+			for _, resource := range index.Resources {
+				if !strings.HasPrefix(resource.ID, scheme+"://donkey-packages/nuget/") {
+					t.Fatalf("package or unconfigured resource escaped the proxy: %s", resource.ID)
+				}
+			}
+		})
+	}
+}
+
+func TestHandlerKeepsNuGetPackageBytes(t *testing.T) {
+	const upstream = "https://api.nuget.example"
+	// Include an upstream URL to catch accidental rewriting inside an archive.
+	const archive = "PK\x03\x04\x00.signature.p7s\x00" + upstream + "/signed-content"
+	transport := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/octet-stream"}, "ETag": {"signed-package"}}, Body: io.NopCloser(strings.NewReader(archive)), Request: r}, nil
+	})
+	cfg := Config{NPMUpstream: upstream, PyPIUpstream: upstream, GoUpstream: upstream, MavenUpstream: upstream, NuGetUpstream: upstream + "/v3/index.json"}
+	proxy, err := handler(cfg, func(string) (string, string, bool, error) { return "", "", false, nil }, transport)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	proxy.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "http://donkey-packages/nuget/v3-flatcontainer/example/example.nupkg", nil))
+	if rec.Body.String() != archive || rec.Header().Get("ETag") != "signed-package" {
+		t.Fatal("package bytes or integrity headers changed")
 	}
 }
 

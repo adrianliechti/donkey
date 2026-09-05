@@ -28,14 +28,9 @@ const (
 	// buildkitConfigPath is where buildkitd finds its config file.
 	buildkitConfigPath = "/etc/buildkit"
 
-	// buildkitCachePath is buildkitd's state directory — the build cache. It
-	// gets a volume of its own, bounded by buildkitCacheSize.
+	// buildkitCachePath holds reusable layers. BuildKit manages cache space
+	// using its own disk-aware garbage collection policy.
 	buildkitCachePath = "/var/lib/buildkit"
-	buildkitCacheSize = "10Gi"
-	// Both stay below the volume size: collection is asynchronous, so the
-	// cache must overshoot without the kubelet evicting the pod holding it.
-	buildkitCacheKeep = "5GB"
-	buildkitCacheMax  = "8GB"
 )
 
 // BuildkitConfig is the build engine's config file. Both runtimes render it
@@ -62,12 +57,10 @@ type registrySection struct {
 }
 
 // BuildkitTOML renders the config file. Every installation gets one for the
-// cache bound alone: without garbage collection the cache grows until the
-// node's disk is full. Private-CA registries and mirrors are named here too.
+// garbage collector; no fixed disk-size ceiling is imposed here. Private-CA registries and mirrors are named here too.
 func BuildkitTOML(c BuildkitConfig) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "[worker.oci]\n  gc = true\n  reservedSpace = %q\n  maxUsedSpace = %q\n",
-		buildkitCacheKeep, buildkitCacheMax)
+	b.WriteString("[worker.oci]\n  gc = true\n")
 
 	sections := map[string]*registrySection{}
 	at := func(host string) *registrySection {
@@ -174,20 +167,14 @@ func buildkitDeployment(in SystemInput) *appsv1.Deployment {
 }
 
 // buildkitResources sizes the build engine, which needs more of everything: a
-// build is the heaviest thing the cluster does, and its cache volume counts
-// against the pod's ephemeral storage. The storage limit stays above what the
-// cache volume can hold, so the engine's own collector — not an eviction —
-// is what keeps the cache in check.
+// build is the heaviest thing the cluster does. Requests reserve capacity;
+// the engine's garbage collector manages cached layers without pod limits.
 func buildkitResources() corev1.ResourceRequirements {
 	return corev1.ResourceRequirements{
 		Requests: corev1.ResourceList{
 			corev1.ResourceCPU:              resource.MustParse("500m"),
 			corev1.ResourceMemory:           resource.MustParse("1Gi"),
 			corev1.ResourceEphemeralStorage: resource.MustParse("4Gi"),
-		},
-		Limits: corev1.ResourceList{
-			corev1.ResourceMemory:           resource.MustParse("8Gi"),
-			corev1.ResourceEphemeralStorage: resource.MustParse("12Gi"),
 		},
 	}
 }
@@ -231,7 +218,7 @@ func buildkitPodSpec(in SystemInput, privileged bool) corev1.PodSpec {
 			// also keeps the snapshotter off the container's own overlay
 			// filesystem, where it would fall back to its slow copy mode.
 			{Name: "buildkit-cache", VolumeSource: corev1.VolumeSource{
-				EmptyDir: &corev1.EmptyDirVolumeSource{SizeLimit: new(resource.MustParse(buildkitCacheSize))},
+				EmptyDir: &corev1.EmptyDirVolumeSource{},
 			}},
 		},
 	}

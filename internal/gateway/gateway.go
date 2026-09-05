@@ -165,10 +165,16 @@ type route struct {
 	App   string
 	Host  string
 	// Path is the route's prefix; "/" for an app's own address.
-	Path    string
-	Backend *url.URL
+	Path        string
+	StripPrefix bool
+	Backend     *url.URL
 	// Login says visitors must sign in before this route forwards.
-	Login  bool
+	Login bool
+	// Mode describes the route's traffic. A login-protected web route uses a
+	// browser session; a login-protected API uses OAuth. Public routes proxy
+	// directly in either mode.
+	Mode   string
+	CORS   string
 	Access *config.AccessConfig
 	// Token forwards a short-lived sealed credential (X-Access-Token) to the
 	// backend. Only donkey's own API route carries it: an app given one
@@ -205,6 +211,14 @@ type Server struct {
 	warm func(host string)
 
 	telemetry *edgeTelemetry
+
+	// OAuth authorization codes are short-lived and one-use. The gateway is
+	// deployed as one replica, so keeping them here avoids a client database
+	// while still preventing replay. Rotated refresh tokens use the same
+	// short in-memory replay ledger; the tokens themselves remain sealed.
+	oauthMu          sync.Mutex
+	oauthCodes       map[string]oauthAuthorizationCode
+	oauthRefreshUsed map[string]int64
 }
 
 func New(cfg *Config) (*Server, error) {
@@ -213,10 +227,12 @@ func New(cfg *Config) (*Server, error) {
 		return nil, fmt.Errorf("configuring gateway telemetry: %w", err)
 	}
 	s := &Server{
-		cfg:       cfg,
-		auth:      newAuthenticator(cfg),
-		routes:    map[string][]route{},
-		telemetry: telemetry,
+		cfg:              cfg,
+		auth:             newAuthenticator(cfg),
+		routes:           map[string][]route{},
+		oauthCodes:       map[string]oauthAuthorizationCode{},
+		oauthRefreshUsed: map[string]int64{},
+		telemetry:        telemetry,
 	}
 	switch cfg.Runtime {
 	case "docker":
@@ -268,7 +284,7 @@ func (f fileRoutes) list(ctx context.Context) ([]route, error) {
 		if err != nil || target.Scheme != "http" || target.Host == "" || rec.Host == "" {
 			continue
 		}
-		r := route{Space: rec.Space, App: rec.App, Host: rec.Host, Path: rec.Path, Backend: target, Login: rec.Login, Access: rec.Access, Token: rec.Token}
+		r := route{Space: rec.Space, App: rec.App, Host: rec.Host, Path: rec.Path, Backend: target, Login: rec.Login, Mode: rec.Mode, CORS: rec.CORS, Access: rec.Access, Token: rec.Token, StripPrefix: rec.StripPrefix}
 		if r.Path == "" {
 			r.Path = "/"
 		}
@@ -449,13 +465,16 @@ func routeFromConfigMap(cm corev1.ConfigMap) (route, bool) {
 		return route{}, false
 	}
 	r := route{
-		Space:   space,
-		App:     app,
-		Host:    ann[manifests.AnnotationHost],
-		Path:    "/",
-		Backend: target,
-		Login:   ann[manifests.AnnotationLogin] == manifests.LoginRequired,
-		Token:   systemRoute,
+		Space:       space,
+		App:         app,
+		Host:        ann[manifests.AnnotationHost],
+		Path:        "/",
+		Backend:     target,
+		Login:       ann[manifests.AnnotationLogin] == manifests.LoginRequired,
+		Mode:        ann[manifests.AnnotationMode],
+		CORS:        ann[manifests.AnnotationCORS],
+		Token:       systemRoute,
+		StripPrefix: ann[manifests.AnnotationStripPrefix] == "true",
 	}
 	if p := ann[manifests.AnnotationPath]; p != "" {
 		r.Path = p

@@ -1,0 +1,6 @@
+name: fastmcp-sample
+port: 8000
+mode: api
+cors: allowAll
+healthcheck:
+  path: /health

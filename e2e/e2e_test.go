@@ -513,13 +513,13 @@ CMD ["httpd", "-f", "-p", "8080", "-h", "/site"]
 					Network *server.NetworkResponse `json:"network"`
 				}
 				s.raw(t, http.MethodPut, "/v1/spaces/"+space+"/apps/"+app+"/network",
-					map[string]string{"exposure": "public", "hostOverride": host}, &out)
+					map[string]string{"exposure": "public", "host": host}, &out)
 				return out.Network
 			}
 
 			net := setHost(t, "@")
-			if net.HostOverride != "@" {
-				t.Errorf(`the space root should read back as "@", got %q`, net.HostOverride)
+			if net.Host != "@" {
+				t.Errorf(`the space root should read back as "@", got %q`, net.Host)
 			}
 			spaceHost := space + "." + s.domain
 			if net.URL != "https://"+spaceHost {
@@ -528,15 +528,15 @@ CMD ["httpd", "-f", "-p", "8080", "-h", "/site"]
 			s.waitBody(t, "https://"+spaceHost+"/healthz", `"ok":true`, 2*time.Minute)
 
 			net = setHost(t, "shop")
-			if net.HostOverride != "shop" {
-				t.Errorf("a label of its own should read back as %q, got %q", "shop", net.HostOverride)
+			if net.Host != "shop" {
+				t.Errorf("a label of its own should read back as %q, got %q", "shop", net.Host)
 			}
 			s.waitBody(t, "https://shop."+space+"."+s.domain+"/healthz", `"ok":true`, 2*time.Minute)
 
 			// Back to the default: the console reports no override at all.
 			net = setHost(t, "")
-			if net.HostOverride != "" {
-				t.Errorf("the default address should read back empty, got %q", net.HostOverride)
+			if net.Host != "" {
+				t.Errorf("the default address should read back empty, got %q", net.Host)
 			}
 			s.waitBody(t, s.appURL("/healthz"), `"ok":true`, 2*time.Minute)
 		})

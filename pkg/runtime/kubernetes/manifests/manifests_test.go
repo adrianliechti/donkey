@@ -94,6 +94,49 @@ func TestProtectionRendering(t *testing.T) {
 	}
 }
 
+func TestAPIProtectionRendering(t *testing.T) {
+	in := testInput(t)
+	in.App.Mode = config.AppModeAPI
+	in.App.CORS = config.CORSAllowAll
+	out, err := Render(mustObjects(t, in))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		AnnotationLogin + ": " + LoginRequired,
+		AnnotationMode + ": " + config.AppModeAPI,
+		AnnotationCORS + ": " + CORSAllowAll,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("API app should render %s", want)
+		}
+	}
+}
+
+func TestPublicAndInternalAPIModeRendering(t *testing.T) {
+	public := testInput(t)
+	public.App.Mode = config.AppModeAPI
+	public.App.Public = true
+	annotations := routeAnnotations(public, public.Domain, "/")
+	if annotations[AnnotationMode] != config.AppModeAPI {
+		t.Error("public API route must retain API mode")
+	}
+	if annotations[AnnotationLogin] != "" {
+		t.Error("public API route must not demand a login")
+	}
+
+	internal := testInput(t)
+	internal.App.Mode = config.AppModeAPI
+	internal.App.Internal = true
+	dep, err := deployment(internal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dep.Annotations[AnnotationMode] != config.AppModeAPI {
+		t.Fatalf("internal API workload mode = %q", dep.Annotations[AnnotationMode])
+	}
+}
+
 // Access rules ride on the route for the gateway to enforce — and only on
 // routes that demand a login.
 func TestAccessAnnotation(t *testing.T) {

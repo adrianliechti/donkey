@@ -1,7 +1,8 @@
 // Package ai is donkey's assistant, and donkey requires it: it reads every
 // app and reports what it is, how to build it, which port it binds, which
 // folders must survive a restart. Without a reachable model donkey stops
-// rather than half-reading an app. It never applies changes on its own.
+// rather than half-reading an app. Planning is read-only; build repairs may
+// edit an isolated workspace and return the resulting source patches.
 package ai
 
 import (
@@ -37,11 +38,20 @@ type DockerfileInput struct {
 	// history goes back, not just the last: with only one attempt to look at,
 	// a model oscillates between two broken variants.
 	Attempts []DockerfileAttempt `json:"attempts"`
+	// Runtime is the reviewed deployment contract. Secret values are removed
+	// before it reaches the model; variable names remain useful evidence.
+	Runtime      string   `json:"runtime,omitempty"`
+	KnownSecrets []string `json:"-"`
+	// AllowEdits is only enabled for an isolated, disposable build workspace.
+	AllowEdits bool         `json:"-"`
+	Progress   func(string) `json:"-"`
 }
 
 type DockerfileAttempt struct {
-	Dockerfile string `json:"dockerfile"`
-	Failure    string `json:"failure"`
+	Dockerfile   string `json:"dockerfile"`
+	Dockerignore string `json:"dockerignore,omitempty"`
+	Stage        string `json:"stage,omitempty"`
+	Failure      string `json:"failure"`
 }
 
 type DockerfileResult struct {
@@ -51,7 +61,14 @@ type DockerfileResult struct {
 	Notes        string `json:"notes"`
 	// FilesRead is what the assistant opened, so the build log can show what
 	// the answer was based on.
-	FilesRead []string `json:"filesRead"`
+	FilesRead []string       `json:"filesRead"`
+	Changes   []SourceChange `json:"changes,omitempty"`
+}
+
+// SourceChange records an edit made only to the disposable build workspace.
+type SourceChange struct {
+	Path string `json:"path"`
+	Diff string `json:"diff"`
 }
 
 // AnalyzeInput is what the assistant gets to look at.

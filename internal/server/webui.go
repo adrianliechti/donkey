@@ -121,9 +121,10 @@ type AppListEntry struct {
 	Restarts int32  `json:"restarts,omitempty"`
 	// StartedAt is when the newest pod came up (RFC 3339; empty when none).
 	StartedAt string `json:"startedAt,omitempty"`
-	// Exposure (public | protected | internal), disk and attached services —
+	// Mode, exposure, disk and attached services —
 	// what the console's canvas cards show without a per-app request.
 	Exposure   string   `json:"exposure,omitempty"`
+	Mode       string   `json:"mode,omitempty"`
 	HasStorage bool     `json:"hasStorage,omitempty"`
 	Addons     []string `json:"addons,omitempty"`
 }
@@ -156,6 +157,7 @@ func (s *Server) handleListApps(w http.ResponseWriter, r *http.Request) {
 			Image:      st.Image,
 			Restarts:   st.Restarts,
 			Exposure:   exposureOf(st),
+			Mode:       modeOfStatus(st),
 			HasStorage: s.rt.HasData(r.Context(), ref.Space, ref.App),
 		}
 		if !st.StartedAt.IsZero() {

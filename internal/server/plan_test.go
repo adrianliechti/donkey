@@ -1,10 +1,13 @@
 package server
 
 import (
+	"bytes"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"testing"
 	"time"
@@ -13,6 +16,86 @@ import (
 	"github.com/adrianliechti/donkey/internal/config"
 	"github.com/adrianliechti/donkey/internal/detect"
 )
+
+func TestPlanReviewKeepsOptionsAfterReselecting(t *testing.T) {
+	sp := planned()
+	service := config.AddonConfig{Type: "postgres", Name: "postgres", Version: "16", Storage: "20Gi", External: true}
+	sp.app.Addons = []config.AddonConfig{service}
+	sp.app.Storage.Class = "fast"
+	sp.app.Storage.Size = "10Gi"
+	sp.app.Env = map[string]string{"DB_URL": "${postgres.DATABASE_URL}", "MODE": "production"}
+	edit := PlanEdit{Name: "web", Space: "acme", Port: 8000, Exposure: "protected"}
+	applyPlanEdit(sp, edit)
+	if _, exists := sp.app.Env["DB_URL"]; exists {
+		t.Fatal("an unselected service left a dangling reference")
+	}
+	edit.Services, edit.Storage = []string{"postgres"}, []string{"/app/data"}
+	applyPlanEdit(sp, edit)
+	if !reflect.DeepEqual(sp.app.Addons, []config.AddonConfig{service}) || sp.app.Env["DB_URL"] != "${postgres.DATABASE_URL}" {
+		t.Fatalf("reselection lost service options or aliases: %+v", sp.app)
+	}
+	if sp.app.Storage.Class != "fast" || sp.app.Storage.Size != "10Gi" || sp.app.Env["MODE"] != "production" {
+		t.Fatal("review changed unrelated settings")
+	}
+}
+
+func TestPlanUpdateRejectsInvalidFields(t *testing.T) {
+	for _, field := range []string{"name", "space", "port", "exposure"} {
+		t.Run(field, func(t *testing.T) {
+			s := planServer(planRuntime{}, &ai.Analysis{})
+			sp := planned()
+			id := s.plans.put(sp)
+			before := cloneApp(sp.app)
+			edit := PlanEdit{Name: "web", Space: "acme", Port: 8000, Exposure: "protected"}
+			switch field {
+			case "name":
+				edit.Name = " "
+			case "space":
+				edit.Space = " "
+			case "port":
+				edit.Port = 0
+			case "exposure":
+				edit.Exposure = "unknown"
+			}
+			body, _ := json.Marshal(edit)
+			req := httptest.NewRequest(http.MethodPut, "/v1/plans/"+id, bytes.NewReader(body))
+			asAdmin(t, req)
+			rec := httptest.NewRecorder()
+			s.routes().ServeHTTP(rec, req)
+			if rec.Code != http.StatusBadRequest || !reflect.DeepEqual(before, sp.app) {
+				t.Fatalf("invalid edit was silently accepted or applied: %d %s", rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestPlanEditSelectsAPIMode(t *testing.T) {
+	sp := planned()
+	edit := PlanEdit{Name: "web", Space: "acme", Port: 8000, Exposure: "protected", Mode: "api"}
+	if err := edit.validate(); err != nil {
+		t.Fatal(err)
+	}
+	applyPlanEdit(sp, edit)
+	if !sp.app.UsesOAuth() || sp.app.Public || sp.app.Internal || exposureOfConfig(sp.app) != "protected" || modeOfConfig(sp.app) != "api" {
+		t.Fatalf("API mode was not applied: %+v", sp.app)
+	}
+}
+
+func TestPlanEditAllowsPublicAndInternalAPIs(t *testing.T) {
+	for _, exposure := range []string{"public", "internal"} {
+		t.Run(exposure, func(t *testing.T) {
+			sp := planned()
+			edit := PlanEdit{Name: "web", Space: "acme", Port: 8000, Exposure: exposure, Mode: "api"}
+			if err := edit.validate(); err != nil {
+				t.Fatal(err)
+			}
+			applyPlanEdit(sp, edit)
+			if sp.app.UsesOAuth() || modeOfConfig(sp.app) != config.AppModeAPI || exposureOfConfig(sp.app) != exposure {
+				t.Fatalf("%s API mode was not applied: %+v", exposure, sp.app)
+			}
+		})
+	}
+}
 
 func planned() *storedPlan {
 	app := &config.AppConfig{Name: "web", Space: "acme", Port: 8000}

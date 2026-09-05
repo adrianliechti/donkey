@@ -1,6 +1,7 @@
 package server
 
 import (
+	"cmp"
 	"context"
 	"encoding/hex"
 	"encoding/json"
@@ -30,12 +31,13 @@ import (
 
 // DeployResult is the final JSON line of a deploy stream.
 type DeployResult struct {
-	OK       bool   `json:"ok"`
-	App      string `json:"app"`
-	Space    string `json:"space,omitempty"`
-	ImageRef string `json:"imageRef,omitempty"`
-	URL      string `json:"url,omitempty"`
-	Error    string `json:"error,omitempty"`
+	Apps     []DeployResult `json:"apps,omitempty"`
+	OK       bool           `json:"ok"`
+	App      string         `json:"app"`
+	Space    string         `json:"space,omitempty"`
+	ImageRef string         `json:"imageRef,omitempty"`
+	URL      string         `json:"url,omitempty"`
+	Error    string         `json:"error,omitempty"`
 	// Diagnosis carries the AI failure analysis when a deploy failed.
 	Diagnosis string         `json:"diagnosis,omitempty"`
 	Proposals []ai.FixAction `json:"proposals,omitempty"`
@@ -46,11 +48,15 @@ type DeployResult struct {
 // state panel beside the human-readable log. Unknown update fields are safe
 // for older clients to ignore.
 type DeployUpdate struct {
-	Stage      string   `json:"stage,omitempty"`
-	BaseImages []string `json:"baseImages,omitempty"`
+	App        string        `json:"app,omitempty"`
+	Result     *DeployResult `json:"result,omitempty"`
+	Stage      string        `json:"stage,omitempty"`
+	BaseImages []string      `json:"baseImages,omitempty"`
 	// Dockerfile is the exact file this build used, reported once it is
 	// settled — the app's own, or the one the assistant wrote.
-	Dockerfile string `json:"dockerfile,omitempty"`
+	Dockerfile   string            `json:"dockerfile,omitempty"`
+	Dockerignore *string           `json:"dockerignore,omitempty"`
+	Changes      []ai.SourceChange `json:"changes,omitempty"`
 }
 
 // lineStreamer writes progress lines to the client as they happen.
@@ -130,7 +136,7 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 	var planned *storedPlan
 	if id := r.URL.Query().Get("plan"); id != "" {
 		p, ok := s.plans.get(id)
-		if !ok {
+		if !ok || p.project != nil {
 			writeErr(w, http.StatusGone,
 				fmt.Errorf("this deploy's plan has expired — upload the app again"))
 			return
@@ -150,7 +156,12 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 	}
 	// The app is not always at the top of the upload (a monorepo, a folder
 	// dragged from one level up) — find the folder that holds it.
-	dir, took, err := contextRoot(dir, r.URL.Query().Get("path"))
+	uploadRoot := dir
+	appPath := r.URL.Query().Get("path")
+	if planned != nil {
+		appPath = planned.root
+	}
+	dir, took, err := contextRoot(dir, appPath)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
@@ -202,6 +213,7 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 		space = ""
 	}
 	opts := deployOpts{
+		Root:      uploadRoot,
 		Analysis:  planned.reading(),
 		Space:     space,
 		Platform:  r.URL.Query().Get("platform"),
@@ -247,11 +259,11 @@ func appFromParams(name, portStr string) (*config.AppConfig, error) {
 	return app, nil
 }
 
-// Must outlast the assistant's own budget (2-minute timeout, one retry), or
-// deploys fail while their model call is still legitimately in flight.
-const analysisDeadline = 5 * time.Minute
-
 type deployOpts struct {
+	Root      string // the uploaded repository, bounding build.context
+	Hosts     map[string]string
+	Reviewed  bool
+	NoVerify  bool // startup needs the live services or sibling apps
 	Space     string
 	Platform  string
 	Tag       string
@@ -266,6 +278,14 @@ type deployOpts struct {
 }
 
 func (s *Server) deploy(ctx context.Context, out *lineStreamer, dir string, app *config.AppConfig, opts deployOpts) DeployResult {
+	unlock := s.lockApp(cmp.Or(opts.Space, app.Space, config.DefaultSpace), app.Name)
+	defer unlock()
+	return s.deployApp(ctx, out, dir, app, opts)
+}
+
+// deployApp requires the caller to hold the app's lock through its health
+// checks. A project holds every sibling's lock until all rollouts finish.
+func (s *Server) deployApp(ctx context.Context, out *lineStreamer, dir string, app *config.AppConfig, opts deployOpts) DeployResult {
 	// The space decides namespace and address, so it is settled first.
 	// Validation failures return plainly — diagnosing a self-explanatory
 	// message only delays the answer.
@@ -281,6 +301,10 @@ func (s *Server) deploy(ctx context.Context, out *lineStreamer, dir string, app 
 	fail := func(err error) DeployResult {
 		return DeployResult{App: app.Name, Space: space, Error: err.Error()}
 	}
+	buildDir, err := buildContext(opts.Root, dir, app.Build.Context)
+	if err != nil {
+		return fail(err)
+	}
 
 	if err := s.rt.ValidateSpace(space); err != nil {
 		return fail(err)
@@ -289,15 +313,12 @@ func (s *Server) deploy(ctx context.Context, out *lineStreamer, dir string, app 
 		return fail(err)
 	}
 
-	// One deploy per app at a time: concurrent deploys would interleave their
-	// applies and race their rollout waits, leaving the live image undefined.
-	unlock := s.lockApp(space, app.Name)
-	defer unlock()
-
 	// Network choices made in the console hold as long as donkey.yaml
 	// doesn't say otherwise — an explicit setting there always wins.
-	for _, line := range s.adoptConsoleChoices(ctx, space, app) {
-		out.Line("· %s", line)
+	if !opts.Reviewed {
+		for _, line := range s.adoptConsoleChoices(ctx, space, app) {
+			out.Line("· %s", line)
+		}
 	}
 
 	if app.Name == addons.SharedOwner {
@@ -314,6 +335,10 @@ func (s *Server) deploy(ctx context.Context, out *lineStreamer, dir string, app 
 		if _, err := addons.Get(a.Type); err != nil {
 			return fail(err)
 		}
+	}
+
+	if err := s.bindEnvironment(ctx, app); err != nil {
+		return fail(err)
 	}
 
 	imageRef := opts.Tag
@@ -339,10 +364,10 @@ func (s *Server) deploy(ctx context.Context, out *lineStreamer, dir string, app 
 			out.Line("· %s", line)
 		}
 		if opts.DryRun {
-			return s.renderDryRun(app, opts.Tag)
+			return s.renderDryRun(app, opts.Tag, opts.Hosts)
 		}
 		out.Update(DeployUpdate{Stage: "releasing"})
-		return s.applyAndWait(ctx, out, app, dir, opts.Tag, opts.NoWait)
+		return s.applyAndWait(ctx, out, app, dir, opts.Tag, opts.NoWait, opts.Hosts)
 	}
 
 	out.Update(DeployUpdate{Stage: "detecting"})
@@ -352,73 +377,48 @@ func (s *Server) deploy(ctx context.Context, out *lineStreamer, dir string, app 
 		out.Inspection(describePlanBuild(dir, det, nil), nil)
 	}
 
-	// Runs alongside the build: a model call should not sit between the user
-	// and their deploy.
-	type analysisResult struct {
-		analysis *ai.Analysis
-		err      error
-	}
-	analysisReady := make(chan analysisResult, 1)
-	run := func() {
-		analysis, signals, err := s.analyzeApp(ctx, dir, det, detErr)
-		if detErr == nil {
-			out.Inspection(describePlanBuild(dir, det, signals), analysis)
-		}
-		analysisReady <- analysisResult{analysis, err}
-	}
-	switch {
-	case opts.Analysis != nil:
-		// A reviewed plan already asked, and its answer is the one the user
-		// said yes to.
-		analysisReady <- analysisResult{opts.Analysis, nil}
-	case detErr != nil:
-		run() // nothing to build yet — the proposal has to come first
-	default:
-		go run()
-	}
-
-	// The only way detection fails is a donkey.yaml naming a Dockerfile that
-	// is not there — every other app gets one written for it.
+	// Analysis and the build must agree on the runtime before generating or
+	// verifying an image, especially when storage masks image directories.
 	if detErr != nil {
 		return fail(detErr)
 	}
-	out.Line("✓ %s will be built with %s", app.Name, det.Summary)
-	if det.DockerfilePath != "" {
-		out.Update(DeployUpdate{BaseImages: dockerfileBaseImagesAt(dir, det.DockerfilePath)})
-	}
-
-	// merge fills in what donkey.yaml left open, right before the app's
-	// objects are rendered. Exactly one of the paths below runs it, and it
-	// reports every decision. A model that never answers stops the deploy
-	// instead of quietly deploying a half-read app.
-	merge := func() error {
-		var res analysisResult
-		select {
-		case res = <-analysisReady:
-		case <-time.After(analysisDeadline):
-			return fmt.Errorf("the assistant didn't answer within %s — check the AI endpoint in the install settings, or deploy again", analysisDeadline)
-		}
-		if res.err != nil {
-			return res.err
-		}
-		for _, f := range mergeAnalysis(app, res.analysis) {
-			out.Line("· %s", f.Text())
-		}
-		// The merge changed the config after its load-time validation — a
-		// proposal that produces an invalid combination must not reach the
-		// cluster.
-		if err := app.Validate(); err != nil {
-			return fmt.Errorf("the assistant's findings don't fit this app's donkey.yaml: %w", err)
-		}
-		return nil
-	}
-
-	if opts.DryRun {
-		if err := merge(); err != nil {
+	analysis := opts.Analysis
+	if analysis == nil {
+		readCtx, cancel := context.WithCancel(ctx)
+		var signals *ai.Signals
+		analysis, signals, err = s.analyzeApp(readCtx, dir, det, nil)
+		cancel()
+		if err != nil {
 			return fail(err)
 		}
-		return s.renderDryRun(app, imageRef)
+		out.Inspection(describePlanBuild(dir, det, signals), analysis)
 	}
+	for _, finding := range mergeAnalysis(app, analysis) {
+		out.Line("· %s", finding.Text())
+	}
+	if err := app.Validate(); err != nil {
+		return fail(err)
+	}
+	if opts.DryRun {
+		return s.renderDryRun(app, imageRef, opts.Hosts)
+	}
+	out.Line("✓ %s will be built with %s", app.Name, det.Summary)
+
+	// Every app gets an isolated copy, including shared workspace packages.
+	// An automatic repair must not alter a sibling's reviewed build inputs.
+	workspace, err := os.MkdirTemp("", "donkey-build-workspace-*")
+	if err != nil {
+		return fail(err)
+	}
+	defer os.RemoveAll(workspace)
+	appRel, err := filepath.Rel(buildDir, dir)
+	if err != nil {
+		return fail(err)
+	}
+	if err := os.CopyFS(workspace, os.DirFS(buildDir)); err != nil {
+		return fail(fmt.Errorf("preparing the build workspace: %w", err))
+	}
+	buildDir, dir = workspace, filepath.Join(workspace, appRel)
 
 	// Platform precedence: --platform flag > donkey.yaml > the server's
 	// default (it knows what its nodes run).
@@ -461,7 +461,7 @@ func (s *Server) deploy(ctx context.Context, out *lineStreamer, dir string, app 
 		imageLabels["org.opencontainers.image.revision"] = opts.SHA
 	}
 	req := build.Request{
-		ContextDir:     dir,
+		ContextDir:     buildDir,
 		ImageRef:       imageRef,
 		Platform:       platform,
 		Push:           true,
@@ -471,61 +471,62 @@ func (s *Server) deploy(ctx context.Context, out *lineStreamer, dir string, app 
 		ImageLabels:    imageLabels,
 		Progress:       build.ProgressSink{LogPath: logFile.Name(), Writer: out},
 	}
-	var result *build.Result
-	if det.Strategy == config.BuildAI {
-		// donkey's own builder writes the Dockerfile, and gets more than one
-		// go at it — every failure is something the assistant can be shown.
-		req.Verify = s.verifySpec(app)
-		outcome, aerr := s.buildGenerated(ctx, out, builder, dir, app, req)
-		if aerr == nil {
-			result, err = outcome.Result, nil
-			if outcome.Attempts > 1 {
-				out.Line("· It took %d tries to get an image that starts.", outcome.Attempts)
-			}
-			if outcome.NeverListened {
-				out.Line("· Careful: the image starts, but it never listened on port %d while donkey watched it. If it listens somewhere else, set `port:` in donkey.yaml.", app.Port)
-			}
-			// The Dockerfile is the durable part of this: kept next to the
-			// app, the next deploy is a plain Dockerfile build with no model
-			// in the way.
-			out.Line("· Save this as %s to keep every later build identical:", detect.AIDockerfilePath)
-			for _, line := range strings.Split(strings.TrimRight(outcome.Dockerfile, "\n"), "\n") {
-				out.Line("    %s", line)
-			}
-			out.Update(DeployUpdate{Dockerfile: outcome.Dockerfile})
-		} else {
-			err = aerr
+	if det.DockerfilePath != "" {
+		req.DockerfilePath, err = filepath.Rel(buildDir, filepath.Join(dir, det.DockerfilePath))
+		if err != nil {
+			return fail(err)
 		}
-	} else {
-		// The recipe goes into the build record either way; for an app that
-		// brings its own file this is the only place it is read whole.
-		if content := readDockerfile(dir, det.DockerfilePath); content != "" {
-			out.Update(DeployUpdate{Dockerfile: content})
+		req.DockerfilePath = filepath.ToSlash(req.DockerfilePath)
+	}
+	req.Verify = s.verifySpec(app)
+	if opts.NoVerify {
+		req.Verify = nil
+	}
+	// Runtime-only values cannot be recreated faithfully inside BuildKit.
+	// The rollout remains mandatory even when this preliminary check is skipped.
+	if stored, e := s.rt.GetEnv(ctx, space, app.Name); e != nil || len(stored) > 0 {
+		req.Verify = nil
+	}
+	var release func(*build.Result) error
+	if !opts.BuildOnly {
+		release = func(result *build.Result) error {
+			return s.rt.Deploy(ctx, runtime.DeploySpec{App: app, Space: space, ImageRef: result.ImageRef,
+				Decisions: decisionsJSON(app), NoWait: opts.NoWait, Hosts: opts.Hosts}, out)
 		}
-		result, err = builder.Build(ctx, req)
+	}
+	outcome, err := s.buildGenerated(ctx, out, builder, dir, app, req, release)
+	res := DeployResult{App: app.Name, Space: space}
+	if outcome != nil && outcome.Result != nil {
+		res.ImageRef = outcome.Result.ImageRef
 	}
 	if err != nil {
-		res := DeployResult{App: app.Name, Space: space, Error: err.Error()}
-		if logs, rerr := os.ReadFile(logFile.Name()); rerr == nil {
-			s.diagnoseWith(ctx, &res, dir, space, app.Name, "build", tailBytes(logs, 15*1024), nil)
+		res.Error = err.Error()
+		var rollout *runtime.RolloutError
+		if errors.As(err, &rollout) {
+			s.diagnoseWith(ctx, &res, buildDir, space, app.Name, "rollout", rollout.Evidence.Logs, rollout.Evidence.Events)
+		} else if logs, e := os.ReadFile(logFile.Name()); e == nil {
+			s.diagnoseWith(ctx, &res, buildDir, space, app.Name, "build", tailBytes(logs, 15*1024), nil)
 		}
 		return res
 	}
-	out.Line("✓ Image ready: %s", result.ImageRef)
-
-	if opts.BuildOnly {
-		return DeployResult{OK: true, App: app.Name, Space: space, ImageRef: result.ImageRef}
+	res.OK = true
+	if !opts.BuildOnly {
+		res.URL = s.cfg.AppURL(space, app)
 	}
-
-	out.Update(DeployUpdate{Stage: "releasing"})
-	if err := merge(); err != nil {
-		// The image is already pushed — hand its reference back so a
-		// `--no-build --tag` retry doesn't have to rebuild.
-		res := fail(err)
-		res.ImageRef = result.ImageRef
-		return res
+	if outcome.Attempts > 1 {
+		out.Line("✓ Completed after %d attempts.", outcome.Attempts)
 	}
-	return s.applyAndWait(ctx, out, app, dir, result.ImageRef, opts.NoWait)
+	if det.Strategy != config.BuildDockerfile || outcome.Attempts > 1 {
+		// CLI clients consume text progress; structured updates also retain
+		// these artifacts for the console and release history.
+		out.Line("· Build recipe — save as %s:\n%s", detect.AIDockerfilePath, outcome.Dockerfile)
+		out.Line("· Build exclusions — save as %s.dockerignore:\n%s", detect.AIDockerfilePath, outcome.Dockerignore)
+		for _, change := range outcome.Changes {
+			out.Line("· Source repair in the build copy — %s:\n%s", change.Path, change.Diff)
+		}
+	}
+	return res
+
 }
 
 func registryMirrorSummary(mirrors map[string]string) string {
@@ -542,10 +543,10 @@ func registryMirrorSummary(mirrors map[string]string) string {
 }
 
 // renderDryRun renders the app's objects without touching the runtime.
-func (s *Server) renderDryRun(app *config.AppConfig, imageRef string) DeployResult {
+func (s *Server) renderDryRun(app *config.AppConfig, imageRef string, hosts map[string]string) DeployResult {
 	res := DeployResult{App: app.Name, Space: app.Space, ImageRef: imageRef}
 	rendered, err := s.rt.Render(runtime.DeploySpec{
-		App: app, Space: app.Space, ImageRef: imageRef, Decisions: decisionsJSON(app),
+		App: app, Space: app.Space, ImageRef: imageRef, Decisions: decisionsJSON(app), Hosts: hosts,
 	})
 	if err != nil {
 		res.Error = err.Error()
@@ -567,11 +568,13 @@ type deployDecisions struct {
 // endpoints only: a deploy re-renders decisions from donkey.yaml, while a
 // console choice survives because server-side apply owns only what it writes.
 type consoleChoices struct {
-	// Exposure is "public", "protected" or "internal"; empty means the
-	// donkeyfile (or the default) decides.
-	Exposure     string               `json:"exposure,omitempty"`
-	HostOverride string               `json:"hostOverride,omitempty"`
-	Access       *config.AccessConfig `json:"access,omitempty"`
+	// Mode is web or api. Exposure is public, protected or internal. Empty
+	// values mean the donkeyfile (or the default) decides.
+	Mode     string               `json:"mode,omitempty"`
+	Exposure string               `json:"exposure,omitempty"`
+	Host     string               `json:"host,omitempty"`
+	Access   *config.AccessConfig `json:"access,omitempty"`
+	CORS     string               `json:"cors,omitempty"`
 }
 
 func (s *Server) readConsoleChoices(ctx context.Context, space, app string) consoleChoices {
@@ -584,14 +587,18 @@ func (s *Server) readConsoleChoices(ctx context.Context, space, app string) cons
 }
 
 // adoptConsoleChoices fills what donkey.yaml leaves open from the console's
-// settings. The file wins where it speaks — an omitted bool is
-// indistinguishable from an explicit false, so "speaks" means it sets
-// public/internal/domain/access. Adoption that would invalidate the config is
+// settings. The file wins where it speaks: mode, exposure, host, access or
+// a CORS policy. Adoption that would invalidate the config is
 // dropped, and only ever the adopted values.
 func (s *Server) adoptConsoleChoices(ctx context.Context, space string, app *config.AppConfig) []string {
 	c := s.readConsoleChoices(ctx, space, app.Name)
 	var lines []string
-	adoptedExposure, adoptedHost, adoptedAccess := false, false, false
+	adoptedMode, adoptedExposure, adoptedHost, adoptedAccess, adoptedCORS := false, false, false, false, false
+	if app.Mode == "" && c.Mode == config.AppModeAPI {
+		app.Mode = c.Mode
+		adoptedMode = true
+		lines = append(lines, fmt.Sprintf("Keeping the console's setting: %s mode", c.Mode))
+	}
 	if !app.Public && !app.Internal {
 		switch c.Exposure {
 		case "public":
@@ -602,10 +609,15 @@ func (s *Server) adoptConsoleChoices(ctx context.Context, space string, app *con
 			lines = append(lines, "Keeping the console's setting: internal only")
 		}
 	}
-	if app.Host == "" && c.HostOverride != "" && !app.Internal {
-		app.Host = c.HostOverride
+	if app.CORS == "" && c.CORS != "" {
+		app.CORS = c.CORS
+		adoptedCORS = true
+		lines = append(lines, "Keeping the console's setting: allow browser requests from any origin")
+	}
+	if app.Host == "" && c.Host != "" && !app.Internal {
+		app.Host = c.Host
 		adoptedHost = true
-		lines = append(lines, fmt.Sprintf("Keeping the console's address: %s", c.HostOverride))
+		lines = append(lines, fmt.Sprintf("Keeping the console's address: %s", c.Host))
 	}
 	if app.Access == nil && !c.Access.Empty() {
 		app.Access = c.Access
@@ -614,6 +626,9 @@ func (s *Server) adoptConsoleChoices(ctx context.Context, space string, app *con
 			len(c.Access.Users), len(c.Access.Groups), len(c.Access.Roles)))
 	}
 	if app.Validate() != nil {
+		if adoptedMode {
+			app.Mode = ""
+		}
 		if adoptedExposure {
 			app.Public, app.Internal = false, false
 		}
@@ -622,6 +637,9 @@ func (s *Server) adoptConsoleChoices(ctx context.Context, space string, app *con
 		}
 		if adoptedAccess {
 			app.Access = nil
+		}
+		if adoptedCORS {
+			app.CORS = ""
 		}
 		return nil
 	}
@@ -684,7 +702,7 @@ func (s *Server) adoptStoredDecisions(ctx context.Context, space, imageRef strin
 // whole go-live choreography (storage, declared services, routes, waiting),
 // and turns its typed failures into the deploy's result — with the AI
 // diagnosis attached where there is real evidence.
-func (s *Server) applyAndWait(ctx context.Context, out *lineStreamer, app *config.AppConfig, root, imageRef string, noWait bool) DeployResult {
+func (s *Server) applyAndWait(ctx context.Context, out *lineStreamer, app *config.AppConfig, root, imageRef string, noWait bool, hosts map[string]string) DeployResult {
 	space := app.Space
 	err := s.rt.Deploy(ctx, runtime.DeploySpec{
 		App:       app,
@@ -692,6 +710,7 @@ func (s *Server) applyAndWait(ctx context.Context, out *lineStreamer, app *confi
 		ImageRef:  imageRef,
 		Decisions: decisionsJSON(app),
 		NoWait:    noWait,
+		Hosts:     hosts,
 	}, out)
 	if err != nil {
 		res := DeployResult{App: app.Name, Space: space, ImageRef: imageRef, Error: err.Error()}
@@ -728,7 +747,7 @@ func decisionsJSON(app *config.AppConfig) string {
 // never applied: the server computes the diff, the user decides. root is the
 // server's own temp copy of the app, never the user's working tree.
 func (s *Server) diagnoseWith(ctx context.Context, res *DeployResult, root, space, app, stage, logs string, events []string) {
-	dctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	dctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	proposal, aerr := s.assistant.DiagnoseFailure(dctx, &ai.FailureContext{
 		Stage:        stage,

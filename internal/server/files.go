@@ -21,15 +21,6 @@ import (
 // only turn HTTP into that, and turn its errors into something a person can
 // act on.
 
-const (
-	// filesOpTimeout covers listing, deleting and moving: the slow part is
-	// starting the helper pod, not the operation itself.
-	filesOpTimeout = 3 * time.Minute
-	// filesTransferTimeout is for uploads and downloads, which are as slow as
-	// the file is large.
-	filesTransferTimeout = 20 * time.Minute
-)
-
 type FileInfo struct {
 	Name string `json:"name"`
 	Size int64  `json:"size"`
@@ -65,7 +56,7 @@ func (s *Server) handleListFiles(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), filesOpTimeout)
+	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 
 	p := r.URL.Query().Get("path")
@@ -109,7 +100,7 @@ func (s *Server) handleReadFile(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), filesTransferTimeout)
+	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 
 	p := r.URL.Query().Get("path")
@@ -136,12 +127,7 @@ func (s *Server) handleWriteFile(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	if r.ContentLength > runtime.MaxUploadBytes {
-		writeErr(w, http.StatusRequestEntityTooLarge,
-			fmt.Errorf("that file is too large to upload — the limit is %d MB", runtime.MaxUploadBytes>>20))
-		return
-	}
-	ctx, cancel := context.WithTimeout(r.Context(), filesTransferTimeout)
+	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 
 	p := r.URL.Query().Get("path")
@@ -180,7 +166,7 @@ func (s *Server) handleDeleteFile(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), filesOpTimeout)
+	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 
 	p := r.URL.Query().Get("path")
@@ -199,7 +185,7 @@ func (s *Server) handleMoveFile(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), filesOpTimeout)
+	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 
 	q := r.URL.Query()
@@ -218,7 +204,7 @@ func (s *Server) handleMakeFolder(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), filesOpTimeout)
+	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 
 	p := r.URL.Query().Get("path")
@@ -238,8 +224,6 @@ func writeFilesErr(w http.ResponseWriter, err error) {
 		writeErr(w, http.StatusNotFound, err)
 	case errors.Is(err, runtime.ErrBadPath), errors.Is(err, runtime.ErrNotAFile), errors.Is(err, runtime.ErrNotAFolder):
 		writeErr(w, http.StatusBadRequest, err)
-	case errors.Is(err, runtime.ErrTooLarge):
-		writeErr(w, http.StatusRequestEntityTooLarge, err)
 	case errors.Is(err, context.DeadlineExceeded):
 		writeErr(w, http.StatusGatewayTimeout, fmt.Errorf("the app's disk didn't answer in time — try again"))
 	default:

@@ -2,12 +2,12 @@ package ai
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io/fs"
 	"os"
 	"path"
-	"sort"
 	"strings"
 	"unicode/utf8"
 
@@ -20,7 +20,7 @@ import (
 // that file imports another, and the setting that broke the deploy is a third
 // nobody mentioned. So the assistant reads the app itself, within hard limits:
 //
-//   - read-only tools. No shell, no write, no network.
+//   - read-only planning; scoped edits only in a disposable build workspace.
 //   - containment is the OS's job: every path goes through an *os.Root on the
 //     upload, which refuses ".." and escaping symlinks at the syscall level —
 //     no string check to get wrong, no check-then-use window. The upload is a
@@ -31,24 +31,23 @@ import (
 const (
 	// maxExploreTurns bounds a diagnosis, which starts from a stack trace and
 	// only has to follow it.
-	maxExploreTurns = 6
+	maxExploreTurns = 16
 	// maxBuildExploreTurns bounds writing a Dockerfile, which starts from
 	// nothing and has to establish the toolchain, the install, the build and
 	// the start command. It is the difference between a model that reads the
 	// vite config and one that guesses the output directory.
-	maxBuildExploreTurns = 14
-	maxToolOutput        = 12 * 1024
-	maxListEntries       = 300
-	maxSearchMatches     = 50
-	maxFindMatches       = 100
-	maxReadFileLines     = 500
-	maxSearchFileSize    = 512 * 1024
+	maxBuildExploreTurns = 32
+	maxToolOutput        = 48 * 1024
+	maxReadFileLines     = 2000
 )
 
 // explorer answers tool calls against one folder.
 type explorer struct {
-	root *os.Root
-	fsys fs.FS
+	root       *os.Root
+	fsys       fs.FS
+	writable   bool
+	readHashes map[string][32]byte
+	originals  map[string]string
 }
 
 // newExplorer opens the folder as a root. Everything the assistant can reach
@@ -58,7 +57,7 @@ func newExplorer(dir string) (*explorer, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &explorer{root: root, fsys: root.FS()}, nil
+	return &explorer{root: root, fsys: root.FS(), readHashes: map[string][32]byte{}, originals: map[string]string{}}, nil
 }
 
 func (e *explorer) Close() error { return e.root.Close() }
@@ -94,30 +93,20 @@ func (e *explorer) tools() []responses.ToolUnionParam {
 		}
 	}
 	tools := []responses.ToolUnionParam{
-		responses.ToolParamOfFunction("list_files", schema(map[string]any{
-			"path": str("Folder to list, relative to the app root. Empty string for the root."),
-		}, []string{"path"}), true),
-
-		responses.ToolParamOfFunction("read_file", schema(map[string]any{
-			"path": str("File to read, relative to the app root."),
-		}, []string{"path"}), true),
-
-		responses.ToolParamOfFunction("search_files", schema(map[string]any{
-			"query": str("Literal text to look for (not a regular expression)."),
-			"path":  str("Optional subfolder to search in. Empty string searches the whole app."),
-		}, []string{"query", "path"}), true),
-
-		responses.ToolParamOfFunction("find_files", schema(map[string]any{
-			"pattern": str("Filename glob, matched against the file name only: '*.csproj', 'vite.config.*', 'Dockerfile*', '*.tsx'."),
-		}, []string{"pattern"}), true),
+		responses.ToolParamOfFunction("read", schema(map[string]any{
+			"file_path": str("File to read, relative to the uploaded workspace."),
+			"offset":    map[string]any{"type": []string{"integer", "null"}, "description": "1-based starting line. Null starts at line 1."},
+			"limit":     map[string]any{"type": []string{"integer", "null"}, "description": "Number of lines, up to 2000. Null uses 2000."},
+		}, []string{"file_path", "offset", "limit"}), true),
 	}
 	for i, desc := range []string{
-		"List files in the app, optionally under a subfolder. Start here when you don't know the layout.",
-		"Read one file from the app, with line numbers.",
-		"Find a literal string across the app's files. Use it to locate a listen port, a route, a setting or a symbol when you don't know which file holds it.",
-		"Find files by name pattern anywhere in the app, shallowest first. Use it to locate a framework config, a project file or an entry point without listing the whole tree.",
+		"Read a file with 1-based line numbers. Use offset and limit to read known ranges; truncated output tells you where to continue.",
 	} {
 		tools[i].OfFunction.Description = openai.String(desc)
+	}
+	tools = append(tools, searchTools()...)
+	if e.writable {
+		tools = append(tools, editTool())
 	}
 	return tools
 }
@@ -127,9 +116,10 @@ func (e *explorer) tools() []responses.ToolUnionParam {
 // hard failure would end an investigation over a wrong guess.
 func (e *explorer) call(name, args string) string {
 	var a struct {
-		Path    string `json:"path"`
-		Query   string `json:"query"`
-		Pattern string `json:"pattern"`
+		Path     string `json:"path"`
+		FilePath string `json:"file_path"`
+		Offset   *int   `json:"offset"`
+		Limit    *int   `json:"limit"`
 	}
 	if args != "" {
 		if err := json.Unmarshal([]byte(args), &a); err != nil {
@@ -137,222 +127,99 @@ func (e *explorer) call(name, args string) string {
 		}
 	}
 	switch name {
-	case "list_files":
-		return e.list(a.Path)
-	case "read_file":
-		return e.read(a.Path)
-	case "search_files":
-		return e.search(a.Query, a.Path)
-	case "find_files":
-		return e.find(a.Pattern)
+	case "read":
+		if a.FilePath != "" {
+			a.Path = a.FilePath
+		}
+		return e.readRange(a.Path, a.Offset, a.Limit)
+	case "glob", "grep":
+		return e.query(name, args)
+	case "edit":
+		if !e.writable {
+			return "This investigation is read-only."
+		}
+		return e.edit(args)
 	default:
 		return "There is no tool called " + name + "."
 	}
 }
 
-// find locates files by name pattern. It is the tool that makes exploration
-// cheap on a repository nobody has seen: "where is the vite config" is one
-// call instead of a walk the model has to read.
-func (e *explorer) find(pattern string) string {
-	pattern = strings.TrimSpace(pattern)
-	if pattern == "" {
-		return "Give a filename pattern, for example '*.csproj'."
-	}
-	// A pattern with a slash is a path pattern; match it against the whole
-	// relative path rather than the base name.
-	full := strings.Contains(pattern, "/")
-	if _, err := path.Match(pattern, "probe"); err != nil {
-		return "That is not a valid pattern: " + err.Error()
-	}
-	var hits []string
-	fs.WalkDir(e.fsys, ".", func(p string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return nil
-		}
-		if d.IsDir() {
-			if skipDirs[d.Name()] {
-				return fs.SkipDir
-			}
-			return nil
-		}
-		if len(hits) >= maxFindMatches {
-			return fs.SkipAll
-		}
-		if deniedFile(d.Name()) {
-			return nil
-		}
-		target := d.Name()
-		if full {
-			target = p
-		}
-		if ok, _ := path.Match(pattern, target); ok {
-			hits = append(hits, p)
-		}
-		return nil
-	})
-	if len(hits) == 0 {
-		return "No file matches " + pattern + "."
-	}
-	// Shallowest first: a manifest at the root almost always outranks the same
-	// name buried in a fixture or an example folder.
-	sort.SliceStable(hits, func(i, j int) bool {
-		di, dj := strings.Count(hits[i], "/"), strings.Count(hits[j], "/")
-		if di != dj {
-			return di < dj
-		}
-		return hits[i] < hits[j]
-	})
-	out := strings.Join(hits, "\n")
-	if len(hits) >= maxFindMatches {
-		out += "\n…(more matches not shown — narrow the pattern)"
-	}
-	return out
-}
-
-func (e *explorer) list(rel string) string {
-	var lines []string
-	n := 0
-	err := fs.WalkDir(e.fsys, fsPath(rel), func(p string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return nil
-		}
-		if d.IsDir() {
-			if skipDirs[d.Name()] {
-				return fs.SkipDir
-			}
-			return nil
-		}
-		if deniedFile(d.Name()) {
-			return nil
-		}
-		if n >= maxListEntries {
-			return fs.SkipAll
-		}
-		n++
-		lines = append(lines, p)
-		return nil
-	})
-	if err != nil || len(lines) == 0 {
-		return "No files there."
-	}
-	sort.Strings(lines)
-	out := strings.Join(lines, "\n")
-	if n >= maxListEntries {
-		out += "\n…(more files not shown)"
-	}
-	return out
-}
-
 func (e *explorer) read(rel string) string {
+	return e.readRange(rel, nil, nil)
+}
+
+func (e *explorer) readRange(rel string, offset, limit *int) string {
 	if rel == "" {
 		return "Give a file path."
 	}
 	name := fsPath(rel)
-	if deniedFile(path.Base(name)) {
-		return "That file is not readable — donkey never sends secrets to the assistant."
+	if !readablePath(name) || !e.noSymlinks(name) {
+		return "That path is excluded or contains a symlink."
 	}
 	info, err := e.root.Stat(name)
 	if err != nil {
 		return "No such file in this app: " + rel
 	}
 	if info.IsDir() {
-		return rel + " is a folder — use list_files."
+		return rel + " is a folder — use glob."
+	}
+	if !info.Mode().IsRegular() {
+		return "Read a regular text file."
 	}
 	b, err := e.root.ReadFile(name)
 	if err != nil {
 		return "Could not read " + rel + ": " + err.Error()
 	}
-	if !utf8.Valid(b) {
+	if !utf8.Valid(b) || strings.ContainsRune(string(b), '\x00') {
 		return rel + " is not a text file."
 	}
-	lines := strings.Split(string(b), "\n")
-	truncated := false
-	if len(lines) > maxReadFileLines {
-		lines = lines[:maxReadFileLines]
-		truncated = true
+	start, count := 1, maxReadFileLines
+	if offset != nil {
+		start = *offset
+	}
+	if limit != nil {
+		count = *limit
+	}
+	if start < 1 || count < 1 || count > maxReadFileLines {
+		return "offset must be a positive 1-based line number and limit must be between 1 and 2000."
+	}
+	lines := strings.Split(strings.TrimSuffix(string(b), "\n"), "\n")
+	if start > len(lines) {
+		return fmt.Sprintf("This file has %d lines; offset %d is beyond its end.", len(lines), start)
 	}
 	var sb strings.Builder
-	for i, l := range lines {
-		fmt.Fprintf(&sb, "%d\t%s\n", i+1, l)
-		if sb.Len() > maxToolOutput {
-			truncated = true
+	end := min(len(lines), start-1+count)
+	next := start
+	for i := start - 1; i < end; i++ {
+		line := fmt.Sprintf("%d\t%s\n", i+1, lines[i])
+		if sb.Len()+len(line) > maxToolOutput-200 {
+			if sb.Len() == 0 {
+				return fmt.Sprintf("Line %d exceeds the read output limit; use grep for a targeted excerpt.", i+1)
+			}
 			break
 		}
+		sb.WriteString(line)
+		next = i + 2
 	}
-	if truncated {
-		sb.WriteString("…(file continues)\n")
+	if next <= len(lines) {
+		fmt.Fprintf(&sb, "[Showing lines %d-%d of %d; use offset=%d to continue.]\n", start, next-1, len(lines), next)
 	}
+	e.readHashes[name] = sha256.Sum256(b)
 	return sb.String()
-}
-
-// search finds a literal string, optionally under one subfolder. Scoping
-// matters on a monorepo: the same import appears in a dozen packages and only
-// the one being built is the answer.
-func (e *explorer) search(query, scope string) string {
-	if query == "" {
-		return "Give something to search for."
-	}
-	root := fsPath(scope)
-	if info, err := e.root.Stat(root); err != nil || !info.IsDir() {
-		// A scope that is not a folder is a wrong guess, not a reason to give
-		// up: search the whole app and say so.
-		root = "."
-	}
-	var hits []string
-	fs.WalkDir(e.fsys, root, func(p string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return nil
-		}
-		if d.IsDir() {
-			if skipDirs[d.Name()] {
-				return fs.SkipDir
-			}
-			return nil
-		}
-		if len(hits) >= maxSearchMatches {
-			return fs.SkipAll
-		}
-		if deniedFile(d.Name()) {
-			return nil
-		}
-		info, err := d.Info()
-		if err != nil || info.Size() > maxSearchFileSize {
-			return nil
-		}
-		b, err := e.root.ReadFile(p)
-		if err != nil || !utf8.Valid(b) {
-			return nil
-		}
-		rel := p
-		for i, line := range strings.Split(string(b), "\n") {
-			if !strings.Contains(line, query) {
-				continue
-			}
-			if len(line) > 200 {
-				line = line[:200] + "…"
-			}
-			hits = append(hits, fmt.Sprintf("%s:%d: %s", rel, i+1, strings.TrimSpace(line)))
-			if len(hits) >= maxSearchMatches {
-				break
-			}
-		}
-		return nil
-	})
-	if len(hits) == 0 {
-		return "No file contains that."
-	}
-	out := strings.Join(hits, "\n")
-	if len(hits) >= maxSearchMatches {
-		out += "\n…(more matches not shown — narrow the search or scope it to a folder)"
-	}
-	return out
 }
 
 // investigate lets the model read the app before it answers. It returns the
 // transcript of what was looked at, which then goes into the call that asks
 // for the structured proposal — so the conclusion is drawn from files that
 // were actually read, and donkey can show which ones those were.
-func (o *openAI) investigate(ctx context.Context, root, instructions, task string, maxTurns int) []responses.ResponseInputItemUnionParam {
+type exploreOptions struct {
+	Writable     bool
+	Progress     func(string)
+	Changes      *[]SourceChange
+	KnownSecrets []string
+}
+
+func (o *openAI) investigate(ctx context.Context, root, instructions, task string, maxTurns int, options ...exploreOptions) []responses.ResponseInputItemUnionParam {
 	input := []responses.ResponseInputItemUnionParam{
 		responses.ResponseInputItemParamOfMessage(task, responses.EasyInputMessageRoleUser),
 	}
@@ -361,6 +228,16 @@ func (o *openAI) investigate(ctx context.Context, root, instructions, task strin
 		return input
 	}
 	defer ex.Close()
+	var opt exploreOptions
+	if len(options) > 0 {
+		opt = options[0]
+	}
+	ex.writable = opt.Writable
+	defer func() {
+		if opt.Changes != nil {
+			*opt.Changes = ex.changes()
+		}
+	}()
 	tools := ex.tools()
 
 	for turn := 0; turn < maxTurns; turn++ {
@@ -381,6 +258,16 @@ func (o *openAI) investigate(ctx context.Context, root, instructions, task strin
 		// configured, and server-side conversation state is the part such
 		// endpoints most often do not implement.
 		for _, item := range resp.Output {
+			if item.Type == "reasoning" {
+				reasoning := item.AsReasoning().ToParam()
+				input = append(input, responses.ResponseInputItemUnionParam{OfReasoning: &reasoning})
+				continue
+			}
+			if item.Type == "message" {
+				message := item.AsMessage().ToParam()
+				input = append(input, responses.ResponseInputItemUnionParam{OfOutputMessage: &message})
+				continue
+			}
 			if item.Type != "function_call" {
 				continue
 			}
@@ -392,19 +279,32 @@ func (o *openAI) investigate(ctx context.Context, root, instructions, task strin
 				Arguments: fc.Arguments,
 			}})
 			out := ex.call(fc.Name, fc.Arguments)
+			if opt.Progress != nil {
+				var args struct {
+					Path     string `json:"path"`
+					FilePath string `json:"file_path"`
+				}
+				_ = json.Unmarshal([]byte(fc.Arguments), &args)
+				if args.FilePath != "" {
+					args.Path = args.FilePath
+				}
+				if fc.Name == "edit" {
+					opt.Progress(out)
+				} else if args.Path != "" {
+					opt.Progress(fc.Name + ": " + args.Path)
+				}
+			}
 			if len(out) > maxToolOutput {
 				out = out[:maxToolOutput] + "\n…(truncated)"
+			}
+			if opt.Writable || len(opt.KnownSecrets) > 0 {
+				out = RedactEvidence(out, opt.KnownSecrets...)
 			}
 			toolOutput := responses.ResponseInputItemParamOfFunctionCallOutput(out)
 			toolOutput.OfFunctionCallOutput.CallID = openai.String(fc.CallID)
 			input = append(input, toolOutput)
 		}
 		if calls == 0 {
-			// Nothing more to look at — whatever it said, the answer call is
-			// what turns it into a proposal.
-			if text := resp.OutputText(); text != "" {
-				input = append(input, responses.ResponseInputItemParamOfMessage(text, responses.EasyInputMessageRoleAssistant))
-			}
 			break
 		}
 	}
@@ -419,13 +319,20 @@ func exploredFiles(history []responses.ResponseInputItemUnionParam) []string {
 	seen := map[string]bool{}
 	for _, item := range history {
 		fc := item.OfFunctionCall
-		if fc == nil || fc.Name != "read_file" {
+		if fc == nil || fc.Name != "read" {
 			continue
 		}
 		var a struct {
-			Path string `json:"path"`
+			Path     string `json:"path"`
+			FilePath string `json:"file_path"`
 		}
-		if json.Unmarshal([]byte(fc.Arguments), &a) != nil || a.Path == "" {
+		if json.Unmarshal([]byte(fc.Arguments), &a) != nil {
+			continue
+		}
+		if a.FilePath != "" {
+			a.Path = a.FilePath
+		}
+		if a.Path == "" {
 			continue
 		}
 		p := fsPath(a.Path)

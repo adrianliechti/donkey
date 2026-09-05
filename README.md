@@ -107,6 +107,12 @@ five ideas:
   asked before the upload: the port comes out of the code, the disks out of
   the folders the app writes to, the services out of its imports. A dropped
   folder is packed client-side with the CLI's exclusion rules.
+  Monorepos are reviewed as a project: every runnable app gets its own
+  deployment in the same space, while workspace packages and lockfiles stay
+  available to builds. Browser-to-backend calls use a shared-origin route;
+  server calls use the runtime's internal address. Connection variables and
+  source fixes are shown before deployment, and each app reports its own
+  progress and result.
   Views are linkable (`#/app/<space>/<name>`) and follow your light/dark
   preference.
 - **donkey-ai** — the openai addon's endpoint (same image, `ai`
@@ -251,7 +257,7 @@ Two readers run over the folder and their answers are combined:
 | | **Scanner** (in-process, deterministic) | **Assistant** (your OpenAI-compatible model) |
 |---|---|---|
 | Question | what do the files prove? | what is true about this app? |
-| Sees | manifests, lockfiles, version files, framework configs | everything the scanner found, plus the source — it reads the app with `list_files`, `read_file`, `search_files`, `find_files` |
+| Sees | manifests, lockfiles, version files, framework configs | everything the scanner found, plus the source — it reads the app with `read`, `glob`, and `grep` |
 | Answers | runtime, package manager, pinned versions, static output directory, start-command candidates, OS packages the dependencies need — each with the file it came from | app type, port, health route, data folders, backing services, and the app's Dockerfile |
 | Fails when | the app is unusual | the endpoint is unreachable → donkey stops and says so |
 
@@ -345,6 +351,8 @@ space: acme                   # default: the repository's folder name
 port: 8000                    # the port your code listens on
 
 public: true                  # skip the login gateway (machine clients)
+mode: api                     # web (default) | api with OAuth
+cors: allowAll                # allow browser calls from every origin
 internal: true                # no address at all; siblings reach it by name
 access:                       # narrow the login to named people (any match)
   users: [ada@example.com]
@@ -361,6 +369,7 @@ healthcheck:
 
 env:                          # non-secret values; `donkey env set` for the rest
   GREETING: hello
+  DB_URL: ${db.DATABASE_URL}   # resolve a service binding when the app starts
 
 storage:                      # one disk, each path its own folder on it
   size: 5Gi
@@ -369,7 +378,7 @@ storage:                      # one disk, each path its own folder on it
     - /app/data
 
 addons:                       # space services this app uses; the deploy
-  - type: postgres            # creates missing ones. postgres | rustfs (S3)
+  - type: postgres            # creates missing ones. postgres | redis | rustfs (S3)
     name: db                  # | openai (the platform's AI).
                               # apps naming the same service share it
 
@@ -381,6 +390,7 @@ build:
                               # ai: write a fresh one even if a Dockerfile
                               # is sitting in the folder
   dockerfile: Dockerfile
+  context: .                  # relative to the app; .. for an uploaded workspace
   platform: linux/arm64
   env:                        # build-time values (VITE_*, build args)
     VITE_API_URL: https://api.example.com
@@ -392,14 +402,40 @@ host: shop.example.com        # where this app answers: a full hostname, a
                               # space's own address. Omitted = <app>.<space>.<domain>
 resources:
   requests: { cpu: 100m, memory: 128Mi }
-  limits:   { memory: 512Mi }
 ```
+
+Default resource requests reserve scheduling capacity; Donkey imposes no
+default CPU, memory, or ephemeral-storage limits on workloads or platform
+services. Build-context, file, and object uploads have no application-defined
+size ceiling. Model calls and database/storage requests follow caller
+cancellation rather than a fixed operation deadline. Release records retain
+complete logs and repair patches. Connection establishment and health probes
+still have timeouts so unreachable services can be detected and repaired.
+
+Environment values such as `${db.DATABASE_URL}` reference an addon by name
+and binding key. They are resolved at runtime, so the config contains no
+copied credential. Selecting a managed PostgreSQL, Redis, OpenAI or RustFS service
+also replaces stale values under its standard variable names with binding
+references. Custom variable names can reference those same keys. Runtime
+service references cannot be used in `build.env`; browser URL variables are
+passed as build arguments and declared in each Dockerfile stage.
 
 **How an app is reached.** By default it gets `<app>.<space>.<domain>` behind
 the login gateway. `host:` moves it: `"@"` puts it at the space's own address
 (`<space>.<domain>` — one app per space can be that front door), a plain name
 gives it a label of its own under the space (so the address outlives a rename),
-and anything with a dot is taken as an exact hostname. `public: true` drops the login. `access:` narrows it — only
+and anything with a dot is taken as an exact hostname. `mode: api` marks MCP
+servers and ordinary APIs. With the default protected exposure, the gateway
+provides OAuth discovery, PKCE and resource-bound access tokens. Clients open
+the existing identity-provider login and return with a token the gateway
+consumes before proxying. Compatibility client registration is automatic and
+stateless, so an administrator does not have to create client IDs. API mode
+does not invent an OAuth scope; `access:` remains the authorization policy.
+`public: true` exposes either a web app or API without login, while
+`internal: true` gives either mode no address of its own and no login.
+`cors: allowAll` makes the
+gateway answer browser preflights and adds `Access-Control-Allow-Origin: *` to
+responses. `access:` narrows it — only
 the named users, groups or roles (any match, from the ID token's claims) get
 past the sign-in. `internal: true` drops the address — the app has no
 hostname, no certificate and nothing on the internet, and its siblings call it
@@ -439,6 +475,7 @@ anything, and that is where the confirmation lives.
 |---|---|---|
 | `postgres` | the relational database (its own Deployment + disk) | `DATABASE_URL`, the `PG*` family, Heroku's `JDBC_*` convention for the Java world |
 | `rustfs` | S3-compatible object storage | the AWS SDK convention (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_ENDPOINT_URL_S3`, `AWS_REGION`) + `S3_URL` |
+| `redis` | Redis with persistent storage and password authentication | `REDIS_URL`, `REDIS_ADDR`, `REDIS_HOST`, `REDIS_PORT`, `REDIS_USERNAME`, `REDIS_PASSWORD`, `REDIS_DB`, `REDIS_TLS` |
 | `openai` | the platform's AI — nothing runs in the space | `OPENAI_BASE_URL`, `OPENAI_API_KEY`, `OPENAI_MODEL` |
 
 Ways in and out, all equivalent:
@@ -532,7 +569,7 @@ The Docker runtime's shape — per-space networks as the isolation model, the
 
 ### The builder
 
-An app that brings a Dockerfile is built with it, always. Every other app
+An app that brings a Dockerfile is built with it first. Every other app
 gets one written for it, and that is the whole of the build system: there is
 one path to the build engine, and what an app is built with is a file you can
 read, edit and keep.
@@ -542,8 +579,11 @@ the files prove — the lockfile that decides the package manager, the version
 files that pin the toolchain, the framework config that names the build output
 directory, the dependencies that need OS packages — and hands the assistant
 that evidence with the file behind each fact. The assistant then reads the app
-for itself, with read-only tools confined to the upload, before it writes
-anything: which directory is really the app in a monorepo, the module path of
+for itself using `read` (1-based line offsets), `glob`, and `grep` (regex,
+context, and result pagination). During a build, `edit` can create files and
+apply batches of exact replacements in an isolated copy of the build context.
+Existing files must be read before editing; stale reads and ambiguous matches
+are rejected. Planning remains read-only. The investigation establishes: which directory is really the app in a monorepo, the module path of
 a Django project, whether the code honors `PORT`. A few well-chosen reads
 settle what a file tree can only hint at.
 
@@ -552,32 +592,35 @@ python:3.12-slim`, `apt-get`, `npm ci` — is an ordinary registry or package
 pull that `registryMirrors` and the internal package proxy cover. There is
 nothing else to reach.
 
-**The Dockerfile is the deliverable, not the model.** donkey prints what it
-wrote and tells you to save it as `.donkey/Dockerfile`. Once it is there,
-detection prefers it, so every later deploy is a plain, repeatable Dockerfile
-build with no model in the path at all. The assistant is how the file gets
-written the first time — not a step in every build.
+**Keep the build recipe and its source repairs.** The release record includes
+its Dockerfile and source diffs, and the console shows automatic repairs as
+they happen. Saving the recipe as `.donkey/Dockerfile` makes it the first
+choice on later deploys. Source repairs affect only the isolated build copy;
+keep the corresponding patches in your project to reproduce that image.
 
-**Built images are run before they are published.** A generated Dockerfile
-fails in ways a build log cannot show, because the build succeeded: an
-interpreter that is not on `PATH`, a dependency that was never installed, an
-entrypoint that exits at once. So donkey starts the image, waits for it to
-listen on the port it will be deployed with, and only exports it once it
-does. When it does not, the failure goes back to the assistant with the log —
-and with every earlier attempt, so it cannot oscillate between two broken
-variants — and it writes another one, `build.attempts` times, three by
-default.
+**Build and rollout failures feed the same repair loop.** The assistant gets
+the failed recipe, exclusions, runtime contract, and redacted failure evidence
+from every attempt. It can correct the recipe or source, including when an
+uploaded Dockerfile fails. There are six attempts by default; repeated failures
+with unchanged inputs stop earlier. Generated exclusions are replaced on each
+attempt in a Dockerfile-specific ignore file; author exclusions are preserved.
+Each repaired candidate gets a distinct image tag so the runtime starts it.
 
-The check is deliberately narrow: it fails an image whose process *exits*,
-and passes one that is still running but not yet listening. An app whose
-first act is to open its database would otherwise fail in a sandbox that has
-no database, and be "fixed" by a model with nothing to fix.
+**Readiness requires a reachable app.** BuildKit checks the reviewed command,
+non-secret environment and storage layout before exporting. An app that exits,
+only binds loopback, or never listens fails. A configured health route must
+also respond. Apps needing live services or stored secrets are checked in the
+runtime, where those dependencies exist. Docker checks from outside the app
+and restores the previous container and app configuration when a replacement
+fails. Persistent application data is not rolled back. With `--no-wait`, or
+cyclic projects that defer readiness checks, later rollout failures are not
+part of the automatic repair loop.
 
 ```yaml
 build:
   verify: true          # default; false skips running the image
   verifySeconds: 45     # how long the app gets to come up
-  attempts: 3           # the first Dockerfile plus two revisions
+  attempts: 6           # build and rollout attempts, including the first candidate
   provenance: min       # SLSA provenance attestation: min (default) | max | off
   sbom: true            # attach an SPDX SBOM to every image (off by default)
 ```
@@ -651,6 +694,12 @@ Maven 3 requires a mirror in `settings.xml`; the assistant creates one from
 `DONKEY_MAVEN_MIRROR`. Existing hand-written Maven 3 or modern NuGet
 Dockerfiles must consume these variables in the same way.
 
+The HTTP proxy omits NuGet's optional `RepositorySignatures` index entries,
+which require HTTPS. Package files and their embedded signatures pass through
+unchanged, and client signature verification remains enabled. The mirror does
+not advertise the upstream's signing-certificate list or its requirement that
+every package be repository-signed.
+
 Package credentials use Basic authentication, which covers the usual
 Artifactory/Nexus username-and-token setup. The same explicit read-only
 credential is sent only to `credentialHosts`. When a PyPI or NuGet index names
@@ -712,6 +761,7 @@ mirrored repositories explicitly (donkey appends the service version):
 ```yaml
 buildkitImage: registry.example.com/dockerhub/moby/buildkit:v0.31.2
 addonImages:
+  redis: registry.example.com/mirror/library/redis
   postgres: registry.example.com/dockerhub/library/postgres
   rustfs: registry.example.com/dockerhub/rustfs/rustfs
 ```
@@ -1010,7 +1060,7 @@ internal/
   build/              BuildKit gRPC builder (dockerfile.v0), startup verification, registry auth, tags
   k8s/                client-go wrapper: server-side apply, rollout wait, logs, env secrets
   k8s/manifests/      pure config→object rendering (app + control plane) — golden-tested
-  addons/             service catalog: postgres, rustfs, openai (provisioned & external bindings)
+  addons/             service catalog: postgres, redis, rustfs, openai (provisioned & external bindings)
   ai/                 Assistant interface (analysis + failure diagnosis), OpenAI impl, secret-safe summarizer, log redaction
   config/             donkey.yaml, client config, install settings file
   doctor/             client-side check engine behind `donkey doctor`
@@ -1048,7 +1098,7 @@ task demo            # kind cluster + control plane + the demo app (dashboard, M
 task test            # unit tests (no cluster needed)
 task e2e             # from nothing to verified: setup:kind + install:kind + the Go e2e suite
 task demo:samples    # deploy every testdata sample; all of them must come up
-task demo:broken     # deploy apps that MUST fail, and check each was explained and patched
+task demo:broken     # deploy the four repair cases; each must come up
 ```
 
 The phases are tasks of their own — and the docker runtime has its own
@@ -1061,7 +1111,50 @@ task install:docker  # donkey straight on the local Docker engine (apps.localhos
 task demo:app        # log in and deploy the demo app (kind; needs devkube connect)
 task verify          # the Go e2e suite against the running kind installation
 task verify:docker   # the same suite against the running docker installation
+task verify:builder  # live AI builds: 19 samples and four repair cases, including HTTP, assets and persistence
+task verify:monorepos # pinned Google microservices-demo, deployed through project review
+task verify:web      # real browser upload/review/deploy, then database, storage and AI requests
+task verify:admin    # PostgreSQL and Redis browsers, including isolation between spaces
 ```
+
+The builder test copies the samples into temporary folders, removes incidental
+root configs, and uploads each through plan review and deployment. It checks
+application responses and referenced assets, and writes notes to SQLite and
+Postgres before restarting their apps to verify persistence. The addon
+declaration and the nested monorepo config remain part of their fixtures.
+Plans and deployment streams are saved in `.build/e2e`. Use `RUNTIME=docker`
+to target Docker, or `DONKEY_E2E_KEEP=true` to keep the dedicated test spaces
+for inspection. Rerunning replaces those spaces.
+
+The builder suite also supplies two broken Dockerfiles and requires automatic
+recovery from a real BuildKit failure and a real runtime rollout failure.
+For rendered pages and Streamlit WebSockets, install Playwright with
+`npm install --prefix .build/browser --no-save playwright@1.62.1` and
+`.build/browser/node_modules/.bin/playwright install chromium`, then run
+`DONKEY_E2E_BROWSER=true task verify:builder`. The kind wrapper's forwarded
+gateway is used by default; Docker runs can set
+`DONKEY_E2E_BROWSER_GATEWAY=127.0.0.1:443`.
+
+The monorepo test uploads Google's Online Boutique source and uses
+the live assistant to discover its apps and connections and write every app's
+Dockerfile. The preparation script removes upstream Dockerfiles and Docker
+ignore files from the test copy; the test requires the AI build strategy for
+every app. It exercises ten
+application services, gRPC addresses, and Redis-backed shopping carts through
+checkout. Its headless load-test client is excluded because it does not serve
+an app port. The test does not install Istio or an observability stack.
+Its optional Gemini/AlloyDB extension is excluded
+because the repository's default deployment does not enable it.
+
+Reviewed plans and deployment streams are saved in `.build/e2e`. Set
+`DONKEY_E2E_KEEP=true` to leave the dedicated `e2e-boutique` space running for
+inspection; rerunning replaces that test space.
+
+The browser test uses the local Docker installation and demo sign-in. It uploads
+`examples/demo`, checks separate exposure choices, deploys both apps, and tests
+PostgreSQL writes, RustFS uploads/downloads, and OpenAI triage through the frontend.
+Playwright is installed under `.build/browser`; screenshots and reviewed plans
+go to `.build/e2e`. `DONKEY_E2E_KEEP=true` keeps its `e2e-services` space running.
 
 ### Scoring the builder
 

@@ -62,6 +62,7 @@ type InstallFile struct {
 // donkey, so these values deliberately contain no tag or digest.
 type InstallAddonImages struct {
 	Postgres string `json:"postgres,omitempty"`
+	Redis    string `json:"redis,omitempty"`
 	RustFS   string `json:"rustfs,omitempty"`
 }
 
@@ -70,6 +71,8 @@ func (i InstallAddonImages) Repository(typ string) string {
 	switch typ {
 	case "postgres":
 		return i.Postgres
+	case "redis":
+		return i.Redis
 	case "rustfs":
 		return i.RustFS
 	default:
@@ -85,6 +88,7 @@ func (i InstallAddonImages) Validate() error {
 		repository string
 	}{
 		{name: "postgres", repository: i.Postgres},
+		{name: "redis", repository: i.Redis},
 		{name: "rustfs", repository: i.RustFS},
 	} {
 		name, repository := image.name, image.repository
@@ -415,12 +419,9 @@ const (
 	// Long enough for a JVM or a cold interpreter, short enough that a broken
 	// image fails quickly.
 	DefaultVerifySeconds = 45
-	// The first Dockerfile plus two revisions. Beyond that a model that has
-	// seen the failure twice is not converging.
-	DefaultAttempts = 3
-	// Enough for detailed registry and toolchain guidance without allowing an
-	// install setting to dominate every builder prompt accidentally.
-	MaxBuilderInstructionsBytes = 16 * 1024
+	// A full attempt includes build and rollout. Stop earlier if identical
+	// inputs repeat the same failure; independent fixes deserve more chances.
+	DefaultAttempts = 6
 )
 
 // Validate checks what can be wrong without consulting the runtime.
@@ -430,9 +431,6 @@ func (b InstallBuild) Validate() error {
 	}
 	if b.VerifySeconds < 0 {
 		return fmt.Errorf("build.verifySeconds cannot be negative")
-	}
-	if len(b.Instructions) > MaxBuilderInstructionsBytes {
-		return fmt.Errorf("build.instructions is too long (maximum %d bytes)", MaxBuilderInstructionsBytes)
 	}
 	for host, mirror := range b.RegistryMirrors {
 		if host == "" {

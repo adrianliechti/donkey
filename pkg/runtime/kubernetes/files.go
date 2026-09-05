@@ -207,15 +207,11 @@ func (c *Client) WriteFile(ctx context.Context, namespace, objectName, space, ap
 	dir, target := paths[0], paths[1]
 	tmp := dir + "/.donkey-upload-" + strings.ToLower(rand.Text()[:12])
 
-	limited := newLimitReader(r, rt.MaxUploadBytes)
 	// dd reads until stdin ends, so the file is written straight from the
 	// request body; 64K blocks keep the round trips down.
-	err = c.execInPod(ctx, namespace, helper, []string{"dd", "of=" + tmp, "bs=65536"}, limited, nil)
-	if err != nil || limited.exceeded() {
+	err = c.execInPod(ctx, namespace, helper, []string{"dd", "of=" + tmp, "bs=65536"}, r, nil)
+	if err != nil {
 		c.removeQuietly(ctx, namespace, helper, tmp)
-		if limited.exceeded() {
-			return fmt.Errorf("%w — the limit is %d MB", rt.ErrTooLarge, rt.MaxUploadBytes>>20)
-		}
 		return err
 	}
 	// The app runs as some other user and only shares the disk's group, so a
@@ -721,9 +717,6 @@ func filesHelperPod(namespace, space, app, objectName, installation string) *cor
 						corev1.ResourceCPU:    resource.MustParse("10m"),
 						corev1.ResourceMemory: resource.MustParse("16Mi"),
 					},
-					Limits: corev1.ResourceList{
-						corev1.ResourceMemory: resource.MustParse("64Mi"),
-					},
 				},
 				SecurityContext: &corev1.SecurityContext{
 					AllowPrivilegeEscalation: &noEscalation,
@@ -930,31 +923,3 @@ func (w *capWriter) Write(p []byte) (int, error) {
 // full reports that the writer stopped the command instead of the command
 // stopping itself — the output is a beginning, not the whole answer.
 func (w *capWriter) full() bool { return w.buf.Len() >= w.limit }
-
-// limitReader stops an upload that outgrows the cap instead of letting it fill
-// the app's disk. It is given one byte more than the cap: reading that byte is
-// what proves the cap was passed, and the upload then simply ends rather than
-// tearing the connection down mid-command.
-func newLimitReader(r io.Reader, cap int64) *limitReader {
-	return &limitReader{r: r, left: cap + 1}
-}
-
-type limitReader struct {
-	r    io.Reader
-	left int64
-}
-
-func (r *limitReader) Read(p []byte) (int, error) {
-	if r.left <= 0 {
-		return 0, io.EOF
-	}
-	if int64(len(p)) > r.left {
-		p = p[:r.left]
-	}
-	n, err := r.r.Read(p)
-	r.left -= int64(n)
-	return n, err
-}
-
-// exceeded reports that there was more to upload than the cap allows.
-func (r *limitReader) exceeded() bool { return r.left <= 0 }

@@ -91,6 +91,9 @@ func (s *Server) routes() http.Handler {
 	// carries its id so the assistant is asked once, not twice.
 	mux.Handle("POST /v1/plans", s.auth(s.handlePlan))
 	mux.Handle("PUT /v1/plans/{id}", s.auth(s.handlePlanUpdate))
+	mux.Handle("POST /v1/projects/plans", s.auth(s.handleProjectPlan))
+	mux.Handle("PUT /v1/projects/plans/{id}", s.auth(s.handleProjectUpdate))
+	mux.Handle("POST /v1/projects/deploys", s.auth(s.handleProjectDeploy))
 	// Apps live in a space, so their address does too.
 	mux.Handle("GET /v1/apps", s.auth(s.handleListApps))
 	mux.Handle("GET /v1/spaces/{space}/apps/{app}/status", s.auth(s.handleStatus))
@@ -141,6 +144,12 @@ func (s *Server) routes() http.Handler {
 	mux.Handle("PUT /v1/spaces/{space}/services/{service}/databases/{db}/tables/{table}/rows", s.auth(s.handleDbUpdateRow))
 	mux.Handle("DELETE /v1/spaces/{space}/services/{service}/databases/{db}/tables/{table}/rows", s.auth(s.handleDbDeleteRow))
 	mux.Handle("POST /v1/spaces/{space}/services/{service}/databases/{db}/query", s.auth(s.handleDbQuery))
+	// Redis keys stay behind the same admin session as the database browser.
+	mux.Handle("GET /v1/spaces/{space}/services/{service}/keys", s.auth(s.handleRedisKeys))
+	mux.Handle("POST /v1/spaces/{space}/services/{service}/keys", s.auth(s.handleRedisSave))
+	mux.Handle("GET /v1/spaces/{space}/services/{service}/keys/value", s.auth(s.handleRedisValue))
+	mux.Handle("PUT /v1/spaces/{space}/services/{service}/keys/value", s.auth(s.handleRedisSave))
+	mux.Handle("DELETE /v1/spaces/{space}/services/{service}/keys/value", s.auth(s.handleRedisDelete))
 	// The services an app is connected to.
 	mux.Handle("GET /v1/spaces/{space}/apps/{app}/services", s.auth(s.handleListAppServices))
 	mux.Handle("POST /v1/spaces/{space}/apps/{app}/services", s.auth(s.handleAddAppService))

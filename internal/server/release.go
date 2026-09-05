@@ -12,7 +12,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode/utf8"
 
 	"github.com/adrianliechti/donkey/internal/ai"
 	"github.com/adrianliechti/donkey/internal/config"
@@ -32,25 +31,17 @@ type AppRelease struct {
 	BuildLog   string       `json:"buildLog,omitempty"`
 	// Dockerfile is the exact file the image was built from — the durable
 	// recipe, whether the app brought it or donkey's assistant wrote it.
-	Dockerfile string       `json:"dockerfile,omitempty"`
-	Result     DeployResult `json:"result"`
+	Dockerfile   string            `json:"dockerfile,omitempty"`
+	Dockerignore *string           `json:"dockerignore,omitempty"`
+	Changes      []ai.SourceChange `json:"changes,omitempty"`
+	Result       DeployResult      `json:"result"`
 	// Decisions is what this deploy settled (storage, health route), kept
 	// with the image it was verified against: a `--no-build` rollback to
 	// this record's tag adopts these, not whatever a newer analysis found.
 	Decisions json.RawMessage `json:"decisions,omitempty"`
-	// Truncated says the useful tail was retained but older output was left
-	// out to keep the record bounded.
+	// Truncated is retained for reading older records that omitted output.
 	Truncated bool `json:"truncated,omitempty"`
 }
-
-const (
-	releaseLinesBytes    = 40 << 10
-	releaseBuildLogBytes = 64 << 10
-	releaseDiffBytes     = 16 << 10
-	// The store refuses unbounded records; stay comfortably under its cap
-	// while keeping room for full build logs and proposal contents.
-	releaseMetaBytes = 1 << 20
-)
 
 // releaseRecorder observes the same structured events and text sent to the
 // live client. Build progress and source analysis can arrive concurrently,
@@ -58,10 +49,8 @@ const (
 type releaseRecorder struct {
 	mu sync.Mutex
 
-	release      AppRelease
-	lineBytes    int
-	omittedLine  bool
-	omittedBuild bool
+	release  AppRelease
+	buildLog strings.Builder
 
 	analysis *ai.Analysis
 	build    PlanBuild
@@ -125,22 +114,12 @@ func (r *releaseRecorder) line(line string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.release.Lines = append(r.release.Lines, line)
-	r.lineBytes += len(line)
-	for r.lineBytes > releaseLinesBytes && len(r.release.Lines) > 1 {
-		r.lineBytes -= len(r.release.Lines[0])
-		r.release.Lines = r.release.Lines[1:]
-		r.omittedLine = true
-	}
 }
 
 func (r *releaseRecorder) progress(progress string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.release.BuildLog += progress
-	if len(r.release.BuildLog) > releaseBuildLogBytes {
-		r.release.BuildLog = tailUTF8(r.release.BuildLog, releaseBuildLogBytes)
-		r.omittedBuild = true
-	}
+	r.buildLog.WriteString(progress)
 }
 
 func (r *releaseRecorder) update(update DeployUpdate) {
@@ -154,6 +133,14 @@ func (r *releaseRecorder) update(update DeployUpdate) {
 	}
 	if update.Dockerfile != "" {
 		r.release.Dockerfile = update.Dockerfile
+	}
+	if update.Dockerignore != nil {
+		value := *update.Dockerignore
+		r.release.Dockerignore = &value
+	}
+	for _, change := range update.Changes {
+		change.Diff = ai.Redact(change.Diff)
+		r.release.Changes = append(r.release.Changes, change)
 	}
 }
 
@@ -179,21 +166,13 @@ func (r *releaseRecorder) finish(s *Server, ctx context.Context, app *config.App
 	r.mu.Lock()
 	r.release.FinishedAt = time.Now().UTC().Format(time.RFC3339)
 	release := r.release
+	release.BuildLog = r.buildLog.String()
 	release.Lines = append([]string{}, r.release.Lines...)
 	release.Update.BaseImages = append([]string{}, r.release.Update.BaseImages...)
 	analysis := r.analysis
 	build := r.build
-	omittedLine, omittedBuild := r.omittedLine, r.omittedBuild
 	r.mu.Unlock()
 
-	if omittedLine {
-		release.Lines = append([]string{"· Earlier release log omitted to keep this record small."}, release.Lines...)
-		release.Truncated = true
-	}
-	if omittedBuild {
-		release.BuildLog = "… earlier build output omitted …\n" + release.BuildLog
-		release.Truncated = true
-	}
 	if release.Plan == nil {
 		release.Plan = s.recordedDeployPlan(ctx, app, analysis, build)
 	}
@@ -260,6 +239,8 @@ func (s *Server) recordedDeployPlan(ctx context.Context, app *config.AppConfig, 
 			Healthcheck: copy.Healthcheck.Path,
 			Storage:     []string{},
 			Exposure:    exposureOfConfig(copy),
+			Mode:        modeOfConfig(copy),
+			CORS:        copy.CORS,
 			URL:         s.cfg.AppURL(copy.Space, copy),
 		},
 	}
@@ -311,34 +292,7 @@ func (s *Server) persistRelease(ctx context.Context, space, app string, release 
 }
 
 func marshalRelease(release AppRelease) ([]byte, error) {
-	b, err := json.Marshal(release)
-	if err != nil || len(b) <= releaseMetaBytes {
-		return b, err
-	}
-	// JSON escaping and unusually large findings can push a bounded log over
-	// the record budget. Shed old output first, then bulky diffs.
-	release.Truncated = true
-	release.BuildLog = tailUTF8(release.BuildLog, 16<<10)
-	release.Lines = tailLines(release.Lines, 16<<10)
-	for i := range release.Result.Proposals {
-		release.Result.Proposals[i].NewContent = ""
-		release.Result.Proposals[i].Diff = prefixUTF8(release.Result.Proposals[i].Diff, 4<<10)
-	}
-	b, err = json.Marshal(release)
-	if err != nil || len(b) <= releaseMetaBytes {
-		return b, err
-	}
-	release.BuildLog = ""
-	release.Lines = []string{"· Detailed release output was too large to retain; structured findings and the result remain."}
-	release.Result.Proposals = nil
-	b, err = json.Marshal(release)
-	if err != nil {
-		return nil, err
-	}
-	if len(b) > releaseMetaBytes {
-		return nil, fmt.Errorf("release record is %d bytes after trimming (limit %d)", len(b), releaseMetaBytes)
-	}
-	return b, nil
+	return json.Marshal(release)
 }
 
 func scrubRelease(release *AppRelease, known []string) {
@@ -362,13 +316,20 @@ func scrubRelease(release *AppRelease, known []string) {
 	release.Result.Error = scrub(release.Result.Error)
 	release.Result.Diagnosis = scrub(release.Result.Diagnosis)
 	release.Dockerfile = scrub(release.Dockerfile)
+	if release.Dockerignore != nil {
+		value := scrub(*release.Dockerignore)
+		release.Dockerignore = &value
+	}
+	for i := range release.Changes {
+		release.Changes[i].Diff = scrub(release.Changes[i].Diff)
+	}
 	for i := range release.Result.Proposals {
 		proposal := &release.Result.Proposals[i]
 		proposal.Explanation = scrub(proposal.Explanation)
 		// A proposal's content is a Dockerfile or config file worth keeping —
 		// scrubbed like everything else, never blanked.
 		proposal.NewContent = scrub(proposal.NewContent)
-		proposal.Diff = prefixUTF8(scrub(proposal.Diff), releaseDiffBytes)
+		proposal.Diff = scrub(proposal.Diff)
 		proposal.Value = scrub(proposal.Value)
 	}
 	if release.Plan == nil {
@@ -390,42 +351,6 @@ func scrubRelease(release *AppRelease, known []string) {
 	for i := range release.Plan.Services {
 		release.Plan.Services[i].Reason = scrub(release.Plan.Services[i].Reason)
 	}
-}
-
-func tailLines(lines []string, limit int) []string {
-	bytes := 0
-	start := len(lines)
-	for start > 0 && bytes+len(lines[start-1]) <= limit {
-		start--
-		bytes += len(lines[start])
-	}
-	return append([]string{}, lines[start:]...)
-}
-
-func tailUTF8(value string, limit int) string {
-	if len(value) <= limit {
-		return value
-	}
-	value = value[len(value)-limit:]
-	for len(value) > 0 && !utf8.RuneStart(value[0]) {
-		value = value[1:]
-	}
-	return value
-}
-
-func prefixUTF8(value string, limit int) string {
-	if len(value) <= limit {
-		return value
-	}
-	// Back the cut up to a rune boundary and no further: an invalid byte
-	// earlier in the content (binary hunks in a diff) is the content's
-	// business — trimming until the whole prefix validates would discard
-	// everything after it.
-	cut := limit
-	for cut > 0 && limit-cut < utf8.UTFMax && !utf8.RuneStart(value[cut]) {
-		cut--
-	}
-	return value[:cut] + "\n… omitted …"
 }
 
 // handleBuilds: GET /v1/spaces/{space}/apps/{app}/builds — the retained

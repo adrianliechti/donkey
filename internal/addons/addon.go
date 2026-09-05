@@ -43,6 +43,7 @@ type Workload struct {
 	Image    string
 	Port     int32
 	PortName string
+	Command  []string // optional entrypoint; credentials are read from SecretEnv
 	// SecretEnv maps env var names onto binding keys, so a runtime may
 	// reference credentials (secretKeyRef) instead of inlining them.
 	Env       map[string]string
@@ -102,6 +103,7 @@ func (in Input) HostName() string {
 // Registry holds the addon types donkey knows.
 var Registry = map[string]Addon{
 	"postgres": postgres{},
+	"redis":    redis{},
 	"rustfs":   rustfs{},
 	"openai":   openai{},
 }

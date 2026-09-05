@@ -3,8 +3,6 @@ package kubernetes
 import (
 	"context"
 	"errors"
-	"io"
-	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -189,28 +187,6 @@ func TestFirstLine(t *testing.T) {
 		if got := firstLine(in); got != want {
 			t.Fatalf("firstLine(%q) = %q, want %q", in, got, want)
 		}
-	}
-}
-
-func TestLimitReader(t *testing.T) {
-	// Exactly the cap goes through untouched.
-	r := newLimitReader(strings.NewReader(strings.Repeat("x", 10)), 10)
-	b, err := io.ReadAll(r)
-	if err != nil {
-		t.Fatalf("reading up to the cap: %v", err)
-	}
-	if len(b) != 10 || r.exceeded() {
-		t.Fatalf("got %d bytes, exceeded=%v", len(b), r.exceeded())
-	}
-	// One byte more and the upload is refused — without an error the caller
-	// would have to notice, so the flag is what matters.
-	r = newLimitReader(strings.NewReader(strings.Repeat("x", 11)), 10)
-	b, err = io.ReadAll(r)
-	if err != nil {
-		t.Fatalf("reading past the cap: %v", err)
-	}
-	if !r.exceeded() {
-		t.Fatalf("got %d bytes, exceeded should be true", len(b))
 	}
 }
 

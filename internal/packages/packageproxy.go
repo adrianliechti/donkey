@@ -208,6 +208,17 @@ func handler(cfg Config, current credentials, transport http.RoundTripper) (http
 			if !strings.Contains(contentType, "json") && !strings.Contains(contentType, "text") && !strings.Contains(contentType, "html") {
 				return nil
 			}
+			if request.route.prefix == "/npm/" && strings.Contains(contentType, "json") {
+				// Large npm packuments (Next.js in particular) contain thousands
+				// of versions. A decoded map plus the input and output buffers
+				// can exhaust the proxy while a perfectly valid app is building.
+				response.Body = streamNPMMetadata(response.Body, request)
+				response.ContentLength = -1
+				response.Header.Del("Content-Length")
+				response.Header.Del("Content-MD5")
+				response.Header.Del("ETag")
+				return nil
+			}
 			body, err := io.ReadAll(response.Body)
 			if err != nil {
 				return err
@@ -484,6 +495,18 @@ func rewriteJSONURLs(value *any, key string, request proxyRequest) {
 			current[childKey] = child
 		}
 	case []any:
+		if request.route.serviceIndex && key == "resources" && strings.HasPrefix(request.public, "http://") {
+			// This optional NuGet resource requires HTTPS. An HTTP mirror must
+			// not advertise it. Package bytes and their signatures stay intact.
+			resources := current[:0]
+			for _, resource := range current {
+				if !repositorySignatures(resource) {
+					resources = append(resources, resource)
+				}
+			}
+			current = resources
+			*value = current
+		}
 		for i := range current {
 			rewriteJSONURLs(&current[i], key, request)
 		}
@@ -506,6 +529,24 @@ func rewriteJSONURLs(value *any, key string, request proxyRequest) {
 			*value = appendURLSuffix(resourceOriginURL(originKey(candidate), request), candidate.EscapedPath(), candidate.RawQuery, candidate.Fragment)
 		}
 	}
+}
+
+func repositorySignatures(value any) bool {
+	resource, ok := value.(map[string]any)
+	if !ok {
+		return false
+	}
+	switch kinds := resource["@type"].(type) {
+	case string:
+		return strings.HasPrefix(kinds, "RepositorySignatures/")
+	case []any:
+		for _, kind := range kinds {
+			if name, ok := kind.(string); ok && strings.HasPrefix(name, "RepositorySignatures/") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func rewriteTextURLs(value string, request proxyRequest) string {

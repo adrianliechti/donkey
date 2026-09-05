@@ -27,5 +27,9 @@ kubectl --context "${CTX}" -n donkey-system create secret generic donkey-registr
   kubectl --context "${CTX}" apply -f - >/dev/null
 
 kubectl --context "${CTX}" apply -f "${ROOT}/hack/demo/private-packages.yaml" >/dev/null
+# testcert rotates the local CA on every install. The mirror loads its TLS
+# certificate at startup, so updating the mounted Secret alone leaves it
+# serving the old chain while the new proxy trusts the new one.
+kubectl --context "${CTX}" -n donkey-system rollout restart deployment private-packages >/dev/null
 kubectl --context "${CTX}" -n donkey-system rollout status deployment private-packages --timeout=180s >/dev/null
 echo "authenticated package mirror ready — https://packages.donkey-system.svc"

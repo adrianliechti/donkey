@@ -223,6 +223,38 @@ tasks:
     cmds:
       - hack/verify.sh docker
 
+  verify:builder:
+    desc: Build all samples, repair cases and FastMCP with the live assistant; verify HTTP, persistence and MCP OAuth
+    env:
+      DONKEY_E2E_BUILDER: 'true'
+      DONKEY_E2E_REPORTS: '{{.ROOT_DIR}}/.build/e2e'
+    cmds:
+      - hack/verify.sh {{.RUNTIME | default "kind"}} -run '^TestBuilder(Samples|Recovery|FastMCPOAuth)$' {{.CLI_ARGS}}
+
+  prepare:monorepos:
+    desc: Fetch the pinned Google microservices-demo repository for live tests
+    cmds:
+      - hack/prepare-monorepos.sh
+
+  verify:monorepos:
+    desc: Deploy and exercise Google Online Boutique on the local Docker installation
+    deps: [prepare:monorepos]
+    env:
+      DONKEY_E2E_GOOGLE: '{{.ROOT_DIR}}/.build/corpus/microservices-demo'
+      DONKEY_E2E_REPORTS: '{{.ROOT_DIR}}/.build/e2e'
+    cmds:
+      - hack/verify.sh docker -run '^TestProjectGoogle$'
+
+  verify:web:
+    desc: Upload, review and deploy the two-app demo in Chromium, then exercise its services
+    cmds:
+      - hack/verify-web.sh
+
+  verify:admin:
+    desc: Exercise the PostgreSQL and Redis browsers and check service isolation between spaces
+    cmds:
+      - hack/verify-web.sh e2e/admin.mjs
+
   e2e:
     desc: "From nothing to verified: setup:kind + install:kind + the Go e2e suite"
     cmds:
@@ -246,7 +278,7 @@ tasks:
       - hack/demo-samples.sh
 
   demo:broken:
-    desc: "Deploy the apps that are MEANT to fail, and check donkey explained each one and proposed a patch"
+    desc: "Deploy all four compatibility repair cases and require healthy applications"
     cmds:
       - hack/demo-broken.sh
 

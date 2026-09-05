@@ -240,7 +240,7 @@ const (
 	// installation says otherwise. It doubles as the installation's identity,
 	// so two donkeys on one cluster cannot both keep it.
 	DefaultSystemNamespace = "donkey-system"
-	DefaultAIModel         = "gpt-5.5"
+	DefaultAIModel         = "gpt-5.6-sol"
 )
 
 // DefaultGlobalPath returns ~/.config/donkey/config.yaml. We deliberately use

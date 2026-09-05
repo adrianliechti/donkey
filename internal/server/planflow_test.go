@@ -51,6 +51,9 @@ type planRuntime struct {
 func (planRuntime) ValidateSpace(string) error                     { return nil }
 func (planRuntime) CheckSpaceFree(context.Context, string) error   { return nil }
 func (r planRuntime) ListSpaces(context.Context) ([]string, error) { return r.spaces, nil }
+func (planRuntime) AppMeta(context.Context, string, string, string) (string, error) {
+	return "", nil
+}
 
 func (r planRuntime) ServiceBinding(_ context.Context, _, owner, name string) (map[string]string, error) {
 	if owner == addons.SharedOwner && slices.Contains(r.services, name) {

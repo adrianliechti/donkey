@@ -64,7 +64,8 @@ type StatusResponse struct {
 	// meaningful then — an app with no volume has nothing donkey can show
 	// that a redeploy would not rebuild.
 	HasStorage bool `json:"hasStorage"`
-	// Exposure is public, protected or internal — how the app is reached.
+	// Mode is web or api; exposure is public, protected or internal.
+	Mode     string `json:"mode,omitempty"`
 	Exposure string `json:"exposure,omitempty"`
 	// Port the app listens on (donkey.yaml's `port`).
 	Port int `json:"port,omitempty"`
@@ -134,6 +135,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	if st.Found {
 		resp.Exposure = exposureOf(st)
+		resp.Mode = modeOfStatus(st)
 		resp.Port = int(st.Port)
 	}
 	writeJSON(w, http.StatusOK, resp)
@@ -179,6 +181,13 @@ func exposureOf(st *runtime.AppStatus) string {
 	default:
 		return "public"
 	}
+}
+
+func modeOfStatus(st *runtime.AppStatus) string {
+	if st.Mode != "" {
+		return st.Mode
+	}
+	return config.AppModeWeb
 }
 
 // handleRestart rolls the app's pods without changing anything else — the
@@ -244,7 +253,7 @@ func (s *Server) handleDiagnose(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Minute)
+	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 	ev := s.rt.Evidence(ctx, space, app)
 	resp := DiagnoseResponse{Pods: ev.Summaries, Events: ev.Events, Logs: ev.Logs}
@@ -755,7 +764,7 @@ func (s *Server) handleDoctor(w http.ResponseWriter, r *http.Request) {
 	// Longer than the other probes want, because the builder checks pull
 	// image manifests through whatever mirrors and proxies stand in the way —
 	// which is exactly the setup that is slow when it is misconfigured.
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 	var checks []DoctorCheck
 

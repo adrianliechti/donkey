@@ -144,7 +144,7 @@ func TestPersistReleaseRedactsAndStoresVersionedBuild(t *testing.T) {
 	}
 }
 
-func TestReleaseRecorderKeepsABoundedUsefulTail(t *testing.T) {
+func TestReleaseRecorderKeepsCompleteOutput(t *testing.T) {
 	plan := releaseFixture().Plan
 	plan.ID = "expiring-plan"
 	plan.ExpiresAt = time.Now().Add(time.Hour).Format(time.RFC3339)
@@ -158,11 +158,8 @@ func TestReleaseRecorderKeepsABoundedUsefulTail(t *testing.T) {
 	recorder.result(DeployResult{OK: true, App: "web", Space: "acme"})
 
 	release := recorder.finish(nil, context.Background(), &config.AppConfig{Name: "web"})
-	if !release.Truncated {
-		t.Fatal("oversized output should say it was truncated")
-	}
-	if len(release.BuildLog) > releaseBuildLogBytes+64 {
-		t.Fatalf("build log was not bounded: %d bytes", len(release.BuildLog))
+	if release.Truncated || len(release.Lines) != 3000 || release.BuildLog != strings.Repeat("build-output\n", 20_000) {
+		t.Fatal("release output was truncated")
 	}
 	if release.Plan.ID != "" || release.Plan.ExpiresAt != "" || release.Plan.Config != "" {
 		t.Fatalf("ephemeral/source plan fields should not be stored: %+v", release.Plan)
@@ -174,8 +171,9 @@ func TestReleaseRecorderKeepsABoundedUsefulTail(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(raw) > releaseMetaBytes {
-		t.Fatalf("stored release is %d bytes, limit is %d", len(raw), releaseMetaBytes)
+	var stored AppRelease
+	if err := json.Unmarshal(raw, &stored); err != nil || stored.BuildLog != release.BuildLog {
+		t.Fatalf("stored log differs: %v", err)
 	}
 }
 
@@ -205,23 +203,5 @@ func TestHandleBuildReturnsStoredRecord(t *testing.T) {
 	}
 	if got.Plan.Findings == nil {
 		t.Fatal("legacy null arrays should be normalized when read")
-	}
-}
-
-func TestPrefixUTF8KeepsContentAroundInvalidBytes(t *testing.T) {
-	// An invalid byte early in a diff (a binary hunk) must not eat the rest
-	// of the prefix.
-	diff := "keep\xffthis and everything after it 0123456789"
-	got := prefixUTF8(diff, 20)
-	if !strings.HasPrefix(got, "keep\xffthis") || len(got) < 20 {
-		t.Fatalf("prefixUTF8 discarded content after an invalid byte: %q", got)
-	}
-	// A multi-byte rune straddling the cut is trimmed cleanly, not split.
-	got = prefixUTF8(strings.Repeat("a", 19)+"é", 20)
-	if want := strings.Repeat("a", 19) + "\n… omitted …"; got != want {
-		t.Fatalf("got %q, want %q", got, want)
-	}
-	if short := prefixUTF8("short", 100); short != "short" {
-		t.Fatalf("an under-limit value must pass through, got %q", short)
 	}
 }

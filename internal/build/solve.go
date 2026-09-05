@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -142,7 +144,7 @@ func (b *BuildKitBuilder) solveOpt(req Request) (*bkclient.SolveOpt, error) {
 		rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return nil, fmt.Errorf("build.dockerfile %q points outside the app folder", req.DockerfilePath)
 	}
-	dockerfileFS, err := packageDockerfileFS(dockerfilePath)
+	dockerfileFS, err := packageDockerfileFS(dockerfilePath, slices.Sorted(maps.Keys(req.BuildEnv))...)
 	if err != nil {
 		return nil, err
 	}

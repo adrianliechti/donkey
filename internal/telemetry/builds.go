@@ -20,10 +20,6 @@ import (
 // ones arrive; deleting the space deletes them all (PurgeSpace).
 const buildRetainPerApp = 20
 
-// maxBuildRecordBytes refuses records the writer failed to bound rather than
-// letting one runaway build log crowd the database.
-const maxBuildRecordBytes = 4 << 20
-
 // ErrNoBuild reports that no matching build record is stored.
 var ErrNoBuild = errors.New("no matching build record")
 
@@ -48,8 +44,8 @@ func (s *Store) InsertBuild(ctx context.Context, space, app, image string, ok bo
 	if err := validBuildScope(space, app); err != nil {
 		return 0, err
 	}
-	if len(record) == 0 || len(record) > maxBuildRecordBytes {
-		return 0, fmt.Errorf("build record must be 1..%d bytes (got %d)", maxBuildRecordBytes, len(record))
+	if len(record) == 0 {
+		return 0, fmt.Errorf("build record must not be empty")
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {

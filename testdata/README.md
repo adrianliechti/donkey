@@ -1,9 +1,9 @@
 # testdata — apps to deploy, and the challenges they pose
 
 Every folder here is a real app you can deploy against a running donkey
-(`task demo` sets one up). They are not a test suite: they are the awkward
-cases donkey has to get right, each isolating one of them so a regression
-tells you *what* broke.
+(`task demo` sets one up). `task verify:builder` builds them with the live assistant and checks their
+application responses, assets, and persistence. Each sample isolates a
+challenge so a regression tells you what broke.
 
 Deploy any of them the same way:
 
@@ -11,35 +11,30 @@ Deploy any of them the same way:
 cd testdata/<sample> && donkey deploy
 ```
 
-## Almost none of them have a donkey.yaml — that is the point
+## Testing automatic configuration
 
-The thing under test is **automatic configuration**: donkey reads the source
-and works out the name, the port, the build, the start command, the health
-route, and whether the app needs a disk. A sample that declares those in a
-`donkey.yaml` is not testing detection; it is testing YAML parsing.
+`task verify:builder` uploads temporary copies without incidental root
+`donkey.yaml` files. It keeps three intentional configuration fixtures:
 
-So only two samples ship one, each for reasons that have nothing to do with
-convenience:
+- `monorepo-root/services/api/donkey.yaml` tests nested app discovery.
+- `addons-sample/donkey.yaml` tests explicit Postgres provisioning and binding.
+- `fastmcp-sample/donkey.yaml` tests API mode with an MCP server.
 
-- **`monorepo-root/services/api/`** — the file *is* the test. Subfolder
-  discovery finds an app by looking for a `donkey.yaml`, so removing it would
-  remove the thing the sample exercises.
-- **`addons-sample/`** — same reason, different feature: addons are the one
-  thing donkey never provisions from detection alone (a `psycopg` import only
-  earns a suggestion), so `addons:` in the file is the only way to say them —
-  and the deploy provisioning what the file lists is what's under test.
-
-(The showcase that says everything explicitly — `internal`, `routes`,
-`storage`, `addons`, a fixed `space` — lives in [examples/](../examples/):
-it stopped being a detection challenge long ago.)
-
-Everything else is bare. When you add a sample, add it bare.
+The builder must infer the remaining ports, start commands, dependencies,
+health routes, and data directories from source. Fixtures are never rewritten
+by the tests. The four apps under `broken/` must deploy successfully too.
 
 ## Attached services
 
 | Sample | Stack | The challenge |
 |---|---|---|
 | `addons-sample/` | An Express guestbook on Postgres | The `donkey.yaml` lists an addon — the deploy has to provision it for the space with its own disk, wait for it, and only then start the app with `DATABASE_URL` injected. Notes land in Postgres. Nothing in the folder holds an address or a credential. |
+
+## MCP
+
+| Sample | Stack | The challenge |
+|---|---|---|
+| `fastmcp-sample/` | FastMCP 4 | A remote Streamable HTTP server with one `add` tool. Donkey builds the Python app, publishes OAuth resource and authorization metadata, completes authorization code + PKCE through the installation's existing login, binds the token to `/mcp`, and keeps that token out of the application. |
 
 ## The way apps are actually generated
 

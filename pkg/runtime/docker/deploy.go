@@ -18,6 +18,7 @@ import (
 	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/api/types/network"
 
+	"github.com/adrianliechti/donkey/internal/addons"
 	"github.com/adrianliechti/donkey/internal/config"
 	"github.com/adrianliechti/donkey/internal/telemetry"
 	rt "github.com/adrianliechti/donkey/pkg/runtime"
@@ -28,9 +29,14 @@ import (
 // effect.
 type runSpec struct {
 	// Image is the reference as the Docker daemon pulls it.
-	Image string   `json:"image"`
-	Port  int      `json:"port"`
-	Paths []string `json:"paths,omitempty"` // storage paths, each a folder of the one volume
+	Image       string   `json:"image"`
+	Port        int      `json:"port"`
+	Paths       []string `json:"paths,omitempty"` // storage paths, each a folder of the one volume
+	Command     []string `json:"command,omitempty"`
+	Healthcheck string   `json:"healthcheck,omitempty"`
+	Host        string   `json:"host,omitempty"`
+	Mode        string   `json:"mode,omitempty"`
+	CORS        string   `json:"cors,omitempty"`
 }
 
 func (r *Runtime) runRecord(space, app string) (*runSpec, error) {
@@ -49,7 +55,7 @@ func (r *Runtime) setRunRecord(space, app string, spec runSpec) error {
 // Deploy takes a built image live as a container. The same choreography as
 // on Kubernetes — storage, declared services, the app, its routes — with
 // Docker's vocabulary underneath.
-func (r *Runtime) Deploy(ctx context.Context, spec rt.DeploySpec, out rt.Progress) error {
+func (r *Runtime) Deploy(ctx context.Context, spec rt.DeploySpec, out rt.Progress) (deployErr error) {
 	app := spec.App
 	space := spec.Space
 
@@ -57,6 +63,25 @@ func (r *Runtime) Deploy(ctx context.Context, spec rt.DeploySpec, out rt.Progres
 	if err := r.ensureSpace(ctx, space); err != nil {
 		return err
 	}
+	recovery, err := r.prepareRecovery(ctx, space, app)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		cleanup, cancel := recoveryContext(ctx)
+		defer cancel()
+		if deployErr != nil {
+			if err := recovery.restore(cleanup); err != nil {
+				// Recovery failure must stop automatic retries, which could
+				// otherwise replace the only remaining copy of the original.
+				deployErr = fmt.Errorf("%v; restoring the previous app failed: %v", deployErr, err)
+			} else if recovery != nil && recovery.parked {
+				out.Line("· Restored the previous app container and configuration.")
+			}
+		} else if err := recovery.discard(cleanup); err != nil {
+			out.Line("· The app is ready; its stopped previous container could not be removed: %v", err)
+		}
+	}()
 
 	if !app.HasStorage() && r.HasData(ctx, space, app.Name) {
 		out.Line("· A disk from an earlier setup still exists (with its data). This deploy doesn't mount it — add its paths back under `storage:` in donkey.yaml to use it, or `donkey destroy` removes it.")
@@ -83,6 +108,10 @@ func (r *Runtime) Deploy(ctx context.Context, spec rt.DeploySpec, out rt.Progres
 			}
 			out.Line("✓ %s is ready.", a.Name)
 		}
+		if err := addons.BindEnvironment(app, a.Name, shared); err != nil {
+			return err
+		}
+
 		if err := r.state.setBinding(space, app.Name, a.Name, shared); err != nil {
 			return err
 		}
@@ -114,7 +143,8 @@ func (r *Runtime) Deploy(ctx context.Context, spec rt.DeploySpec, out rt.Progres
 		}
 	}
 
-	run := runSpec{Image: r.pullRef(spec.ImageRef), Port: app.Port}
+	run := runSpec{Image: r.pullRef(spec.ImageRef), Port: app.Port, Command: app.Command,
+		Healthcheck: app.Healthcheck.Path, Host: r.appHost(space, app), Mode: app.GatewayMode(), CORS: app.CORS}
 	if app.HasStorage() {
 		run.Paths = app.Storage.Paths
 	}
@@ -125,14 +155,23 @@ func (r *Runtime) Deploy(ctx context.Context, spec rt.DeploySpec, out rt.Progres
 	if err := r.pullImage(ctx, run.Image); err != nil {
 		return err
 	}
+	if err := recovery.park(ctx); err != nil {
+		return err
+	}
 
 	if err := r.runApp(ctx, space, app.Name, run); err != nil {
 		return err
 	}
+	if !spec.NoWait {
+		out.Line("Waiting for the app to answer…")
+		if err := r.waitRunning(ctx, ctrName(space, app.Name), 4*time.Minute); err != nil {
+			return err
+		}
+	}
 
 	// The routing table: the app's own hostname, and the paths it answers
 	// on other apps' addresses.
-	if err := r.applyRoutes(ctx, space, app, run.Port); err != nil {
+	if err := r.applyRoutes(ctx, space, app, run.Port, spec.Hosts); err != nil {
 		return err
 	}
 	for _, route := range app.Routes {
@@ -140,15 +179,13 @@ func (r *Runtime) Deploy(ctx context.Context, spec rt.DeploySpec, out rt.Progres
 	}
 	if app.Internal {
 		out.Line("· Internal only — the apps of this space reach it at http://%s", app.Name)
+	} else if app.UsesOAuth() {
+		out.Line("· API OAuth protection is in force.")
 	} else if !app.Public {
 		out.Line("· Login protection is in force.")
 	}
 
-	if spec.NoWait {
-		return nil
-	}
-	out.Line("Waiting for the app to become healthy…")
-	return r.waitRunning(ctx, ctrName(space, app.Name), 120*time.Second)
+	return nil
 }
 
 func optional(v string) *string {
@@ -158,6 +195,29 @@ func optional(v string) *string {
 	return &v
 }
 
+func (r *Runtime) InternalURL(space, app string, port int) string {
+	return fmt.Sprintf("http://%s:%d", app, port)
+}
+
+func (r *Runtime) resolveEnv(space, app string, env map[string]string) error {
+	for key, raw := range env {
+		service, bindingKey, ref := config.ParseEnvRef(raw)
+		if !ref {
+			continue
+		}
+		binding, err := r.state.binding(space, app, service)
+		if err != nil {
+			return err
+		}
+		value, ok := binding[bindingKey]
+		if !ok {
+			return fmt.Errorf("service %s has no binding key %s for %s", service, bindingKey, key)
+		}
+		env[key] = value
+	}
+	return nil
+}
+
 // appHost is the address of an app — see config.AppHost for the rule.
 func (r *Runtime) appHost(space string, app *config.AppConfig) string {
 	return config.AppHost(app, space, r.opts.Domain)
@@ -165,9 +225,9 @@ func (r *Runtime) appHost(space string, app *config.AppConfig) string {
 
 // applyRoutes writes the app's routing table entries and retracts the ones
 // it no longer claims.
-func (r *Runtime) applyRoutes(ctx context.Context, space string, app *config.AppConfig, port int) error {
+func (r *Runtime) applyRoutes(ctx context.Context, space string, app *config.AppConfig, port int, hosts ...map[string]string) error {
 	backend := fmt.Sprintf("http://%s:%d", ctrName(space, app.Name), port)
-	login := !app.Public
+	login := !app.Public && !(app.Internal && app.IsAPI())
 
 	host := r.appHost(space, app)
 	if host == "" {
@@ -175,7 +235,7 @@ func (r *Runtime) applyRoutes(ctx context.Context, space string, app *config.App
 			return err
 		}
 	} else {
-		route := Route{Space: space, App: app.Name, Host: host, Path: "/", Backend: backend, Login: login}
+		route := Route{Space: space, App: app.Name, Host: host, Path: "/", Backend: backend, Login: login, Mode: app.GatewayMode(), CORS: app.CORS}
 		if login && !app.Access.Empty() {
 			route.Access = app.Access
 		}
@@ -189,12 +249,18 @@ func (r *Runtime) applyRoutes(ctx context.Context, space string, app *config.App
 		name := pathRouteName(app.Name, target.App, target.Path)
 		keep[name] = true
 		route := Route{
-			Space:   space,
-			App:     app.Name,
-			Host:    r.targetHost(space, target.App),
-			Path:    target.Path,
-			Backend: backend,
-			Login:   login,
+			Space:       space,
+			App:         app.Name,
+			Host:        r.targetHost(space, target.App),
+			Path:        target.Path,
+			StripPrefix: target.StripPrefix,
+			Backend:     backend,
+			Login:       login,
+			Mode:        app.GatewayMode(),
+			CORS:        app.CORS,
+		}
+		if len(hosts) > 0 && hosts[0][target.App] != "" {
+			route.Host = hosts[0][target.App]
 		}
 		if login && !app.Access.Empty() {
 			route.Access = app.Access
@@ -335,6 +401,9 @@ func (r *Runtime) appEnv(space, app string, port int) (map[string]string, error)
 			return nil, err
 		}
 		for k, v := range data {
+			if _, _, ref := config.ParseEnvRef(env[k]); ref {
+				continue
+			}
 			env[k] = v
 		}
 	}
@@ -434,21 +503,29 @@ func (r *Runtime) runApp(ctx context.Context, space, app string, spec runSpec) e
 	if err != nil {
 		return err
 	}
+	if err := r.resolveEnv(space, app, env); err != nil {
+		return err
+	}
 	labels := appLabels(space, app, roleWorkload)
 	labels[labelImage] = spec.Image
 	labels[labelPort] = strconv.Itoa(spec.Port)
+	labels[labelHealthPath] = spec.Healthcheck
+	labels[labelHost] = spec.Host
+	labels[labelMode] = spec.Mode
+	labels[labelCORS] = spec.CORS
 
 	volumes, err := r.appMounts(ctx, space, app, spec)
 	if err != nil {
 		return err
 	}
 	return r.replaceContainer(ctx, ctrName(space, app), runConfig{
-		Image:   spec.Image,
-		Env:     env,
-		Labels:  labels,
-		Network: netName(space),
-		Alias:   app,
-		Volumes: volumes,
+		Image:      spec.Image,
+		Env:        env,
+		Labels:     labels,
+		Network:    netName(space),
+		Alias:      app,
+		Volumes:    volumes,
+		Entrypoint: spec.Command,
 	})
 }
 
@@ -504,6 +581,10 @@ func (r *Runtime) replaceContainer(ctx context.Context, name string, cfg runConf
 		containerCfg.Cmd = nil
 	}
 	hostCfg := &container.HostConfig{Mounts: mounts}
+	if cfg.Labels[labelRole] == roleWorkload {
+		hostCfg.SecurityOpt = []string{"no-new-privileges:true"}
+		hostCfg.CapDrop = []string{"NET_RAW"}
+	}
 	if !cfg.OneShot {
 		hostCfg.RestartPolicy = container.RestartPolicy{Name: container.RestartPolicyUnlessStopped}
 	}
@@ -594,6 +675,8 @@ func (r *Runtime) Network(ctx context.Context, space, app string) (*rt.NetworkSt
 		st.RouteFound = true
 		st.Host = route.Host
 		st.Protected = route.Login
+		st.Mode = route.Mode
+		st.CORS = route.CORS
 		st.Access = route.Access
 	}
 	names, err := r.state.listRoutes(space)
@@ -609,7 +692,7 @@ func (r *Runtime) Network(ctx context.Context, space, app string) (*rt.NetworkSt
 			continue
 		}
 		st.Routes = append(st.Routes, rt.PathRouteState{
-			Name: name, Host: route.Host, Path: route.Path, Protected: route.Login,
+			Name: name, Host: route.Host, Path: route.Path, Protected: route.Login, Mode: route.Mode, CORS: route.CORS, StripPrefix: route.StripPrefix,
 		})
 	}
 	return st, nil
@@ -628,7 +711,7 @@ func (r *Runtime) ApplyNetwork(ctx context.Context, cfg *config.AppConfig) (stri
 	if spec != nil {
 		port = spec.Port
 	}
-	login := !cfg.Public
+	login := !cfg.Public && !(cfg.Internal && cfg.IsAPI())
 
 	if host := r.appHost(space, cfg); host == "" {
 		if err := r.state.removeRoute(space, app); err != nil {
@@ -648,6 +731,8 @@ func (r *Runtime) ApplyNetwork(ctx context.Context, cfg *config.AppConfig) (stri
 			Path:    "/",
 			Backend: fmt.Sprintf("http://%s:%d", ctrName(space, app), port),
 			Login:   login,
+			Mode:    cfg.GatewayMode(),
+			CORS:    cfg.CORS,
 		}
 		if login && !cfg.Access.Empty() {
 			route.Access = cfg.Access
@@ -670,12 +755,22 @@ func (r *Runtime) ApplyNetwork(ctx context.Context, cfg *config.AppConfig) (stri
 			continue
 		}
 		route.Login = login
+		route.Mode = cfg.GatewayMode()
+		route.CORS = cfg.CORS
 		if !login {
 			route.Access = nil
 		} else if route.Access == nil {
 			route.Access = cfg.Access
 		}
 		if err := r.state.setRoute(space, name, *route); err != nil {
+			return "", err
+		}
+	}
+	if spec != nil {
+		spec.Host = r.appHost(space, cfg)
+		spec.Mode = cfg.GatewayMode()
+		spec.CORS = cfg.CORS
+		if err := r.setRunRecord(space, app, *spec); err != nil {
 			return "", err
 		}
 	}

@@ -7,12 +7,13 @@ import {
   CircleAlert,
   CircleCheck,
   Globe,
+  KeyRound,
   Loader2,
   Lock,
   Network,
   type LucideIcon,
 } from 'lucide-react'
-import type { Exposure } from './api'
+import type { AppMode, Exposure } from './api'
 
 // useColorScheme follows the OS light/dark preference — the console has no
 // theme toggle and stores nothing, so this reads `prefers-color-scheme` live.
@@ -69,24 +70,67 @@ export function StatusDot({ health }: { health: Health }) {
   return <span className={`inline-block size-2.5 rounded-full ${dotColor[health]}`} aria-hidden />
 }
 
+// APP_MODES names the kind of traffic an app takes. The choice only bites
+// behind the login: a browser is sent to the sign-in page, an API client is
+// asked for an OAuth access token. Public and internal apps skip both.
+export const APP_MODES: { value: AppMode; icon: LucideIcon; label: string; hint: string }[] = [
+  {
+    value: 'web',
+    icon: Globe,
+    label: 'Web app',
+    hint: 'Pages people open in a browser. Behind the login, visitors sign in through your identity provider.',
+  },
+  {
+    value: 'api',
+    icon: KeyRound,
+    label: 'API',
+    hint: 'REST APIs, MCP servers, webhook receivers. Behind the login, clients present an OAuth access token instead of signing in.',
+  },
+]
+
+// loginHint spells out what "behind the login" means for the given mode —
+// the one exposure whose meaning depends on it.
+export function loginHint(mode: AppMode): string {
+  return mode === 'api'
+    ? 'Clients present an OAuth access token from your identity provider; MCP clients find the sign-in by discovery.'
+    : 'Visitors sign in through your identity provider.'
+}
+
 // ExposureBadge says how the world reaches an app — the console's shorthand
-// for the network settings: open globe, locked door, or stable-only.
-export function ExposureBadge({ exposure }: { exposure?: Exposure }) {
+// for the network settings: open globe, locked door, OAuth key, or stable-only.
+export function ExposureBadge({ exposure, mode }: { exposure?: Exposure; mode?: AppMode }) {
   if (!exposure) return null
   const spec = {
-    public: { icon: <Globe className="size-3" aria-hidden />, label: 'public', tone: 'text-ink-soft border-line' },
-    protected: { icon: <Lock className="size-3" aria-hidden />, label: 'login', tone: 'text-accent border-accent/40' },
-    internal: { icon: <Network className="size-3" aria-hidden />, label: 'internal', tone: 'text-muted border-line' },
+    public: {
+      icon: <Globe className="size-3" aria-hidden />,
+      label: 'public',
+      tone: 'text-ink-soft border-line',
+      title: mode === 'api' ? 'Public API — anyone with the address can call it' : 'Public — anyone with the address can open it',
+    },
+    protected:
+      mode === 'api'
+        ? {
+            icon: <KeyRound className="size-3" aria-hidden />,
+            label: 'oauth',
+            tone: 'text-accent border-accent/40',
+            title: 'API behind the login — clients present an OAuth access token',
+          }
+        : {
+            icon: <Lock className="size-3" aria-hidden />,
+            label: 'login',
+            tone: 'text-accent border-accent/40',
+            title: 'Behind the login — visitors sign in through the identity provider',
+          },
+    internal: {
+      icon: <Network className="size-3" aria-hidden />,
+      label: 'internal',
+      tone: 'text-muted border-line',
+      title: 'Internal — only the apps of this space reach it, by name',
+    },
   }[exposure]
   return (
     <span
-      title={
-        exposure === 'public'
-          ? 'Public — anyone with the address can open it'
-          : exposure === 'protected'
-            ? 'Login-protected — visitors sign in through the identity provider'
-            : 'Internal — only the apps of this space reach it, by name'
-      }
+      title={spec.title}
       className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wide ${spec.tone}`}
     >
       {spec.icon}
@@ -162,18 +206,20 @@ export function IconButton({
   onClick,
   kind = 'quiet',
   disabled = false,
+  type = 'button',
 }: {
   icon: LucideIcon
   label: string
   onClick?: () => void
   kind?: 'quiet' | 'danger'
   disabled?: boolean
+  type?: 'button' | 'submit'
 }) {
   const tone =
     kind === 'danger' ? 'hover:bg-danger/10 hover:text-danger' : 'hover:bg-line/60 hover:text-ink'
   return (
     <button
-      type="button"
+      type={type}
       title={label}
       aria-label={label}
       onClick={onClick}

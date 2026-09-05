@@ -24,8 +24,6 @@ import (
 	"github.com/adrianliechti/donkey/pkg/runtime"
 )
 
-const dbTimeout = 30 * time.Second
-
 // plainIdent is what the create endpoints accept as names — plain lowercase
 // identifiers sidestep the quoting swamp entirely.
 var plainIdent = regexp.MustCompile(`^[a-z_][a-z0-9_]*$`)
@@ -72,7 +70,7 @@ func (s *Server) dbConnect(ctx context.Context, r *http.Request, db string) (*pg
 // handleDbDatabases lists the service's databases — templates stay hidden,
 // they are postgres' own scaffolding.
 func (s *Server) handleDbDatabases(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), dbTimeout)
+	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 	conn, err := s.dbConnect(ctx, r, "")
 	if err != nil {
@@ -116,7 +114,7 @@ func (s *Server) handleDbDatabases(w http.ResponseWriter, r *http.Request) {
 // handleDbCreateDatabase makes a database on the service. Plain identifiers
 // only — the escape hatch for fancier names is the SQL view.
 func (s *Server) handleDbCreateDatabase(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), dbTimeout)
+	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 	var req struct {
 		Name string `json:"name"`
@@ -145,7 +143,7 @@ func (s *Server) handleDbCreateDatabase(w http.ResponseWriter, r *http.Request) 
 // handleDbDropDatabase removes a database — except the binding's own, which
 // the connected apps depend on.
 func (s *Server) handleDbDropDatabase(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), dbTimeout)
+	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 	db := r.PathValue("db")
 	conn, err := s.dbConnect(ctx, r, "")
@@ -175,7 +173,7 @@ func (s *Server) handleDbDropDatabase(w http.ResponseWriter, r *http.Request) {
 // handleDbDropTable removes one table, dependencies untouched — an error
 // about them is better than a silent cascade.
 func (s *Server) handleDbDropTable(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), dbTimeout)
+	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 	ident, err := tableIdent(r.URL.Query().Get("schema"), r.PathValue("table"))
 	if err != nil {
@@ -198,7 +196,7 @@ func (s *Server) handleDbDropTable(w http.ResponseWriter, r *http.Request) {
 // handleDbTables lists the user's tables — system schemas are the server's
 // business, not the browser's.
 func (s *Server) handleDbTables(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), dbTimeout)
+	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 	conn, err := s.dbConnect(ctx, r, r.PathValue("db"))
 	if err != nil {
@@ -311,7 +309,7 @@ func collectRows(rows pgx.Rows) (columns []string, data [][]any, err error) {
 // handleDbRows serves one page of a table, with the key columns the grid
 // needs to edit it.
 func (s *Server) handleDbRows(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), dbTimeout)
+	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 	conn, err := s.dbConnect(ctx, r, r.PathValue("db"))
 	if err != nil {
@@ -411,7 +409,7 @@ func wherePK(key map[string]string, pk []string, args *[]any) (string, error) {
 }
 
 func (s *Server) handleDbInsertRow(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), dbTimeout)
+	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 	var req dbRowRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -450,7 +448,7 @@ func (s *Server) handleDbInsertRow(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDbUpdateRow(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), dbTimeout)
+	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 	var req dbRowRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -497,7 +495,7 @@ func (s *Server) handleDbUpdateRow(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDbDeleteRow(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), dbTimeout)
+	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 	var req dbRowRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -538,7 +536,7 @@ func (s *Server) handleDbDeleteRow(w http.ResponseWriter, r *http.Request) {
 // the grid doesn't do. The token holder owns this database; the server's
 // job is transport, not judgement.
 func (s *Server) handleDbQuery(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), dbTimeout)
+	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 	var req struct {
 		SQL string `json:"sql"`

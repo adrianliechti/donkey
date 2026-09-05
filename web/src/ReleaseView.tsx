@@ -439,6 +439,19 @@ export function ReleaseView({
       <ServicesNeeded plan={plan} />
       <Problems plan={plan} result={result} />
 
+      {Boolean(update.changes?.length) && (
+        <Card className="space-y-3 p-4">
+          <SectionTitle>Automatic repairs</SectionTitle>
+          <p className="text-xs text-muted">Applied to this build. Keep these changes with the Dockerfile to reproduce it.</p>
+          {update.changes?.map((change, index) => (
+            <details key={`${change.path}-${index}`} className="rounded-md border border-line p-3">
+              <summary className="cursor-pointer font-mono text-xs">{change.path}</summary>
+              <div className="mt-3"><DiffView diff={change.diff} /></div>
+            </details>
+          ))}
+        </Card>
+      )}
+
       {result && (result.url || onOpen || onBackToReview || onDeployAnother) && (
         <div className="flex flex-wrap items-center justify-end gap-2">
           {result.ok ? (

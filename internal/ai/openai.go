@@ -21,14 +21,14 @@ type openAI struct {
 
 // newOpenAI builds the client. The SDK honors OPENAI_BASE_URL from the
 // environment, so local OpenAI-compatible servers work out of the box. The
-// generous-but-finite timeout keeps a dead endpoint from stalling a deploy
-// forever — the failure is then reported, never silently papered over.
+// caller owns cancellation: model reasoning may legitimately take longer
+// than an HTTP request timeout.
 func newOpenAI(key, model string) *openAI {
 	return &openAI{
 		client: openai.NewClient(
 			option.WithAPIKey(key),
 			option.WithMaxRetries(1),
-			option.WithRequestTimeout(2*time.Minute),
+			option.WithRequestTimeout(0),
 		),
 		model: model,
 	}
@@ -100,6 +100,12 @@ func (o *openAI) WriteDockerfile(ctx context.Context, in *DockerfileInput) (*Doc
 	if in.Port > 0 {
 		fmt.Fprintf(&b, "donkey will set PORT=%d.\n\n", in.Port)
 	}
+	if in.Runtime != "" {
+		fmt.Fprintf(&b, "Reviewed runtime contract:\n%s\n\n", in.Runtime)
+	}
+	if in.AllowEdits {
+		b.WriteString("You may use edit to repair deployment compatibility in this disposable workspace. Read before editing; preserve the application's behavior. Every edit is recorded.\n\n")
+	}
 	// The failures go first: on a retry they are the only thing that matters,
 	// and burying them under a file tree is how a model misses them.
 	if n := len(in.Attempts); n > 0 {
@@ -111,6 +117,12 @@ func (o *openAI) WriteDockerfile(ctx context.Context, in *DockerfileInput) (*Doc
 			if at.Dockerfile != "" {
 				fmt.Fprintf(&b, "Dockerfile:\n%s\n", at.Dockerfile)
 			}
+			if at.Dockerignore != "" {
+				fmt.Fprintf(&b, "Dockerignore:\n%s\n", at.Dockerignore)
+			}
+			if at.Stage != "" {
+				fmt.Fprintf(&b, "Failure stage: %s\n", at.Stage)
+			}
 			fmt.Fprintf(&b, "What happened:\n%s\n\n", at.Failure)
 		}
 	}
@@ -120,22 +132,26 @@ func (o *openAI) WriteDockerfile(ctx context.Context, in *DockerfileInput) (*Doc
 
 	var out DockerfileResult
 	var filesRead []string
+	var changes []SourceChange
+	task := RedactEvidence(b.String(), in.KnownSecrets...)
 	if in.Root != "" {
 		history := o.investigate(ctx, in.Root, instructions,
-			b.String()+"\n"+dockerfileExploreInstruction, maxBuildExploreTurns)
+			task+"\n"+dockerfileExploreInstruction, maxBuildExploreTurns,
+			exploreOptions{Writable: in.AllowEdits, Progress: in.Progress, Changes: &changes, KnownSecrets: in.KnownSecrets})
 		filesRead = exploredFiles(history)
 		history = append(history, responses.ResponseInputItemParamOfMessage(
 			dockerfileConcludeInstruction, responses.EasyInputMessageRoleUser))
 		if err := o.structuredWith(ctx, instructions, history, "dockerfile", dockerfileSchema, &out); err != nil {
-			// Exploration or the answer call failed. A one-shot Dockerfile from
-			// the summary alone is worse, but it is not nothing, and this
-			// builder has a verification step and further attempts behind it.
+			// Keep the investigation and edit results on a transient failure.
+			// Falling back to the original summary would describe stale source.
 			out = DockerfileResult{}
-			filesRead = nil
+			if err := o.structuredWith(ctx, instructions, history, "dockerfile", dockerfileSchema, &out); err != nil {
+				return nil, err
+			}
 		}
 	}
-	if out.Dockerfile == "" {
-		if err := o.structured(ctx, instructions, b.String(), "dockerfile", dockerfileSchema, &out); err != nil {
+	if in.Root == "" {
+		if err := o.structured(ctx, instructions, task, "dockerfile", dockerfileSchema, &out); err != nil {
 			return nil, err
 		}
 	}
@@ -152,6 +168,7 @@ func (o *openAI) WriteDockerfile(ctx context.Context, in *DockerfileInput) (*Doc
 		out.Dockerignore = ""
 	}
 	out.FilesRead = filesRead
+	out.Changes = changes
 	return &out, nil
 }
 
@@ -292,10 +309,10 @@ func (o *openAI) structured(ctx context.Context, instructions, user, name string
 }
 
 // structuredWith answers over an exchange that already happened. The schema
-// is provider-enforced, so what comes back is valid or an error — donkey never
-// parses prose into a struct and hopes.
+// is provider-enforced. Read the final message: OutputText also includes
+// commentary, which may precede the structured answer.
 func (o *openAI) structuredWith(ctx context.Context, instructions string, input []responses.ResponseInputItemUnionParam, name string, schema map[string]any, out any) error {
-	resp, err := o.client.Responses.New(ctx, responses.ResponseNewParams{
+	params := responses.ResponseNewParams{
 		Model:        shared.ResponsesModel(o.model),
 		Instructions: openai.String(instructions),
 		Input:        responses.ResponseNewParamsInputUnion{OfInputItemList: input},
@@ -308,16 +325,48 @@ func (o *openAI) structuredWith(ctx context.Context, instructions string, input 
 				},
 			},
 		},
-	})
+	}
+	resp, err := o.client.Responses.New(ctx, params)
 	if err != nil {
 		return fmt.Errorf("asking OpenAI didn't work: %w", err)
 	}
-	text := resp.OutputText()
-	if text == "" {
-		return fmt.Errorf("OpenAI sent an empty answer")
+	text, err := answerText(resp)
+	if err != nil {
+		return err
 	}
 	if err := json.Unmarshal([]byte(text), out); err != nil {
 		return fmt.Errorf("the AI answer wasn't usable: %w", err)
 	}
 	return nil
+}
+
+func answerText(resp *responses.Response) (string, error) {
+	if resp.Status != "" && resp.Status != "completed" {
+		return "", fmt.Errorf("OpenAI didn't finish its answer (status %s)", resp.Status)
+	}
+	final := false
+	for _, item := range resp.Output {
+		final = final || item.Type == "message" && item.Phase == "final_answer"
+	}
+	var text string
+	for _, item := range resp.Output {
+		if item.Type != "message" || item.Phase == "commentary" || final && item.Phase != "final_answer" {
+			continue
+		}
+		for _, content := range item.Content {
+			if content.Type == "refusal" {
+				return "", fmt.Errorf("OpenAI declined to produce this answer")
+			}
+			if content.Type == "output_text" {
+				if text != "" {
+					return "", fmt.Errorf("OpenAI sent more than one answer block")
+				}
+				text = content.Text
+			}
+		}
+	}
+	if text == "" {
+		return "", fmt.Errorf("OpenAI sent an empty answer")
+	}
+	return text, nil
 }

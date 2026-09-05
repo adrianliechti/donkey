@@ -10,11 +10,11 @@
 // read once.
 import { useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { FileArchive, FolderUp, Loader2, UploadCloud } from 'lucide-react'
+import { Loader2, UploadCloud } from 'lucide-react'
 import { zipSync } from 'fflate'
-import { api, type DeployResult, type DeployUpdate, type Plan, type PlanEdit } from './api'
-import { Card, ErrorNote, errText, SectionTitle } from './ui'
-import { PlanReview } from './PlanReview'
+import { api, type DeployResult, type DeployUpdate, type ProjectPlan, type PlanEdit } from './api'
+import { Button, Card, ErrorNote, errText } from './ui'
+import { ProjectReview } from './ProjectReview'
 import { ReleaseView } from './ReleaseView'
 import { fleetQuery, useFleet } from './queries'
 
@@ -22,7 +22,15 @@ import { fleetQuery, useFleet } from './queries'
 // should not ship what `donkey deploy` would leave behind. The server
 // enforces them again for any client; doing it here means the bytes never
 // leave the machine in the first place.
-const SKIP_DIRS = new Set(['.git', 'node_modules', '.venv', 'venv', '__pycache__', '.idea', '.vscode'])
+const SKIP_DIRS = new Set([
+  '.git',
+  'node_modules',
+  '.venv',
+  'venv',
+  '__pycache__',
+  '.idea',
+  '.vscode',
+])
 const SENSITIVE_EXT = ['.pem', '.key', '.p12', '.pfx']
 const SSH_KEYS = new Set(['id_rsa', 'id_dsa', 'id_ecdsa', 'id_ed25519'])
 
@@ -33,7 +41,6 @@ function sensitiveFile(name: string): boolean {
   return SSH_KEYS.has(lower) || SSH_KEYS.has(lower.replace(/\.pub$/, ''))
 }
 
-const MAX_UPLOAD = 256 * 1024 * 1024
 
 interface Collected {
   path: string
@@ -71,49 +78,12 @@ async function collectEntry(
   out.push({ path: prefix + entry.name, file })
 }
 
-// Files that mark a folder as "an app lives here" when no donkey.yaml does.
-const APP_MARKERS = new Set([
-  'package.json',
-  'go.mod',
-  'requirements.txt',
-  'pyproject.toml',
-  'Pipfile',
-  'Gemfile',
-  'composer.json',
-  'pom.xml',
-  'build.gradle',
-  'Cargo.toml',
-  'mix.exs',
-  'Dockerfile',
-  'index.html',
-])
-
-// candidateRoots finds the folders that look like an app, nearest first. The
-// browser knows the whole file list before anything is uploaded, so a
-// monorepo can be narrowed down here instead of failing server-side.
-function candidateRoots(paths: string[]): { dir: string; hasConfig: boolean }[] {
-  const configDirs = new Set<string>()
-  const markerDirs = new Set<string>()
-  for (const p of paths) {
-    const slash = p.lastIndexOf('/')
-    const dir = slash < 0 ? '' : p.slice(0, slash)
-    const base = slash < 0 ? p : p.slice(slash + 1)
-    if (base === 'donkey.yaml') configDirs.add(dir)
-    else if (APP_MARKERS.has(base)) markerDirs.add(dir)
-  }
-  const dirs = configDirs.size > 0 ? configDirs : markerDirs
-  return [...dirs]
-    .map((dir) => ({ dir, hasConfig: configDirs.has(dir) }))
-    .sort((a, b) => a.dir.split('/').length - b.dir.split('/').length || a.dir.localeCompare(b.dir))
-}
-
 // Upload is what the drop zone produced: the collected files plus what we
 // know about them. A ready-made .zip is passed through unopened.
 interface Upload {
   label: string
   files: Collected[] | null // null = an opaque .zip, sent as-is
   blob: Blob | null
-  roots: { dir: string; hasConfig: boolean }[]
   skipped: string[]
   // name is what the app should be called if the upload carries no
   // donkey.yaml. Only the browser knows it: the archive it sends is rebased
@@ -168,22 +138,18 @@ async function uploadFromDrop(
   if (collected.length === 0) {
     throw new Error('Nothing usable was dropped — drop a project folder or a .zip of one.')
   }
-  let total = 0
   buffers.clear()
   for (const c of collected) {
-    total += c.file.size
-    if (total > MAX_UPLOAD) {
-      throw new Error('That folder is over 256 MB — deploy it with the CLI instead (donkey deploy).')
-    }
     buffers.set(c.path, new Uint8Array(await c.file.arrayBuffer()))
   }
   const label =
-    entries.length === 1 ? `${entries[0].name}/ (${collected.length} files)` : `${collected.length} files`
+    entries.length === 1
+      ? `${entries[0].name}/ (${collected.length} files)`
+      : `${collected.length} files`
   return {
     blob: null,
     label,
     files: collected,
-    roots: candidateRoots(collected.map((c) => c.path)),
     skipped,
     name: entries.length === 1 ? entries[0].name : '',
   }
@@ -194,23 +160,20 @@ function zipUpload(file: File): Upload {
     blob: file,
     label: file.name,
     files: null,
-    roots: [],
     skipped: [],
     name: file.name.replace(/\.zip$/i, ''),
   }
 }
 
-type ReviewPhase = { step: 'review'; upload: Upload; blob: Blob; plan: Plan }
-
+type ReviewPhase = { step: 'review'; upload: Upload; blob: Blob; plan: ProjectPlan }
 type Phase =
   | { step: 'pick' }
-  // Several apps in one drop: which one is a question only the person
-  // dropping can answer, and it has to be answered before the upload.
-  | { step: 'root'; upload: Upload }
   | { step: 'reading'; upload: Upload }
   | ReviewPhase
-  | { step: 'deploying'; plan: Plan }
-  | { step: 'done'; result: DeployResult; plan: Plan; review: ReviewPhase }
+  | { step: 'deploying'; plan: ProjectPlan }
+  | { step: 'done'; result: DeployResult; plan: ProjectPlan; review: ReviewPhase }
+
+type AppProgress = { lines: string[]; log: string; update: DeployUpdate; result?: DeployResult }
 
 export function DeployView({
   space,
@@ -223,9 +186,7 @@ export function DeployView({
 }) {
   const [phase, setPhase] = useState<Phase>({ step: 'pick' })
   const [dragOver, setDragOver] = useState(false)
-  const [lines, setLines] = useState<string[]>([])
-  const [buildLog, setBuildLog] = useState('')
-  const [releaseUpdate, setReleaseUpdate] = useState<DeployUpdate>({ stage: 'detecting' })
+  const [progress, setProgress] = useState<Record<string, AppProgress>>({})
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const fileInput = useRef<HTMLInputElement>(null)
@@ -235,90 +196,82 @@ export function DeployView({
 
   async function accept(makeUpload: () => Promise<Upload>) {
     setError('')
+    setBusy(true)
     try {
       const upload = await makeUpload()
-      // One app in the drop (the usual case) goes straight to the server —
-      // asking "which folder?" when there is only one is noise.
-      if (upload.roots.length > 1) {
-        setPhase({ step: 'root', upload })
-        return
-      }
-      read(upload, upload.roots[0]?.dir ?? '')
-    } catch (err) {
-      setError(errText(err, 'That did not work.'))
-    }
-  }
-
-  // read uploads the project and asks the server what it is. It is the slow
-  // step (a model reading real code), and the only one that happens without
-  // the user having decided anything — which is the whole idea.
-  async function read(upload: Upload, root: string) {
-    setError('')
-    setPhase({ step: 'reading', upload })
-    try {
-      const blob = upload.blob ?? zipFrom(upload.files ?? [], root, buffers.current)
-      const hint = root ? root.split('/').pop() || upload.name : upload.name
-      const plan = await api.plan(blob, { space: space || undefined, name: name || hint })
+      setPhase({ step: 'reading', upload })
+      const blob = upload.blob ?? zipFrom(upload.files ?? [], '', buffers.current)
+      const plan = await api.projectPlan(blob, {
+        space: space || undefined,
+        name: name || upload.name,
+      })
       setPhase({ step: 'review', upload, blob, plan })
     } catch (err) {
       setError(errText(err, "Donkey couldn't read that project."))
       setPhase({ step: 'pick' })
+    } finally {
+      setBusy(false)
     }
   }
 
-  // recheck sends the answers back: the server re-decides the config and
-  // re-runs the checks that are only true right now (a free name, an existing
-  // space, a service already running).
-  async function recheck(at: Extract<Phase, { step: 'review' }>, edit: PlanEdit) {
+  async function recheck(at: ReviewPhase, edits: PlanEdit[]) {
     try {
-      const next = await api.updatePlan(at.plan.id, edit)
-      setPhase({ ...at, plan: next })
+      const plan = await api.updateProject(at.plan.id, edits)
+      setPhase({ ...at, plan })
       setError('')
+      return plan
     } catch (err) {
-      setError(errText(err, 'That change could not be checked.'))
+      setError(errText(err, 'The changes could not be checked.'))
+      throw err
     }
   }
 
-  async function deploy(at: Extract<Phase, { step: 'review' }>, edit: PlanEdit) {
+  async function deploy(at: ReviewPhase, edits: PlanEdit[]) {
     setBusy(true)
     setError('')
     let review = at
     try {
-      // The answers go up one last time, so what deploys is exactly what the
-      // screen showed — including anything typed in the last 400ms.
-      const settled = await api.updatePlan(at.plan.id, edit)
+      const settled = await api.updateProject(at.plan.id, edits)
+      review = { ...at, plan: settled }
       if (!settled.ready) {
-        setPhase({ ...at, plan: settled })
+        setPhase(review)
         setError('Something still blocks this deploy — see the checks above.')
         return
       }
-      review = { ...at, plan: settled }
-      setLines([])
-      setBuildLog('')
-      setReleaseUpdate({ stage: 'detecting', baseImages: settled.build.baseImages })
+      setProgress({})
       setPhase({ step: 'deploying', plan: settled })
+      let current = settled.apps[0].app.name
+      const update = (apply: (prev: AppProgress) => AppProgress) => {
+        const app = current
+        setProgress((prev) => ({
+          ...prev,
+          [app]: apply(prev[app] ?? { lines: [], log: '', update: {} }),
+        }))
+      }
       const result = await api.deployUpload(
         at.blob,
-        { plan: settled.id },
-        (line) => setLines((prev) => [...prev, line]),
-        (progress) => setBuildLog((prev) => prev + progress),
-        (update) =>
-          setReleaseUpdate((prev) => ({
+        { plan: settled.id, project: true },
+        (line) => update((prev) => ({ ...prev, lines: [...prev.lines, line] })),
+        (text) => update((prev) => ({ ...prev, log: prev.log + text })),
+        (event) => {
+          if (event.app) current = event.app
+          update((prev) => ({
             ...prev,
-            ...update,
-            baseImages: update.baseImages ?? prev.baseImages,
-          })),
+            update: { ...prev.update, ...event, changes: [...(prev.update.changes ?? []), ...(event.changes ?? [])] },
+            result: event.result ?? prev.result,
+          }))
+        },
       )
-      queryClient.invalidateQueries({ queryKey: fleetQuery.queryKey })
-      queryClient.invalidateQueries({ queryKey: ['status', result.space || settled.app.space, result.app] })
-      queryClient.invalidateQueries({ queryKey: ['builds', result.space || settled.app.space, result.app] })
       setPhase({ step: 'done', result, plan: settled, review })
     } catch (err) {
-      // The plan and the packed project are both still here, so the way back
-      // is the review screen — not the drop zone the folder came from.
-      setError(errText(err, 'The deploy did not work.'))
+      setError(
+        errText(err, 'The deploy did not finish. Check the app pages for the latest status.'),
+      )
       setPhase(review)
     } finally {
+      queryClient.invalidateQueries({ queryKey: fleetQuery.queryKey })
+      queryClient.invalidateQueries({ queryKey: ['status'] })
+      queryClient.invalidateQueries({ queryKey: ['builds'] })
       setBusy(false)
     }
   }
@@ -327,21 +280,19 @@ export function DeployView({
     <div
       className={`mx-auto space-y-5 ${phase.step === 'deploying' || phase.step === 'done' ? 'max-w-6xl' : 'max-w-2xl'}`}
     >
-      <h1 className="text-lg font-semibold">
-        {phase.step === 'deploying' || phase.step === 'done'
-          ? `Release ${phase.plan.app.name}`
-          : 'Deploy'}
-      </h1>
-
-      {(phase.step === 'pick' || phase.step === 'root') && (
+      <h1 className="text-lg font-semibold">Deploy</h1>
+      {phase.step === 'pick' && (
         <>
           <div
             role="button"
             tabIndex={0}
+            aria-disabled={busy}
             aria-label="Drop a project folder or zip here, or press Enter to pick a file"
-            onClick={() => fileInput.current?.click()}
+            onClick={() => {
+              if (!busy) fileInput.current?.click()
+            }}
             onKeyDown={(e) => {
-              if (e.key === 'Enter' || e.key === ' ') fileInput.current?.click()
+              if (!busy && (e.key === 'Enter' || e.key === ' ')) fileInput.current?.click()
             }}
             onDragOver={(e) => {
               e.preventDefault()
@@ -351,36 +302,24 @@ export function DeployView({
             onDrop={(e) => {
               e.preventDefault()
               setDragOver(false)
-              const items = e.dataTransfer.items
-              if (items.length > 0) accept(() => uploadFromDrop(items, buffers.current))
+              if (!busy && e.dataTransfer.items.length > 0)
+                accept(() => uploadFromDrop(e.dataTransfer.items, buffers.current))
             }}
-            className={`flex cursor-pointer flex-col items-center gap-2 rounded-lg border-2 border-dashed p-10 text-center transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-strong ${
-              dragOver ? 'border-accent-strong bg-accent-soft' : 'border-line bg-card hover:bg-accent-soft/50'
-            }`}
+            className={`flex cursor-pointer flex-col items-center gap-2 rounded-lg border-2 border-dashed p-10 text-center transition-colors ${dragOver ? 'border-accent-strong bg-accent-soft' : 'border-line bg-card hover:bg-accent-soft/50'}`}
           >
             <UploadCloud className="size-8 text-accent-strong" aria-hidden />
-            {phase.step === 'root' ? (
-              <p className="flex items-center gap-2 font-mono text-sm">
-                {/\.zip/.test(phase.upload.label) ? (
-                  <FileArchive className="size-4 text-muted" aria-hidden />
-                ) : (
-                  <FolderUp className="size-4 text-muted" aria-hidden />
-                )}
-                {phase.upload.label}
-              </p>
-            ) : (
-              <>
-                <p className="text-sm font-medium">Drop your project folder or a .zip here</p>
-                <p className="text-xs text-muted">
-                  Donkey reads the code first — the port, the folders that hold data, the services it
-                  needs — and shows you what it found before anything is built.
-                </p>
-              </>
-            )}
+            <p className="text-sm font-medium">
+              {busy ? 'Preparing the upload…' : 'Drop your project folder or a .zip here'}
+            </p>
+            <p className="text-xs text-muted">
+              Donkey finds each app, connects them and prepares their services. Review everything
+              before deploying.
+            </p>
             <input
               ref={fileInput}
               type="file"
               accept=".zip"
+              disabled={busy}
               className="hidden"
               onChange={(e) => {
                 const f = e.target.files?.[0]
@@ -389,39 +328,9 @@ export function DeployView({
               }}
             />
           </div>
-
-          {phase.step === 'root' && (
-            <Card className="p-4">
-              <SectionTitle>Which app do you want to deploy?</SectionTitle>
-              <p className="mt-1 text-xs text-muted">
-                This drop holds several. Only the chosen folder is uploaded and read.
-              </p>
-              <div className="mt-3 space-y-1.5">
-                {phase.upload.roots.map((r) => (
-                  <button
-                    key={r.dir}
-                    onClick={() => read(phase.upload, r.dir)}
-                    className="flex w-full items-center justify-between gap-2 rounded-md border border-line px-3 py-2 text-left text-sm hover:border-line-strong hover:bg-raised"
-                  >
-                    <span className="font-mono">{r.dir === '' ? '/ (the whole drop)' : r.dir + '/'}</span>
-                    {r.hasConfig && <span className="text-xs text-muted">has donkey.yaml</span>}
-                  </button>
-                ))}
-              </div>
-            </Card>
-          )}
-
-          {phase.step === 'root' && phase.upload.skipped.length > 0 && (
-            <p className="text-xs text-muted">
-              Left behind (secret-shaped or excluded): {phase.upload.skipped.slice(0, 4).join(', ')}
-              {phase.upload.skipped.length > 4 && ` and ${phase.upload.skipped.length - 4} more`}
-            </p>
-          )}
-
           <ErrorNote message={error} />
         </>
       )}
-
       {phase.step === 'reading' && (
         <Card className="space-y-2 p-6">
           <p className="flex items-center gap-2 text-sm">
@@ -429,55 +338,74 @@ export function DeployView({
             Reading <span className="font-mono">{phase.upload.label}</span>…
           </p>
           <p className="text-xs text-muted">
-            Donkey is detecting how to build it and reading the source for the things no detector can
-            see — which port it listens on, which folders must survive a restart, which services it
-            expects. This takes a moment.
+            Finding runnable apps, shared packages, service dependencies and the URLs that connect
+            them. This takes a moment.
           </p>
         </Card>
       )}
-
       {phase.step === 'review' && (
-        <PlanReview
+        <ProjectReview
+          key={phase.plan.id}
           plan={phase.plan}
           spaces={fleet.data?.spaces ?? []}
           space={space || undefined}
           busy={busy}
           error={error}
-          onRecheck={(edit) => recheck(phase, edit)}
-          onDeploy={(edit) => deploy(phase, edit)}
+          onCheck={(edits) => recheck(phase, edits)}
+          onDeploy={(edits) => deploy(phase, edits)}
           onStartOver={() => {
             setError('')
             setPhase({ step: 'pick' })
           }}
         />
       )}
-
-      {phase.step === 'deploying' && (
-        <ReleaseView
-          plan={phase.plan}
-          lines={lines}
-          buildLog={buildLog}
-          update={releaseUpdate}
-        />
-      )}
-
-      {phase.step === 'done' && (
-        <ReleaseView
-          plan={phase.plan}
-          lines={lines}
-          buildLog={buildLog}
-          update={releaseUpdate}
-          result={phase.result}
-          onOpen={() => onDeployed(phase.result.space || 'default', phase.result.app)}
-          onBackToReview={() => {
-            setError('')
-            setPhase(phase.review)
-          }}
-          onDeployAnother={() => {
-            setError('')
-            setPhase({ step: 'pick' })
-          }}
-        />
+      {(phase.step === 'deploying' || phase.step === 'done') && (
+        <>
+          {phase.step === 'done' && <ErrorNote message={phase.result.error || ''} />}
+          {phase.plan.apps.map((app) => {
+            const status = progress[app.app.name]
+            if (!status)
+              return (
+                <Card key={app.id} className="p-4 text-sm text-muted">
+                  {app.app.name} — waiting to deploy
+                </Card>
+              )
+            return (
+              <div key={app.id} className="space-y-2">
+                <h2 className="text-sm font-semibold">{app.app.name}</h2>
+                <ReleaseView
+                  plan={app}
+                  lines={status.lines}
+                  buildLog={status.log}
+                  update={status.update}
+                  result={status.result}
+                  onOpen={() => onDeployed(status.result?.space || app.app.space, app.app.name)}
+                />
+              </div>
+            )
+          })}
+          {phase.step === 'done' && (
+            <div className="flex gap-2">
+              <Button
+                kind="quiet"
+                onClick={() => {
+                  setError('')
+                  setPhase(phase.review)
+                }}
+              >
+                Back to review
+              </Button>
+              <Button
+                onClick={() => {
+                  setError('')
+                  setPhase({ step: 'pick' })
+                }}
+              >
+                Deploy another project
+              </Button>
+            </div>
+          )}
+        </>
       )}
     </div>
   )
