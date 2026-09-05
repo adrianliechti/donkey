@@ -255,11 +255,13 @@ func TestRouteFromConfigMap(t *testing.T) {
 				manifests.LabelApp:   "shop",
 			},
 			Annotations: map[string]string{
-				"donkey.local/backend": "http://shop.donkey-acme.svc.cluster.local:80",
-				"donkey.local/host":    "shop.example.com",
-				"donkey.local/path":    "/api",
-				"donkey.local/login":   "required",
-				"donkey.local/access":  `{"users":["ada@example.com"],"roles":["developer"]}`,
+				"donkey.local/backend":   "http://shop.donkey-acme.svc.cluster.local:80",
+				"donkey.local/host":      "shop.example.com",
+				"donkey.local/path":      "/api",
+				"donkey.local/login":     "required",
+				manifests.AnnotationMode: config.AppModeAPI,
+				manifests.AnnotationCORS: config.CORSAllowAll,
+				"donkey.local/access":    `{"users":["ada@example.com"],"roles":["developer"]}`,
 			},
 		},
 	}
@@ -267,7 +269,7 @@ func TestRouteFromConfigMap(t *testing.T) {
 	if !ok {
 		t.Fatal("route with backend annotation should be picked up")
 	}
-	if rt.Host != "shop.example.com" || rt.Path != "/api" || !rt.Login {
+	if rt.Host != "shop.example.com" || rt.Path != "/api" || !rt.Login || rt.Mode != config.AppModeAPI || rt.CORS != config.CORSAllowAll {
 		t.Errorf("unexpected route: %+v", rt)
 	}
 	if rt.Space != "acme" || rt.App != "shop" {

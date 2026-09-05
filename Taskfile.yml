@@ -224,12 +224,12 @@ tasks:
       - hack/verify.sh docker
 
   verify:builder:
-    desc: Build all samples and repair cases with the live assistant and verify their HTTP responses, assets and persistence
+    desc: Build all samples, repair cases and FastMCP with the live assistant; verify HTTP, persistence and MCP OAuth
     env:
       DONKEY_E2E_BUILDER: 'true'
       DONKEY_E2E_REPORTS: '{{.ROOT_DIR}}/.build/e2e'
     cmds:
-      - hack/verify.sh {{.RUNTIME | default "kind"}} -run '^TestBuilder(Samples|Recovery)$' {{.CLI_ARGS}}
+      - hack/verify.sh {{.RUNTIME | default "kind"}} -run '^TestBuilder(Samples|Recovery|FastMCPOAuth)$' {{.CLI_ARGS}}
 
   prepare:monorepos:
     desc: Fetch the pinned Google microservices-demo repository for live tests

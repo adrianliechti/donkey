@@ -53,6 +53,8 @@ func routeState(cm *corev1.ConfigMap) rt.PathRouteState {
 		Path:        cm.Annotations[manifests.AnnotationPath],
 		StripPrefix: cm.Annotations[manifests.AnnotationStripPrefix] == "true",
 		Protected:   cm.Annotations[manifests.AnnotationLogin] == manifests.LoginRequired,
+		Mode:        cm.Annotations[manifests.AnnotationMode],
+		CORS:        cm.Annotations[manifests.AnnotationCORS],
 	}
 	if entry.Path == "" {
 		entry.Path = "/"
@@ -75,6 +77,8 @@ func (c *Client) AppNetwork(ctx context.Context, namespace, objectName, space, a
 		st.RouteFound = true
 		st.Host = cm.Annotations[manifests.AnnotationHost]
 		st.Protected = cm.Annotations[manifests.AnnotationLogin] == manifests.LoginRequired
+		st.Mode = cm.Annotations[manifests.AnnotationMode]
+		st.CORS = cm.Annotations[manifests.AnnotationCORS]
 		if raw := cm.Annotations[manifests.AnnotationAccess]; raw != "" {
 			var access config.AccessConfig
 			if json.Unmarshal([]byte(raw), &access) == nil {

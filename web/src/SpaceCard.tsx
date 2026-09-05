@@ -578,7 +578,7 @@ function AppCard({ app }: { app: AppSummary }) {
       >
         <div className="flex items-center justify-between gap-2">
           <span className="truncate font-mono text-sm font-bold">{app.name}</span>
-          <ExposureBadge exposure={app.exposure} />
+		  <ExposureBadge exposure={app.exposure} mode={app.mode} />
         </div>
 
         <div className="mt-2 space-y-1 text-xs">

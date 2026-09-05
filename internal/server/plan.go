@@ -77,6 +77,10 @@ type PlanApp struct {
 	StorageSize string   `json:"storageSize,omitempty"`
 	// Exposure is public, protected or internal — how the app will be reached.
 	Exposure string `json:"exposure"`
+	// Mode is web (the default) or api.
+	Mode string `json:"mode"`
+	// CORS selects the gateway's cross-origin policy.
+	CORS string `json:"cors"`
 	// URL is the address the app will answer on (empty for internal).
 	URL string `json:"url,omitempty"`
 }
@@ -145,6 +149,8 @@ type PlanEdit struct {
 	Services []string `json:"services"`
 	// Exposure is public, protected or internal.
 	Exposure string `json:"exposure"`
+	Mode     string `json:"mode"`
+	CORS     string `json:"cors"`
 }
 
 func (e PlanEdit) validate() error {
@@ -159,6 +165,12 @@ func (e PlanEdit) validate() error {
 	}
 	if e.Exposure != "public" && e.Exposure != "protected" && e.Exposure != "internal" {
 		return fmt.Errorf("exposure must be public, protected or internal")
+	}
+	if e.Mode != "" && e.Mode != config.AppModeWeb && e.Mode != config.AppModeAPI {
+		return fmt.Errorf("mode must be web or api")
+	}
+	if e.CORS != "" && e.CORS != config.CORSAllowAll {
+		return fmt.Errorf("cors must be allowAll when set")
 	}
 	return nil
 }
@@ -511,6 +523,17 @@ func applyPlanEdit(sp *storedPlan, edit PlanEdit) {
 		sp.portSource = PortFromConfig
 	}
 	app.Healthcheck.Path = strings.TrimSpace(edit.Healthcheck)
+	app.CORS = edit.CORS
+	editMode := edit.Mode
+	if editMode == "" {
+		editMode = modeOfConfig(app)
+	}
+	if editMode != modeOfConfig(app) {
+		app.Mode = editMode
+		if editMode == config.AppModeWeb {
+			app.Mode = ""
+		}
+	}
 
 	if app.Storage == nil {
 		app.Storage = &config.StorageConfig{Size: config.DefaultStorage}
@@ -597,6 +620,8 @@ func (s *Server) renderPlan(ctx context.Context, id string, sp *storedPlan) *Pla
 			Healthcheck: app.Healthcheck.Path,
 			Storage:     []string{},
 			Exposure:    exposureOfConfig(app),
+			Mode:        modeOfConfig(app),
+			CORS:        app.CORS,
 			URL:         s.cfg.AppURL(app.Space, app),
 		},
 	}
@@ -734,6 +759,10 @@ func exposureOfConfig(app *config.AppConfig) string {
 	default:
 		return "protected"
 	}
+}
+
+func modeOfConfig(app *config.AppConfig) string {
+	return app.GatewayMode()
 }
 
 // Planning uses the existing binding when present, or the recipe's keys for

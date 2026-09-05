@@ -35,6 +35,8 @@ type runSpec struct {
 	Command     []string `json:"command,omitempty"`
 	Healthcheck string   `json:"healthcheck,omitempty"`
 	Host        string   `json:"host,omitempty"`
+	Mode        string   `json:"mode,omitempty"`
+	CORS        string   `json:"cors,omitempty"`
 }
 
 func (r *Runtime) runRecord(space, app string) (*runSpec, error) {
@@ -142,7 +144,7 @@ func (r *Runtime) Deploy(ctx context.Context, spec rt.DeploySpec, out rt.Progres
 	}
 
 	run := runSpec{Image: r.pullRef(spec.ImageRef), Port: app.Port, Command: app.Command,
-		Healthcheck: app.Healthcheck.Path, Host: r.appHost(space, app)}
+		Healthcheck: app.Healthcheck.Path, Host: r.appHost(space, app), Mode: app.GatewayMode(), CORS: app.CORS}
 	if app.HasStorage() {
 		run.Paths = app.Storage.Paths
 	}
@@ -177,6 +179,8 @@ func (r *Runtime) Deploy(ctx context.Context, spec rt.DeploySpec, out rt.Progres
 	}
 	if app.Internal {
 		out.Line("· Internal only — the apps of this space reach it at http://%s", app.Name)
+	} else if app.UsesOAuth() {
+		out.Line("· API OAuth protection is in force.")
 	} else if !app.Public {
 		out.Line("· Login protection is in force.")
 	}
@@ -223,7 +227,7 @@ func (r *Runtime) appHost(space string, app *config.AppConfig) string {
 // it no longer claims.
 func (r *Runtime) applyRoutes(ctx context.Context, space string, app *config.AppConfig, port int, hosts ...map[string]string) error {
 	backend := fmt.Sprintf("http://%s:%d", ctrName(space, app.Name), port)
-	login := !app.Public
+	login := !app.Public && !(app.Internal && app.IsAPI())
 
 	host := r.appHost(space, app)
 	if host == "" {
@@ -231,7 +235,7 @@ func (r *Runtime) applyRoutes(ctx context.Context, space string, app *config.App
 			return err
 		}
 	} else {
-		route := Route{Space: space, App: app.Name, Host: host, Path: "/", Backend: backend, Login: login}
+		route := Route{Space: space, App: app.Name, Host: host, Path: "/", Backend: backend, Login: login, Mode: app.GatewayMode(), CORS: app.CORS}
 		if login && !app.Access.Empty() {
 			route.Access = app.Access
 		}
@@ -252,6 +256,8 @@ func (r *Runtime) applyRoutes(ctx context.Context, space string, app *config.App
 			StripPrefix: target.StripPrefix,
 			Backend:     backend,
 			Login:       login,
+			Mode:        app.GatewayMode(),
+			CORS:        app.CORS,
 		}
 		if len(hosts) > 0 && hosts[0][target.App] != "" {
 			route.Host = hosts[0][target.App]
@@ -505,6 +511,8 @@ func (r *Runtime) runApp(ctx context.Context, space, app string, spec runSpec) e
 	labels[labelPort] = strconv.Itoa(spec.Port)
 	labels[labelHealthPath] = spec.Healthcheck
 	labels[labelHost] = spec.Host
+	labels[labelMode] = spec.Mode
+	labels[labelCORS] = spec.CORS
 
 	volumes, err := r.appMounts(ctx, space, app, spec)
 	if err != nil {
@@ -667,6 +675,8 @@ func (r *Runtime) Network(ctx context.Context, space, app string) (*rt.NetworkSt
 		st.RouteFound = true
 		st.Host = route.Host
 		st.Protected = route.Login
+		st.Mode = route.Mode
+		st.CORS = route.CORS
 		st.Access = route.Access
 	}
 	names, err := r.state.listRoutes(space)
@@ -682,7 +692,7 @@ func (r *Runtime) Network(ctx context.Context, space, app string) (*rt.NetworkSt
 			continue
 		}
 		st.Routes = append(st.Routes, rt.PathRouteState{
-			Name: name, Host: route.Host, Path: route.Path, Protected: route.Login, StripPrefix: route.StripPrefix,
+			Name: name, Host: route.Host, Path: route.Path, Protected: route.Login, Mode: route.Mode, CORS: route.CORS, StripPrefix: route.StripPrefix,
 		})
 	}
 	return st, nil
@@ -701,7 +711,7 @@ func (r *Runtime) ApplyNetwork(ctx context.Context, cfg *config.AppConfig) (stri
 	if spec != nil {
 		port = spec.Port
 	}
-	login := !cfg.Public
+	login := !cfg.Public && !(cfg.Internal && cfg.IsAPI())
 
 	if host := r.appHost(space, cfg); host == "" {
 		if err := r.state.removeRoute(space, app); err != nil {
@@ -721,6 +731,8 @@ func (r *Runtime) ApplyNetwork(ctx context.Context, cfg *config.AppConfig) (stri
 			Path:    "/",
 			Backend: fmt.Sprintf("http://%s:%d", ctrName(space, app), port),
 			Login:   login,
+			Mode:    cfg.GatewayMode(),
+			CORS:    cfg.CORS,
 		}
 		if login && !cfg.Access.Empty() {
 			route.Access = cfg.Access
@@ -743,12 +755,22 @@ func (r *Runtime) ApplyNetwork(ctx context.Context, cfg *config.AppConfig) (stri
 			continue
 		}
 		route.Login = login
+		route.Mode = cfg.GatewayMode()
+		route.CORS = cfg.CORS
 		if !login {
 			route.Access = nil
 		} else if route.Access == nil {
 			route.Access = cfg.Access
 		}
 		if err := r.state.setRoute(space, name, *route); err != nil {
+			return "", err
+		}
+	}
+	if spec != nil {
+		spec.Host = r.appHost(space, cfg)
+		spec.Mode = cfg.GatewayMode()
+		spec.CORS = cfg.CORS
+		if err := r.setRunRecord(space, app, *spec); err != nil {
 			return "", err
 		}
 	}

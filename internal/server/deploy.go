@@ -568,11 +568,13 @@ type deployDecisions struct {
 // endpoints only: a deploy re-renders decisions from donkey.yaml, while a
 // console choice survives because server-side apply owns only what it writes.
 type consoleChoices struct {
-	// Exposure is "public", "protected" or "internal"; empty means the
-	// donkeyfile (or the default) decides.
-	Exposure     string               `json:"exposure,omitempty"`
-	HostOverride string               `json:"hostOverride,omitempty"`
-	Access       *config.AccessConfig `json:"access,omitempty"`
+	// Mode is web or api. Exposure is public, protected or internal. Empty
+	// values mean the donkeyfile (or the default) decides.
+	Mode     string               `json:"mode,omitempty"`
+	Exposure string               `json:"exposure,omitempty"`
+	Host     string               `json:"host,omitempty"`
+	Access   *config.AccessConfig `json:"access,omitempty"`
+	CORS     string               `json:"cors,omitempty"`
 }
 
 func (s *Server) readConsoleChoices(ctx context.Context, space, app string) consoleChoices {
@@ -585,14 +587,18 @@ func (s *Server) readConsoleChoices(ctx context.Context, space, app string) cons
 }
 
 // adoptConsoleChoices fills what donkey.yaml leaves open from the console's
-// settings. The file wins where it speaks — an omitted bool is
-// indistinguishable from an explicit false, so "speaks" means it sets
-// public/internal/domain/access. Adoption that would invalidate the config is
+// settings. The file wins where it speaks: mode, exposure, host, access or
+// a CORS policy. Adoption that would invalidate the config is
 // dropped, and only ever the adopted values.
 func (s *Server) adoptConsoleChoices(ctx context.Context, space string, app *config.AppConfig) []string {
 	c := s.readConsoleChoices(ctx, space, app.Name)
 	var lines []string
-	adoptedExposure, adoptedHost, adoptedAccess := false, false, false
+	adoptedMode, adoptedExposure, adoptedHost, adoptedAccess, adoptedCORS := false, false, false, false, false
+	if app.Mode == "" && c.Mode == config.AppModeAPI {
+		app.Mode = c.Mode
+		adoptedMode = true
+		lines = append(lines, fmt.Sprintf("Keeping the console's setting: %s mode", c.Mode))
+	}
 	if !app.Public && !app.Internal {
 		switch c.Exposure {
 		case "public":
@@ -603,10 +609,15 @@ func (s *Server) adoptConsoleChoices(ctx context.Context, space string, app *con
 			lines = append(lines, "Keeping the console's setting: internal only")
 		}
 	}
-	if app.Host == "" && c.HostOverride != "" && !app.Internal {
-		app.Host = c.HostOverride
+	if app.CORS == "" && c.CORS != "" {
+		app.CORS = c.CORS
+		adoptedCORS = true
+		lines = append(lines, "Keeping the console's setting: allow browser requests from any origin")
+	}
+	if app.Host == "" && c.Host != "" && !app.Internal {
+		app.Host = c.Host
 		adoptedHost = true
-		lines = append(lines, fmt.Sprintf("Keeping the console's address: %s", c.HostOverride))
+		lines = append(lines, fmt.Sprintf("Keeping the console's address: %s", c.Host))
 	}
 	if app.Access == nil && !c.Access.Empty() {
 		app.Access = c.Access
@@ -615,6 +626,9 @@ func (s *Server) adoptConsoleChoices(ctx context.Context, space string, app *con
 			len(c.Access.Users), len(c.Access.Groups), len(c.Access.Roles)))
 	}
 	if app.Validate() != nil {
+		if adoptedMode {
+			app.Mode = ""
+		}
 		if adoptedExposure {
 			app.Public, app.Internal = false, false
 		}
@@ -623,6 +637,9 @@ func (s *Server) adoptConsoleChoices(ctx context.Context, space string, app *con
 		}
 		if adoptedAccess {
 			app.Access = nil
+		}
+		if adoptedCORS {
+			app.CORS = ""
 		}
 		return nil
 	}

@@ -41,6 +41,8 @@ const (
 	labelPort         = "local.donkey.port"
 	labelHealthPath   = "local.donkey.health-path"
 	labelHost         = "local.donkey.host"
+	labelMode         = "local.donkey.mode"
+	labelCORS         = "local.donkey.cors"
 
 	dockerInstallation = "donkey"
 
@@ -522,6 +524,12 @@ func (r *Runtime) Status(ctx context.Context, space, app string) (*rt.AppStatus,
 	if p, err := strconv.Atoi(info.Config.Labels[labelPort]); err == nil {
 		st.Port = int32(p)
 	}
+	st.Mode = info.Config.Labels[labelMode]
+	st.CORS = info.Config.Labels[labelCORS]
+	if spec, err := r.runRecord(space, app); err == nil && spec != nil {
+		st.Mode = spec.Mode
+		st.CORS = spec.CORS
+	}
 	st.Restarts = int32(info.RestartCount)
 	if info.State != nil {
 		if info.State.Running && !info.State.Restarting && r.probeContainer(ctx, info) == nil {
@@ -535,6 +543,8 @@ func (r *Runtime) Status(ctx context.Context, space, app string) (*rt.AppStatus,
 	if route, err := r.state.route(space, app); err == nil && route != nil {
 		st.PublicHost = route.Host
 		st.Protected = route.Login
+		st.Mode = route.Mode
+		st.CORS = route.CORS
 	}
 	return st, nil
 }

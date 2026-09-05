@@ -1,5 +1,5 @@
 import { useId, useState } from 'react'
-import { Check, Copy, Database, FileCode2, HardDrive } from 'lucide-react'
+import { Check, Copy, Database, FileCode2, Globe2, HardDrive, KeyRound } from 'lucide-react'
 import { type Exposure, type Plan, type PlanEdit, type PortSource } from './api'
 import { FindingsList } from './FindingsList'
 import { Button, Card, SectionTitle } from './ui'
@@ -91,6 +91,7 @@ export function PlanReview({
   const [showConfig, setShowConfig] = useState(false)
   const [copied, setCopied] = useState(false)
   const exposureId = useId()
+  const modeId = useId()
   const set = <K extends keyof PlanEdit>(key: K, value: PlanEdit[K]) =>
     onEdit({ ...edit, [key]: value })
 
@@ -168,10 +169,52 @@ export function PlanReview({
         </Field>
 
         <fieldset>
+          <legend className="mb-1.5 text-xs text-muted">Application mode</legend>
+          <div className="grid gap-2 sm:grid-cols-2">
+            {[
+              {
+                value: 'web' as const,
+                icon: Globe2,
+                label: 'Web / HTTP',
+                hint: 'The default for websites, APIs and webhooks.',
+              },
+              {
+                value: 'api' as const,
+                icon: KeyRound,
+                label: 'API',
+                hint:
+                  'For MCP and ordinary APIs. Protected adds OAuth; public and internal have no login.',
+              },
+            ].map((option) => (
+              <label
+                key={option.value}
+                className="flex cursor-pointer items-start gap-2.5 rounded-md border border-line p-3 text-sm"
+              >
+                <input
+                  type="radio"
+                  name={modeId}
+                  checked={edit.mode === option.value}
+                  onChange={() => onEdit({ ...edit, mode: option.value })}
+                  className="mt-1 accent-accent-strong"
+                />
+                <option.icon className="mt-0.5 size-4 shrink-0" aria-hidden />
+                <span>
+                  {option.label}
+                  <span className="block text-xs text-muted">{option.hint}</span>
+                </span>
+              </label>
+            ))}
+          </div>
+        </fieldset>
+
+        <fieldset>
           <legend className="mb-1.5 text-xs text-muted">Who can reach it</legend>
           <div className="space-y-1">
             {EXPOSURE.map((o) => (
-              <label key={o.value} className="flex cursor-pointer items-start gap-2.5 text-sm">
+              <label
+                key={o.value}
+                className="flex cursor-pointer items-start gap-2.5 text-sm has-disabled:cursor-not-allowed has-disabled:opacity-45"
+              >
                 <input
                   type="radio"
                   name={exposureId}
@@ -187,6 +230,15 @@ export function PlanReview({
             ))}
           </div>
         </fieldset>
+
+        {edit.exposure !== 'internal' && (
+          <Choice
+            checked={edit.cors === 'allowAll'}
+            onChange={(on) => set('cors', on ? 'allowAll' : '')}
+            title="Allow calls from any browser origin"
+            reason="The gateway answers CORS preflights and makes responses readable with Access-Control-Allow-Origin: *."
+          />
+        )}
 
         {plan.app.url && edit.exposure !== 'internal' && (
           <p className="rounded-md border border-line bg-surface px-3 py-2 text-sm">

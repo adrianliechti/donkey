@@ -4,6 +4,8 @@
 
 /** How an app is reached: open to anyone, behind the login, or cluster-only. */
 export type Exposure = 'public' | 'protected' | 'internal'
+export type AppMode = 'web' | 'api'
+export type CorsPolicy = '' | 'allowAll'
 
 export interface AppSummary {
   name: string
@@ -15,6 +17,7 @@ export interface AppSummary {
   restarts?: number
   startedAt?: string
   exposure?: Exposure
+  mode?: AppMode
   hasStorage?: boolean
   addons?: string[]
 }
@@ -31,6 +34,7 @@ export interface AppStatus {
   /** True when the app owns a disk — the only case where files exist to browse. */
   hasStorage?: boolean
   exposure?: Exposure
+  mode?: AppMode
   port?: number
   endpoint?: EndpointStatus
 }
@@ -145,13 +149,16 @@ export interface RouteEntry {
 }
 
 export interface NetworkInfo {
+  mode: AppMode
   exposure: Exposure
+  /** Allow browser code on any origin to call the app through the gateway. */
+  cors: CorsPolicy
   url?: string
-  /** The app's default address, <app>.<space>.<domain> — the placeholder. */
-  host: string
+  /** The generated <app>.<space>.<domain> address — the input placeholder. */
+  defaultHost: string
   /** Set when the app answers somewhere else: a name of its own under the
    * space, "@" for the space's own address, or a full hostname. */
-  hostOverride?: string
+  host?: string
   port?: number
   routes?: RouteEntry[]
   access?: AccessConfig | null
@@ -274,6 +281,8 @@ export interface PlanApp {
   storage: string[]
   storageSize?: string
   exposure: Exposure
+  mode: AppMode
+  cors: CorsPolicy
   url?: string
 }
 
@@ -347,6 +356,15 @@ export interface PlanEdit {
   storage: string[]
   services: string[]
   exposure: Exposure
+  mode: AppMode
+  cors: CorsPolicy
+}
+
+export interface NetworkOptions {
+  mode: AppMode
+  exposure: Exposure
+  host: string
+  cors: CorsPolicy
 }
 
 // editFrom is the plan as an answer sheet: the server already decided every
@@ -360,6 +378,8 @@ export function planEdit(plan: Plan): PlanEdit {
     storage: [...plan.app.storage],
     services: plan.services.filter((s) => s.selected).map((s) => s.name),
     exposure: plan.app.exposure,
+    mode: plan.app.mode,
+    cors: plan.app.cors,
   }
 }
 
@@ -575,10 +595,10 @@ export const api = {
   network: (space: string, app: string) => request<NetworkInfo>(appPath(space, app, '/network')),
   // Changing exposure re-renders the app's routes on the spot — no deploy.
   // The choice sticks until donkey.yaml itself says otherwise.
-  setNetwork: (space: string, app: string, exposure: Exposure, hostOverride: string) =>
+  setNetwork: (space: string, app: string, options: NetworkOptions) =>
     request<{ network: NetworkInfo; note?: string }>(appPath(space, app, '/network'), {
       method: 'PUT',
-      body: JSON.stringify({ exposure, hostOverride }),
+      body: JSON.stringify(options),
     }),
   setAccess: (space: string, app: string, access: AccessConfig) =>
     request<{ ok: boolean; access: AccessConfig | null }>(appPath(space, app, '/access'), {

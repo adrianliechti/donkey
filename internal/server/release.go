@@ -239,6 +239,8 @@ func (s *Server) recordedDeployPlan(ctx context.Context, app *config.AppConfig, 
 			Healthcheck: copy.Healthcheck.Path,
 			Storage:     []string{},
 			Exposure:    exposureOfConfig(copy),
+			Mode:        modeOfConfig(copy),
+			CORS:        copy.CORS,
 			URL:         s.cfg.AppURL(copy.Space, copy),
 		},
 	}

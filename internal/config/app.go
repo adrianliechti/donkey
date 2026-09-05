@@ -22,6 +22,13 @@ type AppConfig struct {
 	Port  int    `json:"port"`
 	// Public opts the app out of the login gateway: anyone can reach it.
 	Public bool `json:"public,omitempty"`
+	// Mode describes the app's traffic. Empty is web; api enables API-aware
+	// gateway behavior when the app also uses protected exposure.
+	Mode string `json:"mode,omitempty"`
+	// CORS selects the cross-origin policy at the gateway. Empty disables
+	// cross-origin access; allowAll answers preflights and emits
+	// Access-Control-Allow-Origin: *.
+	CORS string `json:"cors,omitempty"`
 	// Internal keeps the app off the gateway entirely — no hostname, no
 	// certificate, no login. What a backend behind a frontend wants.
 	Internal bool        `json:"internal,omitempty"`
@@ -48,6 +55,27 @@ type AppConfig struct {
 // convention. Legal as neither an app name nor a hostname, so it can never be
 // mistaken for either.
 const RootHost = "@"
+
+const (
+	AppModeWeb   = "web"
+	AppModeAPI   = "api"
+	CORSAllowAll = "allowAll"
+)
+
+func (a *AppConfig) IsAPI() bool { return a.Mode == AppModeAPI }
+
+// UsesOAuth is true only when an API has an authenticated public address.
+// Public APIs proxy directly, and internal APIs have no address of their own.
+func (a *AppConfig) UsesOAuth() bool { return a.IsAPI() && !a.Public && !a.Internal }
+
+func (a *AppConfig) GatewayMode() string {
+	if a.Mode == "" {
+		return AppModeWeb
+	}
+	return a.Mode
+}
+
+func (a *AppConfig) AllowsAllOrigins() bool { return a.CORS == CORSAllowAll }
 
 // AppHost is the address an app is served at, and the one place the rule
 // lives — the control plane and every runtime provider ask here, so they
@@ -353,12 +381,18 @@ func (c *AppConfig) Validate() error {
 	if c.Internal && c.Public && len(c.Routes) == 0 {
 		return fmt.Errorf("an internal app has no address, so `public: true` has nothing to open — drop it, or give the app a `routes:` entry on another app's address")
 	}
+	if c.Mode != "" && c.Mode != AppModeWeb && c.Mode != AppModeAPI {
+		return fmt.Errorf("mode must be web or api")
+	}
+	if c.CORS != "" && c.CORS != CORSAllowAll {
+		return fmt.Errorf("cors must be allowAll when set")
+	}
 	if c.Internal && c.Host != "" {
 		return fmt.Errorf("an internal app has no address, so `host` has no effect — drop one of the two")
 	}
 	if !c.Access.Empty() {
-		if c.Public {
-			return fmt.Errorf("`access` needs the login gateway, which `public: true` turns off — drop one of the two")
+		if c.Public || (c.Internal && c.IsAPI()) {
+			return fmt.Errorf("`access` needs a login-protected route, which this exposure turns off")
 		}
 		if c.Internal && len(c.Routes) == 0 {
 			return fmt.Errorf("an internal app has no address, so `access` has nobody to let in — drop it, or give the app a `routes:` entry")

@@ -2,6 +2,7 @@ package kubernetes
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -48,6 +49,32 @@ func (c *Client) SwitchToRecreate(ctx context.Context, namespace, name, space, a
 		return err
 	}
 	patch := []byte(`{"spec":{"strategy":{"type":"Recreate","rollingUpdate":null}}}`)
+	_, err = c.Clientset.AppsV1().Deployments(namespace).Patch(ctx, name,
+		types.StrategicMergePatchType, patch, metav1.PatchOptions{})
+	return err
+}
+
+// SetAppNetworkMetadata records network choices on the workload as well as
+// its route. Internal apps have no own route, so the Deployment is the source
+// that lets status and the console retain their mode and CORS policy.
+func (c *Client) SetAppNetworkMetadata(ctx context.Context, namespace, name, space, app, mode, cors string) error {
+	dep, err := c.Clientset.AppsV1().Deployments(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return err
+	}
+	if err := c.requireOwnedObject("Deployment", namespace, name, dep.Labels,
+		manifests.Labels(space, app, manifests.RoleWorkload)); err != nil {
+		return err
+	}
+	patch, err := json.Marshal(map[string]any{
+		"metadata": map[string]any{"annotations": map[string]string{
+			manifests.AnnotationMode: mode,
+			manifests.AnnotationCORS: cors,
+		}},
+	})
+	if err != nil {
+		return err
+	}
 	_, err = c.Clientset.AppsV1().Deployments(namespace).Patch(ctx, name,
 		types.StrategicMergePatchType, patch, metav1.PatchOptions{})
 	return err

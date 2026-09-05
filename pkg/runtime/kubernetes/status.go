@@ -28,6 +28,8 @@ func (c *Client) AppStatus(ctx context.Context, namespace, objectName, space, ap
 	}
 	st.Found = true
 	st.Image = dep.Annotations[manifests.AnnotationImage]
+	st.Mode = dep.Annotations[manifests.AnnotationMode]
+	st.CORS = dep.Annotations[manifests.AnnotationCORS]
 	if st.Image == "" && len(dep.Spec.Template.Spec.Containers) > 0 {
 		st.Image = dep.Spec.Template.Spec.Containers[0].Image
 	}
@@ -65,6 +67,8 @@ func (c *Client) AppStatus(ctx context.Context, namespace, objectName, space, ap
 			manifests.Labels(space, app, manifests.RoleRoute)) == nil && cm.Annotations[manifests.AnnotationBackend] != "" {
 			st.PublicHost = cm.Annotations[manifests.AnnotationHost]
 			st.Protected = cm.Annotations[manifests.AnnotationLogin] == manifests.LoginRequired
+			st.Mode = cm.Annotations[manifests.AnnotationMode]
+			st.CORS = cm.Annotations[manifests.AnnotationCORS]
 		}
 	}
 	return st, nil

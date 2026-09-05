@@ -31,6 +31,8 @@ type Route struct {
 	StripPrefix bool                 `json:"stripPrefix,omitempty"`
 	Backend     string               `json:"backend"`
 	Login       bool                 `json:"login,omitempty"`
+	Mode        string               `json:"mode,omitempty"`
+	CORS        string               `json:"cors,omitempty"`
 	Access      *config.AccessConfig `json:"access,omitempty"`
 	// Token forwards a sealed credential to the backend — set only on the
 	// console route, whose backend verifies identity itself.

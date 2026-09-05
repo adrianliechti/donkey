@@ -155,6 +155,8 @@ func (r *Runtime) Deploy(ctx context.Context, spec rt.DeploySpec, out rt.Progres
 		// The name siblings dial, which carries the space when the whole
 		// installation shares a namespace.
 		out.Line("· Internal only — the apps of this space reach it at http://%s", obj)
+	} else if app.UsesOAuth() {
+		out.Line("· API OAuth protection is in force.")
 	} else if !app.Public {
 		out.Line("· Login protection is in force.")
 	}
@@ -430,6 +432,9 @@ func (r *Runtime) ApplyNetwork(ctx context.Context, cfg *config.AppConfig) (stri
 		if err := r.c.DeleteAppRoute(ctx, ns, space, app); err != nil {
 			return "", err
 		}
+	}
+	if err := r.c.SetAppNetworkMetadata(ctx, ns, obj, space, app, cfg.GatewayMode(), cfg.CORS); err != nil {
+		return "", err
 	}
 	if err := r.reconcileAppTraffic(ctx, in); err != nil {
 		return "", err

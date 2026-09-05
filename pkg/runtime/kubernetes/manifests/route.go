@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/adrianliechti/donkey/internal/config"
+
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -26,12 +28,19 @@ const (
 	// AnnotationLogin marks a route whose visitors must sign in first. Its
 	// absence is what "public" means at the edge.
 	AnnotationLogin = "donkey.local/login"
+	// AnnotationMode selects browser sessions or OAuth for APIs.
+	// Its absence is the default web mode.
+	AnnotationMode = "donkey.local/mode"
+	// AnnotationCORS lets the edge answer preflight requests and make all
+	// responses browser-readable from any origin.
+	AnnotationCORS = "donkey.local/cors"
 	// AnnotationAccess carries the app's access rules (AccessConfig as JSON)
 	// for the gateway to enforce. No secrets — emails and group names only.
 	AnnotationAccess = "donkey.local/access"
 
 	// LoginRequired is AnnotationLogin's one meaningful value.
 	LoginRequired = "required"
+	CORSAllowAll  = config.CORSAllowAll
 
 	// AnnotationToken marks the one route whose backend verifies identity
 	// itself: the gateway forwards a short-lived sealed token
@@ -43,11 +52,11 @@ const (
 	TokenForward = "forward"
 )
 
-// protected says visitors of this app's routes must sign in. Every
-// installation has an identity provider (auth.issuer is required), so the
-// app's own choice is the whole answer.
+// protected says visitors of this app's routes must sign in. An internal API
+// has no login boundary; if it also claims a shared-address route, that route
+// keeps the same machine-facing behavior.
 func protected(in Input) bool {
-	return !in.App.Public
+	return !in.App.Public && !(in.App.Internal && in.App.IsAPI())
 }
 
 // backendURL is where the gateway forwards this app's traffic: the app's
@@ -70,6 +79,9 @@ func routeAnnotations(in Input, host, path string) map[string]string {
 		AnnotationHost:    host,
 		AnnotationPath:    path,
 	}
+	if in.App.IsAPI() {
+		ann[AnnotationMode] = config.AppModeAPI
+	}
 	if protected(in) {
 		ann[AnnotationLogin] = LoginRequired
 		if !in.App.Access.Empty() {
@@ -77,6 +89,9 @@ func routeAnnotations(in Input, host, path string) map[string]string {
 				ann[AnnotationAccess] = string(b)
 			}
 		}
+	}
+	if in.App.AllowsAllOrigins() {
+		ann[AnnotationCORS] = CORSAllowAll
 	}
 	return ann
 }

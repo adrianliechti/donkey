@@ -69,6 +69,34 @@ func TestPlanUpdateRejectsInvalidFields(t *testing.T) {
 	}
 }
 
+func TestPlanEditSelectsAPIMode(t *testing.T) {
+	sp := planned()
+	edit := PlanEdit{Name: "web", Space: "acme", Port: 8000, Exposure: "protected", Mode: "api"}
+	if err := edit.validate(); err != nil {
+		t.Fatal(err)
+	}
+	applyPlanEdit(sp, edit)
+	if !sp.app.UsesOAuth() || sp.app.Public || sp.app.Internal || exposureOfConfig(sp.app) != "protected" || modeOfConfig(sp.app) != "api" {
+		t.Fatalf("API mode was not applied: %+v", sp.app)
+	}
+}
+
+func TestPlanEditAllowsPublicAndInternalAPIs(t *testing.T) {
+	for _, exposure := range []string{"public", "internal"} {
+		t.Run(exposure, func(t *testing.T) {
+			sp := planned()
+			edit := PlanEdit{Name: "web", Space: "acme", Port: 8000, Exposure: exposure, Mode: "api"}
+			if err := edit.validate(); err != nil {
+				t.Fatal(err)
+			}
+			applyPlanEdit(sp, edit)
+			if sp.app.UsesOAuth() || modeOfConfig(sp.app) != config.AppModeAPI || exposureOfConfig(sp.app) != exposure {
+				t.Fatalf("%s API mode was not applied: %+v", exposure, sp.app)
+			}
+		})
+	}
+}
+
 func planned() *storedPlan {
 	app := &config.AppConfig{Name: "web", Space: "acme", Port: 8000}
 	app.ApplyDefaults()

@@ -32,6 +32,15 @@ wait_port() {
   return 1
 }
 
+wait_http() {
+  for _ in $(seq 1 30); do
+    curl --fail --silent --show-error "$1" >/dev/null 2>&1 && return 0
+    sleep 1
+  done
+  echo "FAIL: no healthy HTTP response from $1" >&2
+  return 1
+}
+
 case "${RUNTIME}" in
 kind)
   CTX="kind-${CLUSTER:-donkey}"
@@ -54,8 +63,14 @@ kind)
   FORWARD_PIDS+=($!)
   kubectl --context "${CTX}" -n donkey-system port-forward svc/donkey-gateway 18443:443 >/dev/null 2>&1 &
   FORWARD_PIDS+=($!)
-  wait_port 18088
+	if kubectl --context "${CTX}" -n donkey-identity get service auth >/dev/null 2>&1; then
+	  kubectl --context "${CTX}" -n donkey-identity port-forward svc/auth 18089:80 >/dev/null 2>&1 &
+	  FORWARD_PIDS+=($!)
+	  export DONKEY_E2E_IDP="127.0.0.1:18089"
+	fi
+  wait_http http://127.0.0.1:18088/readyz
   wait_port 18443
+	if [ -n "${DONKEY_E2E_IDP:-}" ]; then wait_port 18089; fi
   export DONKEY_E2E_SERVER="http://127.0.0.1:18088"
   export DONKEY_E2E_GATEWAY="127.0.0.1:18443"
   ;;

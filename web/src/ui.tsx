@@ -7,12 +7,13 @@ import {
   CircleAlert,
   CircleCheck,
   Globe,
+  KeyRound,
   Loader2,
   Lock,
   Network,
   type LucideIcon,
 } from 'lucide-react'
-import type { Exposure } from './api'
+import type { AppMode, Exposure } from './api'
 
 // useColorScheme follows the OS light/dark preference — the console has no
 // theme toggle and stores nothing, so this reads `prefers-color-scheme` live.
@@ -71,17 +72,38 @@ export function StatusDot({ health }: { health: Health }) {
 
 // ExposureBadge says how the world reaches an app — the console's shorthand
 // for the network settings: open globe, locked door, or stable-only.
-export function ExposureBadge({ exposure }: { exposure?: Exposure }) {
+export function ExposureBadge({ exposure, mode }: { exposure?: Exposure; mode?: AppMode }) {
   if (!exposure) return null
-  const spec = {
-    public: { icon: <Globe className="size-3" aria-hidden />, label: 'public', tone: 'text-ink-soft border-line' },
-    protected: { icon: <Lock className="size-3" aria-hidden />, label: 'login', tone: 'text-accent border-accent/40' },
-    internal: { icon: <Network className="size-3" aria-hidden />, label: 'internal', tone: 'text-muted border-line' },
-  }[exposure]
+  const spec =
+    mode === 'api'
+      ? {
+          icon: <KeyRound className="size-3" aria-hidden />,
+          label: 'api',
+          tone: 'text-accent border-accent/40',
+        }
+      : {
+          public: {
+            icon: <Globe className="size-3" aria-hidden />,
+            label: 'public',
+            tone: 'text-ink-soft border-line',
+          },
+          protected: {
+            icon: <Lock className="size-3" aria-hidden />,
+            label: 'login',
+            tone: 'text-accent border-accent/40',
+          },
+          internal: {
+            icon: <Network className="size-3" aria-hidden />,
+            label: 'internal',
+            tone: 'text-muted border-line',
+          },
+        }[exposure]
   return (
     <span
       title={
-        exposure === 'public'
+        mode === 'api'
+          ? 'API — clients connect with resource-bound OAuth access tokens'
+          : exposure === 'public'
           ? 'Public — anyone with the address can open it'
           : exposure === 'protected'
             ? 'Login-protected — visitors sign in through the identity provider'

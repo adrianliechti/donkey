@@ -225,7 +225,7 @@ func (r reviewRuntime) AppMeta(_ context.Context, _, app, _ string) (string, err
 func TestProjectKeepsReviewedConsoleChoices(t *testing.T) {
 	s, _, body := projectFixture(t)
 	s.rt = reviewRuntime{projectRuntime: s.rt.(projectRuntime), choices: map[string]consoleChoices{
-		"frontend": {HostOverride: "custom.example.com", Exposure: "public"},
+		"frontend": {Host: "custom.example.com", Exposure: "public"},
 		"backend":  {Exposure: "public"},
 	}}
 	p := callProject(t, s, body)

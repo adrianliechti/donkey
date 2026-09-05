@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Globe, Lock, Network, Plus, X } from 'lucide-react'
-import { api, type AccessConfig, type Exposure, type NetworkInfo } from './api'
+import { Globe, KeyRound, Lock, Network, Plus, X } from 'lucide-react'
+import { api, type AccessConfig, type AppMode, type Exposure, type NetworkInfo } from './api'
 import { Button, ErrorNote, errText, SectionTitle, Spinner } from './ui'
 
 /**
  * How the app is reached, changed on the spot — no deploy.
  *
  * The donkeyfile stays the source of truth where it speaks: a choice made
- * here holds until donkey.yaml itself sets public/internal/host/access,
+ * here holds until donkey.yaml itself sets mode/public/internal/host/access/cors,
  * which always wins on the next deploy.
  */
 export function NetworkCard({
@@ -20,8 +20,10 @@ export function NetworkCard({
   onChanged: () => void
 }) {
   const [net, setNet] = useState<NetworkInfo | null>(null)
+  const [mode, setMode] = useState<AppMode>('web')
   const [exposure, setExposure] = useState<Exposure>('protected')
-  const [hostOverride, setHostOverride] = useState('')
+  const [host, setHost] = useState('')
+  const [cors, setCors] = useState<'' | 'allowAll'>('')
   const [busy, setBusy] = useState(false)
   const [note, setNote] = useState('')
   const [error, setError] = useState('')
@@ -31,8 +33,10 @@ export function NetworkCard({
       .network(space, app)
       .then((info) => {
         setNet(info)
+        setMode(info.mode)
         setExposure(info.exposure)
-        setHostOverride(info.hostOverride ?? '')
+        setHost(info.host ?? '')
+        setCors(info.cors)
       })
       .catch((err) => setError(errText(err, 'Loading failed.')))
   }, [space, app])
@@ -41,17 +45,29 @@ export function NetworkCard({
     load()
   }, [load])
 
-  const dirty = net !== null && (exposure !== net.exposure || (hostOverride.trim() || '') !== (net.hostOverride ?? ''))
+  const dirty =
+    net !== null &&
+    (exposure !== net.exposure ||
+      mode !== net.mode ||
+      (host.trim() || '') !== (net.host ?? '') ||
+      cors !== net.cors)
 
   async function apply() {
     setBusy(true)
     setError('')
     setNote('')
     try {
-      const res = await api.setNetwork(space, app, exposure, exposure === 'internal' ? '' : hostOverride.trim())
+      const res = await api.setNetwork(space, app, {
+        mode,
+        exposure,
+        host: exposure === 'internal' ? '' : host.trim(),
+        cors,
+      })
       setNet(res.network)
+      setMode(res.network.mode)
       setExposure(res.network.exposure)
-      setHostOverride(res.network.hostOverride ?? '')
+      setHost(res.network.host ?? '')
+      setCors(res.network.cors)
       setNote(res.note || 'Applied — the change is live.')
       onChanged()
     } catch (err) {
@@ -90,6 +106,33 @@ export function NetworkCard({
         <ErrorNote message={error} />
         {net !== null && (
           <div className="mt-3 space-y-4">
+            <div className="grid gap-2 sm:grid-cols-2" role="radiogroup" aria-label="Application mode">
+              <button
+                role="radio"
+                aria-checked={mode === 'web'}
+                onClick={() => setMode('web')}
+                className={`rounded-lg border p-3 text-left ${mode === 'web' ? 'border-accent bg-accent-soft' : 'border-line hover:border-line-strong'}`}
+              >
+                <span className="flex items-center gap-1.5 text-sm font-medium">
+                  <Globe className="size-4" aria-hidden /> Web / HTTP
+                </span>
+                <span className="mt-1 block text-xs text-muted">Websites, APIs and webhooks.</span>
+              </button>
+              <button
+                role="radio"
+                aria-checked={mode === 'api'}
+                onClick={() => setMode('api')}
+                className={`rounded-lg border p-3 text-left ${mode === 'api' ? 'border-accent bg-accent-soft' : 'border-line hover:border-line-strong'}`}
+              >
+                <span className="flex items-center gap-1.5 text-sm font-medium">
+                  <KeyRound className="size-4" aria-hidden /> API
+                </span>
+                <span className="mt-1 block text-xs text-muted">
+                  For MCP and ordinary APIs. Protected adds OAuth; public and internal have no login.
+                </span>
+              </button>
+            </div>
+
             <div className="grid gap-2 sm:grid-cols-3" role="radiogroup" aria-label="Exposure">
               {options.map((o) => (
                 <button
@@ -97,7 +140,7 @@ export function NetworkCard({
                   role="radio"
                   aria-checked={exposure === o.id}
                   onClick={() => setExposure(o.id)}
-                  className={`rounded-lg border p-3 text-left transition-colors focus-visible:outline-2 focus-visible:outline-accent-strong disabled:opacity-40 ${
+                  className={`rounded-lg border p-3 text-left transition-colors focus-visible:outline-2 focus-visible:outline-accent-strong ${
                     exposure === o.id
                       ? 'border-accent bg-accent-soft'
                       : 'border-line hover:border-line-strong'
@@ -117,13 +160,13 @@ export function NetworkCard({
                 <span className="px-3 py-2.5 text-xs font-medium text-muted">Address</span>
                 <span className="min-w-0 border-l border-line/60">
                   <input
-                    value={hostOverride}
-                    onChange={(e) => setHostOverride(e.target.value)}
-                    placeholder={net.host}
+                    value={host}
+                    onChange={(e) => setHost(e.target.value)}
+                    placeholder={net.defaultHost}
                     className="block w-full bg-transparent px-3 pt-2.5 pb-1 font-mono text-sm placeholder:text-muted/60 focus:bg-raised/30 focus:outline-none focus:ring-1 focus:ring-inset focus:ring-accent-strong"
                   />
                   <span className="block px-3 pb-2.5 text-xs leading-relaxed text-muted">
-                    Leave empty for <span className="font-mono">{net.host}</span>. A plain name
+                    Leave empty for <span className="font-mono">{net.defaultHost}</span>. A plain name
                     sits under the space, <span className="font-mono">@</span> takes the space's own
                     address; a full hostname needs its DNS pointed at the gateway.
                   </span>
@@ -147,6 +190,23 @@ export function NetworkCard({
                   exposure above.
                 </p>
               </div>
+            )}
+
+            {exposure !== 'internal' && (
+              <label className="flex cursor-pointer items-start gap-2.5 rounded-md border border-line px-3 py-2.5">
+                <input
+                  type="checkbox"
+                  checked={cors === 'allowAll'}
+                  onChange={(event) => setCors(event.target.checked ? 'allowAll' : '')}
+                  className="mt-0.5 size-4 shrink-0 accent-accent-strong"
+                />
+                <span>
+                  <span className="block text-sm font-medium">Allow calls from any browser origin</span>
+                  <span className="block text-xs text-muted">
+                    The gateway answers CORS preflights and adds Access-Control-Allow-Origin: *.
+                  </span>
+                </span>
+              </label>
             )}
 
             <div className="flex flex-wrap items-center justify-between gap-2 border-t border-line pt-3">

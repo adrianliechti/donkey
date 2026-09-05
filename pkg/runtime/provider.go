@@ -234,6 +234,10 @@ type AppStatus struct {
 	PublicHost string
 	// Protected says traffic reaches the app through the login gateway.
 	Protected bool
+	// Mode is web or api at the gateway.
+	Mode string
+	// CORS is the gateway's cross-origin policy; empty disables it.
+	CORS string
 	// Port the app listens on (donkey.yaml's `port`).
 	Port int32
 	// Restarts sums restarts across instances — what separates "quietly
@@ -313,6 +317,8 @@ type PathRouteState struct {
 	StripPrefix bool
 	// Protected says the route sends its traffic through the login gateway.
 	Protected bool
+	Mode      string
+	CORS      string
 }
 
 // NetworkState is how an app is reached, read from actual state.
@@ -321,6 +327,8 @@ type NetworkState struct {
 	RouteFound bool
 	Host       string
 	Protected  bool
+	Mode       string
+	CORS       string
 	// Access are the rules the gateway enforces on the app's own route.
 	Access *config.AccessConfig
 	Routes []PathRouteState

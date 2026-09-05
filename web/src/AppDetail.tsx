@@ -81,7 +81,7 @@ export function AppDetail({
           <div className="min-w-0">
             <div className="flex items-center gap-2.5">
               <h1 className="truncate font-mono text-xl font-bold tracking-tight">{app}</h1>
-              {status?.found && <ExposureBadge exposure={status.exposure} />}
+			  {status?.found && <ExposureBadge exposure={status.exposure} mode={status.mode} />}
             </div>
             {status?.found && (
               <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-ink-soft">

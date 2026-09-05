@@ -64,7 +64,8 @@ type StatusResponse struct {
 	// meaningful then — an app with no volume has nothing donkey can show
 	// that a redeploy would not rebuild.
 	HasStorage bool `json:"hasStorage"`
-	// Exposure is public, protected or internal — how the app is reached.
+	// Mode is web or api; exposure is public, protected or internal.
+	Mode     string `json:"mode,omitempty"`
 	Exposure string `json:"exposure,omitempty"`
 	// Port the app listens on (donkey.yaml's `port`).
 	Port int `json:"port,omitempty"`
@@ -134,6 +135,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	if st.Found {
 		resp.Exposure = exposureOf(st)
+		resp.Mode = modeOfStatus(st)
 		resp.Port = int(st.Port)
 	}
 	writeJSON(w, http.StatusOK, resp)
@@ -179,6 +181,13 @@ func exposureOf(st *runtime.AppStatus) string {
 	default:
 		return "public"
 	}
+}
+
+func modeOfStatus(st *runtime.AppStatus) string {
+	if st.Mode != "" {
+		return st.Mode
+	}
+	return config.AppModeWeb
 }
 
 // handleRestart rolls the app's pods without changing anything else — the

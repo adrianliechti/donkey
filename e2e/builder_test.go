@@ -76,7 +76,7 @@ func TestBuilderSamples(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			plan, base := s.deployBuilderSample(t, dir, "e2e-"+strings.ToLower(strings.ReplaceAll(filepath.Base(tc.dir), " ", "-")), "")
+			plan, base := s.deployBuilderSample(t, dir, "e2e-"+strings.ToLower(strings.ReplaceAll(filepath.Base(tc.dir), " ", "-")), "", "web", "public")
 			s.waitBody(t, base+tc.path, tc.body, time.Minute)
 			switch tc.dir {
 			case "static-site", "My Cool App", "nextjs-app", "local-habits", "kitchen-sink-sample/web", "streamlit-report", "broken/streamlit-bare":
@@ -118,13 +118,13 @@ func TestBuilderRecovery(t *testing.T) {
 				configuration += "env:\n  FIXTURE_API_TOKEN: runtime-only-fixture-value\n"
 			}
 			writeFile(t, filepath.Join(dir, "donkey.yaml"), configuration)
-			_, base := s.deployBuilderSample(t, dir, "e2e-recovery-"+stage, stage)
+			_, base := s.deployBuilderSample(t, dir, "e2e-recovery-"+stage, stage, "web", "public")
 			s.waitBody(t, base+"/", "It works", time.Minute)
 		})
 	}
 }
 
-func (s *suite) deployBuilderSample(t *testing.T, dir, space, failureStage string) (*server.Plan, string) {
+func (s *suite) deployBuilderSample(t *testing.T, dir, space, failureStage, mode, exposure string) (*server.Plan, string) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 	defer cancel()
@@ -142,7 +142,13 @@ func (s *suite) deployBuilderSample(t *testing.T, dir, space, failureStage strin
 	if err != nil {
 		t.Fatal(err)
 	}
-	edit := server.PlanEdit{Name: plan.App.Name, Space: space, Port: plan.App.Port, Healthcheck: plan.App.Healthcheck, Storage: plan.App.Storage, Exposure: "public"}
+	if exposure == "" {
+		exposure = plan.App.Exposure
+	}
+	if mode == "" {
+		mode = plan.App.Mode
+	}
+	edit := server.PlanEdit{Name: plan.App.Name, Space: space, Port: plan.App.Port, Healthcheck: plan.App.Healthcheck, Storage: plan.App.Storage, Mode: mode, Exposure: exposure, CORS: plan.App.CORS}
 	for _, service := range plan.Services {
 		if service.Selected {
 			edit.Services = append(edit.Services, service.Name)

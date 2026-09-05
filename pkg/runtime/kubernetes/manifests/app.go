@@ -409,6 +409,12 @@ func deployment(in Input) (*appsv1.Deployment, error) {
 	}
 
 	annotations := map[string]string{AnnotationImage: in.ImageRef}
+	if in.App.IsAPI() {
+		annotations[AnnotationMode] = config.AppModeAPI
+	}
+	if in.App.CORS != "" {
+		annotations[AnnotationCORS] = in.App.CORS
+	}
 	if in.Decisions != "" {
 		annotations[AnnotationDecisions] = in.Decisions
 	}

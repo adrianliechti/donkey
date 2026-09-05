@@ -351,6 +351,8 @@ space: acme                   # default: the repository's folder name
 port: 8000                    # the port your code listens on
 
 public: true                  # skip the login gateway (machine clients)
+mode: api                     # web (default) | api with OAuth
+cors: allowAll                # allow browser calls from every origin
 internal: true                # no address at all; siblings reach it by name
 access:                       # narrow the login to named people (any match)
   users: [ada@example.com]
@@ -422,7 +424,18 @@ passed as build arguments and declared in each Dockerfile stage.
 the login gateway. `host:` moves it: `"@"` puts it at the space's own address
 (`<space>.<domain>` — one app per space can be that front door), a plain name
 gives it a label of its own under the space (so the address outlives a rename),
-and anything with a dot is taken as an exact hostname. `public: true` drops the login. `access:` narrows it — only
+and anything with a dot is taken as an exact hostname. `mode: api` marks MCP
+servers and ordinary APIs. With the default protected exposure, the gateway
+provides OAuth discovery, PKCE and resource-bound access tokens. Clients open
+the existing identity-provider login and return with a token the gateway
+consumes before proxying. Compatibility client registration is automatic and
+stateless, so an administrator does not have to create client IDs. API mode
+does not invent an OAuth scope; `access:` remains the authorization policy.
+`public: true` exposes either a web app or API without login, while
+`internal: true` gives either mode no address of its own and no login.
+`cors: allowAll` makes the
+gateway answer browser preflights and adds `Access-Control-Allow-Origin: *` to
+responses. `access:` narrows it — only
 the named users, groups or roles (any match, from the ID token's claims) get
 past the sign-in. `internal: true` drops the address — the app has no
 hostname, no certificate and nothing on the internet, and its siblings call it

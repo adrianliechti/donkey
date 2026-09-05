@@ -21,19 +21,19 @@ type RouteEntry struct {
 // NetworkResponse is what the console's network settings show: read from the
 // runtime's actual state, never from stored intent.
 type NetworkResponse struct {
-	// Exposure is public, protected or internal.
+	// Mode is web or api. Exposure is public, protected or internal.
+	Mode     string `json:"mode"`
 	Exposure string `json:"exposure"`
 	URL      string `json:"url,omitempty"`
-	// Host is the address the app has by default: <app>.<space>.<domain>.
-	// The console shows it as the placeholder.
-	Host string `json:"host"`
-	// HostOverride is set when the app answers somewhere else — a name of
-	// its own under the space, "@" for the space's own address, or a custom
-	// hostname. It is exactly what donkey.yaml's `host:` would say.
-	HostOverride string               `json:"hostOverride,omitempty"`
-	Port         int                  `json:"port,omitempty"`
-	Routes       []RouteEntry         `json:"routes,omitempty"`
-	Access       *config.AccessConfig `json:"access,omitempty"`
+	// DefaultHost is the generated <app>.<space>.<domain> address. Host is the
+	// configured donkey.yaml shape when it differs: a name, "@", or a full
+	// hostname.
+	DefaultHost string               `json:"defaultHost"`
+	Host        string               `json:"host,omitempty"`
+	Port        int                  `json:"port,omitempty"`
+	Routes      []RouteEntry         `json:"routes,omitempty"`
+	Access      *config.AccessConfig `json:"access,omitempty"`
+	CORS        string               `json:"cors"`
 }
 
 func (s *Server) networkResponse(r *http.Request, space, app string) (*NetworkResponse, error) {
@@ -49,9 +49,17 @@ func (s *Server) networkResponse(r *http.Request, space, app string) (*NetworkRe
 		return nil, err
 	}
 	resp := &NetworkResponse{
-		Host:   config.AppHost(&config.AppConfig{Name: app}, space, s.cfg.Domain),
-		Port:   int(st.Port),
-		Access: net.Access,
+		DefaultHost: config.AppHost(&config.AppConfig{Name: app}, space, s.cfg.Domain),
+		Mode:        modeOfStatus(st),
+		Port:        int(st.Port),
+		Access:      net.Access,
+		CORS:        st.CORS,
+	}
+	if net.Mode != "" {
+		resp.Mode = net.Mode
+	}
+	if net.RouteFound {
+		resp.CORS = net.CORS
 	}
 	switch {
 	case !net.RouteFound:
@@ -63,7 +71,7 @@ func (s *Server) networkResponse(r *http.Request, space, app string) (*NetworkRe
 	}
 	if net.Host != "" {
 		resp.URL = s.cfg.Scheme() + "://" + net.Host
-		resp.HostOverride = hostShape(net.Host, resp.Host, space, s.cfg.Domain)
+		resp.Host = hostShape(net.Host, resp.DefaultHost, space, s.cfg.Domain)
 	}
 	for _, pr := range net.Routes {
 		resp.Routes = append(resp.Routes, RouteEntry{Host: pr.Host, Path: pr.Path})
@@ -109,12 +117,14 @@ func (s *Server) handleGetNetwork(w http.ResponseWriter, r *http.Request) {
 }
 
 type PutNetworkRequest struct {
+	Mode     string `json:"mode"`
 	Exposure string `json:"exposure"`
-	// HostOverride is where the app should answer instead of its default
+	CORS     string `json:"cors"`
+	// Host is where the app should answer instead of its default
 	// address — see config.AppHost: a plain name sits under the space, "@"
 	// is the space's own address, anything with a dot is an exact hostname,
 	// and empty puts it back on the default.
-	HostOverride string `json:"hostOverride"`
+	Host string `json:"host"`
 }
 
 // handlePutNetwork changes how an app is reached — without a deploy. The
@@ -132,8 +142,19 @@ func (s *Server) handlePutNetwork(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
+	if req.Mode == "" {
+		req.Mode = config.AppModeWeb
+	}
 	if !slices.Contains([]string{"public", "protected", "internal"}, req.Exposure) {
 		writeErr(w, http.StatusBadRequest, fmt.Errorf("exposure must be public, protected or internal"))
+		return
+	}
+	if req.Mode != config.AppModeWeb && req.Mode != config.AppModeAPI {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("mode must be web or api"))
+		return
+	}
+	if req.CORS != "" && req.CORS != config.CORSAllowAll {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("cors must be allowAll when set"))
 		return
 	}
 
@@ -164,13 +185,17 @@ func (s *Server) handlePutNetwork(w http.ResponseWriter, r *http.Request) {
 	// A synthetic app config carries the choice through the same validation
 	// and rendering a donkey.yaml would.
 	cfg := &config.AppConfig{Name: app, Space: space, Port: int(st.Port)}
+	if req.Mode != config.AppModeWeb {
+		cfg.Mode = req.Mode
+	}
 	switch req.Exposure {
 	case "public":
 		cfg.Public = true
 	case "internal":
 		cfg.Internal = true
 	}
-	cfg.Host = strings.TrimSpace(req.HostOverride)
+	cfg.Host = strings.TrimSpace(req.Host)
+	cfg.CORS = req.CORS
 	if req.Exposure == "protected" {
 		// Access rules ride along unchanged; runtime state is the truth,
 		// with the console's memory as fallback (e.g. internal → protected).
@@ -193,7 +218,9 @@ func (s *Server) handlePutNetwork(w http.ResponseWriter, r *http.Request) {
 
 	// Record the choice so deploys keep it while donkey.yaml stays silent.
 	console.Exposure = req.Exposure
-	console.HostOverride = cfg.Host
+	console.Mode = req.Mode
+	console.Host = cfg.Host
+	console.CORS = cfg.CORS
 	if err := s.writeConsoleChoices(ctx, space, app, console); err != nil {
 		writeErr(w, http.StatusBadGateway, err)
 		return

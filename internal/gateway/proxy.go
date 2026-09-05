@@ -18,6 +18,15 @@ import (
 // protected hostname — the price of putting login in front of an app.
 func (s *Server) handler() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /.well-known/oauth-protected-resource", s.handleOAuthResourceMetadata)
+	mux.HandleFunc("GET /.well-known/oauth-protected-resource/", s.handleOAuthResourceMetadata)
+	mux.HandleFunc("GET /.well-known/oauth-authorization-server", s.handleOAuthAuthorizationServerMetadata)
+	mux.HandleFunc("OPTIONS /.well-known/oauth-authorization-server", s.handleOAuthPreflight)
+	mux.HandleFunc("POST /oauth2/register", s.handleOAuthRegister)
+	mux.HandleFunc("GET /oauth2/authorize", s.handleOAuthAuthorize)
+	mux.HandleFunc("POST /oauth2/authorize", s.handleOAuthAuthorizeConsent)
+	mux.HandleFunc("POST /oauth2/token", s.handleOAuthToken)
+	mux.HandleFunc("OPTIONS /oauth2/{path...}", s.handleOAuthPreflight)
 	mux.HandleFunc("GET /oauth2/callback", s.handleCallback)
 	mux.HandleFunc("GET /oauth2/cli", s.startCLILogin)
 	mux.HandleFunc("GET /oauth2/logout", s.handleLogout)
@@ -30,6 +39,17 @@ func (s *Server) serveApp(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		s.errorPage(w, http.StatusNotFound, "Nothing is served here.",
 			"If this app was just deployed, give it a moment and reload.")
+		return
+	}
+	if routeAllowsAllOrigins(rt) {
+		setCORSHeaders(w.Header())
+		if r.Method == http.MethodOptions && r.Header.Get("Access-Control-Request-Method") != "" {
+			serveCORSPreflight(w, r)
+			return
+		}
+	}
+	if routeUsesOAuth(rt) {
+		s.serveOAuthApp(w, r, rt)
 		return
 	}
 	// Who this is, decided once: the session cookie (a browser) or a sealed
@@ -63,6 +83,12 @@ func (s *Server) serveApp(w http.ResponseWriter, r *http.Request) {
 			s.deniedPage(w, who)
 			return
 		}
+	}
+	// The proxy copies response headers with Add. Remove the provisional CORS
+	// values set above so ModifyResponse contributes exactly one value on a
+	// successful backend response; browsers reject a repeated wildcard.
+	if routeAllowsAllOrigins(rt) {
+		clearCORSHeaders(w.Header())
 	}
 	metrics := httpsnoop.CaptureMetrics(s.proxy(rt, sess, fromToken), w, r)
 	if s.telemetry != nil {
@@ -180,6 +206,9 @@ func (s *Server) proxy(rt route, sess *session, fromToken bool) *httputil.Revers
 			}
 		},
 		ModifyResponse: func(res *http.Response) error {
+			if routeAllowsAllOrigins(rt) {
+				setCORSHeaders(res.Header)
+			}
 			// An API mounted under a proxy prefix may redirect to /login or
 			// add a trailing slash. Keep that redirect on the API's route.
 			location := res.Header.Get("Location")
@@ -197,10 +226,32 @@ func (s *Server) proxy(rt route, sess *session, fromToken bool) *httputil.Revers
 		// in a buffer.
 		FlushInterval: -1,
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			if routeAllowsAllOrigins(rt) {
+				setCORSHeaders(w.Header())
+			}
 			s.errorPage(w, http.StatusBadGateway, "The app didn't answer.",
 				"It may be starting up or crashed — its logs know more. ("+err.Error()+")")
 		},
 	}
+}
+
+func setCORSHeaders(header http.Header) {
+	header.Set("Access-Control-Allow-Origin", "*")
+	header.Set("Access-Control-Expose-Headers", "MCP-Session-Id, WWW-Authenticate")
+}
+
+func clearCORSHeaders(header http.Header) {
+	header.Del("Access-Control-Allow-Origin")
+	header.Del("Access-Control-Expose-Headers")
+}
+
+func serveCORSPreflight(w http.ResponseWriter, r *http.Request) {
+	setCORSHeaders(w.Header())
+	w.Header().Set("Access-Control-Allow-Methods", "GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS")
+	if requested := r.Header.Get("Access-Control-Request-Headers"); requested != "" {
+		w.Header().Set("Access-Control-Allow-Headers", requested)
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // stripCookie removes the named cookies from the outgoing request, keeping

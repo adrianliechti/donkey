@@ -14,10 +14,11 @@ cd testdata/<sample> && donkey deploy
 ## Testing automatic configuration
 
 `task verify:builder` uploads temporary copies without incidental root
-`donkey.yaml` files. It keeps two intentional configuration fixtures:
+`donkey.yaml` files. It keeps three intentional configuration fixtures:
 
 - `monorepo-root/services/api/donkey.yaml` tests nested app discovery.
 - `addons-sample/donkey.yaml` tests explicit Postgres provisioning and binding.
+- `fastmcp-sample/donkey.yaml` tests API mode with an MCP server.
 
 The builder must infer the remaining ports, start commands, dependencies,
 health routes, and data directories from source. Fixtures are never rewritten
@@ -28,6 +29,12 @@ by the tests. The four apps under `broken/` must deploy successfully too.
 | Sample | Stack | The challenge |
 |---|---|---|
 | `addons-sample/` | An Express guestbook on Postgres | The `donkey.yaml` lists an addon — the deploy has to provision it for the space with its own disk, wait for it, and only then start the app with `DATABASE_URL` injected. Notes land in Postgres. Nothing in the folder holds an address or a credential. |
+
+## MCP
+
+| Sample | Stack | The challenge |
+|---|---|---|
+| `fastmcp-sample/` | FastMCP 4 | A remote Streamable HTTP server with one `add` tool. Donkey builds the Python app, publishes OAuth resource and authorization metadata, completes authorization code + PKCE through the installation's existing login, binds the token to `/mcp`, and keeps that token out of the application. |
 
 ## The way apps are actually generated
 
