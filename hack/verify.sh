@@ -11,6 +11,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 RUNTIME="${1:-kind}"
+if [ "$#" -gt 0 ]; then shift; fi
 
 say() { printf '\n\033[1m== %s ==\033[0m\n' "$*"; }
 
@@ -86,7 +87,7 @@ docker)
   # unreachable until it is redeployed. The suite itself cannot catch that:
   # it deploys after installing, and deploying re-attaches.
   say "donkey's own containers are on every space network"
-  for net in $(docker network ls --filter label=donkey.managed=true --format '{{.Name}}'); do
+  for net in $(docker network ls --filter label=local.donkey.managed=true --filter label=local.donkey.installation=donkey --filter label=local.donkey.role=space --format '{{.Name}}'); do
     for own in donkey-gateway donkey-server; do
       if ! docker network inspect "${net}" --format '{{range .Containers}}{{.Name}} {{end}}' | grep -qw "${own}"; then
         echo "FAIL: ${own} is not attached to ${net} — apps in that space cannot be reached" >&2
@@ -108,4 +109,4 @@ esac
 
 say "e2e suite (${RUNTIME})"
 cd "${ROOT}"
-go test -tags e2e -count=1 -timeout 30m -v ./e2e
+go test -tags e2e -count=1 -timeout 60m -v "$@" ./e2e

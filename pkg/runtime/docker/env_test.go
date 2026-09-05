@@ -36,6 +36,36 @@ func TestEnvResolvesLiveServiceReferences(t *testing.T) {
 	}
 }
 
+func TestDetachServiceRemovesOnlyItsReferences(t *testing.T) {
+	r := &Runtime{state: state{dir: t.TempDir()}}
+	if err := r.state.setEnv("team", "api", map[string]string{
+		"DB_URL": "${db.DATABASE_URL}", "DATABASE_URL": "${db.DATABASE_URL}",
+		"MODEL": "${ai.OPENAI_MODEL}", "MODE": "production",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.state.setBinding("team", "api", "db", map[string]string{"DATABASE_URL": "postgres://db/app"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.state.setBinding("team", "api", "ai", map[string]string{"OPENAI_MODEL": "model"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.DetachService(context.Background(), "team", "api", "db"); err != nil {
+		t.Fatal(err)
+	}
+	stored, _ := r.state.env("team", "api")
+	if stored["DB_URL"] != "" || stored["DATABASE_URL"] != "" || stored["MODEL"] != "${ai.OPENAI_MODEL}" || stored["MODE"] != "production" {
+		t.Fatalf("detach removed the wrong environment: %v", stored)
+	}
+	env, err := r.appEnv("team", "api", 8080)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.resolveEnv("team", "api", env); err != nil {
+		t.Fatalf("the next restart still references the removed binding: %v", err)
+	}
+}
+
 func TestProjectRouteUsesReviewedHostBeforeFrontendExists(t *testing.T) {
 	r := &Runtime{state: state{dir: t.TempDir()}, opts: Options{Domain: "example.com"}}
 	app := &config.AppConfig{Name: "api", Internal: true, Routes: []config.RouteConfig{{App: "web", Path: "/_donkey/api", StripPrefix: true}}}

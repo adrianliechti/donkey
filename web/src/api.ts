@@ -416,6 +416,20 @@ export interface DoctorReport {
   domain: string
 }
 
+export interface RedisKey {
+  id: string
+  name: string
+}
+
+export interface RedisValue {
+  type: string
+  ttl: number
+  size: number
+  value: unknown
+  editable: boolean
+  truncated: boolean
+}
+
 /** One database of a browsed postgres service. */
 export interface DbDatabase {
   name: string
@@ -613,6 +627,16 @@ export const api = {
     request<{ ok: boolean }>(appPath(space, app, `/services/${encodeURIComponent(addon)}`), {
       method: 'DELETE',
     }),
+  redisKeys: (space: string, service: string, pattern: string, cursor = '0') =>
+    request<{ keys: RedisKey[]; cursor: string; db: number }>(servicePath(space, service, `/keys?${new URLSearchParams({ pattern, cursor })}`)),
+  redisValue: (space: string, service: string, id: string) =>
+    request<RedisValue>(servicePath(space, service, `/keys/value?${new URLSearchParams({ id })}`)),
+  redisCreate: (space: string, service: string, name: string, value: string, ttl?: number) =>
+    request<{ ok: boolean }>(servicePath(space, service, '/keys'), { method: 'POST', body: JSON.stringify({ name, value, ttl }) }),
+  redisSave: (space: string, service: string, id: string, value: string, previous: string, ttl?: number) =>
+    request<{ ok: boolean }>(servicePath(space, service, `/keys/value?${new URLSearchParams({ id })}`), { method: 'PUT', body: JSON.stringify({ value, previous, ttl }) }),
+  redisDelete: (space: string, service: string, id: string) =>
+    request<{ ok: boolean }>(servicePath(space, service, `/keys/value?${new URLSearchParams({ id })}`), { method: 'DELETE' }),
   // The database browser — talks to a space service's postgres through the
   // server; values travel as strings (or null), which is what a grid edits.
   // Containment lives in the path (service → database → table → rows);

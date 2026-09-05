@@ -376,7 +376,7 @@ storage:                      # one disk, each path its own folder on it
     - /app/data
 
 addons:                       # space services this app uses; the deploy
-  - type: postgres            # creates missing ones. postgres | rustfs (S3)
+  - type: postgres            # creates missing ones. postgres | redis | rustfs (S3)
     name: db                  # | openai (the platform's AI).
                               # apps naming the same service share it
 
@@ -405,7 +405,7 @@ resources:
 
 Environment values such as `${db.DATABASE_URL}` reference an addon by name
 and binding key. They are resolved at runtime, so the config contains no
-copied credential. Selecting a managed PostgreSQL, OpenAI or RustFS service
+copied credential. Selecting a managed PostgreSQL, Redis, OpenAI or RustFS service
 also replaces stale values under its standard variable names with binding
 references. Custom variable names can reference those same keys. Runtime
 service references cannot be used in `build.env`; browser URL variables are
@@ -455,6 +455,7 @@ anything, and that is where the confirmation lives.
 |---|---|---|
 | `postgres` | the relational database (its own Deployment + disk) | `DATABASE_URL`, the `PG*` family, Heroku's `JDBC_*` convention for the Java world |
 | `rustfs` | S3-compatible object storage | the AWS SDK convention (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_ENDPOINT_URL_S3`, `AWS_REGION`) + `S3_URL` |
+| `redis` | Redis with persistent storage and password authentication | `REDIS_URL`, `REDIS_ADDR`, `REDIS_HOST`, `REDIS_PORT`, `REDIS_USERNAME`, `REDIS_PASSWORD`, `REDIS_DB`, `REDIS_TLS` |
 | `openai` | the platform's AI — nothing runs in the space | `OPENAI_BASE_URL`, `OPENAI_API_KEY`, `OPENAI_MODEL` |
 
 Ways in and out, all equivalent:
@@ -667,6 +668,12 @@ Maven 3 requires a mirror in `settings.xml`; the assistant creates one from
 `DONKEY_MAVEN_MIRROR`. Existing hand-written Maven 3 or modern NuGet
 Dockerfiles must consume these variables in the same way.
 
+The HTTP proxy omits NuGet's optional `RepositorySignatures` index entries,
+which require HTTPS. Package files and their embedded signatures pass through
+unchanged, and client signature verification remains enabled. The mirror does
+not advertise the upstream's signing-certificate list or its requirement that
+every package be repository-signed.
+
 Package credentials use Basic authentication, which covers the usual
 Artifactory/Nexus username-and-token setup. The same explicit read-only
 credential is sent only to `credentialHosts`. When a PyPI or NuGet index names
@@ -728,6 +735,7 @@ mirrored repositories explicitly (donkey appends the service version):
 ```yaml
 buildkitImage: registry.example.com/dockerhub/moby/buildkit:v0.31.2
 addonImages:
+  redis: registry.example.com/mirror/library/redis
   postgres: registry.example.com/dockerhub/library/postgres
   rustfs: registry.example.com/dockerhub/rustfs/rustfs
 ```
@@ -1026,7 +1034,7 @@ internal/
   build/              BuildKit gRPC builder (dockerfile.v0), startup verification, registry auth, tags
   k8s/                client-go wrapper: server-side apply, rollout wait, logs, env secrets
   k8s/manifests/      pure config→object rendering (app + control plane) — golden-tested
-  addons/             service catalog: postgres, rustfs, openai (provisioned & external bindings)
+  addons/             service catalog: postgres, redis, rustfs, openai (provisioned & external bindings)
   ai/                 Assistant interface (analysis + failure diagnosis), OpenAI impl, secret-safe summarizer, log redaction
   config/             donkey.yaml, client config, install settings file
   doctor/             client-side check engine behind `donkey doctor`
@@ -1077,7 +1085,31 @@ task install:docker  # donkey straight on the local Docker engine (apps.localhos
 task demo:app        # log in and deploy the demo app (kind; needs devkube connect)
 task verify          # the Go e2e suite against the running kind installation
 task verify:docker   # the same suite against the running docker installation
+task verify:monorepos # pinned Google microservices-demo, deployed through project review
+task verify:web      # real browser upload/review/deploy, then database, storage and AI requests
+task verify:admin    # PostgreSQL and Redis browsers, including isolation between spaces
 ```
+
+The monorepo test uploads Google's Online Boutique source and uses
+the live assistant to discover its apps and connections and write every app's
+Dockerfile. The preparation script removes upstream Dockerfiles and Docker
+ignore files from the test copy; the test requires the AI build strategy for
+every app. It exercises ten
+application services, gRPC addresses, and Redis-backed shopping carts through
+checkout. Its headless load-test client is excluded because it does not serve
+an app port. The test does not install Istio or an observability stack.
+Its optional Gemini/AlloyDB extension is excluded
+because the repository's default deployment does not enable it.
+
+Reviewed plans and deployment streams are saved in `.build/e2e`. Set
+`DONKEY_E2E_KEEP=true` to leave the dedicated `e2e-boutique` space running for
+inspection; rerunning replaces that test space.
+
+The browser test uses the local Docker installation and demo sign-in. It uploads
+`examples/demo`, checks separate exposure choices, deploys both apps, and tests
+PostgreSQL writes, RustFS uploads/downloads, and OpenAI triage through the frontend.
+Playwright is installed under `.build/browser`; screenshots and reviewed plans
+go to `.build/e2e`. `DONKEY_E2E_KEEP=true` keeps its `e2e-services` space running.
 
 ### Scoring the builder
 

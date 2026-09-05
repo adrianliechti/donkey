@@ -62,6 +62,7 @@ type InstallFile struct {
 // donkey, so these values deliberately contain no tag or digest.
 type InstallAddonImages struct {
 	Postgres string `json:"postgres,omitempty"`
+	Redis    string `json:"redis,omitempty"`
 	RustFS   string `json:"rustfs,omitempty"`
 }
 
@@ -70,6 +71,8 @@ func (i InstallAddonImages) Repository(typ string) string {
 	switch typ {
 	case "postgres":
 		return i.Postgres
+	case "redis":
+		return i.Redis
 	case "rustfs":
 		return i.RustFS
 	default:
@@ -85,6 +88,7 @@ func (i InstallAddonImages) Validate() error {
 		repository string
 	}{
 		{name: "postgres", repository: i.Postgres},
+		{name: "redis", repository: i.Redis},
 		{name: "rustfs", repository: i.RustFS},
 	} {
 		name, repository := image.name, image.repository

@@ -145,9 +145,10 @@ func addonObjects(in addons.Input, w *addons.Workload, pull *imagePullCredential
 							Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
 							SeccompProfile:           &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
 						},
-						Image: w.Image,
-						Ports: []corev1.ContainerPort{{ContainerPort: w.Port, Name: w.PortName}},
-						Env:   env,
+						Image:   w.Image,
+						Command: w.Command,
+						Ports:   []corev1.ContainerPort{{ContainerPort: w.Port, Name: w.PortName}},
+						Env:     env,
 						VolumeMounts: []corev1.VolumeMount{{
 							Name:      "data",
 							MountPath: w.DataPath,

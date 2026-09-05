@@ -292,10 +292,10 @@ func (o *openAI) structured(ctx context.Context, instructions, user, name string
 }
 
 // structuredWith answers over an exchange that already happened. The schema
-// is provider-enforced, so what comes back is valid or an error — donkey never
-// parses prose into a struct and hopes.
+// is provider-enforced. Read the final message: OutputText also includes
+// commentary, which may precede the structured answer.
 func (o *openAI) structuredWith(ctx context.Context, instructions string, input []responses.ResponseInputItemUnionParam, name string, schema map[string]any, out any) error {
-	resp, err := o.client.Responses.New(ctx, responses.ResponseNewParams{
+	params := responses.ResponseNewParams{
 		Model:        shared.ResponsesModel(o.model),
 		Instructions: openai.String(instructions),
 		Input:        responses.ResponseNewParamsInputUnion{OfInputItemList: input},
@@ -308,16 +308,48 @@ func (o *openAI) structuredWith(ctx context.Context, instructions string, input 
 				},
 			},
 		},
-	})
+	}
+	resp, err := o.client.Responses.New(ctx, params)
 	if err != nil {
 		return fmt.Errorf("asking OpenAI didn't work: %w", err)
 	}
-	text := resp.OutputText()
-	if text == "" {
-		return fmt.Errorf("OpenAI sent an empty answer")
+	text, err := answerText(resp)
+	if err != nil {
+		return err
 	}
 	if err := json.Unmarshal([]byte(text), out); err != nil {
 		return fmt.Errorf("the AI answer wasn't usable: %w", err)
 	}
 	return nil
+}
+
+func answerText(resp *responses.Response) (string, error) {
+	if resp.Status != "" && resp.Status != "completed" {
+		return "", fmt.Errorf("OpenAI didn't finish its answer (status %s)", resp.Status)
+	}
+	final := false
+	for _, item := range resp.Output {
+		final = final || item.Type == "message" && item.Phase == "final_answer"
+	}
+	var text string
+	for _, item := range resp.Output {
+		if item.Type != "message" || item.Phase == "commentary" || final && item.Phase != "final_answer" {
+			continue
+		}
+		for _, content := range item.Content {
+			if content.Type == "refusal" {
+				return "", fmt.Errorf("OpenAI declined to produce this answer")
+			}
+			if content.Type == "output_text" {
+				if text != "" {
+					return "", fmt.Errorf("OpenAI sent more than one answer block")
+				}
+				text = content.Text
+			}
+		}
+	}
+	if text == "" {
+		return "", fmt.Errorf("OpenAI sent an empty answer")
+	}
+	return text, nil
 }

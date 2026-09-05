@@ -402,8 +402,11 @@ func (o *openAI) investigate(ctx context.Context, root, instructions, task strin
 		if calls == 0 {
 			// Nothing more to look at — whatever it said, the answer call is
 			// what turns it into a proposal.
-			if text := resp.OutputText(); text != "" {
-				input = append(input, responses.ResponseInputItemParamOfMessage(text, responses.EasyInputMessageRoleAssistant))
+			for _, item := range resp.Output {
+				if item.Type == "message" {
+					message := item.AsMessage().ToParam()
+					input = append(input, responses.ResponseInputItemUnionParam{OfOutputMessage: &message})
+				}
 			}
 			break
 		}

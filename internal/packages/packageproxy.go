@@ -484,6 +484,18 @@ func rewriteJSONURLs(value *any, key string, request proxyRequest) {
 			current[childKey] = child
 		}
 	case []any:
+		if request.route.serviceIndex && key == "resources" && strings.HasPrefix(request.public, "http://") {
+			// This optional NuGet resource requires HTTPS. An HTTP mirror must
+			// not advertise it. Package bytes and their signatures stay intact.
+			resources := current[:0]
+			for _, resource := range current {
+				if !repositorySignatures(resource) {
+					resources = append(resources, resource)
+				}
+			}
+			current = resources
+			*value = current
+		}
 		for i := range current {
 			rewriteJSONURLs(&current[i], key, request)
 		}
@@ -506,6 +518,24 @@ func rewriteJSONURLs(value *any, key string, request proxyRequest) {
 			*value = appendURLSuffix(resourceOriginURL(originKey(candidate), request), candidate.EscapedPath(), candidate.RawQuery, candidate.Fragment)
 		}
 	}
+}
+
+func repositorySignatures(value any) bool {
+	resource, ok := value.(map[string]any)
+	if !ok {
+		return false
+	}
+	switch kinds := resource["@type"].(type) {
+	case string:
+		return strings.HasPrefix(kinds, "RepositorySignatures/")
+	case []any:
+		for _, kind := range kinds {
+			if name, ok := kind.(string); ok && strings.HasPrefix(name, "RepositorySignatures/") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func rewriteTextURLs(value string, request proxyRequest) string {

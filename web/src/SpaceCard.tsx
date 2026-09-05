@@ -15,6 +15,7 @@ import {
   Database,
   EllipsisVertical,
   HardDrive,
+  KeyRound,
   Network,
   Plus,
   Rocket,
@@ -25,6 +26,7 @@ import { api, type AddAddonRequest, type AppSummary, type SpaceAddonEntry } from
 import { AddServiceDialog, typeIcons } from './AddonForm'
 import { AiDialog } from './AiDialog'
 import { DatabaseDialog } from './DatabaseDialog'
+import { RedisDialog } from './RedisDialog'
 import { useCatalog, useInvalidateServices, useSpaceServices } from './queries'
 import { S3Dialog } from './S3Dialog'
 import { SpaceTelemetry } from './TrafficPanel'
@@ -33,8 +35,8 @@ import { Button, ErrorNote, ExposureBadge, ago, errText, healthLine, healthOf } 
 /**
  * One section of the paddock per space.
  *
- * A space is the project — it defaults to the repository its apps came from,
- * so a monorepo's frontend and backend land in the same one. Its services
+ * A space groups deployed apps and services. A project's frontend and backend
+ * land in the same space. Its services
  * (databases & co.) live here too, and its apps sit on the dotted field as
  * cards: the card answers "is it up, how do I reach it, what is attached"
  * without opening anything, and clicking it slides the app's panel over the
@@ -255,6 +257,7 @@ function SpaceServices({
 }) {
   const [removing, setRemoving] = useState<SpaceAddonEntry | null>(null)
   const [browsing, setBrowsing] = useState<SpaceAddonEntry | null>(null)
+  const [redisBrowsing, setRedisBrowsing] = useState<SpaceAddonEntry | null>(null)
   const [storeBrowsing, setStoreBrowsing] = useState<SpaceAddonEntry | null>(null)
   const [chatting, setChatting] = useState<SpaceAddonEntry | null>(null)
 
@@ -264,6 +267,8 @@ function SpaceServices({
   const consoleFor = (svc: SpaceAddonEntry) => {
     if (svc.keys.includes('DATABASE_URL'))
       return { Icon: Database, open: () => setBrowsing(svc), label: `Browse the ${svc.name} database` }
+    if (svc.keys.includes('REDIS_URL'))
+      return { Icon: KeyRound, open: () => setRedisBrowsing(svc), label: `Browse the ${svc.name} keys` }
     if (svc.keys.includes('AWS_ENDPOINT_URL_S3'))
       return { Icon: Archive, open: () => setStoreBrowsing(svc), label: `Browse the ${svc.name} buckets` }
     if (svc.keys.includes('OPENAI_BASE_URL'))
@@ -335,6 +340,11 @@ function SpaceServices({
             setStoreBrowsing(null)
           }}
         />
+      )}
+      {redisBrowsing && (
+        <RedisDialog space={space} service={redisBrowsing.name}
+          onClose={() => setRedisBrowsing(null)}
+          onDelete={() => { setRemoving(redisBrowsing); setRedisBrowsing(null) }} />
       )}
       {chatting && (
         <AiDialog

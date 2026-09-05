@@ -128,7 +128,7 @@ func (s *Server) handleProjectDeploy(w http.ResponseWriter, r *http.Request) {
 	hosts := map[string]string{}
 	connected := map[string]bool{}
 	for _, c := range connections {
-		if c.Kind == "server" || c.Kind == "service" {
+		if c.Kind == "server" || c.Kind == "address" || c.Kind == "service" {
 			connected[c.App] = true
 		}
 	}
@@ -241,7 +241,7 @@ func projectOrder(apps []*storedPlan, connections []ai.ProjectConnection) ([]int
 	for _, c := range connections {
 		from, ok := byPath[c.App]
 		to, found := byPath[c.Target]
-		if ok && found && from != to && (c.Kind == "server" || c.Kind == "browser") {
+		if ok && found && from != to && (c.Kind == "server" || c.Kind == "address" || c.Kind == "browser") {
 			deps[from][to] = true
 		}
 	}

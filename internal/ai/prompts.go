@@ -46,9 +46,13 @@ Report:
   · Prefer few, broad folders over many narrow ones. An app with nothing to
     keep gets an empty list — that is the common, correct answer.
 - services: backing services the running app clearly expects; empty when it
-  needs none. The available types are:
+  needs none. Follow the active/default code path: exclude opt-in providers
+  that only run when an unset feature flag or provider-specific setting is
+  supplied and the default path uses local data instead. The available types are:
   · "postgres" for a PostgreSQL database (DATABASE_URL, psycopg/pg, JDBC
     PostgreSQL configuration, and equivalent connection code).
+  · "redis" for Redis caches, sessions or queues (REDIS_URL/REDIS_ADDR,
+    redis/ioredis clients, StackExchange.Redis and equivalent connection code).
   · "rustfs" for S3-compatible object storage (an S3 client used for runtime
     uploads/objects plus endpoint, bucket, or AWS S3 configuration). Do not
     infer it merely because a generic AWS SDK is installed for another AWS
@@ -350,7 +354,7 @@ listen. An image that exits immediately fails the deploy. So:
   allowInsecureConnections="true", then pass it with --configfile. Keep the
   percent-delimited environment expression in a quoted Dockerfile heredoc so
   NuGet expands it on every OS. This is only an internal URL, never an upstream
-  URL or credential.
+  URL or credential. Keep package signature verification enabled.
 - Install the OS packages native dependencies need, and install them in the
   stage that needs them: -dev packages to compile, the plain runtime library
   in the final image. A missing runtime library is the worst failure of all,

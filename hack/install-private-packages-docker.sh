@@ -39,7 +39,10 @@ build:
     dockerConfigHost: ${DOCKER_CONFIG_HOST}
 EOF
 
-docker network inspect donkey >/dev/null 2>&1 || docker network create donkey >/dev/null
+docker network inspect donkey >/dev/null 2>&1 || docker network create \
+  --label local.donkey.managed=true \
+  --label local.donkey.installation=donkey \
+  --label local.donkey.role=network donkey >/dev/null
 docker rm -f donkey-private-packages >/dev/null 2>&1 || true
 docker run -d --name donkey-private-packages --restart=unless-stopped \
   --network donkey \

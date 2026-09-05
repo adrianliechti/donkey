@@ -162,18 +162,20 @@ export function IconButton({
   onClick,
   kind = 'quiet',
   disabled = false,
+  type = 'button',
 }: {
   icon: LucideIcon
   label: string
   onClick?: () => void
   kind?: 'quiet' | 'danger'
   disabled?: boolean
+  type?: 'button' | 'submit'
 }) {
   const tone =
     kind === 'danger' ? 'hover:bg-danger/10 hover:text-danger' : 'hover:bg-line/60 hover:text-ink'
   return (
     <button
-      type="button"
+      type={type}
       title={label}
       aria-label={label}
       onClick={onClick}

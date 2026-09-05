@@ -9,6 +9,7 @@ import (
 	"io"
 	"io/fs"
 	"maps"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -199,11 +200,25 @@ func (s *Server) readProject(ctx context.Context, dir string, reading *ai.Projec
 			input := in
 			input.Root = found.Path
 			if len(reading.Apps) > 1 || input.NameHint == "" {
-				input.NameHint = filepath.Base(full)
+				input.NameHint = found.Name
+				if input.NameHint == "" {
+					input.NameHint = filepath.Base(full)
+				}
 			}
 			sp, err := s.readApp(readCtx, full, app, input)
 			if err != nil {
 				return fmt.Errorf("%s: %w", found.Path, err)
+			}
+			for _, variable := range found.Env {
+				if variable.Name == "PORT" {
+					continue
+				}
+				if sp.app.Env == nil {
+					sp.app.Env = map[string]string{}
+				}
+				if _, configured := sp.app.Env[variable.Name]; !configured {
+					sp.app.Env[variable.Name] = variable.Value
+				}
 			}
 			if setting != "." {
 				sp.app.Build.Context = filepath.ToSlash(setting)
@@ -387,7 +402,7 @@ func (s *Server) resolveProject(ctx context.Context, id string, state *projectSt
 		}
 		app := sp.app
 		value, target := "", c.Target
-		if c.Env == "" && c.File == "" {
+		if c.Env == "" && c.File == "" && c.Kind != "browser" {
 			block("A connection for " + app.Name + " needs an environment variable or source edit.")
 			continue
 		}
@@ -442,17 +457,50 @@ func (s *Server) resolveProject(ctx context.Context, id string, state *projectSt
 					block(app.Name + " needs an address for its browser connections.")
 					continue
 				}
-				prefix := "/_donkey/" + target
-				value = prefix + c.Suffix
-				route := config.RouteConfig{App: app.Name, Path: prefix, StripPrefix: true}
-				if !slices.Contains(to.app.Routes, route) {
-					to.app.Routes = append(to.app.Routes, route)
+				if c.Env == "" && c.File == "" {
+					// A same-origin caller may already be connected by donkey.yaml.
+					// Require a declared route covering the path the caller uses.
+					routed := c.Suffix != "" && slices.ContainsFunc(to.app.Routes, func(route config.RouteConfig) bool {
+						return route.App == app.Name && (route.Path == c.Suffix || strings.HasPrefix(c.Suffix, strings.TrimRight(route.Path, "/")+"/"))
+					})
+					if !routed {
+						block("A connection for " + app.Name + " needs an existing route, environment variable or source edit.")
+						continue
+					}
+					value = c.Suffix
+				} else {
+					prefix := "/_donkey/" + target
+					value = prefix + c.Suffix
+					route := config.RouteConfig{App: app.Name, Path: prefix, StripPrefix: true}
+					if !slices.Contains(to.app.Routes, route) {
+						to.app.Routes = append(to.app.Routes, route)
+					}
 				}
 				if app.Public && !to.app.Public {
 					block(app.Name + " is public, but " + target + " requires login. Match their exposure to allow browser calls.")
 				}
-			case "server":
+			case "server", "address":
+				if config.PublicEnv(c.Env) {
+					block("Internal server URLs cannot be used in browser variable " + c.Env)
+					continue
+				}
 				value = s.rt.InternalURL(app.Space, target, to.app.Port) + c.Suffix
+				if c.Kind == "address" {
+					if c.Suffix != "" {
+						block("A host:port connection cannot have a URL path: " + target)
+						continue
+					}
+					u, err := url.Parse(value)
+					if err != nil || u.Hostname() == "" {
+						block("No internal address is available for " + target)
+						continue
+					}
+					port := u.Port()
+					if port == "" {
+						port = "80"
+					}
+					value = net.JoinHostPort(u.Hostname(), port)
+				}
 			case "origin":
 				value = s.cfg.AppURL(to.app.Space, to.app) + c.Suffix
 				if to.app.Internal {
@@ -475,7 +523,8 @@ func (s *Server) resolveProject(ctx context.Context, id string, state *projectSt
 				app.Env = map[string]string{}
 			}
 			app.Env[c.Env] = value
-			if c.Kind == "browser" {
+			_, baked := app.Build.Env[c.Env]
+			if c.Kind != "service" && (c.Kind == "browser" || config.PublicEnv(c.Env) || baked) {
 				if app.Build.Env == nil {
 					app.Build.Env = map[string]string{}
 				}

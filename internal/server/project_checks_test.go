@@ -30,6 +30,48 @@ func TestProjectWithOneApp(t *testing.T) {
 	}
 }
 
+func TestProjectKeepsExistingBrowserRoute(t *testing.T) {
+	for _, tc := range []struct {
+		name, path, routeApp string
+		public, ready        bool
+	}{
+		{"exact path", "/api", "frontend", true, true},
+		{"child path", "/api/tickets", "frontend", true, true},
+		{"different prefix", "/apix", "frontend", true, false},
+		{"unknown path", "", "frontend", true, false},
+		{"different caller", "/api", "other", true, false},
+		{"login mismatch", "/api", "frontend", false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, reading, body := projectFixture(t)
+			reading.Connections = []ai.ProjectConnection{{App: "frontend", Target: "backend", Kind: "browser", Suffix: tc.path}}
+			dir := t.TempDir()
+			if _, err := extractContext(bytes.NewReader(body), dir); err != nil {
+				t.Fatal(err)
+			}
+			state, err := s.readProject(context.Background(), dir, reading, planInput{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			state.apps[0].app.Public = true
+			state.apps[1].app.Internal = true
+			state.apps[1].app.Public = tc.public
+			routes := []config.RouteConfig{{App: tc.routeApp, Path: "/api"}}
+			state.apps[1].app.Routes = routes
+			plan, apps, patches := s.resolveProject(context.Background(), "test", state)
+			if plan.Ready != tc.ready {
+				t.Fatalf("ready=%v, want %v: %+v", plan.Ready, tc.ready, plan.Findings)
+			}
+			if !reflect.DeepEqual(apps[1].app.Routes, routes) || len(patches) != 0 {
+				t.Fatal("existing routing must not be changed")
+			}
+			if tc.ready && (len(plan.Connections) != 1 || plan.Connections[0].Value != tc.path) {
+				t.Fatalf("existing connection missing from review: %+v", plan.Connections)
+			}
+		})
+	}
+}
+
 func TestProjectValidatesConfiguredBuildContext(t *testing.T) {
 	for _, test := range []struct {
 		name, configured, guessed string
@@ -275,5 +317,50 @@ func TestOverlappingProjectsDoNotDeadlock(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("opposite project orders deadlocked")
+	}
+}
+
+func TestProjectOriginsReachBrowserBuilds(t *testing.T) {
+	s, reading, body := projectFixture(t)
+	reading.Connections = append(reading.Connections,
+		ai.ProjectConnection{App: "frontend", Target: "backend", Kind: "origin", Env: "PUBLIC_API_ORIGIN"},
+		ai.ProjectConnection{App: "backend", Target: "frontend", Kind: "origin", Env: "ALLOWED_ORIGIN"},
+	)
+	p := callProject(t, s, body)
+	stored, _ := s.plans.get(p.ID)
+	stored.project.apps[0].app.Host = "custom.example.com"
+	stored.project.apps[1].app.Build.Env = map[string]string{"ALLOWED_ORIGIN": "http://localhost:3000"}
+	p, apps, _ := s.resolveProject(context.Background(), p.ID, stored.project)
+	if !p.Ready || apps[0].app.Build.Env["PUBLIC_API_ORIGIN"] != "https://backend.default.example.com" || apps[1].app.Env["ALLOWED_ORIGIN"] != "https://custom.example.com" || apps[1].app.Build.Env["ALLOWED_ORIGIN"] != "https://custom.example.com" {
+		t.Fatalf("an origin setting kept its development URL: %+v", p)
+	}
+}
+
+type dockerAddressRuntime struct{ projectRuntime }
+
+func (dockerAddressRuntime) InternalURL(space, app string, port int) string {
+	return fmt.Sprintf("http://%s:%d", app, port)
+}
+
+func TestProjectGRPCAddressesUseRuntimePorts(t *testing.T) {
+	for _, docker := range []bool{false, true} {
+		t.Run(fmt.Sprint(docker), func(t *testing.T) {
+			s, reading, body := projectFixture(t)
+			want := "backend.default.svc:80"
+			if docker {
+				s.rt = dockerAddressRuntime{s.rt.(projectRuntime)}
+				want = "backend:8080"
+			}
+			reading.Connections[2].Kind, reading.Connections[2].Suffix = "address", ""
+			p := callProject(t, s, body)
+			if !p.Ready {
+				t.Fatal(p.Findings)
+			}
+			for _, connection := range p.Connections {
+				if connection.Env == "API_URL" && connection.Value != want {
+					t.Fatalf("gRPC address = %q, want %q", connection.Value, want)
+				}
+			}
+		})
 	}
 }

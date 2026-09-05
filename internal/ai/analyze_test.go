@@ -61,7 +61,7 @@ func TestVolumePaths(t *testing.T) {
 // contract; otherwise it exists in the catalog but can never appear in a
 // source-derived deploy plan.
 func TestAnalyzePromptOffersEveryService(t *testing.T) {
-	for _, service := range []string{"postgres", "rustfs", "openai"} {
+	for _, service := range []string{"postgres", "redis", "rustfs", "openai"} {
 		if !strings.Contains(analyzeInstructions, `"`+service+`"`) {
 			t.Errorf("analysis instructions do not offer %s", service)
 		}

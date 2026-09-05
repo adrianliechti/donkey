@@ -7,14 +7,14 @@ import (
 )
 
 func TestSelectedServicesReplaceStaleEnvWithReferences(t *testing.T) {
-	app := &config.AppConfig{Env: map[string]string{"DATABASE_URL": "postgres://localhost/old", "OPENAI_BASE_URL": "http://localhost:1234", "AWS_ENDPOINT_URL_S3": "http://localhost:9000", "LOG_LEVEL": "debug"}, Addons: []config.AddonConfig{{Name: "db", Type: "postgres"}, {Name: "ai", Type: "openai"}, {Name: "objects", Type: "rustfs"}}}
+	app := &config.AppConfig{Env: map[string]string{"DATABASE_URL": "postgres://localhost/old", "OPENAI_BASE_URL": "http://localhost:1234", "AWS_ENDPOINT_URL_S3": "http://localhost:9000", "LOG_LEVEL": "debug", "REDIS_URL": "redis://localhost:6379"}, Addons: []config.AddonConfig{{Name: "cache", Type: "redis"}, {Name: "db", Type: "postgres"}, {Name: "ai", Type: "openai"}, {Name: "objects", Type: "rustfs"}}}
 	for _, service := range app.Addons {
 		recipe, _ := Get(service.Type)
 		if err := BindEnvironment(app, service.Name, recipe.Binding(Input{})); err != nil {
 			t.Fatal(err)
 		}
 	}
-	for key, want := range map[string]string{"DATABASE_URL": "${db.DATABASE_URL}", "OPENAI_BASE_URL": "${ai.OPENAI_BASE_URL}", "OPENAI_MODEL": "${ai.OPENAI_MODEL}", "OPENAI_API_KEY": "${ai.OPENAI_API_KEY}", "AWS_ENDPOINT_URL_S3": "${objects.AWS_ENDPOINT_URL_S3}", "AWS_SECRET_ACCESS_KEY": "${objects.AWS_SECRET_ACCESS_KEY}", "LOG_LEVEL": "debug"} {
+	for key, want := range map[string]string{"REDIS_URL": "${cache.REDIS_URL}", "REDIS_PASSWORD": "${cache.REDIS_PASSWORD}", "DATABASE_URL": "${db.DATABASE_URL}", "OPENAI_BASE_URL": "${ai.OPENAI_BASE_URL}", "OPENAI_MODEL": "${ai.OPENAI_MODEL}", "OPENAI_API_KEY": "${ai.OPENAI_API_KEY}", "AWS_ENDPOINT_URL_S3": "${objects.AWS_ENDPOINT_URL_S3}", "AWS_SECRET_ACCESS_KEY": "${objects.AWS_SECRET_ACCESS_KEY}", "LOG_LEVEL": "debug"} {
 		if app.Env[key] != want {
 			t.Errorf("%s = %q, want %q", key, app.Env[key], want)
 		}

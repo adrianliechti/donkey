@@ -142,6 +142,29 @@ func TestProjectPlansEveryAppAndResolvesConnections(t *testing.T) {
 	}
 }
 
+func TestProjectUsesAppNameForNestedSourceDirectory(t *testing.T) {
+	s, reading, _ := projectFixture(t)
+	reading.Apps = []ai.ProjectApp{
+		{Name: "cartservice", Path: "cartservice/src", Context: "cartservice/src", Env: []ai.ProjectEnv{{Name: "DISABLE_PROFILER", Value: "1"}, {Name: "PORT", Value: "9999"}}},
+		{Name: "suggested", Path: "api", Context: "api", Env: []ai.ProjectEnv{{Name: "MODE", Value: "suggested"}}},
+	}
+	reading.Connections = nil
+	body := zipBytes(t, map[string]string{
+		"repo/cartservice/src/Dockerfile": "FROM scratch\n",
+		"repo/api/Dockerfile":             "FROM scratch\n",
+		"repo/api/donkey.yaml":            "name: configured\nport: 8080\nenv:\n  MODE: configured\n",
+	})
+	p := callProject(t, s, body)
+	if p.Apps[0].App.Name != "cartservice" || p.Apps[1].App.Name != "configured" {
+		t.Fatalf("names = %s, %s", p.Apps[0].App.Name, p.Apps[1].App.Name)
+	}
+	stored, _ := s.plans.get(p.ID)
+	cart, api := stored.project.apps[0].app, stored.project.apps[1].app
+	if cart.Env["DISABLE_PROFILER"] != "1" || cart.Env["PORT"] != "" || cart.Port == 9999 || api.Env["MODE"] != "configured" {
+		t.Fatalf("deployment defaults must preserve explicit settings and the chosen port: %v, %v", cart.Env, api.Env)
+	}
+}
+
 func TestProjectRecheckRewiresNamesAndSpace(t *testing.T) {
 	s, _, body := projectFixture(t)
 	p := callProject(t, s, body)
@@ -182,6 +205,9 @@ func TestProjectRejectsInvalidConnections(t *testing.T) {
 		{"unmatched edit", func(p *ai.Project) { p.Connections[1].Old = "not in source" }},
 		{"unknown binding", func(p *ai.Project) { p.Connections[3].Key = "MISSING" }},
 		{"invalid kind", func(p *ai.Project) { p.Connections[0].Kind = "made-up" }},
+		{"internal browser URL", func(p *ai.Project) { p.Connections[0].Kind = "server" }},
+		{"no destination", func(p *ai.Project) { p.Connections[0].Env = "" }},
+		{"conflicting env", func(p *ai.Project) { p.Connections[2].Env = "VITE_API_URL" }},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			s, reading, body := projectFixture(t)

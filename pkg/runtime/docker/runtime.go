@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"maps"
+	"net"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -684,7 +687,25 @@ func (r *Runtime) SetAppMeta(ctx context.Context, space, app, key string, value 
 // --- Services (addons) ----------------------------------------------------
 
 func (r *Runtime) ServiceBinding(ctx context.Context, space, owner, name string) (map[string]string, error) {
-	return r.state.binding(space, owner, name)
+	binding, err := r.state.binding(space, owner, name)
+	if err != nil {
+		return nil, err
+	}
+	// Older installations stored short network aliases. The server belongs
+	// to every space network, where those aliases are ambiguous. Resolve an
+	// existing managed service by its owned container name on read as well.
+	scoped := rewriteBindingHost(binding, name, ctrName(space, name))
+	if maps.Equal(binding, scoped) {
+		return binding, nil
+	}
+	host, _, err := r.ServiceEndpoint(ctx, space, name)
+	if err != nil {
+		return nil, err
+	}
+	if host == "" {
+		return binding, nil
+	} // external binding
+	return scoped, nil
 }
 
 func (r *Runtime) aiProxyURL() string {
@@ -754,10 +775,9 @@ func (r *Runtime) EnsureService(ctx context.Context, space string, spec rt.Servi
 			return nil, "", "", err
 		}
 		binding = addon.Binding(in)
-		// Kubernetes bindings speak in Service DNS (name.namespace.svc); on
-		// Docker the plain container name is the address on the space
-		// network, so the host part is rewritten.
-		binding = rewriteBindingHosts(binding, in.Name, in.Namespace)
+		// The unique container name works for both apps in this space and
+		// the admin server, which belongs to multiple space networks.
+		binding = rewriteBindingHost(binding, in.Name+"."+in.Namespace+".svc", ctrName(space, in.Name))
 		if err := r.state.setBinding(space, sharedOwner, spec.Name, binding); err != nil {
 			return nil, "", "", err
 		}
@@ -791,13 +811,35 @@ func (r *Runtime) EnsureService(ctx context.Context, space string, spec rt.Servi
 	return binding, version, storage, nil
 }
 
-// rewriteBindingHosts swaps the Kubernetes Service address an addon binding
-// speaks (name.namespace.svc) for the container name Docker's DNS answers.
-func rewriteBindingHosts(binding map[string]string, name, namespace string) map[string]string {
-	k8sHost := fmt.Sprintf("%s.%s.svc", name, namespace)
-	out := map[string]string{}
-	for k, v := range binding {
-		out[k] = strings.ReplaceAll(v, k8sHost, name)
+// Rewrite address fields only; passwords, usernames and URL paths are data.
+func rewriteBindingHost(binding map[string]string, from, to string) map[string]string {
+	out := maps.Clone(binding)
+	for key, value := range binding {
+		switch key {
+		case "PGHOST", "REDIS_HOST":
+			if value == from {
+				out[key] = to
+			}
+		case "REDIS_ADDR":
+			if host, port, err := net.SplitHostPort(value); err == nil && host == from {
+				out[key] = net.JoinHostPort(to, port)
+			}
+		case "DATABASE_URL", "JDBC_DATABASE_URL", "REDIS_URL", "AWS_ENDPOINT_URL_S3", "S3_URL", "OPENAI_BASE_URL":
+			prefix := ""
+			if strings.HasPrefix(value, "jdbc:") {
+				prefix, value = "jdbc:", strings.TrimPrefix(value, "jdbc:")
+			}
+			u, err := url.Parse(value)
+			if err != nil || u.Hostname() != from {
+				continue
+			}
+			port := u.Port()
+			u.Host = to
+			if port != "" {
+				u.Host = net.JoinHostPort(to, port)
+			}
+			out[key] = prefix + u.String()
+		}
 	}
 	return out
 }
@@ -821,12 +863,13 @@ func (r *Runtime) runService(ctx context.Context, space, name string, in addons.
 		env[envName] = binding[bindingKey]
 	}
 	if err := r.replaceContainer(ctx, ctrName(space, name), runConfig{
-		Image:   w.Image,
-		Env:     env,
-		Labels:  labels,
-		Network: netName(space),
-		Alias:   name,
-		Volumes: map[string]volumeMount{w.DataPath: {Volume: vol}},
+		Entrypoint: w.Command,
+		Image:      w.Image,
+		Env:        env,
+		Labels:     labels,
+		Network:    netName(space),
+		Alias:      name,
+		Volumes:    map[string]volumeMount{w.DataPath: {Volume: vol}},
 	}); err != nil {
 		return err
 	}
