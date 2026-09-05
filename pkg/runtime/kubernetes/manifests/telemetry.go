@@ -104,7 +104,6 @@ func telemetryDeployment(in SystemInput) *appsv1.Deployment {
 								corev1.ResourceCPU:    resource.MustParse("50m"),
 								corev1.ResourceMemory: resource.MustParse("128Mi"),
 							},
-							Limits: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("512Mi")},
 						},
 						SecurityContext: systemSecurityContext(),
 						ReadinessProbe: &corev1.Probe{ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{

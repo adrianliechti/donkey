@@ -66,7 +66,7 @@ function StoredBuild({ space, app, sequence }: { space: string; app: string; seq
         <span className="flex items-center gap-1.5">
           <Clock3 className="size-3.5" aria-hidden /> Finished {when}
         </span>
-        {release.truncated && <span>Older output was trimmed; the result and findings are complete.</span>}
+        {release.truncated && <span>Some logs or repair diffs were trimmed; the result and findings are complete.</span>}
       </div>
       {!release.plan ? (
         <Card className="p-4 text-sm text-muted">This older build has no structured plan to display.</Card>
@@ -75,25 +75,25 @@ function StoredBuild({ space, app, sequence }: { space: string; app: string; seq
           plan={release.plan}
           lines={release.lines ?? []}
           buildLog={release.buildLog ?? ''}
-          update={release.update ?? { stage: 'releasing' }}
+          update={{ ...(release.update ?? { stage: 'releasing' }), changes: release.changes }}
           result={release.result}
           layout="stacked"
         />
       )}
-      {release.dockerfile ? <DockerfileCard content={release.dockerfile} /> : null}
+      {release.dockerfile ? <BuildFileCard content={release.dockerfile} filename=".donkey/Dockerfile" /> : null}
+      {release.dockerignore !== undefined ? <BuildFileCard content={release.dockerignore} filename=".donkey/Dockerfile.dockerignore" /> : null}
     </div>
   )
 }
 
-/** The recipe the image was built from — the durable half of an AI build.
- * Saved as .donkey/Dockerfile, every later deploy is a plain build. */
-function DockerfileCard({ content }: { content: string }) {
+/** The recipe the image was built from. Keep any source repairs alongside it. */
+function BuildFileCard({ content, filename }: { content: string; filename: string }) {
   const [copied, setCopied] = useState(false)
   return (
     <Card className="p-4">
       <div className="mb-2 flex items-center justify-between gap-2">
         <span className="flex items-center gap-1.5 text-sm font-medium text-ink-soft">
-          <FileCode2 className="size-4" aria-hidden /> Dockerfile
+          <FileCode2 className="size-4" aria-hidden /> {filename}
         </span>
         <button
           type="button"
@@ -105,7 +105,7 @@ function DockerfileCard({ content }: { content: string }) {
             })
           }}
         >
-          {copied ? 'Copied' : 'Copy — save as .donkey/Dockerfile'}
+          {copied ? 'Copied' : 'Copy'}
         </button>
       </div>
       <pre className="max-h-96 overflow-auto rounded-md bg-surface p-3 font-mono text-xs leading-relaxed whitespace-pre">

@@ -223,6 +223,14 @@ tasks:
     cmds:
       - hack/verify.sh docker
 
+  verify:builder:
+    desc: Build all samples and repair cases with the live assistant and verify their HTTP responses, assets and persistence
+    env:
+      DONKEY_E2E_BUILDER: 'true'
+      DONKEY_E2E_REPORTS: '{{.ROOT_DIR}}/.build/e2e'
+    cmds:
+      - hack/verify.sh {{.RUNTIME | default "kind"}} -run '^TestBuilder(Samples|Recovery)$' {{.CLI_ARGS}}
+
   prepare:monorepos:
     desc: Fetch the pinned Google microservices-demo repository for live tests
     cmds:
@@ -270,7 +278,7 @@ tasks:
       - hack/demo-samples.sh
 
   demo:broken:
-    desc: "Deploy the apps that are MEANT to fail, and check donkey explained each one and proposed a patch"
+    desc: "Deploy all four compatibility repair cases and require healthy applications"
     cmds:
       - hack/demo-broken.sh
 

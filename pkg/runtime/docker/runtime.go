@@ -1,6 +1,7 @@
 package docker
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"io"
@@ -38,6 +39,8 @@ const (
 	labelRole         = "local.donkey.role"
 	labelImage        = "local.donkey.image"
 	labelPort         = "local.donkey.port"
+	labelHealthPath   = "local.donkey.health-path"
+	labelHost         = "local.donkey.host"
 
 	dockerInstallation = "donkey"
 
@@ -469,11 +472,19 @@ func (r *Runtime) ListApps(ctx context.Context) ([]rt.AppRef, error) {
 		return nil, err
 	}
 	var out []rt.AppRef
+	seen := map[string]bool{}
 	for _, c := range list {
 		space, app := c.Labels[labelSpace], c.Labels[labelApp]
 		if space == "" || app == "" || !sameIdentity(c.Labels, appLabels(space, app, roleWorkload)) {
 			continue
 		}
+		// A stopped previous container can coexist with its candidate until
+		// readiness succeeds. They are versions of one app.
+		key := space + "/" + app
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
 		out = append(out, rt.AppRef{Space: space, App: app})
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -513,7 +524,7 @@ func (r *Runtime) Status(ctx context.Context, space, app string) (*rt.AppStatus,
 	}
 	st.Restarts = int32(info.RestartCount)
 	if info.State != nil {
-		if info.State.Running {
+		if info.State.Running && !info.State.Restarting && r.probeContainer(ctx, info) == nil {
 			st.ReadyReplica = 1
 		}
 		if t, err := time.Parse(time.RFC3339Nano, info.State.StartedAt); err == nil && t.Unix() > 0 {
@@ -1012,56 +1023,67 @@ func (r *Runtime) Checks(ctx context.Context) []rt.Check {
 	return checks
 }
 
-// waitRunning polls until the container runs (steadily) or fails, returning
-// a RolloutError with evidence.
-func (r *Runtime) waitRunning(ctx context.Context, name string, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
+// waitRunning requires a reachable endpoint over a short stable window.
+// Failures retain startup evidence for the automatic repair loop.
+func (r *Runtime) waitRunning(parent context.Context, name string, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(parent, timeout)
+	defer cancel()
 	stableSince := time.Time{}
+	lastProbe := "the process has not started"
+	var previous container.InspectResponse
+	failed := func(reason string) error {
+		if parent.Err() != nil {
+			return parent.Err()
+		}
+		app := name
+		var summaries []string
+		if previous.Config != nil {
+			app = cmp.Or(previous.Config.Labels[labelApp], previous.Config.Labels[labelAddon], name)
+		}
+		if previous.ContainerJSONBase != nil {
+			summaries = []string{containerSummary(previous)}
+		}
+		logsCtx, stop := context.WithTimeout(context.WithoutCancel(parent), 5*time.Second)
+		defer stop()
+		return &rt.RolloutError{App: app, Reason: reason, Evidence: rt.Evidence{Summaries: summaries, Logs: r.logsTail(logsCtx, name, 100)}}
+	}
 	for {
 		info, err := r.cli.ContainerInspect(ctx, name)
 		if err != nil {
+			if ctx.Err() != nil {
+				return failed("readiness check timed out: " + lastProbe)
+			}
 			return err
 		}
-		s := info.State
-		app := info.Config.Labels[labelApp]
-		if app == "" {
-			app = info.Config.Labels[labelAddon]
+		if info.ContainerJSONBase == nil {
+			return fmt.Errorf("container %s has no inspectable state", name)
 		}
+		if previous.ContainerJSONBase != nil && (previous.RestartCount != info.RestartCount || previous.State != nil && info.State != nil && previous.State.StartedAt != info.State.StartedAt) {
+			stableSince = time.Time{}
+		}
+		previous = info
+		state := info.State
 		switch {
-		case s != nil && s.Running && !s.Restarting:
-			if stableSince.IsZero() {
-				stableSince = time.Now()
-			}
-			// A crash-looper is "running" between crashes; a short stable
-			// window filters it out.
-			if time.Since(stableSince) >= 3*time.Second {
-				return nil
-			}
-		case s != nil && (s.Status == "exited" || s.Restarting || s.OOMKilled):
-			return &rt.RolloutError{
-				App:    app,
-				Reason: containerSummary(info),
-				Evidence: rt.Evidence{
-					Summaries: []string{containerSummary(info)},
-					Logs:      r.logsTail(ctx, name, 100),
-				},
+		case state != nil && (state.Status == "exited" || state.Restarting || state.OOMKilled):
+			return failed(containerSummary(info))
+		case state != nil && state.Running:
+			if err := r.probeContainer(ctx, info); err != nil {
+				lastProbe = err.Error()
+				stableSince = time.Time{}
+			} else {
+				if stableSince.IsZero() {
+					stableSince = time.Now()
+				}
+				if time.Since(stableSince) >= 3*time.Second {
+					return nil
+				}
 			}
 		default:
 			stableSince = time.Time{}
 		}
-		if time.Now().After(deadline) {
-			return &rt.RolloutError{
-				App:    app,
-				Reason: "it didn't become healthy in time",
-				Evidence: rt.Evidence{
-					Summaries: []string{containerSummary(info)},
-					Logs:      r.logsTail(ctx, name, 100),
-				},
-			}
-		}
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return failed("readiness check timed out: " + lastProbe)
 		case <-time.After(time.Second):
 		}
 	}

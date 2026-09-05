@@ -484,8 +484,8 @@ func imagePullPolicy(image string) corev1.PullPolicy {
 }
 
 // serverResources sizes donkey-server. Ephemeral storage is the one nobody
-// expects: the server unpacks every build context on local disk (512 MB
-// uploaded, up to 2 GB unpacked), and a pod that requests none is the first
+// expects: the server unpacks build contexts on local disk, and a pod that
+// requests none is the first
 // thing the kubelet evicts when a node runs short of it. CPU is requested but
 // not capped — throttling the API mid-deploy costs more than the noisy
 // neighbour it would prevent.
@@ -495,10 +495,6 @@ func serverResources() corev1.ResourceRequirements {
 			corev1.ResourceCPU:              resource.MustParse("100m"),
 			corev1.ResourceMemory:           resource.MustParse("256Mi"),
 			corev1.ResourceEphemeralStorage: resource.MustParse("3Gi"),
-		},
-		Limits: corev1.ResourceList{
-			corev1.ResourceMemory:           resource.MustParse("1Gi"),
-			corev1.ResourceEphemeralStorage: resource.MustParse("8Gi"),
 		},
 	}
 }

@@ -200,6 +200,22 @@ func TestContextRootFindsSubfolderApp(t *testing.T) {
 	mustRead(t, root, "donkey.yaml")
 }
 
+func TestContextRootFindsDeeplyNestedApp(t *testing.T) {
+	dir := t.TempDir()
+	rel := "company/products/platform/services/backend/api"
+	root := filepath.Join(dir, filepath.FromSlash(rel))
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "donkey.yaml"), []byte("name: api\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, path, err := contextRoot(dir, "")
+	if err != nil || got != root || path != rel {
+		t.Fatalf("nested app discovery: root=%q, path=%q, err=%v", got, path, err)
+	}
+}
+
 func TestContextRootAmbiguousMonorepo(t *testing.T) {
 	dir := t.TempDir()
 	b := zipBytes(t, map[string]string{

@@ -9,8 +9,8 @@ import (
 // Failure evidence is the one place real credentials would reach the model:
 // donkey puts a full DATABASE_URL into every app with a postgres addon, and
 // most frameworks print it when they cannot connect — the very condition that
-// starts a diagnosis. Scrubbing therefore lives inside DiagnoseFailure, not at
-// its callers: a caller that forgets is a leak.
+// starts a diagnosis or repair. Scrubbing also lives at the model boundary,
+// so a caller cannot accidentally send unredacted runtime evidence.
 
 const redacted = "***"
 
@@ -44,6 +44,12 @@ func Redact(s string) string {
 	s = bearerToken.ReplaceAllString(s, "${1} "+redacted)
 	s = secretAssignment.ReplaceAllString(s, "${1}${2}"+redacted)
 	return s
+}
+
+// RedactEvidence is the shared boundary for all model-bound runtime evidence,
+// including automatic repair attempts, rather than just final diagnosis.
+func RedactEvidence(s string, known ...string) string {
+	return Redact(replaceKnown(s, usableSecrets(known)))
 }
 
 // usableSecrets drops values too short to replace safely, longest first so a

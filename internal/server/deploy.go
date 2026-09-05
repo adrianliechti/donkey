@@ -54,7 +54,9 @@ type DeployUpdate struct {
 	BaseImages []string      `json:"baseImages,omitempty"`
 	// Dockerfile is the exact file this build used, reported once it is
 	// settled — the app's own, or the one the assistant wrote.
-	Dockerfile string `json:"dockerfile,omitempty"`
+	Dockerfile   string            `json:"dockerfile,omitempty"`
+	Dockerignore *string           `json:"dockerignore,omitempty"`
+	Changes      []ai.SourceChange `json:"changes,omitempty"`
 }
 
 // lineStreamer writes progress lines to the client as they happen.
@@ -257,10 +259,6 @@ func appFromParams(name, portStr string) (*config.AppConfig, error) {
 	return app, nil
 }
 
-// Must outlast the assistant's own budget (2-minute timeout, one retry), or
-// deploys fail while their model call is still legitimately in flight.
-const analysisDeadline = 5 * time.Minute
-
 type deployOpts struct {
 	Root      string // the uploaded repository, bounding build.context
 	Hosts     map[string]string
@@ -379,73 +377,48 @@ func (s *Server) deployApp(ctx context.Context, out *lineStreamer, dir string, a
 		out.Inspection(describePlanBuild(dir, det, nil), nil)
 	}
 
-	// Runs alongside the build: a model call should not sit between the user
-	// and their deploy.
-	type analysisResult struct {
-		analysis *ai.Analysis
-		err      error
-	}
-	analysisReady := make(chan analysisResult, 1)
-	run := func() {
-		analysis, signals, err := s.analyzeApp(ctx, dir, det, detErr)
-		if detErr == nil {
-			out.Inspection(describePlanBuild(dir, det, signals), analysis)
-		}
-		analysisReady <- analysisResult{analysis, err}
-	}
-	switch {
-	case opts.Analysis != nil:
-		// A reviewed plan already asked, and its answer is the one the user
-		// said yes to.
-		analysisReady <- analysisResult{opts.Analysis, nil}
-	case detErr != nil:
-		run() // nothing to build yet — the proposal has to come first
-	default:
-		go run()
-	}
-
-	// The only way detection fails is a donkey.yaml naming a Dockerfile that
-	// is not there — every other app gets one written for it.
+	// Analysis and the build must agree on the runtime before generating or
+	// verifying an image, especially when storage masks image directories.
 	if detErr != nil {
 		return fail(detErr)
 	}
-	out.Line("✓ %s will be built with %s", app.Name, det.Summary)
-	if det.DockerfilePath != "" {
-		out.Update(DeployUpdate{BaseImages: dockerfileBaseImagesAt(dir, det.DockerfilePath)})
-	}
-
-	// merge fills in what donkey.yaml left open, right before the app's
-	// objects are rendered. Exactly one of the paths below runs it, and it
-	// reports every decision. A model that never answers stops the deploy
-	// instead of quietly deploying a half-read app.
-	merge := func() error {
-		var res analysisResult
-		select {
-		case res = <-analysisReady:
-		case <-time.After(analysisDeadline):
-			return fmt.Errorf("the assistant didn't answer within %s — check the AI endpoint in the install settings, or deploy again", analysisDeadline)
-		}
-		if res.err != nil {
-			return res.err
-		}
-		for _, f := range mergeAnalysis(app, res.analysis) {
-			out.Line("· %s", f.Text())
-		}
-		// The merge changed the config after its load-time validation — a
-		// proposal that produces an invalid combination must not reach the
-		// cluster.
-		if err := app.Validate(); err != nil {
-			return fmt.Errorf("the assistant's findings don't fit this app's donkey.yaml: %w", err)
-		}
-		return nil
-	}
-
-	if opts.DryRun {
-		if err := merge(); err != nil {
+	analysis := opts.Analysis
+	if analysis == nil {
+		readCtx, cancel := context.WithCancel(ctx)
+		var signals *ai.Signals
+		analysis, signals, err = s.analyzeApp(readCtx, dir, det, nil)
+		cancel()
+		if err != nil {
 			return fail(err)
 		}
+		out.Inspection(describePlanBuild(dir, det, signals), analysis)
+	}
+	for _, finding := range mergeAnalysis(app, analysis) {
+		out.Line("· %s", finding.Text())
+	}
+	if err := app.Validate(); err != nil {
+		return fail(err)
+	}
+	if opts.DryRun {
 		return s.renderDryRun(app, imageRef, opts.Hosts)
 	}
+	out.Line("✓ %s will be built with %s", app.Name, det.Summary)
+
+	// Every app gets an isolated copy, including shared workspace packages.
+	// An automatic repair must not alter a sibling's reviewed build inputs.
+	workspace, err := os.MkdirTemp("", "donkey-build-workspace-*")
+	if err != nil {
+		return fail(err)
+	}
+	defer os.RemoveAll(workspace)
+	appRel, err := filepath.Rel(buildDir, dir)
+	if err != nil {
+		return fail(err)
+	}
+	if err := os.CopyFS(workspace, os.DirFS(buildDir)); err != nil {
+		return fail(fmt.Errorf("preparing the build workspace: %w", err))
+	}
+	buildDir, dir = workspace, filepath.Join(workspace, appRel)
 
 	// Platform precedence: --platform flag > donkey.yaml > the server's
 	// default (it knows what its nodes run).
@@ -505,67 +478,55 @@ func (s *Server) deployApp(ctx context.Context, out *lineStreamer, dir string, a
 		}
 		req.DockerfilePath = filepath.ToSlash(req.DockerfilePath)
 	}
-	var result *build.Result
-	if det.Strategy == config.BuildAI {
-		// donkey's own builder writes the Dockerfile, and gets more than one
-		// go at it — every failure is something the assistant can be shown.
-		req.Verify = s.verifySpec(app)
-		if opts.NoVerify {
-			req.Verify = nil
+	req.Verify = s.verifySpec(app)
+	if opts.NoVerify {
+		req.Verify = nil
+	}
+	// Runtime-only values cannot be recreated faithfully inside BuildKit.
+	// The rollout remains mandatory even when this preliminary check is skipped.
+	if stored, e := s.rt.GetEnv(ctx, space, app.Name); e != nil || len(stored) > 0 {
+		req.Verify = nil
+	}
+	var release func(*build.Result) error
+	if !opts.BuildOnly {
+		release = func(result *build.Result) error {
+			return s.rt.Deploy(ctx, runtime.DeploySpec{App: app, Space: space, ImageRef: result.ImageRef,
+				Decisions: decisionsJSON(app), NoWait: opts.NoWait, Hosts: opts.Hosts}, out)
 		}
-		if req.Verify == nil && s.cfg.Build.VerifyStartup() {
-			out.Line("· Startup will be checked during deployment, with the app's connections available.")
-		}
-		outcome, aerr := s.buildGenerated(ctx, out, builder, dir, app, req)
-		if aerr == nil {
-			result, err = outcome.Result, nil
-			if outcome.Attempts > 1 {
-				out.Line("· It took %d tries to get an image that starts.", outcome.Attempts)
-			}
-			if outcome.NeverListened {
-				out.Line("· Careful: the image starts, but it never listened on port %d while donkey watched it. If it listens somewhere else, set `port:` in donkey.yaml.", app.Port)
-			}
-			// The Dockerfile is the durable part of this: kept next to the
-			// app, the next deploy is a plain Dockerfile build with no model
-			// in the way.
-			out.Line("· Save this as %s to keep every later build identical:", detect.AIDockerfilePath)
-			for _, line := range strings.Split(strings.TrimRight(outcome.Dockerfile, "\n"), "\n") {
-				out.Line("    %s", line)
-			}
-			out.Update(DeployUpdate{Dockerfile: outcome.Dockerfile})
-		} else {
-			err = aerr
-		}
-	} else {
-		// The recipe goes into the build record either way; for an app that
-		// brings its own file this is the only place it is read whole.
-		if content := readDockerfile(dir, det.DockerfilePath); content != "" {
-			out.Update(DeployUpdate{Dockerfile: content})
-		}
-		result, err = builder.Build(ctx, req)
+	}
+	outcome, err := s.buildGenerated(ctx, out, builder, dir, app, req, release)
+	res := DeployResult{App: app.Name, Space: space}
+	if outcome != nil && outcome.Result != nil {
+		res.ImageRef = outcome.Result.ImageRef
 	}
 	if err != nil {
-		res := DeployResult{App: app.Name, Space: space, Error: err.Error()}
-		if logs, rerr := os.ReadFile(logFile.Name()); rerr == nil {
-			s.diagnoseWith(ctx, &res, dir, space, app.Name, "build", tailBytes(logs, 15*1024), nil)
+		res.Error = err.Error()
+		var rollout *runtime.RolloutError
+		if errors.As(err, &rollout) {
+			s.diagnoseWith(ctx, &res, buildDir, space, app.Name, "rollout", rollout.Evidence.Logs, rollout.Evidence.Events)
+		} else if logs, e := os.ReadFile(logFile.Name()); e == nil {
+			s.diagnoseWith(ctx, &res, buildDir, space, app.Name, "build", tailBytes(logs, 15*1024), nil)
 		}
 		return res
 	}
-	out.Line("✓ Image ready: %s", result.ImageRef)
-
-	if opts.BuildOnly {
-		return DeployResult{OK: true, App: app.Name, Space: space, ImageRef: result.ImageRef}
+	res.OK = true
+	if !opts.BuildOnly {
+		res.URL = s.cfg.AppURL(space, app)
 	}
-
-	out.Update(DeployUpdate{Stage: "releasing"})
-	if err := merge(); err != nil {
-		// The image is already pushed — hand its reference back so a
-		// `--no-build --tag` retry doesn't have to rebuild.
-		res := fail(err)
-		res.ImageRef = result.ImageRef
-		return res
+	if outcome.Attempts > 1 {
+		out.Line("✓ Completed after %d attempts.", outcome.Attempts)
 	}
-	return s.applyAndWait(ctx, out, app, dir, result.ImageRef, opts.NoWait, opts.Hosts)
+	if det.Strategy != config.BuildDockerfile || outcome.Attempts > 1 {
+		// CLI clients consume text progress; structured updates also retain
+		// these artifacts for the console and release history.
+		out.Line("· Build recipe — save as %s:\n%s", detect.AIDockerfilePath, outcome.Dockerfile)
+		out.Line("· Build exclusions — save as %s.dockerignore:\n%s", detect.AIDockerfilePath, outcome.Dockerignore)
+		for _, change := range outcome.Changes {
+			out.Line("· Source repair in the build copy — %s:\n%s", change.Path, change.Diff)
+		}
+	}
+	return res
+
 }
 
 func registryMirrorSummary(mirrors map[string]string) string {
@@ -769,7 +730,7 @@ func decisionsJSON(app *config.AppConfig) string {
 // never applied: the server computes the diff, the user decides. root is the
 // server's own temp copy of the app, never the user's working tree.
 func (s *Server) diagnoseWith(ctx context.Context, res *DeployResult, root, space, app, stage, logs string, events []string) {
-	dctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	dctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	proposal, aerr := s.assistant.DiagnoseFailure(dctx, &ai.FailureContext{
 		Stage:        stage,

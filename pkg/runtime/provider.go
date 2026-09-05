@@ -381,11 +381,8 @@ const (
 	MetaDecisions = "donkey.local/decisions"
 )
 
-// File-browser limits, shared by every provider.
-var (
-	MaxUploadBytes int64 = 200 << 20
-	MaxListEntries       = 2000
-)
+// File-browser page size, shared by every provider.
+var MaxListEntries = 2000
 
 // File-browser errors, shared so handlers can map them to honest statuses.
 var (
@@ -395,5 +392,4 @@ var (
 	ErrNotFound    = errors.New("there is nothing at that path on the disk")
 	ErrNotAFile    = errors.New("that is a folder, not a file")
 	ErrNotAFolder  = errors.New("that is a file, not a folder")
-	ErrTooLarge    = errors.New("that file is too large to upload")
 )

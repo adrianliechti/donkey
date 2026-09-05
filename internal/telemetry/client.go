@@ -11,7 +11,6 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
-	"time"
 )
 
 type Client struct {
@@ -24,7 +23,7 @@ func NewClient(baseURL string, key []byte) *Client {
 	return &Client{
 		baseURL: strings.TrimSuffix(baseURL, "/"),
 		token:   QueryToken(key),
-		http:    &http.Client{Timeout: 10 * time.Second},
+		http:    &http.Client{},
 	}
 }
 
@@ -224,7 +223,7 @@ func (c *Client) buildRecord(ctx context.Context, query url.Values) (json.RawMes
 	if response.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("telemetry service returned %s", response.Status)
 	}
-	record, err := io.ReadAll(io.LimitReader(response.Body, maxBuildRecordBytes+1))
+	record, err := io.ReadAll(response.Body)
 	if err != nil {
 		return nil, err
 	}

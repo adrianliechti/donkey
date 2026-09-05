@@ -25,6 +25,7 @@ func TestSummarizeCapsAndDenylist(t *testing.T) {
 	write("server.key", "PRIVATE KEY")
 	write("node_modules/dep/index.js", "junk")
 	write("src/index.js", "console.log('hi')")
+	write("very/deep/workspace/packages/backend/service/package.json", `{"name":"deep-app"}`)
 
 	sum, err := Summarize(dir)
 	if err != nil {
@@ -44,6 +45,9 @@ func TestSummarizeCapsAndDenylist(t *testing.T) {
 	}
 	if !strings.Contains(rendered, "console.log('hi')") {
 		t.Error("entrypoint source (src/index.js) should be included — ports live there")
+	}
+	if !strings.Contains(rendered, `{"name":"deep-app"}`) {
+		t.Error("deeply nested manifests should be included")
 	}
 }
 

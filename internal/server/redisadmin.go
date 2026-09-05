@@ -43,9 +43,12 @@ func (s *Server) redisConnect(ctx context.Context, r *http.Request) (*redis.Clie
 	}
 	// One short-lived client per browser request; credentials never reach the browser.
 	options.ContextTimeoutEnabled = true
-	options.DialTimeout, options.ReadTimeout, options.WriteTimeout = redisTimeout, redisTimeout, redisTimeout
+	options.DialTimeout = redisTimeout
+	options.ReadTimeout, options.WriteTimeout = -1, -1
 	options.MaxRetries = -1
-	return redis.NewClient(options), nil
+	client := redis.NewClient(options)
+	context.AfterFunc(ctx, func() { _ = client.Close() })
+	return client, nil
 }
 
 func redisKeyID(r *http.Request) (string, error) {
@@ -60,7 +63,7 @@ func redisKeyID(r *http.Request) (string, error) {
 }
 
 func (s *Server) handleRedisKeys(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), redisTimeout)
+	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 	cursor := uint64(0)
 	if raw := r.URL.Query().Get("cursor"); raw != "" {
@@ -172,7 +175,7 @@ func (s *Server) handleRedisValue(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), redisTimeout)
+	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 	client, err := s.redisConnect(ctx, r)
 	if err != nil {
@@ -210,7 +213,7 @@ func (s *Server) handleRedisSave(w http.ResponseWriter, r *http.Request) {
 		Previous string `json:"previous"`
 		TTL      *int64 `json:"ttl"`
 	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<20)).Decode(&input); err != nil {
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 		writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid key data"))
 		return
 	}
@@ -227,7 +230,7 @@ func (s *Server) handleRedisSave(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), redisTimeout)
+	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 	client, err := s.redisConnect(ctx, r)
 	if err != nil {
@@ -271,7 +274,7 @@ func (s *Server) handleRedisDelete(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), redisTimeout)
+	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 	client, err := s.redisConnect(ctx, r)
 	if err != nil {

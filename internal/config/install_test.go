@@ -130,7 +130,7 @@ func TestInstallBuildValidate(t *testing.T) {
 		{"empty", InstallBuild{}, false},
 		{"negative attempts", InstallBuild{BuildSettings: BuildSettings{Attempts: -1}}, true},
 		{"negative verify seconds", InstallBuild{BuildSettings: BuildSettings{VerifySeconds: -1}}, true},
-		{"instructions too long", InstallBuild{BuildSettings: BuildSettings{Instructions: strings.Repeat("x", MaxBuilderInstructionsBytes+1)}}, true},
+		{"long instructions", InstallBuild{BuildSettings: BuildSettings{Instructions: string(make([]byte, 256<<10))}}, false},
 		{"mirror with no host", InstallBuild{RegistryMirrors: map[string]string{"": "https://mirror"}}, true},
 		{"mirror with no address", InstallBuild{RegistryMirrors: map[string]string{"docker.io": ""}}, true},
 		{"source repository path", InstallBuild{RegistryMirrors: map[string]string{"docker.io/library": "mirror.example.com/docker"}}, true},

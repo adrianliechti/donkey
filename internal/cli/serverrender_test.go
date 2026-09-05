@@ -68,7 +68,7 @@ func TestKubernetesRenderOmitsEverySecretValue(t *testing.T) {
 			Issuer: "https://id.example.com", ClientID: "donkey", ClientSecret: "oidc-secret-must-not-render",
 		},
 		AI: config.InstallAI{
-			BaseURL: "https://api.openai.com/v1", Model: "gpt-5.5", APIKey: "openai-key-must-not-render",
+			BaseURL: "https://api.openai.com/v1", Model: "gpt-5.6-sol", APIKey: "openai-key-must-not-render",
 		},
 		Build: config.InstallBuild{
 			BuildSettings: config.BuildSettings{
@@ -162,7 +162,7 @@ func TestDockerRenderMatchesRuntimeTopologyWithoutSecrets(t *testing.T) {
 			Issuer: "https://id.example.com", ClientID: "donkey", ClientSecret: "docker-oidc-secret-must-not-render",
 		},
 		AI: config.InstallAI{
-			BaseURL: "https://api.openai.com/v1", Model: "gpt-5.5", APIKey: "docker-openai-key-must-not-render",
+			BaseURL: "https://api.openai.com/v1", Model: "gpt-5.6-sol", APIKey: "docker-openai-key-must-not-render",
 		},
 		Build: config.InstallBuild{
 			BuildSettings:   config.BuildSettings{Env: map[string]string{"TOKEN": "docker-build-secret-must-not-render"}},

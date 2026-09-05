@@ -20,7 +20,6 @@ type RepoSummary struct {
 
 const (
 	maxTreeEntries = 600
-	maxTreeDepth   = 5
 	maxFileBytes   = 8 * 1024
 	// The summary is the model's first look at the app, and it can read
 	// anything it wants afterwards with its own tools — but what it never sees
@@ -186,9 +185,6 @@ func Summarize(dir string) (*RepoSummary, error) {
 		}
 		if d.IsDir() {
 			if skipDirs[d.Name()] {
-				return filepath.SkipDir
-			}
-			if strings.Count(rel, string(filepath.Separator)) >= maxTreeDepth {
 				return filepath.SkipDir
 			}
 			return nil

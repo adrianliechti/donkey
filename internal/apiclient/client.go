@@ -2,7 +2,6 @@
 package apiclient
 
 import (
-	"bufio"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -293,17 +292,19 @@ func (c *Client) Deploy(ctx context.Context, contextTar io.Reader, opts DeployOp
 		return nil, apiError(resp)
 	}
 
-	sc := bufio.NewScanner(resp.Body)
-	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	decoder := json.NewDecoder(resp.Body)
 	var result *server.DeployResult
-	for sc.Scan() {
+	for {
 		var msg struct {
 			Line     string               `json:"line"`
 			Progress string               `json:"progress"`
 			Result   *server.DeployResult `json:"result"`
 		}
-		if err := json.Unmarshal(sc.Bytes(), &msg); err != nil {
-			continue
+		if err := decoder.Decode(&msg); err != nil {
+			if err == io.EOF {
+				break
+			}
+			return nil, fmt.Errorf("the connection to the server broke mid-deploy: %w", err)
 		}
 		switch {
 		case msg.Result != nil:
@@ -313,9 +314,6 @@ func (c *Client) Deploy(ctx context.Context, contextTar io.Reader, opts DeployOp
 		case msg.Progress != "":
 			onProgress(msg.Progress)
 		}
-	}
-	if err := sc.Err(); err != nil {
-		return nil, fmt.Errorf("the connection to the server broke mid-deploy: %w", err)
 	}
 	if result == nil {
 		return nil, fmt.Errorf("the server didn't finish the deploy (no result received)")

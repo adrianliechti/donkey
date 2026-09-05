@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
@@ -71,7 +72,7 @@ func TestBuildRecordsVersionRetainAndPurge(t *testing.T) {
 	}
 }
 
-func TestBuildRecordsRefuseBadScopeAndUnboundedRecords(t *testing.T) {
+func TestBuildRecordsValidateScopeAndKeepLargeRecords(t *testing.T) {
 	store, err := OpenStore(":memory:", DefaultRetentionDays)
 	if err != nil {
 		t.Fatal(err)
@@ -84,8 +85,12 @@ func TestBuildRecordsRefuseBadScopeAndUnboundedRecords(t *testing.T) {
 	if _, err := store.InsertBuild(ctx, "acme", "web", "", true, "", time.Now()); err == nil {
 		t.Fatal("an empty record must be refused")
 	}
-	huge := make([]byte, maxBuildRecordBytes+1)
-	if _, err := store.InsertBuild(ctx, "acme", "web", "", true, string(huge), time.Now()); err == nil {
-		t.Fatal("an unbounded record must be refused")
+	huge := fmt.Sprintf(`{"buildLog":%q}`, strings.Repeat("large build record ", 600000))
+	sequence, err := store.InsertBuild(ctx, "acme", "web", "", true, huge, time.Now())
+	if err != nil {
+		t.Fatalf("large record rejected: %v", err)
+	}
+	if got, err := store.Build(ctx, "acme", "web", sequence); err != nil || got != huge {
+		t.Fatalf("large record changed when read back: %v", err)
 	}
 }

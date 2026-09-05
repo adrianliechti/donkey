@@ -28,12 +28,6 @@ import (
 	"github.com/adrianliechti/donkey/pkg/runtime"
 )
 
-const s3Timeout = 30 * time.Second
-
-// s3MaxUpload caps one upload — big enough for real assets, small enough
-// that a stray request can't fill the server's disk buffers or the store.
-const s3MaxUpload = 512 << 20
-
 // s3Connect builds a client for the space service the request names, from
 // the binding's own values — the browser sees exactly the store the apps
 // see.
@@ -87,7 +81,7 @@ func s3Status(err error) int {
 }
 
 func (s *Server) handleS3Buckets(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), s3Timeout)
+	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 	client, err := s.s3Connect(ctx, r)
 	if err != nil {
@@ -111,7 +105,7 @@ func (s *Server) handleS3Buckets(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleS3CreateBucket(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), s3Timeout)
+	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 	var req struct {
 		Name string `json:"name"`
@@ -145,7 +139,7 @@ func (s *Server) handleS3CreateBucket(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleS3DeleteBucket(w http.ResponseWriter, r *http.Request) {
 	// Sweeping a full bucket is many requests, not one — it gets time the
 	// metadata calls don't need.
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
+	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 	bucket := r.PathValue("bucket")
 	if err := s3utils.CheckValidBucketName(bucket); err != nil {
@@ -216,7 +210,7 @@ func s3EmptyBucket(ctx context.Context, client *minio.Client, bucket string) err
 }
 
 func (s *Server) handleS3Objects(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), s3Timeout)
+	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 	q := r.URL.Query()
 	bucket := r.PathValue("bucket")
@@ -279,9 +273,6 @@ func (s *Server) handleS3Upload(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, s3Status(err), err)
 		return
 	}
-	// The cap sits on the raw body, so an oversized upload fails while
-	// streaming instead of after filling anything up.
-	r.Body = http.MaxBytesReader(w, r.Body, s3MaxUpload)
 	mr, err := r.MultipartReader()
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
@@ -315,11 +306,6 @@ func (s *Server) handleS3Upload(w http.ResponseWriter, r *http.Request) {
 			PartSize:    16 << 20,
 		})
 		if err != nil {
-			var tooLarge *http.MaxBytesError
-			if errors.As(err, &tooLarge) {
-				writeErr(w, http.StatusRequestEntityTooLarge, fmt.Errorf("that file is bigger than the console's %dMB upload limit", s3MaxUpload>>20))
-				return
-			}
 			writeErr(w, s3Status(err), err)
 			return
 		}
@@ -370,7 +356,7 @@ func (s *Server) handleS3Download(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleS3DeleteObject(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), s3Timeout)
+	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 	q := r.URL.Query()
 	bucket, key := r.PathValue("bucket"), q.Get("key")

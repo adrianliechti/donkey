@@ -14,15 +14,6 @@ import (
 	"github.com/adrianliechti/donkey/internal/config"
 )
 
-const (
-	maxContextBytes = 512 << 20 // the largest build context donkey accepts
-	// maxExtractBytes caps the *unpacked* size: gzip expands up to ~1000x, so
-	// limiting the compressed stream alone would let one upload fill the
-	// control plane's disk.
-	maxExtractBytes = int64(2) << 30
-	maxFileCount    = 50000
-)
-
 // extractContext unpacks an uploaded build context into dir. The CLI sends
 // tar.gz; the browser sends zip — the format is decided by the bytes, not by
 // a header a client could get wrong. It reports what it left out: a file the
@@ -34,12 +25,9 @@ func extractContext(r io.Reader, dir string) ([]string, error) {
 	}
 	defer os.Remove(tmp.Name())
 	defer tmp.Close()
-	size, err := io.Copy(tmp, io.LimitReader(r, maxContextBytes+1))
+	size, err := io.Copy(tmp, r)
 	if err != nil {
 		return nil, fmt.Errorf("reading the upload: %w", err)
-	}
-	if size > maxContextBytes {
-		return nil, fmt.Errorf("the upload is too large (over %d MB)", maxContextBytes>>20)
 	}
 	var magic [4]byte
 	if _, err := tmp.ReadAt(magic[:], 0); err != nil {
@@ -104,8 +92,6 @@ func untarContext(r io.Reader, dir string, skipped *skipList) error {
 	}
 	defer gz.Close()
 	tr := tar.NewReader(gz)
-	files := 0
-	remaining := maxExtractBytes
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
@@ -113,10 +99,6 @@ func untarContext(r io.Reader, dir string, skipped *skipList) error {
 		}
 		if err != nil {
 			return fmt.Errorf("reading the build context: %w", err)
-		}
-		files++
-		if files > maxFileCount {
-			return fmt.Errorf("the build context has too many files")
 		}
 		name, ok := safeRelPath(hdr.Name)
 		if !ok {
@@ -140,11 +122,10 @@ func untarContext(r io.Reader, dir string, skipped *skipList) error {
 			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 				return err
 			}
-			n, err := writeExtracted(target, tr, os.FileMode(hdr.Mode), remaining)
+			err := writeExtracted(target, tr, os.FileMode(hdr.Mode))
 			if err != nil {
 				return err
 			}
-			remaining -= n
 		default:
 			// Symlinks and specials are dropped: nothing donkey builds needs
 			// them in the uploaded context, and they are traversal vectors.
@@ -160,13 +141,7 @@ func unzipContext(f *os.File, size int64, dir string, skipped *skipList) error {
 	if err != nil {
 		return fmt.Errorf("the upload is not a valid zip: %w", err)
 	}
-	files := 0
-	remaining := maxExtractBytes
 	for _, entry := range zr.File {
-		files++
-		if files > maxFileCount {
-			return fmt.Errorf("the build context has too many files")
-		}
 		name, ok := safeRelPath(entry.Name)
 		if !ok {
 			return fmt.Errorf("the build context contains an invalid path %q", entry.Name)
@@ -200,12 +175,11 @@ func unzipContext(f *os.File, size int64, dir string, skipped *skipList) error {
 		if err != nil {
 			return fmt.Errorf("reading %s from the zip: %w", entry.Name, err)
 		}
-		n, err := writeExtracted(target, rc, entry.FileInfo().Mode(), remaining)
+		err = writeExtracted(target, rc, entry.FileInfo().Mode())
 		rc.Close()
 		if err != nil {
 			return err
 		}
-		remaining -= n
 	}
 	return nil
 }
@@ -257,10 +231,6 @@ func stripSingleRoot(dir string) error {
 	return os.Remove(root)
 }
 
-// maxRootSearchDepth bounds how deep donkey looks for an app's donkey.yaml
-// inside an upload before giving up.
-const maxRootSearchDepth = 3
-
 // contextRoot finds the folder that actually holds the app — an upload is not
 // always rooted at it. An explicit path wins; otherwise a single donkey.yaml
 // decides, and several make it the user's call. Returns the folder and its
@@ -280,7 +250,7 @@ func contextRoot(dir, explicit string) (string, string, error) {
 	if _, err := os.Stat(filepath.Join(dir, config.AppFileName)); err == nil {
 		return dir, "", nil
 	}
-	found := findAppConfigs(dir, maxRootSearchDepth)
+	found := findAppConfigs(dir)
 	switch len(found) {
 	case 0:
 		// Nothing to go on — build the upload as given (a name and port from
@@ -306,12 +276,12 @@ func contextRoot(dir, explicit string) (string, string, error) {
 	}
 }
 
-// findAppConfigs lists the folders holding a donkey.yaml, breadth-first, up
-// to depth levels below dir (dir itself excluded).
-func findAppConfigs(dir string, depth int) []string {
+// findAppConfigs finds the nearest folders holding a donkey.yaml, regardless
+// of their depth within the upload (dir itself excluded).
+func findAppConfigs(dir string) []string {
 	var found []string
 	level := []string{dir}
-	for d := 0; d < depth && len(found) == 0; d++ {
+	for len(level) > 0 && len(found) == 0 {
 		var next []string
 		for _, parent := range level {
 			entries, err := os.ReadDir(parent)
@@ -349,25 +319,18 @@ func safeRelPath(name string) (string, bool) {
 	return clean, true
 }
 
-// writeExtracted copies one entry, reading one byte past the remaining
-// budget so an oversized context is reported instead of silently truncated —
-// a half-written source file would fail the build with a nonsense error.
-func writeExtracted(target string, r io.Reader, mode os.FileMode, remaining int64) (int64, error) {
+// writeExtracted streams an entry to disk without a size ceiling. Archive
+// readers report truncation and checksum failures instead of accepting a
+// partial source file. Path confinement is enforced before opening the file.
+func writeExtracted(target string, r io.Reader, mode os.FileMode) error {
 	f, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode&0o777|0o400)
 	if err != nil {
-		return 0, err
+		return err
 	}
-	n, err := io.Copy(f, io.LimitReader(r, remaining+1))
-	f.Close()
+	_, err = io.Copy(f, r)
+	closeErr := f.Close()
 	if err != nil {
-		return n, err
+		return err
 	}
-	if n > remaining {
-		return n, errTooLarge()
-	}
-	return n, nil
-}
-
-func errTooLarge() error {
-	return fmt.Errorf("the build context is too large once unpacked (over %d GB)", maxExtractBytes>>30)
+	return closeErr
 }

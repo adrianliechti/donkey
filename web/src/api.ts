@@ -365,6 +365,11 @@ export function planEdit(plan: Plan): PlanEdit {
 
 export type DeployStage = 'detecting' | 'building' | 'releasing'
 
+export interface SourceChange {
+  path: string
+  diff: string
+}
+
 /** Structured facts that change while a release is running. The regular
  * log remains the complete human-readable account. */
 export interface DeployUpdate {
@@ -373,6 +378,8 @@ export interface DeployUpdate {
   stage?: DeployStage
   baseImages?: string[]
   dockerfile?: string
+  dockerignore?: string
+  changes?: SourceChange[]
 }
 
 export interface ProjectPlan {
@@ -393,6 +400,8 @@ export interface AppRelease {
   lines: string[]
   buildLog?: string
   dockerfile?: string
+  dockerignore?: string
+  changes?: SourceChange[]
   result: DeployResult
   truncated?: boolean
 }

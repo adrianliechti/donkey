@@ -122,7 +122,7 @@ func (s *Server) handleProjectPlan(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), analysisDeadline)
+	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 	reading, err := reader.ReadProject(ctx, dir)
 	if err != nil {
@@ -310,7 +310,7 @@ func (s *Server) handleProjectUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var edits []PlanEdit
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&edits); err != nil {
+	if err := json.NewDecoder(r.Body).Decode(&edits); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}

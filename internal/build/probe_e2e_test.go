@@ -7,10 +7,12 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/containerd/platforms"
 	bkclient "github.com/moby/buildkit/client"
 	"github.com/moby/buildkit/client/llb"
+	"github.com/moby/buildkit/exporter/containerimage/exptypes"
 	gateway "github.com/moby/buildkit/frontend/gateway/client"
 	"github.com/moby/buildkit/util/progress/progressui"
 	ocispecs "github.com/opencontainers/image-spec/specs-go/v1"
@@ -40,30 +42,66 @@ func TestProbeOnGatewayResult(t *testing.T) {
 	// the failure mode this test exists to keep out.
 	for name, tc := range map[string]struct {
 		cmd     string
+		spec    VerifySpec
 		wantErr bool
 	}{
 		"an app that listens passes": {
-			`CMD ["node", "-e", "require('http').createServer((_,r)=>r.end('ok')).listen(8080)"]`, false,
+			cmd: `CMD ["node", "-e", "require('http').createServer((_,r)=>r.end('ok')).listen(8080)"]`,
 		},
 		"an app that exits fails": {
-			`CMD ["node", "-e", "process.exit(3)"]`, true,
+			cmd: `CMD ["node", "-e", "process.exit(3)"]`, wantErr: true,
+		},
+		"a live process without a listener fails": {
+			cmd: `CMD ["node", "-e", "setInterval(()=>{},1000)"]`, wantErr: true,
+		},
+		"the wrong port fails": {
+			cmd: `CMD ["node", "-e", "require('http').createServer((_,r)=>r.end('ok')).listen(9090)"]`, wantErr: true,
+		},
+		"IPv4 loopback fails": {
+			cmd: `CMD ["node", "-e", "require('http').createServer((_,r)=>r.end('ok')).listen(8080,'127.0.0.1')"]`, wantErr: true,
+		},
+		"IPv6 loopback fails": {
+			cmd: `CMD ["node", "-e", "require('http').createServer((_,r)=>r.end('ok')).listen(8080,'::1')"]`, wantErr: true,
+		},
+		"an unhealthy HTTP listener fails": {
+			cmd:  `CMD ["node", "-e", "require('http').createServer((_,r)=>{r.statusCode=503;r.end('unavailable')}).listen(8080)"]`,
+			spec: VerifySpec{HealthcheckPath: "/healthz"}, wantErr: true,
+		},
+		"runtime command environment and health host are honored": {
+			cmd: `CMD ["node", "-e", "process.exit(3)"]`,
+			spec: VerifySpec{
+				Command: []string{"node", "-e", `require('http').createServer((q,r)=>{r.statusCode=q.url==='/healthz'&&q.headers.host==='app.example.test'&&process.env.MODE==='ready'?200:503;r.end('ok')}).listen(Number(process.env.PORT),'0.0.0.0')`},
+				Env:     map[string]string{"MODE": "ready", "PORT": "9090"}, Host: "app.example.test", HealthcheckPath: "/healthz",
+			},
+		},
+		"runtime storage masks image files": {
+			cmd:  "RUN echo image-only > /app/required.txt\n" + `CMD ["node", "-e", "require('fs').readFileSync('/app/required.txt');require('http').createServer((_,r)=>r.end('ok')).listen(8080)"]`,
+			spec: VerifySpec{StoragePaths: []string{"/app"}}, wantErr: true,
+		},
+		"nonroot app can write disposable storage": {
+			cmd:  "USER node\n" + `CMD ["node", "-e", "require('fs').writeFileSync('/data/note','ok');require('http').createServer((_,r)=>r.end('ok')).listen(8080)"]`,
+			spec: VerifySpec{StoragePaths: []string{"/data"}},
 		},
 	} {
-		t.Run(name, func(t *testing.T) { runProbe(t, addr, p, tc.cmd, tc.wantErr) })
+		t.Run(name, func(t *testing.T) { runProbe(t, addr, p, tc.cmd, tc.spec, tc.wantErr) })
 	}
 }
 
-func runProbe(t *testing.T, addr string, p ocispecs.Platform, cmd string, wantErr bool) {
+func runProbe(t *testing.T, addr string, p ocispecs.Platform, cmd string, spec VerifySpec, wantErr bool) {
 	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "Dockerfile"),
-		[]byte("FROM node:22-alpine\nWORKDIR /app\n"+cmd+"\n"), 0o644)
+	if err := os.WriteFile(filepath.Join(dir, "Dockerfile"),
+		[]byte("FROM node:22-alpine\nWORKDIR /app\n"+cmd+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	fs, err := fsutil.NewFS(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	c, err := bkclient.New(context.Background(), addr)
+	c, err := bkclient.New(ctx, addr)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,7 +113,8 @@ func runProbe(t *testing.T, addr string, p ocispecs.Platform, cmd string, wantEr
 	}()
 
 	opt := bkclient.SolveOpt{LocalMounts: map[string]fsutil.FS{"context": fs, "dockerfile": fs}}
-	_, err = c.Build(context.Background(), opt, "probe", func(ctx context.Context, gw gateway.Client) (*gateway.Result, error) {
+	verified := false
+	_, err = c.Build(ctx, opt, "probe", func(ctx context.Context, gw gateway.Client) (*gateway.Result, error) {
 		res, err := gw.Solve(ctx, gateway.SolveRequest{
 			Frontend:    "dockerfile.v0",
 			FrontendOpt: map[string]string{"filename": "Dockerfile", "platform": platforms.Format(p)},
@@ -87,7 +126,7 @@ func runProbe(t *testing.T, addr string, p ocispecs.Platform, cmd string, wantEr
 		if err != nil {
 			return nil, err
 		}
-		cfg, err := imageConfigOf(res.Metadata)
+		cfg, err := imageConfig(res.Metadata[exptypes.ExporterImageConfigKey])
 		if err != nil {
 			return nil, err
 		}
@@ -95,15 +134,20 @@ func runProbe(t *testing.T, addr string, p ocispecs.Platform, cmd string, wantEr
 		if err != nil {
 			return nil, err
 		}
-		def, err := verifyState(app, cfg, VerifySpec{Port: 8080, Seconds: 20, Platform: p}).Marshal(ctx, llb.Platform(p))
+		spec.Port, spec.Seconds, spec.Platform = 8080, 5, p
+		def, err := verifyState(app, cfg, spec).Marshal(ctx, llb.Platform(p))
 		if err != nil {
 			return nil, err
 		}
+		verified = true
 		if _, err := gw.Solve(ctx, gateway.SolveRequest{Definition: def.ToPB(), Evaluate: true}); err != nil {
 			return nil, err
 		}
 		return res, nil
 	}, ch)
+	if !verified {
+		t.Fatalf("the image could not be built; readiness was never checked: %v", err)
+	}
 	if wantErr && err == nil {
 		t.Fatal("an image that cannot start should have failed verification")
 	}

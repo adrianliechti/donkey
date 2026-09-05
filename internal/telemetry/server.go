@@ -23,8 +23,6 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-const maxIngestBody = 8 << 20
-
 type Config struct {
 	OTLPListen    string
 	APIListen     string
@@ -165,7 +163,7 @@ type buildEnvelope struct {
 
 func (s *Service) handlePutBuild(w http.ResponseWriter, r *http.Request) {
 	var envelope buildEnvelope
-	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxIngestBody))
+	decoder := json.NewDecoder(r.Body)
 	if err := decoder.Decode(&envelope); err != nil {
 		http.Error(w, "invalid build record payload", http.StatusBadRequest)
 		return
@@ -231,7 +229,7 @@ func (s *Service) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	if mediaType == "" {
 		mediaType = "application/x-protobuf"
 	}
-	body, err := ingestBody(w, r)
+	body, err := ingestBody(r)
 	if err != nil {
 		writeOTLPError(w, mediaType, http.StatusBadRequest, codepb.Code_INVALID_ARGUMENT, err.Error())
 		return
@@ -285,8 +283,8 @@ func (s *Service) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	writeOTLPResponse(w, mediaType, response)
 }
 
-func ingestBody(w http.ResponseWriter, r *http.Request) ([]byte, error) {
-	var reader io.Reader = http.MaxBytesReader(w, r.Body, maxIngestBody)
+func ingestBody(r *http.Request) ([]byte, error) {
+	var reader io.Reader = r.Body
 	if r.Header.Get("Content-Encoding") == "gzip" {
 		gz, err := gzip.NewReader(reader)
 		if err != nil {
@@ -297,12 +295,9 @@ func ingestBody(w http.ResponseWriter, r *http.Request) ([]byte, error) {
 	} else if encoding := r.Header.Get("Content-Encoding"); encoding != "" && encoding != "identity" {
 		return nil, fmt.Errorf("unsupported content encoding %q", encoding)
 	}
-	body, err := io.ReadAll(io.LimitReader(reader, maxIngestBody+1))
+	body, err := io.ReadAll(reader)
 	if err != nil {
 		return nil, err
-	}
-	if len(body) > maxIngestBody {
-		return nil, errors.New("telemetry payload is too large")
 	}
 	return body, nil
 }
@@ -353,7 +348,7 @@ func (s *Service) handleViews(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var batch ViewBatch
-	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxIngestBody))
+	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&batch); err != nil {
 		http.Error(w, "invalid view batch", http.StatusBadRequest)

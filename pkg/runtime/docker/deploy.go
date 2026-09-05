@@ -29,9 +29,12 @@ import (
 // effect.
 type runSpec struct {
 	// Image is the reference as the Docker daemon pulls it.
-	Image string   `json:"image"`
-	Port  int      `json:"port"`
-	Paths []string `json:"paths,omitempty"` // storage paths, each a folder of the one volume
+	Image       string   `json:"image"`
+	Port        int      `json:"port"`
+	Paths       []string `json:"paths,omitempty"` // storage paths, each a folder of the one volume
+	Command     []string `json:"command,omitempty"`
+	Healthcheck string   `json:"healthcheck,omitempty"`
+	Host        string   `json:"host,omitempty"`
 }
 
 func (r *Runtime) runRecord(space, app string) (*runSpec, error) {
@@ -50,7 +53,7 @@ func (r *Runtime) setRunRecord(space, app string, spec runSpec) error {
 // Deploy takes a built image live as a container. The same choreography as
 // on Kubernetes — storage, declared services, the app, its routes — with
 // Docker's vocabulary underneath.
-func (r *Runtime) Deploy(ctx context.Context, spec rt.DeploySpec, out rt.Progress) error {
+func (r *Runtime) Deploy(ctx context.Context, spec rt.DeploySpec, out rt.Progress) (deployErr error) {
 	app := spec.App
 	space := spec.Space
 
@@ -58,6 +61,25 @@ func (r *Runtime) Deploy(ctx context.Context, spec rt.DeploySpec, out rt.Progres
 	if err := r.ensureSpace(ctx, space); err != nil {
 		return err
 	}
+	recovery, err := r.prepareRecovery(ctx, space, app)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		cleanup, cancel := recoveryContext(ctx)
+		defer cancel()
+		if deployErr != nil {
+			if err := recovery.restore(cleanup); err != nil {
+				// Recovery failure must stop automatic retries, which could
+				// otherwise replace the only remaining copy of the original.
+				deployErr = fmt.Errorf("%v; restoring the previous app failed: %v", deployErr, err)
+			} else if recovery != nil && recovery.parked {
+				out.Line("· Restored the previous app container and configuration.")
+			}
+		} else if err := recovery.discard(cleanup); err != nil {
+			out.Line("· The app is ready; its stopped previous container could not be removed: %v", err)
+		}
+	}()
 
 	if !app.HasStorage() && r.HasData(ctx, space, app.Name) {
 		out.Line("· A disk from an earlier setup still exists (with its data). This deploy doesn't mount it — add its paths back under `storage:` in donkey.yaml to use it, or `donkey destroy` removes it.")
@@ -119,7 +141,8 @@ func (r *Runtime) Deploy(ctx context.Context, spec rt.DeploySpec, out rt.Progres
 		}
 	}
 
-	run := runSpec{Image: r.pullRef(spec.ImageRef), Port: app.Port}
+	run := runSpec{Image: r.pullRef(spec.ImageRef), Port: app.Port, Command: app.Command,
+		Healthcheck: app.Healthcheck.Path, Host: r.appHost(space, app)}
 	if app.HasStorage() {
 		run.Paths = app.Storage.Paths
 	}
@@ -130,9 +153,18 @@ func (r *Runtime) Deploy(ctx context.Context, spec rt.DeploySpec, out rt.Progres
 	if err := r.pullImage(ctx, run.Image); err != nil {
 		return err
 	}
+	if err := recovery.park(ctx); err != nil {
+		return err
+	}
 
 	if err := r.runApp(ctx, space, app.Name, run); err != nil {
 		return err
+	}
+	if !spec.NoWait {
+		out.Line("Waiting for the app to answer…")
+		if err := r.waitRunning(ctx, ctrName(space, app.Name), 4*time.Minute); err != nil {
+			return err
+		}
 	}
 
 	// The routing table: the app's own hostname, and the paths it answers
@@ -149,11 +181,7 @@ func (r *Runtime) Deploy(ctx context.Context, spec rt.DeploySpec, out rt.Progres
 		out.Line("· Login protection is in force.")
 	}
 
-	if spec.NoWait {
-		return nil
-	}
-	out.Line("Waiting for the app to become healthy…")
-	return r.waitRunning(ctx, ctrName(space, app.Name), 120*time.Second)
+	return nil
 }
 
 func optional(v string) *string {
@@ -475,18 +503,21 @@ func (r *Runtime) runApp(ctx context.Context, space, app string, spec runSpec) e
 	labels := appLabels(space, app, roleWorkload)
 	labels[labelImage] = spec.Image
 	labels[labelPort] = strconv.Itoa(spec.Port)
+	labels[labelHealthPath] = spec.Healthcheck
+	labels[labelHost] = spec.Host
 
 	volumes, err := r.appMounts(ctx, space, app, spec)
 	if err != nil {
 		return err
 	}
 	return r.replaceContainer(ctx, ctrName(space, app), runConfig{
-		Image:   spec.Image,
-		Env:     env,
-		Labels:  labels,
-		Network: netName(space),
-		Alias:   app,
-		Volumes: volumes,
+		Image:      spec.Image,
+		Env:        env,
+		Labels:     labels,
+		Network:    netName(space),
+		Alias:      app,
+		Volumes:    volumes,
+		Entrypoint: spec.Command,
 	})
 }
 
@@ -542,6 +573,10 @@ func (r *Runtime) replaceContainer(ctx context.Context, name string, cfg runConf
 		containerCfg.Cmd = nil
 	}
 	hostCfg := &container.HostConfig{Mounts: mounts}
+	if cfg.Labels[labelRole] == roleWorkload {
+		hostCfg.SecurityOpt = []string{"no-new-privileges:true"}
+		hostCfg.CapDrop = []string{"NET_RAW"}
+	}
 	if !cfg.OneShot {
 		hostCfg.RestartPolicy = container.RestartPolicy{Name: container.RestartPolicyUnlessStopped}
 	}

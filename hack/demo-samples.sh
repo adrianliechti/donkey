@@ -10,8 +10,8 @@
 # That distinction died with the detector: every sample now takes the same
 # path — donkey reads it and writes it a Dockerfile — so a Tcl app is not
 # categorically harder than a Flask one, and there is nothing left to excuse.
-# Apps that are MEANT to fail live in testdata/broken/ and belong to
-# demo-broken.sh, which checks that donkey explained each one.
+# Compatibility repair cases live in testdata/broken/ and belong to
+# demo-broken.sh, which also requires successful deployment.
 #
 # Assumes donkey is installed and you are logged in (task install:kind or
 # task install:docker). Expect this to take a while: every app is built, run

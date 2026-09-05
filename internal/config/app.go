@@ -261,7 +261,6 @@ const (
 	DefaultSpace      = "default"
 	defaultCPURequest = "100m"
 	defaultMemRequest = "128Mi"
-	defaultMemLimit   = "512Mi"
 )
 
 // nameRE follows RFC 1123 DNS labels: app and space names become part of
@@ -326,7 +325,6 @@ func (c *AppConfig) ApplyDefaults() {
 	if c.Resources == nil {
 		c.Resources = &Resources{
 			Requests: map[string]string{"cpu": defaultCPURequest, "memory": defaultMemRequest},
-			Limits:   map[string]string{"memory": defaultMemLimit},
 		}
 	}
 	for i := range c.Addons {
@@ -527,8 +525,7 @@ func (c *AppConfig) Render() ([]byte, error) {
 		len(out.Resources.Requests) == 2 &&
 		out.Resources.Requests["cpu"] == defaultCPURequest &&
 		out.Resources.Requests["memory"] == defaultMemRequest &&
-		len(out.Resources.Limits) == 1 &&
-		out.Resources.Limits["memory"] == defaultMemLimit {
+		len(out.Resources.Limits) == 0 {
 		out.Resources = nil
 	}
 	out.Addons = make([]AddonConfig, len(c.Addons))

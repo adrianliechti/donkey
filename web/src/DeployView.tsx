@@ -41,7 +41,6 @@ function sensitiveFile(name: string): boolean {
   return SSH_KEYS.has(lower) || SSH_KEYS.has(lower.replace(/\.pub$/, ''))
 }
 
-const MAX_UPLOAD = 256 * 1024 * 1024
 
 interface Collected {
   path: string
@@ -139,15 +138,8 @@ async function uploadFromDrop(
   if (collected.length === 0) {
     throw new Error('Nothing usable was dropped — drop a project folder or a .zip of one.')
   }
-  let total = 0
   buffers.clear()
   for (const c of collected) {
-    total += c.file.size
-    if (total > MAX_UPLOAD) {
-      throw new Error(
-        'That folder is over 256 MB — deploy it with the CLI instead (donkey deploy).',
-      )
-    }
     buffers.set(c.path, new Uint8Array(await c.file.arrayBuffer()))
   }
   const label =
@@ -265,7 +257,7 @@ export function DeployView({
           if (event.app) current = event.app
           update((prev) => ({
             ...prev,
-            update: { ...prev.update, ...event },
+            update: { ...prev.update, ...event, changes: [...(prev.update.changes ?? []), ...(event.changes ?? [])] },
             result: event.result ?? prev.result,
           }))
         },

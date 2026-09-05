@@ -208,6 +208,17 @@ func handler(cfg Config, current credentials, transport http.RoundTripper) (http
 			if !strings.Contains(contentType, "json") && !strings.Contains(contentType, "text") && !strings.Contains(contentType, "html") {
 				return nil
 			}
+			if request.route.prefix == "/npm/" && strings.Contains(contentType, "json") {
+				// Large npm packuments (Next.js in particular) contain thousands
+				// of versions. A decoded map plus the input and output buffers
+				// can exhaust the proxy while a perfectly valid app is building.
+				response.Body = streamNPMMetadata(response.Body, request)
+				response.ContentLength = -1
+				response.Header.Del("Content-Length")
+				response.Header.Del("Content-MD5")
+				response.Header.Del("ETag")
+				return nil
+			}
 			body, err := io.ReadAll(response.Body)
 			if err != nil {
 				return err

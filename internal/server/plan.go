@@ -325,7 +325,7 @@ func (s *Server) handlePlan(w http.ResponseWriter, r *http.Request) {
 	}
 	// The assistant is the slow part; it gets the same budget a deploy gives
 	// it, and no more.
-	ctx, cancel := context.WithTimeout(r.Context(), analysisDeadline)
+	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 
 	sp, err := s.readApp(ctx, dir, app, planInput{
@@ -352,7 +352,7 @@ func (s *Server) handlePlanUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var edit PlanEdit
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&edit); err != nil {
+	if err := json.NewDecoder(r.Body).Decode(&edit); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}

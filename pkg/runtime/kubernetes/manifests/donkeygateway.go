@@ -133,9 +133,6 @@ func donkeyGatewayDeployment(in SystemInput) *appsv1.Deployment {
 					corev1.ResourceCPU:    resource.MustParse("50m"),
 					corev1.ResourceMemory: resource.MustParse("64Mi"),
 				},
-				Limits: corev1.ResourceList{
-					corev1.ResourceMemory: resource.MustParse("256Mi"),
-				},
 			},
 			SecurityContext: systemSecurityContext(),
 			ReadinessProbe: &corev1.Probe{ProbeHandler: corev1.ProbeHandler{

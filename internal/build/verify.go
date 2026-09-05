@@ -10,19 +10,10 @@ import (
 	ocispecs "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
-// Startup verification runs a freshly built image before publishing it. It
-// tests one thing: that the app does not fall over on startup — the failure a
-// generated Dockerfile actually produces, and the one nobody can diagnose
-// from a build log, because the build succeeded.
-//
-// It does NOT insist the app serve traffic: an app whose first act is to open
-// its database would fail that in a sandbox with no database, and be "fixed"
-// by a model with nothing to fix. A process still running when the window
-// closes passes; only one that exits fails.
-//
-// VerifyNeverListened is the outcome that is neither: up, but never opened its
-// port. Let through — a sandbox is not the cluster — but said out loud,
-// because the usual cause is an app listening somewhere else.
+// Startup verification runs the reviewed command and non-secret environment,
+// with disposable mounts matching the runtime's storage layout. The app must
+// open a non-loopback socket (and answer its health route, when configured).
+// Apps requiring runtime-only services or secrets are checked at rollout.
 const VerifyNeverListened = "[verify] the app never listened on the port donkey will deploy it with"
 
 const (
@@ -44,10 +35,13 @@ const (
 type VerifySpec struct {
 	Port    int
 	Seconds int
-	// Env is only what donkey sets itself: the app's own secrets are not
-	// needed to find out whether it starts, and a sandbox is not where they
-	// belong.
-	Env map[string]string
+	// Env contains only non-secret runtime settings. Apps needing secrets or
+	// live services are checked by the runtime instead of this preliminary run.
+	Env             map[string]string
+	Command         []string
+	StoragePaths    []string
+	HealthcheckPath string
+	Host            string
 	// Platform must be explicit: llb.Image otherwise resolves against the
 	// platform of whatever built the graph — donkey-server, which on a
 	// developer's machine is not even Linux.
@@ -64,27 +58,38 @@ func verifyState(app llb.State, cfg ocispecs.Image, spec VerifySpec) llb.State {
 		}
 	}
 	// PORT is the contract donkey deploys with, so it is what the check waits on.
-	st = st.AddEnv("PORT", strconv.Itoa(spec.Port))
 	for k, v := range spec.Env {
 		st = st.AddEnv(k, v)
 	}
+	st = st.AddEnv("PORT", strconv.Itoa(spec.Port))
 	if cfg.Config.WorkingDir != "" {
 		st = st.Dir(cfg.Config.WorkingDir)
 	}
 	if cfg.Config.User != "" {
 		st = st.User(cfg.Config.User)
 	}
-	return st.Run(
+	opts := []llb.RunOption{
 		llb.Args([]string{verifyBusybox, "sh", "-c", verifyScript(cfg, spec)}),
-		llb.WithCustomName("[verify] start the app and wait for it"),
-		llb.AddMount(verifyToolsDir,
-			llb.Image(verifyBusyboxImage, llb.Platform(spec.Platform)), llb.Readonly),
-	).Root()
+		llb.WithCustomName("[verify] start the app and check readiness"),
+		llb.IgnoreCache,
+		llb.AddMount(verifyToolsDir, llb.Image(verifyBusyboxImage, llb.Platform(spec.Platform)), llb.Readonly),
+	}
+	for _, p := range spec.StoragePaths {
+		// Reproduce masking by runtime mounts, with disposable writable data.
+		data := llb.Scratch().File(llb.Mkdir("/data", 0777))
+		opts = append(opts, llb.AddMount(p, data, llb.SourcePath("/data")))
+	}
+	return st.Run(opts...).Root()
+
 }
 
 // verifyScript is written against busybox's shell, the one thing mounted —
 // nothing is assumed about the app's image beyond running its own entrypoint.
 func verifyScript(cfg ocispecs.Image, spec VerifySpec) string {
+	if len(spec.Command) > 0 {
+		cfg.Config.Entrypoint = spec.Command
+		cfg.Config.Cmd = nil
+	}
 	bb := verifyBusybox
 	var b strings.Builder
 	// /tmp because the probe runs as whatever user the image names, and an
@@ -100,17 +105,38 @@ func verifyScript(cfg ocispecs.Image, spec VerifySpec) string {
 	b.WriteString("    echo '[verify] the app exited instead of starting up:'\n")
 	fmt.Fprintf(&b, "    %s cat /tmp/donkey-app.log\n", bb)
 	b.WriteString("    exit 1\n  fi\n")
-	fmt.Fprintf(&b, "  if %s nc -z 127.0.0.1 %d 2>/dev/null; then\n", bb, spec.Port)
-	fmt.Fprintf(&b, "    echo '[verify] the app is listening on %d'\n", spec.Port)
+	// Inspect the socket table: connecting from localhost would accept a
+	// loopback-only server that no runtime probe or gateway can reach.
+	check := bb + " awk " + shellQuote(socketProbe(spec.Port)) + " /proc/net/tcp /proc/net/tcp6"
+	if spec.HealthcheckPath != "" {
+		url := "http://127.0.0.1:" + strconv.Itoa(spec.Port) + spec.HealthcheckPath
+		check += " && " + bb + " wget -q -T 2 -O /dev/null"
+		if spec.Host != "" {
+			check += " --header " + shellQuote("Host: "+spec.Host)
+		}
+		check += " " + shellQuote(url)
+	}
+	fmt.Fprintf(&b, "  if %s 2>/dev/null; then\n", check)
+	fmt.Fprintf(&b, "    echo '[verify] the app is ready on %d'\n", spec.Port)
 	b.WriteString("    exit 0\n  fi\n")
 	fmt.Fprintf(&b, "  %s sleep 1\n  i=$((i+1))\ndone\n", bb)
-	// Running but not listening: an app waiting for something the sandbox
-	// lacks, not a broken image. The marker is what donkey warns on later —
-	// passing silently is how a wrong port reaches a rollout timeout.
-	fmt.Fprintf(&b, "echo '%s after %ds — leaving it to the cluster'\n", VerifyNeverListened, spec.Seconds)
+	// Never report an image that only stays alive as ready.
+	fmt.Fprintf(&b, "echo '%s after %ds'\n", VerifyNeverListened, spec.Seconds)
 	fmt.Fprintf(&b, "%s cat /tmp/donkey-app.log\n", bb)
-	b.WriteString("exit 0\n")
+	b.WriteString("exit 1\n")
 	return b.String()
+}
+
+// Linux's socket table stores IPv4 bytes and each IPv6 word in host order.
+// Avoid interval regex syntax: the static BusyBox awk does not always enable it.
+func socketProbe(port int) string {
+	return fmt.Sprintf(`$4 == "0A" {
+ split($2,a,":"); ip=a[1];
+ loop4=(length(ip)==8 && substr(ip,7,2)=="7F");
+ loop6=(ip=="00000000000000000000000001000000");
+ mapped=(substr(ip,1,24)=="0000000000000000FFFF0000" && substr(ip,31,2)=="7F");
+ if(a[2]=="%04X" && !loop4 && !loop6 && !mapped) found=1
+} END {exit !found}`, port)
 }
 
 // startCommand is the image's own entrypoint and command, as one shell line.
@@ -122,7 +148,7 @@ func startCommand(cfg ocispecs.Image) string {
 	}
 	quoted := make([]string, len(argv))
 	for i, a := range argv {
-		quoted[i] = "'" + strings.ReplaceAll(a, "'", `'\''`) + "'"
+		quoted[i] = shellQuote(a)
 	}
 	return strings.Join(quoted, " ")
 }
@@ -138,3 +164,5 @@ func imageConfig(raw []byte) (ocispecs.Image, error) {
 	}
 	return cfg, nil
 }
+
+func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }

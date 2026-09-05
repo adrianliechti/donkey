@@ -114,7 +114,7 @@ auth:
 
 ai:
   baseUrl: https://api.openai.com/v1
-  model: gpt-5.5
+  model: gpt-5.6-sol
   # apiKey comes from the environment
 ```
 

@@ -244,7 +244,7 @@ func (s *Server) handleDiagnose(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Minute)
+	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 	ev := s.rt.Evidence(ctx, space, app)
 	resp := DiagnoseResponse{Pods: ev.Summaries, Events: ev.Events, Logs: ev.Logs}
@@ -755,7 +755,7 @@ func (s *Server) handleDoctor(w http.ResponseWriter, r *http.Request) {
 	// Longer than the other probes want, because the builder checks pull
 	// image manifests through whatever mirrors and proxies stand in the way —
 	// which is exactly the setup that is slow when it is misconfigured.
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 	var checks []DoctorCheck
 

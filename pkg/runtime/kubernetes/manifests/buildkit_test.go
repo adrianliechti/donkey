@@ -136,7 +136,7 @@ func TestBuildkitTOMLWithoutMirrors(t *testing.T) {
 		RegistryHost:   "registry.example.com",
 		RegistryCAFile: "/etc/donkey/registry-ca/ca.crt",
 	})
-	want := "[worker.oci]\n  gc = true\n  reservedSpace = \"5GB\"\n  maxUsedSpace = \"8GB\"\n" +
+	want := "[worker.oci]\n  gc = true\n" +
 		"\n[registry.\"registry.example.com\"]\n  ca = [\"/etc/donkey/registry-ca/ca.crt\"]\n"
 	if got != want {
 		t.Errorf("got:\n%s\nwant:\n%s", got, want)

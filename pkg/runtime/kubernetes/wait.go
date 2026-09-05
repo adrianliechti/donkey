@@ -23,7 +23,7 @@ func (c *Client) WaitForRollout(ctx context.Context, namespace, name string, ide
 	deadline := time.Now().Add(rolloutTimeout)
 	for {
 		if time.Now().After(deadline) {
-			return c.rolloutError(ctx, namespace, name, identity, "it didn't finish starting within 5 minutes")
+			return c.rolloutFailure(ctx, namespace, name, identity, "it didn't finish starting within 5 minutes")
 		}
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -53,7 +53,7 @@ func (c *Client) WaitForRollout(ctx context.Context, namespace, name string, ide
 		// pods of the generation being rolled out: an old copy still crashing
 		// must not condemn the fix that is replacing it.
 		if reason := stuckReason(c.rolloutPods(ctx, dep)); reason != "" {
-			return c.rolloutError(ctx, namespace, name, identity, reason)
+			return c.rolloutFailure(ctx, namespace, name, identity, reason)
 		}
 		time.Sleep(2 * time.Second)
 	}
@@ -121,6 +121,18 @@ func stuckReason(pods []corev1.Pod) string {
 	return ""
 }
 
+func (c *Client) rolloutFailure(ctx context.Context, namespace, app string, identity map[string]string, reason string) error {
+	if dep, err := c.Clientset.AppsV1().Deployments(namespace).Get(ctx, app, metav1.GetOptions{}); err == nil &&
+		c.requireOwnedObject("Deployment", namespace, app, dep.Labels, identity) == nil {
+		if cause := platformBlock(c.rolloutPods(ctx, dep)); cause != "" {
+			// Rebuilding source cannot create node capacity, registry access, or
+			// missing Kubernetes secrets. Keep these out of the AI repair loop.
+			return fmt.Errorf("the cluster could not start %s: %s", app, cause)
+		}
+	}
+	return c.rolloutError(ctx, namespace, app, identity, reason)
+}
+
 func (c *Client) rolloutError(ctx context.Context, namespace, app string, identity map[string]string, reason string) *rt.RolloutError {
 	ev := rt.Evidence{}
 	var pods []corev1.Pod
@@ -148,6 +160,27 @@ func (c *Client) rolloutError(ctx context.Context, namespace, app string, identi
 		}
 	}
 	return &rt.RolloutError{App: app, Evidence: ev, Reason: reason}
+}
+
+func platformBlock(pods []corev1.Pod) string {
+	for _, pod := range pods {
+		for _, condition := range pod.Status.Conditions {
+			if condition.Type == corev1.PodScheduled && condition.Status == corev1.ConditionFalse && condition.Reason == "Unschedulable" {
+				return "the workload could not be scheduled: " + condition.Message
+			}
+		}
+		for _, status := range pod.Status.ContainerStatuses {
+			if waiting := status.State.Waiting; waiting != nil {
+				switch waiting.Reason {
+				case "ImagePullBackOff", "ErrImagePull":
+					return "the registry image could not be downloaded; check registry connectivity and pull credentials"
+				case "CreateContainerConfigError":
+					return "the runtime configuration is incomplete: " + waiting.Message
+				}
+			}
+		}
+	}
+	return ""
 }
 
 func (c *Client) podLogs(ctx context.Context, namespace, pod string, lines int64) string {

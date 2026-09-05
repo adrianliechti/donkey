@@ -81,20 +81,19 @@ func TestVerifyScriptIsValidShell(t *testing.T) {
 func TestVerifyScriptChecksTheRightThings(t *testing.T) {
 	script := verifyScript(imageWith([]string{"python"}, []string{"app.py"}), VerifySpec{Port: 9000, Seconds: 20})
 	for _, want := range []string{
-		"'python' 'app.py'",    // the image's own command
-		"nc -z 127.0.0.1 9000", // the port donkey deploys with
-		"kill -0 $app",         // a process that exited is the failure
-		"exit 1",               // …and it fails the build
+		"'python' 'app.py'", // the image's own command
+		`a[2]=="2328"`,      // the port donkey deploys with, in the kernel table's hex format
+		"kill -0 $app",      // a process that exited is the failure
+		"exit 1",            // …and it fails the build
 	} {
 		if !strings.Contains(script, want) {
 			t.Errorf("the probe is missing %q:\n%s", want, script)
 		}
 	}
-	// An app still running but not listening is not a broken image — it is an
-	// app waiting for something the sandbox hasn't got. That must not fail.
+	// Staying alive without a reachable listener must fail verification.
 	tail := script[strings.LastIndex(script, VerifyNeverListened):]
-	if !strings.Contains(tail, "exit 0") {
-		t.Errorf("an app that is still running should pass:\n%s", script)
+	if !strings.Contains(tail, "exit 1") {
+		t.Errorf("an app that never becomes ready should fail:\n%s", script)
 	}
 }
 
@@ -104,8 +103,45 @@ func TestVerifyStateUsesDonkeysPort(t *testing.T) {
 	img := imageWith([]string{"server"}, nil)
 	img.Config.Env = []string{"PORT=3000", "LANG=C.UTF-8"}
 	script := verifyScript(img, VerifySpec{Port: 8080, Seconds: 10})
-	if !strings.Contains(script, "nc -z 127.0.0.1 8080") {
+	if !strings.Contains(script, `a[2]=="1F90"`) {
 		t.Errorf("the probe should wait on donkey's port, not the image's:\n%s", script)
+	}
+}
+
+func TestSocketProbeRejectsLoopbackAndWrongPorts(t *testing.T) {
+	awk, err := exec.LookPath("awk")
+	if err != nil {
+		t.Skip("awk unavailable")
+	}
+	for _, tc := range []struct {
+		name, address, state string
+		ready                bool
+	}{
+		{"ipv4 wildcard", "00000000:1F90", "0A", true},
+		{"ipv4 external", "020011AC:1F90", "0A", true},
+		{"loopback", "0100007F:1F90", "0A", false},
+		{"loopback subnet", "0200007F:1F90", "0A", false},
+		{"ipv6 wildcard", "00000000000000000000000000000000:1F90", "0A", true},
+		{"ipv6 loopback", "00000000000000000000000001000000:1F90", "0A", false},
+		{"mapped loopback", "0000000000000000FFFF00000100007F:1F90", "0A", false},
+		{"wrong port", "00000000:0BB8", "0A", false},
+		{"not listening", "00000000:1F90", "01", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := exec.Command(awk, socketProbe(8080))
+			cmd.Stdin = strings.NewReader("0: " + tc.address + " 00000000:0000 " + tc.state + "\n")
+			out, err := cmd.CombinedOutput()
+			if (err == nil) != tc.ready {
+				t.Fatalf("ready=%v want=%v: %s %v", err == nil, tc.ready, out, err)
+			}
+		})
+	}
+}
+
+func TestVerifyUsesReviewedCommandAndHost(t *testing.T) {
+	script := verifyScript(imageWith([]string{"wrong"}, nil), VerifySpec{Port: 8080, Seconds: 10, Command: []string{"server", "--production"}, HealthcheckPath: "/ready", Host: "app.example.com"})
+	if strings.Contains(script, "'wrong'") || !strings.Contains(script, "'server' '--production'") || !strings.Contains(script, "'Host: app.example.com'") || !strings.Contains(script, "'http://127.0.0.1:8080/ready'") {
+		t.Fatal(script)
 	}
 }
 
