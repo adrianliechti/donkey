@@ -214,7 +214,7 @@ func TestSharedNamespaceQualifiesEveryName(t *testing.T) {
 		if expect, ok := want[kind]; ok && m.GetName() == expect {
 			seen[kind] = true
 		}
-		if !strings.HasPrefix(m.GetName(), "acme--") {
+		if !strings.HasPrefix(m.GetName(), "acme-") {
 			t.Errorf("%s %s does not carry its space — a second space's app of the same name would overwrite it", kind, m.GetName())
 		}
 	}

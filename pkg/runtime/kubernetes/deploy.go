@@ -58,7 +58,7 @@ func (r *Runtime) Deploy(ctx context.Context, spec rt.DeploySpec, out rt.Progres
 	// the binding. An existing service is left alone: a second app naming it
 	// simply joins it.
 	for _, a := range app.Addons {
-		shared, err := r.c.GetOwnedSecretData(ctx, ns, addons.SecretName(r.sharedOwner(space), a.Name),
+		shared, err := r.c.GetOwnedSecretData(ctx, ns, r.spaceBindingName(space, a.Name),
 			manifests.AddonLabels(space, a.Name, manifests.RoleBinding))
 		if err != nil {
 			return err
@@ -114,7 +114,7 @@ func (r *Runtime) Deploy(ctx context.Context, spec rt.DeploySpec, out rt.Progres
 			known[n] = true
 		}
 		for _, b := range bindings {
-			if n := addons.SecretName(obj, b.Name); !known[n] {
+			if n := manifests.AppBindingSecretName(obj, b.Name); !known[n] {
 				in.AddonSecretNames = append(in.AddonSecretNames, n)
 				out.Line("· Keeping %s, attached in the console", b.Name)
 			}
@@ -317,7 +317,7 @@ func (r *Runtime) manifestInput(spec rt.DeploySpec, includeCreds bool) (manifest
 		in.RegistryPassword = password
 	}
 	for _, a := range app.Addons {
-		in.AddonSecretNames = append(in.AddonSecretNames, addons.SecretName(in.Name(), a.Name))
+		in.AddonSecretNames = append(in.AddonSecretNames, manifests.AppBindingSecretName(in.Name(), a.Name))
 	}
 	// Each route joins another app's address. The default shape is the
 	// assumption; resolveRouteTargets corrects it against what that app

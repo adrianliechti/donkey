@@ -18,7 +18,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
 
-	"github.com/adrianliechti/donkey/internal/addons"
 	"github.com/adrianliechti/donkey/internal/config"
 )
 
@@ -109,6 +108,14 @@ func EnvSecretName(app string) string { return app + "-env" }
 func TelemetrySecretName(app string) string { return app + "-telemetry" }
 
 func DataClaimName(app string) string { return app + "-data" }
+
+// SpaceBindingSecretName is the space's canonical binding of one service,
+// named after the service's object name — the service owns it.
+func SpaceBindingSecretName(service string) string { return service + "-binding" }
+
+// AppBindingSecretName is an app's copy of a service binding, named after
+// the app's object name and the service.
+func AppBindingSecretName(app, service string) string { return app + "-binding-" + service }
 
 // AppObjects renders the namespace, optional pull secret, data volume,
 // deployment and service for an app, in apply order.
@@ -336,7 +343,7 @@ func appEnvironment(in Input) ([]corev1.EnvVar, []corev1.EnvFromSource) {
 		}
 		env = append(env, corev1.EnvVar{Name: k, ValueFrom: &corev1.EnvVarSource{
 			SecretKeyRef: &corev1.SecretKeySelector{
-				LocalObjectReference: corev1.LocalObjectReference{Name: addons.SecretName(in.Name(), service)},
+				LocalObjectReference: corev1.LocalObjectReference{Name: AppBindingSecretName(in.Name(), service)},
 				Key:                  key,
 			},
 		}})

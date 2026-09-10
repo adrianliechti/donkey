@@ -130,3 +130,25 @@ func TestExistingSpacesMigrateWithoutResettingSettings(t *testing.T) {
 		})
 	}
 }
+
+func TestEmptyRenderedSpaceMarkerDoesNotHideLegacySettings(t *testing.T) {
+	ctx := context.Background()
+	client := &Client{Clientset: fake.NewClientset(), Installation: "main"}
+	r := NewRuntime(client, Options{SystemNamespace: "main", Placement: manifests.Placement{SharedNamespace: "apps"}})
+	for _, name := range []string{"team-space", "donkey.space.team"} {
+		cm := manifests.SpaceMarker("team", "apps")
+		cm.Name = name
+		cm.Labels = client.expectedObjectIdentity(cm.Labels)
+		if name == "donkey.space.team" {
+			cm.Data = map[string]string{"config.json": `{"admins":{"users":["owner@example.com"]},"domains":["team.example.com"]}`}
+		}
+		_, _ = client.Clientset.CoreV1().ConfigMaps("apps").Create(ctx, cm, metav1.CreateOptions{})
+	}
+	if err := r.EnsureSpaceConfigs(ctx); err != nil {
+		t.Fatal(err)
+	}
+	settings, err := r.SpaceConfig(ctx, "team")
+	if err != nil || !reflect.DeepEqual(settings.Admins.Users, []string{"owner@example.com"}) || !reflect.DeepEqual(settings.Domains, []string{"team.example.com"}) {
+		t.Fatalf("rendered marker reset legacy settings: %+v, %v", settings, err)
+	}
+}

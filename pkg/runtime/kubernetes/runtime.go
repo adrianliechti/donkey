@@ -8,7 +8,6 @@ import (
 
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"
 
-	"github.com/adrianliechti/donkey/internal/addons"
 	"github.com/adrianliechti/donkey/internal/config"
 	rt "github.com/adrianliechti/donkey/pkg/runtime"
 	"github.com/adrianliechti/donkey/pkg/runtime/kubernetes/manifests"
@@ -93,22 +92,18 @@ func (r *Runtime) InternalURL(space, app string, port int) string {
 // belongs only to object names.
 func (r *Runtime) name(space, name string) string { return r.opts.Placement.Name(space, name) }
 
-// unname is the inverse — what to show a person, and what they typed.
-func (r *Runtime) unname(space, objectName string) string {
-	return r.opts.Placement.Unname(space, objectName)
-}
-
-// sharedOwner qualifies the canonical binding Secret's object name. It is
-// object-name plumbing only; service labels use their logical addon identity.
-func (r *Runtime) sharedOwner(space string) string {
-	return r.name(space, addons.SharedOwner)
+// spaceBindingName is the object name of a service's canonical binding
+// Secret: the service's own object name plus "-binding". The service, not a
+// pseudo-app, owns it.
+func (r *Runtime) spaceBindingName(space, service string) string {
+	return manifests.SpaceBindingSecretName(r.name(space, service))
 }
 
 // --- Spaces ---------------------------------------------------------------
 
 func (r *Runtime) ValidateSpace(space string) error {
-	if !config.ValidSpaceName(space) {
-		return fmt.Errorf("%q is not a valid space name — use lowercase letters and digits, without dashes (max 40 chars)", space)
+	if err := config.ValidateSpaceName(space); err != nil {
+		return err
 	}
 	// With the default prefix, the space "system" resolves to donkey-system —
 	// a crafted (or innocently repo-named) space must never reach the control
@@ -118,7 +113,7 @@ func (r *Runtime) ValidateSpace(space string) error {
 		return fmt.Errorf("the space name %q is reserved for donkey itself — pick another (space: <name> in donkey.yaml)", space)
 	}
 	// A shared namespace joins the space onto every name in it, so the space
-	// has to be joinable at all — and short enough to leave room for an app.
+	// has to be short enough to leave room for an app.
 	return r.opts.Placement.ValidateNames(space, "")
 }
 
@@ -129,8 +124,8 @@ func (r *Runtime) ValidateApp(space, app string) error {
 	if err := r.ValidateSpace(space); err != nil {
 		return err
 	}
-	if !config.ValidName(app) {
-		return fmt.Errorf("%q is not a valid app name — lowercase letters, digits and dashes (max 40 chars)", app)
+	if err := config.ValidateAppName(app); err != nil {
+		return err
 	}
 	return r.opts.Placement.ValidateNames(space, app)
 }
@@ -206,7 +201,7 @@ func (r *Runtime) spaceObjects(space string) []k8sruntime.Object {
 // configuration leaves out.
 func (r *Runtime) syncSpaceIsolation(ctx context.Context, space string) error {
 	if r.opts.IsolateSpaces {
-		return nil
+		return r.c.DeleteObject(ctx, "NetworkPolicy", r.ns(space), "donkey.space."+space, manifests.SpaceLabels(space))
 	}
 	return r.c.DeleteSpaceIsolation(ctx, r.ns(space), space)
 }
@@ -229,7 +224,6 @@ func (r *Runtime) ReconcileSpaceIsolation(ctx context.Context) error {
 			}); err != nil {
 				return err
 			}
-			continue
 		}
 		if err := r.syncSpaceIsolation(ctx, space); err != nil {
 			return err

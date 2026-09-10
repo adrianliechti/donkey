@@ -6,7 +6,7 @@ import (
 )
 
 var input = Input{
-	App: "shop", Space: "prod", Namespace: "donkey-prod",
+	Space: "prod", Namespace: "donkey-prod",
 	Name: "db", Version: "", Storage: "1Gi", Password: "s3cret",
 }
 

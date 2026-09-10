@@ -31,20 +31,19 @@ func TestPerSpaceNamesAreUnchanged(t *testing.T) {
 }
 
 // One namespace holds one Service called "api", so every name carries its
-// space — and comes back out again unchanged.
-func TestSharedNamesRoundTrip(t *testing.T) {
+// space. Names are derived and never parsed back — identity lives in labels —
+// so hyphens on either side are fine, and two pairs may even spell the same
+// name (the apply path refuses the second one by its labels).
+func TestSharedNamesCarryTheSpace(t *testing.T) {
 	p := shared()
 	for _, tc := range []struct{ space, name, want string }{
 		{"shop", "api", "shop-api"},
-		{"shop", "shared", "shop-shared"},
+		{"my-shop", "api", "my-shop-api"},
 		{"a", "b-c", "a-b-c"},
+		{"a-b", "c", "a-b-c"},
 	} {
-		got := p.Name(tc.space, tc.name)
-		if got != tc.want {
+		if got := p.Name(tc.space, tc.name); got != tc.want {
 			t.Errorf("Name(%q, %q) = %q, want %q", tc.space, tc.name, got, tc.want)
-		}
-		if back := p.Unname(tc.space, got); back != tc.name {
-			t.Errorf("Unname(%q, %q) = %q, want %q", tc.space, got, back, tc.name)
 		}
 	}
 	if p.Namespace("shop") != "donkey-apps" || p.Namespace("blog") != "donkey-apps" {
@@ -52,17 +51,20 @@ func TestSharedNamesRoundTrip(t *testing.T) {
 	}
 }
 
-// Spaces have no hyphens; app and service names keep their usual DNS spelling.
-func TestSpaceNamesKeepSingleHyphenUnambiguous(t *testing.T) {
+// Spaces follow the same DNS-label rule as apps and services; only donkey's
+// own names are off limits.
+func TestSpaceNamesAreDNSLabels(t *testing.T) {
 	for _, p := range []Placement{shared(), perSpace()} {
-		for _, space := range []string{"a-b", "a--b", "Team", "a.b", ""} {
+		for _, space := range []string{"-a", "a-", "Team", "a.b", "", "donkey", "platform", "system"} {
 			if err := p.ValidateNames(space, "api"); err == nil {
 				t.Errorf("invalid space %q was accepted", space)
 			}
 		}
-		for _, app := range []string{"api", "my-api", "api-v2"} {
-			if err := p.ValidateNames("team", app); err != nil {
-				t.Errorf("valid app %q rejected: %v", app, err)
+		for _, space := range []string{"team", "my-team", "team-2"} {
+			for _, app := range []string{"api", "my-api", "api-v2"} {
+				if err := p.ValidateNames(space, app); err != nil {
+					t.Errorf("valid pair %q/%q rejected: %v", space, app, err)
+				}
 			}
 		}
 	}

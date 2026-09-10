@@ -40,12 +40,13 @@ say "installing the control plane (real install command, demo settings)"
   --openai-api-key "${AI_KEY}" \
   ${AI_MODEL:+--ai-model "${AI_MODEL}"}
 
-# The install applies the same :dev tag every time, so an already-running
-# server never rolls on its own — without this, a re-run keeps serving the
-# previous build (and its embedded console).
-kubectl --context "${CTX}" -n donkey-system rollout restart deployment donkey-server >/dev/null 2>&1 || true
-kubectl --context "${CTX}" -n donkey-system rollout restart deployment donkey-gateway >/dev/null 2>&1 || true
-kubectl --context "${CTX}" -n donkey-system rollout status deployment donkey-gateway --timeout=180s >/dev/null
+# The install applies the same :dev tag every time. Restart every service
+# using that image so a re-run consistently runs the newly built code.
+donkey_deployments=(donkey-server donkey-gateway donkey-ai donkey-telemetry donkey-packages)
+kubectl --context "${CTX}" -n donkey-system rollout restart deployment "${donkey_deployments[@]}" >/dev/null
+for deployment in "${donkey_deployments[@]}"; do
+  kubectl --context "${CTX}" -n donkey-system rollout status deployment "${deployment}" --timeout=180s >/dev/null
+done
 
 say "the gateway's certificate authority (what the CLI and browser trust)"
 "${ROOT}/hack/demo-gateway-ca.sh" "${CTX}" "${CA_FILE}"

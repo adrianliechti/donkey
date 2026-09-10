@@ -331,9 +331,6 @@ func (s *Server) deployApp(ctx context.Context, out *lineStreamer, dir string, a
 		return fail(err)
 	}
 
-	if app.Name == addons.SharedOwner {
-		return fail(fmt.Errorf("the app name %q is reserved for a space's shared services — pick another name", addons.SharedOwner))
-	}
 	// Services take plain names too ("postgres" is reachable like an app);
 	// an app cannot move in over one.
 	if data, err := s.rt.ServiceBinding(ctx, space, addons.SharedOwner, app.Name); err == nil && len(data) > 0 {

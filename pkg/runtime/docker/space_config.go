@@ -24,6 +24,9 @@ func (r *Runtime) EnsureSpaceConfigs(ctx context.Context) error {
 		if err := r.state.storeJSON(config.SpaceConfig{Domains: []string{}}, false, "spaces", space, "config.json"); err != nil {
 			return err
 		}
+		if err := r.state.migrateSharedBindings(space); err != nil {
+			return err
+		}
 	}
 	return nil
 }

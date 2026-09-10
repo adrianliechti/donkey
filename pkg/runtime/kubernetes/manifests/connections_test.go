@@ -18,7 +18,7 @@ func TestEnvReferencesUseBindingSecrets(t *testing.T) {
 				t.Fatalf("credential must stay in Secret: %+v", variable)
 			}
 			ref := variable.ValueFrom.SecretKeyRef
-			if ref.Name != "team-api-service-db" || ref.Key != "DATABASE_URL" {
+			if ref.Name != "team-api-binding-db" || ref.Key != "DATABASE_URL" {
 				t.Fatalf("wrong secret reference: %+v", ref)
 			}
 		case "MODE":

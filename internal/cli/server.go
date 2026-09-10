@@ -312,6 +312,21 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 	if contextName == "" {
 		contextName = "the current kubeconfig context"
 	}
+	rt := k8s.NewRuntime(client, k8s.Options{
+		Placement: manifests.Placement{
+			SharedNamespace: settings.Kubernetes.Workload.Namespace,
+			NamespacePrefix: settings.Kubernetes.NamespacePrefix(),
+		},
+		SystemNamespace: systemNamespace,
+		Domain:          settings.Domain,
+		TLS:             settings.TLS,
+		ExternalDNS:     settings.Gateway.ExternalDNS,
+		IsolateSpaces:   settings.Kubernetes.SpacesIsolated(),
+		RestrictEgress:  settings.Kubernetes.RestrictEgress,
+	})
+	if err := rt.ValidateExistingNames(ctx); err != nil {
+		return err
+	}
 	u.Printf("Installing the donkey control plane into %s…", u.Bold(contextName))
 	if err := client.MigrateGatewaySecrets(ctx, systemNamespace); err != nil {
 		return fmt.Errorf("preserving gateway certificates: %w", err)
@@ -326,18 +341,7 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 	// Fence (or unfence) the spaces that already exist, so toggling
 	// kubernetes.isolateSpaces takes effect now — not at each space's next
 	// deploy. New spaces get their fence when they are created.
-	rt := k8s.NewRuntime(client, k8s.Options{
-		Placement: manifests.Placement{
-			SharedNamespace: settings.Kubernetes.Workload.Namespace,
-			NamespacePrefix: settings.Kubernetes.NamespacePrefix(),
-		},
-		SystemNamespace: systemNamespace,
-		Domain:          settings.Domain,
-		TLS:             settings.TLS,
-		ExternalDNS:     settings.Gateway.ExternalDNS,
-		IsolateSpaces:   settings.Kubernetes.SpacesIsolated(),
-		RestrictEgress:  settings.Kubernetes.RestrictEgress,
-	})
+
 	if err := rt.EnsureSpaceConfigs(ctx); err != nil {
 		return fmt.Errorf("migrating persisted settings: %w", err)
 	}

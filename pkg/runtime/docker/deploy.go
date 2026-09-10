@@ -58,6 +58,9 @@ func (r *Runtime) setRunRecord(space, app string, spec runSpec) error {
 func (r *Runtime) Deploy(ctx context.Context, spec rt.DeploySpec, out rt.Progress) (deployErr error) {
 	app := spec.App
 	space := spec.Space
+	if err := config.ValidateAppName(app.Name); err != nil {
+		return err
+	}
 
 	out.Line("Setting up on Docker…")
 	if err := r.ensureSpace(ctx, space); err != nil {

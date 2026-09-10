@@ -7,7 +7,6 @@ import (
 	"maps"
 	"strings"
 
-	"github.com/adrianliechti/donkey/internal/addons"
 	"github.com/adrianliechti/donkey/internal/config"
 	"github.com/adrianliechti/donkey/pkg/runtime/kubernetes/manifests"
 	corev1 "k8s.io/api/core/v1"
@@ -215,6 +214,10 @@ func renameSecretReferences(spec *corev1.PodSpec, names map[string]string) bool 
 	return changed
 }
 
+// legacySharedOwner is the pseudo-app that used to own a space's canonical
+// service bindings. Only migration spells it.
+const legacySharedOwner = "shared"
+
 // Only exact legacy names in the expected namespace are eligible for migration.
 func (r *Runtime) migratedSecretName(secret *corev1.Secret) string {
 	space, app := secret.Labels[manifests.LabelSpace], secret.Labels[manifests.LabelApp]
@@ -227,20 +230,19 @@ func (r *Runtime) migratedSecretName(secret *corev1.Secret) string {
 		if !config.ValidName(service) || secret.Namespace != r.ns(space) {
 			return ""
 		}
-		owner := r.sharedOwner(space)
+		// The space's own binding used to belong to a pseudo-app called
+		// "shared"; it is now named after the service. App copies keep
+		// <app>-binding-<service>, but older separators still migrate.
+		logical, current := legacySharedOwner, r.spaceBindingName(space, service)
 		if app != "" {
-			owner = r.name(space, app)
+			logical, current = app, manifests.AppBindingSecretName(r.name(space, app), service)
 		}
-		legacyOwner := owner
-		if r.opts.Placement.Shared() {
-			logical := app
-			if logical == "" {
-				logical = addons.SharedOwner
+		for _, oldOwner := range []string{r.name(space, logical), space + "--" + logical} {
+			for _, separator := range []string{"-addon-", "-service-", "-binding-"} {
+				if secret.Name == oldOwner+separator+service && secret.Name != current {
+					return current
+				}
 			}
-			legacyOwner = space + "--" + logical
-		}
-		if secret.Name == owner+"-addon-"+service || secret.Name == legacyOwner+"-addon-"+service || secret.Name == addons.SecretName(legacyOwner, service) && legacyOwner != owner {
-			return addons.SecretName(owner, service)
 		}
 	case manifests.RoleConfig, manifests.RoleRegistryAuth:
 		logical := app
@@ -255,7 +257,7 @@ func (r *Runtime) migratedSecretName(secret *corev1.Secret) string {
 			}
 		}
 	case manifests.RoleEdge:
-		if app != "" && secret.Namespace == r.opts.SystemNamespace && secret.Name == manifests.AppCertificateName(space, app)+"-tls" {
+		if app != "" && secret.Namespace == r.opts.SystemNamespace && secret.Name == legacyAppCertificateName(space, app)+"-tls" {
 			return manifests.AppCertificateSecretName(space, app)
 		}
 	}
@@ -265,29 +267,33 @@ func (r *Runtime) migratedSecretName(secret *corev1.Secret) string {
 func (r *Runtime) renameCertificateSecret(ctx context.Context, old *corev1.Secret, name string) error {
 	certificates := r.c.Dynamic.Resource(gvrFor["Certificate"]).Namespace(old.Namespace)
 	space, app := old.Labels[manifests.LabelSpace], old.Labels[manifests.LabelApp]
-	cert, err := certificates.Get(ctx, manifests.AppCertificateName(space, app), metav1.GetOptions{})
-	if apierrors.IsNotFound(err) {
-		return nil
+	for _, certName := range []string{legacyAppCertificateName(space, app), manifests.AppCertificateName(space, app)} {
+		cert, err := certificates.Get(ctx, certName, metav1.GetOptions{})
+		if apierrors.IsNotFound(err) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if err := r.c.requireOwnedObject("Certificate", old.Namespace, cert.GetName(), cert.GetLabels(), manifests.Labels(space, app, manifests.RoleEdge)); err != nil {
+			return err
+		}
+		current, _, _ := unstructured.NestedString(cert.Object, "spec", "secretName")
+		if current != old.Name {
+			continue
+		}
+		patch, err := json.Marshal(map[string]any{
+			"metadata": map[string]any{"uid": cert.GetUID()},
+			"spec":     map[string]any{"secretName": name},
+		})
+		if err != nil {
+			return err
+		}
+		if _, err := certificates.Patch(ctx, cert.GetName(), types.MergePatchType, patch, metav1.PatchOptions{FieldManager: "donkey"}); err != nil {
+			return err
+		}
 	}
-	if err != nil {
-		return err
-	}
-	if err := r.c.requireOwnedObject("Certificate", old.Namespace, cert.GetName(), cert.GetLabels(), manifests.Labels(space, app, manifests.RoleEdge)); err != nil {
-		return err
-	}
-	current, _, _ := unstructured.NestedString(cert.Object, "spec", "secretName")
-	if current != old.Name {
-		return nil
-	}
-	patch, err := json.Marshal(map[string]any{
-		"metadata": map[string]any{"uid": cert.GetUID()},
-		"spec":     map[string]any{"secretName": name},
-	})
-	if err != nil {
-		return err
-	}
-	_, err = certificates.Patch(ctx, cert.GetName(), types.MergePatchType, patch, metav1.PatchOptions{FieldManager: "donkey"})
-	return err
+	return nil
 }
 
 // FinishConfigMigration runs after the new control plane is ready. A binding
@@ -332,16 +338,20 @@ func (r *Runtime) FinishConfigMigration(ctx context.Context) error {
 				continue
 			}
 			if old.Labels[manifests.LabelRole] == manifests.RoleEdge {
-				cert, err := r.c.Dynamic.Resource(gvrFor["Certificate"]).Namespace(old.Namespace).
-					Get(ctx, manifests.AppCertificateName(old.Labels[manifests.LabelSpace], old.Labels[manifests.LabelApp]), metav1.GetOptions{})
-				if err != nil && !apierrors.IsNotFound(err) {
-					return err
-				}
-				if err == nil {
-					current, _, _ := unstructured.NestedString(cert.Object, "spec", "secretName")
-					if current == old.Name {
-						continue
+				space, app := old.Labels[manifests.LabelSpace], old.Labels[manifests.LabelApp]
+				for _, certName := range []string{legacyAppCertificateName(space, app), manifests.AppCertificateName(space, app)} {
+					cert, err := r.c.Dynamic.Resource(gvrFor["Certificate"]).Namespace(old.Namespace).
+						Get(ctx, certName, metav1.GetOptions{})
+					if err != nil && !apierrors.IsNotFound(err) {
+						return err
 					}
+					if err == nil {
+						current, _, _ := unstructured.NestedString(cert.Object, "spec", "secretName")
+						inUse = inUse || current == old.Name
+					}
+				}
+				if inUse {
+					continue
 				}
 			}
 			opts := metav1.DeleteOptions{}

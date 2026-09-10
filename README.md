@@ -844,16 +844,25 @@ records are created with no space members and unrestricted domains, preserving
 existing app routes. Platform admins retain access and can assign space roles.
 Saved roles and domains survive subsequent upgrades. Updates use last save wins.
 
+Space, app and service names follow one rule: lowercase letters, digits and
+hyphens, starting and ending with a letter or digit, up to 40 characters (a
+DNS label). `donkey`, `platform`, and `system` are reserved as space names.
+Names derived from repository folders turn punctuation into hyphens;
+explicitly supplied names are validated as entered.
+
 On Kubernetes, the `donkey` ConfigMap in the control-plane namespace holds
-platform settings in `data["platform.json"]` and the console route in annotations.
-The `donkey.space.<space>` ConfigMap in each space's namespace holds its settings
-in `data["config.json"]` (including shared-namespace installations).
-The `donkey` Secret stores credentials and session keys.
-The installer migrates the former `donkey.platform`, `donkey-server` ConfigMap,
-and `donkey-system-config` Secret layout, preserving admins and credentials;
-it removes those old resources after the new pods are ready.
-Docker stores the same JSON under `/var/lib/donkey/platform/config.json` and
-`/var/lib/donkey/spaces/<space>/config.json` in its persistent state volume.
+`platform.yaml`, the console's `route.yaml`, and `buildkitd.toml`. Every space
+has a `<space>-space` ConfigMap containing `config.yaml` in its workload
+namespace. The `donkey` Secret stores installation credentials and session keys.
+App ConfigMaps and Secrets use purpose suffixes (`api-route`, `api-env`,
+`api-registry`), prefixed with the space in a shared workload namespace
+(`team-api-env`). App TLS Secrets live centrally as `team-api-tls`.
+See [the complete resource table and migration details](README_KUBERNETES.md#configmap-and-secret-names).
+
+Docker persists the same settings fields as JSON under
+`/var/lib/donkey/platform/config.json` and
+`/var/lib/donkey/spaces/<space>/config.json` in its state volume.
+See [the Docker storage layout](README_DOCKER.md#what-maps-to-what).
 
 For GitOps, review, or a machine where the CLI must not hold cluster access,
 render the same settings instead:

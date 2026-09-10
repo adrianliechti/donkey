@@ -148,3 +148,21 @@ func TestPlatformConfigMigratesLegacyAdmins(t *testing.T) {
 		t.Fatalf("legacy settings overwrote new settings: %+v, %v", again, err)
 	}
 }
+
+func TestPlatformJSONEntryMigratesToYAMLWithoutReset(t *testing.T) {
+	ctx := context.Background()
+	client := &Client{Clientset: fake.NewClientset(), Installation: "main"}
+	cm := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "donkey", Namespace: "main", Labels: client.expectedObjectIdentity(manifests.SystemLabels(manifests.ServerName))}, Data: map[string]string{
+		"platform.json": `{"admins":{"users":["owner@example.com"]}}`, "buildkitd.toml": "existing build config", "route.yaml": "existing route config",
+	}}
+	_, _ = client.Clientset.CoreV1().ConfigMaps("main").Create(ctx, cm, metav1.CreateOptions{})
+	r := NewRuntime(client, Options{SystemNamespace: "main"})
+	settings, err := r.InitPlatformConfig(ctx, config.PlatformConfig{Admins: config.AccessConfig{Users: []string{"new@example.com"}}})
+	if err != nil || !reflect.DeepEqual(settings.Admins.Users, []string{"owner@example.com"}) {
+		t.Fatalf("upgrade reset admins: %+v, %v", settings, err)
+	}
+	stored, _ := client.Clientset.CoreV1().ConfigMaps("main").Get(ctx, "donkey", metav1.GetOptions{})
+	if stored.Data["platform.json"] != "" || stored.Data["platform.yaml"] == "" || stored.Data["buildkitd.toml"] != cm.Data["buildkitd.toml"] || stored.Data["route.yaml"] != cm.Data["route.yaml"] {
+		t.Fatal("migration changed other configuration entries")
+	}
+}

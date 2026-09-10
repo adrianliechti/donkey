@@ -36,7 +36,7 @@ that never heard of donkey.
 | `managed-by` | `donkey` | `donkey` | `donkey` | `donkey` |
 
 The space is the release and lifecycle instance; `name + instance` identifies
-one app or addon. Shared-namespace object names still use `<space>--<name>` to
+one app or addon. Shared-namespace object names still use `<space>-<name>` to
 avoid collisions, but that storage detail never leaks into standard metadata.
 `app.kubernetes.io/component` is omitted: donkey does not know whether an
 arbitrary app is a frontend, backend or database, and will not invent the
@@ -74,7 +74,8 @@ installation is) but never enters a selector.
 
 ### Annotations
 
-Non-identifying or potentially large configuration stays in annotations:
+Operational metadata stays in annotations. Routing and membership settings
+live in ConfigMap data:
 
 | Annotation | On | Meaning |
 |---|---|---|
@@ -85,7 +86,6 @@ Non-identifying or potentially large configuration stays in annotations:
 | `donkey.local/config-hash` | control-plane pod templates | rolls pods that read config only at startup |
 | `donkey.local/restarted-at` | app pod templates | patched to force a restart |
 | `donkey.local/files-expires-at` | file-browser helper pods | when an abandoned helper may be reaped |
-| `donkey.local/backend`, `host`, `path`, `login`, `access`, `token` | route ConfigMaps | one entry of the gateway's routing table: where to forward, on which hostname and path, whether visitors sign in, who may pass |
 
 ### Finding things
 
@@ -130,10 +130,14 @@ namespace itself.
 Setting `workload.namespace` changes three things:
 
 - **Every app lives in one namespace**, so object names carry their space:
-  the app `api` in space `shop` becomes `shop--api` on the cluster. The
-  separator is `--`, and neither a space nor an app name may contain it.
+  the app `api` in space `shop` becomes `shop-api` on the cluster, the way a
+  Helm release prefixes its chart. Names are derived and never parsed back —
+  identity is always read from the `donkey.local/*` labels — so both halves
+  may contain hyphens. Two pairs can spell the same name (`a-b`/`c` and
+  `a`/`b-c` both give `a-b-c`); the second is refused when applied, by the
+  first's labels, with an error naming who holds it.
 - **Siblings are addressed by that name too.** Where an app in a namespace of
-  its own reaches a sibling at `http://api`, here it is `http://shop--api`.
+  its own reaches a sibling at `http://api`, here it is `http://shop-api`.
   Addon bindings (`DATABASE_URL` and friends) are generated, so they follow
   automatically — only a hostname you hardcoded needs changing.
 - **donkey needs nothing above a namespace.** No ClusterRole, no
@@ -147,7 +151,7 @@ it creates and deletes namespaces and no Role can express that.)
 
 Two limits to check before you commit to a name:
 
-- A Service name is a DNS label, so `<space>--<app>` must be **63 characters
+- A Service name is a DNS label, so `<space>-<app>` must be **63 characters
   or fewer**. donkey refuses the pair at deploy time rather than letting the
   cluster reject it.
 - Both namespaces must **already exist**, and their Pod Security Standard has
@@ -170,6 +174,9 @@ kind: ConfigMap
 metadata:
   name: donkey
   namespace: donkey-system
+  labels:
+    donkey.local/installation: donkey-system
+    donkey.local/role: server
 data:
   platform.yaml: |
     admins:
@@ -231,46 +238,114 @@ Kubernetes distinguishes the ConfigMap and Secret by resource type.
 
 ## ConfigMap and Secret names
 
-System resources live in the control-plane namespace. Workload resources live
-in the space's namespace. Optional resources appear only when their feature is
-used. Standard Kubernetes Secret formats retain their defined keys.
+`<space>`, `<app>`, and `<service>` always mean logical names entered in
+Donkey. For example, space `team`, app `my-api`, and service `postgres`.
+All three follow one rule: a DNS label of lowercase letters, digits and
+hyphens, 1–40 characters. `donkey`, `platform`, and `system` are reserved as
+space names. Object names are built from these by joining with `-`; they are
+never split back apart. To find out what an object is, read its labels. The
+Docker runtime follows the same rules with `.` as its separator; its
+[mapping table](README_DOCKER.md#what-maps-to-what) lists the counterpart of
+every row below.
 
-| Kind | Namespace | Name | Data / purpose |
+Kubernetes has two workload placements. Choosing a custom system namespace
+changes the location of platform resources, not their names. Optional resources
+exist only when their feature is configured.
+
+| Resource | Namespace per space | Shared workload namespace | Content |
 |---|---|---|---|
-| ConfigMap | System | `donkey` | `platform.yaml`, `route.yaml`, `buildkitd.toml` |
-| ConfigMap | Workload | `<space>-space` | `config.yaml`: admins, developers and domains |
-| ConfigMap | Workload | `<app>-route` | `route.yaml`, optional `access.yaml` |
-| ConfigMap | Workload | `<app>-route-<target>-<path-slug>` | Route under another app's hostname |
-| Secret | System | `donkey` | Installation credentials, session/telemetry keys and private build settings |
-| Secret | System | `donkey-registry` | Image pull authentication: `.dockerconfigjson` |
-| Secret | System | `donkey-gateway-ca` | Built-in certificate authority |
-| Secret | System | `donkey-gateway-acme` | ACME account, certificates and challenge cache |
-| Secret | System | `donkey-gateway-tls` | cert-manager TLS certificate: `tls.crt`, `tls.key` |
-| Secret | System | `donkey-<space>--<app>-tls` | App TLS certificate: `tls.crt`, `tls.key` |
-| Secret | Workload | `<app>-env` | User-configured environment variables |
-| Secret | Workload | `<app>-telemetry` | Telemetry environment variables |
-| Secret | Workload | `<app>-registry` | App image pull authentication: `.dockerconfigjson` |
-| Secret | Workload | `<service>-registry` | Service image pull authentication: `.dockerconfigjson` |
-| Secret | Workload | `shared-service-<service>` | Space service connection values and credentials |
-| Secret | Workload | `<app>-service-<service>` | Service environment variables bound to an app |
+| Space ConfigMap | `<space>-space` | `<space>-space` | `config.yaml`: `admins`, `developers`, `domains` |
+| App route ConfigMap | `<app>-route` | `<space>-<app>-route` | `route.yaml`, optional `access.yaml` |
+| Shared-address route ConfigMap | `<app>-route-<target>-<path-slug>` | `<space>-<app>-route-<target>-<path-slug>` | `route.yaml`, optional `access.yaml` |
+| App environment Secret | `<app>-env` | `<space>-<app>-env` | Environment variable names and values |
+| App telemetry Secret | `<app>-telemetry` | `<space>-<app>-telemetry` | OpenTelemetry environment variables |
+| App registry Secret | `<app>-registry` | `<space>-<app>-registry` | `.dockerconfigjson` |
+| Service registry Secret | `<service>-registry` | `<space>-<service>-registry` | `.dockerconfigjson` |
+| Space service binding Secret | `<service>-binding` | `<space>-<service>-binding` | The service's own environment variables, such as `DATABASE_URL` |
+| App service binding Secret | `<app>-binding-<service>` | `<space>-<app>-binding-<service>` | The app's copy of a service binding |
 
-In a shared workload namespace, app and service names get the `<space>--` prefix:
-`team--api-route`, `team--api-env`,
-`team--shared-service-postgres`, and `team--api-route-web-api`.
-Space ConfigMaps already include the space name and remain `team-space`.
-The path slug uses lowercase letters and digits separated by hyphens;
-an empty path is represented by `root`.
+All rows above live in the workload namespace: normally `donkey-<space>`, or
+`kubernetes.workload.namespace` when configured. For `team` / `my-api`, the
+environment Secret is `my-api-env` in `donkey-team`, or `team-my-api-env` in
+the shared namespace. A service's binding belongs to the service, not to a
+pseudo-app: postgres in `team` keeps its credentials in `postgres-binding`,
+and an app that connects gets `my-api-binding-postgres`. No app name is
+reserved for this.
+
+Platform resources always live in `kubernetes.system.namespace`
+(`donkey-system` by default), with the same names in both placements:
+
+| Resource | Name | Content / Secret type |
+|---|---|---|
+| ConfigMap | `donkey` | `platform.yaml`, `route.yaml`, `buildkitd.toml` |
+| Secret | `donkey` | Installation environment values; `Opaque` |
+| Secret | `donkey-registry` | `.dockerconfigjson`; `kubernetes.io/dockerconfigjson` |
+| Secret | `donkey-gateway-ca` | Built-in CA: `ca.crt`, `ca.key`; `Opaque` |
+| Secret | `donkey-gateway-acme` | ACME account, certificates and challenge cache; `Opaque` |
+| Secret | `donkey-gateway-tls` | Platform certificate from cert-manager: `tls.crt`, `tls.key`; `kubernetes.io/tls` |
+| Secret | `<space>-<app>-tls` | App certificate from cert-manager: `tls.crt`, `tls.key`; `kubernetes.io/tls` |
+| Certificate | `donkey-gateway` | Platform certificate request; writes `donkey-gateway-tls` |
+| Certificate | `<space>-<app>` | App certificate request; writes `<space>-<app>-tls` |
+| DNSEndpoint | `donkey-gateway-dns` | Platform DNS records |
+| DNSEndpoint | `<space>-<app>-dns` | App DNS records |
+
+App TLS Secrets always include the space because all certificates share the
+platform namespace. The `team` / `my-api` certificate is `team-my-api-tls` in
+either placement. ACME and built-in CA modes do not create per-app TLS Secrets.
+Registry Secrets use `kubernetes.io/dockerconfigjson`; environment, telemetry
+and service credential Secrets use `Opaque`. Environment keys retain their
+standard names, such as `DATABASE_URL` and `OTEL_EXPORTER_OTLP_ENDPOINT`.
+
+For space `team` and app `my-api`, the Certificate is `team-my-api`, its Secret
+is `team-my-api-tls`, and the DNSEndpoint is `team-my-api-dns`. These names and
+their system namespace are the same in both workload placements. Certificate
+resources exist only in cert-manager mode; DNSEndpoints require external DNS
+publication to be configured.
+
+The installation Secret uses the names consumed by the control-plane pods:
+`DONKEY_SESSION_KEY`, `DONKEY_TELEMETRY_KEY`, `DONKEY_REGISTRY_PASSWORD`,
+`DONKEY_OIDC_CLIENT_ID`, `DONKEY_OIDC_CLIENT_SECRET`, `OPENAI_API_KEY`,
+`DONKEY_PACKAGES_PASSWORD`, `DONKEY_BUILD_ENV`, `DONKEY_BUILDER_INSTRUCTIONS`,
+`HTTP_PROXY`, and `HTTPS_PROXY`. `DONKEY_BUILD_ENV` is a JSON environment map
+because that environment variable's consumer expects JSON. Configuration files
+use YAML; BuildKit's native configuration remains TOML.
 
 The local kind demo also creates Secrets `donkey-registry-ca`,
-`package-registry-auth`, and `private-packages-tls` in `donkey-system`.
-Other existing Secrets referenced by installation settings keep their
-operator-chosen names. `kube-root-ca.crt` is created by Kubernetes.
+`package-registry-auth`, and `private-packages-tls` for its registry/package setup.
+These are inputs to the installation, not resources generated by Donkey.
+Existing Secrets referenced in installation settings keep their operator-chosen
+names. `kube-root-ca.crt` is created by Kubernetes.
 
-Upgrades migrate the previous ConfigMap/Secret names and JSON entries to this
-layout. Existing platform admins, space membership, domain policies, credentials
-and certificates are preserved. The installer updates consumers before removing
-superseded Secrets and ConfigMaps. Both the old annotation routes and the new
-YAML routes remain readable during migration.
+Upgrades migrate previous ConfigMap/Secret names and JSON settings to the YAML
+entries above. Credentials, CA keys, platform admins, space roles, domains and
+app visitor access are preserved. Route readers accept old annotations during
+the rollout; the installer removes those annotations after the new gateway is
+ready. Old credential Secrets remain while any Pod still references them;
+subsequent installs retry cleanup.
+
+App Certificates and DNSEndpoints migrate from `donkey-app-<space>.<app>` and
+`donkey-app-<space>.<app>-dns` during server startup, installation, or the app's
+next deployment. Donkey applies each replacement before removing the old object.
+The TLS Secret keeps its name and certificate data; an upgrade from the original
+TLS Secret name copies its existing data first. Old Certificates are deleted
+with orphan propagation so cert-manager owner references cannot cause the
+issued TLS Secret to be garbage-collected. Migration refuses resources owned by
+another installation and can be rerun after an interrupted upgrade.
+
+When migrating a shared namespace from the former `space--app` names, workload
+Deployments move to `space-app`. Existing PVCs retain their names and data;
+later deploys and the file browser continue using them. Legacy Services remain
+as DNS aliases so stored connection URLs keep working. Donkey does not rename
+spaces automatically: an existing space with a reserved name must be moved to
+a valid space name before upgrading.
+
+Space NetworkPolicies are named `<space>-space`, like the settings ConfigMap;
+policies still called `donkey.space.<space>` are replaced at server startup.
+A space's own service bindings move from the former pseudo-app names
+(`shared-binding-<service>`, `<space>-shared-binding-<service>`, and the
+older `-addon-` and `-service-` spellings) to `<service>-binding`; app copies
+keep `<app>-binding-<service>`. Deployments are repointed first, and an old
+Secret stays until no Pod references it.
 
 ## Isolating spaces from each other
 

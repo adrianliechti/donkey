@@ -15,21 +15,29 @@ import (
 // space binding carries only addon identity.
 func TestAttachmentSecret(t *testing.T) {
 	sec := attachmentSecret("prod", "shop", "shop", "donkey-prod", "db", map[string]string{"DATABASE_URL": "x"})
-	if sec.Name != addons.SecretName("shop", "db") {
+	if sec.Name != "shop-binding-db" {
 		t.Fatalf("name = %q", sec.Name)
 	}
 	if sec.Labels[manifests.LabelApp] != "shop" || sec.Labels[manifests.LabelAddon] != "db" ||
 		sec.Labels[manifests.LabelRole] != manifests.RoleBinding {
 		t.Fatalf("attachment identity = %v", sec.Labels)
 	}
-	plain := spaceBindingSecret("prod", "shared", "donkey-prod", "db", nil)
+	plain := spaceBindingSecret("prod", "db", "donkey-prod", "db", nil)
+	if plain.Name != "db-binding" {
+		t.Fatalf("the space's binding is named after the service, got %q", plain.Name)
+	}
 	if plain.Labels[manifests.LabelApp] != "" || plain.Labels[manifests.LabelAddon] != "db" {
 		t.Fatalf("space binding must have addon identity without a pseudo-app: %v", plain.Labels)
+	}
+	// In a shared namespace both carry the space, and stay distinct from an
+	// app that happens to be called "db".
+	if shared := spaceBindingSecret("prod", "prod-db", "apps", "db", nil); shared.Name != "prod-db-binding" {
+		t.Fatalf("shared-namespace space binding = %q", shared.Name)
 	}
 }
 
 func TestAddonObjectsUseRegistryCredentialsForPrivateMirror(t *testing.T) {
-	in := addons.Input{App: "shared", Space: "prod", Namespace: "donkey-prod", Name: "postgres", Storage: "1Gi"}
+	in := addons.Input{Space: "prod", Namespace: "donkey-prod", Name: "postgres", Storage: "1Gi"}
 	w := &addons.Workload{
 		Image: "registry.example.com/mirror/library/postgres:16", Port: 5432, PortName: "postgres",
 		DataPath: "/var/lib/postgresql/data", RunAsUser: 999, ReadyCommand: []string{"pg_isready"},
@@ -54,7 +62,7 @@ func TestAddonObjectsUseRegistryCredentialsForPrivateMirror(t *testing.T) {
 }
 
 func TestAddonObjectsReferenceExistingPullSecret(t *testing.T) {
-	in := addons.Input{App: "shared", Space: "prod", Namespace: "donkey-prod", Name: "postgres", Storage: "1Gi"}
+	in := addons.Input{Space: "prod", Namespace: "donkey-prod", Name: "postgres", Storage: "1Gi"}
 	w := &addons.Workload{
 		Image: "mirror.example.com/docker/library/postgres:18.6", Port: 5432, PortName: "postgres",
 		DataPath: "/var/lib/postgresql/data", RunAsUser: 999, ReadyCommand: []string{"pg_isready"},
@@ -91,7 +99,7 @@ func TestAddonPullCredentialsAreScopedToRegistryHost(t *testing.T) {
 // The materializer turns one Workload into the same trio every addon used to
 // render by hand — with the security posture applied uniformly.
 func TestAddonObjects(t *testing.T) {
-	in := addons.Input{App: "shared", Space: "prod", Namespace: "donkey-prod", Name: "db", Storage: "1Gi"}
+	in := addons.Input{Space: "prod", Namespace: "donkey-prod", Name: "db", Storage: "1Gi"}
 	w := &addons.Workload{
 		Image: "postgres:16", Port: 5432, PortName: "postgres",
 		Env:       map[string]string{"POSTGRES_USER": "donkey"},

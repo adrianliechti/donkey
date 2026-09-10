@@ -35,7 +35,6 @@ func ResolveSpace(flag string, app *AppConfig, appDir, repoRoot string) string {
 }
 
 var nameCleanRE = regexp.MustCompile(`[^a-z0-9-]+`)
-var spaceNameCleanRE = regexp.MustCompile(`[^a-z0-9]+`)
 
 // SanitizeName turns a folder name into a name donkey (and Kubernetes) can
 // use: lowercase letters, digits and dashes.
@@ -51,15 +50,16 @@ func SanitizeName(base string) string {
 	return name
 }
 
-// SanitizeSpaceName derives a space from a folder. Explicit space names are
+// SanitizeSpaceName derives a space from a folder the same way an app name
+// is derived, then steps around the reserved names. Explicit space names are
 // validated, never silently renamed.
 func SanitizeSpaceName(base string) string {
-	name := spaceNameCleanRE.ReplaceAllString(strings.ToLower(base), "")
-	if name == "" {
-		return DefaultSpace
-	}
+	name := strings.Trim(nameCleanRE.ReplaceAllString(strings.ToLower(base), "-"), "-")
 	if len(name) > 40 {
-		name = name[:40]
+		name = strings.Trim(name[:40], "-")
+	}
+	if !ValidSpaceName(name) {
+		return DefaultSpace
 	}
 	return name
 }

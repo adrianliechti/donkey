@@ -31,9 +31,6 @@ func (s *Server) spaceApp(r *http.Request) (space, app string, err error) {
 	if !config.ValidName(app) {
 		return "", "", fmt.Errorf("%q is not a valid app name", app)
 	}
-	if app == addons.SharedOwner {
-		return "", "", fmt.Errorf("%q is reserved for a space's shared services", addons.SharedOwner)
-	}
 	space = r.PathValue("space")
 	if err := s.rt.ValidateSpace(space); err != nil {
 		return "", "", err
@@ -494,7 +491,7 @@ func (s *Server) handleCatalog(w http.ResponseWriter, r *http.Request) {
 	for _, a := range addons.Types() {
 		// A throwaway binding yields the contract's variable names.
 		dummy := addons.Input{
-			App: addons.SharedOwner, Space: "space", Namespace: "ns",
+			Space: "space", Namespace: "ns",
 			Name: a.Type(), Version: a.DefaultVersion(), Storage: a.DefaultStorage(), Password: "x",
 		}
 		keys := slices.Sorted(maps.Keys(a.Binding(dummy)))

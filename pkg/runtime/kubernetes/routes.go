@@ -21,8 +21,8 @@ import (
 //
 // The installation label is the ownership boundary. Do not select on
 // app.kubernetes.io/managed-by here: a route may be managed by Helm or GitOps
-// even though donkey-gateway serves it. The backend annotation decides whether
-// an installation-labelled ConfigMap is actually a route.
+// even though donkey-gateway serves it. A route.yaml data entry identifies a
+// route; legacy backend annotations remain readable during upgrades.
 func (c *Client) ListManagedRoutes(ctx context.Context) ([]corev1.ConfigMap, error) {
 	var out []corev1.ConfigMap
 	for _, ns := range c.sweep() {
@@ -117,7 +117,7 @@ func (c *Client) AppNetwork(ctx context.Context, namespace, objectName, space, a
 
 // SetAnnotations merge-patches annotations on one object; a nil value removes
 // the annotation. Used for the console's own records (donkey.local/console on
-// the Deployment) and for access rules on routes — a patch instead of an
+// the Deployment) — a patch instead of an
 // apply, so the field stays out of the deploy's server-side-apply ownership
 // and survives the next deploy untouched.
 func (c *Client) SetAnnotations(ctx context.Context, kind, namespace, name string, identity map[string]string, annotations map[string]*string) error {

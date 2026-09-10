@@ -402,3 +402,34 @@ func TestServerNetworkPolicy(t *testing.T) {
 		t.Error("the policy should name the API port")
 	}
 }
+
+func TestSystemConfigMapContainsOnlyPublicConfigurationAndBuildkitMount(t *testing.T) {
+	in := systemInput()
+	in.OpenAIAPIKey = "private-ai-key"
+	in.OIDCClientSecret = "private-client-secret"
+	in.Build.Proxy.HTTP = "http://user:private-proxy-password@proxy.example.com:8080"
+	var mapsFound int
+	for _, obj := range SystemObjects(in) {
+		if cm, ok := obj.(*corev1.ConfigMap); ok {
+			mapsFound++
+			if cm.Name != "donkey" || cm.Data["route.yaml"] == "" || cm.Data["buildkitd.toml"] == "" {
+				t.Fatalf("unexpected platform ConfigMap %s", cm.Name)
+			}
+			for _, value := range cm.Data {
+				if strings.Contains(value, "private-") {
+					t.Fatal("credential leaked into ConfigMap data")
+				}
+			}
+		}
+	}
+	if mapsFound != 1 {
+		t.Fatalf("wanted one platform ConfigMap, got %d", mapsFound)
+	}
+	for _, volume := range buildkitDeployment(in).Spec.Template.Spec.Volumes {
+		if ref := volume.ConfigMap; ref != nil {
+			if ref.Name != "donkey" || len(ref.Items) != 1 || ref.Items[0].Key != "buildkitd.toml" {
+				t.Fatal("BuildKit mounts unrelated platform configuration")
+			}
+		}
+	}
+}

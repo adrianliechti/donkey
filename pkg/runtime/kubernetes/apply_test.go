@@ -53,6 +53,62 @@ func TestApplyRefusesToAdoptSameNamedForeignObject(t *testing.T) {
 	}
 }
 
+// "a-b"/"c" and "a"/"b-c" both render as "a-b-c" in a shared namespace. The
+// second pair must be refused by the first pair's labels — and told why.
+func TestApplyRefusesJoinedNameCollisionByLabels(t *testing.T) {
+	ctx := context.Background()
+	holder := manifests.Labels("a-b", "c", manifests.RoleRoute)
+	holder[manifests.LabelInstallation] = "donkey-system"
+	existing := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "v1",
+		"kind":       "ConfigMap",
+		"metadata": map[string]any{
+			"name": "a-b-c-route", "namespace": "workloads",
+			"labels": stringMap(holder),
+		},
+	}}
+	dynamic := dynamicfake.NewSimpleDynamicClient(k8sruntime.NewScheme(), existing)
+	client := (&Client{Dynamic: dynamic}).WithInstallation("donkey-system")
+	desired := &corev1.ConfigMap{
+		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "ConfigMap"},
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "a-b-c-route", Namespace: "workloads",
+			Labels: manifests.Labels("a", "b-c", manifests.RoleRoute),
+		},
+	}
+	err := client.Apply(ctx, []k8sruntime.Object{desired})
+	if err == nil {
+		t.Fatal("a same-named object of another space was taken over")
+	}
+	if want := `app "c" of space "a-b"`; !contains(err.Error(), want) {
+		t.Fatalf("the error should name the holder %s: %v", want, err)
+	}
+	for _, action := range dynamic.Actions() {
+		if action.GetVerb() == "patch" {
+			t.Fatalf("colliding object reached the apply mutation: %v", action)
+		}
+	}
+}
+
+func stringMap(m map[string]string) map[string]any {
+	out := map[string]any{}
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
+}
+
+func contains(s, sub string) bool {
+	return len(sub) == 0 || (len(s) >= len(sub) && func() bool {
+		for i := 0; i+len(sub) <= len(s); i++ {
+			if s[i:i+len(sub)] == sub {
+				return true
+			}
+		}
+		return false
+	}())
+}
+
 func TestDeleteObjectPreconditionsOnValidatedUID(t *testing.T) {
 	ctx := context.Background()
 	identity := manifests.Labels("team", "site", manifests.RoleRoute)

@@ -27,7 +27,7 @@ type imagePullCredentials struct {
 	Password string
 }
 
-func bindingSecret(objectOwner, namespace string, labels map[string]string, name string, data map[string]string) *corev1.Secret {
+func bindingSecret(objectName, namespace string, labels map[string]string, data map[string]string) *corev1.Secret {
 	bytes := map[string][]byte{}
 	for k, v := range data {
 		bytes[k] = []byte(v)
@@ -35,7 +35,7 @@ func bindingSecret(objectOwner, namespace string, labels map[string]string, name
 	return &corev1.Secret{
 		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Secret"},
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      addons.SecretName(objectOwner, name),
+			Name:      objectName,
 			Namespace: namespace,
 			Labels:    labels,
 		},
@@ -43,11 +43,11 @@ func bindingSecret(objectOwner, namespace string, labels map[string]string, name
 	}
 }
 
-// spaceBindingSecret is the space's canonical service binding. It has addon
-// identity and deliberately no pseudo-app label.
-func spaceBindingSecret(space, objectOwner, namespace, name string, data map[string]string) *corev1.Secret {
-	return bindingSecret(objectOwner, namespace,
-		manifests.AddonLabels(space, name, manifests.RoleBinding), name, data)
+// spaceBindingSecret is the space's canonical service binding, named after
+// the service's object name. It has addon identity and no app label.
+func spaceBindingSecret(space, objectService, namespace, name string, data map[string]string) *corev1.Secret {
+	return bindingSecret(manifests.SpaceBindingSecretName(objectService), namespace,
+		manifests.AddonLabels(space, name, manifests.RoleBinding), data)
 }
 
 // attachmentSecret is an app's copy of a space service binding. App and addon
@@ -55,7 +55,7 @@ func spaceBindingSecret(space, objectOwner, namespace, name string, data map[str
 func attachmentSecret(space, app, objectApp, namespace, name string, data map[string]string) *corev1.Secret {
 	labels := manifests.AddonLabels(space, name, manifests.RoleBinding)
 	labels[manifests.LabelApp] = app
-	return bindingSecret(objectApp, namespace, labels, name, data)
+	return bindingSecret(manifests.AppBindingSecretName(objectApp, name), namespace, labels, data)
 }
 
 // addonObjects renders one provisioned instance: its data volume, its
@@ -95,7 +95,7 @@ func addonObjects(in addons.Input, w *addons.Workload, pull *imagePullCredential
 	for _, k := range sortedKeys(w.SecretEnv) {
 		env = append(env, corev1.EnvVar{Name: k, ValueFrom: &corev1.EnvVarSource{
 			SecretKeyRef: &corev1.SecretKeySelector{
-				LocalObjectReference: corev1.LocalObjectReference{Name: addons.SecretName(in.App, in.Name)},
+				LocalObjectReference: corev1.LocalObjectReference{Name: manifests.SpaceBindingSecretName(in.HostName())},
 				Key:                  w.SecretEnv[k],
 			},
 		}})

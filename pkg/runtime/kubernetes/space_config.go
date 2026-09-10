@@ -11,6 +11,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
+	"github.com/adrianliechti/donkey/internal/addons"
 	"github.com/adrianliechti/donkey/internal/config"
 	rt "github.com/adrianliechti/donkey/pkg/runtime"
 	"github.com/adrianliechti/donkey/pkg/runtime/kubernetes/manifests"
@@ -19,6 +20,9 @@ import (
 const spaceConfigKey = "config.yaml"
 
 func (r *Runtime) EnsureSpaceConfigs(ctx context.Context) error {
+	if err := r.ValidateExistingNames(ctx); err != nil {
+		return err
+	}
 	if err := r.MigrateSystemConfig(ctx); err != nil {
 		return err
 	}
@@ -36,8 +40,14 @@ func (r *Runtime) EnsureSpaceConfigs(ctx context.Context) error {
 		if err := r.ensureSpaceHome(ctx, space); err != nil {
 			return err
 		}
+		if err := r.migrateSpaceIsolation(ctx, space); err != nil {
+			return err
+		}
 	}
-	return r.migrateServiceSecrets(ctx)
+	if err := r.migrateServiceSecrets(ctx); err != nil {
+		return err
+	}
+	return r.migrateAppTrafficNames(ctx)
 }
 
 func (r *Runtime) ownedSpaceNamespace(ctx context.Context, space string) (*corev1.Namespace, error) {
@@ -82,6 +92,19 @@ func (r *Runtime) spaceConfigMap(ctx context.Context, space string) (*corev1.Con
 	if cm.DeletionTimestamp != nil {
 		return nil, fmt.Errorf("the space is being deleted")
 	}
+	if _, current := cm.Data[spaceConfigKey]; !current {
+		if _, oldKey := cm.Data["config.json"]; !oldKey {
+			// A rendered app may have created an empty marker under the new
+			// name. It must not hide membership stored under the old name.
+			migrated, err := r.migrateSpaceConfigMap(ctx, space)
+			if err == nil {
+				return migrated, nil
+			}
+			if !apierrors.IsNotFound(err) {
+				return nil, err
+			}
+		}
+	}
 	return cm, nil
 }
 
@@ -125,6 +148,18 @@ func (r *Runtime) migrateSpaceConfigMap(ctx context.Context, space string) (*cor
 	}
 	if err := r.c.requireOwnedObject("ConfigMap", stored.Namespace, stored.Name, stored.Labels, manifests.SpaceLabels(space)); err != nil {
 		return nil, err
+	}
+	if _, current := stored.Data[spaceConfigKey]; !current {
+		if _, legacy := stored.Data["config.json"]; !legacy {
+			if stored.Data == nil {
+				stored.Data = map[string]string{}
+			}
+			stored.Data[spaceConfigKey] = string(raw)
+			stored, err = cms.Update(ctx, stored, metav1.UpdateOptions{FieldManager: "donkey-space-config"})
+			if err != nil {
+				return nil, err
+			}
+		}
 	}
 	if err := r.c.deleteConfigMap(ctx, old); err != nil {
 		return nil, err
@@ -252,4 +287,37 @@ func (r *Runtime) ensureSpaceHome(ctx context.Context, space string) error {
 		_, err = r.spaceConfigMap(ctx, space)
 	}
 	return err
+}
+
+// ValidateExistingNames catches incompatible logical names before an upgrade
+// mutates any resource. Spaces, apps and services are never silently renamed.
+func (r *Runtime) ValidateExistingNames(ctx context.Context) error {
+	spaces, err := r.ListSpaces(ctx)
+	if err != nil {
+		return err
+	}
+	for _, space := range spaces {
+		if err := r.ValidateSpace(space); err != nil {
+			return fmt.Errorf("existing space must be moved before upgrading: %w", err)
+		}
+		services, err := r.ListServices(ctx, space, addons.SharedOwner)
+		if err != nil {
+			return err
+		}
+		for _, service := range services {
+			if err := config.ValidateServiceName(service.Name); err != nil {
+				return fmt.Errorf("existing service in space %q must be renamed before upgrading: %w", space, err)
+			}
+		}
+	}
+	apps, err := r.c.ListApps(ctx)
+	if err != nil {
+		return err
+	}
+	for _, app := range apps {
+		if err := config.ValidateAppName(app.App); err != nil {
+			return fmt.Errorf("existing app in space %q must be renamed before upgrading: %w", app.Space, err)
+		}
+	}
+	return nil
 }

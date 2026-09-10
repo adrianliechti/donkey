@@ -43,7 +43,7 @@ func testInput(t *testing.T) Input {
 		RegistryHost:     "reg.example.com",
 		RegistryUsername: "bob",
 		RegistryPassword: "hunter2",
-		AddonSecretNames: []string{"shop-service-db"},
+		AddonSecretNames: []string{"shop-binding-db"},
 		Domain:           "shop.acme.apps.example.com",
 	}
 }

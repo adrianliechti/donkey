@@ -68,13 +68,13 @@ Practical CLI facts for scripted use:
   repository folder name (the git root's name, not the app folder's);
   override with `space:` in donkey.yaml or `--space`. Apps in a space reach
   each other by plain name: `http://backend` — no ports, no full hostnames.
-- **Names** (apps, spaces, services) become DNS labels: lowercase letters,
+- **Space, app and service names** become DNS labels: lowercase letters,
   digits and dashes, starting and ending alphanumeric, at most 40
-  characters (`^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$`). The app name
-  `shared` is reserved, and an app cannot take the name of a service that
-  already runs in its space (an app called `postgres` next to a postgres
-  service is refused). Pick valid names up front — the server rejects the
-  rest before building.
+  characters (`^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$`). `donkey`,
+  `platform`, and `system` are reserved as space names. An app cannot take
+  the name of a service that already runs in its space (an app called
+  `postgres` next to a postgres service is refused). Pick valid names up
+  front — the server rejects the rest before building.
 - **Addons (services)** — `postgres`, `redis`, `rustfs` (S3), `openai`.
   They belong to the *space*, and apps *connect* to them. Two apps naming
   the same service share it (a monorepo's database is the project's

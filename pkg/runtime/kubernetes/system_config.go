@@ -2,11 +2,13 @@ package kubernetes
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 
 	rt "github.com/adrianliechti/donkey/pkg/runtime"
 	"github.com/adrianliechti/donkey/pkg/runtime/kubernetes/manifests"
@@ -75,7 +77,46 @@ func (c *Client) DeleteLegacySystemConfig(ctx context.Context, namespace string)
 			return fmt.Errorf("removing %s: %w", old.name, err)
 		}
 	}
-	return c.DeleteObject(ctx, "ConfigMap", namespace, "donkey.platform", manifests.SystemLabels("donkey-platform"))
+	if err := c.DeleteObject(ctx, "ConfigMap", namespace, "donkey.platform", manifests.SystemLabels("donkey-platform")); err != nil {
+		return err
+	}
+	return c.deleteLegacySecretKeys(ctx, namespace)
+}
+
+// Previous manifests used stringData, whose resulting data keys may not be
+// removed by server-side apply. Prune only known legacy keys after all new
+// consumers have rolled out, preserving other entries and current values.
+func (c *Client) deleteLegacySecretKeys(ctx context.Context, namespace string) error {
+	secrets := c.Clientset.CoreV1().Secrets(namespace)
+	secret, err := secrets.Get(ctx, manifests.SystemConfigSecretName, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if err := c.requireOwnedObject("Secret", namespace, secret.Name, secret.Labels, manifests.SystemLabels(manifests.ServerName)); err != nil {
+		return err
+	}
+	data := map[string]any{}
+	for current, legacy := range systemSecretKeys {
+		if _, exists := secret.Data[legacy]; !exists {
+			continue
+		}
+		if _, exists := secret.Data[current]; !exists {
+			return fmt.Errorf("cannot remove legacy credential key %s before %s exists", legacy, current)
+		}
+		data[legacy] = nil
+	}
+	if len(data) == 0 {
+		return nil
+	}
+	patch, err := json.Marshal(map[string]any{"metadata": map[string]any{"uid": secret.UID}, "data": data})
+	if err != nil {
+		return err
+	}
+	_, err = secrets.Patch(ctx, secret.Name, types.MergePatchType, patch, metav1.PatchOptions{FieldManager: "donkey"})
+	return err
 }
 
 // Keys match the environment variables consumed by the control-plane pods.

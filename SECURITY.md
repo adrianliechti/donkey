@@ -36,8 +36,8 @@ only; no donkey component authorizes on them. The server's `auth`
   are read on every API request, including the resolved targets of uploads and
   saved plans. IdP group/role changes still require refreshed identity claims.
 - Platform settings live in the control-plane `donkey` ConfigMap’s
-  `platform.json` entry, alongside the console route annotations. Each space
-  has `donkey.space.<space>`, with JSON in `config.json`. Docker
+  `platform.yaml` entry, alongside `route.yaml` and `buildkitd.toml`. Each space
+  has `<space>-space`, with YAML in `config.yaml`. Docker
   uses equivalent files in its persistent state volume. Existing spaces
   migrate with empty membership and unrestricted domains. Only platform admins
   retain access until space roles are assigned. Subsequent saves use last save
@@ -94,11 +94,12 @@ so in its own start path.
 is never adopted or deleted; both deletion paths re-check ownership. Every
 Kubernetes sweep is narrowed by installation plus logical-scope labels
 (`donkey.local/installation` + space/app/addon); Docker verifies the managed
-network and space before cascading. Name collisions are guarded both ways (an
-addon cannot take an app's name or vice versa) and the `shared` owner is
-reserved. Selectors and ownership checks use only immutable `donkey.local/*`
-identity labels; the descriptive `app.kubernetes.io/*` labels never grant
-authority.
+network and space before cascading. Name collisions are guarded by labels, not
+by name grammar: an addon cannot take an app's name or vice versa, and where
+spaces share a namespace, an object whose identity labels name another space
+or app is refused rather than taken over. Selectors and ownership checks use
+only immutable `donkey.local/*` identity labels; the descriptive
+`app.kubernetes.io/*` labels never grant authority.
 
 **Optional certificate and DNS authority stays namespaced.** In the confined
 two-namespace topology, donkey-server may write cert-manager Certificate and

@@ -1,9 +1,6 @@
-name: addons-sample
-port: 3000
+addons:
+- type: postgres
 healthcheck:
   path: /healthz
-# The reason this file exists: addons are the one thing donkey never invents
-# on its own. Listing one here makes `donkey deploy` provision the service
-# and inject its binding before the app starts.
-addons:
-  - type: postgres
+name: addons-sample
+port: 3000

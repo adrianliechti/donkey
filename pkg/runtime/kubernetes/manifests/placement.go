@@ -11,12 +11,11 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 )
 
-// NameSeparator qualifies a name with its space. Space names contain only
-// letters and digits; app and service names may contain hyphens.
+// NameSeparator joins a space onto a name where one namespace holds several
+// spaces. Object names are derived, never parsed: a space and an app may both
+// contain hyphens, and whoever needs to know what an object is reads its
+// donkey.local/* labels, the way Helm's <release>-<chart> names work.
 const NameSeparator = "-"
-
-// Kept for the existing NetworkPolicy names; space settings use SpaceMarkerName.
-const spaceMarkerPrefix = "donkey.space."
 
 // Placement decides where a space's objects live and what they are called.
 //
@@ -49,19 +48,16 @@ func (p Placement) Namespace(space string) string {
 // Name is the object name for one of the space's things — an app, an addon,
 // a secret prefix. Unqualified when the space owns its namespace, because
 // that is what lets siblings reach each other by plain name.
+//
+// Two pairs can render the same name ("a-b"/"c" and "a"/"b-c" both come out
+// as "a-b-c"). Uniqueness is settled where the object is applied: an existing
+// object whose identity labels name another space or app is refused, never
+// taken over.
 func (p Placement) Name(space, name string) string {
 	if p.Shared() {
 		return space + NameSeparator + name
 	}
 	return name
-}
-
-// Unname recovers the plain name from an object name. The inverse of Name.
-func (p Placement) Unname(space, objectName string) string {
-	if p.Shared() {
-		return strings.TrimPrefix(objectName, space+NameSeparator)
-	}
-	return objectName
 }
 
 // SpaceOf recovers the space from a namespace — the inverse of Namespace for
@@ -105,10 +101,10 @@ func (p Placement) SpaceObject(space string) runtime.Object {
 // allow more, but an app needs all of them, so the tightest one is the rule.
 const MaxObjectName = 63
 
-// ValidateNames checks the space boundary and the combined Service name length.
+// ValidateNames checks the space name and the combined Service name length.
 func (p Placement) ValidateNames(space, app string) error {
-	if !config.ValidSpaceName(space) {
-		return fmt.Errorf("space %q must use lowercase letters and digits, without dashes (max 40 chars)", space)
+	if err := config.ValidateSpaceName(space); err != nil {
+		return err
 	}
 	if !p.Shared() {
 		return nil

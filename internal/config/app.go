@@ -300,10 +300,33 @@ var nameRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$`)
 // hostname and object names, so they follow donkey.yaml's rules.
 func ValidName(s string) bool { return nameRE.MatchString(s) }
 
-var spaceNameRE = regexp.MustCompile(`^[a-z0-9]{1,40}$`)
+func ValidateAppName(s string) error { return validateWorkloadName(s, "app") }
 
-// ValidSpaceName keeps the first hyphen in a qualified resource name unambiguous.
-func ValidSpaceName(s string) bool { return spaceNameRE.MatchString(s) }
+func ValidateServiceName(s string) error { return validateWorkloadName(s, "service") }
+
+func validateWorkloadName(s, kind string) error {
+	if !ValidName(s) {
+		return fmt.Errorf("%s name %q must use lowercase letters, digits and dashes (max 40 chars)", kind, s)
+	}
+	return nil
+}
+
+// ValidSpaceName reports whether s is a name donkey accepts for a space.
+func ValidSpaceName(s string) bool { return ValidateSpaceName(s) == nil }
+
+// ValidateSpaceName applies the same DNS-label rule as apps and services.
+// Object names derived from a space are never parsed back, so a space may
+// contain hyphens like any other name; identity always comes from labels.
+func ValidateSpaceName(s string) error {
+	if !ValidName(s) {
+		return fmt.Errorf("space %q must use lowercase letters, digits and dashes (max 40 chars)", s)
+	}
+	switch s {
+	case "donkey", "platform", "system":
+		return fmt.Errorf("space name %q is reserved for Donkey; choose another name", s)
+	}
+	return nil
+}
 
 // namespaceRE is an RFC 1123 DNS label — what Kubernetes accepts as a
 // namespace name. Longer than donkey's own names allow, because the
@@ -371,11 +394,13 @@ func (c *AppConfig) Validate() error {
 	if c.Name == "" {
 		return fmt.Errorf("name is required")
 	}
-	if !nameRE.MatchString(c.Name) {
-		return fmt.Errorf("name %q must be lowercase letters, digits and dashes (max 40 chars), e.g. %q", c.Name, "my-app")
+	if err := ValidateAppName(c.Name); err != nil {
+		return err
 	}
-	if c.Space != "" && !ValidSpaceName(c.Space) {
-		return fmt.Errorf("space %q must be lowercase letters and digits, without dashes (max 40 chars), e.g. %q", c.Space, "acme")
+	if c.Space != "" {
+		if err := ValidateSpaceName(c.Space); err != nil {
+			return err
+		}
 	}
 	if c.Port < 1 || c.Port > 65535 {
 		return fmt.Errorf("port must be between 1 and 65535 (the port your app listens on)")
@@ -448,8 +473,8 @@ func (c *AppConfig) Validate() error {
 		if a.Type == "" {
 			return fmt.Errorf("addon %q needs a type (e.g. postgres)", a.Name)
 		}
-		if !nameRE.MatchString(a.Name) {
-			return fmt.Errorf("addon name %q must be lowercase letters, digits and dashes (max 40 chars)", a.Name)
+		if err := ValidateServiceName(a.Name); err != nil {
+			return err
 		}
 		if seen[a.Name] {
 			return fmt.Errorf("two addons share the name %q — give them distinct names", a.Name)

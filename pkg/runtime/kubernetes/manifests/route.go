@@ -16,7 +16,7 @@ import (
 // remain readable during upgrades.
 const (
 	// AnnotationBackend names the app Service the donkey gateway forwards
-	// to. Every route carries it — it is what makes a ConfigMap a route.
+	// to in the legacy annotation format.
 	AnnotationBackend = "donkey.local/backend"
 	// AnnotationHost is the hostname the route serves.
 	AnnotationHost = "donkey.local/host"

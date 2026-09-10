@@ -86,7 +86,7 @@ func (m *managedCertificates) reload(ctx context.Context) error {
 				continue
 			}
 			role := secret.Labels[manifests.LabelRole]
-			if role != manifests.RoleEdge && role != manifests.SystemRole(manifests.GatewayAppName) {
+			if role != manifests.RoleEdge && (role != manifests.SystemRole(manifests.GatewayAppName) || secret.Name != manifests.SystemCertificateSecretName) {
 				continue
 			}
 			certPEM, keyPEM := secret.Data["tls.crt"], secret.Data["tls.key"]

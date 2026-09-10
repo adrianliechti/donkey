@@ -244,6 +244,10 @@ function NewSpaceDialog({
   const effective = { ...settings, domains: customDomains ? settings.domains : defaults }
 
   async function create() {
+    if (['donkey', 'platform', 'system'].includes(name.trim())) {
+      setError('This name is reserved for Donkey. Choose another space name.')
+      return
+    }
     setBusy(true)
     setError('')
     try {
@@ -284,11 +288,11 @@ function NewSpaceDialog({
                 autoFocus
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                placeholder="myproject"
-                pattern="[a-z0-9]{1,40}"
+                placeholder="my-project"
+                pattern="[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?"
                 maxLength={40}
                 required
-                title="Use lowercase letters and digits, without dashes."
+                title="Use lowercase letters, digits and dashes, starting and ending with a letter or digit."
                 aria-describedby="space-name-help"
                 aria-label="Space name"
                 autoCapitalize="none"
@@ -296,7 +300,7 @@ function NewSpaceDialog({
                 disabled={busy}
                 className="mt-2 block w-full rounded-lg border border-line bg-surface px-3 py-2.5 font-mono text-sm font-normal focus:outline-2 focus:outline-accent-strong"
               />
-              <span id="space-name-help" className="mt-2 block text-xs font-normal text-muted">Lowercase letters and digits, up to 40 characters.</span>
+              <span id="space-name-help" className="mt-2 block text-xs font-normal text-muted">Lowercase letters, digits and dashes, up to 40 characters.</span>
             </label>
             <fieldset disabled={busy}>
               <SpaceConfigEditor creating settings={effective} domainPlaceholder={!customDomains && !name.trim() && domain ? `<space>.${domain}` : undefined} onChange={(next) => {

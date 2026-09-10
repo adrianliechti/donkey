@@ -26,9 +26,9 @@ func TestServiceBindingsSeparateSpacesInBothPlacements(t *testing.T) {
 			var objects []k8sruntime.Object
 			expected := map[string]string{}
 			for _, space := range []string{"one", "two"} {
-				namespace, name, owner := "donkey-"+space, "postgres", addons.SharedOwner
+				namespace, name := "donkey-"+space, "postgres"
 				if shared {
-					namespace, name, owner = "workloads", space+"--postgres", space+"--shared"
+					namespace, name = "workloads", space+"-postgres"
 				}
 				expected[space] = name + "." + namespace + ".svc"
 				addon, _ := addons.Get("postgres")
@@ -39,7 +39,7 @@ func TestServiceBindingsSeparateSpacesInBothPlacements(t *testing.T) {
 				}
 				labels := manifests.AddonLabels(space, "postgres", manifests.RoleBinding)
 				labels[manifests.LabelInstallation] = manifests.DefaultSystemNamespace
-				objects = append(objects, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: addons.SecretName(owner, "postgres"), Namespace: namespace, Labels: labels}, Data: data})
+				objects = append(objects, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: manifests.SpaceBindingSecretName(name), Namespace: namespace, Labels: labels}, Data: data})
 				labels = manifests.AddonLabels(space, "postgres", manifests.RoleAddon)
 				labels[manifests.LabelInstallation] = manifests.DefaultSystemNamespace
 				objects = append(objects, &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace, Labels: labels}, Spec: corev1.ServiceSpec{Ports: []corev1.ServicePort{{Port: 5432}}}})

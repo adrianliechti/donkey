@@ -159,11 +159,11 @@ type PlanEdit struct {
 }
 
 func (e PlanEdit) validate() error {
-	if !config.ValidName(strings.TrimSpace(e.Name)) {
-		return fmt.Errorf("app name must use lowercase letters, digits and dashes (max 40 chars)")
+	if err := config.ValidateAppName(strings.TrimSpace(e.Name)); err != nil {
+		return err
 	}
-	if !config.ValidName(strings.TrimSpace(e.Space)) {
-		return fmt.Errorf("space must use lowercase letters, digits and dashes (max 40 chars)")
+	if err := config.ValidateSpaceName(strings.TrimSpace(e.Space)); err != nil {
+		return err
 	}
 	if e.Port < 1 || e.Port > 65535 {
 		return fmt.Errorf("port must be between 1 and 65535")
@@ -733,11 +733,11 @@ func (s *Server) clusterFindings(ctx context.Context, app *config.AppConfig, ser
 		return []Finding{{Level: LevelBlock, Code: "space-taken", Title: err.Error()}}
 	}
 	var out []Finding
-	if app.Name == addons.SharedOwner {
+	if err := config.ValidateAppName(app.Name); err != nil {
 		out = append(out, Finding{
 			Level: LevelBlock,
-			Code:  "name-reserved",
-			Title: fmt.Sprintf("The name %q is reserved for a space's shared services", addons.SharedOwner),
+			Code:  "name-invalid",
+			Title: err.Error(),
 			Fix:   "Pick another name.",
 		})
 	}
