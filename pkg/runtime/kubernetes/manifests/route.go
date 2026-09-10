@@ -11,11 +11,9 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 )
 
-// A route is one entry of the donkey gateway's routing table: which hostname
-// (and path) reaches which app, whether visitors sign in first, and who may
-// pass. It is stored as a ConfigMap carrying annotations — the gateway is
-// donkey's own edge (it terminates TLS and proxies straight to the app's
-// Service), so no ingress vocabulary is needed, just the table.
+// A route is configuration in data["route.yaml"]. Identity and ownership stay
+// in labels; annotations are reserved for metadata. The old annotations below
+// remain readable during upgrades.
 const (
 	// AnnotationBackend names the app Service the donkey gateway forwards
 	// to. Every route carries it — it is what makes a ConfigMap a route.
@@ -70,56 +68,102 @@ func backendURL(in Input) string {
 	return fmt.Sprintf("http://%s.%s.svc:80", in.Name(), in.Namespace)
 }
 
-// routeAnnotations is the gateway's routing table entry: where the app
-// really is, which hostname and path it serves, whether to demand a login,
-// and who may pass.
-func routeAnnotations(in Input, host, path string) map[string]string {
-	ann := map[string]string{
-		AnnotationBackend: backendURL(in),
-		AnnotationHost:    host,
-		AnnotationPath:    path,
-	}
-	if in.App.IsAPI() {
-		ann[AnnotationMode] = config.AppModeAPI
-	}
-	if protected(in) {
-		ann[AnnotationLogin] = LoginRequired
-		if !in.App.Access.Empty() {
-			if b, err := json.Marshal(in.App.Access); err == nil {
-				ann[AnnotationAccess] = string(b)
+const (
+	RouteConfigKey = "route.yaml"
+	RouteAccessKey = "access.yaml"
+)
+
+// IsRoute includes old annotation-based entries while an upgrade is running.
+func IsRoute(cm *corev1.ConfigMap) bool {
+	_, found := cm.Data[RouteConfigKey]
+	return found || cm.Annotations[AnnotationBackend] != ""
+}
+
+// ReadRoute accepts the current configuration and the legacy annotation format.
+// A malformed current record never falls back to older, potentially wider rules.
+func ReadRoute(cm *corev1.ConfigMap) (config.GatewayRoute, error) {
+	var route config.GatewayRoute
+	if raw, found := cm.Data[RouteConfigKey]; found {
+		if err := config.DecodeYAML([]byte(raw), &route); err != nil {
+			return route, fmt.Errorf("cannot read route configuration: %w", err)
+		}
+	} else {
+		ann := cm.Annotations
+		route = config.GatewayRoute{
+			Host: ann[AnnotationHost], Path: ann[AnnotationPath], Backend: ann[AnnotationBackend],
+			Login: ann[AnnotationLogin] == LoginRequired, Mode: ann[AnnotationMode], CORS: ann[AnnotationCORS],
+			Token: ann[AnnotationToken] == TokenForward, StripPrefix: ann[AnnotationStripPrefix] == "true",
+		}
+		if raw := ann[AnnotationAccess]; raw != "" {
+			var access config.AccessConfig
+			if err := json.Unmarshal([]byte(raw), &access); err != nil {
+				return route, fmt.Errorf("cannot read route access: %w", err)
 			}
+			route.Access = &access
 		}
 	}
+	if raw, found := cm.Data[RouteAccessKey]; found {
+		var access config.AccessConfig
+		if err := config.DecodeYAML([]byte(raw), &access); err != nil {
+			return route, fmt.Errorf("cannot read route access: %w", err)
+		}
+		route.Access = &access
+	}
+	if route.Access != nil {
+		if err := route.Access.Validate(); err != nil {
+			return route, err
+		}
+	}
+	if route.Path == "" {
+		route.Path = "/"
+	}
+	return route, nil
+}
+
+func routeSettings(in Input, host, path string) config.GatewayRoute {
+	route := config.GatewayRoute{Host: host, Path: path, Backend: backendURL(in), Login: protected(in)}
+	if in.App.IsAPI() {
+		route.Mode = config.AppModeAPI
+	}
+	if route.Login && !in.App.Access.Empty() {
+		route.Access = in.App.Access
+	}
 	if in.App.AllowsAllOrigins() {
-		ann[AnnotationCORS] = CORSAllowAll
+		route.CORS = CORSAllowAll
 	}
-	return ann
+	return route
 }
 
-// routeConfigMap wraps a routing table entry in the object that stores it.
-func routeConfigMap(name, namespace string, labels, annotations map[string]string) *corev1.ConfigMap {
+// RouteData keeps access in its own key so a console membership edit survives
+// a deployment that does not specify access rules in donkey.yaml.
+func RouteData(route config.GatewayRoute) map[string]string {
+	data := map[string]string{}
+	if route.Access != nil {
+		raw, _ := config.EncodeYAML(route.Access)
+		data[RouteAccessKey] = string(raw)
+		route.Access = nil
+	}
+	raw, _ := config.EncodeYAML(route)
+	data[RouteConfigKey] = string(raw)
+	return data
+}
+
+func routeConfigMap(name, namespace string, labels map[string]string, route config.GatewayRoute) *corev1.ConfigMap {
 	return &corev1.ConfigMap{
-		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "ConfigMap"},
-		ObjectMeta: metav1.ObjectMeta{
-			Name:        name,
-			Namespace:   namespace,
-			Labels:      labels,
-			Annotations: annotations,
-		},
+		TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "ConfigMap"},
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace, Labels: labels},
+		Data:       RouteData(route),
 	}
 }
 
-// appRoute exposes the app on its hostname through the donkey gateway. The
-// gateway serves https only — the login cookies are Secure-only, so serving
-// apps over plain http was never right; its http listener redirects.
+// appRoute exposes an app through the gateway's HTTPS endpoint.
 func appRoute(in Input) *corev1.ConfigMap {
-	return routeConfigMap(in.Name(), in.Namespace,
-		Labels(in.Space, in.App.Name, RoleRoute),
-		routeAnnotations(in, in.Domain, "/"))
+	return routeConfigMap(AppRouteName(in.Name()), in.Namespace,
+		Labels(in.Space, in.App.Name, RoleRoute), routeSettings(in, in.Domain, "/"))
 }
-
-// The console changes exposure without a deploy, so it re-renders the
-// network objects piecewise — these exports are its building blocks.
 
 // AppRoute is the app's own-hostname route.
 func AppRoute(in Input) runtime.Object { return appRoute(in) }
+
+// AppRouteName identifies the app’s routing configuration.
+func AppRouteName(app string) string { return app + "-route" }

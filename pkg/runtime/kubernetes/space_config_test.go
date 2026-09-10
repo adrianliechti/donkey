@@ -32,9 +32,9 @@ func TestSpaceConfigPersistsInConfigMapInBothModes(t *testing.T) {
 			if !reflect.DeepEqual(settings.Domains, []string{"team.example.com"}) {
 				t.Fatalf("defaults: %+v", settings)
 			}
-			cm, err := client.Clientset.CoreV1().ConfigMaps(r.ns("team")).Get(ctx, "donkey.space.team", metav1.GetOptions{})
+			cm, err := client.Clientset.CoreV1().ConfigMaps(r.ns("team")).Get(ctx, manifests.SpaceMarkerName("team"), metav1.GetOptions{})
 			if err != nil || cm.Data[spaceConfigKey] == "" {
-				t.Fatalf("missing config.json: %v", err)
+				t.Fatalf("missing config.yaml: %v", err)
 			}
 			cm.Data["unrelated"] = "keep"
 			if _, err := client.Clientset.CoreV1().ConfigMaps(cm.Namespace).Update(ctx, cm, metav1.UpdateOptions{}); err != nil {

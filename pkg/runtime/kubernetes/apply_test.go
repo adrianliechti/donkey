@@ -24,7 +24,7 @@ func TestApplyRefusesToAdoptSameNamedForeignObject(t *testing.T) {
 		"apiVersion": "v1",
 		"kind":       "ConfigMap",
 		"metadata": map[string]any{
-			"name":      "team--site",
+			"name":      "team-site",
 			"namespace": "workloads",
 			"labels": map[string]any{
 				manifests.LabelInstallation: "another-donkey",
@@ -39,7 +39,7 @@ func TestApplyRefusesToAdoptSameNamedForeignObject(t *testing.T) {
 	desired := &corev1.ConfigMap{
 		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "ConfigMap"},
 		ObjectMeta: metav1.ObjectMeta{
-			Name: "team--site", Namespace: "workloads",
+			Name: "team-site", Namespace: "workloads",
 			Labels: manifests.Labels("team", "site", manifests.RoleRoute),
 		},
 	}
@@ -60,13 +60,13 @@ func TestDeleteObjectPreconditionsOnValidatedUID(t *testing.T) {
 	existing := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "v1", "kind": "ConfigMap",
 		"metadata": map[string]any{
-			"name": "team--site", "namespace": "workloads",
+			"name": "team-site", "namespace": "workloads",
 			"uid": "validated-object", "labels": mapStringAny(identity),
 		},
 	}}
 	dynamic := dynamicfake.NewSimpleDynamicClient(k8sruntime.NewScheme(), existing)
 	client := (&Client{Dynamic: dynamic}).WithInstallation("bank-donkey-system")
-	if err := client.DeleteObject(ctx, "ConfigMap", "workloads", "team--site",
+	if err := client.DeleteObject(ctx, "ConfigMap", "workloads", "team-site",
 		manifests.Labels("team", "site", manifests.RoleRoute)); err != nil {
 		t.Fatal(err)
 	}

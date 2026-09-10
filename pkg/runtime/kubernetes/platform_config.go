@@ -15,7 +15,7 @@ import (
 	"k8s.io/client-go/util/retry"
 )
 
-const platformConfigKey = "platform.json"
+const platformConfigKey = "platform.yaml"
 
 func (r *Runtime) platformConfigMap(ctx context.Context) (*corev1.ConfigMap, error) {
 	cm, err := r.c.Clientset.CoreV1().ConfigMaps(r.opts.SystemNamespace).Get(ctx, manifests.SystemConfigMapName, metav1.GetOptions{})
@@ -38,13 +38,20 @@ func (r *Runtime) PlatformConfig(ctx context.Context) (config.PlatformConfig, er
 		return settings, err
 	}
 	if _, exists := cm.Data[platformConfigKey]; !exists {
+		if raw, exists := cm.Data["platform.json"]; exists {
+			settings, err := decodePlatformConfig(raw)
+			if err != nil {
+				return settings, err
+			}
+			return r.InitPlatformConfig(ctx, settings)
+		}
 		return r.migratePlatformConfig(ctx)
 	}
 	return decodePlatformConfig(cm.Data[platformConfigKey])
 }
 
 // Preserve the admin list from installations that used a separate ConfigMap.
-// InitPlatformConfig adds only platform.json and preserves the console route.
+// InitPlatformConfig preserves the console route and other data entries.
 func (r *Runtime) migratePlatformConfig(ctx context.Context) (config.PlatformConfig, error) {
 	cm, err := r.c.Clientset.CoreV1().ConfigMaps(r.opts.SystemNamespace).Get(ctx, "donkey.platform", metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
@@ -65,7 +72,7 @@ func (r *Runtime) migratePlatformConfig(ctx context.Context) (config.PlatformCon
 
 func decodePlatformConfig(raw string) (config.PlatformConfig, error) {
 	var settings config.PlatformConfig
-	if err := json.Unmarshal([]byte(raw), &settings); err != nil {
+	if err := config.DecodeYAML([]byte(raw), &settings); err != nil {
 		return settings, fmt.Errorf("cannot read platform settings: %w", err)
 	}
 	if settings.Admins.Empty() {
@@ -83,7 +90,7 @@ func (r *Runtime) InitPlatformConfig(ctx context.Context, initial config.Platfor
 	if initial.Admins.Empty() {
 		return config.PlatformConfig{}, fmt.Errorf("platform settings must contain an admin")
 	}
-	raw, err := json.Marshal(initial)
+	raw, err := config.EncodeYAML(initial)
 	if err != nil {
 		return config.PlatformConfig{}, err
 	}
@@ -104,6 +111,17 @@ func (r *Runtime) InitPlatformConfig(ctx context.Context, initial config.Platfor
 		}
 		if _, exists := cm.Data[platformConfigKey]; exists {
 			return nil
+		}
+		if legacy, exists := cm.Data["platform.json"]; exists {
+			saved, err := decodePlatformConfig(legacy)
+			if err != nil {
+				return err
+			}
+			raw, err = config.EncodeYAML(saved)
+			if err != nil {
+				return err
+			}
+			delete(cm.Data, "platform.json")
 		}
 		if cm.Data == nil {
 			cm.Data = map[string]string{}
@@ -132,13 +150,13 @@ func (r *Runtime) SetPlatformConfig(ctx context.Context, settings config.Platfor
 	if err != nil {
 		return err
 	}
-	raw, err := json.Marshal(settings)
+	raw, err := config.EncodeYAML(settings)
 	if err != nil {
 		return err
 	}
 	patch, err := json.Marshal(map[string]any{
 		"metadata": map[string]any{"uid": cm.UID},
-		"data":     map[string]string{platformConfigKey: string(raw)},
+		"data":     map[string]any{platformConfigKey: string(raw), "platform.json": nil},
 	})
 	if err != nil {
 		return err

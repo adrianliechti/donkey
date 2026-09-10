@@ -126,12 +126,12 @@ func validateHost(host string) error {
 // ANY list.
 type AccessConfig struct {
 	// Users are exact email addresses (the IdP's `email` claim).
-	Users []string `json:"users,omitempty"`
+	Users []string `json:"users,omitempty" yaml:"users,omitempty"`
 	// Groups match against the IdP's `groups` claim.
-	Groups []string `json:"groups,omitempty"`
+	Groups []string `json:"groups,omitempty" yaml:"groups,omitempty"`
 	// Roles match against the IdP's `roles` claim (Entra app roles) or
 	// Keycloak's realm roles.
-	Roles []string `json:"roles,omitempty"`
+	Roles []string `json:"roles,omitempty" yaml:"roles,omitempty"`
 }
 
 // Empty reports whether the access config restricts nobody — the same as not
@@ -295,10 +295,15 @@ const (
 // namespace, hostnames and object names.
 var nameRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$`)
 
-// ValidName reports whether s is a name donkey accepts for apps, spaces and
+// ValidName reports whether s is a name donkey accepts for apps and
 // addons. The server checks URL path values against it — they feed namespace,
 // hostname and object names, so they follow donkey.yaml's rules.
 func ValidName(s string) bool { return nameRE.MatchString(s) }
+
+var spaceNameRE = regexp.MustCompile(`^[a-z0-9]{1,40}$`)
+
+// ValidSpaceName keeps the first hyphen in a qualified resource name unambiguous.
+func ValidSpaceName(s string) bool { return spaceNameRE.MatchString(s) }
 
 // namespaceRE is an RFC 1123 DNS label — what Kubernetes accepts as a
 // namespace name. Longer than donkey's own names allow, because the
@@ -369,8 +374,8 @@ func (c *AppConfig) Validate() error {
 	if !nameRE.MatchString(c.Name) {
 		return fmt.Errorf("name %q must be lowercase letters, digits and dashes (max 40 chars), e.g. %q", c.Name, "my-app")
 	}
-	if c.Space != "" && !nameRE.MatchString(c.Space) {
-		return fmt.Errorf("space %q must be lowercase letters, digits and dashes (max 40 chars), e.g. %q", c.Space, "acme")
+	if c.Space != "" && !ValidSpaceName(c.Space) {
+		return fmt.Errorf("space %q must be lowercase letters and digits, without dashes (max 40 chars), e.g. %q", c.Space, "acme")
 	}
 	if c.Port < 1 || c.Port > 65535 {
 		return fmt.Errorf("port must be between 1 and 65535 (the port your app listens on)")

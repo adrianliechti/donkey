@@ -83,7 +83,7 @@ func TestReconcileAppTrafficUsesExistingRouteHostname(t *testing.T) {
 		Name: placement.Name(space, "site"), Namespace: workloads,
 		Labels: owned("site", manifests.RoleRoute),
 		Annotations: map[string]string{
-			manifests.AnnotationBackend: "http://team--site.bank-apps.svc:80",
+			manifests.AnnotationBackend: "http://team-site.bank-apps.svc:80",
 			manifests.AnnotationHost:    "shop.example.test",
 		},
 	}}

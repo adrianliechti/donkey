@@ -9,7 +9,7 @@ import (
 // PlatformConfig is persisted separately from spaces. An optional install-file
 // value seeds it; otherwise the first verified sign-in becomes its first admin.
 type PlatformConfig struct {
-	Admins AccessConfig `json:"admins"`
+	Admins AccessConfig `json:"admins" yaml:"admins"`
 }
 
 func (p PlatformConfig) Validate() error {

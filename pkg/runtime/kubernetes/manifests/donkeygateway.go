@@ -32,7 +32,7 @@ const (
 
 	// GatewayCertsSecret stores the certificates the gateway issued (and its
 	// ACME account key) — its persistence across pod restarts.
-	GatewayCertsSecret = "donkey-gateway-certs"
+	GatewayCertsSecret = "donkey-gateway-acme"
 	// GatewayCASecret stores the built-in CA of "ca" mode.
 	GatewayCASecret = "donkey-gateway-ca"
 )
@@ -97,10 +97,10 @@ func donkeyGatewayDeployment(in SystemInput) *appsv1.Deployment {
 		// apps, since both would otherwise match on managed-by=donkey.
 		{Name: "DONKEY_WORKLOAD_NAMESPACE", Value: in.WorkloadNamespace},
 		{Name: "DONKEY_TELEMETRY_OTLP_ENDPOINT", Value: TelemetryOTLPEndpoint(in.Namespace)},
-		secretEnv("DONKEY_OIDC_CLIENT_ID", "oidc-client-id"),
-		secretEnv("DONKEY_OIDC_CLIENT_SECRET", "oidc-client-secret"),
-		secretEnv("DONKEY_SESSION_KEY", "session-key"),
-		secretEnv("DONKEY_TELEMETRY_KEY", "telemetry-key"),
+		secretEnv("DONKEY_OIDC_CLIENT_ID", "DONKEY_OIDC_CLIENT_ID"),
+		secretEnv("DONKEY_OIDC_CLIENT_SECRET", "DONKEY_OIDC_CLIENT_SECRET"),
+		secretEnv("DONKEY_SESSION_KEY", "DONKEY_SESSION_KEY"),
+		secretEnv("DONKEY_TELEMETRY_KEY", "DONKEY_TELEMETRY_KEY"),
 	}
 	// The gateway reaches the outside world too — the OIDC token exchange
 	// and, in acme mode, Let's Encrypt. On a network whose only way out is a

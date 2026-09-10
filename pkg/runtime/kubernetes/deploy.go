@@ -2,7 +2,6 @@ package kubernetes
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -123,6 +122,9 @@ func (r *Runtime) Deploy(ctx context.Context, spec rt.DeploySpec, out rt.Progres
 	}
 	objs, err := manifests.AppObjects(in)
 	if err != nil {
+		return err
+	}
+	if err := r.c.preserveDataClaims(ctx, objs); err != nil {
 		return err
 	}
 	// The Deployment is applied last. Everything it needs — secrets, the
@@ -359,13 +361,14 @@ func (r *Runtime) hostOwner(ctx context.Context, space, host, self string) strin
 	}
 	ns := r.ns(space)
 	for _, cm := range cms {
-		if cm.Namespace != ns || cm.Annotations[manifests.AnnotationHost] != host {
+		route, err := manifests.ReadRoute(&cm)
+		if err != nil || cm.Namespace != ns || route.Host != host {
 			continue
 		}
 		// Path routes share a hostname on purpose; only an app's own address
 		// (path "/") owns it. Without this, a sibling's `routes:` entry on
 		// this host would block the host's own app from deploying.
-		if p := cm.Annotations[manifests.AnnotationPath]; p != "" && p != "/" {
+		if route.Path != "/" {
 			continue
 		}
 		if owner := cm.Labels[manifests.LabelApp]; owner != "" && owner != self {
@@ -478,19 +481,13 @@ func (r *Runtime) SetAccess(ctx context.Context, space, app string, access *conf
 	if err != nil {
 		return err
 	}
-	var value *string
-	if access != nil {
-		b, err := json.Marshal(access)
+	if net.Protected {
+		cm, err := r.c.appRouteConfigMap(ctx, ns, obj, space, app)
 		if err != nil {
 			return err
 		}
-		v := string(b)
-		value = &v
-	}
-	patch := map[string]*string{manifests.AnnotationAccess: value}
-	if net.Protected {
-		if err := r.c.SetAnnotations(ctx, "ConfigMap", ns, obj,
-			manifests.Labels(space, app, manifests.RoleRoute), patch); err != nil {
+		if err := r.c.SetRouteAccess(ctx, ns, cm.Name,
+			manifests.Labels(space, app, manifests.RoleRoute), access); err != nil {
 			return err
 		}
 	}
@@ -498,8 +495,8 @@ func (r *Runtime) SetAccess(ctx context.Context, space, app string, access *conf
 		if !pr.Protected {
 			continue
 		}
-		if err := r.c.SetAnnotations(ctx, "ConfigMap", ns, pr.Name,
-			manifests.Labels(space, app, manifests.RolePathRoute), patch); err != nil {
+		if err := r.c.SetRouteAccess(ctx, ns, pr.Name,
+			manifests.Labels(space, app, manifests.RolePathRoute), access); err != nil {
 			return err
 		}
 	}

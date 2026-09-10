@@ -149,6 +149,9 @@ func (r *Runtime) provisionService(ctx context.Context, space, ns string, spec r
 		}
 		objs = append(objs, addonObjs...)
 	}
+	if err := r.c.preserveDataClaims(ctx, objs); err != nil {
+		return in, err
+	}
 	if err := r.c.Apply(ctx, objs); err != nil {
 		return in, err
 	}

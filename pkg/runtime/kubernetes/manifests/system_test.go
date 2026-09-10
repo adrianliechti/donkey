@@ -288,7 +288,7 @@ func TestServerHostAndCentralCallback(t *testing.T) {
 	}
 	out := componentNames(in)
 	for _, want := range []string{
-		AnnotationHost + ": apps.example.com", // the console's routing entry
+		"host: apps.example.com", // the console's routing entry
 		"name: donkey-gateway",
 		"DONKEY_DOMAIN",      // the gateway knows the cookie/callback domain
 		"DONKEY_SERVER_HOST", // …and which hostname the console lives on
@@ -316,8 +316,8 @@ func TestConsoleBehindGateway(t *testing.T) {
 	in := systemInput()
 	out := componentNames(in)
 	for _, want := range []string{
-		"donkey.local/backend: http://donkey-server.donkey-system.svc:80",
-		"donkey.local/login: required",
+		"backend: http://donkey-server.donkey-system.svc:80",
+		"login: true",
 		"DONKEY_SESSION_KEY", // the server verifies CLI tokens itself
 	} {
 		if !strings.Contains(out, want) {
@@ -366,10 +366,10 @@ func TestImagePullPolicy(t *testing.T) {
 // an app handed a token could replay its visitors against the API.
 func TestOnlyTheAPIRouteCarriesAToken(t *testing.T) {
 	out := componentNames(systemInput())
-	if !strings.Contains(out, "donkey.local/token: forward") {
+	if !strings.Contains(out, "token: true") {
 		t.Error("the console route should be marked for token forwarding")
 	}
-	if n := strings.Count(out, "donkey.local/token"); n != 1 {
+	if n := strings.Count(out, "token: true"); n != 1 {
 		t.Errorf("exactly one route may carry a credential, found %d", n)
 	}
 
@@ -380,7 +380,11 @@ func TestOnlyTheAPIRouteCarriesAToken(t *testing.T) {
 		if !ok {
 			continue
 		}
-		if _, marked := cm.Annotations[AnnotationToken]; marked {
+		route, err := ReadRoute(cm)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if route.Token {
 			t.Errorf("app route %s must never be marked for token forwarding", cm.Name)
 		}
 	}

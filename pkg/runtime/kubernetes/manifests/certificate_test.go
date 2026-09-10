@@ -42,7 +42,7 @@ func TestAppCertificateAndDNSEndpoint(t *testing.T) {
 		"kind: Certificate",
 		"name: donkey-app-acme.shop",
 		"namespace: donkey-system",
-		"secretName: donkey-app-acme.shop-tls",
+		"secretName: acme-shop-tls",
 		"name: platform-ca",
 		"kind: ClusterIssuer",
 		"group: cert-manager.io",

@@ -52,6 +52,11 @@ func (s *Server) edgeTLS(ctx context.Context) (*tls.Config, http.Handler, error)
 	case "cert-manager":
 		return s.managedCertificateTLS(ctx)
 	case "acme":
+		if s.k8s != nil {
+			if err := s.k8s.MigrateGatewaySecrets(ctx, s.cfg.SystemNamespace); err != nil {
+				return nil, nil, fmt.Errorf("migrating the ACME cache: %w", err)
+			}
+		}
 		m := &autocert.Manager{
 			Prompt:     autocert.AcceptTOS,
 			Email:      s.cfg.ACMEEmail,

@@ -57,7 +57,7 @@ func packagesDeployment(in SystemInput) *appsv1.Deployment {
 		{Name: "DONKEY_PACKAGES_USERNAME", Value: p.Username},
 	}
 	if p.Password != "" {
-		env = append(env, secretEnvVar("DONKEY_PACKAGES_PASSWORD", "packages-password"))
+		env = append(env, secretEnvVar("DONKEY_PACKAGES_PASSWORD", "DONKEY_PACKAGES_PASSWORD"))
 	}
 	if in.RegistryCASecret != "" {
 		env = append(env, corev1.EnvVar{Name: "DONKEY_PACKAGES_CA_FILE", Value: registryCAPath + "/ca.crt"})

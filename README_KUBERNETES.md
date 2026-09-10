@@ -160,38 +160,117 @@ Two limits to check before you commit to a name:
 
 ## Space and platform settings
 
-Every space has a `donkey.space.<space>` ConfigMap containing `config.json`:
+Platform configuration lives in the `donkey` ConfigMap in the control-plane
+namespace (`donkey-system` by default). Each entry keeps the format expected by
+its consumer: YAML for donkey settings and TOML for BuildKit.
 
-```json
-{
-  "admins": {"users": ["owner@example.com"]},
-  "developers": {"groups": ["engineering"]},
-  "domains": ["team.example.com"]
-}
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: donkey
+  namespace: donkey-system
+data:
+  platform.yaml: |
+    admins:
+      users:
+        - owner@example.com
+  route.yaml: |
+    host: apps.example.com
+    path: /
+    backend: http://donkey-server.donkey-system.svc:80
+    login: true
+    token: true
+  buildkitd.toml: |
+    # BuildKit configuration generated from the installation settings.
 ```
 
-With a namespace per space, it lives in `donkey-<space>` (or the configured
-prefix); with a shared workload namespace, each space has its own ConfigMap
-there. Missing records for existing spaces are created at server startup with
-empty membership and unrestricted domains. This preserves existing app routes;
-platform admins assign space roles through Space settings. Saved settings are
-preserved on upgrade and deploy.
-
-Platform admins live in the `donkey` ConfigMap in the control-plane namespace
-(`donkey-system` by default), in `data["platform.json"]`:
-
-```json
-{"admins":{"users":["first-user@example.com"]}}
-```
-
-The same ConfigMap carries the gateway route annotations for the dashboard and
-API. A Secret also named `donkey` holds credentials and session keys; Kubernetes
-distinguishes the two by resource type. The installer preserves old secret
-values during upgrades.
-
-The first signed-in user initializes this list unless `platform.admins` was
-seeded in the install file. Platform admins manage the saved list through
+The first signed-in user initializes `platform.yaml` unless `platform.admins`
+was seeded in the install file. Platform admins manage the saved list through
 Account → Platform settings. Saving replaces the list; no revision is required.
+BuildKit mounts only `buildkitd.toml` from this ConfigMap.
+
+Every space has a `<space>-space` ConfigMap in its workload namespace, with
+settings under `config.yaml`:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: team-space
+  namespace: donkey-team
+  labels:
+    donkey.local/installation: donkey-system
+    donkey.local/space: team
+    donkey.local/role: space
+data:
+  config.yaml: |
+    admins:
+      users:
+        - owner@example.com
+    developers:
+      groups:
+        - engineering
+    domains:
+      - team.example.com
+```
+
+The name is the same in a shared workload namespace: `team-space`. The namespace name
+and the labels identify the space; the old `donkey.space.<space>` name is migrated.
+Missing records for existing spaces get empty membership and unrestricted domains
+at server startup, preserving existing app routes. Saved memberships and domains
+survive upgrades and deployments.
+
+Routing configuration uses `route.yaml` in the ConfigMap's `data`. App visitor
+access rules use a separate `access.yaml` entry, so changing a route does not
+overwrite membership maintained through the console. Labels describe identity
+and ownership; routing settings are no longer stored in annotations.
+
+A Secret also named `donkey` holds installation credentials and session keys.
+Kubernetes distinguishes the ConfigMap and Secret by resource type.
+
+## ConfigMap and Secret names
+
+System resources live in the control-plane namespace. Workload resources live
+in the space's namespace. Optional resources appear only when their feature is
+used. Standard Kubernetes Secret formats retain their defined keys.
+
+| Kind | Namespace | Name | Data / purpose |
+|---|---|---|---|
+| ConfigMap | System | `donkey` | `platform.yaml`, `route.yaml`, `buildkitd.toml` |
+| ConfigMap | Workload | `<space>-space` | `config.yaml`: admins, developers and domains |
+| ConfigMap | Workload | `<app>-route` | `route.yaml`, optional `access.yaml` |
+| ConfigMap | Workload | `<app>-route-<target>-<path-slug>` | Route under another app's hostname |
+| Secret | System | `donkey` | Installation credentials, session/telemetry keys and private build settings |
+| Secret | System | `donkey-registry` | Image pull authentication: `.dockerconfigjson` |
+| Secret | System | `donkey-gateway-ca` | Built-in certificate authority |
+| Secret | System | `donkey-gateway-acme` | ACME account, certificates and challenge cache |
+| Secret | System | `donkey-gateway-tls` | cert-manager TLS certificate: `tls.crt`, `tls.key` |
+| Secret | System | `donkey-<space>--<app>-tls` | App TLS certificate: `tls.crt`, `tls.key` |
+| Secret | Workload | `<app>-env` | User-configured environment variables |
+| Secret | Workload | `<app>-telemetry` | Telemetry environment variables |
+| Secret | Workload | `<app>-registry` | App image pull authentication: `.dockerconfigjson` |
+| Secret | Workload | `<service>-registry` | Service image pull authentication: `.dockerconfigjson` |
+| Secret | Workload | `shared-service-<service>` | Space service connection values and credentials |
+| Secret | Workload | `<app>-service-<service>` | Service environment variables bound to an app |
+
+In a shared workload namespace, app and service names get the `<space>--` prefix:
+`team--api-route`, `team--api-env`,
+`team--shared-service-postgres`, and `team--api-route-web-api`.
+Space ConfigMaps already include the space name and remain `team-space`.
+The path slug uses lowercase letters and digits separated by hyphens;
+an empty path is represented by `root`.
+
+The local kind demo also creates Secrets `donkey-registry-ca`,
+`package-registry-auth`, and `private-packages-tls` in `donkey-system`.
+Other existing Secrets referenced by installation settings keep their
+operator-chosen names. `kube-root-ca.crt` is created by Kubernetes.
+
+Upgrades migrate the previous ConfigMap/Secret names and JSON entries to this
+layout. Existing platform admins, space membership, domain policies, credentials
+and certificates are preserved. The installer updates consumers before removing
+superseded Secrets and ConfigMaps. Both the old annotation routes and the new
+YAML routes remain readable during migration.
 
 ## Isolating spaces from each other
 

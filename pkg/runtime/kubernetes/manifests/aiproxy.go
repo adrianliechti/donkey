@@ -106,7 +106,7 @@ func aiDeployment(in SystemInput) *appsv1.Deployment {
 	env := []corev1.EnvVar{
 		{Name: "DONKEY_LISTEN", Value: fmt.Sprintf(":%d", aiPort)},
 		{Name: "OPENAI_BASE_URL", Value: in.OpenAIBaseURL},
-		secretEnvVar("OPENAI_API_KEY", "openai-api-key"),
+		secretEnvVar("OPENAI_API_KEY", "OPENAI_API_KEY"),
 		// Where to look for the binding Secrets. Only the namespaces — this
 		// process never maps a space onto one.
 		{Name: "DONKEY_SYSTEM_NAMESPACE", Value: in.Namespace},

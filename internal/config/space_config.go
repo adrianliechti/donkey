@@ -10,11 +10,11 @@ import (
 // grant nobody a role; platform admins always retain access.
 // App visitor access is configured separately in AppConfig.Access.
 type SpaceConfig struct {
-	Admins     AccessConfig `json:"admins"`
-	Developers AccessConfig `json:"developers"`
+	Admins     AccessConfig `json:"admins" yaml:"admins"`
+	Developers AccessConfig `json:"developers" yaml:"developers"`
 	// Domains lists domain suffixes. Each suffix admits itself and its
 	// subdomains; an empty list allows any hostname.
-	Domains []string `json:"domains"`
+	Domains []string `json:"domains" yaml:"domains"`
 }
 
 func DefaultSpaceConfig(space, domain string) SpaceConfig {

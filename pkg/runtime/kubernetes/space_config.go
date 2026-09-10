@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -15,9 +16,18 @@ import (
 	"github.com/adrianliechti/donkey/pkg/runtime/kubernetes/manifests"
 )
 
-const spaceConfigKey = "config.json"
+const spaceConfigKey = "config.yaml"
 
 func (r *Runtime) EnsureSpaceConfigs(ctx context.Context) error {
+	if err := r.MigrateSystemConfig(ctx); err != nil {
+		return err
+	}
+	if err := r.migrateSharedWorkloadNames(ctx); err != nil {
+		return err
+	}
+	if err := r.migrateRouteConfigs(ctx); err != nil {
+		return err
+	}
 	spaces, err := r.ListSpaces(ctx)
 	if err != nil {
 		return err
@@ -27,7 +37,7 @@ func (r *Runtime) EnsureSpaceConfigs(ctx context.Context) error {
 			return err
 		}
 	}
-	return nil
+	return r.migrateServiceSecrets(ctx)
 }
 
 func (r *Runtime) ownedSpaceNamespace(ctx context.Context, space string) (*corev1.Namespace, error) {
@@ -60,6 +70,9 @@ func (r *Runtime) spaceConfigMap(ctx context.Context, space string) (*corev1.Con
 		}
 	}
 	cm, err := r.c.Clientset.CoreV1().ConfigMaps(r.ns(space)).Get(ctx, manifests.SpaceMarkerName(space), metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return r.migrateSpaceConfigMap(ctx, space)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -70,6 +83,53 @@ func (r *Runtime) spaceConfigMap(ctx context.Context, space string) (*corev1.Con
 		return nil, fmt.Errorf("the space is being deleted")
 	}
 	return cm, nil
+}
+
+func (r *Runtime) migrateSpaceConfigMap(ctx context.Context, space string) (*corev1.ConfigMap, error) {
+	cms := r.c.Clientset.CoreV1().ConfigMaps(r.ns(space))
+	old, err := cms.Get(ctx, "donkey.space."+space, metav1.GetOptions{})
+	if err != nil {
+		return nil, err
+	}
+	if err := r.c.requireOwnedObject("ConfigMap", old.Namespace, old.Name, old.Labels, manifests.SpaceLabels(space)); err != nil {
+		return nil, err
+	}
+	settings := config.SpaceConfig{Domains: []string{}}
+	if raw := old.Data["config.json"]; raw != "" {
+		if err := config.DecodeYAML([]byte(raw), &settings); err != nil {
+			return nil, fmt.Errorf("cannot migrate space settings: %w", err)
+		}
+		if err := settings.Validate(); err != nil {
+			return nil, err
+		}
+	}
+	raw, err := config.EncodeYAML(settings)
+	if err != nil {
+		return nil, err
+	}
+	fresh := manifests.SpaceMarker(space, old.Namespace)
+	fresh.Labels = r.c.expectedObjectIdentity(fresh.Labels)
+	fresh.Annotations = maps.Clone(old.Annotations)
+	fresh.Data = maps.Clone(old.Data)
+	if fresh.Data == nil {
+		fresh.Data = map[string]string{}
+	}
+	fresh.Data[spaceConfigKey] = string(raw)
+	delete(fresh.Data, "config.json")
+	stored, err := cms.Create(ctx, fresh, metav1.CreateOptions{FieldManager: "donkey-space-config"})
+	if apierrors.IsAlreadyExists(err) {
+		stored, err = cms.Get(ctx, fresh.Name, metav1.GetOptions{})
+	}
+	if err != nil {
+		return nil, err
+	}
+	if err := r.c.requireOwnedObject("ConfigMap", stored.Namespace, stored.Name, stored.Labels, manifests.SpaceLabels(space)); err != nil {
+		return nil, err
+	}
+	if err := r.c.deleteConfigMap(ctx, old); err != nil {
+		return nil, err
+	}
+	return stored, nil
 }
 
 func (r *Runtime) SpaceConfig(ctx context.Context, space string) (config.SpaceConfig, error) {
@@ -85,8 +145,12 @@ func (r *Runtime) SpaceConfig(ctx context.Context, space string) (config.SpaceCo
 	if err != nil {
 		return settings, err
 	}
-	if raw := cm.Data[spaceConfigKey]; raw != "" {
-		if err := json.Unmarshal([]byte(raw), &settings); err != nil {
+	raw, exists := cm.Data[spaceConfigKey]
+	if !exists {
+		raw = cm.Data["config.json"]
+	}
+	if raw != "" {
+		if err := config.DecodeYAML([]byte(raw), &settings); err != nil {
 			return settings, fmt.Errorf("cannot read space settings: %w", err)
 		}
 		if err := settings.Validate(); err != nil {
@@ -97,7 +161,7 @@ func (r *Runtime) SpaceConfig(ctx context.Context, space string) (config.SpaceCo
 }
 
 func (r *Runtime) createSpaceConfig(ctx context.Context, space string, settings config.SpaceConfig) error {
-	raw, err := json.Marshal(settings)
+	raw, err := config.EncodeYAML(settings)
 	if err != nil {
 		return err
 	}
@@ -131,14 +195,14 @@ func (r *Runtime) SetSpaceConfig(ctx context.Context, space string, settings con
 	if err != nil {
 		return err
 	}
-	settingsJSON, err := json.Marshal(settings)
+	settingsYAML, err := config.EncodeYAML(settings)
 	if err != nil {
 		return err
 	}
 	// Last save wins. Other ConfigMap keys and metadata are preserved.
 	patch, err := json.Marshal(map[string]any{
 		"metadata": map[string]any{"uid": cm.UID},
-		"data":     map[string]string{spaceConfigKey: string(settingsJSON)},
+		"data":     map[string]any{spaceConfigKey: string(settingsYAML), "config.json": nil},
 	})
 	if err != nil {
 		return err
@@ -149,7 +213,7 @@ func (r *Runtime) SetSpaceConfig(ctx context.Context, space string, settings con
 }
 
 // Every space has a ConfigMap, in both placement modes. Initialize it once;
-// deploy's ordinary apply does not own config.json and cannot reset it.
+// deploy's ordinary apply does not own config.yaml and cannot reset it.
 func (r *Runtime) ensureSpaceHome(ctx context.Context, space string) error {
 	if err := r.ValidateSpace(space); err != nil {
 		return err
@@ -173,7 +237,11 @@ func (r *Runtime) ensureSpaceHome(ctx context.Context, space string) error {
 	}
 	if cm, err := r.spaceConfigMap(ctx, space); err == nil {
 		if cm.Data[spaceConfigKey] == "" {
-			return r.SetSpaceConfig(ctx, space, config.SpaceConfig{Domains: []string{}})
+			saved, err := r.SpaceConfig(ctx, space)
+			if err != nil {
+				return err
+			}
+			return r.SetSpaceConfig(ctx, space, saved)
 		}
 		return nil
 	} else if !apierrors.IsNotFound(err) {

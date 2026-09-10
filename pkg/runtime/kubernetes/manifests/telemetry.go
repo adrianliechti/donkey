@@ -92,7 +92,7 @@ func telemetryDeployment(in SystemInput) *appsv1.Deployment {
 							{Name: "DONKEY_TELEMETRY_LISTEN", Value: fmt.Sprintf(":%d", telemetryOTLPPort)},
 							{Name: "DONKEY_TELEMETRY_API_LISTEN", Value: fmt.Sprintf(":%d", telemetryAPIPort)},
 							{Name: "DONKEY_TELEMETRY_DB", Value: telemetryDBPath},
-							secretEnvVar("DONKEY_TELEMETRY_KEY", "telemetry-key"),
+							secretEnvVar("DONKEY_TELEMETRY_KEY", "DONKEY_TELEMETRY_KEY"),
 						},
 						Ports: []corev1.ContainerPort{
 							{Name: "otlp-http", ContainerPort: telemetryOTLPPort},

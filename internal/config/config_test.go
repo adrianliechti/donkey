@@ -358,9 +358,11 @@ func TestResolveSpace(t *testing.T) {
 		repoRoot string
 		want     string
 	}{
-		{"flag wins", "Prod Team", &AppConfig{Space: "from-file"}, "/x/web", "/x", "prod-team"},
-		{"donkey.yaml next", "", &AppConfig{Space: "from-file"}, "/x/web", "/x", "from-file"},
+		{"flag wins", "prodteam", &AppConfig{Space: "fromfile"}, "/x/web", "/x", "prodteam"},
+		{"donkey.yaml next", "", &AppConfig{Space: "fromfile"}, "/x/web", "/x", "fromfile"},
 		{"repository name groups a monorepo", "", nil, "/home/me/acme/web", "/home/me/acme", "acme"},
+		{"hyphenated repository", "", nil, "/home/me/my-project/web", "/home/me/my-project", "myproject"},
+		{"explicit flags are validated without renaming", "my-team", nil, "/x", "", "my-team"},
 		{"single-app repo", "", nil, "/home/me/blog", "/home/me/blog", "blog"},
 		{"no repository: the folder itself", "", nil, "/home/me/scratch", "", "scratch"},
 	}

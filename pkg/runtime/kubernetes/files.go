@@ -319,8 +319,15 @@ func (c *Client) StorageFolders(ctx context.Context, namespace, objectName, spac
 		return nil, err
 	}
 	volume := ""
+	claim, err := c.dataClaim(ctx, namespace, manifests.DataClaimName(objectName), manifests.Labels(space, app, manifests.RoleStorage))
+	claimName := manifests.DataClaimName(objectName)
+	if err == nil {
+		claimName = claim.Name
+	} else if !apierrors.IsNotFound(err) {
+		return nil, err
+	}
 	for _, v := range dep.Spec.Template.Spec.Volumes {
-		if v.PersistentVolumeClaim != nil && v.PersistentVolumeClaim.ClaimName == manifests.DataClaimName(objectName) {
+		if v.PersistentVolumeClaim != nil && v.PersistentVolumeClaim.ClaimName == claimName {
 			volume = v.Name
 			break
 		}
@@ -533,8 +540,7 @@ func (c *Client) removeQuietly(ctx context.Context, namespace string, helper fil
 // cannot be substituted between path validation and a later command.
 func (c *Client) filesHelper(ctx context.Context, namespace, objectName, space, app string) (filesHelperRef, error) {
 	empty := filesHelperRef{}
-	pvcs := c.Clientset.CoreV1().PersistentVolumeClaims(namespace)
-	pvc, err := pvcs.Get(ctx, manifests.DataClaimName(objectName), metav1.GetOptions{})
+	pvc, err := c.dataClaim(ctx, namespace, manifests.DataClaimName(objectName), manifests.Labels(space, app, manifests.RoleStorage))
 	if apierrors.IsNotFound(err) {
 		// Tell the two "there is nothing to browse" cases apart: no app at all
 		// reads very differently from an app that simply has no disk.
@@ -581,6 +587,7 @@ func (c *Client) filesHelper(ctx context.Context, namespace, objectName, space, 
 	}
 
 	pod := filesHelperPod(namespace, space, app, objectName, c.installation())
+	pod.Spec.Volumes[0].PersistentVolumeClaim.ClaimName = pvc.Name
 	c.pinToAppNode(ctx, namespace, objectName, space, app, pod)
 	created, err := pods.Create(ctx, pod, metav1.CreateOptions{})
 	if err != nil {

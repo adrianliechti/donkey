@@ -56,7 +56,7 @@ func TestSystemSecretDataPreservesUpgradeCredentials(t *testing.T) {
 				}
 				return
 			}
-			if err != nil || data["session-key"] != tt.want {
+			if err != nil || data["DONKEY_SESSION_KEY"] != tt.want {
 				t.Fatalf("credentials were not preserved: %v", err)
 			}
 		})

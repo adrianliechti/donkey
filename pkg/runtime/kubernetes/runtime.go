@@ -107,8 +107,8 @@ func (r *Runtime) sharedOwner(space string) string {
 // --- Spaces ---------------------------------------------------------------
 
 func (r *Runtime) ValidateSpace(space string) error {
-	if !config.ValidName(space) {
-		return fmt.Errorf("%q is not a valid space name — lowercase letters, digits and dashes (max 40 chars)", space)
+	if !config.ValidSpaceName(space) {
+		return fmt.Errorf("%q is not a valid space name — use lowercase letters and digits, without dashes (max 40 chars)", space)
 	}
 	// With the default prefix, the space "system" resolves to donkey-system —
 	// a crafted (or innocently repo-named) space must never reach the control

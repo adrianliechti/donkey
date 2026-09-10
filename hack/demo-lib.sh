@@ -13,7 +13,7 @@ CA_FILE="${ROOT}/.build/donkey-gateway-ca.crt"
 # scripted stand-in for the browser round trip `donkey login` runs.
 mint_token() {
   DONKEY_SESSION_KEY="$(kubectl --context "${CTX}" -n donkey-system get secret donkey \
-    -o jsonpath='{.data.session-key}' | base64 -d)" \
+    -o jsonpath='{.data.DONKEY_SESSION_KEY}' | base64 -d)" \
     go run "${ROOT}/hack/mint-token"
 }
 

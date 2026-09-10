@@ -141,7 +141,7 @@ func Get(typ string) (Addon, error) {
 // cannot collide with binding object names and persisted Docker state.
 const SharedOwner = "shared"
 
-func SecretName(app, addon string) string { return app + "-addon-" + addon }
+func SecretName(app, addon string) string { return app + "-service-" + addon }
 
 // NewPassword generates a credential for a provisioned addon.
 func NewPassword() (string, error) {

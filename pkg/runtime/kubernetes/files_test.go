@@ -220,15 +220,15 @@ func TestFileOperationsRequireRequestedAppIdentity(t *testing.T) {
 	labels := manifests.Labels("other-space", "other-app", manifests.RoleStorage)
 	labels[manifests.LabelInstallation] = "donkey-system"
 	pvc := &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{
-		Name: manifests.DataClaimName("team--site"), Namespace: namespace, Labels: labels,
+		Name: manifests.DataClaimName("team-site"), Namespace: namespace, Labels: labels,
 	}}
 	client := (&Client{Clientset: fake.NewSimpleClientset(pvc)}).WithInstallation("donkey-system")
 
-	if _, err := client.ListFiles(context.Background(), namespace, "team--site", "team", "site", ""); err == nil {
+	if _, err := client.ListFiles(context.Background(), namespace, "team-site", "team", "site", ""); err == nil {
 		t.Fatal("a same-named disk carrying another app's identity was accepted")
 	}
 	if _, err := client.Clientset.CoreV1().Pods(namespace).Get(
-		context.Background(), filesHelperName("team--site"), metav1.GetOptions{},
+		context.Background(), filesHelperName("team-site"), metav1.GetOptions{},
 	); err == nil {
 		t.Fatal("a helper was created for a disk outside the requested app identity")
 	}
@@ -239,11 +239,11 @@ func TestRemoveFilesHelperRequiresRequestedAppIdentity(t *testing.T) {
 	labels := manifests.Labels("other-space", "other-app", manifests.RoleFiles)
 	labels[manifests.LabelInstallation] = "donkey-system"
 	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
-		Name: filesHelperName("team--site"), Namespace: namespace, Labels: labels,
+		Name: filesHelperName("team-site"), Namespace: namespace, Labels: labels,
 	}}
 	client := (&Client{Clientset: fake.NewSimpleClientset(pod)}).WithInstallation("donkey-system")
 
-	if err := client.RemoveFilesHelper(context.Background(), namespace, "team--site", "team", "site"); err == nil {
+	if err := client.RemoveFilesHelper(context.Background(), namespace, "team-site", "team", "site"); err == nil {
 		t.Fatal("a same-named helper carrying another app's identity was accepted")
 	}
 	if _, err := client.Clientset.CoreV1().Pods(namespace).Get(
@@ -258,7 +258,7 @@ func TestFilesHelperCommandsRequireLabelsAndOriginalUID(t *testing.T) {
 	labels := manifests.Labels("team", "site", manifests.RoleFiles)
 	labels[manifests.LabelInstallation] = "donkey-system"
 	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
-		Name:      filesHelperName("team--site"),
+		Name:      filesHelperName("team-site"),
 		Namespace: namespace,
 		Labels:    labels,
 		UID:       types.UID("current-helper"),

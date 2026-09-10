@@ -37,7 +37,7 @@ func (c *Client) ListManagedRoutes(ctx context.Context) ([]corev1.ConfigMap, err
 			// gateway's TLS, login and access rules. Keep this check even though
 			// the API-side selector already narrows the list: fake clients and
 			// unusual API implementations need not enforce selectors perfectly.
-			if cm.Annotations[manifests.AnnotationBackend] != "" && c.ours(cm.Labels) {
+			if manifests.IsRoute(&cm) && c.ours(cm.Labels) {
 				out = append(out, cm)
 			}
 		}
@@ -45,26 +45,37 @@ func (c *Client) ListManagedRoutes(ctx context.Context) ([]corev1.ConfigMap, err
 	return out, nil
 }
 
-// routeState reads one route ConfigMap's annotations.
-func routeState(cm *corev1.ConfigMap) rt.PathRouteState {
-	entry := rt.PathRouteState{
-		Name:        cm.Name,
-		Host:        cm.Annotations[manifests.AnnotationHost],
-		Path:        cm.Annotations[manifests.AnnotationPath],
-		StripPrefix: cm.Annotations[manifests.AnnotationStripPrefix] == "true",
-		Protected:   cm.Annotations[manifests.AnnotationLogin] == manifests.LoginRequired,
-		Mode:        cm.Annotations[manifests.AnnotationMode],
-		CORS:        cm.Annotations[manifests.AnnotationCORS],
+// routeState reads the persisted routing configuration.
+func routeState(cm *corev1.ConfigMap) (rt.PathRouteState, error) {
+	route, err := manifests.ReadRoute(cm)
+	return rt.PathRouteState{
+		Name: cm.Name, Host: route.Host, Path: route.Path,
+		StripPrefix: route.StripPrefix, Protected: route.Login, Mode: route.Mode, CORS: route.CORS,
+	}, err
+}
+
+func (c *Client) appRouteConfigMap(ctx context.Context, namespace, objectName, space, app string) (*corev1.ConfigMap, error) {
+	cms := c.Clientset.CoreV1().ConfigMaps(namespace)
+	cm, err := cms.Get(ctx, manifests.AppRouteName(objectName), metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		cm, err = cms.Get(ctx, objectName, metav1.GetOptions{})
+		if err == nil && objectName == manifests.SpaceMarkerName(space) &&
+			c.requireOwnedObject("ConfigMap", namespace, cm.Name, cm.Labels, manifests.SpaceLabels(space)) == nil {
+			return nil, apierrors.NewNotFound(corev1.Resource("configmaps"), manifests.AppRouteName(objectName))
+		}
 	}
-	if entry.Path == "" {
-		entry.Path = "/"
+	if err != nil {
+		return nil, err
 	}
-	return entry
+	if err := c.requireOwnedObject("ConfigMap", namespace, cm.Name, cm.Labels, manifests.Labels(space, app, manifests.RoleRoute)); err != nil {
+		return nil, err
+	}
+	return cm, nil
 }
 
 func (c *Client) AppNetwork(ctx context.Context, namespace, objectName, space, app string) (*rt.NetworkState, error) {
 	st := &rt.NetworkState{}
-	cm, err := c.Clientset.CoreV1().ConfigMaps(namespace).Get(ctx, objectName, metav1.GetOptions{})
+	cm, err := c.appRouteConfigMap(ctx, namespace, objectName, space, app)
 	switch {
 	case apierrors.IsNotFound(err):
 	case err != nil:
@@ -73,18 +84,13 @@ func (c *Client) AppNetwork(ctx context.Context, namespace, objectName, space, a
 		manifests.Labels(space, app, manifests.RoleRoute))):
 		return nil, c.requireOwnedObject("ConfigMap", namespace, objectName, cm.Labels,
 			manifests.Labels(space, app, manifests.RoleRoute))
-	case cm.Annotations[manifests.AnnotationBackend] != "":
-		st.RouteFound = true
-		st.Host = cm.Annotations[manifests.AnnotationHost]
-		st.Protected = cm.Annotations[manifests.AnnotationLogin] == manifests.LoginRequired
-		st.Mode = cm.Annotations[manifests.AnnotationMode]
-		st.CORS = cm.Annotations[manifests.AnnotationCORS]
-		if raw := cm.Annotations[manifests.AnnotationAccess]; raw != "" {
-			var access config.AccessConfig
-			if json.Unmarshal([]byte(raw), &access) == nil {
-				st.Access = &access
-			}
+	default:
+		route, err := manifests.ReadRoute(cm)
+		if err != nil {
+			return nil, err
 		}
+		st.RouteFound = route.Backend != ""
+		st.Host, st.Protected, st.Mode, st.CORS, st.Access = route.Host, route.Login, route.Mode, route.CORS, route.Access
 	}
 
 	routes, err := c.Clientset.CoreV1().ConfigMaps(namespace).List(ctx, metav1.ListOptions{
@@ -100,7 +106,11 @@ func (c *Client) AppNetwork(ctx context.Context, namespace, objectName, space, a
 			manifests.Labels(space, app, manifests.RolePathRoute)) != nil {
 			continue
 		}
-		st.Routes = append(st.Routes, routeState(&routes.Items[i]))
+		entry, err := routeState(&routes.Items[i])
+		if err != nil {
+			return nil, err
+		}
+		st.Routes = append(st.Routes, entry)
 	}
 	return st, nil
 }
@@ -132,5 +142,44 @@ func (c *Client) SetAnnotations(ctx context.Context, kind, namespace, name strin
 		return err
 	}
 	_, err = c.Dynamic.Resource(gvr).Namespace(namespace).Patch(ctx, name, types.MergePatchType, b, metav1.PatchOptions{})
+	return err
+}
+
+// SetRouteAccess patches a separate config key; ordinary route deploys do not
+// overwrite access settings maintained in the console.
+func (c *Client) SetRouteAccess(ctx context.Context, namespace, name string, identity map[string]string, access *config.AccessConfig) error {
+	cms := c.Clientset.CoreV1().ConfigMaps(namespace)
+	cm, err := cms.Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return err
+	}
+	if err := c.requireOwnedObject("ConfigMap", namespace, name, cm.Labels, identity); err != nil {
+		return err
+	}
+	var value *string
+	if access != nil {
+		raw, err := config.EncodeYAML(access)
+		if err != nil {
+			return err
+		}
+		encoded := string(raw)
+		value = &encoded
+	}
+	metadata := map[string]any{"uid": cm.UID}
+	if cm.Annotations[manifests.AnnotationBackend] != "" {
+		// Keep an older gateway's reader consistent during the rolling upgrade.
+		var legacy *string
+		if access != nil {
+			raw, _ := json.Marshal(access)
+			encoded := string(raw)
+			legacy = &encoded
+		}
+		metadata["annotations"] = map[string]*string{manifests.AnnotationAccess: legacy}
+	}
+	patch, err := json.Marshal(map[string]any{"metadata": metadata, "data": map[string]*string{manifests.RouteAccessKey: value}})
+	if err != nil {
+		return err
+	}
+	_, err = cms.Patch(ctx, name, types.MergePatchType, patch, metav1.PatchOptions{FieldManager: "donkey-route-access"})
 	return err
 }

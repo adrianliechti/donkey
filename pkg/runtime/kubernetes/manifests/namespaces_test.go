@@ -187,11 +187,11 @@ func TestSharedNamespaceQualifiesEveryName(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := map[string]string{
-		"ConfigMap":             "acme--shop",
-		"Secret":                "acme--shop-registry",
-		"Service":               "acme--shop",
-		"Deployment":            "acme--shop",
-		"PersistentVolumeClaim": "acme--shop-data",
+		"ConfigMap":             "acme-shop-route",
+		"Secret":                "acme-shop-registry",
+		"Service":               "acme-shop",
+		"Deployment":            "acme-shop",
+		"PersistentVolumeClaim": "acme-shop-data",
 	}
 	seen := map[string]bool{}
 	for _, obj := range objs {
@@ -207,7 +207,7 @@ func TestSharedNamespaceQualifiesEveryName(t *testing.T) {
 			t.Errorf("%s %s is in %q, want donkey-apps", kind, m.GetName(), m.GetNamespace())
 		}
 		// The space marker is the one object named after the space itself.
-		if IsSpaceMarker(m.GetName()) {
+		if m.GetLabels()[LabelRole] == RoleSpace {
 			seen["marker"] = true
 			continue
 		}
@@ -255,16 +255,20 @@ func TestSharedNamespaceUsesLogicalSelectors(t *testing.T) {
 func TestSharedNamespaceBackendFollows(t *testing.T) {
 	in := sharedInput(t)
 	cm := appRoute(in)
-	want := "http://acme--shop.donkey-apps.svc:80"
-	if got := cm.Annotations[AnnotationBackend]; got != want {
+	route, err := ReadRoute(cm)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "http://acme-shop.donkey-apps.svc:80"
+	if got := route.Backend; got != want {
 		t.Errorf("backend = %q, want %q", got, want)
 	}
-	if cm.Name != "acme--shop" {
-		t.Errorf("the route object is named %q, want acme--shop", cm.Name)
+	if cm.Name != "acme-shop-route" {
+		t.Errorf("the route object is named %q, want acme-shop-route", cm.Name)
 	}
 	// The hostname a visitor types is unchanged: it is built from the plain
 	// app and space names, and nothing about placement should touch it.
-	if got := cm.Annotations[AnnotationHost]; got != "shop.acme.apps.example.com" {
+	if got := route.Host; got != "shop.acme.apps.example.com" {
 		t.Errorf("host = %q — placement must not change the address people use", got)
 	}
 }

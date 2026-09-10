@@ -19,22 +19,23 @@ import (
 // it is passed in so this stays a pure function.
 func ResolveSpace(flag string, app *AppConfig, appDir, repoRoot string) string {
 	if flag != "" {
-		return SanitizeName(flag)
+		return flag
 	}
 	if app != nil && app.Space != "" {
 		return app.Space
 	}
 	if repoRoot != "" {
-		return SanitizeName(filepath.Base(repoRoot))
+		return SanitizeSpaceName(filepath.Base(repoRoot))
 	}
 	abs, err := filepath.Abs(appDir)
 	if err != nil {
 		return DefaultSpace
 	}
-	return SanitizeName(filepath.Base(abs))
+	return SanitizeSpaceName(filepath.Base(abs))
 }
 
 var nameCleanRE = regexp.MustCompile(`[^a-z0-9-]+`)
+var spaceNameCleanRE = regexp.MustCompile(`[^a-z0-9]+`)
 
 // SanitizeName turns a folder name into a name donkey (and Kubernetes) can
 // use: lowercase letters, digits and dashes.
@@ -46,6 +47,19 @@ func SanitizeName(base string) string {
 	}
 	if len(name) > 40 {
 		name = strings.Trim(name[:40], "-")
+	}
+	return name
+}
+
+// SanitizeSpaceName derives a space from a folder. Explicit space names are
+// validated, never silently renamed.
+func SanitizeSpaceName(base string) string {
+	name := spaceNameCleanRE.ReplaceAllString(strings.ToLower(base), "")
+	if name == "" {
+		return DefaultSpace
+	}
+	if len(name) > 40 {
+		name = name[:40]
 	}
 	return name
 }

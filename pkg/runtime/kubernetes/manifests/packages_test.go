@@ -48,7 +48,7 @@ func TestPackageCredentialsStayInSecretAndAreHostScoped(t *testing.T) {
 			continue
 		}
 		foundPassword = true
-		if e.Value != "" || e.ValueFrom == nil || e.ValueFrom.SecretKeyRef == nil || e.ValueFrom.SecretKeyRef.Key != "packages-password" {
+		if e.Value != "" || e.ValueFrom == nil || e.ValueFrom.SecretKeyRef == nil || e.ValueFrom.SecretKeyRef.Key != "DONKEY_PACKAGES_PASSWORD" {
 			t.Errorf("package password is not a Secret reference: %+v", e)
 		}
 	}

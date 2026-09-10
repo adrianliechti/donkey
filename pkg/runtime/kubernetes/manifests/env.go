@@ -35,7 +35,7 @@ func buildEnv(b config.InstallBuild) []corev1.EnvVar {
 	if len(b.Env) > 0 {
 		// A map travels as JSON, the way DONKEY_PLATFORM_ADMINS does — but out of the
 		// Secret, because these values are routinely credentialed URLs.
-		env = append(env, secretEnvVar("DONKEY_BUILD_ENV", "build-env"))
+		env = append(env, secretEnvVar("DONKEY_BUILD_ENV", "DONKEY_BUILD_ENV"))
 	}
 	return env
 }
@@ -124,8 +124,8 @@ func proxyEnv(p config.InstallProxy, registryHost string) []corev1.EnvVar {
 		}
 		env = append(env, secretEnvVar(name, key), secretEnvVar(strings.ToLower(name), key))
 	}
-	secret("HTTP_PROXY", "http-proxy", p.HTTP)
-	secret("HTTPS_PROXY", "https-proxy", p.HTTPS)
+	secret("HTTP_PROXY", "HTTP_PROXY", p.HTTP)
+	secret("HTTPS_PROXY", "HTTPS_PROXY", p.HTTPS)
 	if p.NoProxy != "" {
 		env = append(env,
 			corev1.EnvVar{Name: "NO_PROXY", Value: p.NoProxy},

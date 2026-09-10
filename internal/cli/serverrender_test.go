@@ -110,7 +110,7 @@ func TestKubernetesRenderOmitsEverySecretValue(t *testing.T) {
 	if !strings.Contains(manifest, "donkey.local/installation: donkey-system") {
 		t.Fatal("rendered objects do not carry the installation identity")
 	}
-	if !strings.Contains(manifest, "name: donkey-system-registry") {
+	if !strings.Contains(manifest, "name: donkey-registry") {
 		t.Fatal("credentialed system images do not reference the external pull Secret")
 	}
 	apply := string(files["apply.sh"].Data)

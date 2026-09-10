@@ -22,7 +22,7 @@ const (
 func AppCertificateName(space, app string) string { return "donkey-app-" + space + "." + app }
 
 func AppCertificateSecretName(space, app string) string {
-	return AppCertificateName(space, app) + "-tls"
+	return space + NameSeparator + app + "-tls"
 }
 
 func AppDNSName(space, app string) string { return AppCertificateName(space, app) + "-dns" }
