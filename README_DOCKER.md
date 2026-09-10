@@ -16,7 +16,7 @@ runtime has [its own page](README_KUBERNETES.md). A complete walkthrough is
 | PersistentVolumeClaim | named volume `donkey.<space>.<name>.data` |
 | route ConfigMaps | route records in the state volume, read by the gateway |
 | `donkey.space.<space>` settings ConfigMap | `/var/lib/donkey/spaces/<space>/config.json` |
-| `donkey.platform` settings ConfigMap | `/var/lib/donkey/platform/config.json` |
+| `donkey` ConfigMap’s `platform.json` | `/var/lib/donkey/platform/config.json` |
 | control plane in `donkey-system` | containers `donkey-server`, `donkey-gateway`, `donkey-ai`, `donkey-telemetry`, `donkey-packages`, `donkey-buildkitd` (and optionally `donkey-registry`) on the `donkey` network |
 
 The dots in `donkey.<space>.<app>` keep app containers out of the control

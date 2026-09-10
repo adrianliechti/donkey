@@ -266,33 +266,34 @@ function NewSpaceDialog({
       <div className="fixed inset-0 overflow-y-auto p-4 pt-[8vh]">
         <DialogPanel
           transition
-          className="mx-auto w-full max-w-2xl rounded-lg border border-line bg-card p-4 shadow-2xl transition duration-(--duration-base) ease-emphasized data-closed:opacity-0 data-closed:scale-95 data-leave:duration-(--duration-fast) data-leave:ease-exit"
+          className="mx-auto w-full max-w-lg rounded-xl border border-line bg-card p-6 shadow-2xl transition duration-(--duration-base) ease-emphasized data-closed:opacity-0 data-closed:scale-95 data-leave:duration-(--duration-fast) data-leave:ease-exit"
         >
-          <DialogTitle className="font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-muted">
-            New space
-          </DialogTitle>
+          <DialogTitle className="text-lg font-semibold tracking-tight">Create space</DialogTitle>
+          <p className="mt-1 text-sm text-muted">A home for your apps and services.</p>
           <ErrorNote message={error} />
           <form
             onSubmit={(e) => {
               e.preventDefault()
               if (name.trim()) create()
             }}
-            className="mt-3 flex flex-col gap-2"
+            className="mt-6 flex flex-col gap-5"
           >
-            <input
-              autoFocus
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="my-project"
-              aria-label="Space name"
-              className="rounded-md border border-line bg-surface px-2 py-1.5 font-mono text-sm focus:outline-2 focus:outline-accent-strong"
-            />
-            <p className="text-xs text-muted">
-              A space groups apps that belong together — they reach each other by name and share its
-              services.
-            </p>
-            <fieldset disabled={busy} className="my-3">
-              <SpaceConfigEditor settings={effective} onChange={(next) => {
+            <label className="block text-sm font-medium">
+              Space name
+              <input
+                autoFocus
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="my-project"
+                aria-label="Space name"
+                autoCapitalize="none"
+                spellCheck={false}
+                disabled={busy}
+                className="mt-2 block w-full rounded-lg border border-line bg-surface px-3 py-2.5 font-mono text-sm font-normal focus:outline-2 focus:outline-accent-strong"
+              />
+            </label>
+            <fieldset disabled={busy}>
+              <SpaceConfigEditor creating settings={effective} domainPlaceholder={!customDomains && !name.trim() && domain ? `<space>.${domain}` : undefined} onChange={(next) => {
                 if (next.domains !== effective.domains) setCustomDomains(true)
                 setSettings(next)
               }} />
@@ -302,7 +303,7 @@ function NewSpaceDialog({
                 Cancel
               </Button>
               <Button type="submit" disabled={busy || name.trim() === ''}>
-                {busy ? 'Creating…' : 'Create'}
+                {busy ? 'Creating…' : 'Create space'}
               </Button>
             </div>
           </form>

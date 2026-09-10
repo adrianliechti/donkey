@@ -201,8 +201,7 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 	if err := checkOptionalCRDs(ctx, client, settings); err != nil {
 		return err
 	}
-	existing, err := client.GetOwnedSecretData(ctx, systemNamespace, manifests.SystemConfigSecretName,
-		manifests.SystemLabels(manifests.ServerName))
+	existing, err := client.SystemSecretData(ctx, systemNamespace)
 	if err != nil {
 		return fmt.Errorf("couldn't read the existing installation's secrets: %w", err)
 	}
@@ -336,6 +335,9 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 		IsolateSpaces:   settings.Kubernetes.SpacesIsolated(),
 		RestrictEgress:  settings.Kubernetes.RestrictEgress,
 	})
+	if err := rt.MigrateSystemConfig(ctx); err != nil {
+		return fmt.Errorf("migrating platform settings: %w", err)
+	}
 	if err := rt.ReconcileSpaceIsolation(ctx); err != nil {
 		return fmt.Errorf("updating space isolation: %w", err)
 	}
@@ -369,6 +371,13 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 	if err := client.WaitForRollout(ctx, in.Namespace, manifests.GatewayAppName,
 		manifests.SystemLabels(manifests.GatewayAppName)); err != nil {
 		return err
+	}
+	if err := client.WaitForRollout(ctx, in.Namespace, manifests.AIAppName,
+		manifests.SystemLabels(manifests.AIAppName)); err != nil {
+		return err
+	}
+	if err := client.DeleteLegacySystemConfig(ctx, in.Namespace); err != nil {
+		return fmt.Errorf("removing old control-plane config: %w", err)
 	}
 	u.Success("Control plane is running.")
 

@@ -1,4 +1,5 @@
 import { useId } from 'react'
+import { Select } from './ui'
 
 const inputClass = 'min-w-0 flex-1 rounded-md border border-line bg-surface px-2 py-1.5 font-mono text-sm focus:outline-2 focus:outline-accent-strong'
 
@@ -41,11 +42,8 @@ export function HostEditor({ value, domains, onChange }: {
         {domains.length === 1 ? (
           <span className="break-all font-mono text-sm">{domain}</span>
         ) : (
-          <select aria-label="Domain" value={domain}
-            onChange={(e) => onChange(join(hostname, e.target.value))}
-            className="max-w-full rounded-md border border-line bg-surface px-2 py-1.5 font-mono text-sm">
-            {domains.map((suffix) => <option key={suffix} value={suffix}>{suffix}</option>)}
-          </select>
+          <Select ariaLabel="Domain" value={domain} onChange={(suffix) => onChange(join(hostname, suffix))}
+            options={domains.map((suffix) => ({ value: suffix, label: suffix }))} />
         )}
       </div>
       {value && !matched && <p className="mt-1 text-xs text-danger">Choose a hostname under one of this space’s domains.</p>}

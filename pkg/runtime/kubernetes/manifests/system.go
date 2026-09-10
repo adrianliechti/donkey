@@ -137,7 +137,9 @@ const (
 	ServerName = "donkey-server"
 	// SystemConfigSecretName holds the installation credentials and the
 	// settings intentionally kept out of pod specs.
-	SystemConfigSecretName = "donkey-system-config"
+	SystemConfigSecretName = "donkey"
+	// SystemConfigMapName holds the console route and platform settings.
+	SystemConfigMapName = "donkey"
 	// SystemRegistrySecretName lets Kubernetes pull credentialed control-plane
 	// images. It is exported for offline deployment bundle renderers.
 	SystemRegistrySecretName = "donkey-system-registry"
@@ -204,9 +206,9 @@ func SystemObjects(in SystemInput) []runtime.Object {
 		systemService(in, buildkitName, buildkitPort, buildkitPort),
 		buildkitNetworkPolicy(in),
 		serverNetworkPolicy(in),
+		consoleRoute(in),
 		serverDeployment(in),
 		systemService(in, ServerName, 80, serverPort),
-		consoleRoute(in),
 	)
 	// In cert-manager mode the control-plane Certificate must exist before
 	// the gateway starts looking for its Secret. DNS is adjacent because it
@@ -534,8 +536,8 @@ func adminsJSON(in SystemInput) string {
 
 // consoleRoute serves the console and API — through the donkey gateway,
 // exactly like an app: the gateway runs the browser login (or verifies a
-// sealed CLI token) and forwards identity headers; Admins narrows who gets
-// in. It is one more entry in the gateway's routing table.
+// sealed CLI token). The server checks platform and space permissions.
+// The ConfigMap also holds platform.json, managed independently of the route.
 func consoleRoute(in SystemInput) *corev1.ConfigMap {
 	ann := map[string]string{
 		AnnotationBackend: fmt.Sprintf("http://%s.%s.svc:80", ServerName, in.Namespace),
@@ -546,5 +548,5 @@ func consoleRoute(in SystemInput) *corev1.ConfigMap {
 		// not bare headers anything in the cluster could type.
 		AnnotationToken: TokenForward,
 	}
-	return routeConfigMap(ServerName, in.Namespace, SystemLabels(ServerName), ann)
+	return routeConfigMap(SystemConfigMapName, in.Namespace, SystemLabels(ServerName), ann)
 }

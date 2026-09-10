@@ -844,9 +844,14 @@ records are created with no space members and unrestricted domains, preserving
 existing app routes. Platform admins retain access and can assign space roles.
 Saved roles and domains survive subsequent upgrades. Updates use last save wins.
 
-On Kubernetes, `donkey.platform` in the control-plane namespace holds platform
-settings, and `donkey.space.<space>` in each space's namespace holds its settings
-(including shared-namespace installations). Each uses `data["config.json"]`.
+On Kubernetes, the `donkey` ConfigMap in the control-plane namespace holds
+platform settings in `data["platform.json"]` and the console route in annotations.
+The `donkey.space.<space>` ConfigMap in each space's namespace holds its settings
+in `data["config.json"]` (including shared-namespace installations).
+The `donkey` Secret stores credentials and session keys.
+The installer migrates the former `donkey.platform`, `donkey-server` ConfigMap,
+and `donkey-system-config` Secret layout, preserving admins and credentials;
+it removes those old resources after the new pods are ready.
 Docker stores the same JSON under `/var/lib/donkey/platform/config.json` and
 `/var/lib/donkey/spaces/<space>/config.json` in its persistent state volume.
 
@@ -926,7 +931,7 @@ of this is a gap waiting to be filled — it follows from how donkey is built,
 so plan around it.
 
 **Sessions and revocation.** One secret underlies every login: the session
-key in `donkey-system-config` seals the browser cookies (12 h) and the CLI
+key in `donkey` seals the browser cookies (12 h) and the CLI
 tokens (30 days), all derived from an OIDC sign-in. Individual logins expire
 on their own and revive with a fresh sign-in; kicking one specific person out
 happens by removing every matching entry from platform admins and space roles,
@@ -968,8 +973,8 @@ deploy. What is *not* reproducible has to live outside the cluster:
 | `DONKEY_REGISTRY_PASSWORD` | donkey stores it, but never invents it; without it the server can't push and apps can't pull |
 | `DONKEY_OIDC_CLIENT_SECRET` (with its client id) | belongs to a registration in your IdP — a new one means updating the IdP as well |
 | `OPENAI_API_KEY` | the assistant is required; no key, no deploys |
-| the `session-key` entry of `donkey-system-config` | a fresh install **generates a new one** and thereby invalidates every session and CLI token. Restoring it makes the rebuilt installation the same installation — everyone stays signed in |
-| the `telemetry-key` entry of `donkey-system-config` | existing app exporters carry credentials derived from it. Restoring it keeps those exporters valid and lets a restored telemetry database continue accepting them independently of login-session rotation |
+| the `session-key` entry of `donkey` | a fresh install **generates a new one** and thereby invalidates every session and CLI token. Restoring it makes the rebuilt installation the same installation — everyone stays signed in |
+| the `telemetry-key` entry of `donkey` | existing app exporters carry credentials derived from it. Restoring it keeps those exporters valid and lets a restored telemetry database continue accepting them independently of login-session rotation |
 | the registry CA secret (`registry.caSecret`) | donkey only *references* that Secret in the configured control-plane namespace — it never creates it. Whatever created it has to run again |
 | DNS for `*.<domain>` and `<domain>` | they point at the gateway address, which a rebuilt cluster changes |
 

@@ -35,8 +35,9 @@ only; no donkey component authorizes on them. The server's `auth`
   data, and tunnels. Empty space membership grants nobody a role. Permissions
   are read on every API request, including the resolved targets of uploads and
   saved plans. IdP group/role changes still require refreshed identity claims.
-- Platform settings live in `donkey.platform` in the control-plane namespace;
-  each space has `donkey.space.<space>`, with JSON in `config.json`. Docker
+- Platform settings live in the control-plane `donkey` ConfigMap’s
+  `platform.json` entry, alongside the console route annotations. Each space
+  has `donkey.space.<space>`, with JSON in `config.json`. Docker
   uses equivalent files in its persistent state volume. Existing spaces
   migrate with empty membership and unrestricted domains. Only platform admins
   retain access until space roles are assigned. Subsequent saves use last save
@@ -203,7 +204,7 @@ where an app needs a low port.*
 `resourceNames`. ACME and CA modes create or update named state Secrets;
 cert-manager mode lists Secrets and filters installation and edge labels in
 the client because Kubernetes RBAC cannot constrain a list by label. The grant
-also covers `donkey-system-config` (registry password, OpenAI key, OIDC client
+also covers `donkey` (registry password, OpenAI key, OIDC client
 secret, session key). The gateway is the most exposed component donkey runs,
 so any RCE/SSRF in it becomes one API call for the registry *push* credential
 — write access to the path every app is built from. Its ClusterRole also reads

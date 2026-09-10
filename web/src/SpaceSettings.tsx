@@ -1,64 +1,74 @@
 import { useEffect, useState } from 'react'
 import { Dialog, DialogBackdrop, DialogPanel, DialogTitle } from '@headlessui/react'
-import { api, type AccessConfig, type SpaceConfig } from './api'
+import { ChevronRight, Globe2, Plus, Users, X } from 'lucide-react'
+import { api, type SpaceConfig } from './api'
+import { MembershipEditor } from './MembershipEditor'
 import { Button, ErrorNote, Spinner, errText } from './ui'
 
-function Entries({ label, values, placeholder, onChange }: {
-  label: string; values: string[]; placeholder: string; onChange: (values: string[]) => void
+export function DomainSettings({ domains, onChange, placeholder }: {
+  domains: string[]; onChange: (domains: string[]) => void; placeholder?: string
 }) {
-  const value = values.join('\n')
-  const [draft, setDraft] = useState({ value, text: value })
-  if (value !== draft.value) setDraft({ value, text: value })
+  const [adding, setAdding] = useState(false)
+  const [draft, setDraft] = useState('')
+  function add() {
+    const domain = draft.trim().toLowerCase()
+    if (!domain) return
+    onChange([...new Set([...domains, domain])])
+    setDraft('')
+    setAdding(false)
+  }
   return (
-    <label className="block text-xs text-muted">
-      {label}
-      <textarea rows={2} value={draft.text} placeholder={placeholder} spellCheck={false}
-        onChange={(e) => {
-          const next = [...new Set(e.target.value.split(/[\n,]+/).map((s) => s.trim()).filter(Boolean))]
-          setDraft({ value: next.join('\n'), text: e.target.value })
-          onChange(next)
-        }}
-        className="mt-1 block w-full rounded-md border border-line bg-surface px-2 py-1.5 font-mono text-sm text-ink focus:outline-2 focus:outline-accent-strong" />
-    </label>
-  )
-}
-
-export function DomainSettings({ domains, onChange }: { domains: string[]; onChange: (domains: string[]) => void }) {
-  return (
-    <div className="space-y-1">
-      <Entries label="Domains" values={domains} placeholder="team.example.com" onChange={onChange} />
-      <p className="text-xs text-muted">Apps may use these domains and their subdomains. One per line. Clear the list to allow any domain.</p>
-    </div>
-  )
-}
-
-export function Members({ label, hint, members, onChange }: {
-  label: string; hint: string; members: AccessConfig; onChange: (members: AccessConfig) => void
-}) {
-  return (
-    <fieldset className="space-y-2 border-t border-line pt-3">
-      <legend className="px-1 text-sm font-medium">{label}</legend>
-      <p className="text-xs text-muted">{hint}</p>
-      <div className="grid gap-2 sm:grid-cols-3">
-        <Entries label="Users" values={members.users ?? []} placeholder="ada@example.com" onChange={(users) => onChange({ ...members, users })} />
-        <Entries label="Groups" values={members.groups ?? []} placeholder="engineering" onChange={(groups) => onChange({ ...members, groups })} />
-        <Entries label="Identity-provider roles" values={members.roles ?? []} placeholder="team-developer" onChange={(roles) => onChange({ ...members, roles })} />
+    <section aria-label="Domains" className="space-y-2">
+      <div className="flex items-center justify-between">
+        <h3 className="flex items-center gap-2 text-sm font-medium"><Globe2 className="size-4 text-muted" aria-hidden /> Domains</h3>
+        <button type="button" onClick={() => setAdding(!adding)} className="flex items-center gap-1 rounded px-1 py-0.5 text-xs text-accent hover:bg-accent-soft">
+          <Plus className="size-3.5" aria-hidden /> Add domain
+        </button>
       </div>
-    </fieldset>
+      <div className="flex min-h-10 flex-wrap items-center gap-2 rounded-lg border border-line bg-surface/50 p-2">
+        {domains.map((domain) => <span key={domain} className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-line bg-card py-1 pl-2.5 pr-1 text-xs">
+          <span className="truncate font-mono" title={domain}>{domain}</span>
+          <button type="button" aria-label={`Remove domain ${domain}`} onClick={() => onChange(domains.filter((d) => d !== domain))}
+            className="shrink-0 rounded p-0.5 text-muted hover:bg-raised hover:text-ink"><X className="size-3" aria-hidden /></button>
+        </span>)}
+        {domains.length === 0 && <span className="px-1 text-xs text-muted">{placeholder || 'Any domain'}</span>}
+      </div>
+      {adding && <div className="flex gap-2">
+        <input autoFocus aria-label="New domain" value={draft} placeholder="team.example.com" autoCapitalize="none" spellCheck={false}
+          onChange={(e) => setDraft(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); add() } }}
+          className="min-w-0 flex-1 rounded-md border border-line bg-surface px-3 py-2 font-mono text-sm focus:outline-2 focus:outline-accent-strong" />
+        <Button kind="quiet" onClick={add} disabled={!draft.trim()}>Add</Button>
+      </div>}
+      <p className="text-xs text-muted">{domains.length > 0 ? 'Apps can use any hostname under these domains.' : placeholder ? 'Your space name sets the default domain.' : 'Apps will need a full URL. Add a domain to limit their addresses.'}</p>
+    </section>
   )
 }
 
-export function SpaceConfigEditor({ settings, onChange }: {
-  settings: SpaceConfig; onChange: (settings: SpaceConfig) => void
+export function SpaceConfigEditor({ settings, onChange, creating = false, domainPlaceholder }: {
+  settings: SpaceConfig; onChange: (settings: SpaceConfig) => void; creating?: boolean; domainPlaceholder?: string
 }) {
+  const memberCount = [settings.admins, settings.developers].reduce((n, members) =>
+    n + (members.users?.length ?? 0) + (members.groups?.length ?? 0) + (members.roles?.length ?? 0), 0)
+  const members = <MembershipEditor admins={settings.admins} developers={settings.developers}
+    onChange={(admins, developers) => onChange({ ...settings, admins, developers })} />
   return (
-    <div className="space-y-4">
-      <DomainSettings domains={settings.domains ?? []} onChange={(domains) => onChange({ ...settings, domains })} />
-      <Members label="Space admins" hint="Manage membership, domains, and the entire space, including deletion."
-        members={settings.admins} onChange={(admins) => onChange({ ...settings, admins })} />
-      <Members label="Developers" hint="Deploy and manage apps and services, including their data and credentials."
-        members={settings.developers} onChange={(developers) => onChange({ ...settings, developers })} />
-      <p className="text-xs text-muted">Entries match your sign-in provider. Matching any entry grants the role; empty lists grant nobody access. Users are email addresses, or sub:subject when email is unavailable. Platform admins always retain access.</p>
+    <div className="space-y-5">
+      <DomainSettings domains={settings.domains ?? []} placeholder={domainPlaceholder} onChange={(domains) => onChange({ ...settings, domains })} />
+      {creating ? <details className="group rounded-lg border border-line">
+        <summary className="flex cursor-pointer list-none items-center gap-2.5 px-3 py-3 text-sm [&::-webkit-details-marker]:hidden">
+          <Users className="size-4 text-muted" aria-hidden />
+          <span className="flex-1 font-medium">Space access</span>
+          <span className="text-xs text-muted">{memberCount ? `${memberCount} ${memberCount === 1 ? 'member' : 'members'}` : 'Platform admins only'}</span>
+          <ChevronRight className="size-3.5 text-muted transition-transform group-open:rotate-90" aria-hidden />
+        </summary>
+        <div className="space-y-3 border-t border-line p-3">
+          <p className="text-xs text-muted">Add people or teams now, or later in space settings.</p>
+          {members}
+        </div>
+      </details> : <section aria-label="Space access" className="space-y-3">
+        <h3 className="flex items-center gap-2 text-sm font-medium"><Users className="size-4 text-muted" aria-hidden /> Space access</h3>
+        {members}
+      </section>}
     </div>
   )
 }
@@ -95,7 +105,7 @@ export function SpaceSettings({ space, onClose, onSaved }: {
     <Dialog open onClose={() => !busy && onClose()} className="relative z-50">
       <DialogBackdrop className="fixed inset-0 bg-black/60" />
       <div className="fixed inset-0 overflow-y-auto p-4 pt-[10vh]">
-        <DialogPanel className="mx-auto w-full max-w-2xl rounded-lg border border-line bg-card p-5 shadow-2xl">
+        <DialogPanel className="mx-auto w-full max-w-lg rounded-xl border border-line bg-card p-6 shadow-2xl">
           <DialogTitle className="mb-4 text-base font-semibold">Settings for {space}</DialogTitle>
           <ErrorNote message={error} />
           {!settings && !error && <Spinner label="Loading space settings…" />}

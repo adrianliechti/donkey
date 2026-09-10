@@ -10,8 +10,14 @@ import (
 
 	"github.com/adrianliechti/donkey/internal/config"
 	rt "github.com/adrianliechti/donkey/pkg/runtime"
+	"github.com/adrianliechti/donkey/pkg/runtime/kubernetes/manifests"
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 )
 
 func TestPlatformConfigInitializationAndPersistence(t *testing.T) {
@@ -44,8 +50,8 @@ func TestPlatformConfigInitializationAndPersistence(t *testing.T) {
 	if err != nil || len(first.Admins.Users) != 1 {
 		t.Fatalf("first admin: %+v, %v", first, err)
 	}
-	cm, err := client.Clientset.CoreV1().ConfigMaps("main").Get(ctx, "donkey.platform", metav1.GetOptions{})
-	if err != nil || cm.Data[spaceConfigKey] == "" {
+	cm, err := client.Clientset.CoreV1().ConfigMaps("main").Get(ctx, "donkey", metav1.GetOptions{})
+	if err != nil || cm.Data[platformConfigKey] == "" {
 		t.Fatalf("missing ConfigMap in main: %v", err)
 	}
 	cm.Data["unrelated"] = "keep"
@@ -65,9 +71,80 @@ func TestPlatformConfigInitializationAndPersistence(t *testing.T) {
 	if cm.Data["unrelated"] != "keep" {
 		t.Fatal("overwrote another config key")
 	}
-	cm.Data[spaceConfigKey] = "{}"
+	cm.Data[platformConfigKey] = "{}"
 	_, _ = client.Clientset.CoreV1().ConfigMaps("main").Update(ctx, cm, metav1.UpdateOptions{})
 	if _, err := restarted.InitPlatformConfig(ctx, first); err == nil {
 		t.Fatal("empty persisted settings triggered a new bootstrap")
+	}
+}
+
+func TestPlatformConfigInitializesExistingConsoleRoute(t *testing.T) {
+	for _, conflict := range []bool{false, true} {
+		t.Run(fmt.Sprintf("concurrent sign-in=%t", conflict), func(t *testing.T) {
+			ctx := context.Background()
+			clientset := fake.NewClientset()
+			client := &Client{Clientset: clientset, Installation: "main"}
+			cm := &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{Name: manifests.SystemConfigMapName, Namespace: "main",
+					Labels:      client.expectedObjectIdentity(manifests.SystemLabels(manifests.ServerName)),
+					Annotations: map[string]string{manifests.AnnotationBackend: "http://donkey-server.main.svc:80"}},
+			}
+			if _, err := clientset.CoreV1().ConfigMaps("main").Create(ctx, cm, metav1.CreateOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			want := "first@example.com"
+			if conflict {
+				want = "other@example.com"
+				clientset.PrependReactor("update", "configmaps", func(k8stesting.Action) (bool, runtime.Object, error) {
+					concurrent := cm.DeepCopy()
+					concurrent.Data = map[string]string{platformConfigKey: `{"admins":{"users":["other@example.com"]}}`}
+					if err := clientset.Tracker().Update(corev1.SchemeGroupVersion.WithResource("configmaps"), concurrent, "main"); err != nil {
+						t.Fatal(err)
+					}
+					return true, nil, apierrors.NewConflict(schema.GroupResource{Resource: "configmaps"}, cm.Name, errors.New("concurrent first sign-in"))
+				})
+			}
+			r := NewRuntime(client, Options{SystemNamespace: "main"})
+			settings, err := r.InitPlatformConfig(ctx, config.PlatformConfig{Admins: config.AccessConfig{Users: []string{"first@example.com"}}})
+			if err != nil || !reflect.DeepEqual(settings.Admins.Users, []string{want}) {
+				t.Fatalf("first sign-in: %+v, %v", settings, err)
+			}
+			settings.Admins.Users = append(settings.Admins.Users, "added@example.com")
+			if err := r.SetPlatformConfig(ctx, settings); err != nil {
+				t.Fatal(err)
+			}
+			got, err := clientset.CoreV1().ConfigMaps("main").Get(ctx, cm.Name, metav1.GetOptions{})
+			if err != nil || !reflect.DeepEqual(got.Annotations, cm.Annotations) {
+				t.Fatalf("platform settings overwrote the console route: %v", err)
+			}
+		})
+	}
+}
+
+func TestPlatformConfigMigratesLegacyAdmins(t *testing.T) {
+	ctx := context.Background()
+	clientset := fake.NewClientset()
+	client := &Client{Clientset: clientset, Installation: "main"}
+	legacy := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "donkey.platform", Namespace: "main",
+			Labels: client.expectedObjectIdentity(manifests.SystemLabels("donkey-platform"))},
+		Data: map[string]string{"config.json": `{"admins":{"users":["owner@example.com"],"groups":["operators"]}}`},
+	}
+	if _, err := clientset.CoreV1().ConfigMaps("main").Create(ctx, legacy, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	r := NewRuntime(client, Options{SystemNamespace: "main"})
+	want := config.PlatformConfig{Admins: config.AccessConfig{Users: []string{"owner@example.com"}, Groups: []string{"operators"}}}
+	got, err := r.PlatformConfig(ctx)
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("legacy admins were not migrated: %+v, %v", got, err)
+	}
+	got.Admins.Users = append(got.Admins.Users, "added@example.com")
+	if err := r.SetPlatformConfig(ctx, got); err != nil {
+		t.Fatal(err)
+	}
+	again, err := r.PlatformConfig(ctx)
+	if err != nil || !reflect.DeepEqual(again, got) {
+		t.Fatalf("legacy settings overwrote new settings: %+v, %v", again, err)
 	}
 }

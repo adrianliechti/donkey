@@ -167,8 +167,8 @@ export interface RouteEntry {
 }
 
 export interface NetworkInfo {
-	fqdn: string
-	domains: string[]
+  fqdn: string
+  domains: string[]
   mode: AppMode
   exposure: Exposure
   /** Allow browser code on any origin to call the app through the gateway. */
@@ -396,7 +396,7 @@ export function planEdit(plan: Plan): PlanEdit {
   return {
     name: plan.app.name,
     space: plan.app.space,
-  host: plan.app.host ?? '',
+    host: plan.app.host ?? '',
     port: plan.app.port,
     healthcheck: plan.app.healthcheck ?? '',
     storage: [...plan.app.storage],

@@ -12,19 +12,17 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/retry"
 )
 
-const platformConfigName = "donkey.platform"
+const platformConfigKey = "platform.json"
 
 func (r *Runtime) platformConfigMap(ctx context.Context) (*corev1.ConfigMap, error) {
-	cm, err := r.c.Clientset.CoreV1().ConfigMaps(r.opts.SystemNamespace).Get(ctx, platformConfigName, metav1.GetOptions{})
-	if apierrors.IsNotFound(err) {
-		return nil, rt.ErrPlatformNotFound
-	}
+	cm, err := r.c.Clientset.CoreV1().ConfigMaps(r.opts.SystemNamespace).Get(ctx, manifests.SystemConfigMapName, metav1.GetOptions{})
 	if err != nil {
 		return nil, err
 	}
-	if err := r.c.requireOwnedObject("ConfigMap", cm.Namespace, cm.Name, cm.Labels, manifests.SystemLabels("donkey-platform")); err != nil {
+	if err := r.c.requireOwnedObject("ConfigMap", cm.Namespace, cm.Name, cm.Labels, manifests.SystemLabels(manifests.ServerName)); err != nil {
 		return nil, err
 	}
 	return cm, nil
@@ -33,10 +31,41 @@ func (r *Runtime) platformConfigMap(ctx context.Context) (*corev1.ConfigMap, err
 func (r *Runtime) PlatformConfig(ctx context.Context) (config.PlatformConfig, error) {
 	var settings config.PlatformConfig
 	cm, err := r.platformConfigMap(ctx)
+	if apierrors.IsNotFound(err) {
+		return r.migratePlatformConfig(ctx)
+	}
 	if err != nil {
 		return settings, err
 	}
-	if err := json.Unmarshal([]byte(cm.Data[spaceConfigKey]), &settings); err != nil {
+	if _, exists := cm.Data[platformConfigKey]; !exists {
+		return r.migratePlatformConfig(ctx)
+	}
+	return decodePlatformConfig(cm.Data[platformConfigKey])
+}
+
+// Preserve the admin list from installations that used a separate ConfigMap.
+// InitPlatformConfig adds only platform.json and preserves the console route.
+func (r *Runtime) migratePlatformConfig(ctx context.Context) (config.PlatformConfig, error) {
+	cm, err := r.c.Clientset.CoreV1().ConfigMaps(r.opts.SystemNamespace).Get(ctx, "donkey.platform", metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return config.PlatformConfig{}, rt.ErrPlatformNotFound
+	}
+	if err != nil {
+		return config.PlatformConfig{}, err
+	}
+	if err := r.c.requireOwnedObject("ConfigMap", cm.Namespace, cm.Name, cm.Labels, manifests.SystemLabels("donkey-platform")); err != nil {
+		return config.PlatformConfig{}, err
+	}
+	settings, err := decodePlatformConfig(cm.Data["config.json"])
+	if err != nil {
+		return settings, err
+	}
+	return r.InitPlatformConfig(ctx, settings)
+}
+
+func decodePlatformConfig(raw string) (config.PlatformConfig, error) {
+	var settings config.PlatformConfig
+	if err := json.Unmarshal([]byte(raw), &settings); err != nil {
 		return settings, fmt.Errorf("cannot read platform settings: %w", err)
 	}
 	if settings.Admins.Empty() {
@@ -58,17 +87,37 @@ func (r *Runtime) InitPlatformConfig(ctx context.Context, initial config.Platfor
 	if err != nil {
 		return config.PlatformConfig{}, err
 	}
-	cm := &corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: platformConfigName, Namespace: r.opts.SystemNamespace,
-			Labels: r.c.expectedObjectIdentity(manifests.SystemLabels("donkey-platform")),
-		},
-		Data: map[string]string{spaceConfigKey: string(raw)},
-	}
-	_, err = r.c.Clientset.CoreV1().ConfigMaps(cm.Namespace).Create(ctx, cm, metav1.CreateOptions{FieldManager: "donkey-platform-config"})
-	if err != nil && !apierrors.IsAlreadyExists(err) {
+	err = retry.OnError(retry.DefaultRetry, func(err error) bool {
+		return apierrors.IsConflict(err) || apierrors.IsAlreadyExists(err)
+	}, func() error {
+		cm, err := r.platformConfigMap(ctx)
+		if apierrors.IsNotFound(err) {
+			_, err = r.c.Clientset.CoreV1().ConfigMaps(r.opts.SystemNamespace).Create(ctx, &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{Name: manifests.SystemConfigMapName, Namespace: r.opts.SystemNamespace,
+					Labels: r.c.expectedObjectIdentity(manifests.SystemLabels(manifests.ServerName))},
+				Data: map[string]string{platformConfigKey: string(raw)},
+			}, metav1.CreateOptions{FieldManager: "donkey-platform-config"})
+			return err
+		}
+		if err != nil {
+			return err
+		}
+		if _, exists := cm.Data[platformConfigKey]; exists {
+			return nil
+		}
+		if cm.Data == nil {
+			cm.Data = map[string]string{}
+		}
+		cm.Data[platformConfigKey] = string(raw)
+		// Only first-user registration needs a conditional write. Settings
+		// edits below stay last-save-wins, with no revision in the API.
+		_, err = r.c.Clientset.CoreV1().ConfigMaps(cm.Namespace).Update(ctx, cm, metav1.UpdateOptions{FieldManager: "donkey-platform-config"})
+		return err
+	})
+	if err != nil {
 		return config.PlatformConfig{}, err
 	}
+
 	return r.PlatformConfig(ctx)
 }
 
@@ -89,7 +138,7 @@ func (r *Runtime) SetPlatformConfig(ctx context.Context, settings config.Platfor
 	}
 	patch, err := json.Marshal(map[string]any{
 		"metadata": map[string]any{"uid": cm.UID},
-		"data":     map[string]string{spaceConfigKey: string(raw)},
+		"data":     map[string]string{platformConfigKey: string(raw)},
 	})
 	if err != nil {
 		return err

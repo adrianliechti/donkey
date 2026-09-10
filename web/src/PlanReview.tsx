@@ -101,6 +101,7 @@ export function PlanReview({
   const [copied, setCopied] = useState(false)
   const exposureId = useId()
   const modeId = useId()
+  const previewURL = edit.exposure !== 'internal' && edit.host.trim() ? `https://${edit.host.trim()}` : ''
   const set = <K extends keyof PlanEdit>(key: K, value: PlanEdit[K]) =>
     onEdit({ ...edit, [key]: value })
 
@@ -239,10 +240,10 @@ export function PlanReview({
           />
         )}
 
-        {plan.app.url && edit.exposure !== 'internal' && (
+        {previewURL && (
           <p className="rounded-md border border-line bg-surface px-3 py-2 text-sm">
             <span className="text-muted">It will answer at </span>
-            <span className="font-mono text-accent">{plan.app.url}</span>
+            <span className="break-all font-mono text-accent">{previewURL}</span>
           </p>
         )}
       </Card>

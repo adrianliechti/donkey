@@ -177,12 +177,17 @@ empty membership and unrestricted domains. This preserves existing app routes;
 platform admins assign space roles through Space settings. Saved settings are
 preserved on upgrade and deploy.
 
-Platform admins live separately in `donkey.platform`, in the control-plane
-namespace (`donkey-system` by default), also in `data["config.json"]`:
+Platform admins live in the `donkey` ConfigMap in the control-plane namespace
+(`donkey-system` by default), in `data["platform.json"]`:
 
 ```json
 {"admins":{"users":["first-user@example.com"]}}
 ```
+
+The same ConfigMap carries the gateway route annotations for the dashboard and
+API. A Secret also named `donkey` holds credentials and session keys; Kubernetes
+distinguishes the two by resource type. The installer preserves old secret
+values during upgrades.
 
 The first signed-in user initializes this list unless `platform.admins` was
 seeded in the install file. Platform admins manage the saved list through

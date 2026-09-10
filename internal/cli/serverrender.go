@@ -373,8 +373,16 @@ decode_base64() {
 `)
 	fmt.Fprintf(&b, "namespace=%s\n", shellQuote(namespace))
 	fmt.Fprintf(&b, "system_secret=%s\n", shellQuote(manifests.SystemConfigSecretName))
-	b.WriteString(`existing() {
-  kubectl -n "$namespace" get secret "$system_secret" -o "jsonpath={.data['$1']}" 2>/dev/null | decode_base64 2>/dev/null || true
+	b.WriteString(`source_secret="$system_secret"
+source_name=$(kubectl -n "$namespace" get secret "$source_secret" --ignore-not-found -o name)
+if [ -z "$source_name" ]; then
+  source_secret=donkey-system-config
+  source_name=$(kubectl -n "$namespace" get secret "$source_secret" --ignore-not-found -o name)
+fi
+existing() {
+  [ -n "$source_name" ] || return 0
+  encoded=$(kubectl -n "$namespace" get secret "$source_secret" -o "jsonpath={.data['$1']}") || return 1
+  printf '%s' "$encoded" | decode_base64
 }
 
 registry_password="${DONKEY_REGISTRY_PASSWORD:-$(existing registry-password)}"

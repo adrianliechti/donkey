@@ -114,7 +114,7 @@ func TestKubernetesRenderOmitsEverySecretValue(t *testing.T) {
 		t.Fatal("credentialed system images do not reference the external pull Secret")
 	}
 	apply := string(files["apply.sh"].Data)
-	for _, name := range []string{"OPENAI_API_KEY", "DONKEY_SESSION_KEY", "DONKEY_TELEMETRY_KEY", "donkey-system-config"} {
+	for _, name := range []string{"OPENAI_API_KEY", "DONKEY_SESSION_KEY", "DONKEY_TELEMETRY_KEY", "donkey"} {
 		if !strings.Contains(apply, name) {
 			t.Errorf("apply helper does not name %s", name)
 		}
