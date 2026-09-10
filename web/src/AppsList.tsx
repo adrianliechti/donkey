@@ -1,9 +1,10 @@
 import { useState } from 'react'
 import { Dialog, DialogBackdrop, DialogPanel, DialogTitle } from '@headlessui/react'
 import { FolderPlus, RefreshCw } from 'lucide-react'
-import { api, type AppSummary } from './api'
+import { api, type AppSummary, type SpaceConfig } from './api'
 import { useFleet } from './queries'
 import { SpaceCard } from './SpaceCard'
+import { SpaceConfigEditor } from './SpaceSettings'
 import { Button, DonkeyLogo, ErrorNote, Skeleton, StatusDot, errText, healthOf, type Health } from './ui'
 
 const healthRank: Record<Health, number> = { bad: 0, unknown: 1, ok: 2 }
@@ -75,7 +76,7 @@ export function AppsList() {
           )}
         </div>
         <div className="flex items-center gap-0.5">
-          <button
+          {data?.platformAdmin && <button
             type="button"
             onClick={() => setCreating(true)}
             title="New space"
@@ -83,7 +84,7 @@ export function AppsList() {
             className="rounded-md p-1.5 text-muted hover:bg-raised focus-visible:outline-2 focus-visible:outline-accent-strong"
           >
             <FolderPlus className="size-4" aria-hidden />
-          </button>
+          </button>}
           <button
             type="button"
             onClick={reload}
@@ -121,7 +122,10 @@ export function AppsList() {
         </div>
       )}
 
-      {apps !== null && spaces.length === 0 && (
+      {apps !== null && spaces.length === 0 && !data?.platformAdmin && (
+        <p className="rounded-xl border border-line bg-card p-8 text-center text-sm text-muted">You have no spaces yet. Ask an platform administrator to create a space and give you access.</p>
+      )}
+      {apps !== null && spaces.length === 0 && data?.platformAdmin && (
         <div className="rounded-xl border border-line bg-card p-12 text-center">
           <DonkeyLogo className="mx-auto size-10 text-muted" />
           <p className="mt-3 text-sm text-muted">The paddock is empty.</p>
@@ -148,6 +152,7 @@ export function AppsList() {
               space={space}
               apps={spaceApps}
               allApps={fullBySpace.get(space) ?? spaceApps}
+              role={data?.roles[space] ?? 'developer'}
               onChanged={reload}
             />
           ))}
@@ -155,6 +160,8 @@ export function AppsList() {
       )}
 
       <NewSpaceDialog
+        key={String(creating)}
+        domain={data?.domain ?? ''}
         open={creating}
         onClose={() => setCreating(false)}
         onCreated={() => {
@@ -218,10 +225,12 @@ function FleetSummary({
  * time — a home for services (or teammates) before any app arrives.
  */
 function NewSpaceDialog({
+  domain,
   open,
   onClose,
   onCreated,
 }: {
+  domain: string
   open: boolean
   onClose: () => void
   onCreated: () => void
@@ -229,12 +238,16 @@ function NewSpaceDialog({
   const [name, setName] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const [settings, setSettings] = useState<SpaceConfig>({ admins: {}, developers: {}, domains: [] })
+  const [customDomains, setCustomDomains] = useState(false)
+  const defaults = name.trim() && domain ? [`${name.trim()}.${domain}`] : []
+  const effective = { ...settings, domains: customDomains ? settings.domains : defaults }
 
   async function create() {
     setBusy(true)
     setError('')
     try {
-      await api.createSpace(name.trim())
+      await api.createSpace(name.trim(), effective)
       setName('')
       onCreated()
     } catch (err) {
@@ -250,10 +263,10 @@ function NewSpaceDialog({
         transition
         className="fixed inset-0 bg-black/60 transition-opacity duration-(--duration-base) ease-emphasized data-closed:opacity-0 data-leave:duration-(--duration-fast) data-leave:ease-exit"
       />
-      <div className="fixed inset-0 flex items-start justify-center p-4 pt-[18vh]">
+      <div className="fixed inset-0 overflow-y-auto p-4 pt-[8vh]">
         <DialogPanel
           transition
-          className="w-full max-w-sm rounded-lg border border-line bg-card p-4 shadow-2xl transition duration-(--duration-base) ease-emphasized data-closed:opacity-0 data-closed:scale-95 data-leave:duration-(--duration-fast) data-leave:ease-exit"
+          className="mx-auto w-full max-w-2xl rounded-lg border border-line bg-card p-4 shadow-2xl transition duration-(--duration-base) ease-emphasized data-closed:opacity-0 data-closed:scale-95 data-leave:duration-(--duration-fast) data-leave:ease-exit"
         >
           <DialogTitle className="font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-muted">
             New space
@@ -278,6 +291,12 @@ function NewSpaceDialog({
               A space groups apps that belong together — they reach each other by name and share its
               services.
             </p>
+            <fieldset disabled={busy} className="my-3">
+              <SpaceConfigEditor settings={effective} onChange={(next) => {
+                if (next.domains !== effective.domains) setCustomDomains(true)
+                setSettings(next)
+              }} />
+            </fieldset>
             <div className="flex justify-end gap-2">
               <Button kind="quiet" onClick={onClose} disabled={busy}>
                 Cancel

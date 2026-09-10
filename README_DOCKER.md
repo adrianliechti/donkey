@@ -15,12 +15,19 @@ runtime has [its own page](README_KUBERNETES.md). A complete walkthrough is
 | app Deployment + Service | container `donkey.<space>.<app>` on the space's network |
 | PersistentVolumeClaim | named volume `donkey.<space>.<name>.data` |
 | route ConfigMaps | route records in the state volume, read by the gateway |
+| `donkey.space.<space>` settings ConfigMap | `/var/lib/donkey/spaces/<space>/config.json` |
+| `donkey.platform` settings ConfigMap | `/var/lib/donkey/platform/config.json` |
 | control plane in `donkey-system` | containers `donkey-server`, `donkey-gateway`, `donkey-ai`, `donkey-telemetry`, `donkey-packages`, `donkey-buildkitd` (and optionally `donkey-registry`) on the `donkey` network |
 
 The dots in `donkey.<space>.<app>` keep app containers out of the control
 plane's `donkey-<name>` namespace. Route, binding and console state that
 Kubernetes keeps in objects lives in meta files on the shared state volume
-(`donkey-data`).
+(`donkey-data`). Space and platform settings use the same JSON as Kubernetes;
+RBAC is always active. The first signed-in user becomes a platform admin and
+can add others in Account → Platform settings. An optional install-file
+`platform.admins` seeds the initial list. Server startup creates missing records
+for existing spaces with empty membership and unrestricted domains, preserving
+existing app routes. Saved roles and domains survive restarts and upgrades.
 
 ## Labels
 

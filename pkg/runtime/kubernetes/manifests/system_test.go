@@ -334,10 +334,10 @@ func TestConsoleBehindGateway(t *testing.T) {
 	}
 
 	restricted := systemInput()
-	restricted.Admins = &config.AccessConfig{Users: []string{"ada@example.com"}}
+	restricted.PlatformAdmins = &config.AccessConfig{Users: []string{"ada@example.com"}}
 	out = componentNames(restricted)
-	if !strings.Contains(out, "donkey.local/access") || !strings.Contains(out, "ada@example.com") {
-		t.Error("admin rules should reach the console route's access annotation")
+	if strings.Contains(out, "donkey.local/access") || !strings.Contains(out, "DONKEY_PLATFORM_ADMINS") || !strings.Contains(out, "ada@example.com") {
+		t.Error("admin seed must reach the server while the console admits space members")
 	}
 }
 

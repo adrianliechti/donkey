@@ -162,7 +162,7 @@ func TestBuildConfigReachesBothPods(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		// The build variables travel as JSON, the way DONKEY_ADMINS does.
+		// The build variables travel as JSON, the way DONKEY_PLATFORM_ADMINS does.
 		"DONKEY_BUILD_ENV",
 		"CGO_ENABLED",
 		"DONKEY_BUILDER_INSTRUCTIONS",

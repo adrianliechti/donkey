@@ -70,10 +70,9 @@ type SystemInput struct {
 	// donkey makes every image tag unique.
 	RegistryImmutable bool
 
-	// Admins narrows who may use the console and CLI (users/groups/roles,
-	// matched like an app's access rules). Empty means everyone the IdP
-	// admits — the login itself is never optional for the control plane.
-	Admins *config.AccessConfig
+	// PlatformAdmins optionally seeds the persisted platform settings.
+	// Otherwise the first verified sign-in becomes the first platform admin.
+	PlatformAdmins *config.AccessConfig
 
 	OIDCIssuer       string // OIDC issuer of the login gateway
 	OIDCClientID     string
@@ -386,7 +385,7 @@ func serverDeployment(in SystemInput) *appsv1.Deployment {
 		// the direct (port-forwarded) path next to the gateway's headers.
 		secretEnv("DONKEY_SESSION_KEY", "session-key"),
 		secretEnv("DONKEY_TELEMETRY_KEY", "telemetry-key"),
-		{Name: "DONKEY_ADMINS", Value: adminsJSON(in)},
+		{Name: "DONKEY_PLATFORM_ADMINS", Value: adminsJSON(in)},
 		secretEnv("DONKEY_REGISTRY_PASSWORD", "registry-password"),
 		secretEnv("OPENAI_API_KEY", "openai-api-key"),
 	}
@@ -523,10 +522,10 @@ func systemService(in SystemInput, name string, port, targetPort int32) *corev1.
 // adminsJSON is the console's access rules as the gateway and server read
 // them; empty rules stay an empty string (everyone the IdP admits).
 func adminsJSON(in SystemInput) string {
-	if in.Admins.Empty() {
+	if in.PlatformAdmins.Empty() {
 		return ""
 	}
-	b, err := json.Marshal(in.Admins)
+	b, err := json.Marshal(in.PlatformAdmins)
 	if err != nil {
 		return ""
 	}
@@ -546,9 +545,6 @@ func consoleRoute(in SystemInput) *corev1.ConfigMap {
 		// The server verifies identity itself — it gets the sealed token,
 		// not bare headers anything in the cluster could type.
 		AnnotationToken: TokenForward,
-	}
-	if a := adminsJSON(in); a != "" {
-		ann[AnnotationAccess] = a
 	}
 	return routeConfigMap(ServerName, in.Namespace, SystemLabels(ServerName), ann)
 }

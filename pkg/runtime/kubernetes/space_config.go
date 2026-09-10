@@ -1,0 +1,187 @@
+package kubernetes
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+
+	"github.com/adrianliechti/donkey/internal/config"
+	rt "github.com/adrianliechti/donkey/pkg/runtime"
+	"github.com/adrianliechti/donkey/pkg/runtime/kubernetes/manifests"
+)
+
+const spaceConfigKey = "config.json"
+
+func (r *Runtime) EnsureSpaceConfigs(ctx context.Context) error {
+	spaces, err := r.ListSpaces(ctx)
+	if err != nil {
+		return err
+	}
+	for _, space := range spaces {
+		if err := r.ensureSpaceHome(ctx, space); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (r *Runtime) ownedSpaceNamespace(ctx context.Context, space string) (*corev1.Namespace, error) {
+	ns, err := r.c.Clientset.CoreV1().Namespaces().Get(ctx, r.ns(space), metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return nil, rt.ErrSpaceNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	if err := r.c.requireOwnedObject("Namespace", "", ns.Name, ns.Labels, manifests.SpaceLabels(space)); err != nil {
+		return nil, err
+	}
+	if ns.Annotations[manifests.AnnotationManaged] != "true" {
+		return nil, fmt.Errorf("the namespace is not a managed donkey space")
+	}
+	if ns.DeletionTimestamp != nil {
+		return nil, fmt.Errorf("the space is being deleted")
+	}
+	return ns, nil
+}
+
+func (r *Runtime) spaceConfigMap(ctx context.Context, space string) (*corev1.ConfigMap, error) {
+	if err := r.ValidateSpace(space); err != nil {
+		return nil, err
+	}
+	if !r.opts.Placement.Shared() {
+		if _, err := r.ownedSpaceNamespace(ctx, space); err != nil {
+			return nil, err
+		}
+	}
+	cm, err := r.c.Clientset.CoreV1().ConfigMaps(r.ns(space)).Get(ctx, manifests.SpaceMarkerName(space), metav1.GetOptions{})
+	if err != nil {
+		return nil, err
+	}
+	if err := r.c.requireOwnedObject("ConfigMap", cm.Namespace, cm.Name, cm.Labels, manifests.SpaceLabels(space)); err != nil {
+		return nil, err
+	}
+	if cm.DeletionTimestamp != nil {
+		return nil, fmt.Errorf("the space is being deleted")
+	}
+	return cm, nil
+}
+
+func (r *Runtime) SpaceConfig(ctx context.Context, space string) (config.SpaceConfig, error) {
+	var settings config.SpaceConfig
+	cm, err := r.spaceConfigMap(ctx, space)
+	if apierrors.IsNotFound(err) {
+		if r.opts.Placement.Shared() {
+			return settings, rt.ErrSpaceNotFound
+		}
+		// A namespace from before space settings keeps its existing behavior.
+		return settings, nil
+	}
+	if err != nil {
+		return settings, err
+	}
+	if raw := cm.Data[spaceConfigKey]; raw != "" {
+		if err := json.Unmarshal([]byte(raw), &settings); err != nil {
+			return settings, fmt.Errorf("cannot read space settings: %w", err)
+		}
+		if err := settings.Validate(); err != nil {
+			return settings, err
+		}
+	}
+	return settings, nil
+}
+
+func (r *Runtime) createSpaceConfig(ctx context.Context, space string, settings config.SpaceConfig) error {
+	raw, err := json.Marshal(settings)
+	if err != nil {
+		return err
+	}
+	cm := manifests.SpaceMarker(space, r.ns(space))
+	cm.Labels = r.c.expectedObjectIdentity(cm.Labels)
+	cm.Data = map[string]string{spaceConfigKey: string(raw)}
+	_, err = r.c.Clientset.CoreV1().ConfigMaps(cm.Namespace).Create(ctx, cm,
+		metav1.CreateOptions{FieldManager: "donkey-space-config"})
+	return err
+}
+
+func (r *Runtime) SetSpaceConfig(ctx context.Context, space string, settings config.SpaceConfig) error {
+	if settings.Domains == nil {
+		settings.Domains = []string{}
+	}
+	if err := settings.Validate(); err != nil {
+		return err
+	}
+	cm, err := r.spaceConfigMap(ctx, space)
+	if apierrors.IsNotFound(err) && !r.opts.Placement.Shared() {
+		// The namespace exists and is owned; add the config on its first edit.
+		err = r.createSpaceConfig(ctx, space, settings)
+		if !apierrors.IsAlreadyExists(err) {
+			return err
+		}
+		cm, err = r.spaceConfigMap(ctx, space)
+	}
+	if apierrors.IsNotFound(err) {
+		return rt.ErrSpaceNotFound
+	}
+	if err != nil {
+		return err
+	}
+	settingsJSON, err := json.Marshal(settings)
+	if err != nil {
+		return err
+	}
+	// Last save wins. Other ConfigMap keys and metadata are preserved.
+	patch, err := json.Marshal(map[string]any{
+		"metadata": map[string]any{"uid": cm.UID},
+		"data":     map[string]string{spaceConfigKey: string(settingsJSON)},
+	})
+	if err != nil {
+		return err
+	}
+	_, err = r.c.Clientset.CoreV1().ConfigMaps(cm.Namespace).Patch(ctx, cm.Name, types.MergePatchType, patch,
+		metav1.PatchOptions{FieldManager: "donkey-space-config"})
+	return err
+}
+
+// Every space has a ConfigMap, in both placement modes. Initialize it once;
+// deploy's ordinary apply does not own config.json and cannot reset it.
+func (r *Runtime) ensureSpaceHome(ctx context.Context, space string) error {
+	if err := r.ValidateSpace(space); err != nil {
+		return err
+	}
+	settings := config.DefaultSpaceConfig(space, r.opts.Domain)
+	if !r.opts.Placement.Shared() {
+		_, err := r.ownedSpaceNamespace(ctx, space)
+		if err == nil {
+			settings = config.SpaceConfig{Domains: []string{}} // existing custom domains keep working
+		} else if err == rt.ErrSpaceNotFound {
+			ns := manifests.Namespace(space, r.ns(space))
+			ns.Labels = r.c.expectedObjectIdentity(ns.Labels)
+			_, err = r.c.Clientset.CoreV1().Namespaces().Create(ctx, ns, metav1.CreateOptions{FieldManager: "donkey"})
+			if apierrors.IsAlreadyExists(err) {
+				_, err = r.ownedSpaceNamespace(ctx, space)
+			}
+		}
+		if err != nil {
+			return err
+		}
+	}
+	if cm, err := r.spaceConfigMap(ctx, space); err == nil {
+		if cm.Data[spaceConfigKey] == "" {
+			return r.SetSpaceConfig(ctx, space, config.SpaceConfig{Domains: []string{}})
+		}
+		return nil
+	} else if !apierrors.IsNotFound(err) {
+		return err
+	}
+	err := r.createSpaceConfig(ctx, space, settings)
+	if apierrors.IsAlreadyExists(err) {
+		_, err = r.spaceConfigMap(ctx, space)
+	}
+	return err
+}

@@ -15,6 +15,19 @@ metadata:
   name: donkey-acme
 ---
 apiVersion: v1
+kind: ConfigMap
+metadata:
+  labels:
+    app.kubernetes.io/instance: acme
+    app.kubernetes.io/managed-by: donkey
+    app.kubernetes.io/name: acme
+    app.kubernetes.io/part-of: acme
+    donkey.local/role: space
+    donkey.local/space: acme
+  name: donkey.space.acme
+  namespace: donkey-acme
+---
+apiVersion: v1
 data:
   .dockerconfigjson: eyJhdXRocyI6eyJyZWcuZXhhbXBsZS5jb20iOnsiYXV0aCI6IlltOWlPbWgxYm5SbGNqST0iLCJwYXNzd29yZCI6Imh1bnRlcjIiLCJ1c2VybmFtZSI6ImJvYiJ9fX0=
 kind: Secret

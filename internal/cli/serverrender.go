@@ -39,6 +39,12 @@ tls:
 #   externalDNS:
 #     targets: [10.0.0.10]
 
+# Optional initial admins; omit to make the first signed-in user an admin.
+# Later changes are made in Account → Platform settings.
+# platform:
+#   admins:
+#     users: [owner@example.com]
+
 auth:
   issuer: https://id.example.com
   clientId: donkey
@@ -59,6 +65,12 @@ domain: apps.localhost
 
 tls:
   mode: ca
+
+# Optional initial admins; omit to make the first signed-in user an admin.
+# Later changes are made in Account → Platform settings.
+# platform:
+#   admins:
+#     users: [owner@example.com]
 
 auth:
   issuer: https://id.example.com

@@ -2,12 +2,16 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io/fs"
 	"net/http"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/adrianliechti/donkey/internal/config"
+	"github.com/adrianliechti/donkey/pkg/runtime"
 	"github.com/adrianliechti/donkey/web"
 )
 
@@ -58,9 +62,31 @@ func (s *Server) handleListSpaces(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	names := []string{}
-	names = append(names, spaces...)
+	roles := map[string]string{}
+	domains := map[string][]string{}
+	for _, space := range spaces {
+		role, err := s.spaceRole(r.Context(), space)
+		if err != nil {
+			writeAccessError(w, err)
+			return
+		}
+		if role != "" {
+			settings, err := s.rt.SpaceConfig(r.Context(), space)
+			if err != nil {
+				writeAccessError(w, err)
+				return
+			}
+			names = append(names, space)
+			roles[space] = role
+			domains[space] = append([]string{}, settings.Domains...)
+		}
+	}
 	sort.Strings(names)
-	writeJSON(w, http.StatusOK, map[string]any{"spaces": names})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"spaces": names, "roles": roles, "domains": domains,
+		"platformAdmin": s.platformAdmin(r.Context()),
+		"domain":        s.cfg.Domain,
+	})
 }
 
 // handleCreateSpace makes an empty space — a home to put services into
@@ -68,13 +94,30 @@ func (s *Server) handleListSpaces(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleCreateSpace(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Name string `json:"name"`
+		config.SpaceConfig
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 160<<10))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
 	if err := s.rt.ValidateSpace(req.Name); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if req.Domains == nil {
+		req.Domains = config.DefaultSpaceConfig(req.Name, s.cfg.Domain).Domains
+	}
+	if err := req.SpaceConfig.Validate(); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if _, err := s.rt.SpaceConfig(r.Context(), req.Name); err == nil {
+		writeErr(w, http.StatusConflict, fmt.Errorf("the space already exists"))
+		return
+	} else if !errors.Is(err, runtime.ErrSpaceNotFound) {
+		writeAccessError(w, err)
 		return
 	}
 	if err := s.rt.CheckSpaceFree(r.Context(), req.Name); err != nil {
@@ -83,6 +126,10 @@ func (s *Server) handleCreateSpace(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.rt.CreateSpace(r.Context(), req.Name); err != nil {
 		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	if err := s.rt.SetSpaceConfig(r.Context(), req.Name, req.SpaceConfig); err != nil {
+		writeAccessError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "name": req.Name})
@@ -138,7 +185,21 @@ func (s *Server) handleListApps(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	apps := []AppListEntry{}
+	roles := map[string]string{}
 	for _, ref := range refs {
+		role, checked := roles[ref.Space]
+		if !checked {
+			var err error
+			role, err = s.spaceRole(r.Context(), ref.Space)
+			if err != nil {
+				writeAccessError(w, err)
+				return
+			}
+			roles[ref.Space] = role
+		}
+		if role != config.SpaceAdmin && role != config.SpaceDeveloper {
+			continue
+		}
 		st, err := s.rt.Status(r.Context(), ref.Space, ref.App)
 		if err != nil {
 			// A transient status error must not make a running app vanish

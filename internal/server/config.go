@@ -87,10 +87,10 @@ type Config struct {
 	// TelemetryKey authenticates the gateway, app exporters, and private query
 	// client independently of login-session rotation.
 	TelemetryKey []byte
-	// Admins narrows who may administer (users/groups/roles). Empty means
-	// everyone the IdP admits.
-	Admins  *config.AccessConfig
-	AIModel string
+	// PlatformAdmins optionally seeds the persisted platform settings. With no
+	// seed, the first verified sign-in becomes the first platform admin.
+	PlatformAdmins *config.AccessConfig
+	AIModel        string
 }
 
 func FromEnv() (*Config, error) {
@@ -147,7 +147,7 @@ func FromEnv() (*Config, error) {
 		}
 	}
 	// The build environment is a map, so it travels as JSON — the same way
-	// DONKEY_ADMINS does.
+	// DONKEY_PLATFORM_ADMINS does.
 	if raw := os.Getenv("DONKEY_BUILD_ENV"); raw != "" {
 		if err := json.Unmarshal([]byte(raw), &c.Build.Env); err != nil {
 			return nil, fmt.Errorf("DONKEY_BUILD_ENV is not a JSON object of build variables: %w", err)
@@ -174,12 +174,17 @@ func FromEnv() (*Config, error) {
 		return nil, fmt.Errorf("DONKEY_TELEMETRY_KEY must be 32 bytes of hex — `donkey server install` generates it")
 	}
 	c.TelemetryKey = telemetryKey
-	if raw := os.Getenv("DONKEY_ADMINS"); raw != "" {
+	if raw := os.Getenv("DONKEY_PLATFORM_ADMINS"); raw != "" {
 		var admins config.AccessConfig
 		if err := json.Unmarshal([]byte(raw), &admins); err != nil {
-			return nil, fmt.Errorf("DONKEY_ADMINS is not valid AccessConfig JSON: %w", err)
+			return nil, fmt.Errorf("DONKEY_PLATFORM_ADMINS is not valid AccessConfig JSON: %w", err)
 		}
-		c.Admins = &admins
+		c.PlatformAdmins = &admins
+	}
+	if c.PlatformAdmins != nil {
+		if err := (config.PlatformConfig{Admins: *c.PlatformAdmins}).Validate(); err != nil {
+			return nil, err
+		}
 	}
 	if c.Registry.URL == "" {
 		return nil, fmt.Errorf("DONKEY_REGISTRY_URL is required")

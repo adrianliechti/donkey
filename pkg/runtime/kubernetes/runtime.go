@@ -179,6 +179,9 @@ func (r *Runtime) CreateSpace(ctx context.Context, space string) error {
 	if err := r.ValidateSpace(space); err != nil {
 		return err
 	}
+	if err := r.ensureSpaceHome(ctx, space); err != nil {
+		return err
+	}
 	if err := r.c.Apply(ctx, r.spaceObjects(space)); err != nil {
 		return err
 	}
@@ -189,6 +192,9 @@ func (r *Runtime) CreateSpace(ctx context.Context, space string) error {
 // and its network fence when the installation isolates spaces.
 func (r *Runtime) spaceObjects(space string) []k8sruntime.Object {
 	objs := []k8sruntime.Object{r.opts.Placement.SpaceObject(space)}
+	if !r.opts.Placement.Shared() {
+		objs = append(objs, manifests.SpaceMarker(space, r.ns(space)))
+	}
 	if r.opts.IsolateSpaces {
 		objs = append(objs, manifests.SpaceIsolationPolicy(space, r.ns(space), r.opts.SystemNamespace, r.opts.RestrictEgress))
 	}
@@ -214,6 +220,9 @@ func (r *Runtime) ReconcileSpaceIsolation(ctx context.Context) error {
 		return err
 	}
 	for _, space := range spaces {
+		if err := r.ensureSpaceHome(ctx, space); err != nil {
+			return err
+		}
 		if r.opts.IsolateSpaces {
 			if err := r.c.Apply(ctx, []k8sruntime.Object{
 				manifests.SpaceIsolationPolicy(space, r.ns(space), r.opts.SystemNamespace, r.opts.RestrictEgress),

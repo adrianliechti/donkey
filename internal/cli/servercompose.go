@@ -212,7 +212,7 @@ func dockerComposeFiles(settings *config.InstallFile, bundledRegistry bool) (map
 		"DONKEY_OIDC_CLIENT_SECRET":      clientSecret,
 		"DONKEY_SESSION_KEY":             "${DONKEY_SESSION_KEY:-}",
 		"DONKEY_TELEMETRY_KEY":           "${DONKEY_TELEMETRY_KEY:-}",
-		"DONKEY_ADMINS":                  adminsJSONString(settings.Auth.Admins),
+		"DONKEY_PLATFORM_ADMINS":         adminsJSONString(&settings.Platform.Admins),
 		"DONKEY_AI_MODEL":                settings.AI.Model,
 		"OPENAI_BASE_URL":                settings.AI.BaseURL,
 		"OPENAI_API_KEY":                 "${OPENAI_API_KEY:-}",

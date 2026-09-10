@@ -115,6 +115,9 @@ func DataClaimName(app string) string { return app + "-data" }
 func AppObjects(in Input) ([]runtime.Object, error) {
 	app := in.App
 	objs := []runtime.Object{SpaceHome(in.Space, in.Namespace, in.SharedNamespace)}
+	if !in.SharedNamespace {
+		objs = append(objs, SpaceMarker(in.Space, in.Namespace))
+	}
 	if in.IsolateSpace {
 		objs = append(objs, SpaceIsolationPolicy(in.Space, in.Namespace, in.SystemNamespace, in.RestrictEgress))
 	}

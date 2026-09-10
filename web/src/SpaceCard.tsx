@@ -20,6 +20,7 @@ import {
   Plus,
   Rocket,
   Sparkles,
+	Settings,
   Trash2,
 } from 'lucide-react'
 import { api, type AddAddonRequest, type AppSummary, type SpaceAddonEntry } from './api'
@@ -30,6 +31,7 @@ import { RedisDialog } from './RedisDialog'
 import { useCatalog, useInvalidateServices, useSpaceServices } from './queries'
 import { S3Dialog } from './S3Dialog'
 import { SpaceTelemetry } from './TrafficPanel'
+import { SpaceSettings } from './SpaceSettings'
 import { Button, ErrorNote, ExposureBadge, ago, errText, healthLine, healthOf } from './ui'
 
 /**
@@ -46,6 +48,7 @@ export function SpaceCard({
   space,
   apps,
   allApps,
+  role,
   onChanged,
 }: {
   space: string
@@ -56,12 +59,14 @@ export function SpaceCard({
    *  count from this, or it under-reports what a delete destroys. Defaults to
    *  `apps` when the caller isn't filtering. */
   allApps?: AppSummary[]
+  role: 'admin' | 'developer'
   onChanged: () => void
 }) {
   const everyApp = allApps ?? apps
   // null = closed; a type name = the add-service dialog open on that service.
   const [addingType, setAddingType] = useState<string | null>(null)
   const [deletingSpace, setDeletingSpace] = useState(false)
+  const [editingSettings, setEditingSettings] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [typedSpace, setTypedSpace] = useState('')
@@ -95,18 +100,20 @@ export function SpaceCard({
           <SpaceTelemetry space={space} />
           <span className="mx-1 h-4 w-px bg-line" aria-hidden />
           <AddMenu space={space} onAddService={(type) => setAddingType(type)} />
-          <SpaceMenu
+          {role === 'admin' && <SpaceMenu
             space={space}
+            onSettings={() => setEditingSettings(true)}
             onDelete={() => {
               setError('')
               setTypedSpace('')
               setDeletingSpace(true)
             }}
-          />
+          />}
         </div>
       </div>
 
       <SpaceServices space={space} services={services} onChanged={() => invalidate(space)} />
+      {editingSettings && <SpaceSettings space={space} onClose={() => setEditingSettings(false)} onSaved={onChanged} />}
 
       {apps.length === 0 && (
         <p className="text-sm text-muted">
@@ -526,7 +533,7 @@ function AddMenu({ space, onAddService }: { space: string; onAddService: (type: 
 
 // The space's overflow menu. Deleting a space is the one destructive act here,
 // so it sits behind a kebab rather than a bare trash icon a mis-click reaches.
-function SpaceMenu({ space, onDelete }: { space: string; onDelete: () => void }) {
+function SpaceMenu({ space, onDelete, onSettings }: { space: string; onDelete: () => void; onSettings: () => void }) {
   return (
     <Menu>
       <MenuButton
@@ -540,6 +547,12 @@ function SpaceMenu({ space, onDelete }: { space: string; onDelete: () => void })
         anchor="bottom end"
         className="z-50 mt-1 w-48 overflow-hidden rounded-md border border-line bg-card py-1 shadow-lg focus:outline-none"
       >
+		<MenuItem>
+		  <button type="button" onClick={onSettings}
+		    className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-ink-soft data-focus:bg-accent-soft">
+		    <Settings className="size-4" aria-hidden /> Space settings
+		  </button>
+		</MenuItem>
         <MenuItem>
           <button
             type="button"

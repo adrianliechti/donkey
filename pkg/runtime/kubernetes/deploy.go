@@ -28,6 +28,12 @@ func (r *Runtime) Deploy(ctx context.Context, spec rt.DeploySpec, out rt.Progres
 	if err := r.ValidateApp(space, app.Name); err != nil {
 		return rt.UserError{Err: err}
 	}
+	if err := r.ensureSpaceHome(ctx, space); err != nil {
+		return err
+	}
+	if err := rt.CheckAppDomain(ctx, r, app, space, r.opts.Domain); err != nil {
+		return err
+	}
 	out.Line("Setting up on the cluster…")
 	// A file-browser helper holds the app's disk, and an RWO volume attaches
 	// to one node at a time — leaving it running would strand the new pod on
@@ -92,6 +98,13 @@ func (r *Runtime) Deploy(ctx context.Context, spec rt.DeploySpec, out rt.Progres
 		if host := spec.Hosts[in.RouteTargets[i].App]; host != "" {
 			in.RouteTargets[i].Host = host
 		}
+	}
+	hosts := []string{in.Domain}
+	for _, target := range in.RouteTargets {
+		hosts = append(hosts, target.Host)
+	}
+	if err := rt.CheckSpaceDomains(ctx, r, space, hosts...); err != nil {
+		return err
 	}
 	// Addons added in the console aren't in this donkey.yaml; the cluster
 	// knows them by their binding secrets, and they keep working across
@@ -392,6 +405,9 @@ func (r *Runtime) retractRemovedRoutes(ctx context.Context, ns string, in manife
 // existing shared-address routes keep serving under their existing names.
 func (r *Runtime) ApplyNetwork(ctx context.Context, cfg *config.AppConfig) (string, error) {
 	space, app := cfg.Space, cfg.Name
+	if err := rt.CheckAppDomain(ctx, r, cfg, space, r.opts.Domain); err != nil {
+		return "", err
+	}
 	ns, obj := r.ns(space), r.name(space, app)
 	st, err := r.c.AppStatus(ctx, ns, obj, space, app)
 	if err != nil {
@@ -416,6 +432,13 @@ func (r *Runtime) ApplyNetwork(ctx context.Context, cfg *config.AppConfig) (stri
 
 	// Re-render: the app's own route and public traffic objects unless
 	// internal, and every existing path route under its existing name.
+	hosts := []string{in.Domain}
+	for _, route := range net.Routes {
+		hosts = append(hosts, route.Host)
+	}
+	if err := rt.CheckSpaceDomains(ctx, r, space, hosts...); err != nil {
+		return "", err
+	}
 	var objs []k8sruntime.Object
 	if in.Domain != "" {
 		objs = append(objs, manifests.AppRoute(in))

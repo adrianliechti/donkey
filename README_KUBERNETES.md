@@ -158,6 +158,36 @@ Two limits to check before you commit to a name:
   workload namespace must not be `restricted`, because most real application
   images run as root. donkey sets `baseline` on namespaces it creates itself.
 
+## Space and platform settings
+
+Every space has a `donkey.space.<space>` ConfigMap containing `config.json`:
+
+```json
+{
+  "admins": {"users": ["owner@example.com"]},
+  "developers": {"groups": ["engineering"]},
+  "domains": ["team.example.com"]
+}
+```
+
+With a namespace per space, it lives in `donkey-<space>` (or the configured
+prefix); with a shared workload namespace, each space has its own ConfigMap
+there. Missing records for existing spaces are created at server startup with
+empty membership and unrestricted domains. This preserves existing app routes;
+platform admins assign space roles through Space settings. Saved settings are
+preserved on upgrade and deploy.
+
+Platform admins live separately in `donkey.platform`, in the control-plane
+namespace (`donkey-system` by default), also in `data["config.json"]`:
+
+```json
+{"admins":{"users":["first-user@example.com"]}}
+```
+
+The first signed-in user initializes this list unless `platform.admins` was
+seeded in the install file. Platform admins manage the saved list through
+Account → Platform settings. Saving replaces the list; no revision is required.
+
 ## Isolating spaces from each other
 
 Spaces are a network boundary, not just an organizational one: each space

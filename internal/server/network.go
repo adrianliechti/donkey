@@ -29,6 +29,8 @@ type NetworkResponse struct {
 	// configured donkey.yaml shape when it differs: a name, "@", or a full
 	// hostname.
 	DefaultHost string               `json:"defaultHost"`
+	FQDN        string               `json:"fqdn"`
+	Domains     []string             `json:"domains"`
 	Host        string               `json:"host,omitempty"`
 	Port        int                  `json:"port,omitempty"`
 	Routes      []RouteEntry         `json:"routes,omitempty"`
@@ -48,7 +50,13 @@ func (s *Server) networkResponse(r *http.Request, space, app string) (*NetworkRe
 	if err != nil {
 		return nil, err
 	}
+	settings, err := s.spaceSettings(r.Context(), space)
+	if err != nil {
+		return nil, err
+	}
 	resp := &NetworkResponse{
+		FQDN:        net.Host,
+		Domains:     append([]string{}, settings.Domains...),
 		DefaultHost: config.AppHost(&config.AppConfig{Name: app}, space, s.cfg.Domain),
 		Mode:        modeOfStatus(st),
 		Port:        int(st.Port),
@@ -206,6 +214,10 @@ func (s *Server) handlePutNetwork(w http.ResponseWriter, r *http.Request) {
 	}
 	cfg.ApplyDefaults()
 	if err := cfg.Validate(); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := runtime.CheckAppDomain(ctx, s.rt, cfg, space, s.cfg.Domain); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}

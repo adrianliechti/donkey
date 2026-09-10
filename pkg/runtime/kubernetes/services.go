@@ -38,6 +38,9 @@ func (r *Runtime) EnsureService(ctx context.Context, space string, spec rt.Servi
 	if err := r.opts.Placement.ValidateNames(space, spec.Name); err != nil {
 		return nil, "", "", rt.UserError{Err: err}
 	}
+	if err := r.ensureSpaceHome(ctx, space); err != nil {
+		return nil, "", "", err
+	}
 	var binding map[string]string
 	var version, storage string
 	if spec.External {

@@ -63,6 +63,9 @@ func (r *Runtime) Deploy(ctx context.Context, spec rt.DeploySpec, out rt.Progres
 	if err := r.ensureSpace(ctx, space); err != nil {
 		return err
 	}
+	if err := rt.CheckAppDomain(ctx, r, app, space, r.opts.Domain); err != nil {
+		return err
+	}
 	recovery, err := r.prepareRecovery(ctx, space, app)
 	if err != nil {
 		return err
@@ -226,6 +229,25 @@ func (r *Runtime) appHost(space string, app *config.AppConfig) string {
 // applyRoutes writes the app's routing table entries and retracts the ones
 // it no longer claims.
 func (r *Runtime) applyRoutes(ctx context.Context, space string, app *config.AppConfig, port int, hosts ...map[string]string) error {
+	var settings config.SpaceConfig
+	if _, err := r.state.readJSON(&settings, "spaces", space, "config.json"); err != nil {
+		return err
+	}
+	if err := settings.Validate(); err != nil {
+		return err
+	}
+	if err := settings.CheckAppHost(app, space, r.opts.Domain); err != nil {
+		return rt.UserError{Err: err}
+	}
+	for _, target := range app.Routes {
+		host := r.targetHost(space, target.App)
+		if len(hosts) > 0 && hosts[0][target.App] != "" {
+			host = hosts[0][target.App]
+		}
+		if err := settings.CheckHost(host); err != nil {
+			return rt.UserError{Err: err}
+		}
+	}
 	backend := fmt.Sprintf("http://%s:%d", ctrName(space, app.Name), port)
 	login := !app.Public && !(app.Internal && app.IsAPI())
 
@@ -703,6 +725,20 @@ func (r *Runtime) Network(ctx context.Context, space, app string) (*rt.NetworkSt
 // shared-address routes keep serving; their exposure follows the app's.
 func (r *Runtime) ApplyNetwork(ctx context.Context, cfg *config.AppConfig) (string, error) {
 	space, app := cfg.Space, cfg.Name
+	if err := rt.CheckAppDomain(ctx, r, cfg, space, r.opts.Domain); err != nil {
+		return "", err
+	}
+	network, err := r.Network(ctx, space, app)
+	if err != nil {
+		return "", err
+	}
+	var hosts []string
+	for _, route := range network.Routes {
+		hosts = append(hosts, route.Host)
+	}
+	if err := rt.CheckSpaceDomains(ctx, r, space, hosts...); err != nil {
+		return "", err
+	}
 	spec, err := r.runRecord(space, app)
 	if err != nil {
 		return "", err

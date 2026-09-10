@@ -377,10 +377,10 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 	u.Printf("  API:        %s", u.Bold(serverURL))
 	u.Printf("  Builder:    %s", u.Faint(builderSummary(settings.Build)))
 	switch {
-	case in.Admins.Empty():
-		u.Printf("  Admins:     %s", u.Faint("everyone your identity provider signs in (narrow it with auth.admins)"))
+	case in.PlatformAdmins.Empty():
+		u.Printf("  Admins:     %s", u.Faint("first signed-in user (managed in Platform settings)"))
 	default:
-		u.Printf("  Admins:     %s", u.Faint("per auth.admins"))
+		u.Printf("  Admins:     %s", u.Faint("initially seeded from platform.admins"))
 	}
 	switch {
 	case in.IsolateSpaces && in.RestrictEgress:
@@ -455,8 +455,8 @@ func validateKubernetesSettings(settings *config.InstallFile) error {
 	if h := settings.ServerHost; h != "" && h != settings.Domain && !strings.HasSuffix(h, "."+settings.Domain) {
 		return fmt.Errorf("serverHost %q must be the domain %q or a name under it", h, settings.Domain)
 	}
-	if err := settings.Auth.Admins.Validate(); err != nil {
-		return fmt.Errorf("auth.admins: %w", err)
+	if err := settings.Platform.Validate(); err != nil {
+		return err
 	}
 	if err := settings.Build.Validate(); err != nil {
 		return err
@@ -499,7 +499,7 @@ func kubernetesSystemInput(settings *config.InstallFile, skipNamespace bool, reg
 		RegistryPassword:           registryPassword,
 		RegistryInsecure:           settings.Registry.Insecure,
 		RegistryImmutable:          settings.Registry.Immutable,
-		Admins:                     settings.Auth.Admins,
+		PlatformAdmins:             &settings.Platform.Admins,
 		OIDCIssuer:                 settings.Auth.Issuer,
 		OIDCClientID:               settings.Auth.ClientID,
 		OIDCClientSecret:           settings.Auth.ClientSecret,

@@ -59,6 +59,10 @@ func (s state) readJSON(target any, parts ...string) (bool, error) {
 }
 
 func (s state) writeJSON(value any, parts ...string) error {
+	return s.storeJSON(value, true, parts...)
+}
+
+func (s state) storeJSON(value any, replace bool, parts ...string) error {
 	p := s.path(parts...)
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 		return err
@@ -69,11 +73,31 @@ func (s state) writeJSON(value any, parts ...string) error {
 	}
 	// Write-then-rename: the gateway reads these files concurrently and must
 	// never see half a route.
-	tmp := p + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o644); err != nil {
+	tmp, err := os.CreateTemp(filepath.Dir(p), "."+filepath.Base(p)+"-*")
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, p)
+	defer os.Remove(tmp.Name())
+	defer tmp.Close()
+	if err := tmp.Chmod(0o644); err != nil {
+		return err
+	}
+	if _, err := tmp.Write(b); err != nil {
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if replace {
+		return os.Rename(tmp.Name(), p)
+	}
+	// A hard link publishes the complete record only if it does not exist.
+	// Competing first sign-ins can never overwrite the first saved admin.
+	err = os.Link(tmp.Name(), p)
+	if errors.Is(err, fs.ErrExist) {
+		return nil
+	}
+	return err
 }
 
 func (s state) remove(parts ...string) error {
@@ -306,7 +330,7 @@ func (s state) cleanupApp(space, app string, keepData bool) error {
 
 // cleanupSpace removes a space's records entirely.
 func (s state) cleanupSpace(space string) error {
-	for _, sub := range []string{"env", "meta", "bindings", "routes", "deploy"} {
+	for _, sub := range []string{"env", "meta", "bindings", "routes", "deploy", "spaces"} {
 		if err := os.RemoveAll(s.path(sub, space)); err != nil {
 			return err
 		}

@@ -33,7 +33,7 @@ func buildEnv(b config.InstallBuild) []corev1.EnvVar {
 		}
 	}
 	if len(b.Env) > 0 {
-		// A map travels as JSON, the way DONKEY_ADMINS does — but out of the
+		// A map travels as JSON, the way DONKEY_PLATFORM_ADMINS does — but out of the
 		// Secret, because these values are routinely credentialed URLs.
 		env = append(env, secretEnvVar("DONKEY_BUILD_ENV", "build-env"))
 	}

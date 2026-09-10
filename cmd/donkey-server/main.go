@@ -136,7 +136,7 @@ func main() {
 		}
 		if err := docker.WriteSystemRoute(stateDir, "console", docker.Route{
 			Host: serverHost, Path: "/", Backend: "http://donkey-server:8088",
-			Login: true, Access: cfg.Admins, Token: true,
+			Login: true, Token: true,
 		}); err != nil {
 			fmt.Fprintln(os.Stderr, "startup error:", err)
 			os.Exit(1)
@@ -163,6 +163,10 @@ func main() {
 			IsolateSpaces:         cfg.IsolateSpaces,
 			RestrictEgress:        cfg.RestrictEgress,
 		})
+	}
+	if err := rt.EnsureSpaceConfigs(ctx); err != nil {
+		fmt.Fprintln(os.Stderr, "migrating space settings:", err)
+		os.Exit(1)
 	}
 	srv, err := server.New(cfg, rt)
 	if err != nil {

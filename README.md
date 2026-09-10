@@ -529,7 +529,7 @@ applies anything, and `donkey doctor` keeps checking them after):
 | **Kubernetes cluster** with a default StorageClass | donkey-telemetry always claims its 2 Gi DuckDB volume; apps with `storage.paths` and provisioned services claim their own | any conformant cluster; nothing donkey-specific. Donkey brings its own edge, normally as a `LoadBalancer` Service; on clusters where nothing assigns those an address (kind), set `gateway.serviceType: NodePort` or `ClusterIP`. cert-manager is required only for `tls.mode: cert-manager`; external-dns with `--source=crd` only when `gateway.externalDNS` is set |
 | **Container registry** the cluster can pull from | donkey pushes every build there | `registry.url` + credentials; `registry.caSecret` when its certificate comes from a private CA |
 | **DNS** pointing public hostnames to the gateway address | apps are served at `<app>.<space>.<domain>`, the API and login callback at `<domain>` | configure a wildcard plus apex yourself, or let `gateway.externalDNS` publish exact records |
-| **OIDC provider** (Pocket ID, Entra ID, Keycloak, …) | the one way in: console, CLI and protected apps all sign in against it | required — `auth.issuer` (+ client id/secret); `auth.admins` optionally narrows who may administer |
+| **OIDC provider** (Pocket ID, Entra ID, Keycloak, …) | the one way in: console, CLI and protected apps all sign in against it | required — `auth.issuer` (+ client id/secret); `platform.admins` optionally seeds the platform admins |
 | **OpenAI-compatible endpoint** | donkey reads every app with it (ports, health routes, data folders) | required — the server refuses to start without one. Point it at a model you control: source summaries go there |
 
 A complete copy-paste walkthrough that stands all of this up on a single
@@ -817,11 +817,38 @@ donkey server install -f server-install.yaml
 ```
 
 Prints where to sign in — there is no API token: the console and the CLI
-authenticate through the same OIDC login the apps use, and `auth.admins`
-(users/groups/roles, matched like an app's `access` rules) narrows who may
-administer; empty means everyone the IdP admits. Re-running with changed
-settings updates the installation idempotently (server-side apply; existing
-secrets and sessions survive; config changes roll the affected pods).
+authenticate through the same OIDC login the apps use. The first signed-in
+user becomes a platform admin and can add others in **Account → Platform
+settings**. An optional `platform.admins` in the install file seeds that list
+instead; once saved, the runtime settings are authoritative and reinstalling
+does not reset them. Re-running with changed installation settings updates it
+idempotently (existing secrets and sessions survive; config changes roll the
+affected pods).
+
+Space permissions are always enforced. Platform admins create spaces and can
+manage every space. Space admins manage their space, its membership and domains;
+developers manage its apps and services, including data and credentials. Assign
+users by email (or `sub:<subject>` when email is unavailable), groups, or
+identity-provider roles. Matching any entry grants that role; empty membership
+lists grant no access. App visitor `access` rules remain separate.
+
+Every space stores `admins`, `developers`, and `domains`. A new space starts
+with `<space>.<configured-domain>` in `domains`. Apps can use that suffix or
+any subdomain under it. Add more suffixes or clear the list to allow any domain.
+App creation shows a hostname field with a fixed suffix or domain selector;
+with no suffixes configured, it requires a full hostname. Deploys and network
+changes enforce the same rule, including shared-address routes.
+
+Existing spaces migrate automatically at server startup: missing settings
+records are created with no space members and unrestricted domains, preserving
+existing app routes. Platform admins retain access and can assign space roles.
+Saved roles and domains survive subsequent upgrades. Updates use last save wins.
+
+On Kubernetes, `donkey.platform` in the control-plane namespace holds platform
+settings, and `donkey.space.<space>` in each space's namespace holds its settings
+(including shared-namespace installations). Each uses `data["config.json"]`.
+Docker stores the same JSON under `/var/lib/donkey/platform/config.json` and
+`/var/lib/donkey/spaces/<space>/config.json` in its persistent state volume.
 
 For GitOps, review, or a machine where the CLI must not hold cluster access,
 render the same settings instead:
@@ -902,8 +929,10 @@ so plan around it.
 key in `donkey-system-config` seals the browser cookies (12 h) and the CLI
 tokens (30 days), all derived from an OIDC sign-in. Individual logins expire
 on their own and revive with a fresh sign-in; kicking one specific person out
-happens at the IdP (or by removing them from `auth.admins` and the affected
-apps' `access` rules — the gateway checks those on every request). The big
+happens by removing every matching entry from platform admins and space roles,
+and from the affected apps' `access` rules. Management permissions are read on
+every API request; app visitor rules are checked by the gateway. Changes to IdP
+claims take effect when the user signs in again. The big
 lever is rotating the session key itself: delete the `session-key` entry from
 the Secret and re-run the install — a new key is generated, every cookie and
 every CLI token everywhere is invalid the moment the pods roll, and everyone

@@ -46,9 +46,20 @@ type planRuntime struct {
 	spaces   []string
 	services []string
 	running  *runtime.AppStatus
+	platform *config.PlatformConfig
 }
 
-func (planRuntime) ValidateSpace(string) error                     { return nil }
+func (r planRuntime) PlatformConfig(context.Context) (config.PlatformConfig, error) {
+	if r.platform != nil {
+		return *r.platform, nil
+	}
+	return testPlatformConfig(), nil
+}
+
+func (planRuntime) ValidateSpace(string) error { return nil }
+func (planRuntime) SpaceConfig(context.Context, string) (config.SpaceConfig, error) {
+	return config.SpaceConfig{}, nil
+}
 func (planRuntime) CheckSpaceFree(context.Context, string) error   { return nil }
 func (r planRuntime) ListSpaces(context.Context) ([]string, error) { return r.spaces, nil }
 func (planRuntime) AppMeta(context.Context, string, string, string) (string, error) {

@@ -334,6 +334,9 @@ func (r *Runtime) ensureSpace(ctx context.Context, space string) error {
 		_, err = r.cli.NetworkCreate(ctx, name, network.CreateOptions{
 			Labels: resourceLabels(space, roleSpace),
 		})
+		if err == nil {
+			err = r.state.writeJSON(config.DefaultSpaceConfig(space, r.opts.Domain), "spaces", space, "config.json")
+		}
 	}
 	if err != nil {
 		return err

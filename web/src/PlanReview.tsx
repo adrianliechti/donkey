@@ -2,6 +2,8 @@ import { useId, useState } from 'react'
 import { Check, Copy, Database, FileCode2, HardDrive } from 'lucide-react'
 import { type AppMode, type Exposure, type Plan, type PlanEdit, type PortSource } from './api'
 import { FindingsList } from './FindingsList'
+import { HostEditor } from './HostEditor'
+import { useFleet } from './queries'
 import { APP_MODES, Button, Card, SectionTitle, loginHint } from './ui'
 
 const PORT_SOURCE: Record<PortSource, string> = {
@@ -93,6 +95,9 @@ export function PlanReview({
   onEdit: (edit: PlanEdit) => void
 }) {
   const [showConfig, setShowConfig] = useState(false)
+  const { data: fleet } = useFleet()
+  const domains = fleet?.domains[edit.space] ?? (edit.space === plan.app.space
+    ? (plan.app.domains ?? []) : (fleet?.domain ? [`${edit.space}.${fleet.domain}`] : []))
   const [copied, setCopied] = useState(false)
   const exposureId = useId()
   const modeId = useId()
@@ -220,6 +225,10 @@ export function PlanReview({
             ))}
           </div>
         </fieldset>
+
+        {edit.exposure !== 'internal' && (
+          <HostEditor value={edit.host} domains={domains} onChange={(value) => set('host', value)} />
+        )}
 
         {edit.exposure !== 'internal' && (
           <Choice
