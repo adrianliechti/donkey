@@ -31,49 +31,42 @@ func TestPerSpaceNamesAreUnchanged(t *testing.T) {
 }
 
 // One namespace holds one Service called "api", so every name carries its
-// space — and comes back out again unchanged.
-func TestSharedNamesRoundTrip(t *testing.T) {
+// space. Names are derived and never parsed back — identity lives in labels —
+// so hyphens on either side are fine, and two pairs may even spell the same
+// name (the apply path refuses the second one by its labels).
+func TestSharedNamesCarryTheSpace(t *testing.T) {
 	p := shared()
 	for _, tc := range []struct{ space, name, want string }{
-		{"shop", "api", "shop--api"},
-		{"shop", "shared", "shop--shared"},
-		{"a", "b-c", "a--b-c"},
-		{"a-b", "c", "a-b--c"},
+		{"shop", "api", "shop-api"},
+		{"my-shop", "api", "my-shop-api"},
+		{"a", "b-c", "a-b-c"},
+		{"a-b", "c", "a-b-c"},
 	} {
-		got := p.Name(tc.space, tc.name)
-		if got != tc.want {
+		if got := p.Name(tc.space, tc.name); got != tc.want {
 			t.Errorf("Name(%q, %q) = %q, want %q", tc.space, tc.name, got, tc.want)
 		}
-		if back := p.Unname(tc.space, got); back != tc.name {
-			t.Errorf("Unname(%q, %q) = %q, want %q", tc.space, got, back, tc.name)
-		}
-	}
-	// The pair that makes the whole separator rule necessary: with a single
-	// dash, ("a", "b-c") and ("a-b", "c") would both be "a-b-c" — one
-	// Deployment for two apps, and the second deploy silently wins.
-	if p.Name("a", "b-c") == p.Name("a-b", "c") {
-		t.Fatal("two different apps must never render the same object name")
 	}
 	if p.Namespace("shop") != "donkey-apps" || p.Namespace("blog") != "donkey-apps" {
 		t.Error("every space shares the one namespace")
 	}
 }
 
-// The separator only stays unambiguous if neither half may contain it.
-func TestSharedRejectsSeparatorInNames(t *testing.T) {
-	p := shared()
-	if err := p.ValidateNames("a--b", "c"); err == nil {
-		t.Error("a space containing the separator must be refused")
-	}
-	if err := p.ValidateNames("a", "b--c"); err == nil {
-		t.Error("an app containing the separator must be refused")
-	}
-	if err := p.ValidateNames("shop", "api"); err != nil {
-		t.Errorf("ordinary names must pass: %v", err)
-	}
-	// A namespace per space joins nothing, so it constrains nothing.
-	if err := perSpace().ValidateNames("a--b", "c--d"); err != nil {
-		t.Errorf("per-space placement has no separator to protect: %v", err)
+// Spaces follow the same DNS-label rule as apps and services; only donkey's
+// own names are off limits.
+func TestSpaceNamesAreDNSLabels(t *testing.T) {
+	for _, p := range []Placement{shared(), perSpace()} {
+		for _, space := range []string{"-a", "a-", "Team", "a.b", "", "donkey", "platform", "system"} {
+			if err := p.ValidateNames(space, "api"); err == nil {
+				t.Errorf("invalid space %q was accepted", space)
+			}
+		}
+		for _, space := range []string{"team", "my-team", "team-2"} {
+			for _, app := range []string{"api", "my-api", "api-v2"} {
+				if err := p.ValidateNames(space, app); err != nil {
+					t.Errorf("valid pair %q/%q rejected: %v", space, app, err)
+				}
+			}
+		}
 	}
 }
 
@@ -116,15 +109,10 @@ func TestSpaceObject(t *testing.T) {
 	if m.GetLabels()[LabelSpace] != "shop" {
 		t.Error("the marker must carry its space, or an empty space cannot be listed")
 	}
-	// App names cannot contain a dot, so no app's object can ever be named
-	// like a marker — including an app called "space".
-	if !strings.Contains(m.GetName(), ".") {
-		t.Errorf("the marker name %q must be unreachable for an app name", m.GetName())
+	if m.GetName() != "shop-space" || m.GetLabels()[LabelRole] != RoleSpace {
+		t.Errorf("unexpected space settings identity: %s, %v", m.GetName(), m.GetLabels())
 	}
-	if !IsSpaceMarker(m.GetName()) {
-		t.Errorf("%q should be recognised as a marker", m.GetName())
-	}
-	if IsSpaceMarker(shared().Name("shop", "space")) {
-		t.Error("an app called \"space\" must not look like a space marker")
+	if m.GetName() == AppRouteName(shared().Name("shop", "space")) {
+		t.Error("space config collides with an app route")
 	}
 }

@@ -201,8 +201,7 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 	if err := checkOptionalCRDs(ctx, client, settings); err != nil {
 		return err
 	}
-	existing, err := client.GetOwnedSecretData(ctx, systemNamespace, manifests.SystemConfigSecretName,
-		manifests.SystemLabels(manifests.ServerName))
+	existing, err := client.SystemSecretData(ctx, systemNamespace)
 	if err != nil {
 		return fmt.Errorf("couldn't read the existing installation's secrets: %w", err)
 	}
@@ -248,22 +247,22 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 		return err
 	}
 	if registryPassword == "" {
-		registryPassword = existing["registry-password"]
+		registryPassword = existing["DONKEY_REGISTRY_PASSWORD"]
 		registryUsername = settings.Registry.Username
 	}
 	if settings.AI.APIKey == "" {
-		settings.AI.APIKey = existing["openai-api-key"]
+		settings.AI.APIKey = existing["OPENAI_API_KEY"]
 	}
 	// The "pending-setup" sentinel marks credentials that were never real —
 	// it must not survive into a configuration that now has a real client id.
-	if v := existing["oidc-client-secret"]; settings.Auth.ClientSecret == "" && v != pendingOIDC {
+	if v := existing["DONKEY_OIDC_CLIENT_SECRET"]; settings.Auth.ClientSecret == "" && v != pendingOIDC {
 		settings.Auth.ClientSecret = v
 	}
-	if v := existing["oidc-client-id"]; settings.Auth.ClientID == "" && v != pendingOIDC {
+	if v := existing["DONKEY_OIDC_CLIENT_ID"]; settings.Auth.ClientID == "" && v != pendingOIDC {
 		settings.Auth.ClientID = v
 	}
 	if settings.Build.Packages.Password == "" && settings.Build.Packages.NeedsPassword() {
-		settings.Build.Packages.Password = existing["packages-password"]
+		settings.Build.Packages.Password = existing["DONKEY_PACKAGES_PASSWORD"]
 	}
 	if err := settings.Build.Packages.ValidateCredentials(); err != nil {
 		return err
@@ -286,7 +285,7 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 	// The session key seals the gateway's login cookies and the CLI tokens.
 	// Reused on re-installs — rotating it signs everyone out of every app
 	// and revokes every `donkey login`.
-	sessionKey := existing["session-key"]
+	sessionKey := existing["DONKEY_SESSION_KEY"]
 	if sessionKey == "" {
 		if sessionKey, err = randomHexKey(); err != nil {
 			return err
@@ -294,7 +293,7 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 	}
 	// Exporters live longer than login sessions. Keep their root credential
 	// stable across re-installs and separate from deliberate session rotation.
-	telemetryKey := existing["telemetry-key"]
+	telemetryKey := existing["DONKEY_TELEMETRY_KEY"]
 	if telemetryKey == "" {
 		if telemetryKey, err = randomHexKey(); err != nil {
 			return err
@@ -313,17 +312,6 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 	if contextName == "" {
 		contextName = "the current kubeconfig context"
 	}
-	u.Printf("Installing the donkey control plane into %s…", u.Bold(contextName))
-	if err := client.Apply(ctx, manifests.SystemObjects(in)); err != nil {
-		return fmt.Errorf("the cluster refused the installation: %w", err)
-	}
-	if err := client.DeleteObsoleteSystemTraffic(ctx, in.Namespace,
-		settings.TLS.UsesCertManager(), settings.Gateway.ExternalDNS.Enabled()); err != nil {
-		return fmt.Errorf("removing obsolete control-plane traffic objects: %w", err)
-	}
-	// Fence (or unfence) the spaces that already exist, so toggling
-	// kubernetes.isolateSpaces takes effect now — not at each space's next
-	// deploy. New spaces get their fence when they are created.
 	rt := k8s.NewRuntime(client, k8s.Options{
 		Placement: manifests.Placement{
 			SharedNamespace: settings.Kubernetes.Workload.Namespace,
@@ -336,6 +324,27 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 		IsolateSpaces:   settings.Kubernetes.SpacesIsolated(),
 		RestrictEgress:  settings.Kubernetes.RestrictEgress,
 	})
+	if err := rt.ValidateExistingNames(ctx); err != nil {
+		return err
+	}
+	u.Printf("Installing the donkey control plane into %s…", u.Bold(contextName))
+	if err := client.MigrateGatewaySecrets(ctx, systemNamespace); err != nil {
+		return fmt.Errorf("preserving gateway certificates: %w", err)
+	}
+	if err := client.Apply(ctx, manifests.SystemObjects(in)); err != nil {
+		return fmt.Errorf("the cluster refused the installation: %w", err)
+	}
+	if err := client.DeleteObsoleteSystemTraffic(ctx, in.Namespace,
+		settings.TLS.UsesCertManager(), settings.Gateway.ExternalDNS.Enabled()); err != nil {
+		return fmt.Errorf("removing obsolete control-plane traffic objects: %w", err)
+	}
+	// Fence (or unfence) the spaces that already exist, so toggling
+	// kubernetes.isolateSpaces takes effect now — not at each space's next
+	// deploy. New spaces get their fence when they are created.
+
+	if err := rt.EnsureSpaceConfigs(ctx); err != nil {
+		return fmt.Errorf("migrating persisted settings: %w", err)
+	}
 	if err := rt.ReconcileSpaceIsolation(ctx); err != nil {
 		return fmt.Errorf("updating space isolation: %w", err)
 	}
@@ -370,6 +379,16 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 		manifests.SystemLabels(manifests.GatewayAppName)); err != nil {
 		return err
 	}
+	if err := client.WaitForRollout(ctx, in.Namespace, manifests.AIAppName,
+		manifests.SystemLabels(manifests.AIAppName)); err != nil {
+		return err
+	}
+	if err := client.DeleteLegacySystemConfig(ctx, in.Namespace); err != nil {
+		return fmt.Errorf("removing old control-plane config: %w", err)
+	}
+	if err := rt.FinishConfigMigration(ctx); err != nil {
+		return fmt.Errorf("removing old workload config: %w", err)
+	}
 	u.Success("Control plane is running.")
 
 	serverURL := in.Scheme() + "://" + in.ServerHost()
@@ -377,10 +396,10 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 	u.Printf("  API:        %s", u.Bold(serverURL))
 	u.Printf("  Builder:    %s", u.Faint(builderSummary(settings.Build)))
 	switch {
-	case in.Admins.Empty():
-		u.Printf("  Admins:     %s", u.Faint("everyone your identity provider signs in (narrow it with auth.admins)"))
+	case in.PlatformAdmins.Empty():
+		u.Printf("  Admins:     %s", u.Faint("first signed-in user (managed in Platform settings)"))
 	default:
-		u.Printf("  Admins:     %s", u.Faint("per auth.admins"))
+		u.Printf("  Admins:     %s", u.Faint("initially seeded from platform.admins"))
 	}
 	switch {
 	case in.IsolateSpaces && in.RestrictEgress:
@@ -455,8 +474,8 @@ func validateKubernetesSettings(settings *config.InstallFile) error {
 	if h := settings.ServerHost; h != "" && h != settings.Domain && !strings.HasSuffix(h, "."+settings.Domain) {
 		return fmt.Errorf("serverHost %q must be the domain %q or a name under it", h, settings.Domain)
 	}
-	if err := settings.Auth.Admins.Validate(); err != nil {
-		return fmt.Errorf("auth.admins: %w", err)
+	if err := settings.Platform.Validate(); err != nil {
+		return err
 	}
 	if err := settings.Build.Validate(); err != nil {
 		return err
@@ -499,7 +518,7 @@ func kubernetesSystemInput(settings *config.InstallFile, skipNamespace bool, reg
 		RegistryPassword:           registryPassword,
 		RegistryInsecure:           settings.Registry.Insecure,
 		RegistryImmutable:          settings.Registry.Immutable,
-		Admins:                     settings.Auth.Admins,
+		PlatformAdmins:             &settings.Platform.Admins,
 		OIDCIssuer:                 settings.Auth.Issuer,
 		OIDCClientID:               settings.Auth.ClientID,
 		OIDCClientSecret:           settings.Auth.ClientSecret,

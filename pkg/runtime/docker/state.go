@@ -2,7 +2,7 @@
 // Kubernetes, no kind. Spaces are user-defined networks (apps of a space
 // reach each other by plain container DNS), apps and provisioned services
 // are containers with donkey labels, disks are named volumes, and the small
-// records Kubernetes kept in Secrets and annotations (env, bindings, route
+// records Kubernetes keeps in Secrets and ConfigMaps (env, bindings, route
 // table entries, app metadata) live as files in a state directory — a named
 // volume shared with the donkey gateway, whose routing table is exactly the
 // routes/ folder (and whose issued certificates live next to it).
@@ -21,23 +21,8 @@ import (
 	"github.com/adrianliechti/donkey/internal/config"
 )
 
-// Route is one routing-table entry as the gateway reads it from the state
-// directory (mirrors the annotations of the Kubernetes route ConfigMaps).
-type Route struct {
-	Space       string               `json:"space,omitempty"`
-	App         string               `json:"app,omitempty"`
-	Host        string               `json:"host"`
-	Path        string               `json:"path"`
-	StripPrefix bool                 `json:"stripPrefix,omitempty"`
-	Backend     string               `json:"backend"`
-	Login       bool                 `json:"login,omitempty"`
-	Mode        string               `json:"mode,omitempty"`
-	CORS        string               `json:"cors,omitempty"`
-	Access      *config.AccessConfig `json:"access,omitempty"`
-	// Token forwards a sealed credential to the backend — set only on the
-	// console route, whose backend verifies identity itself.
-	Token bool `json:"token,omitempty"`
-}
+// Route has the same fields as Kubernetes route configuration. Docker stores JSON.
+type Route = config.GatewayRoute
 
 // state reads and writes the provider's file records. Every method takes
 // donkey names (space, app) — the layout underneath is nobody's business.
@@ -59,6 +44,10 @@ func (s state) readJSON(target any, parts ...string) (bool, error) {
 }
 
 func (s state) writeJSON(value any, parts ...string) error {
+	return s.storeJSON(value, true, parts...)
+}
+
+func (s state) storeJSON(value any, replace bool, parts ...string) error {
 	p := s.path(parts...)
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 		return err
@@ -69,11 +58,31 @@ func (s state) writeJSON(value any, parts ...string) error {
 	}
 	// Write-then-rename: the gateway reads these files concurrently and must
 	// never see half a route.
-	tmp := p + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o644); err != nil {
+	tmp, err := os.CreateTemp(filepath.Dir(p), "."+filepath.Base(p)+"-*")
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, p)
+	defer os.Remove(tmp.Name())
+	defer tmp.Close()
+	if err := tmp.Chmod(0o644); err != nil {
+		return err
+	}
+	if _, err := tmp.Write(b); err != nil {
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if replace {
+		return os.Rename(tmp.Name(), p)
+	}
+	// A hard link publishes the complete record only if it does not exist.
+	// Competing first sign-ins can never overwrite the first saved admin.
+	err = os.Link(tmp.Name(), p)
+	if errors.Is(err, fs.ErrExist) {
+		return nil
+	}
+	return err
 }
 
 func (s state) remove(parts ...string) error {
@@ -111,9 +120,47 @@ func (s state) setMeta(space, app string, m map[string]string) error {
 // --- bindings -------------------------------------------------------------
 
 // bindingName is one owner's copy of a service binding: the space's own
-// (owner "shared") or an app's attachment. The dot separates safely — donkey
-// names never contain one.
-func bindingName(owner, name string) string { return owner + "." + name + ".json" }
+// (<name>.json, owner empty) or an app's attachment (<app>.<name>.json). The
+// dot separates safely — donkey names never contain one.
+func bindingName(owner, name string) string {
+	if owner == sharedOwner {
+		return name + ".json"
+	}
+	return owner + "." + name + ".json"
+}
+
+// legacySharedBindingPrefix is how the space's own bindings used to be
+// filed, under a pseudo-app called "shared". Only migration spells it.
+const legacySharedBindingPrefix = "shared."
+
+// migrateSharedBindings moves a space's own bindings from the pseudo-app
+// layout onto plain <name>.json. A file already at the new name wins.
+func (s state) migrateSharedBindings(space string) error {
+	entries, err := os.ReadDir(s.path("bindings", space))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		rest, ok := strings.CutPrefix(e.Name(), legacySharedBindingPrefix)
+		if !ok || strings.Count(rest, ".") != 1 || !strings.HasSuffix(rest, ".json") {
+			continue
+		}
+		next := s.path("bindings", space, rest)
+		if _, err := os.Stat(next); err == nil {
+			if err := os.Remove(s.path("bindings", space, e.Name())); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := os.Rename(s.path("bindings", space, e.Name()), next); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
 func (s state) binding(space, owner, name string) (map[string]string, error) {
 	data := map[string]string{}
@@ -140,10 +187,15 @@ func (s state) listBindings(space, owner string) ([]string, error) {
 	}
 	var out []string
 	for _, e := range entries {
-		if rest, ok := strings.CutPrefix(e.Name(), owner+"."); ok {
-			if name, ok := strings.CutSuffix(rest, ".json"); ok {
-				out = append(out, name)
+		rest := e.Name()
+		if owner != sharedOwner {
+			var ok bool
+			if rest, ok = strings.CutPrefix(rest, owner+"."); !ok {
+				continue
 			}
+		}
+		if name, ok := strings.CutSuffix(rest, ".json"); ok && !strings.Contains(name, ".") {
+			out = append(out, name)
 		}
 	}
 	sort.Strings(out)
@@ -162,7 +214,7 @@ func (s state) attachments(space, name string) ([]string, error) {
 	var out []string
 	for _, e := range entries {
 		owner, ok := strings.CutSuffix(e.Name(), "."+name+".json")
-		if ok && !strings.Contains(owner, ".") && owner != sharedOwner {
+		if ok && owner != "" && !strings.Contains(owner, ".") {
 			out = append(out, owner)
 		}
 	}
@@ -187,7 +239,8 @@ func (s state) bindingValues(key string) ([]string, error) {
 			continue
 		}
 		for _, e := range entries {
-			if !strings.HasPrefix(e.Name(), sharedOwner+".") {
+			// The space's own bindings are the files with no owner prefix.
+			if name, ok := strings.CutSuffix(e.Name(), ".json"); !ok || strings.Contains(name, ".") {
 				continue
 			}
 			data := map[string]string{}
@@ -306,7 +359,7 @@ func (s state) cleanupApp(space, app string, keepData bool) error {
 
 // cleanupSpace removes a space's records entirely.
 func (s state) cleanupSpace(space string) error {
-	for _, sub := range []string{"env", "meta", "bindings", "routes", "deploy"} {
+	for _, sub := range []string{"env", "meta", "bindings", "routes", "deploy", "spaces"} {
 		if err := os.RemoveAll(s.path(sub, space)); err != nil {
 			return err
 		}

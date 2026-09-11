@@ -53,7 +53,7 @@ const (
 	roleSpace    = "space"
 	roleStorage  = "storage"
 
-	sharedOwner = "shared" // addons.SharedOwner, spelled here for state.go
+	sharedOwner = addons.SharedOwner // the space's own binding, not an app's copy
 )
 
 // System role values, shared by the direct Docker installer, generated
@@ -290,12 +290,8 @@ func (r *Runtime) pullRef(imageRef string) string {
 // --- Spaces ---------------------------------------------------------------
 
 func (r *Runtime) ValidateSpace(space string) error {
-	if !config.ValidName(space) {
-		return fmt.Errorf("%q is not a valid space name — lowercase letters, digits and dashes (max 40 chars)", space)
-	}
-	// The "system" space would collide with donkey's own records.
-	if space == "system" {
-		return fmt.Errorf("the space name %q is reserved for donkey itself — pick another (space: <name> in donkey.yaml)", space)
+	if err := config.ValidateSpaceName(space); err != nil {
+		return err
 	}
 	return nil
 }
@@ -334,6 +330,9 @@ func (r *Runtime) ensureSpace(ctx context.Context, space string) error {
 		_, err = r.cli.NetworkCreate(ctx, name, network.CreateOptions{
 			Labels: resourceLabels(space, roleSpace),
 		})
+		if err == nil {
+			err = r.state.writeJSON(config.DefaultSpaceConfig(space, r.opts.Domain), "spaces", space, "config.json")
+		}
 	}
 	if err != nil {
 		return err
@@ -591,8 +590,8 @@ func (r *Runtime) Restart(ctx context.Context, space, app string) (bool, error) 
 func (r *Runtime) Logs(ctx context.Context, space, app string, opts rt.LogOptions, out io.Writer) error {
 	name := ctrName(space, app)
 	expected := appLabels(space, app, roleWorkload)
-	// A space's services belong to the pseudo-app "shared"; their container
-	// carries the service's own name.
+	// A space's services are not apps; their container carries the
+	// service's own name.
 	//
 	// The name is checked here as well as at the handler because it ends up in
 	// the engine client's request URL, which path.Joins it — an unchecked
@@ -738,8 +737,8 @@ func (r *Runtime) EnsureService(ctx context.Context, space string, spec rt.Servi
 	if err != nil {
 		return nil, "", "", rt.UserError{Err: err}
 	}
-	if !config.ValidName(spec.Name) {
-		return nil, "", "", rt.UserError{Err: fmt.Errorf("%q is not a valid service name — lowercase letters, digits and dashes", spec.Name)}
+	if err := config.ValidateServiceName(spec.Name); err != nil {
+		return nil, "", "", rt.UserError{Err: err}
 	}
 	if err := r.ensureSpace(ctx, space); err != nil {
 		return nil, "", "", err
@@ -773,7 +772,7 @@ func (r *Runtime) EnsureService(ctx context.Context, space string, spec rt.Servi
 			return nil, "", "", inspectErr
 		}
 		in := addons.Input{
-			App: sharedOwner, Space: space, Namespace: netName(space),
+			Space: space, Namespace: netName(space),
 			Name: spec.Name, Version: spec.Version, Storage: spec.Storage,
 			ImageRepository: r.opts.AddonImages.Repository(spec.Type),
 			AIProxyURL:      r.aiProxyURL(),

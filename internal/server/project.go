@@ -174,18 +174,39 @@ func (s *Server) readProject(ctx context.Context, dir string, reading *ai.Projec
 		}
 	}
 	spaces := make([]string, len(reading.Apps))
+	configs := make([]*config.AppConfig, len(reading.Apps))
+	for i, found := range reading.Apps {
+		app, err := config.LoadApp(filepath.Join(dir, filepath.FromSlash(found.Path)))
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", found.Path, err)
+		}
+		configs[i] = app
+		if app != nil {
+			spaces[i] = app.Space
+		}
+	}
+	// Resolve inherited spaces before reading any app's live settings.
+	space := in.Space
+	if space == "" {
+		for _, configured := range spaces {
+			if configured != "" {
+				space = configured
+				break
+			}
+		}
+	}
+	if space == "" {
+		space = config.DefaultSpace
+	}
 	group, readCtx := errgroup.WithContext(ctx)
 	group.SetLimit(3)
 	for i, found := range reading.Apps {
 		group.Go(func() error {
 			full := filepath.Join(dir, filepath.FromSlash(found.Path))
-			app, err := config.LoadApp(full)
-			if err != nil {
-				return fmt.Errorf("%s: %w", found.Path, err)
-			}
+			app := configs[i]
 			setting := ""
 			if app != nil {
-				spaces[i], setting = app.Space, app.Build.Context
+				setting = app.Build.Context
 			}
 			if setting == "" {
 				contextDir, _, err := projectPath(dir, found.Context)
@@ -198,6 +219,9 @@ func (s *Server) readProject(ctx context.Context, dir string, reading *ai.Projec
 				return fmt.Errorf("%s: %w", found.Path, err)
 			}
 			input := in
+			if input.Space == "" && spaces[i] == "" {
+				input.Space = space
+			}
 			input.Root = found.Path
 			if len(reading.Apps) > 1 || input.NameHint == "" {
 				input.NameHint = found.Name
@@ -230,24 +254,7 @@ func (s *Server) readProject(ctx context.Context, dir string, reading *ai.Projec
 	if err := group.Wait(); err != nil {
 		return nil, err
 	}
-	// All siblings share one space; an explicit caller choice wins. Otherwise
-	// keep an agreed donkey.yaml space, or ask through a blocking finding.
-	space := in.Space
-	if space == "" {
-		for _, configured := range spaces {
-			if configured != "" {
-				space = configured
-				break
-			}
-		}
-	}
-	if space == "" {
-		space = config.DefaultSpace
-	}
-	for i, sp := range state.apps {
-		if in.Space != "" || spaces[i] == "" {
-			sp.app.Space = space
-		}
+	for _, sp := range state.apps {
 		s.adoptConsoleChoices(ctx, sp.app.Space, sp.app)
 	}
 	sourceSize := 0
@@ -324,6 +331,10 @@ func (s *Server) handleProjectUpdate(w http.ResponseWriter, r *http.Request) {
 	for i, edit := range edits {
 		if err := edit.validate(); err != nil {
 			writeErr(w, http.StatusBadRequest, fmt.Errorf("%s: %w", stored.project.apps[i].root, err))
+			return
+		}
+		if !s.requireSpace(w, r, stored.project.apps[i].app.Space, false) ||
+			!s.requireSpace(w, r, strings.TrimSpace(edit.Space), false) {
 			return
 		}
 	}

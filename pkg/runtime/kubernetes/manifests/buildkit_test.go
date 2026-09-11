@@ -162,22 +162,30 @@ func TestBuildConfigReachesBothPods(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		// The build variables travel as JSON, the way DONKEY_ADMINS does.
+		// The build variables travel as JSON, the way DONKEY_PLATFORM_ADMINS does.
 		"DONKEY_BUILD_ENV",
-		"CGO_ENABLED",
 		"DONKEY_BUILDER_INSTRUCTIONS",
-		"registry.example.com/mirror/<image>",
 		// The mirrors are the build engine's business, and live in its config.
 		`mirrors = ["mirror.example.com/docker"]`,
 		"DONKEY_REGISTRY_MIRRORS", // the session auth client gets the same hosts
 		// Both pods get the proxy, in both spellings.
 		"HTTPS_PROXY",
 		"https_proxy",
-		"http://proxy.example.com:3128",
 		"NO_PROXY",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("a configured build section should render %s", want)
+		}
+	}
+
+	secret := systemSecret(in)
+	for key, want := range map[string]string{
+		"DONKEY_BUILD_ENV":            `{"CGO_ENABLED":"0"}`,
+		"DONKEY_BUILDER_INSTRUCTIONS": in.Build.Instructions,
+		"HTTPS_PROXY":                 in.Build.Proxy.HTTPS,
+	} {
+		if string(secret.Data[key]) != want {
+			t.Errorf("Secret key %s did not retain its configured value", key)
 		}
 	}
 
@@ -217,7 +225,7 @@ func TestBuildConfigAbsentChangesNothing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(out, "DONKEY_BUILD_") {
+	if strings.Contains(out, "name: DONKEY_BUILD_") {
 		t.Errorf("an unconfigured installation rendered build variables:\n%s", out)
 	}
 	if strings.Contains(out, "name: HTTP_PROXY") || strings.Contains(out, "name: HTTPS_PROXY") ||

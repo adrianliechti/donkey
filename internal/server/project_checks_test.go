@@ -49,7 +49,7 @@ func TestProjectKeepsExistingBrowserRoute(t *testing.T) {
 			if _, err := extractContext(bytes.NewReader(body), dir); err != nil {
 				t.Fatal(err)
 			}
-			state, err := s.readProject(context.Background(), dir, reading, planInput{})
+			state, err := s.readProject(adminTestContext(), dir, reading, planInput{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -95,7 +95,7 @@ func TestProjectValidatesConfiguredBuildContext(t *testing.T) {
 				t.Fatal(err)
 			}
 			reading.Apps[1].Context = test.guessed
-			_, err := s.readProject(context.Background(), dir, reading, planInput{})
+			_, err := s.readProject(adminTestContext(), dir, reading, planInput{})
 			if (err == nil) != test.valid {
 				t.Fatalf("valid=%v: %v", test.valid, err)
 			}
@@ -112,7 +112,7 @@ func TestProjectUsesSpaceFromConfiguredSibling(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "frontend", config.AppFileName), []byte("name: frontend\nport: 8080\nspace: team\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	state, err := s.readProject(context.Background(), dir, reading, planInput{})
+	state, err := s.readProject(adminTestContext(), dir, reading, planInput{})
 	if err != nil {
 		t.Fatal(err)
 	}

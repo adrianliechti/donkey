@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -17,6 +18,7 @@ import (
 	"github.com/adrianliechti/donkey/internal/ai"
 	"github.com/adrianliechti/donkey/internal/config"
 	"github.com/adrianliechti/donkey/internal/detect"
+	"github.com/adrianliechti/donkey/pkg/runtime"
 )
 
 // A plan is everything donkey works out about an app before building it, so
@@ -65,9 +67,11 @@ type Plan struct {
 
 // PlanApp is the app as this plan would deploy it.
 type PlanApp struct {
-	Name  string `json:"name"`
-	Space string `json:"space"`
-	Port  int    `json:"port"`
+	Name    string   `json:"name"`
+	Space   string   `json:"space"`
+	Host    string   `json:"host"`
+	Domains []string `json:"domains"`
+	Port    int      `json:"port"`
 	// PortSource is donkey.yaml, the code, the PORT convention, or a guess —
 	// a review screen would rather explain a port than ask for one.
 	PortSource  string   `json:"portSource"`
@@ -142,6 +146,7 @@ type PlanService struct {
 type PlanEdit struct {
 	Name        string   `json:"name"`
 	Space       string   `json:"space"`
+	Host        *string  `json:"host,omitempty"`
 	Port        int      `json:"port"`
 	Healthcheck string   `json:"healthcheck"`
 	Storage     []string `json:"storage"`
@@ -154,11 +159,11 @@ type PlanEdit struct {
 }
 
 func (e PlanEdit) validate() error {
-	if !config.ValidName(strings.TrimSpace(e.Name)) {
-		return fmt.Errorf("app name must use lowercase letters, digits and dashes (max 40 chars)")
+	if err := config.ValidateAppName(strings.TrimSpace(e.Name)); err != nil {
+		return err
 	}
-	if !config.ValidName(strings.TrimSpace(e.Space)) {
-		return fmt.Errorf("space must use lowercase letters, digits and dashes (max 40 chars)")
+	if err := config.ValidateSpaceName(strings.TrimSpace(e.Space)); err != nil {
+		return err
 	}
 	if e.Port < 1 || e.Port > 65535 {
 		return fmt.Errorf("port must be between 1 and 65535")
@@ -218,6 +223,20 @@ func (p *storedPlan) appCopy() *config.AppConfig {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return cloneApp(p.app)
+}
+
+// A deploy uses one snapshot: a concurrent review cannot change the space
+// between authorization, rendering the review, and building the app.
+func (p *storedPlan) snapshot() *storedPlan {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return &storedPlan{
+		app: cloneApp(p.app), analysis: p.analysis,
+		volumes: slices.Clone(p.volumes), services: slices.Clone(p.services),
+		build: p.build, root: p.root, hasConfig: p.hasConfig,
+		portSource: p.portSource, skipped: p.skipped,
+		appType: p.appType, notes: p.notes, created: p.created,
+	}
 }
 
 func cloneApp(app *config.AppConfig) *config.AppConfig {
@@ -376,6 +395,9 @@ func (s *Server) handlePlanUpdate(w http.ResponseWriter, r *http.Request) {
 	// re-decide the config while this one is describing it.
 	sp.mu.Lock()
 	defer sp.mu.Unlock()
+	if !s.requireSpace(w, r, sp.app.Space, false) || !s.requireSpace(w, r, strings.TrimSpace(edit.Space), false) {
+		return
+	}
 	applyPlanEdit(sp, edit)
 	writeJSON(w, http.StatusOK, s.renderPlan(r.Context(), r.PathValue("id"), sp))
 }
@@ -436,6 +458,16 @@ func (s *Server) readApp(ctx context.Context, dir string, app *config.AppConfig,
 		app.Space = in.Space
 	case app.Space == "":
 		app.Space = config.DefaultSpace
+	}
+	if err := s.authorizeSpace(ctx, app.Space, false); err != nil {
+		return nil, err
+	}
+	settings, err := s.spaceSettings(ctx, app.Space)
+	if err != nil {
+		return nil, err
+	}
+	if app.Host == "" && !app.Internal && len(settings.Domains) > 0 {
+		app.Host = app.Name + "." + settings.Domains[0]
 	}
 	sp.portSource = PortFromConfig
 	if app.Port == 0 {
@@ -579,6 +611,11 @@ func applyPlanEdit(sp *storedPlan, edit PlanEdit) {
 			app.Public, app.Internal = false, false
 		}
 	}
+	if app.Internal {
+		app.Host = ""
+	} else if edit.Host != nil {
+		app.Host = strings.TrimSpace(*edit.Host)
+	}
 	app.ApplyDefaults()
 	for key, value := range app.Env {
 		if service, _, ref := config.ParseEnvRef(value); ref && !slices.Contains(edit.Services, service) {
@@ -630,6 +667,17 @@ func (s *Server) renderPlan(ctx context.Context, id string, sp *storedPlan) *Pla
 		p.App.StorageSize = app.Storage.Size
 	}
 	p.Findings = analysisWarnings(app, sp.analysis)
+	settings, settingsErr := s.spaceSettings(ctx, app.Space)
+	p.App.Domains = append([]string{}, settings.Domains...)
+	p.App.Host = config.AppHost(app, app.Space, s.cfg.Domain)
+	if settingsErr != nil {
+		p.Findings = append(p.Findings, Finding{Level: LevelBlock, Code: "space-settings", Title: settingsErr.Error()})
+	} else if err := settings.CheckAppHost(app, app.Space, s.cfg.Domain); err != nil {
+		p.Findings = append(p.Findings, Finding{Level: LevelBlock, Code: "space-domain", Title: err.Error()})
+		if len(settings.Domains) == 0 && !strings.Contains(app.Host, ".") {
+			p.App.Host, p.App.URL = "", ""
+		}
+	}
 	if err := s.bindEnvironment(ctx, app); err != nil {
 		p.Findings = append(p.Findings, Finding{Level: LevelBlock, Code: "service-env", Title: err.Error()})
 	}
@@ -665,6 +713,14 @@ func (s *Server) renderPlan(ctx context.Context, id string, sp *storedPlan) *Pla
 	return p
 }
 
+func (s *Server) spaceSettings(ctx context.Context, space string) (config.SpaceConfig, error) {
+	settings, err := s.rt.SpaceConfig(ctx, space)
+	if errors.Is(err, runtime.ErrSpaceNotFound) {
+		return config.DefaultSpaceConfig(space, s.cfg.Domain), nil
+	}
+	return settings, err
+}
+
 // clusterFindings checks the plan against what already runs: the questions
 // only the cluster can answer, and the ones a deploy would otherwise answer
 // minutes later with a failure.
@@ -677,11 +733,11 @@ func (s *Server) clusterFindings(ctx context.Context, app *config.AppConfig, ser
 		return []Finding{{Level: LevelBlock, Code: "space-taken", Title: err.Error()}}
 	}
 	var out []Finding
-	if app.Name == addons.SharedOwner {
+	if err := config.ValidateAppName(app.Name); err != nil {
 		out = append(out, Finding{
 			Level: LevelBlock,
-			Code:  "name-reserved",
-			Title: fmt.Sprintf("The name %q is reserved for a space's shared services", addons.SharedOwner),
+			Code:  "name-invalid",
+			Title: err.Error(),
 			Fix:   "Pick another name.",
 		})
 	}

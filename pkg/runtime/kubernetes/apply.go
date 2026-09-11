@@ -92,7 +92,30 @@ func requireObjectIdentity(kind, namespace, name string, actual, expected map[st
 	if namespace != "" {
 		qualified = namespace + "/" + name
 	}
+	// Object names are joined from space and app with "-", so two different
+	// pairs can spell the same name where spaces share a namespace. Say so,
+	// rather than "not the expected resource", when the holder is one of ours.
+	if holder := describeOwner(actual); holder != "" &&
+		actual[manifests.LabelInstallation] == expected[manifests.LabelInstallation] {
+		return fmt.Errorf("the Kubernetes %s %s already belongs to %s — the joined name collides, so give one of them another name", kind, qualified, holder)
+	}
 	return fmt.Errorf("the Kubernetes %s %s exists but isn't the expected donkey resource — remove or rename it before continuing", kind, qualified)
+}
+
+// describeOwner names the donkey thing that owns an object from its identity
+// labels, or "" when the labels say it is not donkey's.
+func describeOwner(labels map[string]string) string {
+	space := labels[manifests.LabelSpace]
+	if space == "" {
+		return ""
+	}
+	if app := labels[manifests.LabelApp]; app != "" {
+		return fmt.Sprintf("app %q of space %q", app, space)
+	}
+	if addon := labels[manifests.LabelAddon]; addon != "" {
+		return fmt.Sprintf("service %q of space %q", addon, space)
+	}
+	return fmt.Sprintf("space %q", space)
 }
 
 func (c *Client) expectedObjectIdentity(identity map[string]string) map[string]string {
@@ -142,8 +165,27 @@ func (c *Client) Apply(ctx context.Context, objs []runtime.Object) error {
 		} else if !apierrors.IsNotFound(err) {
 			return fmt.Errorf("checking existing %s %s: %w", kind, u.GetName(), err)
 		}
+		legacy, err := c.legacyAppTrafficObject(ctx, u)
+		if err != nil {
+			return err
+		}
+		if legacy != nil && kind == "Certificate" {
+			if err := c.preserveAppTLSSecret(ctx, legacy, u); err != nil {
+				return err
+			}
+		}
 		if err := applyWithRetry(ctx, ri, u); err != nil {
 			return fmt.Errorf("applying %s %s: %w", kind, u.GetName(), err)
+		}
+		if legacy != nil {
+			if err := c.deleteLegacyAppTrafficObject(ctx, legacy); err != nil {
+				return err
+			}
+		}
+		if kind == "Certificate" {
+			if err := c.finishAppCertificateMigration(ctx, u); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

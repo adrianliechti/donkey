@@ -107,7 +107,7 @@ func TestTelemetryCredentialIsIndependentFromLoginSessions(t *testing.T) {
 		t.Fatal("telemetry key rotation did not roll donkey-telemetry")
 	}
 	secret := systemSecret(in)
-	if secret.StringData["session-key"] == secret.StringData["telemetry-key"] {
+	if string(secret.Data["DONKEY_SESSION_KEY"]) == string(secret.Data["DONKEY_TELEMETRY_KEY"]) {
 		t.Fatal("login sessions and telemetry must not share a root credential")
 	}
 }

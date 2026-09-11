@@ -2,7 +2,6 @@ package kubernetes
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -27,6 +26,12 @@ func (r *Runtime) Deploy(ctx context.Context, spec rt.DeploySpec, out rt.Progres
 
 	if err := r.ValidateApp(space, app.Name); err != nil {
 		return rt.UserError{Err: err}
+	}
+	if err := r.ensureSpaceHome(ctx, space); err != nil {
+		return err
+	}
+	if err := rt.CheckAppDomain(ctx, r, app, space, r.opts.Domain); err != nil {
+		return err
 	}
 	out.Line("Setting up on the cluster…")
 	// A file-browser helper holds the app's disk, and an RWO volume attaches
@@ -53,7 +58,7 @@ func (r *Runtime) Deploy(ctx context.Context, spec rt.DeploySpec, out rt.Progres
 	// the binding. An existing service is left alone: a second app naming it
 	// simply joins it.
 	for _, a := range app.Addons {
-		shared, err := r.c.GetOwnedSecretData(ctx, ns, addons.SecretName(r.sharedOwner(space), a.Name),
+		shared, err := r.c.GetOwnedSecretData(ctx, ns, r.spaceBindingName(space, a.Name),
 			manifests.AddonLabels(space, a.Name, manifests.RoleBinding))
 		if err != nil {
 			return err
@@ -93,6 +98,13 @@ func (r *Runtime) Deploy(ctx context.Context, spec rt.DeploySpec, out rt.Progres
 			in.RouteTargets[i].Host = host
 		}
 	}
+	hosts := []string{in.Domain}
+	for _, target := range in.RouteTargets {
+		hosts = append(hosts, target.Host)
+	}
+	if err := rt.CheckSpaceDomains(ctx, r, space, hosts...); err != nil {
+		return err
+	}
 	// Addons added in the console aren't in this donkey.yaml; the cluster
 	// knows them by their binding secrets, and they keep working across
 	// deploys instead of silently losing their env.
@@ -102,7 +114,7 @@ func (r *Runtime) Deploy(ctx context.Context, spec rt.DeploySpec, out rt.Progres
 			known[n] = true
 		}
 		for _, b := range bindings {
-			if n := addons.SecretName(obj, b.Name); !known[n] {
+			if n := manifests.AppBindingSecretName(obj, b.Name); !known[n] {
 				in.AddonSecretNames = append(in.AddonSecretNames, n)
 				out.Line("· Keeping %s, attached in the console", b.Name)
 			}
@@ -110,6 +122,9 @@ func (r *Runtime) Deploy(ctx context.Context, spec rt.DeploySpec, out rt.Progres
 	}
 	objs, err := manifests.AppObjects(in)
 	if err != nil {
+		return err
+	}
+	if err := r.c.preserveDataClaims(ctx, objs); err != nil {
 		return err
 	}
 	// The Deployment is applied last. Everything it needs — secrets, the
@@ -302,7 +317,7 @@ func (r *Runtime) manifestInput(spec rt.DeploySpec, includeCreds bool) (manifest
 		in.RegistryPassword = password
 	}
 	for _, a := range app.Addons {
-		in.AddonSecretNames = append(in.AddonSecretNames, addons.SecretName(in.Name(), a.Name))
+		in.AddonSecretNames = append(in.AddonSecretNames, manifests.AppBindingSecretName(in.Name(), a.Name))
 	}
 	// Each route joins another app's address. The default shape is the
 	// assumption; resolveRouteTargets corrects it against what that app
@@ -346,13 +361,14 @@ func (r *Runtime) hostOwner(ctx context.Context, space, host, self string) strin
 	}
 	ns := r.ns(space)
 	for _, cm := range cms {
-		if cm.Namespace != ns || cm.Annotations[manifests.AnnotationHost] != host {
+		route, err := manifests.ReadRoute(&cm)
+		if err != nil || cm.Namespace != ns || route.Host != host {
 			continue
 		}
 		// Path routes share a hostname on purpose; only an app's own address
 		// (path "/") owns it. Without this, a sibling's `routes:` entry on
 		// this host would block the host's own app from deploying.
-		if p := cm.Annotations[manifests.AnnotationPath]; p != "" && p != "/" {
+		if route.Path != "/" {
 			continue
 		}
 		if owner := cm.Labels[manifests.LabelApp]; owner != "" && owner != self {
@@ -392,6 +408,9 @@ func (r *Runtime) retractRemovedRoutes(ctx context.Context, ns string, in manife
 // existing shared-address routes keep serving under their existing names.
 func (r *Runtime) ApplyNetwork(ctx context.Context, cfg *config.AppConfig) (string, error) {
 	space, app := cfg.Space, cfg.Name
+	if err := rt.CheckAppDomain(ctx, r, cfg, space, r.opts.Domain); err != nil {
+		return "", err
+	}
 	ns, obj := r.ns(space), r.name(space, app)
 	st, err := r.c.AppStatus(ctx, ns, obj, space, app)
 	if err != nil {
@@ -416,6 +435,13 @@ func (r *Runtime) ApplyNetwork(ctx context.Context, cfg *config.AppConfig) (stri
 
 	// Re-render: the app's own route and public traffic objects unless
 	// internal, and every existing path route under its existing name.
+	hosts := []string{in.Domain}
+	for _, route := range net.Routes {
+		hosts = append(hosts, route.Host)
+	}
+	if err := rt.CheckSpaceDomains(ctx, r, space, hosts...); err != nil {
+		return "", err
+	}
 	var objs []k8sruntime.Object
 	if in.Domain != "" {
 		objs = append(objs, manifests.AppRoute(in))
@@ -455,19 +481,13 @@ func (r *Runtime) SetAccess(ctx context.Context, space, app string, access *conf
 	if err != nil {
 		return err
 	}
-	var value *string
-	if access != nil {
-		b, err := json.Marshal(access)
+	if net.Protected {
+		cm, err := r.c.appRouteConfigMap(ctx, ns, obj, space, app)
 		if err != nil {
 			return err
 		}
-		v := string(b)
-		value = &v
-	}
-	patch := map[string]*string{manifests.AnnotationAccess: value}
-	if net.Protected {
-		if err := r.c.SetAnnotations(ctx, "ConfigMap", ns, obj,
-			manifests.Labels(space, app, manifests.RoleRoute), patch); err != nil {
+		if err := r.c.SetRouteAccess(ctx, ns, cm.Name,
+			manifests.Labels(space, app, manifests.RoleRoute), access); err != nil {
 			return err
 		}
 	}
@@ -475,8 +495,8 @@ func (r *Runtime) SetAccess(ctx context.Context, space, app string, access *conf
 		if !pr.Protected {
 			continue
 		}
-		if err := r.c.SetAnnotations(ctx, "ConfigMap", ns, pr.Name,
-			manifests.Labels(space, app, manifests.RolePathRoute), patch); err != nil {
+		if err := r.c.SetRouteAccess(ctx, ns, pr.Name,
+			manifests.Labels(space, app, manifests.RolePathRoute), access); err != nil {
 			return err
 		}
 	}

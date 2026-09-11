@@ -16,7 +16,7 @@ func PathRouteName(app, targetApp, path string) string {
 	if slug == "" {
 		slug = "root"
 	}
-	return app + "-on-" + targetApp + "-" + slug
+	return app + "-route-" + targetApp + "-" + slug
 }
 
 // PathRoute puts one path prefix of another app's hostname onto this app.
@@ -34,11 +34,11 @@ func PathRoute(in Input, r RouteTarget) *corev1.ConfigMap {
 // the cluster (whose name encodes a target app the cluster no longer spells
 // out).
 func PathRouteNamed(in Input, name string, r RouteTarget) *corev1.ConfigMap {
-	ann := routeAnnotations(in, r.Host, r.Path)
+	route := routeSettings(in, r.Host, r.Path)
 	if r.StripPrefix {
-		ann[AnnotationStripPrefix] = "true"
+		route.StripPrefix = true
 	}
 	return routeConfigMap(name, in.Namespace,
 		Labels(in.Space, in.App.Name, RolePathRoute),
-		ann)
+		route)
 }

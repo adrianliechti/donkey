@@ -307,7 +307,7 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 		"DONKEY_OIDC_CLIENT_SECRET":      settings.Auth.ClientSecret,
 		"DONKEY_SESSION_KEY":             sessionKey,
 		"DONKEY_TELEMETRY_KEY":           telemetryKey,
-		"DONKEY_ADMINS":                  adminsJSONString(settings.Auth.Admins),
+		"DONKEY_PLATFORM_ADMINS":         adminsJSONString(&settings.Platform.Admins),
 		"DONKEY_AI_MODEL":                settings.AI.Model,
 		"OPENAI_BASE_URL":                settings.AI.BaseURL,
 		"OPENAI_API_KEY":                 settings.AI.APIKey,
@@ -501,6 +501,9 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 // installer. Compose rendering uses the same checks without opening a Docker
 // socket or resolving credentials from the host.
 func validateDockerSettings(settings *config.InstallFile) error {
+	if err := settings.Platform.Validate(); err != nil {
+		return err
+	}
 	if missing := missingSettings(settings, false); len(missing) > 0 {
 		return fmt.Errorf("these settings are required (via -f file or flags): %v", missing)
 	}

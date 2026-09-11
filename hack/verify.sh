@@ -48,9 +48,9 @@ kind)
   # Assigned before export: `export X="$(cmd)"` is one command whose status is
   # export's, so a failed kubectl would slip past `set -e` and hand the suite
   # an empty key.
-  SESSION_KEY="$(kubectl --context "${CTX}" -n donkey-system get secret donkey-system-config \
-    -o jsonpath='{.data.session-key}' | base64 -d)"
-  [ -n "${SESSION_KEY}" ] || { echo "FAIL: no session key in donkey-system-config — is donkey installed?" >&2; exit 1; }
+  SESSION_KEY="$(kubectl --context "${CTX}" -n donkey-system get secret donkey \
+    -o jsonpath='{.data.DONKEY_SESSION_KEY}' | base64 -d)"
+  [ -n "${SESSION_KEY}" ] || { echo "FAIL: no session key in donkey — is donkey installed?" >&2; exit 1; }
   export DONKEY_E2E_SESSION_KEY="${SESSION_KEY}"
 
   say "the gateway's certificate authority"

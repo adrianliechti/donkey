@@ -17,7 +17,7 @@ import (
 )
 
 type releaseRuntime struct {
-	runtime.Provider
+	planRuntime
 	status *runtime.AppStatus
 	meta   map[string]string
 	env    map[string]string

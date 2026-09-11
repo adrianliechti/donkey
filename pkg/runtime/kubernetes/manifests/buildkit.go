@@ -139,14 +139,6 @@ func buildkitTOML(in SystemInput) string {
 	return BuildkitTOML(c)
 }
 
-func buildkitConfig(in SystemInput) *corev1.ConfigMap {
-	return &corev1.ConfigMap{
-		TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "ConfigMap"},
-		ObjectMeta: metav1.ObjectMeta{Name: buildkitName, Namespace: in.Namespace, Labels: SystemLabels(buildkitName)},
-		Data:       map[string]string{"buildkitd.toml": buildkitTOML(in)},
-	}
-}
-
 func buildkitDeployment(in SystemInput) *appsv1.Deployment {
 	labels := SystemLabels(buildkitName)
 	replicas := int32(1)
@@ -210,7 +202,8 @@ func buildkitPodSpec(in SystemInput, privileged bool) corev1.PodSpec {
 		Volumes: []corev1.Volume{
 			{Name: "buildkit-config", VolumeSource: corev1.VolumeSource{
 				ConfigMap: &corev1.ConfigMapVolumeSource{
-					LocalObjectReference: corev1.LocalObjectReference{Name: buildkitName},
+					LocalObjectReference: corev1.LocalObjectReference{Name: SystemConfigMapName},
+					Items:                []corev1.KeyToPath{{Key: "buildkitd.toml", Path: "buildkitd.toml"}},
 				},
 			}},
 			// The cache gets a volume of its own so its size is something the

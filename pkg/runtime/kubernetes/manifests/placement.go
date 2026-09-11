@@ -4,22 +4,18 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/adrianliechti/donkey/internal/config"
+
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 )
 
-// NameSeparator joins a space and a name into one object name when a whole
-// installation shares a single namespace. Space and app names may not contain
-// it (ValidateNames refuses them), so the join is unambiguous: without that
-// rule the pair ("a", "b-c") and the pair ("a-b", "c") would both render
-// "a-b-c" and the second deploy would silently overwrite the first.
-const NameSeparator = "--"
-
-// spaceMarkerPrefix names the object that stands in for a space when there is
-// no namespace to be the space. It contains dots, which no space or app name
-// may — so a marker can never collide with an app's objects.
-const spaceMarkerPrefix = "donkey.space."
+// NameSeparator joins a space onto a name where one namespace holds several
+// spaces. Object names are derived, never parsed: a space and an app may both
+// contain hyphens, and whoever needs to know what an object is reads its
+// donkey.local/* labels, the way Helm's <release>-<chart> names work.
+const NameSeparator = "-"
 
 // Placement decides where a space's objects live and what they are called.
 //
@@ -52,19 +48,16 @@ func (p Placement) Namespace(space string) string {
 // Name is the object name for one of the space's things — an app, an addon,
 // a secret prefix. Unqualified when the space owns its namespace, because
 // that is what lets siblings reach each other by plain name.
+//
+// Two pairs can render the same name ("a-b"/"c" and "a"/"b-c" both come out
+// as "a-b-c"). Uniqueness is settled where the object is applied: an existing
+// object whose identity labels name another space or app is refused, never
+// taken over.
 func (p Placement) Name(space, name string) string {
 	if p.Shared() {
 		return space + NameSeparator + name
 	}
 	return name
-}
-
-// Unname recovers the plain name from an object name. The inverse of Name.
-func (p Placement) Unname(space, objectName string) string {
-	if p.Shared() {
-		return strings.TrimPrefix(objectName, space+NameSeparator)
-	}
-	return objectName
 }
 
 // SpaceOf recovers the space from a namespace — the inverse of Namespace for
@@ -78,17 +71,12 @@ func (p Placement) SpaceOf(namespace string) string {
 	return strings.TrimPrefix(namespace, p.NamespacePrefix)
 }
 
-// SpaceMarkerName is the object that records an empty space. A space with
-// apps is evident from its apps; one holding only services — or nothing at
-// all, freshly created in the console — needs something to exist.
-func SpaceMarkerName(space string) string { return spaceMarkerPrefix + space }
+// SpaceMarkerName holds a space's settings in either placement mode, and
+// records empty spaces when there is no namespace of their own.
+func SpaceMarkerName(space string) string { return space + "-space" }
 
-// IsSpaceMarker reports whether an object name is a space marker.
-func IsSpaceMarker(name string) bool { return strings.HasPrefix(name, spaceMarkerPrefix) }
-
-// SpaceMarker records a space that has no namespace of its own. It carries
-// the space label like everything else donkey writes, so the same sweep that
-// finds a space's apps finds the space itself.
+// SpaceMarker holds space settings. Labels identify the space independently
+// of its name and namespace.
 func SpaceMarker(space, namespace string) *corev1.ConfigMap {
 	return &corev1.ConfigMap{
 		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "ConfigMap"},
@@ -113,17 +101,13 @@ func (p Placement) SpaceObject(space string) runtime.Object {
 // allow more, but an app needs all of them, so the tightest one is the rule.
 const MaxObjectName = 63
 
-// ValidateNames checks what the shared arrangement adds to donkey's ordinary
-// name rules: the two names are joined, so together they have to fit, and
-// neither may contain the separator that joins them.
+// ValidateNames checks the space name and the combined Service name length.
 func (p Placement) ValidateNames(space, app string) error {
+	if err := config.ValidateSpaceName(space); err != nil {
+		return err
+	}
 	if !p.Shared() {
 		return nil
-	}
-	for _, n := range []struct{ what, value string }{{"space", space}, {"name", app}} {
-		if strings.Contains(n.value, NameSeparator) {
-			return fmt.Errorf("this installation puts every app in one namespace, so the %s %q may not contain %q — it is what separates the space from the app in an object's name", n.what, n.value, NameSeparator)
-		}
 	}
 	if n := len(p.Name(space, app)); n > MaxObjectName {
 		return fmt.Errorf("%q in space %q comes to %d characters as one object name (%q), and the cluster allows %d — shorten one of them",

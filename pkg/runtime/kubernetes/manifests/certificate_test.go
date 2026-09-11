@@ -40,9 +40,10 @@ func TestAppCertificateAndDNSEndpoint(t *testing.T) {
 	for _, want := range []string{
 		"apiVersion: cert-manager.io/v1",
 		"kind: Certificate",
-		"name: donkey-app-acme.shop",
+		"name: acme-shop\n",
+		"name: acme-shop-dns\n",
 		"namespace: donkey-system",
-		"secretName: donkey-app-acme.shop-tls",
+		"secretName: acme-shop-tls",
 		"name: platform-ca",
 		"kind: ClusterIssuer",
 		"group: cert-manager.io",
@@ -63,8 +64,10 @@ func TestCertificateNamesIncludeLogicalSpace(t *testing.T) {
 	if AppCertificateName("alpha", "shop") == AppCertificateName("beta", "shop") {
 		t.Fatal("two spaces produced the same certificate name")
 	}
-	if AppCertificateName("a", "b-c") == AppCertificateName("a-b", "c") {
-		t.Fatal("certificate name is ambiguous across space/app pairs")
+	if AppCertificateName("team", "my-api") != "team-my-api" ||
+		AppDNSName("team", "my-api") != "team-my-api-dns" ||
+		AppCertificateSecretName("team", "my-api") != "team-my-api-tls" {
+		t.Fatal("certificate, DNS and TLS Secret names must share the same space/app prefix")
 	}
 }
 

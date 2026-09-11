@@ -12,10 +12,10 @@ trade-offs for a small platform, marked as such.
 ## The trust model
 
 **One credential underlies everything: an OIDC login.** The gateway runs the
-browser sign-in, checks the admin rules, and mints a short-lived sealed token
+browser sign-in and mints a short-lived sealed token
 from the session (`X-Access-Token`, ≤10 min). The CLI carries the same kind of
 token in `Authorization: Bearer` (30 days). `donkey-server` verifies the seal
-itself under `SessionKey` and applies the admin rules — so a request that never
+itself under `SessionKey` and applies platform and space permissions — so a request that never
 touched the gateway is still authorized on its own, which matters because
 tenant workloads can reach the server's AI proxy by design. There is no static
 API token.
@@ -24,14 +24,27 @@ Identity headers (`X-Auth-Request-*`) are forwarded to *apps* as information
 only; no donkey component authorizes on them. The server's `auth`
 (`internal/server/server.go`) accepts only a verified sealed token.
 
-**Two things follow from this model, and both are load-bearing:**
+**Management permissions are always enforced:**
 
-- **`auth.admins` empty means every account the IdP admits is an operator**
-  (`AccessConfig.Empty()`). An installation that does not set it grants full
-  platform rights to everyone the IdP will issue a token for. Set it.
-- **There is no per-space authorization.** Any operator reaches every space.
-  This is by design at PoC stage; several risks below become privilege-boundary
-  violations the day it changes, and are marked.
+- The first verified sign-in initializes `platform.admins` unless the install
+  file supplies a seed. Concurrent first sign-ins select one initial admin.
+  Platform admins manage the list in the console; empty persisted admin lists
+  and storage failures never grant access or trigger another bootstrap.
+- Platform admins manage all spaces. Space admins manage membership, domains,
+  and the space; developers manage apps and services, including credentials,
+  data, and tunnels. Empty space membership grants nobody a role. Permissions
+  are read on every API request, including the resolved targets of uploads and
+  saved plans. IdP group/role changes still require refreshed identity claims.
+- Platform settings live in the control-plane `donkey` ConfigMap’s
+  `platform.yaml` entry, alongside `route.yaml` and `buildkitd.toml`. Each space
+  has `<space>-space`, with YAML in `config.yaml`. Docker
+  uses equivalent files in its persistent state volume. Existing spaces
+  migrate with empty membership and unrestricted domains. Only platform admins
+  retain access until space roles are assigned. Subsequent saves use last save
+  wins; no revision is exposed.
+- Space `domains` constrains published app hostnames, including shared-address
+  routes. An empty list allows any domain; app visitor access remains governed
+  by the app's independent `access` rules.
 
 ## Boundaries that hold
 
@@ -81,11 +94,12 @@ so in its own start path.
 is never adopted or deleted; both deletion paths re-check ownership. Every
 Kubernetes sweep is narrowed by installation plus logical-scope labels
 (`donkey.local/installation` + space/app/addon); Docker verifies the managed
-network and space before cascading. Name collisions are guarded both ways (an
-addon cannot take an app's name or vice versa) and the `shared` owner is
-reserved. Selectors and ownership checks use only immutable `donkey.local/*`
-identity labels; the descriptive `app.kubernetes.io/*` labels never grant
-authority.
+network and space before cascading. Name collisions are guarded by labels, not
+by name grammar: an addon cannot take an app's name or vice versa, and where
+spaces share a namespace, an object whose identity labels name another space
+or app is refused rather than taken over. Selectors and ownership checks use
+only immutable `donkey.local/*` identity labels; the descriptive
+`app.kubernetes.io/*` labels never grant authority.
 
 **Optional certificate and DNS authority stays namespaced.** In the confined
 two-namespace topology, donkey-server may write cert-manager Certificate and
@@ -191,7 +205,7 @@ where an app needs a low port.*
 `resourceNames`. ACME and CA modes create or update named state Secrets;
 cert-manager mode lists Secrets and filters installation and edge labels in
 the client because Kubernetes RBAC cannot constrain a list by label. The grant
-also covers `donkey-system-config` (registry password, OpenAI key, OIDC client
+also covers `donkey` (registry password, OpenAI key, OIDC client
 secret, session key). The gateway is the most exposed component donkey runs,
 so any RCE/SSRF in it becomes one API call for the registry *push* credential
 — write access to the path every app is built from. Its ClusterRole also reads
@@ -203,7 +217,7 @@ from the system namespace.*
 
 **Access allowlists match an unverified `email` claim.** The OIDC claims struct
 decodes `email` but not `email_verified`, and `AccessConfig.Allows` compares it
-against `access.users` and the console `admins` rule. On an IdP where the email
+against `access.users`; management membership matches email in the same way. On an IdP where the email
 attribute is user-settable (guest/B2B accounts, open sign-up), a user the IdP
 admits can set their profile email to an allowlisted address and match. `groups`
 and `roles` compare exactly and are unaffected. *Fix: decode `email_verified`
@@ -318,8 +332,8 @@ A batch worth clearing together.
 
 ## Hardening priorities
 
-1. **Decide what an empty `auth.admins` means.** "Every account the IdP admits
-   is an operator" is a surprising default; refuse to start, or set one.
+1. **Verify cross-space service endpoints**, especially Docker's binding-host
+   rewrite below, now that space membership is an authorization boundary.
 2. **Docker runtime parity** — `CapDrop`, `SecurityOpt`, `User` in
    `replaceContainer`. Three lines, closes the highest Docker-side risk.
 3. **Small and self-contained** — isolate gateway-readable TLS Secrets;

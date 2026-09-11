@@ -43,7 +43,7 @@ func testInput(t *testing.T) Input {
 		RegistryHost:     "reg.example.com",
 		RegistryUsername: "bob",
 		RegistryPassword: "hunter2",
-		AddonSecretNames: []string{"shop-addon-db"},
+		AddonSecretNames: []string{"shop-binding-db"},
 		Domain:           "shop.acme.apps.example.com",
 	}
 }
@@ -60,9 +60,9 @@ func TestProtectionRendering(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		AnnotationHost + ": shop.acme.apps.example.com",
-		AnnotationLogin + ": " + LoginRequired,
-		AnnotationBackend + ": http://shop.donkey-acme.svc:80",
+		"host: shop.acme.apps.example.com",
+		"login: true",
+		"backend: http://shop.donkey-acme.svc:80",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("protected app should render %s", want)
@@ -84,10 +84,10 @@ func TestProtectionRendering(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(out, AnnotationLogin+": "+LoginRequired) {
+	if strings.Contains(out, "login: true") {
 		t.Error("public app must not demand a login")
 	}
-	for _, want := range []string{AnnotationHost + ":", AnnotationBackend + ":"} {
+	for _, want := range []string{"host:", "backend:"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("public app still needs %s", want)
 		}
@@ -103,9 +103,9 @@ func TestAPIProtectionRendering(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		AnnotationLogin + ": " + LoginRequired,
-		AnnotationMode + ": " + config.AppModeAPI,
-		AnnotationCORS + ": " + CORSAllowAll,
+		"login: true",
+		"mode: " + config.AppModeAPI,
+		"cors: " + CORSAllowAll,
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("API app should render %s", want)
@@ -117,11 +117,11 @@ func TestPublicAndInternalAPIModeRendering(t *testing.T) {
 	public := testInput(t)
 	public.App.Mode = config.AppModeAPI
 	public.App.Public = true
-	annotations := routeAnnotations(public, public.Domain, "/")
-	if annotations[AnnotationMode] != config.AppModeAPI {
+	route := routeSettings(public, public.Domain, "/")
+	if route.Mode != config.AppModeAPI {
 		t.Error("public API route must retain API mode")
 	}
-	if annotations[AnnotationLogin] != "" {
+	if route.Login {
 		t.Error("public API route must not demand a login")
 	}
 
@@ -139,14 +139,14 @@ func TestPublicAndInternalAPIModeRendering(t *testing.T) {
 
 // Access rules ride on the route for the gateway to enforce — and only on
 // routes that demand a login.
-func TestAccessAnnotation(t *testing.T) {
+func TestAccessYAML(t *testing.T) {
 	in := testInput(t)
 	in.App.Access = &config.AccessConfig{Users: []string{"ada@example.com"}, Groups: []string{"staff"}}
 	out, err := Render(mustObjects(t, in))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out, `donkey.local/access: '{"users":["ada@example.com"],"groups":["staff"]}'`) {
+	if !strings.Contains(out, "access.yaml:") || !strings.Contains(out, "- ada@example.com") || !strings.Contains(out, "- staff") {
 		t.Errorf("access rules should ride on the route, got:\n%s", out)
 	}
 
@@ -155,8 +155,8 @@ func TestAccessAnnotation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(out, AnnotationAccess) {
-		t.Error("no rules, no annotation")
+	if strings.Contains(out, RouteAccessKey) {
+		t.Error("no rules, no access.yaml")
 	}
 }
 
@@ -398,7 +398,7 @@ func TestInternalAppIsNotExposed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, forbidden := range []string{AnnotationHost + ":", AnnotationBackend + ":", "kind: Certificate", "client-secret"} {
+	for _, forbidden := range []string{"host:", "backend:", "kind: Certificate", "client-secret"} {
 		if strings.Contains(rendered, forbidden) {
 			t.Errorf("an internal app must not render %q", forbidden)
 		}
@@ -425,9 +425,9 @@ func TestPathRoutesShareAnAddress(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		AnnotationHost + ": dashboard.acme.apps.example.com",   // the other app's hostname
-		AnnotationPath + ": /api",                              // …under this prefix
-		AnnotationBackend + ": http://shop.donkey-acme.svc:80", // …reaching this app
+		"host: dashboard.acme.apps.example.com",   // the other app's hostname
+		"path: /api",                              // …under this prefix
+		"backend: http://shop.donkey-acme.svc:80", // …reaching this app
 	} {
 		if !strings.Contains(rendered, want) {
 			t.Errorf("a shared-address route should contain %q", want)
@@ -440,7 +440,7 @@ func TestPathRoutesShareAnAddress(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(open, AnnotationLogin+": "+LoginRequired) {
+	if strings.Contains(open, "login: true") {
 		t.Error("a public app must not demand a login on its shared route")
 	}
 }

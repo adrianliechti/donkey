@@ -288,7 +288,7 @@ func TestServerHostAndCentralCallback(t *testing.T) {
 	}
 	out := componentNames(in)
 	for _, want := range []string{
-		AnnotationHost + ": apps.example.com", // the console's routing entry
+		"host: apps.example.com", // the console's routing entry
 		"name: donkey-gateway",
 		"DONKEY_DOMAIN",      // the gateway knows the cookie/callback domain
 		"DONKEY_SERVER_HOST", // …and which hostname the console lives on
@@ -316,8 +316,8 @@ func TestConsoleBehindGateway(t *testing.T) {
 	in := systemInput()
 	out := componentNames(in)
 	for _, want := range []string{
-		"donkey.local/backend: http://donkey-server.donkey-system.svc:80",
-		"donkey.local/login: required",
+		"backend: http://donkey-server.donkey-system.svc:80",
+		"login: true",
 		"DONKEY_SESSION_KEY", // the server verifies CLI tokens itself
 	} {
 		if !strings.Contains(out, want) {
@@ -334,10 +334,10 @@ func TestConsoleBehindGateway(t *testing.T) {
 	}
 
 	restricted := systemInput()
-	restricted.Admins = &config.AccessConfig{Users: []string{"ada@example.com"}}
+	restricted.PlatformAdmins = &config.AccessConfig{Users: []string{"ada@example.com"}}
 	out = componentNames(restricted)
-	if !strings.Contains(out, "donkey.local/access") || !strings.Contains(out, "ada@example.com") {
-		t.Error("admin rules should reach the console route's access annotation")
+	if strings.Contains(out, "donkey.local/access") || !strings.Contains(out, "DONKEY_PLATFORM_ADMINS") || !strings.Contains(out, "ada@example.com") {
+		t.Error("admin seed must reach the server while the console admits space members")
 	}
 }
 
@@ -366,10 +366,10 @@ func TestImagePullPolicy(t *testing.T) {
 // an app handed a token could replay its visitors against the API.
 func TestOnlyTheAPIRouteCarriesAToken(t *testing.T) {
 	out := componentNames(systemInput())
-	if !strings.Contains(out, "donkey.local/token: forward") {
+	if !strings.Contains(out, "token: true") {
 		t.Error("the console route should be marked for token forwarding")
 	}
-	if n := strings.Count(out, "donkey.local/token"); n != 1 {
+	if n := strings.Count(out, "token: true"); n != 1 {
 		t.Errorf("exactly one route may carry a credential, found %d", n)
 	}
 
@@ -380,7 +380,11 @@ func TestOnlyTheAPIRouteCarriesAToken(t *testing.T) {
 		if !ok {
 			continue
 		}
-		if _, marked := cm.Annotations[AnnotationToken]; marked {
+		route, err := ReadRoute(cm)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if route.Token {
 			t.Errorf("app route %s must never be marked for token forwarding", cm.Name)
 		}
 	}
@@ -396,5 +400,36 @@ func TestServerNetworkPolicy(t *testing.T) {
 	}
 	if !strings.Contains(out, "port: 8088") {
 		t.Error("the policy should name the API port")
+	}
+}
+
+func TestSystemConfigMapContainsOnlyPublicConfigurationAndBuildkitMount(t *testing.T) {
+	in := systemInput()
+	in.OpenAIAPIKey = "private-ai-key"
+	in.OIDCClientSecret = "private-client-secret"
+	in.Build.Proxy.HTTP = "http://user:private-proxy-password@proxy.example.com:8080"
+	var mapsFound int
+	for _, obj := range SystemObjects(in) {
+		if cm, ok := obj.(*corev1.ConfigMap); ok {
+			mapsFound++
+			if cm.Name != "donkey" || cm.Data["route.yaml"] == "" || cm.Data["buildkitd.toml"] == "" {
+				t.Fatalf("unexpected platform ConfigMap %s", cm.Name)
+			}
+			for _, value := range cm.Data {
+				if strings.Contains(value, "private-") {
+					t.Fatal("credential leaked into ConfigMap data")
+				}
+			}
+		}
+	}
+	if mapsFound != 1 {
+		t.Fatalf("wanted one platform ConfigMap, got %d", mapsFound)
+	}
+	for _, volume := range buildkitDeployment(in).Spec.Template.Spec.Volumes {
+		if ref := volume.ConfigMap; ref != nil {
+			if ref.Name != "donkey" || len(ref.Items) != 1 || ref.Items[0].Key != "buildkitd.toml" {
+				t.Fatal("BuildKit mounts unrelated platform configuration")
+			}
+		}
 	}
 }

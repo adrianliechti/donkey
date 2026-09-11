@@ -529,7 +529,7 @@ applies anything, and `donkey doctor` keeps checking them after):
 | **Kubernetes cluster** with a default StorageClass | donkey-telemetry always claims its 2 Gi DuckDB volume; apps with `storage.paths` and provisioned services claim their own | any conformant cluster; nothing donkey-specific. Donkey brings its own edge, normally as a `LoadBalancer` Service; on clusters where nothing assigns those an address (kind), set `gateway.serviceType: NodePort` or `ClusterIP`. cert-manager is required only for `tls.mode: cert-manager`; external-dns with `--source=crd` only when `gateway.externalDNS` is set |
 | **Container registry** the cluster can pull from | donkey pushes every build there | `registry.url` + credentials; `registry.caSecret` when its certificate comes from a private CA |
 | **DNS** pointing public hostnames to the gateway address | apps are served at `<app>.<space>.<domain>`, the API and login callback at `<domain>` | configure a wildcard plus apex yourself, or let `gateway.externalDNS` publish exact records |
-| **OIDC provider** (Pocket ID, Entra ID, Keycloak, …) | the one way in: console, CLI and protected apps all sign in against it | required — `auth.issuer` (+ client id/secret); `auth.admins` optionally narrows who may administer |
+| **OIDC provider** (Pocket ID, Entra ID, Keycloak, …) | the one way in: console, CLI and protected apps all sign in against it | required — `auth.issuer` (+ client id/secret); `platform.admins` optionally seeds the platform admins |
 | **OpenAI-compatible endpoint** | donkey reads every app with it (ports, health routes, data folders) | required — the server refuses to start without one. Point it at a model you control: source summaries go there |
 
 A complete copy-paste walkthrough that stands all of this up on a single
@@ -817,11 +817,52 @@ donkey server install -f server-install.yaml
 ```
 
 Prints where to sign in — there is no API token: the console and the CLI
-authenticate through the same OIDC login the apps use, and `auth.admins`
-(users/groups/roles, matched like an app's `access` rules) narrows who may
-administer; empty means everyone the IdP admits. Re-running with changed
-settings updates the installation idempotently (server-side apply; existing
-secrets and sessions survive; config changes roll the affected pods).
+authenticate through the same OIDC login the apps use. The first signed-in
+user becomes a platform admin and can add others in **Account → Platform
+settings**. An optional `platform.admins` in the install file seeds that list
+instead; once saved, the runtime settings are authoritative and reinstalling
+does not reset them. Re-running with changed installation settings updates it
+idempotently (existing secrets and sessions survive; config changes roll the
+affected pods).
+
+Space permissions are always enforced. Platform admins create spaces and can
+manage every space. Space admins manage their space, its membership and domains;
+developers manage its apps and services, including data and credentials. Assign
+users by email (or `sub:<subject>` when email is unavailable), groups, or
+identity-provider roles. Matching any entry grants that role; empty membership
+lists grant no access. App visitor `access` rules remain separate.
+
+Every space stores `admins`, `developers`, and `domains`. A new space starts
+with `<space>.<configured-domain>` in `domains`. Apps can use that suffix or
+any subdomain under it. Add more suffixes or clear the list to allow any domain.
+App creation shows a hostname field with a fixed suffix or domain selector;
+with no suffixes configured, it requires a full hostname. Deploys and network
+changes enforce the same rule, including shared-address routes.
+
+Existing spaces migrate automatically at server startup: missing settings
+records are created with no space members and unrestricted domains, preserving
+existing app routes. Platform admins retain access and can assign space roles.
+Saved roles and domains survive subsequent upgrades. Updates use last save wins.
+
+Space, app and service names follow one rule: lowercase letters, digits and
+hyphens, starting and ending with a letter or digit, up to 40 characters (a
+DNS label). `donkey`, `platform`, and `system` are reserved as space names.
+Names derived from repository folders turn punctuation into hyphens;
+explicitly supplied names are validated as entered.
+
+On Kubernetes, the `donkey` ConfigMap in the control-plane namespace holds
+`platform.yaml`, the console's `route.yaml`, and `buildkitd.toml`. Every space
+has a `<space>-space` ConfigMap containing `config.yaml` in its workload
+namespace. The `donkey` Secret stores installation credentials and session keys.
+App ConfigMaps and Secrets use purpose suffixes (`api-route`, `api-env`,
+`api-registry`), prefixed with the space in a shared workload namespace
+(`team-api-env`). App TLS Secrets live centrally as `team-api-tls`.
+See [the complete resource table and migration details](README_KUBERNETES.md#configmap-and-secret-names).
+
+Docker persists the same settings fields as JSON under
+`/var/lib/donkey/platform/config.json` and
+`/var/lib/donkey/spaces/<space>/config.json` in its state volume.
+See [the Docker storage layout](README_DOCKER.md#what-maps-to-what).
 
 For GitOps, review, or a machine where the CLI must not hold cluster access,
 render the same settings instead:
@@ -899,11 +940,13 @@ of this is a gap waiting to be filled — it follows from how donkey is built,
 so plan around it.
 
 **Sessions and revocation.** One secret underlies every login: the session
-key in `donkey-system-config` seals the browser cookies (12 h) and the CLI
+key in `donkey` seals the browser cookies (12 h) and the CLI
 tokens (30 days), all derived from an OIDC sign-in. Individual logins expire
 on their own and revive with a fresh sign-in; kicking one specific person out
-happens at the IdP (or by removing them from `auth.admins` and the affected
-apps' `access` rules — the gateway checks those on every request). The big
+happens by removing every matching entry from platform admins and space roles,
+and from the affected apps' `access` rules. Management permissions are read on
+every API request; app visitor rules are checked by the gateway. Changes to IdP
+claims take effect when the user signs in again. The big
 lever is rotating the session key itself: delete the `session-key` entry from
 the Secret and re-run the install — a new key is generated, every cookie and
 every CLI token everywhere is invalid the moment the pods roll, and everyone
@@ -939,8 +982,8 @@ deploy. What is *not* reproducible has to live outside the cluster:
 | `DONKEY_REGISTRY_PASSWORD` | donkey stores it, but never invents it; without it the server can't push and apps can't pull |
 | `DONKEY_OIDC_CLIENT_SECRET` (with its client id) | belongs to a registration in your IdP — a new one means updating the IdP as well |
 | `OPENAI_API_KEY` | the assistant is required; no key, no deploys |
-| the `session-key` entry of `donkey-system-config` | a fresh install **generates a new one** and thereby invalidates every session and CLI token. Restoring it makes the rebuilt installation the same installation — everyone stays signed in |
-| the `telemetry-key` entry of `donkey-system-config` | existing app exporters carry credentials derived from it. Restoring it keeps those exporters valid and lets a restored telemetry database continue accepting them independently of login-session rotation |
+| the `session-key` entry of `donkey` | a fresh install **generates a new one** and thereby invalidates every session and CLI token. Restoring it makes the rebuilt installation the same installation — everyone stays signed in |
+| the `telemetry-key` entry of `donkey` | existing app exporters carry credentials derived from it. Restoring it keeps those exporters valid and lets a restored telemetry database continue accepting them independently of login-session rotation |
 | the registry CA secret (`registry.caSecret`) | donkey only *references* that Secret in the configured control-plane namespace — it never creates it. Whatever created it has to run again |
 | DNS for `*.<domain>` and `<domain>` | they point at the gateway address, which a rebuilt cluster changes |
 

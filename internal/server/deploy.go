@@ -141,7 +141,7 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 				fmt.Errorf("this deploy's plan has expired — upload the app again"))
 			return
 		}
-		planned = p
+		planned = p.snapshot()
 	}
 
 	dir, err := os.MkdirTemp("", "donkey-ctx-*")
@@ -192,6 +192,14 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	space := r.URL.Query().Get("space")
+	if planned != nil {
+		space = ""
+	}
+	if !s.requireSpace(w, r, cmp.Or(space, app.Space, config.DefaultSpace), false) {
+		return
+	}
+
 	started := time.Now()
 	var reviewed *Plan
 	if planned != nil {
@@ -208,10 +216,6 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 	// A reviewed plan settles the space too — it is one of the things the
 	// review screen shows, so a query parameter left over from before the
 	// review must not quietly move the app somewhere else.
-	space := r.URL.Query().Get("space")
-	if planned != nil {
-		space = ""
-	}
 	opts := deployOpts{
 		Root:      uploadRoot,
 		Analysis:  planned.reading(),
@@ -301,6 +305,9 @@ func (s *Server) deployApp(ctx context.Context, out *lineStreamer, dir string, a
 	fail := func(err error) DeployResult {
 		return DeployResult{App: app.Name, Space: space, Error: err.Error()}
 	}
+	if err := s.authorizeSpace(ctx, space, false); err != nil {
+		return fail(err)
+	}
 	buildDir, err := buildContext(opts.Root, dir, app.Build.Context)
 	if err != nil {
 		return fail(err)
@@ -320,10 +327,10 @@ func (s *Server) deployApp(ctx context.Context, out *lineStreamer, dir string, a
 			out.Line("· %s", line)
 		}
 	}
-
-	if app.Name == addons.SharedOwner {
-		return fail(fmt.Errorf("the app name %q is reserved for a space's shared services — pick another name", addons.SharedOwner))
+	if err := runtime.CheckAppDomain(ctx, s.rt, app, space, s.cfg.Domain); err != nil {
+		return fail(err)
 	}
+
 	// Services take plain names too ("postgres" is reachable like an app);
 	// an app cannot move in over one.
 	if data, err := s.rt.ServiceBinding(ctx, space, addons.SharedOwner, app.Name); err == nil && len(data) > 0 {

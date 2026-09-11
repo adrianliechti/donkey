@@ -17,9 +17,9 @@ const (
 	SystemDNSName               = GatewayAppName + "-dns"
 )
 
-// AppCertificateName is globally unique in the system namespace. Dots keep
-// the logical space/app boundary unambiguous.
-func AppCertificateName(space, app string) string { return "donkey-app-" + space + "." + app }
+// AppCertificateName includes the space because all certificates live in the
+// system namespace. Space names cannot contain the separator.
+func AppCertificateName(space, app string) string { return space + NameSeparator + app }
 
 func AppCertificateSecretName(space, app string) string {
 	return AppCertificateName(space, app) + "-tls"

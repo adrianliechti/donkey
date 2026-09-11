@@ -95,6 +95,12 @@ func (s *Server) handleProjectDeploy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	stored.mu.Lock()
+	for _, app := range stored.project.apps {
+		if !s.requireSpace(w, r, app.app.Space, false) {
+			stored.mu.Unlock()
+			return
+		}
+	}
 	if digest != stored.project.digest {
 		stored.mu.Unlock()
 		writeErr(w, http.StatusConflict, fmt.Errorf("the project changed since review — upload it again"))

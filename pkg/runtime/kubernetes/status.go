@@ -62,13 +62,12 @@ func (c *Client) AppStatus(ctx context.Context, namespace, objectName, space, ap
 			}
 		}
 	}
-	if cm, err := c.Clientset.CoreV1().ConfigMaps(namespace).Get(ctx, objectName, metav1.GetOptions{}); err == nil {
-		if c.requireOwnedObject("ConfigMap", namespace, objectName, cm.Labels,
-			manifests.Labels(space, app, manifests.RoleRoute)) == nil && cm.Annotations[manifests.AnnotationBackend] != "" {
-			st.PublicHost = cm.Annotations[manifests.AnnotationHost]
-			st.Protected = cm.Annotations[manifests.AnnotationLogin] == manifests.LoginRequired
-			st.Mode = cm.Annotations[manifests.AnnotationMode]
-			st.CORS = cm.Annotations[manifests.AnnotationCORS]
+	if cm, err := c.appRouteConfigMap(ctx, namespace, objectName, space, app); err == nil {
+		if c.requireOwnedObject("ConfigMap", namespace, cm.Name, cm.Labels,
+			manifests.Labels(space, app, manifests.RoleRoute)) == nil {
+			if route, err := manifests.ReadRoute(cm); err == nil && route.Backend != "" {
+				st.PublicHost, st.Protected, st.Mode, st.CORS = route.Host, route.Login, route.Mode, route.CORS
+			}
 		}
 	}
 	return st, nil

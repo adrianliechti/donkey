@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -11,13 +12,22 @@ import (
 	"github.com/adrianliechti/donkey/internal/identity"
 )
 
+func testPlatformConfig() config.PlatformConfig {
+	return config.PlatformConfig{Admins: config.AccessConfig{Users: []string{"u1@example.com", "ada@example.com"}}}
+}
+
+func adminTestContext() context.Context {
+	ctx := context.WithValue(context.Background(), identityContextKey{}, &identity.Identity{Subject: "u1", Email: "u1@example.com"})
+	return context.WithValue(ctx, platformContextKey{}, testPlatformConfig())
+}
+
 var testSessionKey = bytes.Repeat([]byte{7}, 32)
 
 // A draining server answers POST /v1/deploys with 503 before it touches the
 // cluster, which makes it the one state-changing route these tests can drive
 // without one — handy for checking what the middleware in front of it does.
 func drainingServer() *Server {
-	s := &Server{cfg: &Config{Domain: "example.com", SessionKey: testSessionKey}}
+	s := &Server{cfg: &Config{Domain: "example.com", SessionKey: testSessionKey}, rt: planRuntime{}}
 	s.draining.Store(true)
 	return s
 }
@@ -53,7 +63,7 @@ func post(t *testing.T, s *Server, headers map[string]string) int {
 // Service (the AI proxy), and a header is just a string anything can type.
 func TestAuthPaths(t *testing.T) {
 	key := bytes.Repeat([]byte{7}, 32)
-	s := &Server{cfg: &Config{Domain: "example.com", SessionKey: key}}
+	s := &Server{cfg: &Config{Domain: "example.com", SessionKey: key}, rt: planRuntime{}}
 	s.draining.Store(true) // deploys answer 503 before touching a cluster
 
 	call := func(mutate func(*http.Request)) int {
@@ -90,15 +100,15 @@ func TestAuthPaths(t *testing.T) {
 		t.Fatalf("gateway-forwarded token: want past auth (503 drain), got %d", got)
 	}
 
-	// Both paths answer to the admin rules — the gateway checks them too,
-	// but a port-forward or an in-cluster call never met the gateway.
-	s.cfg.Admins = &config.AccessConfig{Users: []string{"bob@example.com"}}
+	// Authentication also admits space members. Their resolved targets are
+	// authorized by each operation after the drain check.
+	s.rt = planRuntime{platform: &config.PlatformConfig{Admins: config.AccessConfig{Users: []string{"bob@example.com"}}}}
 	for _, set := range []func(*http.Request){
 		func(r *http.Request) { r.Header.Set("Authorization", "Bearer "+tok) },
 		func(r *http.Request) { r.Header.Set("X-Access-Token", tok) },
 	} {
-		if got := call(set); got != http.StatusUnauthorized {
-			t.Fatalf("token outside the admin rules: want 401, got %d", got)
+		if got := call(set); got != http.StatusServiceUnavailable {
+			t.Fatalf("signed-in space member: want 503 drain, got %d", got)
 		}
 	}
 }

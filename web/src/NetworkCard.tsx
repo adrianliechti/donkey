@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Globe, Lock, Network, Plus, X } from 'lucide-react'
 import { api, type AccessConfig, type AppMode, type Exposure, type NetworkInfo } from './api'
+import { HostEditor } from './HostEditor'
 import { APP_MODES, Button, ErrorNote, errText, loginHint, SectionTitle, Spinner } from './ui'
 
 /**
@@ -35,7 +36,7 @@ export function NetworkCard({
         setNet(info)
         setMode(info.mode)
         setExposure(info.exposure)
-        setHost(info.host ?? '')
+        setHost(info.fqdn ?? '')
         setCors(info.cors)
       })
       .catch((err) => setError(errText(err, 'Loading failed.')))
@@ -49,7 +50,7 @@ export function NetworkCard({
     net !== null &&
     (exposure !== net.exposure ||
       mode !== net.mode ||
-      (host.trim() || '') !== (net.host ?? '') ||
+      (host.trim() || '') !== (net.fqdn ?? '') ||
       cors !== net.cors)
 
   async function apply() {
@@ -66,7 +67,7 @@ export function NetworkCard({
       setNet(res.network)
       setMode(res.network.mode)
       setExposure(res.network.exposure)
-      setHost(res.network.host ?? '')
+      setHost(res.network.fqdn ?? '')
       setCors(res.network.cors)
       setNote(res.note || 'Applied — the change is live.')
       onChanged()
@@ -148,22 +149,7 @@ export function NetworkCard({
             </div>
 
             {exposure !== 'internal' && (
-              <label className="grid grid-cols-[6.5rem_minmax(0,1fr)] border-y border-line/70">
-                <span className="px-3 py-2.5 text-xs font-medium text-muted">Address</span>
-                <span className="min-w-0 border-l border-line/60">
-                  <input
-                    value={host}
-                    onChange={(e) => setHost(e.target.value)}
-                    placeholder={net.defaultHost}
-                    className="block w-full bg-transparent px-3 pt-2.5 pb-1 font-mono text-sm placeholder:text-muted/60 focus:bg-raised/30 focus:outline-none focus:ring-1 focus:ring-inset focus:ring-accent-strong"
-                  />
-                  <span className="block px-3 pb-2.5 text-xs leading-relaxed text-muted">
-                    Leave empty for <span className="font-mono">{net.defaultHost}</span>. A plain name
-                    sits under the space, <span className="font-mono">@</span> takes the space's own
-                    address; a full hostname needs its DNS pointed at the gateway.
-                  </span>
-                </span>
-              </label>
+              <HostEditor value={host} domains={net.domains ?? []} onChange={setHost} />
             )}
 
             {(net.routes ?? []).length > 0 && (
@@ -206,7 +192,7 @@ export function NetworkCard({
                 Applies immediately, without a deploy. An explicit setting in donkey.yaml wins again
                 at the next deploy.
               </p>
-              <Button onClick={apply} disabled={!dirty || busy}>
+              <Button onClick={apply} disabled={!dirty || busy || (exposure !== 'internal' && !host.trim())}>
                 {busy ? 'Applying…' : 'Apply'}
               </Button>
             </div>

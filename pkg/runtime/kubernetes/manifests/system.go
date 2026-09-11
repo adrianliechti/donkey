@@ -70,10 +70,9 @@ type SystemInput struct {
 	// donkey makes every image tag unique.
 	RegistryImmutable bool
 
-	// Admins narrows who may use the console and CLI (users/groups/roles,
-	// matched like an app's access rules). Empty means everyone the IdP
-	// admits — the login itself is never optional for the control plane.
-	Admins *config.AccessConfig
+	// PlatformAdmins optionally seeds the persisted platform settings.
+	// Otherwise the first verified sign-in becomes the first platform admin.
+	PlatformAdmins *config.AccessConfig
 
 	OIDCIssuer       string // OIDC issuer of the login gateway
 	OIDCClientID     string
@@ -138,10 +137,12 @@ const (
 	ServerName = "donkey-server"
 	// SystemConfigSecretName holds the installation credentials and the
 	// settings intentionally kept out of pod specs.
-	SystemConfigSecretName = "donkey-system-config"
+	SystemConfigSecretName = "donkey"
+	// SystemConfigMapName holds the console route and platform settings.
+	SystemConfigMapName = "donkey"
 	// SystemRegistrySecretName lets Kubernetes pull credentialed control-plane
 	// images. It is exported for offline deployment bundle renderers.
-	SystemRegistrySecretName = "donkey-system-registry"
+	SystemRegistrySecretName = "donkey-registry"
 	// BuildkitAppName is the build engine Deployment and Service. Installers
 	// wait for this exact generation before accepting an AI build.
 	BuildkitAppName          = "donkey-buildkitd"
@@ -193,7 +194,7 @@ func SystemObjects(in SystemInput) []runtime.Object {
 	}
 	// The build engine's config file has to exist before the deployment that
 	// mounts it.
-	objs = append(objs, buildkitConfig(in))
+	objs = append(objs, systemConfigMap(in))
 	// Package traffic has its own unprivileged process and credentials. It is
 	// ready before builds are accepted by donkey-server.
 	objs = append(objs, packagesObjects(in)...)
@@ -207,7 +208,6 @@ func SystemObjects(in SystemInput) []runtime.Object {
 		serverNetworkPolicy(in),
 		serverDeployment(in),
 		systemService(in, ServerName, 80, serverPort),
-		consoleRoute(in),
 	)
 	// In cert-manager mode the control-plane Certificate must exist before
 	// the gateway starts looking for its Secret. DNS is adjacent because it
@@ -293,21 +293,22 @@ func systemSecret(in SystemInput) *corev1.Secret {
 	return &corev1.Secret{
 		TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "Secret"},
 		ObjectMeta: metav1.ObjectMeta{Name: SystemConfigSecretName, Namespace: in.Namespace, Labels: SystemLabels(ServerName)},
-		StringData: map[string]string{
-			"registry-password":  in.RegistryPassword,
-			"openai-api-key":     in.OpenAIAPIKey,
-			"oidc-client-id":     in.OIDCClientID,
-			"oidc-client-secret": in.OIDCClientSecret,
-			"session-key":        in.SessionKey,
-			"telemetry-key":      in.TelemetryKey,
+		Type:       corev1.SecretTypeOpaque,
+		Data: map[string][]byte{
+			"DONKEY_REGISTRY_PASSWORD":  []byte(in.RegistryPassword),
+			"OPENAI_API_KEY":            []byte(in.OpenAIAPIKey),
+			"DONKEY_OIDC_CLIENT_ID":     []byte(in.OIDCClientID),
+			"DONKEY_OIDC_CLIENT_SECRET": []byte(in.OIDCClientSecret),
+			"DONKEY_SESSION_KEY":        []byte(in.SessionKey),
+			"DONKEY_TELEMETRY_KEY":      []byte(in.TelemetryKey),
 			// Build environment and proxy settings routinely carry credentials
 			// ("https://ci:token@jfrog.corp"); builder instructions can expose
 			// internal registry topology. Keep all three out of the Deployment.
-			"build-env":            buildEnvJSON(in.Build),
-			"builder-instructions": in.Build.Instructions,
-			"http-proxy":           in.Build.Proxy.HTTP,
-			"https-proxy":          in.Build.Proxy.HTTPS,
-			"packages-password":    in.Build.Packages.Password,
+			"DONKEY_BUILD_ENV":            []byte(buildEnvJSON(in.Build)),
+			"DONKEY_BUILDER_INSTRUCTIONS": []byte(in.Build.Instructions),
+			"HTTP_PROXY":                  []byte(in.Build.Proxy.HTTP),
+			"HTTPS_PROXY":                 []byte(in.Build.Proxy.HTTPS),
+			"DONKEY_PACKAGES_PASSWORD":    []byte(in.Build.Packages.Password),
 		},
 	}
 }
@@ -377,18 +378,18 @@ func serverDeployment(in SystemInput) *appsv1.Deployment {
 		{Name: "DONKEY_EXTERNAL_DNS_RECORD_TYPE", Value: in.ExternalDNS.EffectiveRecordType()},
 		{Name: "DONKEY_EXTERNAL_DNS_TTL", Value: strconv.FormatInt(in.ExternalDNS.TTL, 10)},
 		{Name: "DONKEY_OIDC_ISSUER", Value: in.OIDCIssuer},
-		secretEnv("DONKEY_OIDC_CLIENT_ID", "oidc-client-id"),
-		secretEnv("DONKEY_OIDC_CLIENT_SECRET", "oidc-client-secret"),
+		secretEnv("DONKEY_OIDC_CLIENT_ID", "DONKEY_OIDC_CLIENT_ID"),
+		secretEnv("DONKEY_OIDC_CLIENT_SECRET", "DONKEY_OIDC_CLIENT_SECRET"),
 		{Name: "DONKEY_AI_MODEL", Value: in.AIModel},
 		{Name: "OPENAI_BASE_URL", Value: in.OpenAIBaseURL},
-		secretEnv("DONKEY_BUILDER_INSTRUCTIONS", "builder-instructions"),
+		secretEnv("DONKEY_BUILDER_INSTRUCTIONS", "DONKEY_BUILDER_INSTRUCTIONS"),
 		// The session key lets the server verify sealed CLI tokens itself —
 		// the direct (port-forwarded) path next to the gateway's headers.
-		secretEnv("DONKEY_SESSION_KEY", "session-key"),
-		secretEnv("DONKEY_TELEMETRY_KEY", "telemetry-key"),
-		{Name: "DONKEY_ADMINS", Value: adminsJSON(in)},
-		secretEnv("DONKEY_REGISTRY_PASSWORD", "registry-password"),
-		secretEnv("OPENAI_API_KEY", "openai-api-key"),
+		secretEnv("DONKEY_SESSION_KEY", "DONKEY_SESSION_KEY"),
+		secretEnv("DONKEY_TELEMETRY_KEY", "DONKEY_TELEMETRY_KEY"),
+		{Name: "DONKEY_PLATFORM_ADMINS", Value: adminsJSON(in)},
+		secretEnv("DONKEY_REGISTRY_PASSWORD", "DONKEY_REGISTRY_PASSWORD"),
+		secretEnv("OPENAI_API_KEY", "OPENAI_API_KEY"),
 	}
 	if in.RegistryDockerConfigSecret != "" {
 		env = append(env, corev1.EnvVar{Name: "DONKEY_REGISTRY_CONFIG_DIR", Value: registryDockerConfigPath})
@@ -523,32 +524,27 @@ func systemService(in SystemInput, name string, port, targetPort int32) *corev1.
 // adminsJSON is the console's access rules as the gateway and server read
 // them; empty rules stay an empty string (everyone the IdP admits).
 func adminsJSON(in SystemInput) string {
-	if in.Admins.Empty() {
+	if in.PlatformAdmins.Empty() {
 		return ""
 	}
-	b, err := json.Marshal(in.Admins)
+	b, err := json.Marshal(in.PlatformAdmins)
 	if err != nil {
 		return ""
 	}
 	return string(b)
 }
 
-// consoleRoute serves the console and API — through the donkey gateway,
-// exactly like an app: the gateway runs the browser login (or verifies a
-// sealed CLI token) and forwards identity headers; Admins narrows who gets
-// in. It is one more entry in the gateway's routing table.
+// consoleRoute stores platform routing alongside platform.yaml in the donkey
+// ConfigMap. The server verifies the forwarded identity and management roles.
 func consoleRoute(in SystemInput) *corev1.ConfigMap {
-	ann := map[string]string{
-		AnnotationBackend: fmt.Sprintf("http://%s.%s.svc:80", ServerName, in.Namespace),
-		AnnotationHost:    in.ServerHost(),
-		AnnotationPath:    "/",
-		AnnotationLogin:   LoginRequired,
-		// The server verifies identity itself — it gets the sealed token,
-		// not bare headers anything in the cluster could type.
-		AnnotationToken: TokenForward,
-	}
-	if a := adminsJSON(in); a != "" {
-		ann[AnnotationAccess] = a
-	}
-	return routeConfigMap(ServerName, in.Namespace, SystemLabels(ServerName), ann)
+	return routeConfigMap(SystemConfigMapName, in.Namespace, SystemLabels(ServerName), config.GatewayRoute{
+		Backend: fmt.Sprintf("http://%s.%s.svc:80", ServerName, in.Namespace),
+		Host:    in.ServerHost(), Path: "/", Login: true, Token: true,
+	})
+}
+
+func systemConfigMap(in SystemInput) *corev1.ConfigMap {
+	cm := consoleRoute(in)
+	cm.Data["buildkitd.toml"] = buildkitTOML(in)
+	return cm
 }

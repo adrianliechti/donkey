@@ -39,6 +39,12 @@ tls:
 #   externalDNS:
 #     targets: [10.0.0.10]
 
+# Optional initial admins; omit to make the first signed-in user an admin.
+# Later changes are made in Account → Platform settings.
+# platform:
+#   admins:
+#     users: [owner@example.com]
+
 auth:
   issuer: https://id.example.com
   clientId: donkey
@@ -59,6 +65,12 @@ domain: apps.localhost
 
 tls:
   mode: ca
+
+# Optional initial admins; omit to make the first signed-in user an admin.
+# Later changes are made in Account → Platform settings.
+# platform:
+#   admins:
+#     users: [owner@example.com]
 
 auth:
   issuer: https://id.example.com
@@ -361,21 +373,47 @@ decode_base64() {
 `)
 	fmt.Fprintf(&b, "namespace=%s\n", shellQuote(namespace))
 	fmt.Fprintf(&b, "system_secret=%s\n", shellQuote(manifests.SystemConfigSecretName))
-	b.WriteString(`existing() {
-  kubectl -n "$namespace" get secret "$system_secret" -o "jsonpath={.data['$1']}" 2>/dev/null | decode_base64 2>/dev/null || true
+	b.WriteString(`source_secret="$system_secret"
+source_name=$(kubectl -n "$namespace" get secret "$source_secret" --ignore-not-found -o name)
+if [ -z "$source_name" ]; then
+  source_secret=donkey-system-config
+  source_name=$(kubectl -n "$namespace" get secret "$source_secret" --ignore-not-found -o name)
+fi
+existing() {
+  key="$1"
+  case "$key" in
+    DONKEY_REGISTRY_PASSWORD) legacy_key=registry-password ;;
+    OPENAI_API_KEY) legacy_key=openai-api-key ;;
+    DONKEY_OIDC_CLIENT_ID) legacy_key=oidc-client-id ;;
+    DONKEY_OIDC_CLIENT_SECRET) legacy_key=oidc-client-secret ;;
+    DONKEY_SESSION_KEY) legacy_key=session-key ;;
+    DONKEY_TELEMETRY_KEY) legacy_key=telemetry-key ;;
+    DONKEY_BUILD_ENV) legacy_key=build-env ;;
+    DONKEY_BUILDER_INSTRUCTIONS) legacy_key=builder-instructions ;;
+    HTTP_PROXY) legacy_key=http-proxy ;;
+    HTTPS_PROXY) legacy_key=https-proxy ;;
+    DONKEY_PACKAGES_PASSWORD) legacy_key=packages-password ;;
+    *) legacy_key="$key" ;;
+  esac
+  [ -n "$source_name" ] || return 0
+  encoded=$(kubectl -n "$namespace" get secret "$source_secret" -o "jsonpath={.data['$1']}") || return 1
+  if [ -z "$encoded" ]; then
+    encoded=$(kubectl -n "$namespace" get secret "$source_secret" -o "jsonpath={.data['$legacy_key']}") || return 1
+  fi
+  printf '%s' "$encoded" | decode_base64
 }
 
-registry_password="${DONKEY_REGISTRY_PASSWORD:-$(existing registry-password)}"
-packages_password="${DONKEY_PACKAGES_PASSWORD:-$(existing packages-password)}"
-oidc_client_id="${DONKEY_OIDC_CLIENT_ID:-$(existing oidc-client-id)}"
-oidc_client_secret="${DONKEY_OIDC_CLIENT_SECRET:-$(existing oidc-client-secret)}"
-openai_api_key="${OPENAI_API_KEY:-$(existing openai-api-key)}"
-session_key="${DONKEY_SESSION_KEY:-$(existing session-key)}"
-telemetry_key="${DONKEY_TELEMETRY_KEY:-$(existing telemetry-key)}"
-build_env="${DONKEY_BUILD_ENV:-$(existing build-env)}"
-builder_instructions="${DONKEY_BUILDER_INSTRUCTIONS:-$(existing builder-instructions)}"
-http_proxy="${HTTP_PROXY:-$(existing http-proxy)}"
-https_proxy="${HTTPS_PROXY:-$(existing https-proxy)}"
+registry_password="${DONKEY_REGISTRY_PASSWORD:-$(existing DONKEY_REGISTRY_PASSWORD)}"
+packages_password="${DONKEY_PACKAGES_PASSWORD:-$(existing DONKEY_PACKAGES_PASSWORD)}"
+oidc_client_id="${DONKEY_OIDC_CLIENT_ID:-$(existing DONKEY_OIDC_CLIENT_ID)}"
+oidc_client_secret="${DONKEY_OIDC_CLIENT_SECRET:-$(existing DONKEY_OIDC_CLIENT_SECRET)}"
+openai_api_key="${OPENAI_API_KEY:-$(existing OPENAI_API_KEY)}"
+session_key="${DONKEY_SESSION_KEY:-$(existing DONKEY_SESSION_KEY)}"
+telemetry_key="${DONKEY_TELEMETRY_KEY:-$(existing DONKEY_TELEMETRY_KEY)}"
+build_env="${DONKEY_BUILD_ENV:-$(existing DONKEY_BUILD_ENV)}"
+builder_instructions="${DONKEY_BUILDER_INSTRUCTIONS:-$(existing DONKEY_BUILDER_INSTRUCTIONS)}"
+http_proxy="${HTTP_PROXY:-$(existing HTTP_PROXY)}"
+https_proxy="${HTTPS_PROXY:-$(existing HTTPS_PROXY)}"
 `)
 	fmt.Fprintf(&b, "[ -n \"$oidc_client_id\" ] || oidc_client_id=%s\n", shellQuote(clientID))
 	if clientID == pendingOIDC {
@@ -411,17 +449,17 @@ if [ -z "$telemetry_key" ]; then telemetry_key=$(openssl rand -hex 32); fi
 `)
 	}
 	b.WriteString(`kubectl -n "$namespace" create secret generic "$system_secret" \
-  --from-literal=registry-password="$registry_password" \
-  --from-literal=openai-api-key="$openai_api_key" \
-  --from-literal=oidc-client-id="$oidc_client_id" \
-  --from-literal=oidc-client-secret="$oidc_client_secret" \
-  --from-literal=session-key="$session_key" \
-  --from-literal=telemetry-key="$telemetry_key" \
-  --from-literal=build-env="$build_env" \
-  --from-literal=builder-instructions="$builder_instructions" \
-  --from-literal=http-proxy="$http_proxy" \
-  --from-literal=https-proxy="$https_proxy" \
-  --from-literal=packages-password="$packages_password" \
+  --from-literal=DONKEY_REGISTRY_PASSWORD="$registry_password" \
+  --from-literal=OPENAI_API_KEY="$openai_api_key" \
+  --from-literal=DONKEY_OIDC_CLIENT_ID="$oidc_client_id" \
+  --from-literal=DONKEY_OIDC_CLIENT_SECRET="$oidc_client_secret" \
+  --from-literal=DONKEY_SESSION_KEY="$session_key" \
+  --from-literal=DONKEY_TELEMETRY_KEY="$telemetry_key" \
+  --from-literal=DONKEY_BUILD_ENV="$build_env" \
+  --from-literal=DONKEY_BUILDER_INSTRUCTIONS="$builder_instructions" \
+  --from-literal=HTTP_PROXY="$http_proxy" \
+  --from-literal=HTTPS_PROXY="$https_proxy" \
+  --from-literal=DONKEY_PACKAGES_PASSWORD="$packages_password" \
   --dry-run=client -o yaml | kubectl apply -f -
 `)
 	if features.RegistryCredentials {

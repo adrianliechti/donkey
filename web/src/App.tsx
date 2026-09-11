@@ -25,6 +25,7 @@ import { SpaceCard } from './SpaceCard'
 import { SystemView } from './SystemView'
 import { DonkeyLogo, ErrorNote, Spinner, healthOf, type Health } from './ui'
 import { UserMenu } from './UserMenu'
+import { PlatformSettings } from './PlatformSettings'
 
 const healthRank: Record<Health, number> = { bad: 0, unknown: 1, ok: 2 }
 
@@ -44,7 +45,9 @@ const queryClient = new QueryClient({
 
 function Shell() {
   const navigate = useNavigate()
+  const { data: fleet } = useFleet()
   const [paletteOpen, setPaletteOpen] = useState(false)
+  const [platformSettingsOpen, setPlatformSettingsOpen] = useState(false)
 
   // ⌘K / Ctrl-K opens the palette from anywhere. Registered once at the shell
   // so it works over the fleet, an app panel, or any page.
@@ -86,7 +89,7 @@ function Shell() {
             >
               <Search className="size-5" aria-hidden />
             </button>
-            <button
+            {fleet?.platformAdmin && <button
               type="button"
               title="System health"
               aria-label="System health"
@@ -94,8 +97,9 @@ function Shell() {
               className="flex items-center rounded-md p-1.5 text-muted hover:bg-line/60 hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-strong"
             >
               <Activity className="size-5" aria-hidden />
-            </button>
+            </button>}
             <UserMenu
+              onPlatformSettings={fleet?.platformAdmin ? () => setPlatformSettingsOpen(true) : undefined}
               onSignOut={() => {
                 // The gateway owns the session — its logout page clears the
                 // cookie for the console and every app at once.
@@ -107,6 +111,7 @@ function Shell() {
       </header>
 
       <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} />
+      {platformSettingsOpen && <PlatformSettings onClose={() => setPlatformSettingsOpen(false)} />}
 
       {/* The paddock: the fleet lives on a dotted field. */}
       <main className="dotgrid flex-1">
@@ -183,6 +188,7 @@ function SpacePage({ space }: { space: string }) {
         <SpaceCard
           space={space}
           apps={apps}
+          role={data.roles[space] ?? 'developer'}
           onChanged={reload}
         />
       )}

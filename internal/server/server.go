@@ -112,6 +112,10 @@ func (s *Server) routes() http.Handler {
 	mux.Handle("GET /v1/spaces", s.auth(s.handleListSpaces))
 	mux.Handle("POST /v1/spaces", s.auth(s.handleCreateSpace))
 	mux.Handle("DELETE /v1/spaces/{space}", s.auth(s.handleDeleteSpace))
+	mux.Handle("GET /v1/spaces/{space}/settings", s.auth(s.handleGetSpaceConfig))
+	mux.Handle("GET /v1/platform/settings", s.auth(s.handleGetPlatformConfig))
+	mux.Handle("PUT /v1/platform/settings", s.auth(s.handlePutPlatformConfig))
+	mux.Handle("PUT /v1/spaces/{space}/settings", s.auth(s.handlePutSpaceConfig))
 	mux.Handle("GET /v1/spaces/{space}/traffic", s.auth(s.handleTraffic))
 	mux.Handle("GET /v1/spaces/{space}/apps/{app}/traffic", s.auth(s.handleTraffic))
 	mux.Handle("GET /v1/spaces/{space}/apps/{app}/resources", s.auth(s.handleResources))
@@ -233,7 +237,7 @@ func (s *Server) Run(ctx context.Context) error {
 }
 
 // auth is who may call the API: a sealed token, verified here, checked
-// against the admin rules — nothing else. The browser console's rides in
+// against the platform and space roles. The browser console's rides in
 // X-Access-Token, minted per request by the gateway from the login session;
 // the CLI's rides as Authorization: Bearer, through the gateway or a
 // port-forward alike. An identity header is just a header: anything in the
@@ -246,9 +250,17 @@ func (s *Server) auth(next http.HandlerFunc) http.Handler {
 			token, _ = strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 		}
 		if token != "" {
-			if id, err := identity.VerifyToken(s.cfg.SessionKey, token); err == nil &&
-				s.cfg.Admins.Allows(id.Email, id.Groups, id.Roles) {
-				next(w, r)
+			if id, err := identity.VerifyToken(s.cfg.SessionKey, token); err == nil {
+				settings, err := s.loadPlatformConfig(r.Context(), id)
+				if err != nil {
+					writeErr(w, http.StatusBadGateway, err)
+					return
+				}
+				ctx := context.WithValue(r.Context(), identityContextKey{}, id)
+				r = r.WithContext(context.WithValue(ctx, platformContextKey{}, settings))
+				if s.authorizeRoute(w, r) {
+					next(w, r)
+				}
 				return
 			}
 		}
@@ -263,5 +275,8 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 }
 
 func writeErr(w http.ResponseWriter, status int, err error) {
+	if errors.Is(err, errSpaceForbidden) {
+		status = http.StatusForbidden
+	}
 	writeJSON(w, status, map[string]string{"error": err.Error()})
 }

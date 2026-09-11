@@ -21,6 +21,7 @@ function sameEdit(left: PlanEdit, right: PlanEdit): boolean {
   return (
     left.name === right.name &&
     left.space === right.space &&
+    left.host === right.host &&
     left.port === right.port &&
     left.healthcheck === right.healthcheck &&
     left.exposure === right.exposure &&

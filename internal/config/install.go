@@ -53,8 +53,9 @@ type InstallFile struct {
 
 	Build InstallBuild `json:"build,omitempty"`
 
-	Auth InstallAuth `json:"auth,omitempty"`
-	AI   InstallAI   `json:"ai,omitempty"`
+	Auth     InstallAuth    `json:"auth,omitempty"`
+	Platform PlatformConfig `json:"platform,omitempty"`
+	AI       InstallAI      `json:"ai,omitempty"`
 }
 
 // InstallAddonImages overrides the image repository of each managed addon.
@@ -587,10 +588,6 @@ type InstallAuth struct {
 	Issuer       string `json:"issuer,omitempty"`
 	ClientID     string `json:"clientId,omitempty"`
 	ClientSecret string `json:"clientSecret,omitempty"`
-	// Admins narrows who may use the console and CLI (users/groups/roles,
-	// matched like an app's `access` rules). Empty means everyone the IdP
-	// admits may administer.
-	Admins *AccessConfig `json:"admins,omitempty"`
 }
 
 // InstallKubernetes says which namespaces donkey may use, and by omission

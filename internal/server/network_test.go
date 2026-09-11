@@ -15,6 +15,10 @@ type networkRuntime struct {
 	network runtime.NetworkState
 }
 
+func (networkRuntime) SpaceConfig(context.Context, string) (config.SpaceConfig, error) {
+	return config.SpaceConfig{}, nil
+}
+
 func (r networkRuntime) Status(context.Context, string, string) (*runtime.AppStatus, error) {
 	return &r.status, nil
 }

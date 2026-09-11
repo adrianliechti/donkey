@@ -60,14 +60,13 @@ type Workload struct {
 }
 
 type Input struct {
-	App       string
 	Space     string
 	Namespace string
 	// Name distinguishes multiple addons of one type (defaults to the type).
 	Name string
 	// ObjectName is what the instance's own objects are called, and the name
 	// apps dial it by. It differs from Name only where a whole installation
-	// shares one namespace and every object carries its space — "shop--
+	// shares one namespace and every object carries its space — "shop-
 	// postgres" rather than "postgres". Empty means the two are the same.
 	ObjectName string
 	Version    string
@@ -135,13 +134,10 @@ func Get(typ string) (Addon, error) {
 	return a, nil
 }
 
-// SharedOwner is the API/storage owner used when asking for a space's
-// canonical service binding. Runtime labels identify the service directly;
-// they never present it as an app. The name remains reserved so an actual app
-// cannot collide with binding object names and persisted Docker state.
-const SharedOwner = "shared"
-
-func SecretName(app, addon string) string { return app + "-addon-" + addon }
+// SharedOwner is the owner value that asks for a space's own service binding
+// rather than an app's copy. It is empty on purpose: no app can be called
+// that, so nothing needs reserving.
+const SharedOwner = ""
 
 // NewPassword generates a credential for a provisioned addon.
 func NewPassword() (string, error) {

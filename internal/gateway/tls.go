@@ -48,6 +48,11 @@ import (
 // challenges in acme mode).
 func (s *Server) edgeTLS(ctx context.Context) (*tls.Config, http.Handler, error) {
 	redirect := http.HandlerFunc(redirectHTTPS)
+	if s.k8s != nil {
+		if err := s.k8s.MigrateGatewaySecrets(ctx, s.cfg.SystemNamespace); err != nil {
+			return nil, nil, fmt.Errorf("migrating gateway certificates: %w", err)
+		}
+	}
 	switch s.cfg.TLSMode {
 	case "cert-manager":
 		return s.managedCertificateTLS(ctx)
@@ -280,7 +285,7 @@ func (s *Server) loadOrCreateCA(ctx context.Context) (*caIssuer, error) {
 	certBlock, _ := pem.Decode(certPEM)
 	keyBlock, _ := pem.Decode(keyPEM)
 	if certBlock == nil || keyBlock == nil {
-		return nil, fmt.Errorf("the stored CA doesn't hold a PEM ca.crt/ca.key pair")
+		return nil, fmt.Errorf("the stored CA doesn't hold a PEM certificate and private key")
 	}
 	caCert, err := x509.ParseCertificate(certBlock.Bytes)
 	if err != nil {

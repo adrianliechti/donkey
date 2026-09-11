@@ -1,5 +1,5 @@
 import { Menu, MenuButton, MenuItem, MenuItems } from '@headlessui/react'
-import { LogOut, UserRound } from 'lucide-react'
+import { LogOut, Settings, UserRound } from 'lucide-react'
 
 /**
  * The account control in the header.
@@ -10,7 +10,7 @@ import { LogOut, UserRound } from 'lucide-react'
  * people use least. Dismissal, Escape and keyboard navigation come from
  * Headless UI.
  */
-export function UserMenu({ onSignOut }: { onSignOut: () => void }) {
+export function UserMenu({ onSignOut, onPlatformSettings }: { onSignOut: () => void; onPlatformSettings?: () => void }) {
   return (
     <Menu>
       <MenuButton
@@ -24,6 +24,12 @@ export function UserMenu({ onSignOut }: { onSignOut: () => void }) {
         anchor="bottom end"
         className="z-50 mt-1 w-44 overflow-hidden rounded-md border border-line bg-card py-1 shadow-lg focus:outline-none"
       >
+        {onPlatformSettings && <MenuItem>
+          <button type="button" onClick={onPlatformSettings}
+            className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-ink-soft data-focus:bg-accent-soft data-focus:text-ink">
+            <Settings className="size-4" aria-hidden /> Platform settings
+          </button>
+        </MenuItem>}
         <MenuItem>
           <button
             type="button"

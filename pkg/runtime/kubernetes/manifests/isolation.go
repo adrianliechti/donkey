@@ -32,9 +32,9 @@ import (
 // cache at a link-local address, or both, and pinning one breaks the others.
 const dnsPort = 53
 
-// SpaceIsolationName names the space's NetworkPolicy — the space marker's
-// dotted spelling, which no app or space name can collide with.
-func SpaceIsolationName(space string) string { return spaceMarkerPrefix + space }
+// SpaceIsolationName matches the space's settings ConfigMap. Kubernetes keeps
+// NetworkPolicy and ConfigMap names in separate resource types.
+func SpaceIsolationName(space string) string { return SpaceMarkerName(space) }
 
 // SpaceIsolationPolicy fences one space. installation is the control plane's
 // namespace — the installation identity every donkey object is stamped with.

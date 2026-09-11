@@ -15,6 +15,19 @@ metadata:
   name: donkey-acme
 ---
 apiVersion: v1
+kind: ConfigMap
+metadata:
+  labels:
+    app.kubernetes.io/instance: acme
+    app.kubernetes.io/managed-by: donkey
+    app.kubernetes.io/name: acme
+    app.kubernetes.io/part-of: acme
+    donkey.local/role: space
+    donkey.local/space: acme
+  name: acme-space
+  namespace: donkey-acme
+---
+apiVersion: v1
 data:
   .dockerconfigjson: eyJhdXRocyI6eyJyZWcuZXhhbXBsZS5jb20iOnsiYXV0aCI6IlltOWlPbWgxYm5SbGNqST0iLCJwYXNzd29yZCI6Imh1bnRlcjIiLCJ1c2VybmFtZSI6ImJvYiJ9fX0=
 kind: Secret
@@ -81,7 +94,7 @@ spec:
             name: shop-env
             optional: true
         - secretRef:
-            name: shop-addon-db
+            name: shop-binding-db
         image: reg.example.com/donkey/shop:abc123-20260101000000
         livenessProbe:
           httpGet:
@@ -144,13 +157,14 @@ status:
   loadBalancer: {}
 ---
 apiVersion: v1
+data:
+  route.yaml: |
+    host: shop.acme.apps.example.com
+    path: /
+    backend: http://shop.donkey-acme.svc:80
+    login: true
 kind: ConfigMap
 metadata:
-  annotations:
-    donkey.local/backend: http://shop.donkey-acme.svc:80
-    donkey.local/host: shop.acme.apps.example.com
-    donkey.local/login: required
-    donkey.local/path: /
   labels:
     app.kubernetes.io/instance: acme
     app.kubernetes.io/managed-by: donkey
@@ -159,5 +173,5 @@ metadata:
     donkey.local/app: shop
     donkey.local/role: route
     donkey.local/space: acme
-  name: shop
+  name: shop-route
   namespace: donkey-acme

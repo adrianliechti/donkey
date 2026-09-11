@@ -18,6 +18,10 @@ import (
 // runtime's own. Methods that change shared state are serialized per app by
 // the caller, so providers need no locks of their own.
 type Provider interface {
+	// Concurrent first sign-ins return the configuration that won initialization.
+	PlatformConfig(ctx context.Context) (config.PlatformConfig, error)
+	InitPlatformConfig(ctx context.Context, initial config.PlatformConfig) (config.PlatformConfig, error)
+	SetPlatformConfig(ctx context.Context, settings config.PlatformConfig) error
 	// --- Spaces -----------------------------------------------------------
 
 	// ValidateSpace is pure — no I/O, callable on every request.
@@ -27,7 +31,13 @@ type Provider interface {
 	// else's namespace or network.
 	CheckSpaceFree(ctx context.Context, space string) error
 	ListSpaces(ctx context.Context) ([]string, error)
+	// EnsureSpaceConfigs migrates existing spaces without changing saved roles or domains.
+	EnsureSpaceConfigs(ctx context.Context) error
 	CreateSpace(ctx context.Context, space string) error
+	// SpaceConfig keeps management permissions on the space. Empty rules grant
+	// nobody a role. Saving replaces the policy; the last save wins.
+	SpaceConfig(ctx context.Context, space string) (config.SpaceConfig, error)
+	SetSpaceConfig(ctx context.Context, space string, access config.SpaceConfig) error
 	// DeleteSpace removes the complete space boundary: apps, services,
 	// bindings, routes, runtime state, and data.
 	DeleteSpace(ctx context.Context, space string) error

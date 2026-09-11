@@ -293,7 +293,7 @@ func TestExpiredPlanIsRefused(t *testing.T) {
 // The deploy says so plainly rather than falling back to a different reading
 // of the app than the one that was reviewed.
 func TestDeployWithUnknownPlan(t *testing.T) {
-	s := &Server{cfg: &Config{Domain: "example.com", SessionKey: testSessionKey}, plans: newPlanStore()}
+	s := &Server{cfg: &Config{Domain: "example.com", SessionKey: testSessionKey}, plans: newPlanStore(), rt: planRuntime{}}
 	req := httptest.NewRequest(http.MethodPost, "https://donkey.example.com/v1/deploys?plan=nope", nil)
 	asAdmin(t, req)
 	rec := httptest.NewRecorder()

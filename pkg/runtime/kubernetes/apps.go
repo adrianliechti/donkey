@@ -24,7 +24,7 @@ func (c *Client) DeleteAppResources(ctx context.Context, namespace, space, app s
 // HasDataClaim reports whether the app's data volume exists — used to tell
 // the user about a disk left over from an earlier configuration.
 func (c *Client) HasDataClaim(ctx context.Context, namespace, objectName, space, app string) bool {
-	pvc, err := c.Clientset.CoreV1().PersistentVolumeClaims(namespace).Get(ctx, manifests.DataClaimName(objectName), metav1.GetOptions{})
+	pvc, err := c.dataClaim(ctx, namespace, manifests.DataClaimName(objectName), manifests.Labels(space, app, manifests.RoleStorage))
 	return err == nil && c.requireOwnedObject("PersistentVolumeClaim", namespace, pvc.Name, pvc.Labels,
 		manifests.Labels(space, app, manifests.RoleStorage)) == nil
 }

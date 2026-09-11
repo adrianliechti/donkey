@@ -143,12 +143,32 @@ export interface AccessConfig {
   roles?: string[]
 }
 
+export interface SpaceConfig {
+  admins: AccessConfig
+  developers: AccessConfig
+  domains: string[]
+}
+
+export interface PlatformConfig {
+  admins: AccessConfig
+}
+
+export interface SpaceList {
+  spaces: string[]
+  roles: Record<string, 'admin' | 'developer'>
+  domains: Record<string, string[]>
+  platformAdmin: boolean
+  domain: string
+}
+
 export interface RouteEntry {
   host: string
   path: string
 }
 
 export interface NetworkInfo {
+  fqdn: string
+  domains: string[]
   mode: AppMode
   exposure: Exposure
   /** Allow browser code on any origin to call the app through the gateway. */
@@ -272,6 +292,8 @@ export interface Finding {
 export type PortSource = 'config' | 'code' | 'env' | 'guess'
 
 export interface PlanApp {
+  host: string
+  domains: string[]
   name: string
   space: string
   port: number
@@ -349,6 +371,7 @@ export interface Plan {
 /** What the review screen decided. Every field is authoritative: an empty
  *  storage list means "no disk", not "you decide". */
 export interface PlanEdit {
+  host: string
   name: string
   space: string
   port: number
@@ -373,6 +396,7 @@ export function planEdit(plan: Plan): PlanEdit {
   return {
     name: plan.app.name,
     space: plan.app.space,
+    host: plan.app.host ?? '',
     port: plan.app.port,
     healthcheck: plan.app.healthcheck ?? '',
     storage: [...plan.app.storage],
@@ -611,11 +635,22 @@ export const api = {
     }),
   // Every space, with or without apps — one that holds only services still
   // needs its card.
-  spaces: () => request<{ spaces: string[] }>('/v1/spaces'),
-  createSpace: (name: string) =>
+  platformConfig: () => request<PlatformConfig>('/v1/platform/settings'),
+  setPlatformConfig: (settings: PlatformConfig) =>
+    request<PlatformConfig>('/v1/platform/settings', {
+      method: 'PUT', body: JSON.stringify(settings),
+    }),
+  spaces: () => request<SpaceList>('/v1/spaces'),
+  createSpace: (name: string, settings: SpaceConfig) =>
     request<{ ok: boolean; name: string }>('/v1/spaces', {
       method: 'POST',
-      body: JSON.stringify({ name }),
+      body: JSON.stringify({ name, ...settings }),
+    }),
+  spaceConfig: (space: string) =>
+    request<SpaceConfig>(`/v1/spaces/${encodeURIComponent(space)}/settings`),
+  setSpaceConfig: (space: string, settings: SpaceConfig) =>
+    request<SpaceConfig>(`/v1/spaces/${encodeURIComponent(space)}/settings`, {
+      method: 'PUT', body: JSON.stringify(settings),
     }),
   // Removes the entire space boundary, including apps, services, and data.
   deleteSpace: (space: string) =>

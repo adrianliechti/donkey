@@ -15,8 +15,8 @@ import (
 func TestSpaceIsolationPolicyAdmitsSpaceGatewayAndServer(t *testing.T) {
 	p := SpaceIsolationPolicy("acme", "donkey-acme", "donkey-system", false)
 
-	if p.Name != "donkey.space.acme" {
-		t.Errorf("name = %q — the dotted space spelling keeps it out of the app namespace", p.Name)
+	if p.Name != "acme-space" {
+		t.Errorf("name = %q, want acme-space", p.Name)
 	}
 	if got := p.Spec.PodSelector.MatchLabels; got[LabelSpace] != "acme" || len(got) != 1 {
 		t.Errorf("pod selector = %v, want the space alone — the apply boundary stamps the installation", got)

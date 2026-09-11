@@ -9,7 +9,6 @@ package gateway
 import (
 	"context"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -438,54 +437,26 @@ func (s *Server) refreshRoutes(ctx context.Context) error {
 }
 
 func routeFromConfigMap(cm corev1.ConfigMap) (route, bool) {
-	ann := cm.Annotations
-	backend := ann[manifests.AnnotationBackend]
-	if backend == "" {
+	settings, err := manifests.ReadRoute(&cm)
+	if err != nil || settings.Host == "" || settings.Backend == "" {
 		return route{}, false
 	}
-	target, err := url.Parse(backend)
-	// The annotation is donkey-server's, but a proxy target still deserves a
-	// sanity check: in-cluster plain http, nothing else.
-	if err != nil || target.Scheme != "http" || target.Host == "" {
+	target, err := url.Parse(settings.Backend)
+	if err != nil || target.Host == "" || target.Scheme != "http" {
 		return route{}, false
 	}
-	if ann[manifests.AnnotationHost] == "" {
-		return route{}, false
-	}
+	// Identity comes from ownership labels, never editable routing fields.
 	space, app := cm.Labels[manifests.LabelSpace], cm.Labels[manifests.LabelApp]
-	// Scope is part of a route's required identity, not optional telemetry
-	// decoration. Serving an unscoped route would work while every request and
-	// view metric is silently discarded by the telemetry boundary. The one
-	// intentional exception is donkey-server's own console/API route: it is
-	// control-plane traffic, not a tenant app stream.
 	systemRoute := space == "" && app == "" &&
-		cm.Labels[manifests.LabelRole] == manifests.SystemRole(manifests.ServerName) &&
-		ann[manifests.AnnotationToken] == manifests.TokenForward
+		cm.Labels[manifests.LabelRole] == manifests.SystemRole(manifests.ServerName) && settings.Token
 	if (!config.ValidName(space) || !config.ValidName(app)) && !systemRoute {
 		return route{}, false
 	}
-	r := route{
-		Space:       space,
-		App:         app,
-		Host:        ann[manifests.AnnotationHost],
-		Path:        "/",
-		Backend:     target,
-		Login:       ann[manifests.AnnotationLogin] == manifests.LoginRequired,
-		Mode:        ann[manifests.AnnotationMode],
-		CORS:        ann[manifests.AnnotationCORS],
-		Token:       systemRoute,
-		StripPrefix: ann[manifests.AnnotationStripPrefix] == "true",
-	}
-	if p := ann[manifests.AnnotationPath]; p != "" {
-		r.Path = p
-	}
-	if raw := ann[manifests.AnnotationAccess]; raw != "" {
-		var access config.AccessConfig
-		if err := json.Unmarshal([]byte(raw), &access); err == nil {
-			r.Access = &access
-		}
-	}
-	return r, true
+	return route{
+		Space: space, App: app, Host: settings.Host, Path: settings.Path, Backend: target,
+		Login: settings.Login, Mode: settings.Mode, CORS: settings.CORS, Token: systemRoute,
+		StripPrefix: settings.StripPrefix, Access: settings.Access,
+	}, true
 }
 
 // lookup finds the most specific route for a request. On a miss it refreshes

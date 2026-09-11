@@ -126,12 +126,12 @@ func validateHost(host string) error {
 // ANY list.
 type AccessConfig struct {
 	// Users are exact email addresses (the IdP's `email` claim).
-	Users []string `json:"users,omitempty"`
+	Users []string `json:"users,omitempty" yaml:"users,omitempty"`
 	// Groups match against the IdP's `groups` claim.
-	Groups []string `json:"groups,omitempty"`
+	Groups []string `json:"groups,omitempty" yaml:"groups,omitempty"`
 	// Roles match against the IdP's `roles` claim (Entra app roles) or
 	// Keycloak's realm roles.
-	Roles []string `json:"roles,omitempty"`
+	Roles []string `json:"roles,omitempty" yaml:"roles,omitempty"`
 }
 
 // Empty reports whether the access config restricts nobody — the same as not
@@ -295,10 +295,38 @@ const (
 // namespace, hostnames and object names.
 var nameRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$`)
 
-// ValidName reports whether s is a name donkey accepts for apps, spaces and
+// ValidName reports whether s is a name donkey accepts for apps and
 // addons. The server checks URL path values against it — they feed namespace,
 // hostname and object names, so they follow donkey.yaml's rules.
 func ValidName(s string) bool { return nameRE.MatchString(s) }
+
+func ValidateAppName(s string) error { return validateWorkloadName(s, "app") }
+
+func ValidateServiceName(s string) error { return validateWorkloadName(s, "service") }
+
+func validateWorkloadName(s, kind string) error {
+	if !ValidName(s) {
+		return fmt.Errorf("%s name %q must use lowercase letters, digits and dashes (max 40 chars)", kind, s)
+	}
+	return nil
+}
+
+// ValidSpaceName reports whether s is a name donkey accepts for a space.
+func ValidSpaceName(s string) bool { return ValidateSpaceName(s) == nil }
+
+// ValidateSpaceName applies the same DNS-label rule as apps and services.
+// Object names derived from a space are never parsed back, so a space may
+// contain hyphens like any other name; identity always comes from labels.
+func ValidateSpaceName(s string) error {
+	if !ValidName(s) {
+		return fmt.Errorf("space %q must use lowercase letters, digits and dashes (max 40 chars)", s)
+	}
+	switch s {
+	case "donkey", "platform", "system":
+		return fmt.Errorf("space name %q is reserved for Donkey; choose another name", s)
+	}
+	return nil
+}
 
 // namespaceRE is an RFC 1123 DNS label — what Kubernetes accepts as a
 // namespace name. Longer than donkey's own names allow, because the
@@ -366,11 +394,13 @@ func (c *AppConfig) Validate() error {
 	if c.Name == "" {
 		return fmt.Errorf("name is required")
 	}
-	if !nameRE.MatchString(c.Name) {
-		return fmt.Errorf("name %q must be lowercase letters, digits and dashes (max 40 chars), e.g. %q", c.Name, "my-app")
+	if err := ValidateAppName(c.Name); err != nil {
+		return err
 	}
-	if c.Space != "" && !nameRE.MatchString(c.Space) {
-		return fmt.Errorf("space %q must be lowercase letters, digits and dashes (max 40 chars), e.g. %q", c.Space, "acme")
+	if c.Space != "" {
+		if err := ValidateSpaceName(c.Space); err != nil {
+			return err
+		}
 	}
 	if c.Port < 1 || c.Port > 65535 {
 		return fmt.Errorf("port must be between 1 and 65535 (the port your app listens on)")
@@ -443,8 +473,8 @@ func (c *AppConfig) Validate() error {
 		if a.Type == "" {
 			return fmt.Errorf("addon %q needs a type (e.g. postgres)", a.Name)
 		}
-		if !nameRE.MatchString(a.Name) {
-			return fmt.Errorf("addon name %q must be lowercase letters, digits and dashes (max 40 chars)", a.Name)
+		if err := ValidateServiceName(a.Name); err != nil {
+			return err
 		}
 		if seen[a.Name] {
 			return fmt.Errorf("two addons share the name %q — give them distinct names", a.Name)

@@ -17,7 +17,7 @@ export const fleetQuery = queryOptions({
   queryKey: ['fleet'],
   queryFn: async () => {
     const [apps, spaces] = await Promise.all([api.apps(), api.spaces()])
-    return { apps: apps.apps, spaces: spaces.spaces }
+    return { apps: apps.apps, ...spaces }
   },
   refetchInterval: 10_000,
 })
