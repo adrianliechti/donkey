@@ -38,18 +38,31 @@ checksum:
 changelog:
   sort: asc
 
-# A formula, not a cask, on purpose: casks are macOS-only, while the formula
-# goreleaser writes carries a Linux block too — so the same
-# `brew install adrianliechti/tap/donkey` works on the server. (goreleaser
-# flags `brews` as deprecated; the cask successor can't cover Linux.)
-brews:
-  - repository:
+# Homebrew casks support both macOS and Linux.
+homebrew_casks:
+  - name: donkey
+    binaries: [donkey]
+    # The publisher adds postflight_steps; GoReleaser's hooks still emit postflight.
+    skip_upload: true
+    homepage: "https://github.com/adrianliechti/donkey"
+    description: "Deploy applications to Kubernetes"
+    repository:
       owner: adrianliechti
       name: homebrew-tap
 
     commit_author:
       name: Adrian Liechti
       email: adrian@localhost
+
+publishers:
+  - name: homebrew-cask
+    # Publish the extra cask file, excluding release archives.
+    ids: [homebrew-cask]
+    extra_files:
+      - glob: dist/homebrew/Casks/donkey.rb
+    env:
+      - GITHUB_TOKEN={{ .Env.GITHUB_TOKEN }}
+    cmd: ./scripts/publish-cask.sh {{ .Version }}
 
 scoops:
   - repository:
