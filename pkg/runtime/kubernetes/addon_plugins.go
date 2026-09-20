@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -60,18 +61,19 @@ func (r *Runtime) pluginStateSecret(state *addons.Provisioning) (*corev1.Secret,
 		map[string]string{provisioningKey: string(data)}), nil
 }
 
-func (r *Runtime) provisionPlugin(ctx context.Context, space string, spec rt.ServiceSpec, plugin *addons.Plugin, previous *addons.Provisioning) (map[string]string, string, string, error) {
+func (r *Runtime) savePluginState(ctx context.Context, state *addons.Provisioning) error {
+	secret, err := r.pluginStateSecret(state)
+	if err != nil {
+		return err
+	}
+	return r.c.Apply(ctx, []k8sruntime.Object{secret})
+}
+
+func (r *Runtime) provisionPlugin(ctx context.Context, space string, spec rt.ServiceSpec, plugin *addons.Plugin, desc *addonv1.DescribeResponse, previous *addons.Provisioning) (map[string]string, addons.Parameters, error) {
 	if _, exists, err := r.c.DeploymentIdentity(ctx, r.ns(space), r.name(space, spec.Name)); err != nil {
-		return nil, "", "", err
+		return nil, nil, err
 	} else if exists {
-		return nil, "", "", fmt.Errorf("the name %q is already taken by a local workload", spec.Name)
-	}
-	version, storage := spec.Version, spec.Storage
-	if version == "" {
-		version = plugin.DefaultVersion()
-	}
-	if storage == "" {
-		storage = plugin.DefaultStorage()
+		return nil, nil, fmt.Errorf("the name %q is already taken by a local workload", spec.Name)
 	}
 	state := previous
 	if state == nil {
@@ -79,45 +81,81 @@ func (r *Runtime) provisionPlugin(ctx context.Context, space string, spec rt.Ser
 		// plugin: otherwise its backing data would lose its lifecycle owner.
 		binding, err := r.ServiceBinding(ctx, space, addons.SharedOwner, spec.Name)
 		if err != nil {
-			return nil, "", "", err
+			return nil, nil, err
 		}
 		if len(binding) != 0 {
-			return nil, "", "", fmt.Errorf("remove service %s before changing its provisioner", spec.Name)
+			return nil, nil, fmt.Errorf("remove service %s before changing its provisioner", spec.Name)
 		}
 		state = &addons.Provisioning{Type: spec.Type, Instance: r.pluginInstance(space, spec.Name)}
 	}
+	params, err := addons.ResolveInstanceParameters(desc, spec.Parameters, state.Parameters)
+	if err != nil {
+		return nil, nil, rt.UserError{Err: err}
+	}
+	// Intent first: even a lost response leaves an identity and the
+	// parameters to retry or remove with.
+	state.Parameters, state.Protocol, state.Error = params, addons.NormalizeProtocol(desc.Protocol), ""
 	intent, err := r.pluginStateSecret(state)
 	if err != nil {
-		return nil, "", "", err
+		return nil, nil, err
 	}
 	if err := r.c.Apply(ctx, append(r.spaceObjects(space), intent)); err != nil {
-		return nil, "", "", err
+		return nil, nil, err
 	}
-	info, err := plugin.Provision(ctx, &addonv1.ProvisionRequest{Instance: state.Instance, Version: version, Storage: storage})
+	info, err := plugin.Provision(ctx, &addonv1.ProvisionRequest{Instance: state.Instance, Parameters: params.Struct()}, nil)
 	if err != nil {
-		return nil, "", "", err
+		state.Error = failureMessage(err)
+		if saveErr := r.savePluginState(ctx, state); saveErr != nil {
+			log.Printf("service %s/%s: recording provisioning failure: %v", space, spec.Name, saveErr)
+		}
+		return nil, nil, err
 	}
-	state.Info, state.Stopped = info, false
-	secret, err := r.pluginStateSecret(state)
-	if err != nil {
-		return nil, "", "", err
+	if effective := addons.ParametersFrom(info.Parameters); len(effective) > 0 {
+		merged := map[string]any{}
+		for k, v := range params {
+			merged[k] = v
+		}
+		for k, v := range effective {
+			merged[k] = v
+		}
+		if params, err = addons.ResolveParameters(desc.Parameters, merged); err != nil {
+			return nil, nil, fmt.Errorf("addon plugin %s reported effective parameters its schema rejects: %w", plugin.Type(), err)
+		}
 	}
-	objects := []k8sruntime.Object{secret}
+	state.Info, state.Parameters, state.Stopped, state.Error = info, params, false, ""
+	// Retain the successful response before policy validation or application.
+	// If either fails, reconciliation and removal still have the destinations
+	// and credentials returned by the provisioner, not merely the intent.
+	if err := r.savePluginState(ctx, state); err != nil {
+		return nil, nil, err
+	}
+	var objects []k8sruntime.Object
 	if r.opts.IsolateSpaces && r.opts.RestrictEgress {
 		policy, err := manifests.AddonEgressPolicy(space, r.ns(space), r.opts.SystemNamespace, spec.Name, r.name(space, spec.Name), info)
 		if err != nil {
-			return nil, "", "", err
+			state.Error = failureMessage(err)
+			_ = r.savePluginState(ctx, state)
+			return nil, nil, err
 		}
 		objects = append(objects, policy)
 	} else if err := r.deletePluginEgress(ctx, space, spec.Name); err != nil {
-		return nil, "", "", err
+		return nil, nil, err
 	}
 	objects = append(objects, spaceBindingSecret(space, r.name(space, spec.Name), r.ns(space), spec.Name, info.Env,
-		addons.Metadata{Type: plugin.Type(), Protocol: info.Protocol}))
+		addons.Metadata{Type: plugin.Type(), Protocol: state.Protocol, Parameters: params}))
 	if err := r.c.Apply(ctx, objects); err != nil {
-		return nil, "", "", err
+		return nil, nil, err
 	}
-	return info.Env, version, storage, nil
+	return info.Env, params, nil
+}
+
+// failureMessage keeps a provisioning error short enough for a listing.
+func failureMessage(err error) string {
+	message := err.Error()
+	if len(message) > 500 {
+		message = message[:500] + "…"
+	}
+	return message
 }
 
 func (r *Runtime) deletePluginEgress(ctx context.Context, space, name string) error {
@@ -125,28 +163,30 @@ func (r *Runtime) deletePluginEgress(ctx context.Context, space, name string) er
 		manifests.AddonLabels(space, name, manifests.RoleProvisioning), false)
 }
 
-func (r *Runtime) deprovisionPlugin(ctx context.Context, space, name string, keepData bool) error {
+// deprovisionPlugin asks the plugin to remove (or stop) the instance. With
+// force, a plugin that is gone or failing no longer blocks: the record is
+// dropped and the backing service left to the operator.
+func (r *Runtime) deprovisionPlugin(ctx context.Context, space, name string, keepData, force bool) error {
 	state, err := r.pluginState(ctx, space, name)
 	if err != nil || state == nil {
 		return err
 	}
 	plugin, err := state.Plugin()
-	if err != nil {
-		return err
+	if err == nil {
+		err = plugin.Deprovision(ctx, state.Instance, keepData)
 	}
-	if err := plugin.Deprovision(ctx, state.Instance, keepData); err != nil {
-		return err
+	if err != nil {
+		if !force {
+			return fmt.Errorf("%w — remove with --orphan to drop donkey's record and leave the backing service behind", err)
+		}
+		log.Printf("service %s/%s: orphaning plugin resources: %v", space, name, err)
 	}
 	if err := r.deletePluginEgress(ctx, space, name); err != nil {
 		return err
 	}
 	if keepData {
 		state.Stopped = true
-		secret, err := r.pluginStateSecret(state)
-		if err != nil {
-			return err
-		}
-		if err := r.c.Apply(ctx, []k8sruntime.Object{secret}); err != nil {
+		if err := r.savePluginState(ctx, state); err != nil {
 			return err
 		}
 		// The plugin retains credentials with its data. Retire the active
@@ -176,6 +216,33 @@ func (r *Runtime) pluginServiceNames(ctx context.Context, space string) ([]strin
 		}
 	}
 	return names, nil
+}
+
+// unboundPluginServices lists plugin instances that have no binding right
+// now — pending, failed or stopped — so the console can show and remove them.
+func (r *Runtime) unboundPluginServices(ctx context.Context, space string, bound map[string]bool) ([]rt.ServiceBindingInfo, error) {
+	names, err := r.pluginServiceNames(ctx, space)
+	if err != nil {
+		return nil, err
+	}
+	var out []rt.ServiceBindingInfo
+	for _, name := range names {
+		if bound[name] {
+			continue
+		}
+		state, err := r.pluginState(ctx, space, name)
+		if err != nil {
+			return nil, err
+		}
+		if state == nil {
+			continue
+		}
+		out = append(out, rt.ServiceBindingInfo{
+			Name: name, Type: state.Type, Protocol: state.Protocol, Parameters: state.Parameters,
+			State: state.State(), Message: state.Error,
+		})
+	}
+	return out, nil
 }
 
 // Reconcile after installation changes too: enabling a fence must retain

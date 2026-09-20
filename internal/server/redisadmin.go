@@ -14,7 +14,6 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/adrianliechti/donkey/internal/addons"
-	"github.com/adrianliechti/donkey/internal/config"
 	"github.com/adrianliechti/donkey/pkg/runtime"
 )
 
@@ -22,22 +21,11 @@ const redisTimeout = 10 * time.Second
 const redisPreviewBytes = 256 << 10
 
 func (s *Server) redisConnect(ctx context.Context, r *http.Request) (*redis.Client, error) {
-	space, err := s.space(r)
-	if err != nil {
-		return nil, runtime.UserError{Err: err}
-	}
-	name := r.PathValue("service")
-	if !config.ValidName(name) {
-		return nil, runtime.UserError{Err: fmt.Errorf("invalid service name")}
-	}
-	binding, err := s.rt.ServiceBinding(ctx, space, addons.SharedOwner, name)
+	service, err := s.serviceConnection(ctx, r, addons.ProtocolRedis)
 	if err != nil {
 		return nil, err
 	}
-	if binding["REDIS_URL"] == "" {
-		return nil, runtime.UserError{Err: fmt.Errorf("%s has no Redis binding", name)}
-	}
-	options, err := redis.ParseURL(binding["REDIS_URL"])
+	options, err := redis.ParseURL(service.Binding["REDIS_URL"])
 	if err != nil {
 		return nil, runtime.UserError{Err: fmt.Errorf("the service's Redis URL is invalid")}
 	}

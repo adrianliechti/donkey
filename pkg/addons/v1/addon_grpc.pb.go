@@ -28,13 +28,18 @@ const (
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 //
-// A plugin owns its backing resources; Donkey owns app bindings and egress.
-// Provision and Deprovision must be idempotent for an Instance's identity.
+// A plugin owns its backing resources; Donkey owns the catalog, app bindings
+// and consumer-side egress. Provision and Deprovision must be idempotent for
+// an Instance's identity and safe under concurrent retries.
 type AddonPluginClient interface {
+	// Describe is the catalog entry. It must not create resources or return
+	// secrets. Donkey calls it lazily and caches the answer briefly, so a
+	// plugin may change its description between releases.
 	Describe(ctx context.Context, in *DescribeRequest, opts ...grpc.CallOption) (*DescribeResponse, error)
-	// Return only once the service is ready for connections. A deadline or a
-	// lost response may cause Donkey to repeat this request.
-	Provision(ctx context.Context, in *ProvisionRequest, opts ...grpc.CallOption) (*ProvisionResponse, error)
+	// Provision streams progress and ends with the event carrying `result`,
+	// sent only once the service is ready for connections. A deadline or a
+	// lost stream may cause Donkey to repeat this request.
+	Provision(ctx context.Context, in *ProvisionRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ProvisionEvent], error)
 	Deprovision(ctx context.Context, in *DeprovisionRequest, opts ...grpc.CallOption) (*DeprovisionResponse, error)
 }
 
@@ -56,15 +61,24 @@ func (c *addonPluginClient) Describe(ctx context.Context, in *DescribeRequest, o
 	return out, nil
 }
 
-func (c *addonPluginClient) Provision(ctx context.Context, in *ProvisionRequest, opts ...grpc.CallOption) (*ProvisionResponse, error) {
+func (c *addonPluginClient) Provision(ctx context.Context, in *ProvisionRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ProvisionEvent], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(ProvisionResponse)
-	err := c.cc.Invoke(ctx, AddonPlugin_Provision_FullMethodName, in, out, cOpts...)
+	stream, err := c.cc.NewStream(ctx, &AddonPlugin_ServiceDesc.Streams[0], AddonPlugin_Provision_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
-	return out, nil
+	x := &grpc.GenericClientStream[ProvisionRequest, ProvisionEvent]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
 }
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type AddonPlugin_ProvisionClient = grpc.ServerStreamingClient[ProvisionEvent]
 
 func (c *addonPluginClient) Deprovision(ctx context.Context, in *DeprovisionRequest, opts ...grpc.CallOption) (*DeprovisionResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
@@ -80,13 +94,18 @@ func (c *addonPluginClient) Deprovision(ctx context.Context, in *DeprovisionRequ
 // All implementations must embed UnimplementedAddonPluginServer
 // for forward compatibility.
 //
-// A plugin owns its backing resources; Donkey owns app bindings and egress.
-// Provision and Deprovision must be idempotent for an Instance's identity.
+// A plugin owns its backing resources; Donkey owns the catalog, app bindings
+// and consumer-side egress. Provision and Deprovision must be idempotent for
+// an Instance's identity and safe under concurrent retries.
 type AddonPluginServer interface {
+	// Describe is the catalog entry. It must not create resources or return
+	// secrets. Donkey calls it lazily and caches the answer briefly, so a
+	// plugin may change its description between releases.
 	Describe(context.Context, *DescribeRequest) (*DescribeResponse, error)
-	// Return only once the service is ready for connections. A deadline or a
-	// lost response may cause Donkey to repeat this request.
-	Provision(context.Context, *ProvisionRequest) (*ProvisionResponse, error)
+	// Provision streams progress and ends with the event carrying `result`,
+	// sent only once the service is ready for connections. A deadline or a
+	// lost stream may cause Donkey to repeat this request.
+	Provision(*ProvisionRequest, grpc.ServerStreamingServer[ProvisionEvent]) error
 	Deprovision(context.Context, *DeprovisionRequest) (*DeprovisionResponse, error)
 	mustEmbedUnimplementedAddonPluginServer()
 }
@@ -101,8 +120,8 @@ type UnimplementedAddonPluginServer struct{}
 func (UnimplementedAddonPluginServer) Describe(context.Context, *DescribeRequest) (*DescribeResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Describe not implemented")
 }
-func (UnimplementedAddonPluginServer) Provision(context.Context, *ProvisionRequest) (*ProvisionResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method Provision not implemented")
+func (UnimplementedAddonPluginServer) Provision(*ProvisionRequest, grpc.ServerStreamingServer[ProvisionEvent]) error {
+	return status.Error(codes.Unimplemented, "method Provision not implemented")
 }
 func (UnimplementedAddonPluginServer) Deprovision(context.Context, *DeprovisionRequest) (*DeprovisionResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Deprovision not implemented")
@@ -146,23 +165,16 @@ func _AddonPlugin_Describe_Handler(srv interface{}, ctx context.Context, dec fun
 	return interceptor(ctx, in, info, handler)
 }
 
-func _AddonPlugin_Provision_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(ProvisionRequest)
-	if err := dec(in); err != nil {
-		return nil, err
+func _AddonPlugin_Provision_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(ProvisionRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
 	}
-	if interceptor == nil {
-		return srv.(AddonPluginServer).Provision(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: AddonPlugin_Provision_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(AddonPluginServer).Provision(ctx, req.(*ProvisionRequest))
-	}
-	return interceptor(ctx, in, info, handler)
+	return srv.(AddonPluginServer).Provision(m, &grpc.GenericServerStream[ProvisionRequest, ProvisionEvent]{ServerStream: stream})
 }
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type AddonPlugin_ProvisionServer = grpc.ServerStreamingServer[ProvisionEvent]
 
 func _AddonPlugin_Deprovision_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(DeprovisionRequest)
@@ -194,14 +206,16 @@ var AddonPlugin_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _AddonPlugin_Describe_Handler,
 		},
 		{
-			MethodName: "Provision",
-			Handler:    _AddonPlugin_Provision_Handler,
-		},
-		{
 			MethodName: "Deprovision",
 			Handler:    _AddonPlugin_Deprovision_Handler,
 		},
 	},
-	Streams:  []grpc.StreamDesc{},
+	Streams: []grpc.StreamDesc{
+		{
+			StreamName:    "Provision",
+			Handler:       _AddonPlugin_Provision_Handler,
+			ServerStreams: true,
+		},
+	},
 	Metadata: "addon.proto",
 }

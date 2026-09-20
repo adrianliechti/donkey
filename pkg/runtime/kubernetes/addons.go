@@ -1,6 +1,7 @@
 package kubernetes
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 
@@ -27,6 +28,24 @@ type imagePullCredentials struct {
 	Password string
 }
 
+const (
+	annotationAddonType       = "donkey.local/addon-type"
+	annotationAddonProtocol   = "donkey.local/addon-protocol"
+	annotationAddonParameters = "donkey.local/addon-parameters"
+)
+
+func bindingMetadata(secret *corev1.Secret) addons.Metadata {
+	metadata := addons.Metadata{Type: secret.Annotations[annotationAddonType], Protocol: secret.Annotations[annotationAddonProtocol]}
+	if raw := secret.Annotations[annotationAddonParameters]; raw != "" {
+		// Unreadable parameters are not worth failing a listing over.
+		_ = json.Unmarshal([]byte(raw), &metadata.Parameters)
+	}
+	if metadata.Protocol == "" {
+		return metadata.Resolve(secretStringData(secret))
+	}
+	return metadata.Resolve(nil)
+}
+
 func bindingSecret(objectName, namespace string, labels map[string]string, data map[string]string) *corev1.Secret {
 	bytes := map[string][]byte{}
 	for k, v := range data {
@@ -45,13 +64,16 @@ func bindingSecret(objectName, namespace string, labels map[string]string, data 
 
 // spaceBindingSecret is the space's canonical service binding, named after
 // the service's object name. It has addon identity and no app label.
-func spaceBindingSecret(space, objectService, namespace, name string, data map[string]string, metadata ...addons.Metadata) *corev1.Secret {
+func spaceBindingSecret(space, objectService, namespace, name string, data map[string]string, metadata addons.Metadata) *corev1.Secret {
 	secret := bindingSecret(manifests.SpaceBindingSecretName(objectService), namespace,
 		manifests.AddonLabels(space, name, manifests.RoleBinding), data)
-	if len(metadata) > 0 {
-		secret.Annotations = map[string]string{
-			"donkey.local/addon-type":     metadata[0].Type,
-			"donkey.local/addon-protocol": metadata[0].Protocol,
+	secret.Annotations = map[string]string{
+		annotationAddonType:     metadata.Type,
+		annotationAddonProtocol: addons.NormalizeProtocol(metadata.Protocol),
+	}
+	if len(metadata.Parameters) > 0 {
+		if raw, err := json.Marshal(metadata.Parameters); err == nil {
+			secret.Annotations[annotationAddonParameters] = string(raw)
 		}
 	}
 	return secret

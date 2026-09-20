@@ -2,31 +2,54 @@ syntax = "proto3";
 
 package donkey.addons.v1;
 
+import "google/protobuf/struct.proto";
+
 option go_package = "github.com/adrianliechti/donkey/pkg/addons/v1;addonv1";
 
-// A plugin owns its backing resources; Donkey owns app bindings and egress.
-// Provision and Deprovision must be idempotent for an Instance's identity.
+// A plugin owns its backing resources; Donkey owns the catalog, app bindings
+// and consumer-side egress. Provision and Deprovision must be idempotent for
+// an Instance's identity and safe under concurrent retries.
 service AddonPlugin {
+  // Describe is the catalog entry. It must not create resources or return
+  // secrets. Donkey calls it lazily and caches the answer briefly, so a
+  // plugin may change its description between releases.
   rpc Describe(DescribeRequest) returns (DescribeResponse);
-  // Return only once the service is ready for connections. A deadline or a
-  // lost response may cause Donkey to repeat this request.
-  rpc Provision(ProvisionRequest) returns (ProvisionResponse);
+  // Provision streams progress and ends with the event carrying `result`,
+  // sent only once the service is ready for connections. A deadline or a
+  // lost stream may cause Donkey to repeat this request.
+  rpc Provision(ProvisionRequest) returns (stream ProvisionEvent);
   rpc Deprovision(DeprovisionRequest) returns (DeprovisionResponse);
 }
 
 message DescribeRequest {}
 
 message DescribeResponse {
+  // Type is the lowercase catalog id; it must equal the configured type.
   string type = 1;
   string title = 2;
   string description = 3;
-  string default_version = 4;
-  string default_storage = 5;
-  // The environment contract, used by the catalog without provisioning.
-  repeated string env_keys = 6;
   // Application protocol used by clients and the console: postgres, mysql
   // (including MariaDB), redis, s3, openai, or a custom lowercase name.
-  string protocol = 7;
+  string protocol = 4;
+  // A JSON Schema (draft 2020-12; see the README for the supported subset)
+  // describing ProvisionRequest.parameters. Donkey validates requests
+  // against it, applies top-level defaults and renders it as a form.
+  // Absent or empty means the plugin takes no parameters.
+  google.protobuf.Struct parameters = 5;
+  // The environment contract, used by the catalog without provisioning.
+  repeated EnvVar env = 6;
+  // Well-known values: "runtime:kubernetes", "runtime:docker" (absent means
+  // every runtime) and "keep-data" (Deprovision honours keep_data).
+  repeated string capabilities = 7;
+}
+
+message EnvVar {
+  string name = 1;
+  string description = 2;
+  // Secret values are masked in consoles and logs.
+  bool secret = 3;
+  // An optional variable may be absent from ProvisionResponse.env.
+  bool optional = 4;
 }
 
 message Instance {
@@ -40,35 +63,50 @@ message Instance {
   // Kubernetes labels selecting this space's consumers. A plugin may use
   // these with namespace to admit clients in its own ingress policy.
   map<string, string> consumer_labels = 6;
+  // Additional context Donkey may attach in later releases (for example the
+  // space's owner). Plugins must tolerate unknown keys.
+  map<string, string> labels = 7;
 }
 
 message ProvisionRequest {
   Instance instance = 1;
-  string version = 2;
-  string storage = 3;
+  // Validated against DescribeResponse.parameters, with defaults applied.
+  // A repeat request for a retained instance carries the parameters it was
+  // created with unless the caller explicitly changed them.
+  google.protobuf.Struct parameters = 2;
+}
+
+// Progress events carry `message`; the final event carries `result`.
+message ProvisionEvent {
+  string message = 1;
+  ProvisionResponse result = 2;
 }
 
 message ProvisionResponse {
   // These values (including credentials) are injected into attached apps.
+  // Keys must be declared in DescribeResponse.env; non-optional keys are
+  // required.
   map<string, string> env = 1;
   // Connection URLs are explicit metadata, never inferred from env values.
   repeated string urls = 2;
   // Every destination an app needs. URLs alone cannot express a portable
   // Kubernetes NetworkPolicy. Specify pods or CIDRs when egress is fenced.
   repeated Endpoint endpoints = 3;
-  // Defaults to Describe.protocol; if both are set they must agree.
-  // This is distinct from Endpoint.protocol, which describes TCP/UDP/SCTP.
-  string protocol = 4;
+  // The effective parameters, when they differ from the request (a grown
+  // disk, a resolved version). Absent means the request's values apply.
+  google.protobuf.Struct parameters = 4;
 }
 
 message Endpoint {
   string host = 1; // DNS name or IP, without a scheme or port
   int32 port = 2; // port the client dials
   string protocol = 3; // "TCP" (also the default), "UDP", or "SCTP"
-  // Exactly one network destination may be supplied. Kubernetes services
-  // should use pod labels, not their ClusterIP (translation is CNI-specific).
-  KubernetesTarget kubernetes = 4;
-  repeated string cidrs = 5; // external, stable IP ranges; no DNS snapshots
+  // The network destination for fenced egress. Kubernetes services should
+  // use pod labels, not their ClusterIP (translation is CNI-specific).
+  oneof target {
+    KubernetesTarget kubernetes = 4;
+    CIDRTarget cidrs = 5;
+  }
 }
 
 message KubernetesTarget {
@@ -78,9 +116,14 @@ message KubernetesTarget {
   int32 port = 3;
 }
 
+message CIDRTarget {
+  repeated string ranges = 1; // external, stable IP ranges; no DNS snapshots
+}
+
 message DeprovisionRequest {
   Instance instance = 1;
   // Stop the service but retain data AND the credentials needed to reuse it.
+  // Only sent to plugins declaring the "keep-data" capability.
   bool keep_data = 2;
 }
 

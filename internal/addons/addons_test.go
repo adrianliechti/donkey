@@ -1,9 +1,24 @@
 package addons
 
 import (
+	"context"
 	"strings"
 	"testing"
 )
+
+// defaultParameters resolves a type's schema with no input: its defaults.
+func defaultParameters(t *testing.T, a Addon) Parameters {
+	t.Helper()
+	desc, err := a.Describe(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	params, err := ResolveParameters(desc.Parameters, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return params
+}
 
 var input = Input{
 	Space: "prod", Namespace: "donkey-prod",
@@ -17,8 +32,7 @@ func TestRegistryDefaultsProvision(t *testing.T) {
 	for _, a := range Types() {
 		in := input
 		in.Name = a.Type()
-		in.Version = a.DefaultVersion()
-		in.Storage = a.DefaultStorage()
+		in = in.WithParameters(defaultParameters(t, a))
 		binding := a.Binding(in)
 		if len(binding) == 0 {
 			t.Fatalf("%s: empty binding", a.Type())
@@ -51,14 +65,14 @@ func TestManagedAddonDefaultVersions(t *testing.T) {
 		"redis":    "7.4.11",
 		"rustfs":   "1.0.0-rc.3",
 	} {
-		if got := Registry[typ].DefaultVersion(); got != want {
+		if got := defaultParameters(t, registry[typ]).String(ParamVersion); got != want {
 			t.Errorf("%s default version = %q, want %q", typ, got, want)
 		}
 	}
 }
 
 func TestPostgresBindingContract(t *testing.T) {
-	a := Registry["postgres"]
+	a := registry["postgres"]
 	got := a.Binding(input)
 	// The host is the service's plain name — reachable the way siblings
 	// reach each other.
@@ -81,9 +95,9 @@ func TestManagedAddonImageRepositoryOverride(t *testing.T) {
 		"redis":    "registry.example.com/mirror/library/redis",
 		"rustfs":   "registry.example.com/mirror/rustfs/rustfs",
 	} {
-		a := Registry[typ]
+		a := registry[typ]
 		in := input
-		in.Version = a.DefaultVersion()
+		in.Version = defaultParameters(t, a).String(ParamVersion)
 		in.ImageRepository = repository
 		w, err := a.Workload(in)
 		if err != nil {
@@ -98,7 +112,7 @@ func TestManagedAddonImageRepositoryOverride(t *testing.T) {
 // External and provisioned bindings are freely swappable, so both must
 // speak the same set of keys.
 func TestPostgresExternalMatchesProvisioned(t *testing.T) {
-	a := Registry["postgres"]
+	a := registry["postgres"]
 	ext, err := a.ExternalBinding("postgres://u:p%40ss@db.example.com/mydb")
 	if err != nil {
 		t.Fatal(err)
@@ -129,7 +143,7 @@ func TestPostgresExternalMatchesProvisioned(t *testing.T) {
 // points at donkey-server's proxy and carries a stand-in key, never the
 // real one.
 func TestOpenAIBinding(t *testing.T) {
-	a := Registry["openai"]
+	a := registry["openai"]
 	in := input
 	in.Name = "openai"
 	in.AIProxyURL = "http://donkey-server.donkey-system.svc/ai/v1"

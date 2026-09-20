@@ -3,6 +3,7 @@
 FROM golang:1.26 AS build
 WORKDIR /src
 COPY go.mod go.sum ./
+COPY pkg/addons/go.mod pkg/addons/go.sum ./pkg/addons/
 RUN go mod download
 COPY pkg/addons ./pkg/addons
 COPY examples/addon-mariadb ./examples/addon-mariadb

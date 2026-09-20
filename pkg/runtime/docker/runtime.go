@@ -736,125 +736,153 @@ func (r *Runtime) ServiceBinding(ctx context.Context, space, owner, name string)
 	return scoped, nil
 }
 
+func (r *Runtime) ServiceConnection(ctx context.Context, space, name string) (rt.ServiceConnection, error) {
+	binding, err := r.ServiceBinding(ctx, space, sharedOwner, name)
+	if err != nil {
+		return rt.ServiceConnection{}, err
+	}
+	metadata, err := r.serviceMetadata(space, name, binding)
+	if err != nil {
+		return rt.ServiceConnection{}, err
+	}
+	return rt.ServiceConnection{Binding: binding, Type: metadata.Type, Protocol: metadata.Protocol, Parameters: metadata.Parameters}, nil
+}
+
+func (r *Runtime) serviceMetadata(space, name string, binding map[string]string) (addons.Metadata, error) {
+	var metadata addons.Metadata
+	_, err := r.state.readJSON(&metadata, "service-metadata", space, name+".json")
+	return metadata.Resolve(binding), err
+}
+
 func (r *Runtime) aiProxyURL() string {
 	return fmt.Sprintf("http://%s:8089/v1", r.opts.AIContainer)
 }
 
-func (r *Runtime) EnsureService(ctx context.Context, space string, spec rt.ServiceSpec) (map[string]string, string, string, error) {
+func (r *Runtime) EnsureService(ctx context.Context, space string, spec rt.ServiceSpec) (map[string]string, map[string]any, error) {
 	addon, err := addons.Get(spec.Type)
 	if err != nil {
-		return nil, "", "", rt.UserError{Err: err}
+		return nil, nil, rt.UserError{Err: err}
 	}
 	if err := config.ValidateServiceName(spec.Name); err != nil {
-		return nil, "", "", rt.UserError{Err: err}
+		return nil, nil, rt.UserError{Err: err}
+	}
+	desc, err := addon.Describe(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !addons.SupportsRuntime(desc, "docker") {
+		return nil, nil, rt.UserError{Err: fmt.Errorf("the %s service is not offered on Docker", spec.Type)}
 	}
 	if err := r.ensureSpace(ctx, space); err != nil {
-		return nil, "", "", err
+		return nil, nil, err
 	}
-	var binding map[string]string
-	var version, storage string
 	previous, err := r.pluginState(space, spec.Name)
 	if err != nil {
-		return nil, "", "", err
+		return nil, nil, err
 	}
 	plugin, isPlugin := addon.(*addons.Plugin)
 	if previous != nil && (previous.Type != spec.Type || !isPlugin || spec.External) {
-		return nil, "", "", fmt.Errorf("remove service %s before changing its provisioner", spec.Name)
+		return nil, nil, fmt.Errorf("remove service %s before changing its provisioner", spec.Name)
 	}
-	if isPlugin && !spec.External {
-		binding, version, storage, err = r.provisionPlugin(ctx, space, spec, plugin, previous)
+	var binding map[string]string
+	var params addons.Parameters
+	switch {
+	case isPlugin && !spec.External:
+		binding, params, err = r.provisionPlugin(ctx, space, spec, plugin, desc, previous)
 		if err != nil {
-			return nil, "", "", err
+			return nil, nil, err
 		}
-	} else if spec.External {
+	case spec.External:
 		binding, err = addon.ExternalBinding(spec.URL)
 		if err != nil {
-			return nil, "", "", rt.UserError{Err: err}
+			return nil, nil, rt.UserError{Err: err}
 		}
 		if err := r.state.setBinding(space, sharedOwner, spec.Name, binding); err != nil {
-			return nil, "", "", err
+			return nil, nil, err
 		}
-	} else {
+	default:
 		// The service takes its plain name, reachable as e.g. "postgres" the
 		// way siblings reach each other — so it must not seize a name an app
 		// already holds.
 		if info, inspectErr := r.cli.ContainerInspect(ctx, ctrName(space, spec.Name)); inspectErr == nil {
 			if info.Config == nil {
-				return nil, "", "", fmt.Errorf("the Docker container %s has no inspectable configuration", ctrName(space, spec.Name))
+				return nil, nil, fmt.Errorf("the Docker container %s has no inspectable configuration", ctrName(space, spec.Name))
 			}
 			switch {
 			case sameIdentity(info.Config.Labels, appLabels(space, spec.Name, roleWorkload)):
-				return nil, "", "", rt.UserError{Err: fmt.Errorf("the name %q is taken by an app in this space — pick another for the service", spec.Name)}
+				return nil, nil, rt.UserError{Err: fmt.Errorf("the name %q is taken by an app in this space — pick another for the service", spec.Name)}
 			case !sameIdentity(info.Config.Labels, addonLabels(space, spec.Name, roleAddon)):
-				return nil, "", "", requireIdentity("container", ctrName(space, spec.Name), info.Config.Labels,
+				return nil, nil, requireIdentity("container", ctrName(space, spec.Name), info.Config.Labels,
 					addonLabels(space, spec.Name, roleAddon))
 			}
 		} else if !cerrdefs.IsNotFound(inspectErr) {
-			return nil, "", "", inspectErr
+			return nil, nil, inspectErr
 		}
-		in := addons.Input{
-			Space: space, Namespace: netName(space),
-			Name: spec.Name, Version: spec.Version, Storage: spec.Storage,
-			ImageRepository: r.opts.AddonImages.Repository(spec.Type),
-			AIProxyURL:      r.aiProxyURL(),
-		}
-		if in.Version == "" {
-			in.Version = addon.DefaultVersion()
-		}
-		if in.Storage == "" {
-			in.Storage = addon.DefaultStorage()
-		}
+		// An existing instance keeps its credential and, unless asked
+		// otherwise, its parameters.
 		existing, err := r.state.binding(space, sharedOwner, spec.Name)
 		if err != nil {
-			return nil, "", "", err
+			return nil, nil, err
 		}
+		stored, err := r.serviceMetadata(space, spec.Name, existing)
+		if err != nil {
+			return nil, nil, err
+		}
+		params, err = addons.ResolveInstanceParameters(desc, spec.Parameters, stored.Parameters)
+		if err != nil {
+			return nil, nil, rt.UserError{Err: err}
+		}
+		in := addons.Input{
+			Space: space, Namespace: netName(space), Name: spec.Name,
+			ImageRepository: r.opts.AddonImages.Repository(spec.Type),
+			AIProxyURL:      r.aiProxyURL(),
+		}.WithParameters(params)
 		// Reuse the credential the instance was initialized with — rotating
 		// it here would lock the service out of its own kept data.
 		if pw, ok := existing[addon.CredentialKey()]; ok {
 			in.Password = pw
 		} else if in.Password, err = addons.NewPassword(); err != nil {
-			return nil, "", "", err
+			return nil, nil, err
 		}
 		binding = addon.Binding(in)
 		// The unique container name works for both apps in this space and
 		// the admin server, which belongs to multiple space networks.
 		binding = rewriteBindingHost(binding, in.Name+"."+in.Namespace+".svc", ctrName(space, in.Name))
 		if err := r.state.setBinding(space, sharedOwner, spec.Name, binding); err != nil {
-			return nil, "", "", err
+			return nil, nil, err
 		}
 		workload, err := addon.Workload(in)
 		if err != nil {
-			return nil, "", "", err
+			return nil, nil, err
 		}
 		if workload != nil {
 			if err := r.runService(ctx, space, spec.Name, in, workload, binding); err != nil {
-				return nil, "", "", err
+				return nil, nil, err
 			}
 		}
-		version, storage = in.Version, in.Storage
 	}
 	if !isPlugin || spec.External {
-		if err := r.state.writeJSON(addons.MetadataFor(addon), "service-metadata", space, spec.Name+".json"); err != nil {
-			return nil, "", "", err
+		if err := r.state.writeJSON(addons.MetadataFor(desc, params), "service-metadata", space, spec.Name+".json"); err != nil {
+			return nil, nil, err
 		}
 	}
 	// Attached apps hold copies; refresh them (and restart on external
 	// changes, whose addresses may have moved).
 	attached, err := r.state.attachments(space, spec.Name)
 	if err != nil {
-		return nil, "", "", err
+		return nil, nil, err
 	}
 	for _, app := range attached {
 		if err := r.state.setBinding(space, app, spec.Name, binding); err != nil {
-			return nil, "", "", err
+			return nil, nil, err
 		}
 		if spec.External || isPlugin {
 			if _, err := r.Restart(ctx, space, app); err != nil {
-				return nil, "", "", err
+				return nil, nil, err
 			}
 		}
 	}
-	return binding, version, storage, nil
+	return binding, params, nil
 }
 
 // Rewrite address fields only; passwords, usernames and URL paths are data.
@@ -951,12 +979,12 @@ func (r *Runtime) DetachService(ctx context.Context, space, app, name string) er
 	return err
 }
 
-func (r *Runtime) RemoveService(ctx context.Context, space, name string, keepData bool) ([]string, error) {
+func (r *Runtime) RemoveService(ctx context.Context, space, name string, keepData, force bool) ([]string, error) {
 	attached, err := r.state.attachments(space, name)
 	if err != nil {
 		return nil, err
 	}
-	if err := r.deprovisionPlugin(ctx, space, name, keepData); err != nil {
+	if err := r.deprovisionPlugin(ctx, space, name, keepData, force); err != nil {
 		return nil, err
 	}
 	for _, app := range attached {
@@ -994,14 +1022,8 @@ func (r *Runtime) ServiceEndpoint(ctx context.Context, space, name string) (stri
 		return "", 0, err
 	}
 	if state != nil {
-		if !state.Stopped && state.Info != nil {
-			for _, e := range state.Info.Endpoints {
-				if e.Protocol == "" || e.Protocol == "TCP" {
-					return e.Host, e.Port, nil
-				}
-			}
-		}
-		return "", 0, nil
+		host, port := state.Endpoint()
+		return host, port, nil
 	}
 	info, err := r.cli.ContainerInspect(ctx, ctrName(space, name))
 	if cerrdefs.IsNotFound(err) {
@@ -1035,25 +1057,36 @@ func (r *Runtime) ListServices(ctx context.Context, space, owner string) ([]rt.S
 		if err != nil {
 			return nil, err
 		}
-		var metadata addons.Metadata
-		if _, err := r.state.readJSON(&metadata, "service-metadata", space, name+".json"); err != nil {
+		metadata, err := r.serviceMetadata(space, name, data)
+		if err != nil {
 			return nil, err
 		}
-		if metadata.Protocol == "" {
-			metadata.Protocol = addons.LegacyProtocol(data)
-		}
-		info := rt.ServiceBindingInfo{Name: name, Type: metadata.Type, Protocol: addons.NormalizeProtocol(metadata.Protocol)}
+		info := rt.ServiceBindingInfo{Name: name, Type: metadata.Type, Protocol: metadata.Protocol, Parameters: metadata.Parameters}
 		for k := range data {
 			info.Keys = append(info.Keys, k)
 		}
 		sort.Strings(info.Keys)
 		out = append(out, info)
 	}
+	if owner == sharedOwner {
+		// The space's own view also shows plugin instances that have no
+		// binding yet (or any more): pending, failed and stopped ones.
+		bound := map[string]bool{}
+		for _, b := range out {
+			bound[b.Name] = true
+		}
+		unbound, err := r.unboundPluginServices(space, bound)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, unbound...)
+		sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	}
 	return out, nil
 }
 
-func (r *Runtime) SharedServiceValues(ctx context.Context, key string) ([]string, error) {
-	return r.state.bindingValues(key)
+func (r *Runtime) AIProxyTokens(ctx context.Context) ([]string, error) {
+	return r.state.bindingValues("OPENAI_API_KEY", "OPENAI_BASE_URL", r.aiProxyURL())
 }
 
 // --- Health ---------------------------------------------------------------

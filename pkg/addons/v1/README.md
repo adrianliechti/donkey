@@ -61,11 +61,34 @@ not select a built-in editor. `postgresql` and `mariadb` normalize to
 `postgres` and `mysql`. This field is separate from `Endpoint.protocol`,
 which still means TCP, UDP, or SCTP.
 
-The catalog, service listings, and binding API expose the protocol without
-credentials. It is saved outside the app environment. Built-in external
+The catalog and service listings expose the protocol without credentials;
+the authorized binding API includes it alongside connection values. It is
+saved outside the app environment. Built-in external
 bindings keep the protocol of their addon type, so an externally hosted
 PostgreSQL service still opens the database editor. Old bindings without
 metadata use their connection URL scheme for compatibility.
+
+The same protocol selects the catalog icon and console for every provider:
+
+| Protocol | Connection environment | Console |
+| --- | --- | --- |
+| `postgres` | `DATABASE_URL` (`postgres://` or `postgresql://`) | SQL editor |
+| `mysql` | `DATABASE_URL` (`mysql://` or `mariadb://`) | SQL editor |
+| `redis` | `REDIS_URL` (`redis://` or `rediss://`) | Key browser/editor |
+| `s3` | `AWS_ENDPOINT_URL_S3` (HTTP/HTTPS origin), `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, optional `AWS_SESSION_TOKEN` and `AWS_REGION` | Bucket/object browser |
+| `openai` | `OPENAI_BASE_URL` (HTTP/HTTPS base URL), optional `OPENAI_API_KEY` and `OPENAI_MODEL` | Model chat |
+
+For known protocols, `Describe.env_keys` must include the connection URL key;
+`Provision.env` must contain a usable URL for that protocol. Additional app
+variables are allowed when declared. Custom protocols keep their own env
+contract and display a generic service icon without a specialized console.
+An explicit protocol always takes precedence over legacy environment inference.
+
+OpenAI-compatible consoles forward requests through an authenticated service
+route, using the saved endpoint and credential. This supports private and
+external providers without browser CORS access. Operator sessions stay at
+Donkey; provider credentials never authorize access to Donkey's platform AI
+proxy. The S3 console also supports providers issuing temporary credentials.
 
 Database plugins supply `DATABASE_URL`: `postgres://…` / `postgresql://…`
 for PostgreSQL, or `mysql://user:password@host:3306/database` for MySQL/MariaDB.
@@ -90,6 +113,11 @@ also declare one of:
   Service maps to a different pod port, set `kubernetes.port` to that port.
 - `cidrs`: explicit, stable external IP ranges. IPv4 and IPv6 are supported;
   default routes are rejected.
+
+Put the primary client connection first among TCP endpoints: the CLI tunnel
+uses that destination. Other endpoints may describe additional ports required
+by the service. Tunnel output rewrites address fields without changing
+credentials, URL paths, or connections to other destinations.
 
 Donkey grants those destinations to the owning space, bounded by installation
 and space labels. It only installs these additive policies when both
@@ -126,5 +154,5 @@ The [MariaDB example](../../../examples/addon-mariadb/README.md) includes a
 standalone service, container build, namespace-scoped RBAC, ingress policies,
 and app configuration. The initial API supports plugin-managed provisioning;
 URL-only `addon attach --url` remains a built-in addon capability. The
-console selects PostgreSQL or MySQL/MariaDB editors by protocol. The generic
-service tunnel also works with a native database client.
+console selects its editor by protocol. The generic service tunnel also works
+with a native database client.

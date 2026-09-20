@@ -1,0 +1,20 @@
+import { Archive, Database, KeyRound, Server, Sparkles, type LucideIcon } from 'lucide-react'
+
+type ServiceUI = { Icon: LucideIcon; console?: 'database' | 'redis' | 's3' | 'openai'; noun: string }
+
+// Provider names are deliberately absent: compatible plugins and external
+// services share the same presentation and console.
+const protocols: Record<string, ServiceUI> = {
+  postgres: { Icon: Database, console: 'database', noun: 'database' },
+  mysql: { Icon: Database, console: 'database', noun: 'database' },
+  redis: { Icon: KeyRound, console: 'redis', noun: 'keys' },
+  s3: { Icon: Archive, console: 's3', noun: 'buckets' },
+  openai: { Icon: Sparkles, console: 'openai', noun: 'chat' },
+}
+const unknown: ServiceUI = { Icon: Server, noun: 'service' }
+
+export function serviceUI(protocol?: string): ServiceUI {
+  if (protocol === 'postgresql') protocol = 'postgres'
+  if (protocol === 'mariadb') protocol = 'mysql'
+  return protocol && Object.hasOwn(protocols, protocol) ? protocols[protocol] : unknown
+}

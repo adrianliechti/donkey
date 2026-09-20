@@ -1,12 +1,14 @@
 package addons
 
 import (
+	"context"
 	"fmt"
 	"net/url"
 	"os"
 	"strings"
 
 	"github.com/adrianliechti/donkey/internal/config"
+	addonv1 "github.com/adrianliechti/donkey/pkg/addons/v1"
 )
 
 // openai is a binding-only addon: nothing runs in the space. Apps get the
@@ -15,16 +17,16 @@ import (
 // leaves donkey-system.
 type openai struct{}
 
-func (openai) Protocol() string { return "openai" }
+func (openai) Type() string          { return "openai" }
+func (openai) CredentialKey() string { return "OPENAI_API_KEY" }
 
-func (openai) Type() string  { return "openai" }
-func (openai) Title() string { return "OpenAI" }
-func (openai) Description() string {
-	return "The platform's AI, OpenAI-compatible — no key of your own to manage."
+func (o openai) Describe(context.Context) (*addonv1.DescribeResponse, error) {
+	desc := description(o, "OpenAI", "The platform's AI, OpenAI-compatible — no key of your own to manage.",
+		ProtocolOpenAI, ObjectSchema(nil), "OPENAI_API_KEY")
+	// Nothing runs and nothing is stored, so there is no data to keep.
+	desc.Capabilities = nil
+	return desc, nil
 }
-func (openai) CredentialKey() string  { return "OPENAI_API_KEY" }
-func (openai) DefaultVersion() string { return "" }
-func (openai) DefaultStorage() string { return "" }
 
 func (openai) Binding(in Input) map[string]string {
 	b := map[string]string{

@@ -9,6 +9,7 @@ package addonv1
 import (
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
+	structpb "google.golang.org/protobuf/types/known/structpb"
 	reflect "reflect"
 	sync "sync"
 	unsafe "unsafe"
@@ -58,17 +59,24 @@ func (*DescribeRequest) Descriptor() ([]byte, []int) {
 }
 
 type DescribeResponse struct {
-	state          protoimpl.MessageState `protogen:"open.v1"`
-	Type           string                 `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"`
-	Title          string                 `protobuf:"bytes,2,opt,name=title,proto3" json:"title,omitempty"`
-	Description    string                 `protobuf:"bytes,3,opt,name=description,proto3" json:"description,omitempty"`
-	DefaultVersion string                 `protobuf:"bytes,4,opt,name=default_version,json=defaultVersion,proto3" json:"default_version,omitempty"`
-	DefaultStorage string                 `protobuf:"bytes,5,opt,name=default_storage,json=defaultStorage,proto3" json:"default_storage,omitempty"`
-	// The environment contract, used by the catalog without provisioning.
-	EnvKeys []string `protobuf:"bytes,6,rep,name=env_keys,json=envKeys,proto3" json:"env_keys,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Type is the lowercase catalog id; it must equal the configured type.
+	Type        string `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"`
+	Title       string `protobuf:"bytes,2,opt,name=title,proto3" json:"title,omitempty"`
+	Description string `protobuf:"bytes,3,opt,name=description,proto3" json:"description,omitempty"`
 	// Application protocol used by clients and the console: postgres, mysql
 	// (including MariaDB), redis, s3, openai, or a custom lowercase name.
-	Protocol      string `protobuf:"bytes,7,opt,name=protocol,proto3" json:"protocol,omitempty"`
+	Protocol string `protobuf:"bytes,4,opt,name=protocol,proto3" json:"protocol,omitempty"`
+	// A JSON Schema (draft 2020-12; see the README for the supported subset)
+	// describing ProvisionRequest.parameters. Donkey validates requests
+	// against it, applies top-level defaults and renders it as a form.
+	// Absent or empty means the plugin takes no parameters.
+	Parameters *structpb.Struct `protobuf:"bytes,5,opt,name=parameters,proto3" json:"parameters,omitempty"`
+	// The environment contract, used by the catalog without provisioning.
+	Env []*EnvVar `protobuf:"bytes,6,rep,name=env,proto3" json:"env,omitempty"`
+	// Well-known values: "runtime:kubernetes", "runtime:docker" (absent means
+	// every runtime) and "keep-data" (Deprovision honours keep_data).
+	Capabilities  []string `protobuf:"bytes,7,rep,name=capabilities,proto3" json:"capabilities,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -124,32 +132,102 @@ func (x *DescribeResponse) GetDescription() string {
 	return ""
 }
 
-func (x *DescribeResponse) GetDefaultVersion() string {
-	if x != nil {
-		return x.DefaultVersion
-	}
-	return ""
-}
-
-func (x *DescribeResponse) GetDefaultStorage() string {
-	if x != nil {
-		return x.DefaultStorage
-	}
-	return ""
-}
-
-func (x *DescribeResponse) GetEnvKeys() []string {
-	if x != nil {
-		return x.EnvKeys
-	}
-	return nil
-}
-
 func (x *DescribeResponse) GetProtocol() string {
 	if x != nil {
 		return x.Protocol
 	}
 	return ""
+}
+
+func (x *DescribeResponse) GetParameters() *structpb.Struct {
+	if x != nil {
+		return x.Parameters
+	}
+	return nil
+}
+
+func (x *DescribeResponse) GetEnv() []*EnvVar {
+	if x != nil {
+		return x.Env
+	}
+	return nil
+}
+
+func (x *DescribeResponse) GetCapabilities() []string {
+	if x != nil {
+		return x.Capabilities
+	}
+	return nil
+}
+
+type EnvVar struct {
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	Name        string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Description string                 `protobuf:"bytes,2,opt,name=description,proto3" json:"description,omitempty"`
+	// Secret values are masked in consoles and logs.
+	Secret bool `protobuf:"varint,3,opt,name=secret,proto3" json:"secret,omitempty"`
+	// An optional variable may be absent from ProvisionResponse.env.
+	Optional      bool `protobuf:"varint,4,opt,name=optional,proto3" json:"optional,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *EnvVar) Reset() {
+	*x = EnvVar{}
+	mi := &file_addon_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *EnvVar) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*EnvVar) ProtoMessage() {}
+
+func (x *EnvVar) ProtoReflect() protoreflect.Message {
+	mi := &file_addon_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use EnvVar.ProtoReflect.Descriptor instead.
+func (*EnvVar) Descriptor() ([]byte, []int) {
+	return file_addon_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *EnvVar) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *EnvVar) GetDescription() string {
+	if x != nil {
+		return x.Description
+	}
+	return ""
+}
+
+func (x *EnvVar) GetSecret() bool {
+	if x != nil {
+		return x.Secret
+	}
+	return false
+}
+
+func (x *EnvVar) GetOptional() bool {
+	if x != nil {
+		return x.Optional
+	}
+	return false
 }
 
 type Instance struct {
@@ -164,13 +242,16 @@ type Instance struct {
 	// Kubernetes labels selecting this space's consumers. A plugin may use
 	// these with namespace to admit clients in its own ingress policy.
 	ConsumerLabels map[string]string `protobuf:"bytes,6,rep,name=consumer_labels,json=consumerLabels,proto3" json:"consumer_labels,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// Additional context Donkey may attach in later releases (for example the
+	// space's owner). Plugins must tolerate unknown keys.
+	Labels        map[string]string `protobuf:"bytes,7,rep,name=labels,proto3" json:"labels,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Instance) Reset() {
 	*x = Instance{}
-	mi := &file_addon_proto_msgTypes[2]
+	mi := &file_addon_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -182,7 +263,7 @@ func (x *Instance) String() string {
 func (*Instance) ProtoMessage() {}
 
 func (x *Instance) ProtoReflect() protoreflect.Message {
-	mi := &file_addon_proto_msgTypes[2]
+	mi := &file_addon_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -195,7 +276,7 @@ func (x *Instance) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Instance.ProtoReflect.Descriptor instead.
 func (*Instance) Descriptor() ([]byte, []int) {
-	return file_addon_proto_rawDescGZIP(), []int{2}
+	return file_addon_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *Instance) GetInstallation() string {
@@ -240,18 +321,27 @@ func (x *Instance) GetConsumerLabels() map[string]string {
 	return nil
 }
 
+func (x *Instance) GetLabels() map[string]string {
+	if x != nil {
+		return x.Labels
+	}
+	return nil
+}
+
 type ProvisionRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Instance      *Instance              `protobuf:"bytes,1,opt,name=instance,proto3" json:"instance,omitempty"`
-	Version       string                 `protobuf:"bytes,2,opt,name=version,proto3" json:"version,omitempty"`
-	Storage       string                 `protobuf:"bytes,3,opt,name=storage,proto3" json:"storage,omitempty"`
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	Instance *Instance              `protobuf:"bytes,1,opt,name=instance,proto3" json:"instance,omitempty"`
+	// Validated against DescribeResponse.parameters, with defaults applied.
+	// A repeat request for a retained instance carries the parameters it was
+	// created with unless the caller explicitly changed them.
+	Parameters    *structpb.Struct `protobuf:"bytes,2,opt,name=parameters,proto3" json:"parameters,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ProvisionRequest) Reset() {
 	*x = ProvisionRequest{}
-	mi := &file_addon_proto_msgTypes[3]
+	mi := &file_addon_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -263,7 +353,7 @@ func (x *ProvisionRequest) String() string {
 func (*ProvisionRequest) ProtoMessage() {}
 
 func (x *ProvisionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_addon_proto_msgTypes[3]
+	mi := &file_addon_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -276,7 +366,7 @@ func (x *ProvisionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProvisionRequest.ProtoReflect.Descriptor instead.
 func (*ProvisionRequest) Descriptor() ([]byte, []int) {
-	return file_addon_proto_rawDescGZIP(), []int{3}
+	return file_addon_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *ProvisionRequest) GetInstance() *Instance {
@@ -286,39 +376,87 @@ func (x *ProvisionRequest) GetInstance() *Instance {
 	return nil
 }
 
-func (x *ProvisionRequest) GetVersion() string {
+func (x *ProvisionRequest) GetParameters() *structpb.Struct {
 	if x != nil {
-		return x.Version
+		return x.Parameters
+	}
+	return nil
+}
+
+// Progress events carry `message`; the final event carries `result`.
+type ProvisionEvent struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Message       string                 `protobuf:"bytes,1,opt,name=message,proto3" json:"message,omitempty"`
+	Result        *ProvisionResponse     `protobuf:"bytes,2,opt,name=result,proto3" json:"result,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ProvisionEvent) Reset() {
+	*x = ProvisionEvent{}
+	mi := &file_addon_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ProvisionEvent) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ProvisionEvent) ProtoMessage() {}
+
+func (x *ProvisionEvent) ProtoReflect() protoreflect.Message {
+	mi := &file_addon_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ProvisionEvent.ProtoReflect.Descriptor instead.
+func (*ProvisionEvent) Descriptor() ([]byte, []int) {
+	return file_addon_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *ProvisionEvent) GetMessage() string {
+	if x != nil {
+		return x.Message
 	}
 	return ""
 }
 
-func (x *ProvisionRequest) GetStorage() string {
+func (x *ProvisionEvent) GetResult() *ProvisionResponse {
 	if x != nil {
-		return x.Storage
+		return x.Result
 	}
-	return ""
+	return nil
 }
 
 type ProvisionResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// These values (including credentials) are injected into attached apps.
+	// Keys must be declared in DescribeResponse.env; non-optional keys are
+	// required.
 	Env map[string]string `protobuf:"bytes,1,rep,name=env,proto3" json:"env,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	// Connection URLs are explicit metadata, never inferred from env values.
 	Urls []string `protobuf:"bytes,2,rep,name=urls,proto3" json:"urls,omitempty"`
 	// Every destination an app needs. URLs alone cannot express a portable
 	// Kubernetes NetworkPolicy. Specify pods or CIDRs when egress is fenced.
 	Endpoints []*Endpoint `protobuf:"bytes,3,rep,name=endpoints,proto3" json:"endpoints,omitempty"`
-	// Defaults to Describe.protocol; if both are set they must agree.
-	// This is distinct from Endpoint.protocol, which describes TCP/UDP/SCTP.
-	Protocol      string `protobuf:"bytes,4,opt,name=protocol,proto3" json:"protocol,omitempty"`
+	// The effective parameters, when they differ from the request (a grown
+	// disk, a resolved version). Absent means the request's values apply.
+	Parameters    *structpb.Struct `protobuf:"bytes,4,opt,name=parameters,proto3" json:"parameters,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ProvisionResponse) Reset() {
 	*x = ProvisionResponse{}
-	mi := &file_addon_proto_msgTypes[4]
+	mi := &file_addon_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -330,7 +468,7 @@ func (x *ProvisionResponse) String() string {
 func (*ProvisionResponse) ProtoMessage() {}
 
 func (x *ProvisionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_addon_proto_msgTypes[4]
+	mi := &file_addon_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -343,7 +481,7 @@ func (x *ProvisionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProvisionResponse.ProtoReflect.Descriptor instead.
 func (*ProvisionResponse) Descriptor() ([]byte, []int) {
-	return file_addon_proto_rawDescGZIP(), []int{4}
+	return file_addon_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *ProvisionResponse) GetEnv() map[string]string {
@@ -367,11 +505,11 @@ func (x *ProvisionResponse) GetEndpoints() []*Endpoint {
 	return nil
 }
 
-func (x *ProvisionResponse) GetProtocol() string {
+func (x *ProvisionResponse) GetParameters() *structpb.Struct {
 	if x != nil {
-		return x.Protocol
+		return x.Parameters
 	}
-	return ""
+	return nil
 }
 
 type Endpoint struct {
@@ -379,17 +517,21 @@ type Endpoint struct {
 	Host     string                 `protobuf:"bytes,1,opt,name=host,proto3" json:"host,omitempty"`         // DNS name or IP, without a scheme or port
 	Port     int32                  `protobuf:"varint,2,opt,name=port,proto3" json:"port,omitempty"`        // port the client dials
 	Protocol string                 `protobuf:"bytes,3,opt,name=protocol,proto3" json:"protocol,omitempty"` // "TCP" (also the default), "UDP", or "SCTP"
-	// Exactly one network destination may be supplied. Kubernetes services
-	// should use pod labels, not their ClusterIP (translation is CNI-specific).
-	Kubernetes    *KubernetesTarget `protobuf:"bytes,4,opt,name=kubernetes,proto3" json:"kubernetes,omitempty"`
-	Cidrs         []string          `protobuf:"bytes,5,rep,name=cidrs,proto3" json:"cidrs,omitempty"` // external, stable IP ranges; no DNS snapshots
+	// The network destination for fenced egress. Kubernetes services should
+	// use pod labels, not their ClusterIP (translation is CNI-specific).
+	//
+	// Types that are valid to be assigned to Target:
+	//
+	//	*Endpoint_Kubernetes
+	//	*Endpoint_Cidrs
+	Target        isEndpoint_Target `protobuf_oneof:"target"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Endpoint) Reset() {
 	*x = Endpoint{}
-	mi := &file_addon_proto_msgTypes[5]
+	mi := &file_addon_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -401,7 +543,7 @@ func (x *Endpoint) String() string {
 func (*Endpoint) ProtoMessage() {}
 
 func (x *Endpoint) ProtoReflect() protoreflect.Message {
-	mi := &file_addon_proto_msgTypes[5]
+	mi := &file_addon_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -414,7 +556,7 @@ func (x *Endpoint) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Endpoint.ProtoReflect.Descriptor instead.
 func (*Endpoint) Descriptor() ([]byte, []int) {
-	return file_addon_proto_rawDescGZIP(), []int{5}
+	return file_addon_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *Endpoint) GetHost() string {
@@ -438,19 +580,46 @@ func (x *Endpoint) GetProtocol() string {
 	return ""
 }
 
-func (x *Endpoint) GetKubernetes() *KubernetesTarget {
+func (x *Endpoint) GetTarget() isEndpoint_Target {
 	if x != nil {
-		return x.Kubernetes
+		return x.Target
 	}
 	return nil
 }
 
-func (x *Endpoint) GetCidrs() []string {
+func (x *Endpoint) GetKubernetes() *KubernetesTarget {
 	if x != nil {
-		return x.Cidrs
+		if x, ok := x.Target.(*Endpoint_Kubernetes); ok {
+			return x.Kubernetes
+		}
 	}
 	return nil
 }
+
+func (x *Endpoint) GetCidrs() *CIDRTarget {
+	if x != nil {
+		if x, ok := x.Target.(*Endpoint_Cidrs); ok {
+			return x.Cidrs
+		}
+	}
+	return nil
+}
+
+type isEndpoint_Target interface {
+	isEndpoint_Target()
+}
+
+type Endpoint_Kubernetes struct {
+	Kubernetes *KubernetesTarget `protobuf:"bytes,4,opt,name=kubernetes,proto3,oneof"`
+}
+
+type Endpoint_Cidrs struct {
+	Cidrs *CIDRTarget `protobuf:"bytes,5,opt,name=cidrs,proto3,oneof"`
+}
+
+func (*Endpoint_Kubernetes) isEndpoint_Target() {}
+
+func (*Endpoint_Cidrs) isEndpoint_Target() {}
 
 type KubernetesTarget struct {
 	state     protoimpl.MessageState `protogen:"open.v1"`
@@ -464,7 +633,7 @@ type KubernetesTarget struct {
 
 func (x *KubernetesTarget) Reset() {
 	*x = KubernetesTarget{}
-	mi := &file_addon_proto_msgTypes[6]
+	mi := &file_addon_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -476,7 +645,7 @@ func (x *KubernetesTarget) String() string {
 func (*KubernetesTarget) ProtoMessage() {}
 
 func (x *KubernetesTarget) ProtoReflect() protoreflect.Message {
-	mi := &file_addon_proto_msgTypes[6]
+	mi := &file_addon_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -489,7 +658,7 @@ func (x *KubernetesTarget) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use KubernetesTarget.ProtoReflect.Descriptor instead.
 func (*KubernetesTarget) Descriptor() ([]byte, []int) {
-	return file_addon_proto_rawDescGZIP(), []int{6}
+	return file_addon_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *KubernetesTarget) GetNamespace() string {
@@ -513,10 +682,55 @@ func (x *KubernetesTarget) GetPort() int32 {
 	return 0
 }
 
+type CIDRTarget struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Ranges        []string               `protobuf:"bytes,1,rep,name=ranges,proto3" json:"ranges,omitempty"` // external, stable IP ranges; no DNS snapshots
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CIDRTarget) Reset() {
+	*x = CIDRTarget{}
+	mi := &file_addon_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CIDRTarget) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CIDRTarget) ProtoMessage() {}
+
+func (x *CIDRTarget) ProtoReflect() protoreflect.Message {
+	mi := &file_addon_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CIDRTarget.ProtoReflect.Descriptor instead.
+func (*CIDRTarget) Descriptor() ([]byte, []int) {
+	return file_addon_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *CIDRTarget) GetRanges() []string {
+	if x != nil {
+		return x.Ranges
+	}
+	return nil
+}
+
 type DeprovisionRequest struct {
 	state    protoimpl.MessageState `protogen:"open.v1"`
 	Instance *Instance              `protobuf:"bytes,1,opt,name=instance,proto3" json:"instance,omitempty"`
 	// Stop the service but retain data AND the credentials needed to reuse it.
+	// Only sent to plugins declaring the "keep-data" capability.
 	KeepData      bool `protobuf:"varint,2,opt,name=keep_data,json=keepData,proto3" json:"keep_data,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -524,7 +738,7 @@ type DeprovisionRequest struct {
 
 func (x *DeprovisionRequest) Reset() {
 	*x = DeprovisionRequest{}
-	mi := &file_addon_proto_msgTypes[7]
+	mi := &file_addon_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -536,7 +750,7 @@ func (x *DeprovisionRequest) String() string {
 func (*DeprovisionRequest) ProtoMessage() {}
 
 func (x *DeprovisionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_addon_proto_msgTypes[7]
+	mi := &file_addon_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -549,7 +763,7 @@ func (x *DeprovisionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeprovisionRequest.ProtoReflect.Descriptor instead.
 func (*DeprovisionRequest) Descriptor() ([]byte, []int) {
-	return file_addon_proto_rawDescGZIP(), []int{7}
+	return file_addon_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *DeprovisionRequest) GetInstance() *Instance {
@@ -574,7 +788,7 @@ type DeprovisionResponse struct {
 
 func (x *DeprovisionResponse) Reset() {
 	*x = DeprovisionResponse{}
-	mi := &file_addon_proto_msgTypes[8]
+	mi := &file_addon_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -586,7 +800,7 @@ func (x *DeprovisionResponse) String() string {
 func (*DeprovisionResponse) ProtoMessage() {}
 
 func (x *DeprovisionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_addon_proto_msgTypes[8]
+	mi := &file_addon_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -599,53 +813,71 @@ func (x *DeprovisionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeprovisionResponse.ProtoReflect.Descriptor instead.
 func (*DeprovisionResponse) Descriptor() ([]byte, []int) {
-	return file_addon_proto_rawDescGZIP(), []int{8}
+	return file_addon_proto_rawDescGZIP(), []int{11}
 }
 
 var File_addon_proto protoreflect.FileDescriptor
 
 const file_addon_proto_rawDesc = "" +
 	"\n" +
-	"\vaddon.proto\x12\x10donkey.addons.v1\"\x11\n" +
-	"\x0fDescribeRequest\"\xe7\x01\n" +
+	"\vaddon.proto\x12\x10donkey.addons.v1\x1a\x1cgoogle/protobuf/struct.proto\"\x11\n" +
+	"\x0fDescribeRequest\"\x83\x02\n" +
 	"\x10DescribeResponse\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12\x14\n" +
 	"\x05title\x18\x02 \x01(\tR\x05title\x12 \n" +
-	"\vdescription\x18\x03 \x01(\tR\vdescription\x12'\n" +
-	"\x0fdefault_version\x18\x04 \x01(\tR\x0edefaultVersion\x12'\n" +
-	"\x0fdefault_storage\x18\x05 \x01(\tR\x0edefaultStorage\x12\x19\n" +
-	"\benv_keys\x18\x06 \x03(\tR\aenvKeys\x12\x1a\n" +
-	"\bprotocol\x18\a \x01(\tR\bprotocol\"\xac\x02\n" +
+	"\vdescription\x18\x03 \x01(\tR\vdescription\x12\x1a\n" +
+	"\bprotocol\x18\x04 \x01(\tR\bprotocol\x127\n" +
+	"\n" +
+	"parameters\x18\x05 \x01(\v2\x17.google.protobuf.StructR\n" +
+	"parameters\x12*\n" +
+	"\x03env\x18\x06 \x03(\v2\x18.donkey.addons.v1.EnvVarR\x03env\x12\"\n" +
+	"\fcapabilities\x18\a \x03(\tR\fcapabilities\"r\n" +
+	"\x06EnvVar\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12 \n" +
+	"\vdescription\x18\x02 \x01(\tR\vdescription\x12\x16\n" +
+	"\x06secret\x18\x03 \x01(\bR\x06secret\x12\x1a\n" +
+	"\boptional\x18\x04 \x01(\bR\boptional\"\xa7\x03\n" +
 	"\bInstance\x12\"\n" +
 	"\finstallation\x18\x01 \x01(\tR\finstallation\x12\x14\n" +
 	"\x05space\x18\x02 \x01(\tR\x05space\x12\x12\n" +
 	"\x04name\x18\x03 \x01(\tR\x04name\x12\x18\n" +
 	"\aruntime\x18\x04 \x01(\tR\aruntime\x12\x1c\n" +
 	"\tnamespace\x18\x05 \x01(\tR\tnamespace\x12W\n" +
-	"\x0fconsumer_labels\x18\x06 \x03(\v2..donkey.addons.v1.Instance.ConsumerLabelsEntryR\x0econsumerLabels\x1aA\n" +
+	"\x0fconsumer_labels\x18\x06 \x03(\v2..donkey.addons.v1.Instance.ConsumerLabelsEntryR\x0econsumerLabels\x12>\n" +
+	"\x06labels\x18\a \x03(\v2&.donkey.addons.v1.Instance.LabelsEntryR\x06labels\x1aA\n" +
 	"\x13ConsumerLabelsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"~\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1a9\n" +
+	"\vLabelsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x83\x01\n" +
 	"\x10ProvisionRequest\x126\n" +
-	"\binstance\x18\x01 \x01(\v2\x1a.donkey.addons.v1.InstanceR\binstance\x12\x18\n" +
-	"\aversion\x18\x02 \x01(\tR\aversion\x12\x18\n" +
-	"\astorage\x18\x03 \x01(\tR\astorage\"\xf5\x01\n" +
+	"\binstance\x18\x01 \x01(\v2\x1a.donkey.addons.v1.InstanceR\binstance\x127\n" +
+	"\n" +
+	"parameters\x18\x02 \x01(\v2\x17.google.protobuf.StructR\n" +
+	"parameters\"g\n" +
+	"\x0eProvisionEvent\x12\x18\n" +
+	"\amessage\x18\x01 \x01(\tR\amessage\x12;\n" +
+	"\x06result\x18\x02 \x01(\v2#.donkey.addons.v1.ProvisionResponseR\x06result\"\x92\x02\n" +
 	"\x11ProvisionResponse\x12>\n" +
 	"\x03env\x18\x01 \x03(\v2,.donkey.addons.v1.ProvisionResponse.EnvEntryR\x03env\x12\x12\n" +
 	"\x04urls\x18\x02 \x03(\tR\x04urls\x128\n" +
-	"\tendpoints\x18\x03 \x03(\v2\x1a.donkey.addons.v1.EndpointR\tendpoints\x12\x1a\n" +
-	"\bprotocol\x18\x04 \x01(\tR\bprotocol\x1a6\n" +
+	"\tendpoints\x18\x03 \x03(\v2\x1a.donkey.addons.v1.EndpointR\tendpoints\x127\n" +
+	"\n" +
+	"parameters\x18\x04 \x01(\v2\x17.google.protobuf.StructR\n" +
+	"parameters\x1a6\n" +
 	"\bEnvEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xa8\x01\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xd4\x01\n" +
 	"\bEndpoint\x12\x12\n" +
 	"\x04host\x18\x01 \x01(\tR\x04host\x12\x12\n" +
 	"\x04port\x18\x02 \x01(\x05R\x04port\x12\x1a\n" +
-	"\bprotocol\x18\x03 \x01(\tR\bprotocol\x12B\n" +
+	"\bprotocol\x18\x03 \x01(\tR\bprotocol\x12D\n" +
 	"\n" +
-	"kubernetes\x18\x04 \x01(\v2\".donkey.addons.v1.KubernetesTargetR\n" +
-	"kubernetes\x12\x14\n" +
-	"\x05cidrs\x18\x05 \x03(\tR\x05cidrs\"\xd4\x01\n" +
+	"kubernetes\x18\x04 \x01(\v2\".donkey.addons.v1.KubernetesTargetH\x00R\n" +
+	"kubernetes\x124\n" +
+	"\x05cidrs\x18\x05 \x01(\v2\x1c.donkey.addons.v1.CIDRTargetH\x00R\x05cidrsB\b\n" +
+	"\x06target\"\xd4\x01\n" +
 	"\x10KubernetesTarget\x12\x1c\n" +
 	"\tnamespace\x18\x01 \x01(\tR\tnamespace\x12P\n" +
 	"\n" +
@@ -653,14 +885,17 @@ const file_addon_proto_rawDesc = "" +
 	"\x04port\x18\x03 \x01(\x05R\x04port\x1a<\n" +
 	"\x0ePodLabelsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"i\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"$\n" +
+	"\n" +
+	"CIDRTarget\x12\x16\n" +
+	"\x06ranges\x18\x01 \x03(\tR\x06ranges\"i\n" +
 	"\x12DeprovisionRequest\x126\n" +
 	"\binstance\x18\x01 \x01(\v2\x1a.donkey.addons.v1.InstanceR\binstance\x12\x1b\n" +
 	"\tkeep_data\x18\x02 \x01(\bR\bkeepData\"\x15\n" +
-	"\x13DeprovisionResponse2\x92\x02\n" +
+	"\x13DeprovisionResponse2\x91\x02\n" +
 	"\vAddonPlugin\x12Q\n" +
-	"\bDescribe\x12!.donkey.addons.v1.DescribeRequest\x1a\".donkey.addons.v1.DescribeResponse\x12T\n" +
-	"\tProvision\x12\".donkey.addons.v1.ProvisionRequest\x1a#.donkey.addons.v1.ProvisionResponse\x12Z\n" +
+	"\bDescribe\x12!.donkey.addons.v1.DescribeRequest\x1a\".donkey.addons.v1.DescribeResponse\x12S\n" +
+	"\tProvision\x12\".donkey.addons.v1.ProvisionRequest\x1a .donkey.addons.v1.ProvisionEvent0\x01\x12Z\n" +
 	"\vDeprovision\x12$.donkey.addons.v1.DeprovisionRequest\x1a%.donkey.addons.v1.DeprovisionResponseB7Z5github.com/adrianliechti/donkey/pkg/addons/v1;addonv1b\x06proto3"
 
 var (
@@ -675,40 +910,52 @@ func file_addon_proto_rawDescGZIP() []byte {
 	return file_addon_proto_rawDescData
 }
 
-var file_addon_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
+var file_addon_proto_msgTypes = make([]protoimpl.MessageInfo, 16)
 var file_addon_proto_goTypes = []any{
 	(*DescribeRequest)(nil),     // 0: donkey.addons.v1.DescribeRequest
 	(*DescribeResponse)(nil),    // 1: donkey.addons.v1.DescribeResponse
-	(*Instance)(nil),            // 2: donkey.addons.v1.Instance
-	(*ProvisionRequest)(nil),    // 3: donkey.addons.v1.ProvisionRequest
-	(*ProvisionResponse)(nil),   // 4: donkey.addons.v1.ProvisionResponse
-	(*Endpoint)(nil),            // 5: donkey.addons.v1.Endpoint
-	(*KubernetesTarget)(nil),    // 6: donkey.addons.v1.KubernetesTarget
-	(*DeprovisionRequest)(nil),  // 7: donkey.addons.v1.DeprovisionRequest
-	(*DeprovisionResponse)(nil), // 8: donkey.addons.v1.DeprovisionResponse
-	nil,                         // 9: donkey.addons.v1.Instance.ConsumerLabelsEntry
-	nil,                         // 10: donkey.addons.v1.ProvisionResponse.EnvEntry
-	nil,                         // 11: donkey.addons.v1.KubernetesTarget.PodLabelsEntry
+	(*EnvVar)(nil),              // 2: donkey.addons.v1.EnvVar
+	(*Instance)(nil),            // 3: donkey.addons.v1.Instance
+	(*ProvisionRequest)(nil),    // 4: donkey.addons.v1.ProvisionRequest
+	(*ProvisionEvent)(nil),      // 5: donkey.addons.v1.ProvisionEvent
+	(*ProvisionResponse)(nil),   // 6: donkey.addons.v1.ProvisionResponse
+	(*Endpoint)(nil),            // 7: donkey.addons.v1.Endpoint
+	(*KubernetesTarget)(nil),    // 8: donkey.addons.v1.KubernetesTarget
+	(*CIDRTarget)(nil),          // 9: donkey.addons.v1.CIDRTarget
+	(*DeprovisionRequest)(nil),  // 10: donkey.addons.v1.DeprovisionRequest
+	(*DeprovisionResponse)(nil), // 11: donkey.addons.v1.DeprovisionResponse
+	nil,                         // 12: donkey.addons.v1.Instance.ConsumerLabelsEntry
+	nil,                         // 13: donkey.addons.v1.Instance.LabelsEntry
+	nil,                         // 14: donkey.addons.v1.ProvisionResponse.EnvEntry
+	nil,                         // 15: donkey.addons.v1.KubernetesTarget.PodLabelsEntry
+	(*structpb.Struct)(nil),     // 16: google.protobuf.Struct
 }
 var file_addon_proto_depIdxs = []int32{
-	9,  // 0: donkey.addons.v1.Instance.consumer_labels:type_name -> donkey.addons.v1.Instance.ConsumerLabelsEntry
-	2,  // 1: donkey.addons.v1.ProvisionRequest.instance:type_name -> donkey.addons.v1.Instance
-	10, // 2: donkey.addons.v1.ProvisionResponse.env:type_name -> donkey.addons.v1.ProvisionResponse.EnvEntry
-	5,  // 3: donkey.addons.v1.ProvisionResponse.endpoints:type_name -> donkey.addons.v1.Endpoint
-	6,  // 4: donkey.addons.v1.Endpoint.kubernetes:type_name -> donkey.addons.v1.KubernetesTarget
-	11, // 5: donkey.addons.v1.KubernetesTarget.pod_labels:type_name -> donkey.addons.v1.KubernetesTarget.PodLabelsEntry
-	2,  // 6: donkey.addons.v1.DeprovisionRequest.instance:type_name -> donkey.addons.v1.Instance
-	0,  // 7: donkey.addons.v1.AddonPlugin.Describe:input_type -> donkey.addons.v1.DescribeRequest
-	3,  // 8: donkey.addons.v1.AddonPlugin.Provision:input_type -> donkey.addons.v1.ProvisionRequest
-	7,  // 9: donkey.addons.v1.AddonPlugin.Deprovision:input_type -> donkey.addons.v1.DeprovisionRequest
-	1,  // 10: donkey.addons.v1.AddonPlugin.Describe:output_type -> donkey.addons.v1.DescribeResponse
-	4,  // 11: donkey.addons.v1.AddonPlugin.Provision:output_type -> donkey.addons.v1.ProvisionResponse
-	8,  // 12: donkey.addons.v1.AddonPlugin.Deprovision:output_type -> donkey.addons.v1.DeprovisionResponse
-	10, // [10:13] is the sub-list for method output_type
-	7,  // [7:10] is the sub-list for method input_type
-	7,  // [7:7] is the sub-list for extension type_name
-	7,  // [7:7] is the sub-list for extension extendee
-	0,  // [0:7] is the sub-list for field type_name
+	16, // 0: donkey.addons.v1.DescribeResponse.parameters:type_name -> google.protobuf.Struct
+	2,  // 1: donkey.addons.v1.DescribeResponse.env:type_name -> donkey.addons.v1.EnvVar
+	12, // 2: donkey.addons.v1.Instance.consumer_labels:type_name -> donkey.addons.v1.Instance.ConsumerLabelsEntry
+	13, // 3: donkey.addons.v1.Instance.labels:type_name -> donkey.addons.v1.Instance.LabelsEntry
+	3,  // 4: donkey.addons.v1.ProvisionRequest.instance:type_name -> donkey.addons.v1.Instance
+	16, // 5: donkey.addons.v1.ProvisionRequest.parameters:type_name -> google.protobuf.Struct
+	6,  // 6: donkey.addons.v1.ProvisionEvent.result:type_name -> donkey.addons.v1.ProvisionResponse
+	14, // 7: donkey.addons.v1.ProvisionResponse.env:type_name -> donkey.addons.v1.ProvisionResponse.EnvEntry
+	7,  // 8: donkey.addons.v1.ProvisionResponse.endpoints:type_name -> donkey.addons.v1.Endpoint
+	16, // 9: donkey.addons.v1.ProvisionResponse.parameters:type_name -> google.protobuf.Struct
+	8,  // 10: donkey.addons.v1.Endpoint.kubernetes:type_name -> donkey.addons.v1.KubernetesTarget
+	9,  // 11: donkey.addons.v1.Endpoint.cidrs:type_name -> donkey.addons.v1.CIDRTarget
+	15, // 12: donkey.addons.v1.KubernetesTarget.pod_labels:type_name -> donkey.addons.v1.KubernetesTarget.PodLabelsEntry
+	3,  // 13: donkey.addons.v1.DeprovisionRequest.instance:type_name -> donkey.addons.v1.Instance
+	0,  // 14: donkey.addons.v1.AddonPlugin.Describe:input_type -> donkey.addons.v1.DescribeRequest
+	4,  // 15: donkey.addons.v1.AddonPlugin.Provision:input_type -> donkey.addons.v1.ProvisionRequest
+	10, // 16: donkey.addons.v1.AddonPlugin.Deprovision:input_type -> donkey.addons.v1.DeprovisionRequest
+	1,  // 17: donkey.addons.v1.AddonPlugin.Describe:output_type -> donkey.addons.v1.DescribeResponse
+	5,  // 18: donkey.addons.v1.AddonPlugin.Provision:output_type -> donkey.addons.v1.ProvisionEvent
+	11, // 19: donkey.addons.v1.AddonPlugin.Deprovision:output_type -> donkey.addons.v1.DeprovisionResponse
+	17, // [17:20] is the sub-list for method output_type
+	14, // [14:17] is the sub-list for method input_type
+	14, // [14:14] is the sub-list for extension type_name
+	14, // [14:14] is the sub-list for extension extendee
+	0,  // [0:14] is the sub-list for field type_name
 }
 
 func init() { file_addon_proto_init() }
@@ -716,13 +963,17 @@ func file_addon_proto_init() {
 	if File_addon_proto != nil {
 		return
 	}
+	file_addon_proto_msgTypes[7].OneofWrappers = []any{
+		(*Endpoint_Kubernetes)(nil),
+		(*Endpoint_Cidrs)(nil),
+	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_addon_proto_rawDesc), len(file_addon_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   12,
+			NumMessages:   16,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

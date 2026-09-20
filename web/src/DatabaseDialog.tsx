@@ -686,8 +686,8 @@ function TableView({
 
   const limit = 50
 
-  const order = sorting.length > 0 ? { column: sorting[0].id, desc: sorting[0].desc } : undefined
   const load = useCallback(() => {
+    const order = sorting.length > 0 ? { column: sorting[0].id, desc: sorting[0].desc } : undefined
     api
       .dbRows(space, service, db, table.schema, table.name, limit, offset, order)
       .then((res) => {
@@ -695,7 +695,7 @@ function TableView({
         setError('')
       })
       .catch((err) => setError(errText(err, 'Loading rows did not work.')))
-  }, [space, service, db, table.schema, table.name, offset, order?.column, order?.desc])
+  }, [space, service, db, table.schema, table.name, offset, sorting])
 
   useEffect(() => {
     load()

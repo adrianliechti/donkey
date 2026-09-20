@@ -4,6 +4,7 @@ go 1.26.3
 
 require (
 	github.com/BurntSushi/toml v1.6.0
+	github.com/adrianliechti/donkey/pkg/addons v0.0.0-00010101000000-000000000000
 	github.com/alicebob/miniredis/v2 v2.39.0
 	github.com/aymanbagabas/go-udiff v0.4.1
 	github.com/charmbracelet/huh v1.0.0
@@ -109,6 +110,7 @@ require (
 	github.com/gofrs/flock v0.13.1 // indirect
 	github.com/google/flatbuffers v25.12.19+incompatible // indirect
 	github.com/google/gnostic-models v0.7.1 // indirect
+	github.com/google/jsonschema-go v0.4.3 // indirect
 	github.com/google/shlex v0.0.0-20191202100458-e7afc7fbc510 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.30.0 // indirect
@@ -195,3 +197,5 @@ require (
 	sigs.k8s.io/randfill v1.0.0 // indirect
 	sigs.k8s.io/structured-merge-diff/v6 v6.4.2 // indirect
 )
+
+replace github.com/adrianliechti/donkey/pkg/addons => ./pkg/addons

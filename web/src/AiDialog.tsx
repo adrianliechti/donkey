@@ -34,10 +34,8 @@ function themeCssFor(theme: highlightTheme): string {
 const codeHighlighter = (code: string, lang?: string) => highlightToHtml(code, { lang })
 
 /**
- * The AI explorer: a chat against a space's openai service, spoken through
- * the same proxy and the same per-space token the apps get — what you try
- * here is exactly what an app will see. Everything renders as markdown with
- * highlighted code, streamed as it arrives.
+ * Chat with any OpenAI-compatible service through its authenticated console
+ * route. The server supplies the binding's endpoint and upstream credential.
  */
 export function AiDialog({
   space,
@@ -50,9 +48,8 @@ export function AiDialog({
   onClose: () => void
   onDelete: () => void
 }) {
-  const [token, setToken] = useState('')
   const [base, setBase] = useState('')
-  const [external, setExternal] = useState('')
+  const [loading, setLoading] = useState(true)
   const [models, setModels] = useState<string[]>([])
   const [model, setModel] = useState('')
   const [loadError, setLoadError] = useState('')
@@ -67,41 +64,25 @@ export function AiDialog({
   // The fetcher stays stable across renders; refs carry the current choice
   // so switching models applies to the next message without resetting the
   // conversation.
-  const settings = useRef({ base: '', token: '', model: '' })
-  settings.current = { base, token, model }
+  const settings = useRef({ base: '', model: '' })
+  settings.current = { base, model }
 
   useEffect(() => {
+    const controller = new AbortController()
+    setLoading(true)
+    setLoadError('')
     api
       .serviceBinding(space, service)
       .then(async (res) => {
-        const bound = res.binding.OPENAI_BASE_URL ?? ''
-        // Only the platform's own endpoint is reachable from the browser
-        // (and from this origin's CSP). A service pointing elsewhere is for
-        // apps.
-        //
-        // The key is the tell, not the address. donkey mints a per-space
-        // token for its own endpoint alone, and that endpoint accepts no
-        // other credential — so a binding carrying one is donkey's, whatever
-        // the address says (a Service on Kubernetes, a container name on
-        // Docker: both unresolvable here, and both have moved before). A
-        // service attached with --url carries an address and nothing else;
-        // that one is the apps', and they bring their own key.
-        const key = res.binding.OPENAI_API_KEY ?? ''
-        if (!key) {
-          setExternal(bound)
-          return
-        }
-        // donkey's endpoint answers on this origin under /ai/v1, which the
-        // server forwards to it — on this origin /v1 is already the admin
-        // API.
-        const sameOrigin = `${location.origin}/ai/v1`
+        if (controller.signal.aborted) return
+        const sameOrigin = `${location.origin}${api.serviceAIBase(space, service)}`
         setBase(sameOrigin)
-        setToken(key)
         const preferred = res.binding.OPENAI_MODEL
         try {
           const answer = await fetch(`${sameOrigin}/models`, {
-            headers: { Authorization: `Bearer ${key}` },
+            signal: controller.signal,
           })
+          if (!answer.ok) throw new Error('The service could not list its models.')
           const listed = ((await answer.json()).data ?? []).map((m: { id: string }) => m.id)
           // The binding's model leads: it is the one the platform vouches
           // for, whether or not the upstream's own listing mentions it.
@@ -109,26 +90,26 @@ export function AiDialog({
           setModels(list)
           setModel(preferred ?? list[0] ?? '')
         } catch {
+          if (controller.signal.aborted) return
           // No model list is not fatal — the binding's own model still works.
+          setModels(preferred ? [preferred] : [])
           setModel(preferred ?? '')
         }
       })
-      .catch((err) => setLoadError(errText(err, 'The service did not answer.')))
+      .catch((err) => { if (!controller.signal.aborted) setLoadError(errText(err, 'The service did not answer.')) })
+      .finally(() => { if (!controller.signal.aborted) setLoading(false) })
+    return () => controller.abort()
   }, [space, service])
 
   const fetcher = useCallback(
     ({ messages }: { messages: Parameters<typeof chat>[0]['messages'] }) => {
-      // Read at send time, not render time — the binding arrives after the
-      // first render, and a snapshot from back then would chat with an
-      // empty key.
-      const { base, token, model } = settings.current
+      const { base, model } = settings.current
       return chat({
         adapter: openaiCompatibleText(model, {
           baseURL: base,
-          apiKey: token,
-          // The "danger" is putting a credential in a browser — this one is
-          // the console operator's own per-space token, already visible to
-          // them via the binding API.
+          // The SDK requires a key. Authentication uses the gateway session;
+          // the server replaces this placeholder with the service's key.
+          apiKey: 'console',
           dangerouslyAllowBrowser: true,
         }),
         messages,
@@ -149,8 +130,6 @@ export function AiDialog({
     setInput('')
     sendMessage(text)
   }
-
-  const ready = Boolean(token && model)
 
   return (
     <Dialog open onClose={onClose} className="relative z-50">
@@ -179,8 +158,10 @@ export function AiDialog({
                   options={models.map((m) => ({ value: m, label: m }))}
                 />
               )}
-              {models.length === 0 && model && (
-                <span className="font-mono text-xs text-muted">{model}</span>
+              {!loading && models.length === 0 && (
+                <input aria-label="Model" placeholder="Model name" value={model}
+                  onChange={(event) => setModel(event.target.value)}
+                  className="rounded border border-line bg-surface px-2 py-1 font-mono text-xs" />
               )}
             </div>
             <div className="flex items-center gap-1">
@@ -193,15 +174,7 @@ export function AiDialog({
             <ErrorNote message={loadError || (error ? errText(error, 'The model did not answer.') : '')} />
           </div>
 
-          {external ? (
-            <div className="flex flex-1 items-center justify-center p-8">
-              <p className="max-w-md text-center text-sm text-muted">
-                This service points at <span className="font-mono">{external}</span> — somewhere the
-                browser can't go. Apps use it through their binding; the explorer only speaks to the
-                platform's own proxy.
-              </p>
-            </div>
-          ) : !ready && !loadError ? (
+          {loading ? (
             <div className="flex flex-1 items-center justify-center">
               <Spinner label="Opening the line…" />
             </div>
@@ -211,8 +184,7 @@ export function AiDialog({
                 {messages.length === 0 && (
                   <div className="flex h-full items-center justify-center">
                     <p className="max-w-sm text-center text-sm text-muted">
-                      This talks to the same proxy, with the same token, that connected apps get —
-                      what works here works there. Ask something.
+                      Chat with {service} using the same connection as its apps.
                     </p>
                   </div>
                 )}
@@ -265,7 +237,7 @@ export function AiDialog({
                       </span>
                     </Button>
                   ) : (
-                    <Button onClick={send} disabled={!input.trim() || !ready}>
+                    <Button onClick={send} disabled={!input.trim() || !base || !model.trim() || Boolean(loadError)}>
                       <span className="flex items-center gap-1.5">
                         <Send className="size-3.5" aria-hidden /> Send
                       </span>

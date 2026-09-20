@@ -96,9 +96,13 @@ type Provider interface {
 	// ServiceBinding is the env contract of a service instance: the space's
 	// own for owner == addons.SharedOwner, an app's copy otherwise.
 	ServiceBinding(ctx context.Context, space, owner, name string) (map[string]string, error)
+	// ServiceConnection reads the canonical binding and its protocol together.
+	// Metadata is kept separate from the environment injected into applications.
+	ServiceConnection(ctx context.Context, space, name string) (ServiceConnection, error)
 	// EnsureService creates the service if missing (waiting until it serves)
-	// or re-applies it. Version and storage echo what the instance uses.
-	EnsureService(ctx context.Context, space string, spec ServiceSpec) (binding map[string]string, version, storage string, err error)
+	// or re-applies it. The returned parameters are the resolved values the
+	// instance runs with.
+	EnsureService(ctx context.Context, space string, spec ServiceSpec) (binding map[string]string, parameters map[string]any, err error)
 	// AttachService wires the binding into the app's env. Restarted reports
 	// whether a running app picked it up on the spot.
 	AttachService(ctx context.Context, space, app, name string, binding map[string]string) (restarted bool, err error)
@@ -106,7 +110,9 @@ type Provider interface {
 	DetachService(ctx context.Context, space, app, name string) error
 	// RemoveService detaches every app that uses the service first, and
 	// returns who was detached.
-	RemoveService(ctx context.Context, space, name string, keepData bool) (detached []string, err error)
+	// With force, a plugin instance whose plugin is gone or failing is
+	// dropped from donkey's records and its backing service left behind.
+	RemoveService(ctx context.Context, space, name string, keepData, force bool) (detached []string, err error)
 	// ServiceAttachments names the apps holding a copy of the service's
 	// binding.
 	ServiceAttachments(ctx context.Context, space, name string) ([]string, error)
@@ -115,9 +121,9 @@ type Provider interface {
 	ServiceEndpoint(ctx context.Context, space, name string) (host string, port int32, err error)
 	// ListServices lists the bindings an owner holds.
 	ListServices(ctx context.Context, space, owner string) ([]ServiceBindingInfo, error)
-	// SharedServiceValues collects one binding key across every space — the
-	// AI proxy's token list.
-	SharedServiceValues(ctx context.Context, key string) ([]string, error)
+	// AIProxyTokens returns only credentials bound to this installation's AI
+	// endpoint. Other OpenAI-compatible providers must not grant proxy access.
+	AIProxyTokens(ctx context.Context) ([]string, error)
 
 	// --- Files ------------------------------------------------------------
 
@@ -346,10 +352,12 @@ type NetworkState struct {
 
 // ServiceSpec asks for a service instance of the space.
 type ServiceSpec struct {
-	Type    string
-	Name    string
-	Version string
-	Storage string
+	Type string
+	Name string
+	// Parameters are values of the type's parameter schema. Missing ones
+	// take the schema's defaults, or the instance's stored values when it
+	// already exists.
+	Parameters map[string]any
 	// External: nothing is provisioned, the binding comes from URL.
 	External bool
 	URL      string
@@ -362,6 +370,20 @@ type ServiceBindingInfo struct {
 	Keys     []string
 	Type     string
 	Protocol string
+	// Parameters are the resolved values the instance was created with.
+	Parameters map[string]any
+	// State is empty for a bound service. A plugin instance without a
+	// binding reports pending, failed or stopped; Message says why.
+	State   string
+	Message string
+}
+
+// ServiceConnection is the canonical binding with its metadata.
+type ServiceConnection struct {
+	Binding    map[string]string
+	Type       string
+	Protocol   string
+	Parameters map[string]any
 }
 
 // StorageFolder maps a folder on the disk to where the app mounts it.

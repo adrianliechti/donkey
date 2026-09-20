@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { lazy, Suspense, useState } from 'react'
 import { Link, useNavigate } from '@tanstack/react-router'
 import {
   Dialog,
@@ -11,28 +11,27 @@ import {
   MenuItems,
 } from '@headlessui/react'
 import {
-  Archive,
   Database,
   EllipsisVertical,
   HardDrive,
-  KeyRound,
   Network,
   Plus,
   Rocket,
-  Sparkles,
-	Settings,
+  Settings,
   Trash2,
 } from 'lucide-react'
 import { api, type AddAddonRequest, type AppSummary, type SpaceAddonEntry } from './api'
-import { AddServiceDialog, typeIcons } from './AddonForm'
-import { AiDialog } from './AiDialog'
-import { DatabaseDialog } from './DatabaseDialog'
-import { RedisDialog } from './RedisDialog'
+import { AddServiceDialog } from './AddonForm'
 import { useCatalog, useInvalidateServices, useSpaceServices } from './queries'
-import { S3Dialog } from './S3Dialog'
+import { serviceUI } from './serviceProtocol'
 import { SpaceTelemetry } from './TrafficPanel'
 import { SpaceSettings } from './SpaceSettings'
-import { Button, ErrorNote, ExposureBadge, ago, errText, healthLine, healthOf } from './ui'
+import { Button, ErrorNote, ExposureBadge, Spinner, ago, errText, healthLine, healthOf } from './ui'
+
+const DatabaseDialog = lazy(() => import('./DatabaseDialog').then((m) => ({ default: m.DatabaseDialog })))
+const RedisDialog = lazy(() => import('./RedisDialog').then((m) => ({ default: m.RedisDialog })))
+const S3Dialog = lazy(() => import('./S3Dialog').then((m) => ({ default: m.S3Dialog })))
+const AiDialog = lazy(() => import('./AiDialog').then((m) => ({ default: m.AiDialog })))
 
 /**
  * One section of the paddock per space.
@@ -264,23 +263,14 @@ function SpaceServices({
 }) {
   const [removing, setRemoving] = useState<SpaceAddonEntry | null>(null)
   const [browsing, setBrowsing] = useState<SpaceAddonEntry | null>(null)
-  const [redisBrowsing, setRedisBrowsing] = useState<SpaceAddonEntry | null>(null)
-  const [storeBrowsing, setStoreBrowsing] = useState<SpaceAddonEntry | null>(null)
-  const [chatting, setChatting] = useState<SpaceAddonEntry | null>(null)
 
   if (!services || services.length === 0) return null
 
-  // Each service opens one console, which is where it is managed and removed.
-  const consoleFor = (svc: SpaceAddonEntry) => {
-    if (svc.protocol === 'postgres' || svc.protocol === 'mysql')
-      return { Icon: Database, open: () => setBrowsing(svc), label: `Browse the ${svc.name} database` }
-    if (svc.protocol === 'redis')
-      return { Icon: KeyRound, open: () => setRedisBrowsing(svc), label: `Browse the ${svc.name} keys` }
-    if (svc.protocol === 's3')
-      return { Icon: Archive, open: () => setStoreBrowsing(svc), label: `Browse the ${svc.name} buckets` }
-    if (svc.protocol === 'openai')
-      return { Icon: Sparkles, open: () => setChatting(svc), label: `Try ${svc.name} in a chat` }
-    return null
+  const consoleKind = serviceUI(browsing?.protocol).console
+  const consoleProps = {
+    space, service: browsing?.name ?? '',
+    onClose: () => setBrowsing(null),
+    onDelete: () => { setRemoving(browsing); setBrowsing(null) },
   }
   const chip =
     'inline-flex items-center gap-1.5 rounded border border-line bg-raised px-2 py-1 font-mono text-xs text-ink-soft'
@@ -289,16 +279,16 @@ function SpaceServices({
     <div className="mb-3">
       <div className="flex flex-wrap items-center gap-2">
         {services.map((svc) => {
-          const view = consoleFor(svc)
+          const view = serviceUI(svc.protocol)
           const used =
             svc.attachedTo.length > 0
               ? `Used by ${svc.attachedTo.join(', ')}`
               : 'Not connected to any app yet'
           // No console to hold a Remove: keep a direct one.
-          if (!view) {
+          if (!view.console) {
             return (
               <span key={svc.name} className={chip} title={used}>
-                <Database className="size-3" aria-hidden />
+                <view.Icon className="size-3" aria-hidden />
                 {svc.name}
                 <button
                   type="button"
@@ -316,8 +306,8 @@ function SpaceServices({
             <button
               key={svc.name}
               type="button"
-              onClick={view.open}
-              title={`${view.label} — ${used}`}
+              onClick={() => setBrowsing(svc)}
+              title={`Open ${svc.name} ${view.noun} — ${used}`}
               className={`${chip} transition-colors duration-(--duration-fast) hover:border-accent/70 hover:bg-accent-soft hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-strong`}
             >
               <view.Icon className="size-3" aria-hidden />
@@ -326,45 +316,12 @@ function SpaceServices({
           )
         })}
       </div>
-      {browsing && (
-        <DatabaseDialog
-          space={space}
-          service={browsing.name}
-          protocol={browsing.protocol}
-          onClose={() => setBrowsing(null)}
-          onDelete={() => {
-            setRemoving(browsing)
-            setBrowsing(null)
-          }}
-        />
-      )}
-      {storeBrowsing && (
-        <S3Dialog
-          space={space}
-          service={storeBrowsing.name}
-          onClose={() => setStoreBrowsing(null)}
-          onDelete={() => {
-            setRemoving(storeBrowsing)
-            setStoreBrowsing(null)
-          }}
-        />
-      )}
-      {redisBrowsing && (
-        <RedisDialog space={space} service={redisBrowsing.name}
-          onClose={() => setRedisBrowsing(null)}
-          onDelete={() => { setRemoving(redisBrowsing); setRedisBrowsing(null) }} />
-      )}
-      {chatting && (
-        <AiDialog
-          space={space}
-          service={chatting.name}
-          onClose={() => setChatting(null)}
-          onDelete={() => {
-            setRemoving(chatting)
-            setChatting(null)
-          }}
-        />
-      )}
+      <Suspense fallback={<Spinner label="Opening service…" />}>
+        {browsing && consoleKind === 'database' && <DatabaseDialog {...consoleProps} protocol={browsing.protocol} />}
+        {browsing && consoleKind === 's3' && <S3Dialog {...consoleProps} />}
+        {browsing && consoleKind === 'redis' && <RedisDialog {...consoleProps} />}
+        {browsing && consoleKind === 'openai' && <AiDialog {...consoleProps} />}
+      </Suspense>
       {removing && (
         <RemoveServiceDialog
           space={space}
@@ -508,7 +465,7 @@ function AddMenu({ space, onAddService }: { space: string; onAddService: (type: 
         </MenuItem>
         {services.length > 0 && <div className="my-1 h-px bg-line" aria-hidden />}
         {services.map((svc) => {
-          const Icon = typeIcons[svc.type] ?? Database
+          const { Icon } = serviceUI(svc.protocol)
           return (
             <MenuItem key={svc.type}>
               <button

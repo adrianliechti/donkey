@@ -3,30 +3,33 @@
 // or remote, the app sees the same contract, so the two are swappable.
 // Runtime-neutral: an addon describes a Workload, each provider materializes
 // it its own way.
+//
+// Every addon, built in or served by a plugin, presents itself through the
+// same descriptor (addonv1.DescribeResponse): title, protocol, the JSON
+// Schema of its parameters and its environment contract. The catalog, the
+// console form and the CLI are driven by that descriptor alone.
 package addons
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
+
+	addonv1 "github.com/adrianliechti/donkey/pkg/addons/v1"
 )
 
 // Addon provisions an instance of a service type.
 type Addon interface {
 	// Type is the lowercase slug the API and CLI speak (postgres, rustfs…).
 	Type() string
-	// Protocol is the application protocol (postgres, mysql, s3, redis…),
-	// independent of the provisioner and the endpoint's transport protocol.
-	Protocol() string
-	// Title is the product's own name for the catalog and console
-	// (PostgreSQL, RustFS, OpenAI) — Type is the id, Title is what a person
-	// reads.
-	Title() string
-	// Description is the catalog's one-liner: what a person gets.
-	Description() string
+	// Describe is the catalog descriptor. Built-in addons answer statically;
+	// a plugin asks its service and may fail while that service is down.
+	Describe(ctx context.Context) (*addonv1.DescribeResponse, error)
 	Binding(in Input) map[string]string
 	// ExternalBinding derives the same contract from a connection URL, so a
 	// remote service binds exactly like a provisioned one.
@@ -36,8 +39,81 @@ type Addon interface {
 	// CredentialKey is the binding entry the instance was initialized with.
 	// Re-adds reuse it: rotating would lock the service out of its own data.
 	CredentialKey() string
-	DefaultVersion() string
-	DefaultStorage() string
+}
+
+// Well-known capability values of a descriptor.
+const (
+	// CapabilityKeepData means Deprovision honours keep_data.
+	CapabilityKeepData = "keep-data"
+	// CapabilityRuntimePrefix marks the runtimes a plugin serves, e.g.
+	// "runtime:kubernetes". A descriptor without any means every runtime.
+	CapabilityRuntimePrefix = "runtime:"
+)
+
+// HasCapability reports whether a descriptor declares a capability.
+func HasCapability(desc *addonv1.DescribeResponse, capability string) bool {
+	return desc != nil && slices.Contains(desc.Capabilities, capability)
+}
+
+// SupportsRuntime reports whether a descriptor serves the named runtime: it
+// does unless it lists runtimes and this one is missing.
+func SupportsRuntime(desc *addonv1.DescribeResponse, runtime string) bool {
+	if desc == nil {
+		return false
+	}
+	listed := false
+	for _, c := range desc.Capabilities {
+		if name, ok := strings.CutPrefix(c, CapabilityRuntimePrefix); ok {
+			listed = true
+			if name == runtime {
+				return true
+			}
+		}
+	}
+	return !listed
+}
+
+// EnvNames lists the declared environment keys, sorted.
+func EnvNames(desc *addonv1.DescribeResponse) []string {
+	if desc == nil {
+		return nil
+	}
+	names := make([]string, 0, len(desc.Env))
+	for _, v := range desc.Env {
+		names = append(names, v.Name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// sampleInput yields a throwaway binding: the contract's variable names,
+// never real values.
+func sampleInput(typ string) Input {
+	return Input{
+		Space: "space", Namespace: "ns", Name: typ,
+		Version: "sample", Storage: "1Gi", Password: "x", AIProxyURL: "http://ai.example/v1",
+	}
+}
+
+// description builds a built-in catalog entry. The env contract is derived
+// from a sample binding; the named keys are marked secret.
+func description(a Addon, title, summary, protocol string, schema map[string]any, secrets ...string) *addonv1.DescribeResponse {
+	binding := a.Binding(sampleInput(a.Type()))
+	var env []*addonv1.EnvVar
+	for _, key := range slices.Sorted(func(yield func(string) bool) {
+		for k := range binding {
+			if !yield(k) {
+				return
+			}
+		}
+	}) {
+		env = append(env, &addonv1.EnvVar{Name: key, Secret: slices.Contains(secrets, key)})
+	}
+	return &addonv1.DescribeResponse{
+		Type: a.Type(), Title: title, Description: summary, Protocol: protocol,
+		Parameters: MustStruct(schema), Env: env,
+		Capabilities: []string{CapabilityKeepData},
+	}
 }
 
 // Workload is one provisioned service instance, free of runtime vocabulary.
@@ -73,6 +149,9 @@ type Input struct {
 	// shares one namespace and every object carries its space — "shop-
 	// postgres" rather than "postgres". Empty means the two are the same.
 	ObjectName string
+	// Parameters are the resolved values of the descriptor's schema. Version
+	// and Storage are the two every built-in reads, lifted out for brevity.
+	Parameters Parameters
 	Version    string
 	Storage    string
 	Password   string
@@ -82,6 +161,14 @@ type Input struct {
 	// AIProxyURL is where donkey-server's AI proxy is reachable from apps —
 	// the runtime provider fills it in (its address is runtime vocabulary).
 	AIProxyURL string
+}
+
+// WithParameters lifts the well-known parameters into their fields.
+func (in Input) WithParameters(p Parameters) Input {
+	in.Parameters = p
+	in.Version = p.String(ParamVersion)
+	in.Storage = p.String(ParamStorage)
+	return in
 }
 
 // ImageRef combines the installation's optional mirror path with the
@@ -103,8 +190,8 @@ func (in Input) HostName() string {
 	return in.Name
 }
 
-// Registry holds the addon types donkey knows.
-var Registry = map[string]Addon{
+// registry holds the addon types donkey knows.
+var registry = map[string]Addon{
 	"postgres": postgres{},
 	"redis":    redis{},
 	"rustfs":   rustfs{},
@@ -117,14 +204,14 @@ var registryMu sync.RWMutex
 func Types() []Addon {
 	registryMu.RLock()
 	defer registryMu.RUnlock()
-	names := make([]string, 0, len(Registry))
-	for t := range Registry {
+	names := make([]string, 0, len(registry))
+	for t := range registry {
 		names = append(names, t)
 	}
 	sort.Strings(names)
 	out := make([]Addon, 0, len(names))
 	for _, t := range names {
-		out = append(out, Registry[t])
+		out = append(out, registry[t])
 	}
 	return out
 }
@@ -132,10 +219,10 @@ func Types() []Addon {
 func Get(typ string) (Addon, error) {
 	registryMu.RLock()
 	defer registryMu.RUnlock()
-	a, ok := Registry[typ]
+	a, ok := registry[typ]
 	if !ok {
-		known := make([]string, 0, len(Registry))
-		for t := range Registry {
+		known := make([]string, 0, len(registry))
+		for t := range registry {
 			known = append(known, t)
 		}
 		sort.Strings(known)

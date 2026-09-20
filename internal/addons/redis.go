@@ -1,23 +1,29 @@
 package addons
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"net/url"
 	"strconv"
 	"strings"
+
+	addonv1 "github.com/adrianliechti/donkey/pkg/addons/v1"
 )
 
 type redis struct{}
 
-func (redis) Protocol() string { return "redis" }
+func (redis) Type() string          { return "redis" }
+func (redis) CredentialKey() string { return "REDIS_PASSWORD" }
 
-func (redis) Type() string           { return "redis" }
-func (redis) Title() string          { return "Redis" }
-func (redis) Description() string    { return "A fast key-value store for caches, sessions and queues." }
-func (redis) CredentialKey() string  { return "REDIS_PASSWORD" }
-func (redis) DefaultVersion() string { return "7.4.11" }
-func (redis) DefaultStorage() string { return "1Gi" }
+func (r redis) Describe(context.Context) (*addonv1.DescribeResponse, error) {
+	return description(r, "Redis", "A fast key-value store for caches, sessions and queues.",
+		ProtocolRedis, ObjectSchema(map[string]any{
+			ParamVersion: VersionParameter("7.4.11", "A tag of the redis image."),
+			ParamStorage: StorageParameter("1Gi"),
+		}),
+		"REDIS_URL", "REDIS_PASSWORD"), nil
+}
 
 func (r redis) Binding(in Input) map[string]string {
 	u := &url.URL{

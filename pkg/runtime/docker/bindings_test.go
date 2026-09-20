@@ -4,6 +4,8 @@ import (
 	"context"
 	"net/http"
 	"net/url"
+	"os"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -42,6 +44,40 @@ func TestServiceBindingsSeparateSameNamedServicesAcrossSpaces(t *testing.T) {
 		password, _ := u.User.Password()
 		if u.Host != "donkey."+space+".postgres:5432" || password != space || got["PGHOST"] != "donkey."+space+".postgres" {
 			t.Fatalf("binding escaped its space or changed credentials: %+v", got)
+		}
+	}
+}
+
+func TestServiceMetadataAndAIProxyCredentials(t *testing.T) {
+	r := &Runtime{state: state{dir: t.TempDir()}, opts: Options{AIContainer: "donkey-ai"}}
+	ctx := context.Background()
+	for _, fixture := range []struct{ name, endpoint, key, owner string }{
+		{"platform", r.aiProxyURL(), "platform-token", sharedOwner},
+		{"vendor", "https://vendor.example/v1", "vendor-secret", sharedOwner},
+		{"copy", r.aiProxyURL(), "app-token", "api"},
+	} {
+		if err := r.state.setBinding("team", fixture.owner, fixture.name, map[string]string{"OPENAI_BASE_URL": fixture.endpoint, "OPENAI_API_KEY": fixture.key}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := r.state.writeJSON(addons.Metadata{Type: "external-model", Protocol: "custom"}, "service-metadata", "team", "vendor.json"); err != nil {
+		t.Fatal(err)
+	}
+	connection, err := r.ServiceConnection(ctx, "team", "vendor")
+	if err != nil || connection.Type != "external-model" || connection.Protocol != "custom" {
+		t.Fatalf("provider metadata: %+v %v", connection, err)
+	}
+	tokens, err := r.AIProxyTokens(ctx)
+	if err != nil || !reflect.DeepEqual(tokens, []string{"platform-token"}) {
+		t.Fatalf("wrong proxy tokens: %v", err)
+	}
+	for _, folder := range []string{"env", "bindings", "provisioning"} {
+		if err := r.state.writeJSON(map[string]string{"secret": "private"}, folder, "team", "private.json"); err != nil {
+			t.Fatal(err)
+		}
+		info, err := os.Stat(r.state.path(folder, "team", "private.json"))
+		if err != nil || info.Mode().Perm() != 0o600 {
+			t.Fatalf("%s credentials are not private: %v", folder, err)
 		}
 	}
 }

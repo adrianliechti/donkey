@@ -1,8 +1,9 @@
 import { useState, type ReactNode } from 'react'
 import { Dialog, DialogBackdrop, DialogPanel, DialogTitle } from '@headlessui/react'
-import { Archive, ArrowLeft, Database, Server, Sparkles } from 'lucide-react'
+import { ArrowLeft } from 'lucide-react'
 import { type AddAddonRequest } from './api'
 import { useCatalog } from './queries'
+import { serviceUI } from './serviceProtocol'
 import { Button, ErrorNote, Select, Spinner } from './ui'
 
 const inputStyle =
@@ -11,15 +12,6 @@ const inputStyle =
 // A short ladder of disk sizes is easier to pick right than a free-text
 // field is to fill right; the type's own default always leads the list.
 const diskSizes = ['1Gi', '2Gi', '5Gi', '10Gi', '20Gi', '50Gi']
-
-// Each catalog entry gets a face; unknown future types fall back to a
-// plain server glyph.
-export const typeIcons: Record<string, typeof Database> = {
-  postgres: Database,
-  redis: Database,
-  rustfs: Archive,
-  openai: Sparkles,
-}
 
 function Eyebrow({ children }: { children: ReactNode }) {
   return (
@@ -143,7 +135,7 @@ export function AddonForm({
       <div className="flex flex-col gap-3">
         <div className="grid gap-2 sm:grid-cols-2">
           {types.map((t) => {
-            const Icon = typeIcons[t.type] ?? Server
+            const { Icon } = serviceUI(t.protocol)
             return (
               <button
                 key={t.type}
@@ -174,7 +166,7 @@ export function AddonForm({
 
   // Step 2 — configure the chosen service. Always cluster-managed, so the only
   // choices left are a name and (for the ones that store data) a disk size.
-  const ChosenIcon = typeIcons[chosen.type] ?? Server
+  const { Icon: ChosenIcon } = serviceUI(chosen.protocol)
 
   return (
     <div className="flex flex-col gap-4">

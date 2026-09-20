@@ -184,11 +184,15 @@ export interface NetworkInfo {
   access?: AccessConfig | null
 }
 
+/** The parameter values a service was created with (version, disk size…). */
+export type ServiceParameters = Record<string, unknown>
+
 export interface AddonEntry {
   type?: string
   protocol?: string
   name: string
   keys: string[]
+  parameters?: ServiceParameters
 }
 
 /** One service of a space, and the apps connected to it. */
@@ -198,10 +202,54 @@ export interface SpaceAddonEntry {
   name: string
   keys: string[]
   attachedTo: string[]
+  parameters?: ServiceParameters
+  /** Set only for a plugin instance without a binding: it is still being
+   *  set up, failed (see message), or stopped with its data kept. */
+  state?: 'pending' | 'failed' | 'stopped' | string
+  message?: string
 }
 
-/** One catalog entry: a service type donkey can provide, with its defaults
- * and the env variable names connected apps will see. */
+/** One property of a service's parameter schema — the JSON Schema subset
+ * the catalog speaks, plus donkey's own presentation hints. */
+export interface ParameterSchema {
+  type?: 'string' | 'integer' | 'number' | 'boolean' | 'array'
+  title?: string
+  description?: string
+  default?: unknown
+  enum?: unknown[]
+  minimum?: number
+  maximum?: number
+  pattern?: string
+  /** "quantity" is a Kubernetes-style size such as 1Gi. */
+  format?: string
+  items?: ParameterSchema
+  /** "disk-size" offers a ladder of sizes; "select" forces a dropdown. */
+  'x-donkey-widget'?: string
+  /** Cannot change once the service exists. */
+  'x-donkey-immutable'?: boolean
+  /** Hidden behind the advanced toggle. */
+  'x-donkey-advanced'?: boolean
+  /** Ascending sort key; unordered fields follow by name. */
+  'x-donkey-order'?: number
+}
+
+export interface ParametersSchema {
+  type?: string
+  properties?: Record<string, ParameterSchema>
+  required?: string[]
+  additionalProperties?: boolean | object
+}
+
+export interface AddonEnvVar {
+  name: string
+  description?: string
+  secret?: boolean
+  optional?: boolean
+}
+
+/** One catalog entry: a service type donkey can provide — its descriptor,
+ * the schema of what can be chosen, and the env contract connected apps
+ * will see (names only, never values). */
 export interface AddonType {
   /** Application protocol, independent of the service provisioner. */
   protocol?: string
@@ -209,18 +257,23 @@ export interface AddonType {
   type: string
   /** The product's own name for display (PostgreSQL, RustFS, OpenAI). */
   title: string
-  version: string
-  storage: string
   description?: string
+  parameters?: ParametersSchema
+  env?: AddonEnvVar[]
   keys?: string[]
+  capabilities?: string[]
+  /** False while a plugin is not answering or does not serve this runtime;
+   *  error says which. */
+  available?: boolean
+  error?: string
 }
 
 export interface AddAddonRequest {
   /** Omitted when connecting to a service the space already has. */
   type?: string
   name?: string
-  version?: string
-  storage?: string
+  /** Values of the type's parameter schema; missing ones take defaults. */
+  parameters?: ServiceParameters
   external?: boolean
   url?: string
 }
@@ -662,25 +715,27 @@ export const api = {
   deleteSpace: (space: string) =>
     request<{ ok: boolean }>(`/v1/spaces/${encodeURIComponent(space)}`, { method: 'DELETE' }),
   addonTypes: () => request<{ types: AddonType[] }>('/v1/catalog'),
-  // The binding with values — what the AI explorer chats with. Token-holder
-  // territory, same trust level as the env API.
+  // The binding with values: same authorization as the app env API.
   serviceBinding: (space: string, service: string) =>
-    request<{ binding: Record<string, string>; host: string; port: number }>(
+    request<{ binding: Record<string, string>; host: string; port: number; type?: string; protocol?: string }>(
       servicePath(space, service, '/binding'),
     ),
+  serviceAIBase: (space: string, service: string) => servicePath(space, service, '/ai'),
   // Services belong to the space; apps hold connections to them.
   spaceAddons: (space: string) =>
     request<{ addons: SpaceAddonEntry[] }>(`/v1/spaces/${encodeURIComponent(space)}/services`),
   // Creating can take a while the first time (the cluster pulls the image and
   // waits for the service to answer) — the request stays open throughout.
   addSpaceAddon: (space: string, req: AddAddonRequest) =>
-    request<{ ok: boolean; version?: string }>(`/v1/spaces/${encodeURIComponent(space)}/services`, {
+    request<{ ok: boolean; parameters?: ServiceParameters }>(`/v1/spaces/${encodeURIComponent(space)}/services`, {
       method: 'POST',
       body: JSON.stringify(req),
     }),
-  removeSpaceAddon: (space: string, addon: string, keepData: boolean) =>
+  // orphan drops a plugin instance whose plugin is gone or failing; its
+  // backing service is then the operator's to clean up.
+  removeSpaceAddon: (space: string, addon: string, keepData: boolean, orphan = false) =>
     request<{ ok: boolean; detached?: string[] }>(
-      `/v1/spaces/${encodeURIComponent(space)}/services/${encodeURIComponent(addon)}?keepData=${keepData}`,
+      `/v1/spaces/${encodeURIComponent(space)}/services/${encodeURIComponent(addon)}?keepData=${keepData}&orphan=${orphan}`,
       { method: 'DELETE' },
     ),
   addons: (space: string, app: string) =>
@@ -688,7 +743,7 @@ export const api = {
   // Connects the app; with a type it creates the space service first when
   // missing (which can take a minute — the request stays open throughout).
   addAddon: (space: string, app: string, req: AddAddonRequest) =>
-    request<{ ok: boolean; created?: boolean; restarted?: boolean; version?: string }>(
+    request<{ ok: boolean; created?: boolean; restarted?: boolean; parameters?: ServiceParameters }>(
       appPath(space, app, '/services'),
       { method: 'POST', body: JSON.stringify(req) },
     ),

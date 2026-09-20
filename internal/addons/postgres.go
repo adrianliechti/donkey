@@ -1,9 +1,12 @@
 package addons
 
 import (
+	"context"
 	"fmt"
 	"net/url"
 	"strings"
+
+	addonv1 "github.com/adrianliechti/donkey/pkg/addons/v1"
 )
 
 const (
@@ -14,16 +17,18 @@ const (
 
 type postgres struct{}
 
-func (postgres) Protocol() string { return "postgres" }
+func (postgres) Type() string          { return "postgres" }
+func (postgres) CredentialKey() string { return "PGPASSWORD" }
 
-func (postgres) Type() string  { return "postgres" }
-func (postgres) Title() string { return "PostgreSQL" }
-func (postgres) Description() string {
-	return "The relational database — most frameworks speak to it out of the box."
+func (p postgres) Describe(context.Context) (*addonv1.DescribeResponse, error) {
+	return description(p, "PostgreSQL",
+		"The relational database — most frameworks speak to it out of the box.",
+		ProtocolPostgres, ObjectSchema(map[string]any{
+			ParamVersion: VersionParameter("18.6", "A tag of the postgres image, such as 18.6 or 17."),
+			ParamStorage: StorageParameter("1Gi"),
+		}),
+		"DATABASE_URL", "JDBC_DATABASE_URL", "JDBC_DATABASE_PASSWORD", "PGPASSWORD"), nil
 }
-func (postgres) CredentialKey() string  { return "PGPASSWORD" }
-func (postgres) DefaultVersion() string { return "18.6" }
-func (postgres) DefaultStorage() string { return "1Gi" }
 
 func (postgres) Binding(in Input) map[string]string {
 	// The service is named plainly after itself, so siblings in the space

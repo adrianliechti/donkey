@@ -26,6 +26,9 @@ type databaseTestRuntime struct {
 func (r databaseTestRuntime) ServiceBinding(context.Context, string, string, string) (map[string]string, error) {
 	return map[string]string{"DATABASE_URL": r.dsn}, nil
 }
+func (r databaseTestRuntime) ServiceConnection(context.Context, string, string) (runtime.ServiceConnection, error) {
+	return runtime.ServiceConnection{Binding: map[string]string{"DATABASE_URL": r.dsn}, Type: "external-vendor", Protocol: r.protocol}, nil
+}
 func (r databaseTestRuntime) ListServices(context.Context, string, string) ([]runtime.ServiceBindingInfo, error) {
 	return []runtime.ServiceBindingInfo{{Name: "db", Type: "external-vendor", Protocol: r.protocol, Keys: []string{"DATABASE_URL"}}}, nil
 }

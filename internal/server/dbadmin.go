@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/adrianliechti/donkey/internal/addons"
-	"github.com/adrianliechti/donkey/internal/config"
 	"github.com/adrianliechti/donkey/pkg/runtime"
 )
 
@@ -30,32 +29,13 @@ var plainIdent = regexp.MustCompile(`^[a-z_][a-z0-9_]*$`)
 // database the apps see. db picks one of the service's databases; empty
 // means the binding's own.
 func (s *Server) dbConnect(ctx context.Context, r *http.Request, db string) (*databaseConn, error) {
-	space, err := s.space(r)
-	if err != nil {
-		return nil, runtime.UserError{Err: err}
-	}
-	name := r.PathValue("service")
-	if !config.ValidName(name) {
-		return nil, runtime.UserError{Err: fmt.Errorf("%q is not a valid service name", name)}
-	}
-	data, err := s.rt.ServiceBinding(ctx, space, addons.SharedOwner, name)
+	service, err := s.serviceConnection(ctx, r, addons.ProtocolPostgres, addons.ProtocolMySQL)
 	if err != nil {
 		return nil, err
 	}
-	if len(data) == 0 {
-		return nil, runtime.UserError{Err: fmt.Errorf("the space has no service named %q", name)}
-	}
-	dsn, ok := data["DATABASE_URL"]
-	if !ok {
-		return nil, runtime.UserError{Err: fmt.Errorf("%s has no database connection URL", name)}
-	}
-	metadata, err := s.serviceMetadata(ctx, space, name, data)
+	conn, err := connectDatabase(ctx, service.Protocol, service.Binding["DATABASE_URL"], db)
 	if err != nil {
-		return nil, err
-	}
-	conn, err := connectDatabase(ctx, metadata.Protocol, dsn, db)
-	if err != nil {
-		return nil, fmt.Errorf("%s is not answering: %w", name, err)
+		return nil, fmt.Errorf("%s is not answering: %w", r.PathValue("service"), err)
 	}
 	return conn, nil
 }

@@ -3,12 +3,15 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/url"
 	"testing"
 
 	addonv1 "github.com/adrianliechti/donkey/pkg/addons/v1"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/structpb"
 	networkingv1 "k8s.io/api/networking/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -49,25 +52,90 @@ func testInstance(space string) *addonv1.Instance {
 		ConsumerLabels: map[string]string{"donkey.local/installation": "main", "donkey.local/space": space}}
 }
 
+func params(t *testing.T, values map[string]any) *structpb.Struct {
+	t.Helper()
+	s, err := structpb.NewStruct(values)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+// captureStream stands in for the gRPC stream: it keeps the progress
+// messages and the final result.
+type captureStream struct {
+	grpc.ServerStream
+	ctx      context.Context
+	messages []string
+	result   *addonv1.ProvisionResponse
+}
+
+func (s *captureStream) Context() context.Context { return s.ctx }
+func (s *captureStream) Send(event *addonv1.ProvisionEvent) error {
+	if event.Message != "" {
+		s.messages = append(s.messages, event.Message)
+	}
+	if event.Result != nil {
+		s.result = event.Result
+	}
+	return nil
+}
+
+func provision(ctx context.Context, m *mariaDB, request *addonv1.ProvisionRequest) (*addonv1.ProvisionResponse, error) {
+	stream := &captureStream{ctx: ctx}
+	if err := m.Provision(request, stream); err != nil {
+		return nil, err
+	}
+	if stream.result == nil {
+		return nil, errors.New("provisioning ended without a result")
+	}
+	if len(stream.messages) == 0 {
+		return nil, errors.New("provisioning reported no progress")
+	}
+	return stream.result, nil
+}
+
+func TestMariaDBDescribesRenderableParameters(t *testing.T) {
+	desc, err := testMariaDB().Describe(context.Background(), &addonv1.DescribeRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	properties := desc.Parameters.AsMap()["properties"].(map[string]any)
+	if properties["storage"].(map[string]any)["default"] != defaultStorage || properties["version"].(map[string]any)["default"] != defaultVersion {
+		t.Fatal("schema defaults disagree with the plugin's own")
+	}
+	if desc.Protocol != "mysql" || len(desc.Env) != 6 || desc.Capabilities[0] != "runtime:kubernetes" {
+		t.Fatalf("unexpected descriptor: %+v", desc)
+	}
+}
+
 func TestMariaDBProvisionAndRetentionLifecycle(t *testing.T) {
 	ctx := context.Background()
 	m := testMariaDB()
 	i := testInstance("team")
-	request := &addonv1.ProvisionRequest{Instance: i, Version: "11.8", Storage: "2Gi"}
-	first, err := m.Provision(ctx, request)
+	request := &addonv1.ProvisionRequest{Instance: i, Parameters: params(t, map[string]any{"version": "11.8", "storage": "2Gi"})}
+	first, err := provision(ctx, m, request)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := m.Provision(ctx, request)
+	if effective := first.Parameters.AsMap(); effective["storage"] != "2Gi" || effective["version"] != "11.8" {
+		t.Fatalf("effective parameters not reported: %v", effective)
+	}
+	second, err := provision(ctx, m, request)
 	if err != nil || first.Env["MYSQL_PASSWORD"] != second.Env["MYSQL_PASSWORD"] {
 		t.Fatalf("repeat provisioning changed credentials: %v", err)
+	}
+	// A disk never shrinks: asking for less keeps the larger volume and says so.
+	smaller, err := provision(ctx, m, &addonv1.ProvisionRequest{Instance: i, Parameters: params(t, map[string]any{"storage": "1Gi"})})
+	if err != nil || smaller.Parameters.AsMap()["storage"] != "2Gi" {
+		t.Fatalf("volume shrank or effective size lost: %v", err)
 	}
 	u, err := url.Parse(first.Env["DATABASE_URL"])
 	if err != nil {
 		t.Fatal(err)
 	}
 	password, _ := u.User.Password()
-	if password != first.Env["MYSQL_PASSWORD"] || u.Hostname() != first.Endpoints[0].Host || first.Endpoints[0].Kubernetes.Namespace != "addons" {
+	if password != first.Env["MYSQL_PASSWORD"] || u.Hostname() != first.Endpoints[0].Host || first.Endpoints[0].GetKubernetes().Namespace != "addons" {
 		t.Fatal("URL, env and network metadata disagree")
 	}
 	policy, err := m.resource("NetworkPolicy").Get(ctx, instanceName(i), metav1.GetOptions{})
@@ -82,7 +150,7 @@ func TestMariaDBProvisionAndRetentionLifecycle(t *testing.T) {
 	if len(peers) != 2 || peers[0].NamespaceSelector.MatchLabels["kubernetes.io/metadata.name"] != i.Namespace || peers[0].PodSelector.MatchLabels["donkey.local/space"] != i.Space || peers[1].PodSelector.MatchLabels["donkey.local/role"] != "server" {
 		t.Fatal("database ingress is not bounded to consumers and admin server")
 	}
-	other, err := m.Provision(ctx, &addonv1.ProvisionRequest{Instance: testInstance("other")})
+	other, err := provision(ctx, m, &addonv1.ProvisionRequest{Instance: testInstance("other")})
 	if err != nil || other.Endpoints[0].Host == first.Endpoints[0].Host || other.Env["MYSQL_PASSWORD"] == first.Env["MYSQL_PASSWORD"] {
 		t.Fatalf("spaces shared an instance: %v", err)
 	}
@@ -99,7 +167,7 @@ func TestMariaDBProvisionAndRetentionLifecycle(t *testing.T) {
 			t.Fatalf("keep_data left %s running", kind)
 		}
 	}
-	recreated, err := m.Provision(ctx, &addonv1.ProvisionRequest{Instance: i})
+	recreated, err := provision(ctx, m, &addonv1.ProvisionRequest{Instance: i})
 	if err != nil || recreated.Env["MYSQL_PASSWORD"] != first.Env["MYSQL_PASSWORD"] {
 		t.Fatalf("retained database credentials rotated: %v", err)
 	}
@@ -122,14 +190,17 @@ func TestMariaDBRefusesCredentialLossAndForeignResources(t *testing.T) {
 	ctx := context.Background()
 	m := testMariaDB()
 	i := testInstance("team")
-	if _, err := m.Provision(ctx, &addonv1.ProvisionRequest{Instance: i}); err != nil {
+	if _, err := provision(ctx, m, &addonv1.ProvisionRequest{Instance: i}); err != nil {
 		t.Fatal(err)
 	}
 	if err := m.resource("Secret").Delete(ctx, instanceName(i), metav1.DeleteOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.Provision(ctx, &addonv1.ProvisionRequest{Instance: i}); status.Code(err) != codes.FailedPrecondition {
+	if _, err := provision(ctx, m, &addonv1.ProvisionRequest{Instance: i}); status.Code(err) != codes.FailedPrecondition {
 		t.Fatalf("reinitialized credentials for existing data: %v", err)
+	}
+	if _, err := provision(ctx, m, &addonv1.ProvisionRequest{Instance: i, Parameters: params(t, map[string]any{"version": "bad tag"})}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("accepted an invalid version: %v", err)
 	}
 	deployment, _ := m.resource("Deployment").Get(ctx, instanceName(i), metav1.GetOptions{})
 	deployment.SetLabels(map[string]string{"owner": "somebody-else"})

@@ -74,6 +74,9 @@ type Config struct {
 	// that Kubernetes should use when pulling managed service images.
 	AddonImagePullSecrets []string
 	AddonPlugins          config.AddonPlugins
+	// Runtime names the provider in use (kubernetes or docker); the catalog
+	// hides services a plugin does not offer there.
+	Runtime string
 	// TLS carries the cert-manager issuer used for exact-host Certificates in
 	// Kubernetes. Docker's gateway issues certificates independently.
 	TLS config.InstallTLS
@@ -154,6 +157,10 @@ func FromEnv() (*Config, error) {
 	}
 	if err := c.AddonPlugins.Validate(); err != nil {
 		return nil, err
+	}
+	c.Runtime = os.Getenv("DONKEY_RUNTIME")
+	if c.Runtime == "" {
+		c.Runtime = "kubernetes"
 	}
 	// The build environment is a map, so it travels as JSON — the same way
 	// DONKEY_PLATFORM_ADMINS does.

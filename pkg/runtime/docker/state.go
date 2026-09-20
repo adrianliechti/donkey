@@ -64,7 +64,11 @@ func (s state) storeJSON(value any, replace bool, parts ...string) error {
 	}
 	defer os.Remove(tmp.Name())
 	defer tmp.Close()
-	if err := tmp.Chmod(0o644); err != nil {
+	mode := fs.FileMode(0o644)
+	if len(parts) > 0 && (parts[0] == "env" || parts[0] == "bindings" || parts[0] == "provisioning") {
+		mode = 0o600
+	}
+	if err := tmp.Chmod(mode); err != nil {
 		return err
 	}
 	if _, err := tmp.Write(b); err != nil {
@@ -224,7 +228,7 @@ func (s state) attachments(space, name string) ([]string, error) {
 
 // bindingValues collects one key's values across every space's shared
 // bindings — the AI proxy's token list.
-func (s state) bindingValues(key string) ([]string, error) {
+func (s state) bindingValues(key, matchKey, matchValue string) ([]string, error) {
 	var out []string
 	spaces, err := os.ReadDir(s.path("bindings"))
 	if errors.Is(err, fs.ErrNotExist) {
@@ -245,7 +249,7 @@ func (s state) bindingValues(key string) ([]string, error) {
 			}
 			data := map[string]string{}
 			if _, err := s.readJSON(&data, "bindings", sp.Name(), e.Name()); err == nil {
-				if v := data[key]; v != "" {
+				if v := data[key]; v != "" && data[matchKey] == matchValue {
 					out = append(out, v)
 				}
 			}

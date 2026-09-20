@@ -57,7 +57,7 @@ func TestBindingLayoutAndMigration(t *testing.T) {
 	if apps, err := s.attachments("team", "postgres"); err != nil || !reflect.DeepEqual(apps, []string{"api"}) {
 		t.Fatalf("attachments = %v, %v", apps, err)
 	}
-	if values, err := s.bindingValues("OPENAI_API_KEY"); err != nil || !reflect.DeepEqual(values, []string{"k1"}) {
+	if values, err := s.bindingValues("OPENAI_API_KEY", "DATABASE_URL", "old"); err != nil || !reflect.DeepEqual(values, []string{"k1"}) {
 		t.Fatalf("shared values = %v, %v", values, err)
 	}
 	// An app may now be called "shared": its copy sits under its own name.

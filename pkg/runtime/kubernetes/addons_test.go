@@ -22,7 +22,7 @@ func TestAttachmentSecret(t *testing.T) {
 		sec.Labels[manifests.LabelRole] != manifests.RoleBinding {
 		t.Fatalf("attachment identity = %v", sec.Labels)
 	}
-	plain := spaceBindingSecret("prod", "db", "donkey-prod", "db", nil)
+	plain := spaceBindingSecret("prod", "db", "donkey-prod", "db", nil, addons.Metadata{})
 	if plain.Name != "db-binding" {
 		t.Fatalf("the space's binding is named after the service, got %q", plain.Name)
 	}
@@ -31,7 +31,7 @@ func TestAttachmentSecret(t *testing.T) {
 	}
 	// In a shared namespace both carry the space, and stay distinct from an
 	// app that happens to be called "db".
-	if shared := spaceBindingSecret("prod", "prod-db", "apps", "db", nil); shared.Name != "prod-db-binding" {
+	if shared := spaceBindingSecret("prod", "prod-db", "apps", "db", nil, addons.Metadata{}); shared.Name != "prod-db-binding" {
 		t.Fatalf("shared-namespace space binding = %q", shared.Name)
 	}
 }

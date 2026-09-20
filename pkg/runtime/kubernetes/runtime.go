@@ -239,12 +239,17 @@ func (r *Runtime) DeleteSpace(ctx context.Context, space string) error {
 	if err := r.ValidateSpace(space); err != nil {
 		return err
 	}
+	if !r.opts.Placement.Shared() {
+		if _, err := r.c.ownedSpaceNamespace(ctx, r.ns(space), space); err != nil {
+			return err
+		}
+	}
 	names, err := r.pluginServiceNames(ctx, space)
 	if err != nil {
 		return err
 	}
 	for _, name := range names {
-		if err := r.deprovisionPlugin(ctx, space, name, false); err != nil {
+		if err := r.deprovisionPlugin(ctx, space, name, false, false); err != nil {
 			return err
 		}
 	}

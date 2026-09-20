@@ -6,7 +6,7 @@ import (
 )
 
 func TestRustfsBinding(t *testing.T) {
-	a := Registry["rustfs"]
+	a := registry["rustfs"]
 	in := input
 	in.Name = "rustfs"
 	got := a.Binding(in)
@@ -29,7 +29,7 @@ func TestRustfsBinding(t *testing.T) {
 }
 
 func TestRustfsExternalBinding(t *testing.T) {
-	a := Registry["rustfs"]
+	a := registry["rustfs"]
 	got, err := a.ExternalBinding("https://s3.example.com/")
 	if err != nil {
 		t.Fatal(err)

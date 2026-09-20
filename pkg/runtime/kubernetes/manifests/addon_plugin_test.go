@@ -10,8 +10,8 @@ import (
 
 func TestPluginEgressPinsNamespacePodsAndTranslatedPort(t *testing.T) {
 	info := &addonv1.ProvisionResponse{Env: map[string]string{"MYSQL_HOST": "db.addons.svc"}, Endpoints: []*addonv1.Endpoint{
-		{Host: "db.addons.svc", Port: 3306, Kubernetes: &addonv1.KubernetesTarget{Namespace: "addons", PodLabels: map[string]string{"db": "team"}, Port: 13306}},
-		{Host: "backup.example.com", Port: 443, Cidrs: []string{"192.0.2.10/32", "2001:db8::10/128"}},
+		{Host: "db.addons.svc", Port: 3306, Target: &addonv1.Endpoint_Kubernetes{Kubernetes: &addonv1.KubernetesTarget{Namespace: "addons", PodLabels: map[string]string{"db": "team"}, Port: 13306}}},
+		{Host: "backup.example.com", Port: 443, Target: &addonv1.Endpoint_Cidrs{Cidrs: &addonv1.CIDRTarget{Ranges: []string{"192.0.2.10/32", "2001:db8::10/128"}}}},
 	}}
 	p, err := AddonEgressPolicy("team", "workloads", "main", "db", "team-db", info)
 	if err != nil {
@@ -33,7 +33,7 @@ func TestPluginEgressPinsNamespacePodsAndTranslatedPort(t *testing.T) {
 	if peers := p.Spec.Egress[1].To; len(peers) != 2 || peers[0].IPBlock.CIDR != "192.0.2.10/32" || peers[1].IPBlock.CIDR != "2001:db8::10/128" {
 		t.Fatal("external CIDRs were widened or lost")
 	}
-	info.Endpoints[0].Kubernetes.PodLabels["db"] = "changed"
+	info.Endpoints[0].GetKubernetes().PodLabels["db"] = "changed"
 	if rule.To[0].PodSelector.MatchLabels["db"] != "team" {
 		t.Fatal("policy aliases the mutable plugin response")
 	}

@@ -36,7 +36,7 @@ func AddonEgressPolicy(space, namespace, installation, name, objectName string, 
 	for _, endpoint := range info.Endpoints {
 		port := endpoint.Port
 		var peers []networkingv1.NetworkPolicyPeer
-		if target := endpoint.Kubernetes; target != nil {
+		if target := endpoint.GetKubernetes(); target != nil {
 			if target.Port != 0 {
 				port = target.Port
 			}
@@ -46,8 +46,8 @@ func AddonEgressPolicy(space, namespace, installation, name, objectName string, 
 				NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{LabelNamespaceName: target.Namespace}},
 				PodSelector:       &metav1.LabelSelector{MatchLabels: maps.Clone(target.PodLabels)},
 			})
-		} else {
-			for _, cidr := range endpoint.Cidrs {
+		} else if cidrs := endpoint.GetCidrs(); cidrs != nil {
+			for _, cidr := range cidrs.Ranges {
 				peers = append(peers, networkingv1.NetworkPolicyPeer{IPBlock: &networkingv1.IPBlock{CIDR: cidr}})
 			}
 		}

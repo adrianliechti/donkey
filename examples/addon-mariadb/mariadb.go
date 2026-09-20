@@ -16,6 +16,7 @@ import (
 	addonv1 "github.com/adrianliechti/donkey/pkg/addons/v1"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/structpb"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
@@ -32,25 +33,60 @@ import (
 	"k8s.io/client-go/dynamic"
 )
 
-const databasePort = 3306
+const (
+	databasePort   = 3306
+	defaultVersion = "11.8"
+	defaultStorage = "1Gi"
+)
 
-var envKeys = []string{"DATABASE_URL", "MYSQL_HOST", "MYSQL_PORT", "MYSQL_DATABASE", "MYSQL_USER", "MYSQL_PASSWORD"}
-var imageTag = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$`)
+// The catalog descriptor: what apps get, and what a person may choose.
+var (
+	env = []*addonv1.EnvVar{
+		{Name: "DATABASE_URL", Description: "mysql:// connection URL with credentials", Secret: true},
+		{Name: "MYSQL_HOST"}, {Name: "MYSQL_PORT"}, {Name: "MYSQL_DATABASE"}, {Name: "MYSQL_USER"},
+		{Name: "MYSQL_PASSWORD", Secret: true},
+	}
+	parameters = map[string]any{
+		"type": "object", "additionalProperties": false,
+		"properties": map[string]any{
+			"version": map[string]any{
+				"type": "string", "title": "Version", "description": "The MariaDB release to run.",
+				"enum": []any{"10.11", "11.4", "11.8"}, "default": defaultVersion, "x-donkey-order": 20,
+			},
+			"storage": map[string]any{
+				"type": "string", "title": "Disk", "description": "Size of the data volume. It can grow later, never shrink.",
+				"default": defaultStorage, "format": "quantity", "pattern": `^[0-9]+(\.[0-9]+)?([KMGTPE]i?)?$`,
+				"x-donkey-widget": "disk-size", "x-donkey-order": 10,
+			},
+		},
+	}
+	imageTag = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$`)
+)
 
 type mariaDB struct {
 	addonv1.UnimplementedAddonPluginServer
 	client                  dynamic.Interface
 	namespace, installation string
-	// The example runs one replica. Serializing mutations also prevents two
-	// initial requests from assigning different passwords to the same disk.
-	mu sync.Mutex
+	// One lock per instance: two requests for the same disk must not race on
+	// its credentials, while unrelated instances provision in parallel.
+	locks sync.Map
+}
+
+func (m *mariaDB) lock(name string) func() {
+	mu, _ := m.locks.LoadOrStore(name, &sync.Mutex{})
+	mu.(*sync.Mutex).Lock()
+	return mu.(*sync.Mutex).Unlock
 }
 
 func (m *mariaDB) Describe(context.Context, *addonv1.DescribeRequest) (*addonv1.DescribeResponse, error) {
+	schema, err := structpb.NewStruct(parameters)
+	if err != nil {
+		return nil, err
+	}
 	return &addonv1.DescribeResponse{
-		Protocol: "mysql",
-		Type:     "mariadb", Title: "MariaDB", Description: "A MariaDB database provisioned in a separate namespace.",
-		DefaultVersion: "11.8", DefaultStorage: "1Gi", EnvKeys: envKeys,
+		Type: "mariadb", Title: "MariaDB", Description: "A MariaDB database provisioned in a separate namespace.",
+		Protocol: "mysql", Parameters: schema, Env: env,
+		Capabilities: []string{"runtime:kubernetes", "keep-data"},
 	}, nil
 }
 
@@ -72,6 +108,32 @@ func (m *mariaDB) validate(i *addonv1.Instance) error {
 	return nil
 }
 
+// provisionParameters reads the request's parameters. Donkey validated them
+// against Describe's schema and applied its defaults; the plugin still
+// checks what it relies on, as any server should.
+func provisionParameters(request *addonv1.ProvisionRequest) (string, resource.Quantity, error) {
+	params := map[string]any{}
+	if request.Parameters != nil {
+		params = request.Parameters.AsMap()
+	}
+	version, _ := params["version"].(string)
+	if version == "" {
+		version = defaultVersion
+	}
+	if !imageTag.MatchString(version) {
+		return "", resource.Quantity{}, status.Error(codes.InvalidArgument, "version must be a MariaDB image tag")
+	}
+	storage, _ := params["storage"].(string)
+	if storage == "" {
+		storage = defaultStorage
+	}
+	size, err := resource.ParseQuantity(storage)
+	if err != nil || size.Sign() <= 0 {
+		return "", resource.Quantity{}, status.Error(codes.InvalidArgument, "storage must be a positive Kubernetes quantity")
+	}
+	return version, size, nil
+}
+
 func instanceName(i *addonv1.Instance) string {
 	sum := sha256.Sum256([]byte(i.Installation + "/" + i.Space + "/" + i.Name))
 	return "mariadb-" + hex.EncodeToString(sum[:12])
@@ -86,41 +148,31 @@ func instanceLabels(i *addonv1.Instance) map[string]string {
 	}
 }
 
-func (m *mariaDB) Provision(ctx context.Context, request *addonv1.ProvisionRequest) (*addonv1.ProvisionResponse, error) {
+// Provision streams progress and ends with the result once MariaDB answers.
+func (m *mariaDB) Provision(request *addonv1.ProvisionRequest, stream addonv1.AddonPlugin_ProvisionServer) error {
+	ctx := stream.Context()
 	if request == nil {
-		return nil, status.Error(codes.InvalidArgument, "missing request")
+		return status.Error(codes.InvalidArgument, "missing request")
 	}
 	if err := m.validate(request.Instance); err != nil {
-		return nil, err
+		return err
 	}
-	version := request.Version
-	if version == "" {
-		version = "11.8"
+	version, size, err := provisionParameters(request)
+	if err != nil {
+		return err
 	}
-	if !imageTag.MatchString(version) {
-		return nil, status.Error(codes.InvalidArgument, "version must be a MariaDB image tag")
-	}
-	storage := request.Storage
-	if storage == "" {
-		storage = "1Gi"
-	}
-	size, err := resource.ParseQuantity(storage)
-	if err != nil || size.Sign() <= 0 {
-		return nil, status.Error(codes.InvalidArgument, "storage must be a positive Kubernetes quantity")
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
 	i := request.Instance
 	name, labels := instanceName(i), instanceLabels(i)
+	defer m.lock(name)()
 	secret, err := m.resource("Secret").Get(ctx, name, metav1.GetOptions{})
 	var password string
 	if apierrors.IsNotFound(err) {
 		// A surviving volume without its credentials must never be silently
 		// assigned a new password: MariaDB ignores initialization env then.
 		if _, diskErr := m.resource("PersistentVolumeClaim").Get(ctx, name, metav1.GetOptions{}); diskErr == nil {
-			return nil, status.Error(codes.FailedPrecondition, "database disk exists but credentials are missing")
+			return status.Error(codes.FailedPrecondition, "database disk exists but credentials are missing")
 		} else if !apierrors.IsNotFound(diskErr) {
-			return nil, diskErr
+			return diskErr
 		}
 		password = rand.Text()
 		if err := m.apply(ctx, &corev1.Secret{
@@ -128,41 +180,49 @@ func (m *mariaDB) Provision(ctx context.Context, request *addonv1.ProvisionReque
 			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: m.namespace, Labels: labels},
 			Data:       map[string][]byte{"password": []byte(password), "root-password": []byte(rand.Text())},
 		}); err != nil {
-			return nil, err
+			return err
 		}
 	} else if err != nil {
-		return nil, err
+		return err
 	} else {
 		if !owned(secret, labels) {
-			return nil, status.Error(codes.AlreadyExists, "credential secret has another owner")
+			return status.Error(codes.AlreadyExists, "credential secret has another owner")
 		}
 		var stored corev1.Secret
 		if err := runtime.DefaultUnstructuredConverter.FromUnstructured(secret.Object, &stored); err != nil {
-			return nil, err
+			return err
 		}
 		password = string(stored.Data["password"])
 		if password == "" || len(stored.Data["root-password"]) == 0 {
-			return nil, status.Error(codes.FailedPrecondition, "database credentials are incomplete")
+			return status.Error(codes.FailedPrecondition, "database credentials are incomplete")
 		}
 	}
 	if existing, err := m.resource("PersistentVolumeClaim").Get(ctx, name, metav1.GetOptions{}); err == nil {
 		if !owned(existing, labels) {
-			return nil, status.Error(codes.AlreadyExists, "database disk has another owner")
+			return status.Error(codes.AlreadyExists, "database disk has another owner")
 		}
 		var pvc corev1.PersistentVolumeClaim
 		if err := runtime.DefaultUnstructuredConverter.FromUnstructured(existing.Object, &pvc); err != nil {
-			return nil, err
+			return err
 		}
+		// A volume never shrinks: keep the larger of the two sizes and report
+		// it back as the effective parameter.
 		if current := pvc.Spec.Resources.Requests[corev1.ResourceStorage]; current.Cmp(size) > 0 {
 			size = current
 		}
 	} else if !apierrors.IsNotFound(err) {
-		return nil, err
+		return err
+	}
+	if err := stream.Send(&addonv1.ProvisionEvent{Message: "applying MariaDB " + version + " with a " + size.String() + " disk"}); err != nil {
+		return err
 	}
 	for _, object := range m.objects(i, version, size) {
 		if err := m.apply(ctx, object); err != nil {
-			return nil, err
+			return err
 		}
+	}
+	if err := stream.Send(&addonv1.ProvisionEvent{Message: "waiting for MariaDB to accept connections"}); err != nil {
+		return err
 	}
 	if err := wait.PollUntilContextTimeout(ctx, time.Second, 3*time.Minute, true, func(ctx context.Context) (bool, error) {
 		object, err := m.resource("Deployment").Get(ctx, name, metav1.GetOptions{})
@@ -175,18 +235,22 @@ func (m *mariaDB) Provision(ctx context.Context, request *addonv1.ProvisionReque
 		}
 		return dep.Status.ObservedGeneration >= dep.Generation && dep.Status.UpdatedReplicas == 1 && dep.Status.AvailableReplicas == 1 && dep.Status.Replicas == 1, nil
 	}); err != nil {
-		return nil, status.Error(codes.DeadlineExceeded, "MariaDB did not become ready before the provisioning deadline")
+		return status.Error(codes.DeadlineExceeded, "MariaDB did not become ready before the provisioning deadline")
 	}
 	host := name + "." + m.namespace + ".svc"
 	connection := &url.URL{Scheme: "mysql", User: url.UserPassword("donkey", password), Host: host + ":3306", Path: "/app"}
-	return &addonv1.ProvisionResponse{
-		Protocol: "mysql",
-		Env:      map[string]string{"DATABASE_URL": connection.String(), "MYSQL_HOST": host, "MYSQL_PORT": "3306", "MYSQL_DATABASE": "app", "MYSQL_USER": "donkey", "MYSQL_PASSWORD": password},
-		Urls:     []string{"mysql://" + host + ":3306/app"},
-		Endpoints: []*addonv1.Endpoint{{Host: host, Port: databasePort, Protocol: "TCP", Kubernetes: &addonv1.KubernetesTarget{
+	effective, err := structpb.NewStruct(map[string]any{"version": version, "storage": size.String()})
+	if err != nil {
+		return err
+	}
+	return stream.Send(&addonv1.ProvisionEvent{Result: &addonv1.ProvisionResponse{
+		Env:        map[string]string{"DATABASE_URL": connection.String(), "MYSQL_HOST": host, "MYSQL_PORT": "3306", "MYSQL_DATABASE": "app", "MYSQL_USER": "donkey", "MYSQL_PASSWORD": password},
+		Urls:       []string{"mysql://" + host + ":3306/app"},
+		Parameters: effective,
+		Endpoints: []*addonv1.Endpoint{{Host: host, Port: databasePort, Protocol: "TCP", Target: &addonv1.Endpoint_Kubernetes{Kubernetes: &addonv1.KubernetesTarget{
 			Namespace: m.namespace, PodLabels: labels, Port: databasePort,
-		}}},
-	}, nil
+		}}}},
+	}})
 }
 
 func (m *mariaDB) objects(i *addonv1.Instance, version string, size resource.Quantity) []runtime.Object {
@@ -251,9 +315,8 @@ func (m *mariaDB) Deprovision(ctx context.Context, request *addonv1.DeprovisionR
 	if err := m.validate(request.Instance); err != nil {
 		return nil, err
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
 	name, labels := instanceName(request.Instance), instanceLabels(request.Instance)
+	defer m.lock(name)()
 	kinds := []string{"Deployment", "Service", "NetworkPolicy"}
 	if !request.KeepData {
 		kinds = append(kinds, "PersistentVolumeClaim", "Secret")
