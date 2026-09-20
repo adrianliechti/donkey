@@ -386,6 +386,9 @@ func (r *Runtime) DeleteSpace(ctx context.Context, space string) error {
 	if inspectErr == nil && !sameIdentity(nw.Labels, resourceLabels(space, roleSpace)) {
 		return fmt.Errorf("the network %s isn't donkey's space %s to delete", netName(space), space)
 	}
+	if err := r.deprovisionSpacePlugins(ctx, space); err != nil {
+		return err
+	}
 	own, err := ownedSystemContainers(ctx, r.cli,
 		r.opts.ServerContainer, r.opts.GatewayContainer, r.opts.AIContainer, r.opts.TelemetryContainer)
 	if err != nil {
@@ -711,6 +714,11 @@ func (r *Runtime) ServiceBinding(ctx context.Context, space, owner, name string)
 	if err != nil {
 		return nil, err
 	}
+	if state, err := r.pluginState(space, name); err != nil {
+		return nil, err
+	} else if state != nil {
+		return binding, nil // plugin addresses are already app-reachable
+	}
 	// Older installations stored short network aliases. The server belongs
 	// to every space network, where those aliases are ambiguous. Resolve an
 	// existing managed service by its owned container name on read as well.
@@ -745,7 +753,20 @@ func (r *Runtime) EnsureService(ctx context.Context, space string, spec rt.Servi
 	}
 	var binding map[string]string
 	var version, storage string
-	if spec.External {
+	previous, err := r.pluginState(space, spec.Name)
+	if err != nil {
+		return nil, "", "", err
+	}
+	plugin, isPlugin := addon.(*addons.Plugin)
+	if previous != nil && (previous.Type != spec.Type || !isPlugin || spec.External) {
+		return nil, "", "", fmt.Errorf("remove service %s before changing its provisioner", spec.Name)
+	}
+	if isPlugin && !spec.External {
+		binding, version, storage, err = r.provisionPlugin(ctx, space, spec, plugin, previous)
+		if err != nil {
+			return nil, "", "", err
+		}
+	} else if spec.External {
 		binding, err = addon.ExternalBinding(spec.URL)
 		if err != nil {
 			return nil, "", "", rt.UserError{Err: err}
@@ -812,6 +833,11 @@ func (r *Runtime) EnsureService(ctx context.Context, space string, spec rt.Servi
 		}
 		version, storage = in.Version, in.Storage
 	}
+	if !isPlugin || spec.External {
+		if err := r.state.writeJSON(addons.MetadataFor(addon), "service-metadata", space, spec.Name+".json"); err != nil {
+			return nil, "", "", err
+		}
+	}
 	// Attached apps hold copies; refresh them (and restart on external
 	// changes, whose addresses may have moved).
 	attached, err := r.state.attachments(space, spec.Name)
@@ -822,7 +848,7 @@ func (r *Runtime) EnsureService(ctx context.Context, space string, spec rt.Servi
 		if err := r.state.setBinding(space, app, spec.Name, binding); err != nil {
 			return nil, "", "", err
 		}
-		if spec.External {
+		if spec.External || isPlugin {
 			if _, err := r.Restart(ctx, space, app); err != nil {
 				return nil, "", "", err
 			}
@@ -930,6 +956,9 @@ func (r *Runtime) RemoveService(ctx context.Context, space, name string, keepDat
 	if err != nil {
 		return nil, err
 	}
+	if err := r.deprovisionPlugin(ctx, space, name, keepData); err != nil {
+		return nil, err
+	}
 	for _, app := range attached {
 		if err := r.DetachService(ctx, space, app, name); err != nil {
 			return nil, err
@@ -945,6 +974,12 @@ func (r *Runtime) RemoveService(ctx context.Context, space, name string, keepDat
 		if err := r.removeOwnedVolume(ctx, volName(space, name), addonLabels(space, name, roleStorage)); err != nil {
 			return nil, err
 		}
+		if err := r.state.remove("provisioning", space, name+".json"); err != nil {
+			return nil, err
+		}
+		if err := r.state.remove("service-metadata", space, name+".json"); err != nil {
+			return nil, err
+		}
 	}
 	return attached, nil
 }
@@ -954,6 +989,20 @@ func (r *Runtime) ServiceAttachments(ctx context.Context, space, name string) ([
 }
 
 func (r *Runtime) ServiceEndpoint(ctx context.Context, space, name string) (string, int32, error) {
+	state, err := r.pluginState(space, name)
+	if err != nil {
+		return "", 0, err
+	}
+	if state != nil {
+		if !state.Stopped && state.Info != nil {
+			for _, e := range state.Info.Endpoints {
+				if e.Protocol == "" || e.Protocol == "TCP" {
+					return e.Host, e.Port, nil
+				}
+			}
+		}
+		return "", 0, nil
+	}
 	info, err := r.cli.ContainerInspect(ctx, ctrName(space, name))
 	if cerrdefs.IsNotFound(err) {
 		return "", 0, nil
@@ -986,7 +1035,14 @@ func (r *Runtime) ListServices(ctx context.Context, space, owner string) ([]rt.S
 		if err != nil {
 			return nil, err
 		}
-		info := rt.ServiceBindingInfo{Name: name}
+		var metadata addons.Metadata
+		if _, err := r.state.readJSON(&metadata, "service-metadata", space, name+".json"); err != nil {
+			return nil, err
+		}
+		if metadata.Protocol == "" {
+			metadata.Protocol = addons.LegacyProtocol(data)
+		}
+		info := rt.ServiceBindingInfo{Name: name, Type: metadata.Type, Protocol: addons.NormalizeProtocol(metadata.Protocol)}
 		for k := range data {
 			info.Keys = append(info.Keys, k)
 		}

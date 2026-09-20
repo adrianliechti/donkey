@@ -1,7 +1,7 @@
 package server
 
 // The console's database browser. donkey-server already sits in the cluster
-// and already holds the binding, so it can speak to a space's postgres
+// and already holds the binding, so it can speak to a space's database
 // directly — no tunnel, no exposed port, the admin token is the only door.
 
 import (
@@ -10,14 +10,11 @@ import (
 	"fmt"
 	"maps"
 	"net/http"
-	"net/url"
 	"regexp"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/jackc/pgx/v5"
 
 	"github.com/adrianliechti/donkey/internal/addons"
 	"github.com/adrianliechti/donkey/internal/config"
@@ -32,7 +29,7 @@ var plainIdent = regexp.MustCompile(`^[a-z_][a-z0-9_]*$`)
 // using the binding's own DATABASE_URL — the browser sees exactly the
 // database the apps see. db picks one of the service's databases; empty
 // means the binding's own.
-func (s *Server) dbConnect(ctx context.Context, r *http.Request, db string) (*pgx.Conn, error) {
+func (s *Server) dbConnect(ctx context.Context, r *http.Request, db string) (*databaseConn, error) {
 	space, err := s.space(r)
 	if err != nil {
 		return nil, runtime.UserError{Err: err}
@@ -50,17 +47,13 @@ func (s *Server) dbConnect(ctx context.Context, r *http.Request, db string) (*pg
 	}
 	dsn, ok := data["DATABASE_URL"]
 	if !ok {
-		return nil, runtime.UserError{Err: fmt.Errorf("%s doesn't speak SQL — only services with a DATABASE_URL can be browsed", name)}
+		return nil, runtime.UserError{Err: fmt.Errorf("%s has no database connection URL", name)}
 	}
-	if db != "" {
-		u, err := url.Parse(dsn)
-		if err != nil {
-			return nil, runtime.UserError{Err: fmt.Errorf("the binding's DATABASE_URL is not a URL")}
-		}
-		u.Path = "/" + db
-		dsn = u.String()
+	metadata, err := s.serviceMetadata(ctx, space, name, data)
+	if err != nil {
+		return nil, err
 	}
-	conn, err := pgx.Connect(ctx, dsn)
+	conn, err := connectDatabase(ctx, metadata.Protocol, dsn, db)
 	if err != nil {
 		return nil, fmt.Errorf("%s is not answering: %w", name, err)
 	}
@@ -70,7 +63,7 @@ func (s *Server) dbConnect(ctx context.Context, r *http.Request, db string) (*pg
 // handleDbDatabases lists the service's databases — templates stay hidden,
 // they are postgres' own scaffolding.
 func (s *Server) handleDbDatabases(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithCancel(r.Context())
+	ctx, cancel := context.WithTimeout(r.Context(), databaseRequestTimeout)
 	defer cancel()
 	conn, err := s.dbConnect(ctx, r, "")
 	if err != nil {
@@ -79,11 +72,14 @@ func (s *Server) handleDbDatabases(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close(ctx)
 
-	rows, err := conn.Query(ctx, `
-		SELECT datname, pg_database_size(datname)
-		FROM pg_database
-		WHERE NOT datistemplate
-		ORDER BY datname`)
+	query := `SELECT datname, pg_database_size(datname) FROM pg_database WHERE NOT datistemplate ORDER BY datname`
+	if conn.protocol == addons.ProtocolMySQL {
+		query = `SELECT s.SCHEMA_NAME, COALESCE(SUM(t.DATA_LENGTH + t.INDEX_LENGTH), 0)
+		FROM information_schema.SCHEMATA s LEFT JOIN information_schema.TABLES t ON t.TABLE_SCHEMA = s.SCHEMA_NAME
+		WHERE s.SCHEMA_NAME NOT IN ('information_schema', 'mysql', 'performance_schema', 'sys')
+		GROUP BY s.SCHEMA_NAME ORDER BY s.SCHEMA_NAME`
+	}
+	rows, err := conn.Query(ctx, query)
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err)
 		return
@@ -102,19 +98,24 @@ func (s *Server) handleDbDatabases(w http.ResponseWriter, r *http.Request) {
 		}
 		out = append(out, d)
 	}
-	// The binding's own database is the one apps see — the browser opens on it.
-	var current string
-	if err := conn.QueryRow(ctx, "SELECT current_database()").Scan(&current); err != nil {
+	if err := rows.Err(); err != nil {
 		writeErr(w, http.StatusBadGateway, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"databases": out, "default": current})
+	rows.Close()
+	// The binding's own database is the one apps see — the browser opens on it.
+	var current string
+	if err := conn.QueryRow(ctx, conn.currentDatabaseSQL()).Scan(&current); err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"databases": out, "default": current, "protocol": conn.protocol})
 }
 
 // handleDbCreateDatabase makes a database on the service. Plain identifiers
 // only — the escape hatch for fancier names is the SQL view.
 func (s *Server) handleDbCreateDatabase(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithCancel(r.Context())
+	ctx, cancel := context.WithTimeout(r.Context(), databaseRequestTimeout)
 	defer cancel()
 	var req struct {
 		Name string `json:"name"`
@@ -133,7 +134,7 @@ func (s *Server) handleDbCreateDatabase(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	defer conn.Close(ctx)
-	if _, err := conn.Exec(ctx, "CREATE DATABASE "+pgx.Identifier{req.Name}.Sanitize()); err != nil {
+	if _, err := conn.Exec(ctx, "CREATE DATABASE "+conn.quote(req.Name)); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
@@ -143,7 +144,7 @@ func (s *Server) handleDbCreateDatabase(w http.ResponseWriter, r *http.Request) 
 // handleDbDropDatabase removes a database — except the binding's own, which
 // the connected apps depend on.
 func (s *Server) handleDbDropDatabase(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithCancel(r.Context())
+	ctx, cancel := context.WithTimeout(r.Context(), databaseRequestTimeout)
 	defer cancel()
 	db := r.PathValue("db")
 	conn, err := s.dbConnect(ctx, r, "")
@@ -153,7 +154,7 @@ func (s *Server) handleDbDropDatabase(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close(ctx)
 	var current string
-	if err := conn.QueryRow(ctx, "SELECT current_database()").Scan(&current); err != nil {
+	if err := conn.QueryRow(ctx, conn.currentDatabaseSQL()).Scan(&current); err != nil {
 		writeErr(w, http.StatusBadGateway, err)
 		return
 	}
@@ -163,7 +164,11 @@ func (s *Server) handleDbDropDatabase(w http.ResponseWriter, r *http.Request) {
 	}
 	// FORCE kicks lingering connections; without it, one idle session would
 	// make the drop flake.
-	if _, err := conn.Exec(ctx, "DROP DATABASE "+pgx.Identifier{db}.Sanitize()+" WITH (FORCE)"); err != nil {
+	query := "DROP DATABASE " + conn.quote(db)
+	if conn.protocol == addons.ProtocolPostgres {
+		query += " WITH (FORCE)"
+	}
+	if _, err := conn.Exec(ctx, query); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
@@ -173,19 +178,19 @@ func (s *Server) handleDbDropDatabase(w http.ResponseWriter, r *http.Request) {
 // handleDbDropTable removes one table, dependencies untouched — an error
 // about them is better than a silent cascade.
 func (s *Server) handleDbDropTable(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithCancel(r.Context())
+	ctx, cancel := context.WithTimeout(r.Context(), databaseRequestTimeout)
 	defer cancel()
-	ident, err := tableIdent(r.URL.Query().Get("schema"), r.PathValue("table"))
-	if err != nil {
-		writeErr(w, statusFor(err), err)
-		return
-	}
 	conn, err := s.dbConnect(ctx, r, r.PathValue("db"))
 	if err != nil {
 		writeErr(w, statusFor(err), err)
 		return
 	}
 	defer conn.Close(ctx)
+	ident, err := conn.tableIdent(r.URL.Query().Get("schema"), r.PathValue("table"))
+	if err != nil {
+		writeErr(w, statusFor(err), err)
+		return
+	}
 	if _, err := conn.Exec(ctx, "DROP TABLE "+ident); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
@@ -196,7 +201,7 @@ func (s *Server) handleDbDropTable(w http.ResponseWriter, r *http.Request) {
 // handleDbTables lists the user's tables — system schemas are the server's
 // business, not the browser's.
 func (s *Server) handleDbTables(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithCancel(r.Context())
+	ctx, cancel := context.WithTimeout(r.Context(), databaseRequestTimeout)
 	defer cancel()
 	conn, err := s.dbConnect(ctx, r, r.PathValue("db"))
 	if err != nil {
@@ -205,13 +210,20 @@ func (s *Server) handleDbTables(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close(ctx)
 
-	rows, err := conn.Query(ctx, `
+	query := `
 		SELECT n.nspname, c.relname, GREATEST(c.reltuples, 0)::bigint
 		FROM pg_class c
 		JOIN pg_namespace n ON n.oid = c.relnamespace
 		WHERE c.relkind IN ('r', 'p')
 		  AND n.nspname NOT IN ('pg_catalog', 'information_schema')
-		ORDER BY 1, 2`)
+		ORDER BY 1, 2`
+	var args []any
+	if conn.protocol == addons.ProtocolMySQL {
+		query = `SELECT TABLE_SCHEMA, TABLE_NAME, COALESCE(TABLE_ROWS, 0) FROM information_schema.TABLES
+		WHERE TABLE_SCHEMA = ? AND TABLE_TYPE = 'BASE TABLE' ORDER BY TABLE_NAME`
+		args = []any{conn.database}
+	}
+	rows, err := conn.Query(ctx, query, args...)
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err)
 		return
@@ -233,31 +245,32 @@ func (s *Server) handleDbTables(w http.ResponseWriter, r *http.Request) {
 		}
 		out = append(out, t)
 	}
+	if err := rows.Err(); err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"tables": out})
 }
 
-// tableIdent validates and quotes a schema-qualified table name; everything
-// the browser touches goes through here, so identifiers are never spliced
-// raw into SQL.
-func tableIdent(schema, table string) (string, error) {
-	if schema == "" {
-		schema = "public"
+// primaryKey names the columns that safely identify a row for grid edits.
+func primaryKey(ctx context.Context, conn *databaseConn, schema, table string) ([]string, error) {
+	ident, err := conn.tableIdent(schema, table)
+	if err != nil {
+		return nil, err
 	}
-	if table == "" {
-		return "", runtime.UserError{Err: fmt.Errorf("which table?")}
+	query := `SELECT a.attname FROM pg_index i
+	JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
+	WHERE i.indrelid = $1::regclass AND i.indisprimary ORDER BY array_position(i.indkey, a.attnum)`
+	args := []any{ident}
+	if conn.protocol == addons.ProtocolMySQL {
+		if schema == "" {
+			schema = conn.database
+		}
+		query = `SELECT COLUMN_NAME FROM information_schema.KEY_COLUMN_USAGE
+		WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND CONSTRAINT_NAME = 'PRIMARY' ORDER BY ORDINAL_POSITION`
+		args = []any{schema, table}
 	}
-	return pgx.Identifier{schema, table}.Sanitize(), nil
-}
-
-// primaryKey names the table's key columns — the row grid's handle for
-// updates and deletes. A table without one stays read-only in the grid.
-func primaryKey(ctx context.Context, conn *pgx.Conn, ident string) ([]string, error) {
-	rows, err := conn.Query(ctx, `
-		SELECT a.attname
-		FROM pg_index i
-		JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
-		WHERE i.indrelid = $1::regclass AND i.indisprimary
-		ORDER BY array_position(i.indkey, a.attnum)`, ident)
+	rows, err := conn.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -288,10 +301,8 @@ func cell(v any) any {
 	}
 }
 
-func collectRows(rows pgx.Rows) (columns []string, data [][]any, err error) {
-	for _, f := range rows.FieldDescriptions() {
-		columns = append(columns, f.Name)
-	}
+func collectRows(rows *databaseRows) (columns []string, data [][]any, err error) {
+	columns = append(columns, rows.columns...)
 	for rows.Next() {
 		values, err := rows.Values()
 		if err != nil {
@@ -309,7 +320,7 @@ func collectRows(rows pgx.Rows) (columns []string, data [][]any, err error) {
 // handleDbRows serves one page of a table, with the key columns the grid
 // needs to edit it.
 func (s *Server) handleDbRows(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithCancel(r.Context())
+	ctx, cancel := context.WithTimeout(r.Context(), databaseRequestTimeout)
 	defer cancel()
 	conn, err := s.dbConnect(ctx, r, r.PathValue("db"))
 	if err != nil {
@@ -318,7 +329,7 @@ func (s *Server) handleDbRows(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close(ctx)
 
-	ident, err := tableIdent(r.URL.Query().Get("schema"), r.PathValue("table"))
+	ident, err := conn.tableIdent(r.URL.Query().Get("schema"), r.PathValue("table"))
 	if err != nil {
 		writeErr(w, statusFor(err), err)
 		return
@@ -332,7 +343,7 @@ func (s *Server) handleDbRows(w http.ResponseWriter, r *http.Request) {
 		offset = 0
 	}
 
-	key, err := primaryKey(ctx, conn, ident)
+	key, err := primaryKey(ctx, conn, r.URL.Query().Get("schema"), r.PathValue("table"))
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err)
 		return
@@ -346,10 +357,10 @@ func (s *Server) handleDbRows(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("dir") == "desc" {
 			dir = " DESC"
 		}
-		ordering = append(ordering, pgx.Identifier{col}.Sanitize()+dir)
+		ordering = append(ordering, conn.quote(col)+dir)
 	}
 	for _, k := range key {
-		ordering = append(ordering, pgx.Identifier{k}.Sanitize())
+		ordering = append(ordering, conn.quote(k))
 	}
 	order := ""
 	if len(ordering) > 0 {
@@ -392,7 +403,7 @@ type dbRowRequest struct {
 
 // wherePK builds the key match; every key column must be present, so a
 // half-identified row can never match more than intended.
-func wherePK(key map[string]string, pk []string, args *[]any) (string, error) {
+func wherePK(conn *databaseConn, key map[string]string, pk []string, args *[]any) (string, error) {
 	if len(pk) == 0 {
 		return "", runtime.UserError{Err: fmt.Errorf("this table has no primary key — the grid can't safely change rows, use the SQL view")}
 	}
@@ -403,13 +414,13 @@ func wherePK(key map[string]string, pk []string, args *[]any) (string, error) {
 			return "", runtime.UserError{Err: fmt.Errorf("the row's %s value is missing", col)}
 		}
 		*args = append(*args, v)
-		parts = append(parts, fmt.Sprintf("%s = $%d", pgx.Identifier{col}.Sanitize(), len(*args)))
+		parts = append(parts, conn.quote(col)+" = "+conn.placeholder(len(*args)))
 	}
 	return strings.Join(parts, " AND "), nil
 }
 
 func (s *Server) handleDbInsertRow(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithCancel(r.Context())
+	ctx, cancel := context.WithTimeout(r.Context(), databaseRequestTimeout)
 	defer cancel()
 	var req dbRowRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -426,7 +437,7 @@ func (s *Server) handleDbInsertRow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer conn.Close(ctx)
-	ident, err := tableIdent(r.URL.Query().Get("schema"), r.PathValue("table"))
+	ident, err := conn.tableIdent(r.URL.Query().Get("schema"), r.PathValue("table"))
 	if err != nil {
 		writeErr(w, statusFor(err), err)
 		return
@@ -435,8 +446,8 @@ func (s *Server) handleDbInsertRow(w http.ResponseWriter, r *http.Request) {
 	var args []any
 	for _, c := range slices.Sorted(maps.Keys(req.Values)) {
 		args = append(args, req.Values[c])
-		cols = append(cols, pgx.Identifier{c}.Sanitize())
-		holders = append(holders, fmt.Sprintf("$%d", len(args)))
+		cols = append(cols, conn.quote(c))
+		holders = append(holders, conn.placeholder(len(args)))
 	}
 	_, err = conn.Exec(ctx, fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)",
 		ident, strings.Join(cols, ", "), strings.Join(holders, ", ")), args...)
@@ -448,7 +459,7 @@ func (s *Server) handleDbInsertRow(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDbUpdateRow(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithCancel(r.Context())
+	ctx, cancel := context.WithTimeout(r.Context(), databaseRequestTimeout)
 	defer cancel()
 	var req dbRowRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -465,12 +476,12 @@ func (s *Server) handleDbUpdateRow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer conn.Close(ctx)
-	ident, err := tableIdent(r.URL.Query().Get("schema"), r.PathValue("table"))
+	ident, err := conn.tableIdent(r.URL.Query().Get("schema"), r.PathValue("table"))
 	if err != nil {
 		writeErr(w, statusFor(err), err)
 		return
 	}
-	pk, err := primaryKey(ctx, conn, ident)
+	pk, err := primaryKey(ctx, conn, r.URL.Query().Get("schema"), r.PathValue("table"))
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err)
 		return
@@ -479,9 +490,9 @@ func (s *Server) handleDbUpdateRow(w http.ResponseWriter, r *http.Request) {
 	var sets []string
 	for _, c := range slices.Sorted(maps.Keys(req.Values)) {
 		args = append(args, req.Values[c])
-		sets = append(sets, fmt.Sprintf("%s = $%d", pgx.Identifier{c}.Sanitize(), len(args)))
+		sets = append(sets, conn.quote(c)+" = "+conn.placeholder(len(args)))
 	}
-	where, err := wherePK(req.Key, pk, &args)
+	where, err := wherePK(conn, req.Key, pk, &args)
 	if err != nil {
 		writeErr(w, statusFor(err), err)
 		return
@@ -495,7 +506,7 @@ func (s *Server) handleDbUpdateRow(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDbDeleteRow(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithCancel(r.Context())
+	ctx, cancel := context.WithTimeout(r.Context(), databaseRequestTimeout)
 	defer cancel()
 	var req dbRowRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -508,18 +519,18 @@ func (s *Server) handleDbDeleteRow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer conn.Close(ctx)
-	ident, err := tableIdent(r.URL.Query().Get("schema"), r.PathValue("table"))
+	ident, err := conn.tableIdent(r.URL.Query().Get("schema"), r.PathValue("table"))
 	if err != nil {
 		writeErr(w, statusFor(err), err)
 		return
 	}
-	pk, err := primaryKey(ctx, conn, ident)
+	pk, err := primaryKey(ctx, conn, r.URL.Query().Get("schema"), r.PathValue("table"))
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err)
 		return
 	}
 	var args []any
-	where, err := wherePK(req.Key, pk, &args)
+	where, err := wherePK(conn, req.Key, pk, &args)
 	if err != nil {
 		writeErr(w, statusFor(err), err)
 		return
@@ -536,7 +547,7 @@ func (s *Server) handleDbDeleteRow(w http.ResponseWriter, r *http.Request) {
 // the grid doesn't do. The token holder owns this database; the server's
 // job is transport, not judgement.
 func (s *Server) handleDbQuery(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithCancel(r.Context())
+	ctx, cancel := context.WithTimeout(r.Context(), databaseRequestTimeout)
 	defer cancel()
 	var req struct {
 		SQL string `json:"sql"`
@@ -564,9 +575,7 @@ func (s *Server) handleDbQuery(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 	const maxRows = 500
 	var columns []string
-	for _, f := range rows.FieldDescriptions() {
-		columns = append(columns, f.Name)
-	}
+	columns = append(columns, rows.columns...)
 	data := [][]any{}
 	truncated := false
 	for rows.Next() {
@@ -590,8 +599,16 @@ func (s *Server) handleDbQuery(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
+	affected, err := conn.queryAffected(ctx, rows, len(data))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if columns == nil {
+		columns = []string{}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"columns": columns, "rows": data,
-		"affected": rows.CommandTag().RowsAffected(), "truncated": truncated,
+		"affected": affected, "truncated": truncated,
 	})
 }

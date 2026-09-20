@@ -10,6 +10,7 @@ import (
 
 	_ "github.com/duckdb/duckdb-go/v2"
 
+	"github.com/adrianliechti/donkey/internal/addons"
 	"github.com/adrianliechti/donkey/internal/aiproxy"
 	"github.com/adrianliechti/donkey/internal/config"
 	"github.com/adrianliechti/donkey/internal/gateway"
@@ -102,6 +103,12 @@ func main() {
 	}
 	// The control plane runs against one runtime provider — DONKEY_RUNTIME
 	// picks which; everything else is identical.
+	closePlugins, err := addons.ConnectPlugins(ctx, cfg.AddonPlugins)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "addon plugin startup error:", err)
+		os.Exit(1)
+	}
+	defer closePlugins()
 	var rt runtime.Provider
 	switch os.Getenv("DONKEY_RUNTIME") {
 	case "docker":

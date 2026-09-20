@@ -478,6 +478,13 @@ anything, and that is where the confirmation lives.
 | `redis` | Redis with persistent storage and password authentication | `REDIS_URL`, `REDIS_ADDR`, `REDIS_HOST`, `REDIS_PORT`, `REDIS_USERNAME`, `REDIS_PASSWORD`, `REDIS_DB`, `REDIS_TLS` |
 | `openai` | the platform's AI — nothing runs in the space | `OPENAI_BASE_URL`, `OPENAI_API_KEY`, `OPENAI_MODEL` |
 
+Out-of-tree services can join this catalog through the versioned
+[gRPC addon API](pkg/addons/v1/README.md). Provisioning returns app environment
+variables, connection URLs, and explicit network destinations. Configure
+`addonPlugins` in the server installation settings; the
+[MariaDB example](examples/addon-mariadb/README.md) provisions in a separate
+namespace and works with restricted Kubernetes egress.
+
 Ways in and out, all equivalent:
 
 - `donkey addon add postgres` creates the service if the space lacks it and

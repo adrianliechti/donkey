@@ -15,6 +15,8 @@ import (
 // leaves donkey-system.
 type openai struct{}
 
+func (openai) Protocol() string { return "openai" }
+
 func (openai) Type() string  { return "openai" }
 func (openai) Title() string { return "OpenAI" }
 func (openai) Description() string {

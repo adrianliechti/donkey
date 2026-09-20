@@ -10,6 +10,8 @@ import (
 
 type redis struct{}
 
+func (redis) Protocol() string { return "redis" }
+
 func (redis) Type() string           { return "redis" }
 func (redis) Title() string          { return "Redis" }
 func (redis) Description() string    { return "A fast key-value store for caches, sessions and queues." }

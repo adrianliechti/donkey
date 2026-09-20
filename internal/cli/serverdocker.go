@@ -302,6 +302,7 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 		"DONKEY_DEFAULT_PLATFORM":        settings.DefaultPlatform,
 		"DONKEY_POSTGRES_IMAGE":          settings.AddonImages.Postgres,
 		"DONKEY_RUSTFS_IMAGE":            settings.AddonImages.RustFS,
+		"DONKEY_ADDON_PLUGINS":           settings.AddonPlugins.JSON(),
 		"DONKEY_OIDC_ISSUER":             settings.Auth.Issuer,
 		"DONKEY_OIDC_CLIENT_ID":          settings.Auth.ClientID,
 		"DONKEY_OIDC_CLIENT_SECRET":      settings.Auth.ClientSecret,
@@ -535,6 +536,9 @@ func validateDockerSettings(settings *config.InstallFile) error {
 		return err
 	}
 	if err := settings.Build.Packages.ValidateRuntime("docker"); err != nil {
+		return err
+	}
+	if err := settings.AddonPlugins.Validate(); err != nil {
 		return err
 	}
 	return settings.AddonImages.Validate()

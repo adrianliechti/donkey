@@ -14,6 +14,8 @@ const (
 
 type postgres struct{}
 
+func (postgres) Protocol() string { return "postgres" }
+
 func (postgres) Type() string  { return "postgres" }
 func (postgres) Title() string { return "PostgreSQL" }
 func (postgres) Description() string {

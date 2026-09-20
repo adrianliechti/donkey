@@ -73,6 +73,7 @@ type Config struct {
 	// AddonImagePullSecrets names existing secrets in each workload namespace
 	// that Kubernetes should use when pulling managed service images.
 	AddonImagePullSecrets []string
+	AddonPlugins          config.AddonPlugins
 	// TLS carries the cert-manager issuer used for exact-host Certificates in
 	// Kubernetes. Docker's gateway issues certificates independently.
 	TLS config.InstallTLS
@@ -145,6 +146,14 @@ func FromEnv() (*Config, error) {
 		if err := json.Unmarshal([]byte(raw), &c.RegistryMirrors); err != nil {
 			return nil, fmt.Errorf("DONKEY_REGISTRY_MIRRORS is not a JSON object of registry-to-mirror mappings: %w", err)
 		}
+	}
+	if raw := os.Getenv("DONKEY_ADDON_PLUGINS"); raw != "" {
+		if err := json.Unmarshal([]byte(raw), &c.AddonPlugins); err != nil {
+			return nil, fmt.Errorf("DONKEY_ADDON_PLUGINS must be a JSON array of addon plugin configurations: %w", err)
+		}
+	}
+	if err := c.AddonPlugins.Validate(); err != nil {
+		return nil, err
 	}
 	// The build environment is a map, so it travels as JSON — the same way
 	// DONKEY_PLATFORM_ADMINS does.

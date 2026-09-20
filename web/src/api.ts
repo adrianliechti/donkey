@@ -185,12 +185,16 @@ export interface NetworkInfo {
 }
 
 export interface AddonEntry {
+  type?: string
+  protocol?: string
   name: string
   keys: string[]
 }
 
 /** One service of a space, and the apps connected to it. */
 export interface SpaceAddonEntry {
+  type?: string
+  protocol?: string
   name: string
   keys: string[]
   attachedTo: string[]
@@ -199,6 +203,8 @@ export interface SpaceAddonEntry {
 /** One catalog entry: a service type donkey can provide, with its defaults
  * and the env variable names connected apps will see. */
 export interface AddonType {
+  /** Application protocol, independent of the service provisioner. */
+  protocol?: string
   /** The lowercase id the API speaks. */
   type: string
   /** The product's own name for display (PostgreSQL, RustFS, OpenAI). */
@@ -706,7 +712,7 @@ export const api = {
   // Containment lives in the path (service → database → table → rows);
   // postgres details like the schema ride the query, defaulting to public.
   dbDatabases: (space: string, service: string) =>
-    request<{ databases: DbDatabase[]; default: string }>(
+    request<{ databases: DbDatabase[]; default: string; protocol: string }>(
       servicePath(space, service, '/databases'),
     ),
   dbCreateDatabase: (space: string, service: string, name: string) =>

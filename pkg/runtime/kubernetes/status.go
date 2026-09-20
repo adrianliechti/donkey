@@ -3,6 +3,7 @@ package kubernetes
 import (
 	"context"
 	"fmt"
+	"github.com/adrianliechti/donkey/internal/addons"
 	"sort"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -152,7 +153,15 @@ func (c *Client) ListAddonBindings(ctx context.Context, namespace, space, app st
 		if c.requireOwnedObject("Secret", namespace, sec.Name, sec.Labels, identity) != nil {
 			continue
 		}
-		b := rt.ServiceBindingInfo{Name: name}
+		b := rt.ServiceBindingInfo{Name: name, Type: sec.Annotations["donkey.local/addon-type"],
+			Protocol: addons.NormalizeProtocol(sec.Annotations["donkey.local/addon-protocol"])}
+		if b.Protocol == "" {
+			binding := map[string]string{}
+			for k, v := range sec.Data {
+				binding[k] = string(v)
+			}
+			b.Protocol = addons.LegacyProtocol(binding)
+		}
 		for k := range sec.Data {
 			b.Keys = append(b.Keys, k)
 		}

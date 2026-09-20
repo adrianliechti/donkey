@@ -221,12 +221,14 @@ func (s *Server) handleListAppServices(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	type entry struct {
-		Name string   `json:"name"`
-		Keys []string `json:"keys"`
+		Name     string   `json:"name"`
+		Keys     []string `json:"keys"`
+		Type     string   `json:"type,omitempty"`
+		Protocol string   `json:"protocol,omitempty"`
 	}
 	out := []entry{}
 	for _, b := range bindings {
-		out = append(out, entry{Name: b.Name, Keys: b.Keys})
+		out = append(out, entry{Name: b.Name, Keys: b.Keys, Type: b.Type, Protocol: b.Protocol})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"addons": out})
 }
@@ -481,6 +483,7 @@ func statusFor(err error) int {
 func (s *Server) handleCatalog(w http.ResponseWriter, r *http.Request) {
 	type entry struct {
 		Type        string   `json:"type"`
+		Protocol    string   `json:"protocol,omitempty"`
 		Title       string   `json:"title"`
 		Version     string   `json:"version"`
 		Storage     string   `json:"storage"`
@@ -496,7 +499,7 @@ func (s *Server) handleCatalog(w http.ResponseWriter, r *http.Request) {
 		}
 		keys := slices.Sorted(maps.Keys(a.Binding(dummy)))
 		out = append(out, entry{
-			Type: a.Type(), Title: a.Title(), Version: a.DefaultVersion(), Storage: a.DefaultStorage(),
+			Type: a.Type(), Protocol: a.Protocol(), Title: a.Title(), Version: a.DefaultVersion(), Storage: a.DefaultStorage(),
 			Description: a.Description(), Keys: keys,
 		})
 	}
@@ -541,6 +544,8 @@ func (s *Server) handleListSpaceServices(w http.ResponseWriter, r *http.Request)
 		Name       string   `json:"name"`
 		Keys       []string `json:"keys"`
 		AttachedTo []string `json:"attachedTo"`
+		Type       string   `json:"type,omitempty"`
+		Protocol   string   `json:"protocol,omitempty"`
 	}
 	out := []entry{}
 	for _, b := range bindings {
@@ -552,7 +557,7 @@ func (s *Server) handleListSpaceServices(w http.ResponseWriter, r *http.Request)
 		if attached == nil {
 			attached = []string{}
 		}
-		out = append(out, entry{Name: b.Name, Keys: b.Keys, AttachedTo: attached})
+		out = append(out, entry{Name: b.Name, Keys: b.Keys, Type: b.Type, Protocol: b.Protocol, AttachedTo: attached})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"addons": out})
 }
@@ -620,7 +625,12 @@ func (s *Server) handleServiceBinding(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadGateway, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"binding": data, "host": host, "port": port})
+	metadata, err := s.serviceMetadata(r.Context(), space, name, data)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"binding": data, "host": host, "port": port, "type": metadata.Type, "protocol": metadata.Protocol})
 }
 
 var tunnelUpgrader = websocket.Upgrader{

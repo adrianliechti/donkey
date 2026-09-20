@@ -44,13 +44,26 @@ func (r *Runtime) EnsureService(ctx context.Context, space string, spec rt.Servi
 	}
 	var binding map[string]string
 	var version, storage string
-	if spec.External {
+	previous, err := r.pluginState(ctx, space, spec.Name)
+	if err != nil {
+		return nil, "", "", err
+	}
+	plugin, isPlugin := addon.(*addons.Plugin)
+	if previous != nil && (previous.Type != spec.Type || !isPlugin || spec.External) {
+		return nil, "", "", fmt.Errorf("remove service %s before changing its provisioner", spec.Name)
+	}
+	if isPlugin && !spec.External {
+		binding, version, storage, err = r.provisionPlugin(ctx, space, spec, plugin, previous)
+		if err != nil {
+			return nil, "", "", err
+		}
+	} else if spec.External {
 		binding, err = addon.ExternalBinding(spec.URL)
 		if err != nil {
 			return nil, "", "", rt.UserError{Err: err}
 		}
 		objs := append(r.spaceObjects(space),
-			spaceBindingSecret(space, r.name(space, spec.Name), ns, spec.Name, binding))
+			spaceBindingSecret(space, r.name(space, spec.Name), ns, spec.Name, binding, addons.MetadataFor(addon)))
 		if err := r.c.Apply(ctx, objs); err != nil {
 			return nil, "", "", err
 		}
@@ -89,7 +102,7 @@ func (r *Runtime) EnsureService(ctx context.Context, space string, spec rt.Servi
 		if err := r.c.Apply(ctx, []k8sruntime.Object{attachmentSecret(space, app, obj, ns, spec.Name, binding)}); err != nil {
 			return nil, "", "", err
 		}
-		if spec.External {
+		if spec.External || isPlugin {
 			if _, err := r.c.RestartApp(ctx, ns, obj, space, app); err != nil {
 				return nil, "", "", err
 			}
@@ -131,7 +144,7 @@ func (r *Runtime) provisionService(ctx context.Context, space, ns string, spec r
 		return in, err
 	}
 	objs := append(r.spaceObjects(space),
-		spaceBindingSecret(space, in.HostName(), ns, in.Name, addon.Binding(in)))
+		spaceBindingSecret(space, in.HostName(), ns, in.Name, addon.Binding(in), addons.MetadataFor(addon)))
 	workload, err := addon.Workload(in)
 	if err != nil {
 		return in, err
@@ -215,6 +228,9 @@ func (r *Runtime) RemoveService(ctx context.Context, space, name string, keepDat
 	if err != nil {
 		return nil, err
 	}
+	if err := r.deprovisionPlugin(ctx, space, name, keepData); err != nil {
+		return nil, err
+	}
 	var apps []string
 	for _, obj := range attached {
 		objectName := r.name(space, obj)
@@ -241,6 +257,20 @@ func (r *Runtime) ServiceAttachments(ctx context.Context, space, name string) ([
 }
 
 func (r *Runtime) ServiceEndpoint(ctx context.Context, space, name string) (string, int32, error) {
+	state, err := r.pluginState(ctx, space, name)
+	if err != nil {
+		return "", 0, err
+	}
+	if state != nil {
+		if !state.Stopped && state.Info != nil {
+			for _, e := range state.Info.Endpoints {
+				if e.Protocol == "" || e.Protocol == "TCP" {
+					return e.Host, e.Port, nil
+				}
+			}
+		}
+		return "", 0, nil
+	}
 	return r.c.ServiceEndpoint(ctx, r.ns(space), r.name(space, name), space, name)
 }
 
@@ -249,7 +279,23 @@ func (r *Runtime) ListServices(ctx context.Context, space, owner string) ([]rt.S
 	if owner == addons.SharedOwner {
 		app = ""
 	}
-	return r.c.ListAddonBindings(ctx, r.ns(space), space, app)
+	bindings, err := r.c.ListAddonBindings(ctx, r.ns(space), space, app)
+	if err != nil || app == "" {
+		return bindings, err
+	}
+	shared, err := r.c.ListAddonBindings(ctx, r.ns(space), space, "")
+	if err != nil {
+		return nil, err
+	}
+	for i := range bindings {
+		for _, service := range shared {
+			if service.Name == bindings[i].Name {
+				bindings[i].Type, bindings[i].Protocol = service.Type, service.Protocol
+				break
+			}
+		}
+	}
+	return bindings, nil
 }
 
 func (r *Runtime) SharedServiceValues(ctx context.Context, key string) ([]string, error) {

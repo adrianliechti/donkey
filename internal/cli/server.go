@@ -486,6 +486,9 @@ func validateKubernetesSettings(settings *config.InstallFile) error {
 	if err := settings.AddonImages.Validate(); err != nil {
 		return err
 	}
+	if err := settings.AddonPlugins.Validate(); err != nil {
+		return err
+	}
 	if err := config.ValidateAddonImagePullSecrets(settings.AddonImagePullSecrets); err != nil {
 		return err
 	}
@@ -531,6 +534,7 @@ func kubernetesSystemInput(settings *config.InstallFile, skipNamespace bool, reg
 		Build:                      settings.Build,
 		AddonImages:                settings.AddonImages,
 		AddonImagePullSecrets:      settings.AddonImagePullSecrets,
+		AddonPlugins:               settings.AddonPlugins,
 		BuildkitImage:              settings.BuildkitImage,
 	}
 	if in.BuildkitImage == "" {

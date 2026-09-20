@@ -11,12 +11,16 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 )
 
 // Addon provisions an instance of a service type.
 type Addon interface {
 	// Type is the lowercase slug the API and CLI speak (postgres, rustfs…).
 	Type() string
+	// Protocol is the application protocol (postgres, mysql, s3, redis…),
+	// independent of the provisioner and the endpoint's transport protocol.
+	Protocol() string
 	// Title is the product's own name for the catalog and console
 	// (PostgreSQL, RustFS, OpenAI) — Type is the id, Title is what a person
 	// reads.
@@ -107,8 +111,12 @@ var Registry = map[string]Addon{
 	"openai":   openai{},
 }
 
+var registryMu sync.RWMutex
+
 // Types lists the registered addon types, sorted.
 func Types() []Addon {
+	registryMu.RLock()
+	defer registryMu.RUnlock()
 	names := make([]string, 0, len(Registry))
 	for t := range Registry {
 		names = append(names, t)
@@ -122,6 +130,8 @@ func Types() []Addon {
 }
 
 func Get(typ string) (Addon, error) {
+	registryMu.RLock()
+	defer registryMu.RUnlock()
 	a, ok := Registry[typ]
 	if !ok {
 		known := make([]string, 0, len(Registry))

@@ -80,7 +80,7 @@ function EditableCell({
 }
 
 /**
- * The database browser: a space service's postgres, one page of rows at a
+ * The database browser: a space service's database, one page of rows at a
  * time, edited in place through the server. The binding's database is only
  * the default — the header picks any of the service's databases, or makes a
  * new one. The SQL view is the escape hatch for everything the forms don't
@@ -90,14 +90,17 @@ function EditableCell({
 export function DatabaseDialog({
   space,
   service,
+  protocol = 'postgres',
   onClose,
   onDelete,
 }: {
   space: string
   service: string
+  protocol?: string
   onClose: () => void
   onDelete: () => void
 }) {
+  const mysql = protocol === 'mysql'
   const [databases, setDatabases] = useState<DbDatabase[]>([])
   const [db, setDb] = useState('')
   const [defaultDb, setDefaultDb] = useState('')
@@ -303,9 +306,10 @@ export function DatabaseDialog({
               space={space}
               service={service}
               db={db}
+              mysql={mysql}
               onDone={(name) => {
                 loadTables()
-                setCurrent({ schema: 'public', name, rows: 0 })
+                setCurrent({ schema: mysql ? db : 'public', name, rows: 0 })
                 setView('tables')
               }}
               onCancel={() => setView('tables')}
@@ -388,7 +392,7 @@ export function DatabaseDialog({
                         className="flex min-w-0 flex-1 items-baseline justify-between gap-2 px-2 py-1.5 text-left font-mono text-xs"
                       >
                         <span className="truncate">
-                          {t.schema !== 'public' ? `${t.schema}.` : ''}
+                          {t.schema !== 'public' && t.schema !== db ? `${t.schema}.` : ''}
                           {t.name}
                         </span>
                         <span className="text-[10px] text-muted">~{t.rows}</span>
@@ -432,7 +436,9 @@ export function DatabaseDialog({
                         kind="quiet"
                         onClick={() => {
                           setSeedSql(
-                            'create table notes (\n  id bigint generated always as identity primary key,\n  text text not null,\n  at timestamptz default now()\n);',
+                            mysql
+                              ? 'create table notes (\n  id bigint auto_increment primary key,\n  text text not null,\n  at datetime default current_timestamp\n);'
+                              : 'create table notes (\n  id bigint generated always as identity primary key,\n  text text not null,\n  at timestamptz default now()\n);',
                           )
                           setView('sql')
                         }}
@@ -441,8 +447,7 @@ export function DatabaseDialog({
                       </Button>
                     </div>
                     <p className="mt-4 text-xs text-muted">
-                      Only your tables show here — postgres' own bookkeeping (pg_catalog,
-                      information_schema) is hidden on purpose.
+                      Only tables available to this service are shown.
                     </p>
                   </div>
                 </div>
@@ -472,6 +477,20 @@ const columnTypes = [
   { value: 'uuid', label: 'uuid' },
 ]
 
+const mysqlColumnTypes = [
+  { value: 'auto', label: 'auto id' },
+  { value: 'text', label: 'text' },
+  { value: 'varchar(255)', label: 'short text' },
+  { value: 'integer', label: 'integer' },
+  { value: 'bigint', label: 'bigint' },
+  { value: 'boolean', label: 'boolean' },
+  { value: 'decimal(20,6)', label: 'decimal' },
+  { value: 'datetime(6)', label: 'timestamp' },
+  { value: 'date', label: 'date' },
+  { value: 'json', label: 'json' },
+  { value: 'char(36)', label: 'uuid' },
+]
+
 interface ColumnDraft {
   name: string
   type: string
@@ -488,12 +507,14 @@ function CreateTableView({
   space,
   service,
   db,
+  mysql,
   onDone,
   onCancel,
 }: {
   space: string
   service: string
   db: string
+  mysql: boolean
   onDone: (table: string) => void
   onCancel: () => void
 }) {
@@ -524,13 +545,14 @@ function CreateTableView({
         return
       }
     }
+    const quote = (ident: string) => mysql ? `\`${ident}\`` : `"${ident}"`
     const defs = used.map((c) => {
-      const type = c.type === 'auto' ? 'bigint generated always as identity' : c.type
-      return `  "${c.name}" ${type}${c.required && c.type !== 'auto' ? ' not null' : ''}`
+      const type = c.type === 'auto' ? (mysql ? 'bigint auto_increment' : 'bigint generated always as identity') : c.type
+      return `  ${quote(c.name)} ${type}${c.required && c.type !== 'auto' ? ' not null' : ''}`
     })
-    const pk = used.filter((c) => c.pk).map((c) => `"${c.name}"`)
+    const pk = used.filter((c) => c.pk).map((c) => quote(c.name))
     if (pk.length > 0) defs.push(`  primary key (${pk.join(', ')})`)
-    const sql = `create table "${name}" (\n${defs.join(',\n')}\n)`
+    const sql = `create table ${quote(name)} (\n${defs.join(',\n')}\n)`
     setBusy(true)
     setError('')
     try {
@@ -576,7 +598,7 @@ function CreateTableView({
                 ariaLabel={`Column ${i + 1} type`}
                 value={c.type}
                 onChange={(t) => patch(i, { type: t })}
-                options={columnTypes}
+                options={mysql ? mysqlColumnTypes : columnTypes}
               />
               <label className="flex items-center gap-1 text-xs text-ink-soft">
                 <input

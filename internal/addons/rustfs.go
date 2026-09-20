@@ -23,6 +23,8 @@ const rfImage = "rustfs/rustfs"
 
 type rustfs struct{}
 
+func (rustfs) Protocol() string { return "s3" }
+
 func (rustfs) Type() string  { return "rustfs" }
 func (rustfs) Title() string { return "RustFS" }
 func (rustfs) Description() string {

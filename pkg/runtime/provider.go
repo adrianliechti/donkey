@@ -358,8 +358,10 @@ type ServiceSpec struct {
 // ServiceBindingInfo is one binding as the console may see it — key names,
 // never values.
 type ServiceBindingInfo struct {
-	Name string
-	Keys []string
+	Name     string
+	Keys     []string
+	Type     string
+	Protocol string
 }
 
 // StorageFolder maps a folder on the disk to where the app mounts it.

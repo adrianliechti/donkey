@@ -407,9 +407,11 @@ func (c *Client) SpaceAddons(ctx context.Context, space string) ([]SpaceAddon, e
 // AddonBindingInfo is a service's contract with values, plus its in-cluster
 // address (empty for one running elsewhere).
 type AddonBindingInfo struct {
-	Binding map[string]string `json:"binding"`
-	Host    string            `json:"host"`
-	Port    int               `json:"port"`
+	Type     string            `json:"type"`
+	Protocol string            `json:"protocol"`
+	Binding  map[string]string `json:"binding"`
+	Host     string            `json:"host"`
+	Port     int               `json:"port"`
 }
 
 func (c *Client) AddonBinding(ctx context.Context, space, addon string) (AddonBindingInfo, error) {

@@ -359,7 +359,7 @@ func (s state) cleanupApp(space, app string, keepData bool) error {
 
 // cleanupSpace removes a space's records entirely.
 func (s state) cleanupSpace(space string) error {
-	for _, sub := range []string{"env", "meta", "bindings", "routes", "deploy", "spaces"} {
+	for _, sub := range []string{"env", "meta", "bindings", "routes", "deploy", "spaces", "provisioning", "service-metadata"} {
 		if err := os.RemoveAll(s.path(sub, space)); err != nil {
 			return err
 		}

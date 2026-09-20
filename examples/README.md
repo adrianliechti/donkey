@@ -6,6 +6,10 @@ write yours once you know the platform, saying everything explicitly and
 using everything the platform offers. Deploy them, read them, copy from
 them.
 
+The [MariaDB addon plugin](addon-mariadb/README.md) demonstrates an independent
+gRPC provisioner, with database resources in a separate namespace and explicit
+app environment bindings and network policy destinations.
+
 ## demo/ — an AI-run helpdesk: two apps, one address, three services
 
 The showcase `task demo` deploys (`hack/demo-app.sh` does the two deploys):

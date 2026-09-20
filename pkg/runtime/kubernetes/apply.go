@@ -308,6 +308,11 @@ func (c *Client) deleteKindBySelector(ctx context.Context, namespace, kind, sele
 
 // DeleteAddon removes one space service and optionally keeps its disk.
 func (c *Client) DeleteAddon(ctx context.Context, namespace, space, addon string, keepData bool) error {
+	if err := c.deleteKindsBySelector(ctx, namespace, []string{"NetworkPolicy"}, map[string]string{
+		manifests.LabelSpace: space, manifests.LabelAddon: addon, manifests.LabelRole: manifests.RoleProvisioning,
+	}, false); err != nil {
+		return err
+	}
 	return c.deleteBySelector(ctx, namespace, map[string]string{
 		manifests.LabelSpace: space,
 		manifests.LabelAddon: addon,

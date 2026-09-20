@@ -43,6 +43,9 @@ func (r *Runtime) EnsureSpaceConfigs(ctx context.Context) error {
 		if err := r.migrateSpaceIsolation(ctx, space); err != nil {
 			return err
 		}
+		if err := r.reconcilePluginEgress(ctx, space); err != nil {
+			return err
+		}
 	}
 	if err := r.migrateServiceSecrets(ctx); err != nil {
 		return err

@@ -385,8 +385,13 @@ kubernetes:
 Now a space's pods reach only their own space (sibling apps and its
 services, postgres and rustfs included), the platform endpoints an app
 actually uses — donkey-ai for the openai addon and donkey-telemetry for
-metrics — and DNS. Everything else, the public internet and every other
-space, is cut.
+metrics — and DNS. Configured addon plugins can additionally declare specific
+destination namespaces/pods/ports or external CIDRs. Donkey persists these
+destinations with the provisioning info and maintains separate additive
+egress policies for the owning space. Everything else, including undeclared
+public internet destinations and other spaces, is cut. See the
+[plugin API](pkg/addons/v1/README.md) and
+[cross-namespace MariaDB example](examples/addon-mariadb/README.md).
 
 This one is **off by default and deliberate**, unlike the ingress fence:
 cutting outbound traffic breaks any app that calls a third-party API,

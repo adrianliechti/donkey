@@ -272,13 +272,13 @@ function SpaceServices({
 
   // Each service opens one console, which is where it is managed and removed.
   const consoleFor = (svc: SpaceAddonEntry) => {
-    if (svc.keys.includes('DATABASE_URL'))
+    if (svc.protocol === 'postgres' || svc.protocol === 'mysql')
       return { Icon: Database, open: () => setBrowsing(svc), label: `Browse the ${svc.name} database` }
-    if (svc.keys.includes('REDIS_URL'))
+    if (svc.protocol === 'redis')
       return { Icon: KeyRound, open: () => setRedisBrowsing(svc), label: `Browse the ${svc.name} keys` }
-    if (svc.keys.includes('AWS_ENDPOINT_URL_S3'))
+    if (svc.protocol === 's3')
       return { Icon: Archive, open: () => setStoreBrowsing(svc), label: `Browse the ${svc.name} buckets` }
-    if (svc.keys.includes('OPENAI_BASE_URL'))
+    if (svc.protocol === 'openai')
       return { Icon: Sparkles, open: () => setChatting(svc), label: `Try ${svc.name} in a chat` }
     return null
   }
@@ -330,6 +330,7 @@ function SpaceServices({
         <DatabaseDialog
           space={space}
           service={browsing.name}
+          protocol={browsing.protocol}
           onClose={() => setBrowsing(null)}
           onDelete={() => {
             setRemoving(browsing)

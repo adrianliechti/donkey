@@ -228,6 +228,9 @@ func (r *Runtime) ReconcileSpaceIsolation(ctx context.Context) error {
 		if err := r.syncSpaceIsolation(ctx, space); err != nil {
 			return err
 		}
+		if err := r.reconcilePluginEgress(ctx, space); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -235,6 +238,15 @@ func (r *Runtime) ReconcileSpaceIsolation(ctx context.Context) error {
 func (r *Runtime) DeleteSpace(ctx context.Context, space string) error {
 	if err := r.ValidateSpace(space); err != nil {
 		return err
+	}
+	names, err := r.pluginServiceNames(ctx, space)
+	if err != nil {
+		return err
+	}
+	for _, name := range names {
+		if err := r.deprovisionPlugin(ctx, space, name, false); err != nil {
+			return err
+		}
 	}
 	// Public traffic objects go first, so a partial deletion never leaves the
 	// gateway pointing at a disappearing workload.

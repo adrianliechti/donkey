@@ -45,9 +45,16 @@ func bindingSecret(objectName, namespace string, labels map[string]string, data 
 
 // spaceBindingSecret is the space's canonical service binding, named after
 // the service's object name. It has addon identity and no app label.
-func spaceBindingSecret(space, objectService, namespace, name string, data map[string]string) *corev1.Secret {
-	return bindingSecret(manifests.SpaceBindingSecretName(objectService), namespace,
+func spaceBindingSecret(space, objectService, namespace, name string, data map[string]string, metadata ...addons.Metadata) *corev1.Secret {
+	secret := bindingSecret(manifests.SpaceBindingSecretName(objectService), namespace,
 		manifests.AddonLabels(space, name, manifests.RoleBinding), data)
+	if len(metadata) > 0 {
+		secret.Annotations = map[string]string{
+			"donkey.local/addon-type":     metadata[0].Type,
+			"donkey.local/addon-protocol": metadata[0].Protocol,
+		}
+	}
+	return secret
 }
 
 // attachmentSecret is an app's copy of a space service binding. App and addon

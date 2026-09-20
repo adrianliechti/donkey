@@ -35,6 +35,8 @@ type InstallFile struct {
 	// secrets used for managed addon images. Each secret must exist in every
 	// workload namespace where an addon can run.
 	AddonImagePullSecrets []string `json:"addonImagePullSecrets,omitempty"`
+	// AddonPlugins registers services provisioned by independent gRPC servers.
+	AddonPlugins AddonPlugins `json:"addonPlugins,omitempty"`
 	// Domain: apps become <app>.<space>.<domain>.
 	Domain string `json:"domain,omitempty"`
 	// ServerHost is where the API and console live (default: the domain
