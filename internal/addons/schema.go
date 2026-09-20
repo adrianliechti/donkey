@@ -88,7 +88,8 @@ func MustStruct(m map[string]any) *structpb.Struct {
 }
 
 // ObjectSchema wraps property schemas into the object schema a descriptor
-// carries. Unknown parameters are rejected.
+// carries. Only declared parameters exist, whatever the schema says about
+// additional properties.
 func ObjectSchema(properties map[string]any) map[string]any {
 	schema := map[string]any{"type": "object", "additionalProperties": false}
 	if len(properties) > 0 {
@@ -121,14 +122,14 @@ var scalarTypes = []string{"string", "integer", "number", "boolean"}
 type compiled struct {
 	resolved *jsonschema.Resolved
 	schema   *jsonschema.Schema
-	// admitsUnknown is true only when the schema says additionalProperties
-	// may exist; absent means "no", the stricter reading, so typos fail fast.
-	admitsUnknown bool
 }
 
+// knows reports whether the schema declares a parameter. Only declared
+// parameters exist: a typo fails fast, and a stored value the schema no
+// longer names is dropped rather than carried along.
 func (c *compiled) knows(name string) bool {
 	_, ok := c.schema.Properties[name]
-	return ok || c.admitsUnknown
+	return ok
 }
 
 // compileSchema accepts the renderable subset: one object whose properties
@@ -138,8 +139,7 @@ func compileSchema(s *structpb.Struct) (*compiled, error) {
 	if s == nil || len(s.Fields) == 0 {
 		s = MustStruct(ObjectSchema(nil))
 	}
-	doc := s.AsMap()
-	raw, err := json.Marshal(doc)
+	raw, err := json.Marshal(s.AsMap())
 	if err != nil {
 		return nil, err
 	}
@@ -169,14 +169,7 @@ func compileSchema(s *structpb.Struct) (*compiled, error) {
 	if err != nil {
 		return nil, err
 	}
-	c := &compiled{resolved: resolved, schema: &schema}
-	switch extra := doc["additionalProperties"].(type) {
-	case bool:
-		c.admitsUnknown = extra
-	case map[string]any:
-		c.admitsUnknown = true
-	}
-	return c, nil
+	return &compiled{resolved: resolved, schema: &schema}, nil
 }
 
 // ValidateSchema rejects descriptors the console could not render.
@@ -186,9 +179,9 @@ func ValidateSchema(s *structpb.Struct) error {
 }
 
 // ResolveParameters applies the schema's top-level defaults to the given
-// values and validates the result. Unknown names are an error unless the
-// schema admits additional properties. Values are normalized to their JSON
-// forms, so callers may pass Go ints or the console's decoded numbers alike.
+// values and validates the result. Names the schema does not declare are an
+// error. Values are normalized to their JSON forms, so callers may pass Go
+// ints or the console's decoded numbers alike.
 func ResolveParameters(s *structpb.Struct, given map[string]any) (Parameters, error) {
 	c, err := compileSchema(s)
 	if err != nil {

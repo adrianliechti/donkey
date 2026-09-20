@@ -90,16 +90,19 @@ function EditableCell({
 export function DatabaseDialog({
   space,
   service,
-  protocol = 'postgres',
+  protocol: initialProtocol = 'postgres',
   onClose,
   onDelete,
 }: {
   space: string
   service: string
+  /** A first guess from the listing; the server's own answer wins once the
+   *  databases load. */
   protocol?: string
   onClose: () => void
   onDelete: () => void
 }) {
+  const [protocol, setProtocol] = useState(initialProtocol)
   const mysql = protocol === 'mysql'
   const [databases, setDatabases] = useState<DbDatabase[]>([])
   const [db, setDb] = useState('')
@@ -122,6 +125,7 @@ export function DatabaseDialog({
         setDatabases(res.databases ?? [])
         setDb(res.default)
         setDefaultDb(res.default)
+        if (res.protocol) setProtocol(res.protocol)
       })
       .catch((err) => setError(errText(err, 'The database did not answer.')))
   }, [space, service])

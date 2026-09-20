@@ -1,7 +1,8 @@
 import { useState, type ReactNode } from 'react'
 import { Dialog, DialogBackdrop, DialogPanel, DialogTitle } from '@headlessui/react'
-import { ArrowLeft } from 'lucide-react'
-import { type AddAddonRequest } from './api'
+import { ArrowLeft, ChevronDown, ChevronRight } from 'lucide-react'
+import { type AddAddonRequest, type ServiceParameters } from './api'
+import { parameterDefault, parameterFields, type Field } from './parameters'
 import { useCatalog } from './queries'
 import { serviceUI } from './serviceProtocol'
 import { Button, ErrorNote, Select, Spinner } from './ui'
@@ -18,6 +19,83 @@ function Eyebrow({ children }: { children: ReactNode }) {
     <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-muted">
       {children}
     </span>
+  )
+}
+
+/**
+ * One control per schema property. The value is a string while it is being
+ * edited (the server coerces it against the schema); booleans are the one
+ * exception, since a checkbox has nothing to type.
+ */
+function ParameterField({
+  field,
+  value,
+  onChange,
+  disabled,
+}: {
+  field: Field
+  value: unknown
+  onChange: (value: unknown) => void
+  disabled: boolean
+}) {
+  const { name, schema } = field
+  const label = schema.title || name
+  const fallback = schema.default === undefined || schema.default === null ? '' : String(schema.default)
+  const current = value === undefined || value === null ? fallback : String(value)
+  let control: ReactNode
+  if (schema.enum && schema.enum.length > 0) {
+    const options = schema.enum.map((v) => ({ value: String(v), label: String(v) }))
+    control = <Select ariaLabel={label} value={current} onChange={onChange} options={options} />
+  } else if (schema['x-donkey-widget'] === 'disk-size' || schema.format === 'quantity') {
+    const options = [...new Set([fallback, current, ...diskSizes])]
+      .filter(Boolean)
+      .map((s) => ({ value: s, label: s }))
+    control = <Select ariaLabel={label} value={current} onChange={onChange} options={options} />
+  } else if (schema.type === 'boolean') {
+    const checked = value === undefined || value === null ? Boolean(schema.default) : Boolean(value)
+    control = (
+      <input
+        type="checkbox"
+        aria-label={label}
+        checked={checked}
+        disabled={disabled}
+        onChange={(e) => onChange(e.target.checked)}
+        className="size-4 accent-accent"
+      />
+    )
+  } else if (schema.type === 'integer' || schema.type === 'number') {
+    control = (
+      <input
+        type="number"
+        aria-label={label}
+        value={current}
+        min={schema.minimum}
+        max={schema.maximum}
+        step={schema.type === 'integer' ? 1 : 'any'}
+        disabled={disabled}
+        onChange={(e) => onChange(e.target.value)}
+        className={`${inputStyle} w-28`}
+      />
+    )
+  } else {
+    // Strings, and arrays as comma-separated strings.
+    control = (
+      <input
+        aria-label={label}
+        value={current}
+        placeholder={schema.type === 'array' ? 'one, two' : fallback}
+        disabled={disabled}
+        onChange={(e) => onChange(e.target.value)}
+        className={`${inputStyle} w-44`}
+      />
+    )
+  }
+  return (
+    <label className="flex flex-col gap-1.5" title={schema.description}>
+      <Eyebrow>{label}</Eyebrow>
+      {control}
+      {schema.description && <span className="max-w-56 text-[11px] leading-4 text-muted">{schema.description}</span>}
+    </label>
   )
 }
 
@@ -84,10 +162,12 @@ export function AddServiceDialog({
 }
 
 /**
- * Configure a managed service before it is created. donkey runs it in the
- * cluster and shares it across the space; the contract strip shows the
- * variable names its apps will receive. (Attaching an external service by
- * address is a CLI-only path — `donkey addon attach`.)
+ * Configure a service before it is created. The form is the type's own
+ * parameter schema rendered: every built-in and every plugin describes what
+ * can be chosen the same way, so nothing here knows about disks or versions
+ * in particular. The contract strip shows the variable names its apps will
+ * receive. (Attaching an external service by address is a CLI-only path —
+ * `donkey addon attach`.)
  */
 export function AddonForm({
   busy,
@@ -110,14 +190,11 @@ export function AddonForm({
   // '' means the catalog step; a type name means its configuration step.
   const [type, setType] = useState(initialType ?? '')
   const [name, setName] = useState('')
-  const [storage, setStorage] = useState('')
+  const [values, setValues] = useState<ServiceParameters>({})
+  const [showAdvanced, setShowAdvanced] = useState(false)
 
   const chosen = types.find((t) => t.type === type)
-  const needsDisk = Boolean(chosen?.storage)
-  const disk = storage || chosen?.storage || ''
-  const diskOptions = [...new Set([chosen?.storage ?? '', ...diskSizes])]
-    .filter(Boolean)
-    .map((s) => ({ value: s, label: s }))
+  const { main, advanced } = parameterFields(chosen)
 
   if (!loaded) return <Spinner label="Opening the catalog…" />
   if (types.length === 0) {
@@ -136,21 +213,28 @@ export function AddonForm({
         <div className="grid gap-2 sm:grid-cols-2">
           {types.map((t) => {
             const { Icon } = serviceUI(t.protocol)
+            const available = t.available !== false
             return (
               <button
                 key={t.type}
                 type="button"
-                onClick={() => setType(t.type)}
-                className="rounded-lg border border-line bg-surface p-3 text-left transition-colors hover:border-accent/70 hover:bg-accent-soft focus-visible:outline-2 focus-visible:outline-accent-strong"
+                disabled={!available}
+                title={available ? undefined : t.error}
+                onClick={() => {
+                  setValues({})
+                  setType(t.type)
+                }}
+                className="rounded-lg border border-line bg-surface p-3 text-left transition-colors hover:border-accent/70 hover:bg-accent-soft focus-visible:outline-2 focus-visible:outline-accent-strong disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-line disabled:hover:bg-surface"
               >
                 <div className="flex items-center gap-2">
                   <Icon className="size-4 text-muted" aria-hidden />
                   <span className="font-mono text-sm font-bold">{t.title || t.type}</span>
-                  <span className="font-mono text-[11px] text-muted">{t.version}</span>
+                  <span className="font-mono text-[11px] text-muted">{parameterDefault(t, 'version')}</span>
                 </div>
                 {t.description && (
                   <p className="mt-1.5 text-xs leading-relaxed text-ink-soft">{t.description}</p>
                 )}
+                {!available && <p className="mt-1.5 text-xs text-danger">{t.error || 'Not available right now.'}</p>}
               </button>
             )
           })}
@@ -164,9 +248,15 @@ export function AddonForm({
     )
   }
 
-  // Step 2 — configure the chosen service. Always cluster-managed, so the only
-  // choices left are a name and (for the ones that store data) a disk size.
+  // Step 2 — configure the chosen service: a name, and whatever its schema
+  // offers. Values the person did not touch are left to the server's
+  // defaults, so the request says only what was chosen.
   const { Icon: ChosenIcon } = serviceUI(chosen.protocol)
+  const setValue = (field: Field, value: unknown) => setValues((v) => ({ ...v, [field.name]: value }))
+  const runsSomething = Boolean(chosen.parameters?.properties?.version)
+  const disk = String(values.storage ?? parameterDefault(chosen, 'storage'))
+  const envNames = (chosen.env ?? []).map((v) => v.name)
+  const keys = envNames.length > 0 ? envNames : (chosen.keys ?? [])
 
   return (
     <div className="flex flex-col gap-4">
@@ -186,11 +276,13 @@ export function AddonForm({
         <span className="flex items-center gap-2 rounded-md border border-accent/40 bg-accent-soft px-2 py-1">
           <ChosenIcon className="size-3.5 text-accent" aria-hidden />
           <span className="font-mono text-sm font-bold">{chosen.title || chosen.type}</span>
-          <span className="font-mono text-[11px] text-muted">{chosen.version}</span>
+          <span className="font-mono text-[11px] text-muted">{parameterDefault(chosen, 'version')}</span>
         </span>
       </div>
 
-      <div className="flex flex-wrap items-end gap-3">
+      {chosen.available === false && <ErrorNote message={chosen.error || 'This service is not available right now.'} />}
+
+      <div className="flex flex-wrap items-start gap-3">
         <label className="flex flex-col gap-1.5">
           <Eyebrow>Name · optional</Eyebrow>
           <input
@@ -200,25 +292,40 @@ export function AddonForm({
             className={`${inputStyle} w-44`}
           />
         </label>
-        {needsDisk && (
-          <div className="flex flex-col gap-1.5">
-            <Eyebrow>Disk</Eyebrow>
-            <Select ariaLabel="Disk size" value={disk} onChange={setStorage} options={diskOptions} />
-          </div>
-        )}
+        {main.map((field) => (
+          <ParameterField key={field.name} field={field} value={values[field.name]} onChange={(v) => setValue(field, v)} disabled={busy} />
+        ))}
       </div>
+
+      {advanced.length > 0 && (
+        <div className="flex flex-col gap-3">
+          <button
+            type="button"
+            onClick={() => setShowAdvanced((s) => !s)}
+            className="flex w-fit items-center gap-1 text-xs text-muted hover:text-ink"
+          >
+            {showAdvanced ? <ChevronDown className="size-3.5" aria-hidden /> : <ChevronRight className="size-3.5" aria-hidden />}
+            Advanced settings
+          </button>
+          {showAdvanced && (
+            <div className="flex flex-wrap items-start gap-3">
+              {advanced.map((field) => (
+                <ParameterField key={field.name} field={field} value={values[field.name]} onChange={(v) => setValue(field, v)} disabled={busy} />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="rounded-md border border-line/60 bg-raised/60 px-3 py-2.5">
         <Eyebrow>Your apps will see</Eyebrow>
-        <p className="mt-1 font-mono text-[11px] leading-5 text-ink-soft">
-          {(chosen.keys ?? []).join(' · ')}
-        </p>
+        <p className="mt-1 font-mono text-[11px] leading-5 text-ink-soft">{keys.join(' · ')}</p>
       </div>
 
       <div className="mt-1 flex flex-col gap-3 border-t border-line/60 pt-3">
         <p className="text-xs text-muted">
-          {chosen.version
-            ? `Runs in the cluster${needsDisk ? ` on a ${disk} disk` : ''}, shared by every app in the space.`
+          {runsSomething
+            ? `Runs in the cluster${disk ? ` on a ${disk} disk` : ''}, shared by every app in the space.`
             : 'Provided by the platform — nothing runs in your space.'}
         </p>
         <div className="flex justify-end gap-2">
@@ -230,12 +337,12 @@ export function AddonForm({
               onSubmit({
                 type: chosen.type,
                 name: name.trim() || undefined,
-                storage: needsDisk && storage ? storage : undefined,
+                parameters: Object.keys(values).length > 0 ? values : undefined,
                 external: false,
                 url: undefined,
               })
             }
-            disabled={busy}
+            disabled={busy || chosen.available === false}
           >
             {busy ? 'Adding…' : submitLabel}
           </Button>

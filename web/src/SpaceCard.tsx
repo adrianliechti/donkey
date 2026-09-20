@@ -22,6 +22,7 @@ import {
 } from 'lucide-react'
 import { api, type AddAddonRequest, type AppSummary, type SpaceAddonEntry } from './api'
 import { AddServiceDialog } from './AddonForm'
+import { summarizeParameters } from './parameters'
 import { useCatalog, useInvalidateServices, useSpaceServices } from './queries'
 import { serviceUI } from './serviceProtocol'
 import { SpaceTelemetry } from './TrafficPanel'
@@ -280,16 +281,26 @@ function SpaceServices({
       <div className="flex flex-wrap items-center gap-2">
         {services.map((svc) => {
           const view = serviceUI(svc.protocol)
+          const settings = summarizeParameters(svc.parameters)
           const used =
-            svc.attachedTo.length > 0
+            (svc.attachedTo.length > 0
               ? `Used by ${svc.attachedTo.join(', ')}`
-              : 'Not connected to any app yet'
-          // No console to hold a Remove: keep a direct one.
-          if (!view.console) {
+              : 'Not connected to any app yet') + (settings ? ` · ${settings}` : '')
+          // A plugin instance that is still being set up, failed, or was
+          // stopped with its data kept has nothing to browse: say what it is
+          // and offer the way out.
+          const unready = svc.state && svc.state !== 'ready'
+          if (!view.console || unready) {
+            const note = unready ? `${svc.state}${svc.message ? `: ${svc.message}` : ''}` : ''
             return (
-              <span key={svc.name} className={chip} title={used}>
+              <span key={svc.name} className={`${chip} ${svc.state === 'failed' ? 'border-danger/50' : ''}`} title={note ? `${note} — ${used}` : used}>
                 <view.Icon className="size-3" aria-hidden />
                 {svc.name}
+                {unready && (
+                  <span className={`rounded px-1 text-[10px] uppercase tracking-wide ${svc.state === 'failed' ? 'bg-danger/10 text-danger' : 'bg-line/60 text-muted'}`}>
+                    {svc.state}
+                  </span>
+                )}
                 <button
                   type="button"
                   title={`Remove ${svc.name} from ${space}`}
@@ -354,14 +365,19 @@ function RemoveServiceDialog({
   onRemoved: () => void
 }) {
   const [keepData, setKeepData] = useState(false)
+  // A plugin-provided service whose plugin is gone or failing cannot be
+  // removed properly; once the server says so, offer to drop donkey's record
+  // and leave the backing service behind.
+  const [orphan, setOrphan] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const canOrphan = error.includes('--orphan')
 
   async function remove() {
     setBusy(true)
     setError('')
     try {
-      await api.removeSpaceAddon(space, service.name, keepData)
+      await api.removeSpaceAddon(space, service.name, keepData, orphan)
       onRemoved()
     } catch (err) {
       setError(errText(err, 'Removing did not work.'))
@@ -395,6 +411,11 @@ function RemoveServiceDialog({
             ) : (
               <p>No app is connected to it.</p>
             )}
+            {service.state && service.state !== 'ready' && (
+              <p className="text-muted">
+                It is {service.state}{service.message ? `: ${service.message}` : ''}.
+              </p>
+            )}
             {keepData ? (
               <p className="text-muted">
                 Its disk stays — adding a service with the same name later picks the data back up.
@@ -412,6 +433,17 @@ function RemoveServiceDialog({
             />
             Keep its data
           </label>
+          {canOrphan && (
+            <label className="mt-2 flex items-center gap-1.5 text-xs text-ink-soft">
+              <input
+                type="checkbox"
+                checked={orphan}
+                onChange={(e) => setOrphan(e.target.checked)}
+                className="size-3.5 accent-accent-strong"
+              />
+              Its plugin is not answering — drop donkey's record anyway and leave the backing service to the operator
+            </label>
+          )}
           <div className="mt-4 flex justify-end gap-2">
             <Button kind="quiet" onClick={onClose} disabled={busy}>
               Cancel

@@ -2,15 +2,23 @@
 
 This independent gRPC service provisions MariaDB in `donkey-addons`, separate
 from the namespaces containing Donkey apps. It imports only the public
-[addon API](../../pkg/addons/v1/README.md), so its code can live in another
-repository without changing Donkey. Copy the Go files into your own module
-and depend on a Donkey revision containing `pkg/addons/v1` plus the gRPC and
-Kubernetes client libraries.
+[addon API](../../pkg/addons/v1/README.md) module
+(`github.com/adrianliechti/donkey/pkg/addons`), so its code can live in
+another repository without changing Donkey. Copy the Go files into your own
+module and depend on that module plus the gRPC and Kubernetes client
+libraries.
 
 Each `(installation, space, name)` gets its own Deployment, Service, volume,
 credential Secret, and ingress NetworkPolicy. Stable names and stored
 credentials make repeat provisioning safe. The example runs one replica and
-serializes mutations; use distributed coordination before scaling it.
+serializes mutations per instance; use distributed coordination before
+scaling it.
+
+`Describe` offers two parameters: `version` (a choice of MariaDB releases)
+and `storage` (a disk size). The console renders them from that schema; the
+CLI takes `--version`, `--storage` or `--param storage=5Gi`. `Provision`
+streams progress while it applies resources and waits for readiness, and
+reports the effective size: a disk grows to what is asked but never shrinks.
 
 ## Install
 
@@ -55,6 +63,12 @@ remove `insecure: true`, and replace the plaintext gRPC readiness probe with
 a suitable probe. The certificate must be trusted by Donkey and cover the
 configured plugin hostname.
 
+To make the plugin refuse callers other than Donkey, give both sides the same
+secret: mount it into the plugin as `PLUGIN_TOKEN_FILE` (or set
+`PLUGIN_TOKEN`) and into donkey-server, then add `tokenFile` (or `token`) to
+the `addonPlugins` entry. The health check stays open for the readiness
+probe; every addon call without the bearer token is rejected.
+
 ## Connect an app
 
 Declare the service in the app's `donkey.yaml`:
@@ -72,10 +86,12 @@ env:
 ```
 
 Deploy as usual. Existing apps can also use `donkey addon add mariadb --name
-db`. Donkey injects `DATABASE_URL`, `MYSQL_HOST`, `MYSQL_PORT`,
-`MYSQL_DATABASE`, `MYSQL_USER`, and `MYSQL_PASSWORD`. `DB_URL` above is an
-optional app-specific alias. The database is `app` and the non-root user is
-`donkey`; passwords are generated once and retained with the data.
+db --param storage=5Gi`. Donkey injects `DATABASE_URL`, `MYSQL_HOST`,
+`MYSQL_PORT`, `MYSQL_DATABASE`, `MYSQL_USER`, and `MYSQL_PASSWORD`. `DB_URL`
+above is an optional app-specific alias. The database is `app` and the
+non-root user is `donkey`; passwords are generated once and retained with the
+data. A service that is re-added after `--keep-data` resumes with the
+parameters it was created with.
 
 The descriptor and response declare `protocol: mysql`, which selects the
 MySQL/MariaDB web editor regardless of the plugin's type or namespace.
@@ -94,6 +110,8 @@ Removing the service with
 `donkey addon remove db --space` invokes `Deprovision`; `--keep-data` keeps
 the volume and its credential Secret. Re-adding resumes it with the same
 password. Deleting the entire space removes its plugin instances and data.
+If the plugin itself is gone, `--orphan` drops Donkey's record and leaves the
+MariaDB resources for you to clean up.
 
 ## Checks
 
@@ -103,9 +121,9 @@ From the repository root:
 go test ./internal/addons ./pkg/runtime/kubernetes/... ./examples/addon-mariadb
 ```
 
-These tests cover the gRPC lifecycle, persisted provisioning intent, app
-bindings, policy selectors and ports, and MariaDB credential/data retention
-using Kubernetes API fakes. They do not prove live CNI behavior. With your
+These tests cover the gRPC lifecycle, the parameter schema, persisted
+provisioning intent and parameters, app bindings, policy selectors and
+ports, and MariaDB credential/data retention using Kubernetes API fakes. They do not prove live CNI behavior. With your
 cluster, deploy an app that uses the injected credentials and verify a SQL
 query succeeds with `restrictEgress` enabled; from another space, the same
 database destination should be denied.

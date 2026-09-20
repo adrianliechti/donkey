@@ -19,6 +19,7 @@ require (
 	github.com/duckdb/duckdb-go/v2 v2.10505.0
 	github.com/felixge/httpsnoop v1.1.0
 	github.com/go-sql-driver/mysql v1.9.3
+	github.com/google/jsonschema-go v0.4.3
 	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/minio/minio-go/v7 v7.3.0
@@ -110,7 +111,6 @@ require (
 	github.com/gofrs/flock v0.13.1 // indirect
 	github.com/google/flatbuffers v25.12.19+incompatible // indirect
 	github.com/google/gnostic-models v0.7.1 // indirect
-	github.com/google/jsonschema-go v0.4.3 // indirect
 	github.com/google/shlex v0.0.0-20191202100458-e7afc7fbc510 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.30.0 // indirect

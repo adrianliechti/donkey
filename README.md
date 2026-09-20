@@ -478,10 +478,17 @@ anything, and that is where the confirmation lives.
 | `redis` | Redis with persistent storage and password authentication | `REDIS_URL`, `REDIS_ADDR`, `REDIS_HOST`, `REDIS_PORT`, `REDIS_USERNAME`, `REDIS_PASSWORD`, `REDIS_DB`, `REDIS_TLS` |
 | `openai` | the platform's AI — nothing runs in the space | `OPENAI_BASE_URL`, `OPENAI_API_KEY`, `OPENAI_MODEL` |
 
+Every type describes what can be chosen for it (a version, a disk size…) as
+a JSON Schema, which the console renders as a form and the CLI takes as
+`donkey addon add postgres --param storage=5Gi` (or `--version` and
+`--storage` for those two). What was chosen is recorded with the service and
+kept when it is stopped and re-added.
+
 Out-of-tree services can join this catalog through the versioned
-[gRPC addon API](pkg/addons/v1/README.md). Provisioning returns app environment
-variables, connection URLs, and explicit network destinations. Configure
-`addonPlugins` in the server installation settings; the
+[gRPC addon API](pkg/addons/v1/README.md): a plugin describes its own
+parameters the same way, streams provisioning progress, and returns app
+environment variables, connection URLs, and explicit network destinations.
+Configure `addonPlugins` in the server installation settings; the
 [MariaDB example](examples/addon-mariadb/README.md) provisions in a separate
 namespace and works with restricted Kubernetes egress.
 
