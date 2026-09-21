@@ -255,15 +255,25 @@ export interface AddonType {
   protocol?: string
   /** The lowercase id the API speaks. */
   type: string
+  /** The configured provider an offering comes from; absent for built-ins. */
+  provider?: string
   /** The product's own name for display (PostgreSQL, RustFS, OpenAI). */
   title: string
   description?: string
+  /** A lowercase grouping: database, cache, storage, messaging, ai, api… */
+  category?: string
+  tags?: string[]
+  /** An icon name overriding the protocol's icon. */
+  icon?: string
+  documentationUrl?: string
+  /** Provisioning grants access to one installation-wide service rather
+   *  than creating a dedicated instance. */
+  shared?: boolean
   parameters?: ParametersSchema
   env?: AddonEnvVar[]
   keys?: string[]
-  capabilities?: string[]
-  /** False while a plugin is not answering or does not serve this runtime;
-   *  error says which. */
+  capabilities?: { retainData: boolean; update: boolean }
+  /** False while a provider has never answered; error says why. */
   available?: boolean
   error?: string
 }

@@ -20,11 +20,13 @@ import (
 
 const provisioningKey = "provisioning.json"
 
-func (r *Runtime) pluginInstance(space, name string) *addonv1.Instance {
+func (r *Runtime) pluginInstance(space, name, offering string) *addonv1.Instance {
 	return &addonv1.Instance{
-		Installation: r.opts.SystemNamespace, Space: space, Name: name,
-		Runtime: "kubernetes", Namespace: r.ns(space),
-		ConsumerLabels: manifests.SpacePodSelector(r.opts.SystemNamespace, space),
+		Installation: r.opts.SystemNamespace, Space: space, Name: name, Offering: offering,
+		Kubernetes: &addonv1.KubernetesContext{
+			Namespace:      r.ns(space),
+			ConsumerLabels: manifests.SpacePodSelector(r.opts.SystemNamespace, space),
+		},
 	}
 }
 
@@ -44,7 +46,7 @@ func (r *Runtime) pluginState(ctx context.Context, space, name string) (*addons.
 	if err := json.Unmarshal(secret.Data[provisioningKey], &state); err != nil {
 		return nil, fmt.Errorf("service %s has unreadable provisioning state", name)
 	}
-	if i := state.Instance; i == nil || i.Installation != r.opts.SystemNamespace || i.Space != space || i.Name != name || i.Namespace != r.ns(space) || i.Runtime != "kubernetes" || state.Type == "" {
+	if i := state.Instance; i == nil || i.Installation != r.opts.SystemNamespace || i.Space != space || i.Name != name || i.GetKubernetes().GetNamespace() != r.ns(space) || state.Type == "" || i.Offering != state.Type {
 		return nil, fmt.Errorf("service %s has mismatched provisioning identity", name)
 	}
 	return &state, nil
@@ -69,7 +71,7 @@ func (r *Runtime) savePluginState(ctx context.Context, state *addons.Provisionin
 	return r.c.Apply(ctx, []k8sruntime.Object{secret})
 }
 
-func (r *Runtime) provisionPlugin(ctx context.Context, space string, spec rt.ServiceSpec, plugin *addons.Plugin, desc *addonv1.DescribeResponse, previous *addons.Provisioning) (map[string]string, addons.Parameters, error) {
+func (r *Runtime) provisionPlugin(ctx context.Context, space string, spec rt.ServiceSpec, plugin *addons.Plugin, desc *addonv1.Offering, previous *addons.Provisioning) (map[string]string, addons.Parameters, error) {
 	if _, exists, err := r.c.DeploymentIdentity(ctx, r.ns(space), r.name(space, spec.Name)); err != nil {
 		return nil, nil, err
 	} else if exists {
@@ -86,15 +88,16 @@ func (r *Runtime) provisionPlugin(ctx context.Context, space string, spec rt.Ser
 		if len(binding) != 0 {
 			return nil, nil, fmt.Errorf("remove service %s before changing its provisioner", spec.Name)
 		}
-		state = &addons.Provisioning{Type: spec.Type, Instance: r.pluginInstance(space, spec.Name)}
+		state = &addons.Provisioning{Type: spec.Type, Provider: plugin.Provider(), Instance: r.pluginInstance(space, spec.Name, spec.Type)}
 	}
-	params, err := addons.ResolveInstanceParameters(desc, spec.Parameters, state.Parameters)
+	params, reason, err := addons.PlanProvision(desc, spec.Parameters, previous)
 	if err != nil {
 		return nil, nil, rt.UserError{Err: err}
 	}
-	// Intent first: even a lost response leaves an identity and the
-	// parameters to retry or remove with.
-	state.Parameters, state.Protocol, state.Error = params, addons.NormalizeProtocol(desc.Protocol), ""
+	request := &addonv1.ProvisionRequest{Instance: state.Instance, Parameters: params.Struct(), PreviousParameters: state.Parameters.Struct(), Reason: reason}
+	// Intent first: even a lost response leaves an identity, the offering
+	// and the parameters to retry or remove with.
+	state.Parameters, state.Offering, state.Protocol, state.Error = params, desc, addons.NormalizeProtocol(desc.Protocol), ""
 	intent, err := r.pluginStateSecret(state)
 	if err != nil {
 		return nil, nil, err
@@ -102,7 +105,7 @@ func (r *Runtime) provisionPlugin(ctx context.Context, space string, spec rt.Ser
 	if err := r.c.Apply(ctx, append(r.spaceObjects(space), intent)); err != nil {
 		return nil, nil, err
 	}
-	info, err := plugin.Provision(ctx, &addonv1.ProvisionRequest{Instance: state.Instance, Parameters: params.Struct()}, nil)
+	info, err := plugin.Provision(ctx, request, nil)
 	if err != nil {
 		state.Error = failureMessage(err)
 		if saveErr := r.savePluginState(ctx, state); saveErr != nil {
@@ -119,7 +122,7 @@ func (r *Runtime) provisionPlugin(ctx context.Context, space string, spec rt.Ser
 			merged[k] = v
 		}
 		if params, err = addons.ResolveParameters(desc.Parameters, merged); err != nil {
-			return nil, nil, fmt.Errorf("addon plugin %s reported effective parameters its schema rejects: %w", plugin.Type(), err)
+			return nil, nil, fmt.Errorf("addon %s reported effective parameters its schema rejects: %w", plugin.Type(), err)
 		}
 	}
 	state.Info, state.Parameters, state.Stopped, state.Error = info, params, false, ""

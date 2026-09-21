@@ -20,10 +20,10 @@ type postgres struct{}
 func (postgres) Type() string          { return "postgres" }
 func (postgres) CredentialKey() string { return "PGPASSWORD" }
 
-func (p postgres) Describe(context.Context) (*addonv1.DescribeResponse, error) {
+func (p postgres) Describe(context.Context) (*addonv1.Offering, error) {
 	return description(p, "PostgreSQL",
 		"The relational database — most frameworks speak to it out of the box.",
-		ProtocolPostgres, ObjectSchema(map[string]any{
+		CategoryDatabase, ProtocolPostgres, ObjectSchema(map[string]any{
 			ParamVersion: VersionParameter("18.6", "A tag of the postgres image, such as 18.6 or 17."),
 			ParamStorage: StorageParameter("1Gi"),
 		}),

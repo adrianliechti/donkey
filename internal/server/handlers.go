@@ -482,10 +482,12 @@ func statusFor(err error) int {
 }
 
 // handleCatalog is the service catalog: what the console can offer, each
-// type with its descriptor — title, protocol, the JSON Schema of its
-// parameters and the env contract connected apps will see (names only,
-// never values). A plugin that is not answering keeps its entry, marked
-// unavailable, so the console can say so instead of silently losing it.
+// entry with its descriptor — title, category, protocol, the JSON Schema of
+// its parameters and the env contract connected apps will see (names only,
+// never values). A provider that has never answered is listed once, under
+// its name and marked unavailable, so the console can say so instead of
+// silently losing it; a provider with a cached catalog never delays this.
+// Deprecated offerings are left out: they serve existing instances only.
 func (s *Server) handleCatalog(w http.ResponseWriter, r *http.Request) {
 	type envEntry struct {
 		Name        string `json:"name"`
@@ -493,38 +495,53 @@ func (s *Server) handleCatalog(w http.ResponseWriter, r *http.Request) {
 		Secret      bool   `json:"secret,omitempty"`
 		Optional    bool   `json:"optional,omitempty"`
 	}
+	type capabilities struct {
+		RetainData bool `json:"retainData"`
+		Update     bool `json:"update"`
+	}
 	type entry struct {
-		Type         string         `json:"type"`
-		Protocol     string         `json:"protocol,omitempty"`
-		Title        string         `json:"title"`
-		Description  string         `json:"description"`
-		Parameters   map[string]any `json:"parameters,omitempty"`
-		Env          []envEntry     `json:"env"`
-		Keys         []string       `json:"keys"`
-		Capabilities []string       `json:"capabilities,omitempty"`
-		Available    bool           `json:"available"`
-		Error        string         `json:"error,omitempty"`
+		Type             string         `json:"type"`
+		Provider         string         `json:"provider,omitempty"`
+		Protocol         string         `json:"protocol,omitempty"`
+		Title            string         `json:"title"`
+		Description      string         `json:"description"`
+		Category         string         `json:"category,omitempty"`
+		Tags             []string       `json:"tags,omitempty"`
+		Icon             string         `json:"icon,omitempty"`
+		DocumentationURL string         `json:"documentationUrl,omitempty"`
+		Shared           bool           `json:"shared,omitempty"`
+		Parameters       map[string]any `json:"parameters,omitempty"`
+		Env              []envEntry     `json:"env"`
+		Keys             []string       `json:"keys"`
+		Capabilities     capabilities   `json:"capabilities"`
+		Available        bool           `json:"available"`
+		Error            string         `json:"error,omitempty"`
 	}
 	out := []entry{}
-	for _, a := range addons.Types() {
+	for _, a := range addons.Types(r.Context()) {
+		provider := ""
+		if p, ok := a.(*addons.Plugin); ok {
+			provider = p.Provider()
+		}
 		desc, err := a.Describe(r.Context())
 		if err != nil {
-			out = append(out, entry{Type: a.Type(), Title: a.Type(), Env: []envEntry{}, Keys: []string{}, Error: err.Error()})
+			out = append(out, entry{Type: a.Type(), Provider: provider, Title: a.Type(), Env: []envEntry{}, Keys: []string{}, Error: err.Error()})
+			continue
+		}
+		if desc.Deprecated {
 			continue
 		}
 		e := entry{
-			Type: desc.Type, Protocol: addons.NormalizeProtocol(desc.Protocol), Title: desc.Title, Description: desc.Description,
-			Capabilities: desc.Capabilities, Available: addons.SupportsRuntime(desc, s.cfg.Runtime),
-			Env: []envEntry{}, Keys: addons.EnvNames(desc),
+			Type: desc.Id, Provider: provider, Protocol: addons.NormalizeProtocol(desc.Protocol), Title: desc.Title, Description: desc.Description,
+			Category: desc.Category, Tags: desc.Tags, Icon: desc.Icon, DocumentationURL: desc.DocumentationUrl, Shared: desc.Shared,
+			Capabilities: capabilities{RetainData: desc.GetCapabilities().GetRetainData(), Update: desc.GetCapabilities().GetUpdate()},
+			Available:    true, Env: []envEntry{}, Keys: addons.EnvNames(desc),
 		}
 		if desc.Parameters != nil {
 			e.Parameters = desc.Parameters.AsMap()
 		}
 		for _, v := range desc.Env {
 			e.Env = append(e.Env, envEntry{Name: v.Name, Description: v.Description, Secret: v.Secret, Optional: v.Optional})
-		}
-		if !e.Available {
-			e.Error = fmt.Sprintf("not offered on the %s runtime", s.cfg.Runtime)
 		}
 		out = append(out, e)
 	}

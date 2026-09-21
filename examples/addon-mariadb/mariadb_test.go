@@ -48,8 +48,8 @@ func testMariaDB() *mariaDB {
 }
 
 func testInstance(space string) *addonv1.Instance {
-	return &addonv1.Instance{Installation: "main", Space: space, Name: "db", Runtime: "kubernetes", Namespace: "donkey-" + space,
-		ConsumerLabels: map[string]string{"donkey.local/installation": "main", "donkey.local/space": space}}
+	return &addonv1.Instance{Installation: "main", Space: space, Name: "db", Offering: "mariadb", Kubernetes: &addonv1.KubernetesContext{
+		Namespace: "donkey-" + space, ConsumerLabels: map[string]string{"donkey.local/installation": "main", "donkey.local/space": space}}}
 }
 
 func params(t *testing.T, values map[string]any) *structpb.Struct {
@@ -96,15 +96,16 @@ func provision(ctx context.Context, m *mariaDB, request *addonv1.ProvisionReques
 }
 
 func TestMariaDBDescribesRenderableParameters(t *testing.T) {
-	desc, err := testMariaDB().Describe(context.Background(), &addonv1.DescribeRequest{})
-	if err != nil {
-		t.Fatal(err)
+	catalog, err := testMariaDB().Offerings(context.Background(), &addonv1.OfferingsRequest{})
+	if err != nil || len(catalog.Offerings) != 1 {
+		t.Fatalf("catalog: %v %v", catalog, err)
 	}
+	desc := catalog.Offerings[0]
 	properties := desc.Parameters.AsMap()["properties"].(map[string]any)
 	if properties["storage"].(map[string]any)["default"] != defaultStorage || properties["version"].(map[string]any)["default"] != defaultVersion {
 		t.Fatal("schema defaults disagree with the plugin's own")
 	}
-	if desc.Protocol != "mysql" || len(desc.Env) != 6 || desc.Capabilities[0] != "runtime:kubernetes" {
+	if desc.Id != "mariadb" || desc.Protocol != "mysql" || len(desc.Env) != 6 || !desc.Capabilities.RetainData || !desc.Capabilities.Update {
 		t.Fatalf("unexpected descriptor: %+v", desc)
 	}
 }
@@ -147,7 +148,7 @@ func TestMariaDBProvisionAndRetentionLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	peers := ingress.Spec.Ingress[0].From
-	if len(peers) != 2 || peers[0].NamespaceSelector.MatchLabels["kubernetes.io/metadata.name"] != i.Namespace || peers[0].PodSelector.MatchLabels["donkey.local/space"] != i.Space || peers[1].PodSelector.MatchLabels["donkey.local/role"] != "server" {
+	if len(peers) != 2 || peers[0].NamespaceSelector.MatchLabels["kubernetes.io/metadata.name"] != i.Kubernetes.Namespace || peers[0].PodSelector.MatchLabels["donkey.local/space"] != i.Space || peers[1].PodSelector.MatchLabels["donkey.local/role"] != "server" {
 		t.Fatal("database ingress is not bounded to consumers and admin server")
 	}
 	other, err := provision(ctx, m, &addonv1.ProvisionRequest{Instance: testInstance("other")})

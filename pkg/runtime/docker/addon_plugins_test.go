@@ -17,25 +17,25 @@ import (
 )
 
 type dockerPluginServer struct {
-	addonv1.UnimplementedAddonPluginServer
+	addonv1.UnimplementedServiceProviderServer
 	deletions chan *addonv1.DeprovisionRequest
 }
 
-func (*dockerPluginServer) Describe(context.Context, *addonv1.DescribeRequest) (*addonv1.DescribeResponse, error) {
-	return &addonv1.DescribeResponse{
-		Type: "docker-testdb", Protocol: "mysql", Title: "Remote DB",
+func (*dockerPluginServer) Offerings(context.Context, *addonv1.OfferingsRequest) (*addonv1.OfferingsResponse, error) {
+	return &addonv1.OfferingsResponse{Offerings: []*addonv1.Offering{{
+		Id: "docker-testdb", Protocol: "mysql", Title: "Remote DB", Category: "database",
 		Parameters:   addons.MustStruct(addons.ObjectSchema(map[string]any{addons.ParamVersion: addons.VersionParameter("1", "tag")})),
 		Env:          []*addonv1.EnvVar{{Name: "DATABASE_URL", Secret: true}},
-		Capabilities: []string{addons.CapabilityKeepData},
-	}, nil
+		Capabilities: &addonv1.Capabilities{RetainData: true},
+	}}}, nil
 }
 
-func (*dockerPluginServer) Provision(r *addonv1.ProvisionRequest, stream addonv1.AddonPlugin_ProvisionServer) error {
-	if r.Instance.Runtime != "docker" || r.Instance.Namespace != netName("team") {
-		return status.Error(codes.InvalidArgument, "wrong runtime or network")
+func (*dockerPluginServer) Provision(r *addonv1.ProvisionRequest, stream addonv1.ServiceProvider_ProvisionServer) error {
+	if r.Instance.Kubernetes != nil || r.Instance.Offering != "docker-testdb" || r.Instance.Installation != dockerInstallation {
+		return status.Error(codes.InvalidArgument, "wrong identity")
 	}
 	return stream.Send(&addonv1.ProvisionEvent{Result: &addonv1.ProvisionResponse{
-		Env: map[string]string{"DATABASE_URL": "mysql://donkey:secret@db:3306/app"}, Urls: []string{"mysql://db:3306/app"},
+		Env:       map[string]string{"DATABASE_URL": "mysql://donkey:secret@db:3306/app"},
 		Endpoints: []*addonv1.Endpoint{{Host: "db", Port: 3306}},
 	}})
 }
@@ -53,10 +53,10 @@ func TestDockerPluginRetainsAddressesAndLifecycleState(t *testing.T) {
 	}
 	s := grpc.NewServer()
 	remote := &dockerPluginServer{deletions: make(chan *addonv1.DeprovisionRequest, 4)}
-	addonv1.RegisterAddonPluginServer(s, remote)
+	addonv1.RegisterServiceProviderServer(s, remote)
 	go s.Serve(listener)
 	defer s.Stop()
-	closePlugins, err := addons.ConnectPlugins(ctx, config.AddonPlugins{{Type: "docker-testdb", Address: listener.Addr().String(), Insecure: true}})
+	closePlugins, err := addons.ConnectPlugins(config.AddonPlugins{{Name: "remote", Address: listener.Addr().String(), Insecure: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,7 +69,10 @@ func TestDockerPluginRetainsAddressesAndLifecycleState(t *testing.T) {
 	}
 	defer cli.Close()
 	r := &Runtime{cli: cli, state: state{dir: t.TempDir()}}
-	a, _ := addons.Get("docker-testdb")
+	a, err := addons.Get(ctx, "docker-testdb")
+	if err != nil {
+		t.Fatal(err)
+	}
 	plugin := a.(*addons.Plugin)
 	desc, err := plugin.Describe(ctx)
 	if err != nil {

@@ -103,7 +103,7 @@ func main() {
 	}
 	// The control plane runs against one runtime provider — DONKEY_RUNTIME
 	// picks which; everything else is identical.
-	closePlugins, err := addons.ConnectPlugins(ctx, cfg.AddonPlugins)
+	closePlugins, err := addons.ConnectPlugins(cfg.AddonPlugins)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "addon plugin startup error:", err)
 		os.Exit(1)

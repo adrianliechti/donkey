@@ -34,27 +34,32 @@ import (
 )
 
 type runtimePlugin struct {
-	addonv1.UnimplementedAddonPluginServer
+	addonv1.UnimplementedServiceProviderServer
 	deletions     chan *addonv1.DeprovisionRequest
 	requests      chan *addonv1.ProvisionRequest
 	failDelete    atomic.Bool
 	failProvision atomic.Bool
+	failCatalog   atomic.Bool
 	omitPolicy    atomic.Bool
+	noUpdate      atomic.Bool
 }
 
-func (*runtimePlugin) Describe(context.Context, *addonv1.DescribeRequest) (*addonv1.DescribeResponse, error) {
-	return &addonv1.DescribeResponse{
-		Type: "remote-db", Protocol: "mysql", Title: "Remote DB",
+func (p *runtimePlugin) Offerings(context.Context, *addonv1.OfferingsRequest) (*addonv1.OfferingsResponse, error) {
+	if p.failCatalog.Load() {
+		return nil, status.Error(codes.Unavailable, "provider down")
+	}
+	return &addonv1.OfferingsResponse{Offerings: []*addonv1.Offering{{
+		Id: "remote-db", Protocol: "mysql", Title: "Remote DB", Category: "database",
 		Parameters: addons.MustStruct(addons.ObjectSchema(map[string]any{
 			addons.ParamVersion: addons.VersionParameter("11.8", "release"),
 			addons.ParamStorage: addons.StorageParameter("1Gi"),
 		})),
 		Env:          []*addonv1.EnvVar{{Name: "DATABASE_URL", Secret: true}, {Name: "MYSQL_PASSWORD", Secret: true}},
-		Capabilities: []string{addons.CapabilityKeepData},
-	}, nil
+		Capabilities: &addonv1.Capabilities{RetainData: true, Update: !p.noUpdate.Load()},
+	}}}, nil
 }
 
-func (p *runtimePlugin) Provision(r *addonv1.ProvisionRequest, stream addonv1.AddonPlugin_ProvisionServer) error {
+func (p *runtimePlugin) Provision(r *addonv1.ProvisionRequest, stream addonv1.ServiceProvider_ProvisionServer) error {
 	select {
 	case p.requests <- r:
 	default:
@@ -63,8 +68,7 @@ func (p *runtimePlugin) Provision(r *addonv1.ProvisionRequest, stream addonv1.Ad
 		return status.Error(codes.Unavailable, "provisioning response lost")
 	}
 	response := &addonv1.ProvisionResponse{
-		Env:  map[string]string{"DATABASE_URL": "mysql://donkey:secret@db.addons.svc:3306/app", "MYSQL_PASSWORD": "secret"},
-		Urls: []string{"mysql://db.addons.svc:3306/app"},
+		Env: map[string]string{"DATABASE_URL": "mysql://donkey:secret@db.addons.svc:3306/app", "MYSQL_PASSWORD": "secret"},
 		Endpoints: []*addonv1.Endpoint{{Host: "db.addons.svc", Port: 3306, Target: &addonv1.Endpoint_Kubernetes{
 			Kubernetes: &addonv1.KubernetesTarget{Namespace: "addons", PodLabels: map[string]string{"instance": r.Instance.Space + "-" + r.Instance.Name}},
 		}}},
@@ -111,10 +115,10 @@ func connectRuntimePlugin(t *testing.T) *runtimePlugin {
 		t.Fatal(err)
 	}
 	s := grpc.NewServer()
-	addonv1.RegisterAddonPluginServer(s, p)
+	addonv1.RegisterServiceProviderServer(s, p)
 	go s.Serve(listener)
 	t.Cleanup(s.Stop)
-	closePlugins, err := addons.ConnectPlugins(context.Background(), config.AddonPlugins{{Type: "remote-db", Address: listener.Addr().String(), Insecure: true}})
+	closePlugins, err := addons.ConnectPlugins(config.AddonPlugins{{Name: "remote", Address: listener.Addr().String(), Insecure: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -220,11 +224,11 @@ func TestPluginRuntimeProvisionAttachRetainAndDelete(t *testing.T) {
 				if err != nil || params["version"] != "11.4" || params["storage"] != "1Gi" || binding["MYSQL_PASSWORD"] != "secret" {
 					t.Fatalf("provision: %v %v", params, err)
 				}
-				if got := lastRequest(t, p).Parameters.AsMap(); got["version"] != "11.4" || got["storage"] != "1Gi" {
-					t.Fatalf("plugin received %v", got)
+				if request := lastRequest(t, p); request.Parameters.AsMap()["version"] != "11.4" || request.Parameters.AsMap()["storage"] != "1Gi" || request.Reason != addonv1.ProvisionReason_PROVISION_REASON_CREATE || request.Instance.Offering != "remote-db" || request.Instance.Kubernetes.Namespace != r.ns("team") {
+					t.Fatalf("plugin received %v", request)
 				}
 				state, err := r.pluginState(ctx, "team", "db")
-				if err != nil || state == nil || len(state.Info.Urls) != 1 || state.Instance.Namespace != r.ns("team") || state.State() != addons.StateReady {
+				if err != nil || state == nil || len(state.Info.Endpoints) != 1 || state.Provider != "remote" || state.Offering.GetId() != "remote-db" || state.State() != addons.StateReady {
 					t.Fatalf("lost provisioning metadata: %v", err)
 				}
 				appLabels := r.c.expectedObjectIdentity(manifests.Labels("team", "api", manifests.RoleWorkload))
@@ -281,15 +285,27 @@ func TestPluginRuntimeProvisionAttachRetainAndDelete(t *testing.T) {
 					t.Fatal("stopped service retained network access")
 				}
 				// Re-adding without parameters resumes the instance as it was,
-				// not with whatever the plugin's default is today.
+				// not with whatever the plugin's default is today — and does so
+				// through the recorded offering while the provider's catalog
+				// is unavailable.
+				p.failCatalog.Store(true)
 				if _, params, err := r.EnsureService(ctx, "team", rt.ServiceSpec{Type: "remote-db", Name: "db"}); err != nil || params["version"] != "11.4" {
 					t.Fatalf("resume: %v %v", params, err)
 				}
-				if got := lastRequest(t, p).Parameters.AsMap(); got["version"] != "11.4" {
-					t.Fatalf("retained instance re-provisioned with %v", got)
+				p.failCatalog.Store(false)
+				if request := lastRequest(t, p); request.Parameters.AsMap()["version"] != "11.4" || request.Reason != addonv1.ProvisionReason_PROVISION_REASON_RESUME || request.PreviousParameters.AsMap()["version"] != "11.4" {
+					t.Fatalf("retained instance re-provisioned with %v", request)
 				}
 				if _, _, err := r.EnsureService(ctx, "team", rt.ServiceSpec{Type: "remote-db", Name: "db", Parameters: map[string]any{"storage": "5Gi"}}); err == nil {
 					t.Fatal("the disk of an existing instance changed")
+				}
+				// A running instance takes changed parameters only when its
+				// offering supports updates.
+				if _, params, err := r.EnsureService(ctx, "team", rt.ServiceSpec{Type: "remote-db", Name: "db", Parameters: map[string]any{"version": "11.8"}}); err != nil || params["version"] != "11.8" {
+					t.Fatalf("update: %v %v", params, err)
+				}
+				if request := lastRequest(t, p); request.Reason != addonv1.ProvisionReason_PROVISION_REASON_UPDATE || request.PreviousParameters.AsMap()["version"] != "11.4" {
+					t.Fatalf("update lost its reason or previous parameters: %v", request)
 				}
 				p.failDelete.Store(true)
 				if _, err := r.RemoveService(ctx, "team", "db", false, false); err == nil {

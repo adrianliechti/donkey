@@ -759,30 +759,36 @@ func (r *Runtime) aiProxyURL() string {
 }
 
 func (r *Runtime) EnsureService(ctx context.Context, space string, spec rt.ServiceSpec) (map[string]string, map[string]any, error) {
-	addon, err := addons.Get(spec.Type)
-	if err != nil {
+	if err := config.ValidateServiceName(spec.Name); err != nil {
 		return nil, nil, rt.UserError{Err: err}
 	}
-	if err := config.ValidateServiceName(spec.Name); err != nil {
+	// The record comes first: an instance a provider created resolves
+	// through its recorded offering when the provider is not answering.
+	previous, err := r.pluginState(space, spec.Name)
+	if err != nil {
+		return nil, nil, err
+	}
+	if previous != nil && previous.Type != spec.Type {
+		return nil, nil, fmt.Errorf("remove service %s before changing its provisioner", spec.Name)
+	}
+	addon, err := addons.Lookup(ctx, spec.Type, previous)
+	if err != nil {
 		return nil, nil, rt.UserError{Err: err}
 	}
 	desc, err := addon.Describe(ctx)
 	if err != nil {
 		return nil, nil, err
 	}
-	if !addons.SupportsRuntime(desc, "docker") {
-		return nil, nil, rt.UserError{Err: fmt.Errorf("the %s service is not offered on Docker", spec.Type)}
-	}
 	if err := r.ensureSpace(ctx, space); err != nil {
 		return nil, nil, err
 	}
-	previous, err := r.pluginState(space, spec.Name)
-	if err != nil {
-		return nil, nil, err
-	}
 	plugin, isPlugin := addon.(*addons.Plugin)
-	if previous != nil && (previous.Type != spec.Type || !isPlugin || spec.External) {
+	builtin, _ := addon.(addons.Builtin)
+	if previous != nil && (!isPlugin || spec.External) {
 		return nil, nil, fmt.Errorf("remove service %s before changing its provisioner", spec.Name)
+	}
+	if isPlugin && spec.External {
+		return nil, nil, rt.UserError{Err: fmt.Errorf("the %s service is provisioned by provider %s; external URL bindings are not supported for it", spec.Type, plugin.Provider())}
 	}
 	var binding map[string]string
 	var params addons.Parameters
@@ -793,7 +799,7 @@ func (r *Runtime) EnsureService(ctx context.Context, space string, spec rt.Servi
 			return nil, nil, err
 		}
 	case spec.External:
-		binding, err = addon.ExternalBinding(spec.URL)
+		binding, err = builtin.ExternalBinding(spec.URL)
 		if err != nil {
 			return nil, nil, rt.UserError{Err: err}
 		}
@@ -839,19 +845,19 @@ func (r *Runtime) EnsureService(ctx context.Context, space string, spec rt.Servi
 		}.WithParameters(params)
 		// Reuse the credential the instance was initialized with — rotating
 		// it here would lock the service out of its own kept data.
-		if pw, ok := existing[addon.CredentialKey()]; ok {
+		if pw, ok := existing[builtin.CredentialKey()]; ok {
 			in.Password = pw
 		} else if in.Password, err = addons.NewPassword(); err != nil {
 			return nil, nil, err
 		}
-		binding = addon.Binding(in)
+		binding = builtin.Binding(in)
 		// The unique container name works for both apps in this space and
 		// the admin server, which belongs to multiple space networks.
 		binding = rewriteBindingHost(binding, in.Name+"."+in.Namespace+".svc", ctrName(space, in.Name))
 		if err := r.state.setBinding(space, sharedOwner, spec.Name, binding); err != nil {
 			return nil, nil, err
 		}
-		workload, err := addon.Workload(in)
+		workload, err := builtin.Workload(in)
 		if err != nil {
 			return nil, nil, err
 		}

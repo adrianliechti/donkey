@@ -19,23 +19,28 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	AddonPlugin_Describe_FullMethodName    = "/donkey.addons.v1.AddonPlugin/Describe"
-	AddonPlugin_Provision_FullMethodName   = "/donkey.addons.v1.AddonPlugin/Provision"
-	AddonPlugin_Deprovision_FullMethodName = "/donkey.addons.v1.AddonPlugin/Deprovision"
+	ServiceProvider_Offerings_FullMethodName   = "/donkey.addons.v1.ServiceProvider/Offerings"
+	ServiceProvider_Provision_FullMethodName   = "/donkey.addons.v1.ServiceProvider/Provision"
+	ServiceProvider_Deprovision_FullMethodName = "/donkey.addons.v1.ServiceProvider/Deprovision"
 )
 
-// AddonPluginClient is the client API for AddonPlugin service.
+// ServiceProviderClient is the client API for ServiceProvider service.
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 //
-// A plugin owns its backing resources; Donkey owns the catalog, app bindings
-// and consumer-side egress. Provision and Deprovision must be idempotent for
-// an Instance's identity and safe under concurrent retries.
-type AddonPluginClient interface {
-	// Describe is the catalog entry. It must not create resources or return
-	// secrets. Donkey calls it lazily and caches the answer briefly, so a
-	// plugin may change its description between releases.
-	Describe(ctx context.Context, in *DescribeRequest, opts ...grpc.CallOption) (*DescribeResponse, error)
+// A provider serves a catalog of offerings and owns the resources behind
+// each provisioned instance. Donkey owns the catalog listing, app bindings
+// and consumer-side egress. Provision and Deprovision must be idempotent
+// for an Instance's identity and safe under concurrent retries.
+//
+// Donkey calls Offerings lazily, caches the answer and keeps the last good
+// one through an outage; nothing is called at startup. Every instance
+// records the offering it was provisioned with, so removing or resuming it
+// never depends on the provider describing itself again.
+type ServiceProviderClient interface {
+	// Offerings is the provider's catalog. It must not create resources or
+	// return secrets, and should answer quickly: it is called from listings.
+	Offerings(ctx context.Context, in *OfferingsRequest, opts ...grpc.CallOption) (*OfferingsResponse, error)
 	// Provision streams progress and ends with the event carrying `result`,
 	// sent only once the service is ready for connections. A deadline or a
 	// lost stream may cause Donkey to repeat this request.
@@ -43,27 +48,27 @@ type AddonPluginClient interface {
 	Deprovision(ctx context.Context, in *DeprovisionRequest, opts ...grpc.CallOption) (*DeprovisionResponse, error)
 }
 
-type addonPluginClient struct {
+type serviceProviderClient struct {
 	cc grpc.ClientConnInterface
 }
 
-func NewAddonPluginClient(cc grpc.ClientConnInterface) AddonPluginClient {
-	return &addonPluginClient{cc}
+func NewServiceProviderClient(cc grpc.ClientConnInterface) ServiceProviderClient {
+	return &serviceProviderClient{cc}
 }
 
-func (c *addonPluginClient) Describe(ctx context.Context, in *DescribeRequest, opts ...grpc.CallOption) (*DescribeResponse, error) {
+func (c *serviceProviderClient) Offerings(ctx context.Context, in *OfferingsRequest, opts ...grpc.CallOption) (*OfferingsResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(DescribeResponse)
-	err := c.cc.Invoke(ctx, AddonPlugin_Describe_FullMethodName, in, out, cOpts...)
+	out := new(OfferingsResponse)
+	err := c.cc.Invoke(ctx, ServiceProvider_Offerings_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *addonPluginClient) Provision(ctx context.Context, in *ProvisionRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ProvisionEvent], error) {
+func (c *serviceProviderClient) Provision(ctx context.Context, in *ProvisionRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ProvisionEvent], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	stream, err := c.cc.NewStream(ctx, &AddonPlugin_ServiceDesc.Streams[0], AddonPlugin_Provision_FullMethodName, cOpts...)
+	stream, err := c.cc.NewStream(ctx, &ServiceProvider_ServiceDesc.Streams[0], ServiceProvider_Provision_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -78,142 +83,147 @@ func (c *addonPluginClient) Provision(ctx context.Context, in *ProvisionRequest,
 }
 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
-type AddonPlugin_ProvisionClient = grpc.ServerStreamingClient[ProvisionEvent]
+type ServiceProvider_ProvisionClient = grpc.ServerStreamingClient[ProvisionEvent]
 
-func (c *addonPluginClient) Deprovision(ctx context.Context, in *DeprovisionRequest, opts ...grpc.CallOption) (*DeprovisionResponse, error) {
+func (c *serviceProviderClient) Deprovision(ctx context.Context, in *DeprovisionRequest, opts ...grpc.CallOption) (*DeprovisionResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(DeprovisionResponse)
-	err := c.cc.Invoke(ctx, AddonPlugin_Deprovision_FullMethodName, in, out, cOpts...)
+	err := c.cc.Invoke(ctx, ServiceProvider_Deprovision_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-// AddonPluginServer is the server API for AddonPlugin service.
-// All implementations must embed UnimplementedAddonPluginServer
+// ServiceProviderServer is the server API for ServiceProvider service.
+// All implementations must embed UnimplementedServiceProviderServer
 // for forward compatibility.
 //
-// A plugin owns its backing resources; Donkey owns the catalog, app bindings
-// and consumer-side egress. Provision and Deprovision must be idempotent for
-// an Instance's identity and safe under concurrent retries.
-type AddonPluginServer interface {
-	// Describe is the catalog entry. It must not create resources or return
-	// secrets. Donkey calls it lazily and caches the answer briefly, so a
-	// plugin may change its description between releases.
-	Describe(context.Context, *DescribeRequest) (*DescribeResponse, error)
+// A provider serves a catalog of offerings and owns the resources behind
+// each provisioned instance. Donkey owns the catalog listing, app bindings
+// and consumer-side egress. Provision and Deprovision must be idempotent
+// for an Instance's identity and safe under concurrent retries.
+//
+// Donkey calls Offerings lazily, caches the answer and keeps the last good
+// one through an outage; nothing is called at startup. Every instance
+// records the offering it was provisioned with, so removing or resuming it
+// never depends on the provider describing itself again.
+type ServiceProviderServer interface {
+	// Offerings is the provider's catalog. It must not create resources or
+	// return secrets, and should answer quickly: it is called from listings.
+	Offerings(context.Context, *OfferingsRequest) (*OfferingsResponse, error)
 	// Provision streams progress and ends with the event carrying `result`,
 	// sent only once the service is ready for connections. A deadline or a
 	// lost stream may cause Donkey to repeat this request.
 	Provision(*ProvisionRequest, grpc.ServerStreamingServer[ProvisionEvent]) error
 	Deprovision(context.Context, *DeprovisionRequest) (*DeprovisionResponse, error)
-	mustEmbedUnimplementedAddonPluginServer()
+	mustEmbedUnimplementedServiceProviderServer()
 }
 
-// UnimplementedAddonPluginServer must be embedded to have
+// UnimplementedServiceProviderServer must be embedded to have
 // forward compatible implementations.
 //
 // NOTE: this should be embedded by value instead of pointer to avoid a nil
 // pointer dereference when methods are called.
-type UnimplementedAddonPluginServer struct{}
+type UnimplementedServiceProviderServer struct{}
 
-func (UnimplementedAddonPluginServer) Describe(context.Context, *DescribeRequest) (*DescribeResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method Describe not implemented")
+func (UnimplementedServiceProviderServer) Offerings(context.Context, *OfferingsRequest) (*OfferingsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Offerings not implemented")
 }
-func (UnimplementedAddonPluginServer) Provision(*ProvisionRequest, grpc.ServerStreamingServer[ProvisionEvent]) error {
+func (UnimplementedServiceProviderServer) Provision(*ProvisionRequest, grpc.ServerStreamingServer[ProvisionEvent]) error {
 	return status.Error(codes.Unimplemented, "method Provision not implemented")
 }
-func (UnimplementedAddonPluginServer) Deprovision(context.Context, *DeprovisionRequest) (*DeprovisionResponse, error) {
+func (UnimplementedServiceProviderServer) Deprovision(context.Context, *DeprovisionRequest) (*DeprovisionResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Deprovision not implemented")
 }
-func (UnimplementedAddonPluginServer) mustEmbedUnimplementedAddonPluginServer() {}
-func (UnimplementedAddonPluginServer) testEmbeddedByValue()                     {}
+func (UnimplementedServiceProviderServer) mustEmbedUnimplementedServiceProviderServer() {}
+func (UnimplementedServiceProviderServer) testEmbeddedByValue()                         {}
 
-// UnsafeAddonPluginServer may be embedded to opt out of forward compatibility for this service.
-// Use of this interface is not recommended, as added methods to AddonPluginServer will
+// UnsafeServiceProviderServer may be embedded to opt out of forward compatibility for this service.
+// Use of this interface is not recommended, as added methods to ServiceProviderServer will
 // result in compilation errors.
-type UnsafeAddonPluginServer interface {
-	mustEmbedUnimplementedAddonPluginServer()
+type UnsafeServiceProviderServer interface {
+	mustEmbedUnimplementedServiceProviderServer()
 }
 
-func RegisterAddonPluginServer(s grpc.ServiceRegistrar, srv AddonPluginServer) {
-	// If the following call panics, it indicates UnimplementedAddonPluginServer was
+func RegisterServiceProviderServer(s grpc.ServiceRegistrar, srv ServiceProviderServer) {
+	// If the following call panics, it indicates UnimplementedServiceProviderServer was
 	// embedded by pointer and is nil.  This will cause panics if an
 	// unimplemented method is ever invoked, so we test this at initialization
 	// time to prevent it from happening at runtime later due to I/O.
 	if t, ok := srv.(interface{ testEmbeddedByValue() }); ok {
 		t.testEmbeddedByValue()
 	}
-	s.RegisterService(&AddonPlugin_ServiceDesc, srv)
+	s.RegisterService(&ServiceProvider_ServiceDesc, srv)
 }
 
-func _AddonPlugin_Describe_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(DescribeRequest)
+func _ServiceProvider_Offerings_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(OfferingsRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(AddonPluginServer).Describe(ctx, in)
+		return srv.(ServiceProviderServer).Offerings(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: AddonPlugin_Describe_FullMethodName,
+		FullMethod: ServiceProvider_Offerings_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(AddonPluginServer).Describe(ctx, req.(*DescribeRequest))
+		return srv.(ServiceProviderServer).Offerings(ctx, req.(*OfferingsRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-func _AddonPlugin_Provision_Handler(srv interface{}, stream grpc.ServerStream) error {
+func _ServiceProvider_Provision_Handler(srv interface{}, stream grpc.ServerStream) error {
 	m := new(ProvisionRequest)
 	if err := stream.RecvMsg(m); err != nil {
 		return err
 	}
-	return srv.(AddonPluginServer).Provision(m, &grpc.GenericServerStream[ProvisionRequest, ProvisionEvent]{ServerStream: stream})
+	return srv.(ServiceProviderServer).Provision(m, &grpc.GenericServerStream[ProvisionRequest, ProvisionEvent]{ServerStream: stream})
 }
 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
-type AddonPlugin_ProvisionServer = grpc.ServerStreamingServer[ProvisionEvent]
+type ServiceProvider_ProvisionServer = grpc.ServerStreamingServer[ProvisionEvent]
 
-func _AddonPlugin_Deprovision_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+func _ServiceProvider_Deprovision_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(DeprovisionRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(AddonPluginServer).Deprovision(ctx, in)
+		return srv.(ServiceProviderServer).Deprovision(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: AddonPlugin_Deprovision_FullMethodName,
+		FullMethod: ServiceProvider_Deprovision_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(AddonPluginServer).Deprovision(ctx, req.(*DeprovisionRequest))
+		return srv.(ServiceProviderServer).Deprovision(ctx, req.(*DeprovisionRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-// AddonPlugin_ServiceDesc is the grpc.ServiceDesc for AddonPlugin service.
+// ServiceProvider_ServiceDesc is the grpc.ServiceDesc for ServiceProvider service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
-var AddonPlugin_ServiceDesc = grpc.ServiceDesc{
-	ServiceName: "donkey.addons.v1.AddonPlugin",
-	HandlerType: (*AddonPluginServer)(nil),
+var ServiceProvider_ServiceDesc = grpc.ServiceDesc{
+	ServiceName: "donkey.addons.v1.ServiceProvider",
+	HandlerType: (*ServiceProviderServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{
-			MethodName: "Describe",
-			Handler:    _AddonPlugin_Describe_Handler,
+			MethodName: "Offerings",
+			Handler:    _ServiceProvider_Offerings_Handler,
 		},
 		{
 			MethodName: "Deprovision",
-			Handler:    _AddonPlugin_Deprovision_Handler,
+			Handler:    _ServiceProvider_Deprovision_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{
 		{
 			StreamName:    "Provision",
-			Handler:       _AddonPlugin_Provision_Handler,
+			Handler:       _ServiceProvider_Provision_Handler,
 			ServerStreams: true,
 		},
 	},

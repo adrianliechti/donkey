@@ -10,10 +10,13 @@ import (
 
 func TestPluginProtocolGovernsTheConnectionURL(t *testing.T) {
 	response := sampleProvisioning()
-	server := &testPluginServer{typ: "protocol-plugin", protocol: "mariadb", provision: func(context.Context, *addonv1.ProvisionRequest) (*addonv1.ProvisionResponse, error) {
+	offering := testOffering("protocoldb")
+	offering.Protocol = "mariadb"
+	server := &testProviderServer{offerings: []*addonv1.Offering{offering}, provision: func(context.Context, *addonv1.ProvisionRequest) (*addonv1.ProvisionResponse, error) {
 		return response, nil
 	}}
-	p := connectTestPlugin(t, server)
+	connectTestProvider(t, "protocol", server)
+	p := getPlugin(t, "protocoldb")
 	desc, err := p.Describe(context.Background())
 	if err != nil || NormalizeProtocol(desc.Protocol) != ProtocolMySQL {
 		t.Fatalf("mariadb should normalize to mysql: %+v %v", desc, err)
@@ -54,12 +57,12 @@ func TestProtocolConnectionContracts(t *testing.T) {
 			t.Fatal("connection error disclosed credentials")
 		}
 	}
-	info := &addonv1.DescribeResponse{Type: "vendor", Title: "Vendor", Protocol: "redis", Env: []*addonv1.EnvVar{{Name: "CUSTOM_URL"}}}
-	if validateDescription("vendor", info) == nil {
+	info := &addonv1.Offering{Id: "vendor", Title: "Vendor", Protocol: "redis", Env: []*addonv1.EnvVar{{Name: "CUSTOM_URL"}}}
+	if validateOffering(info) == nil {
 		t.Fatal("advertised a console without its connection key")
 	}
 	info.Protocol = "custom"
-	if err := validateDescription("vendor", info); err != nil {
+	if err := validateOffering(info); err != nil {
 		t.Fatal(err)
 	}
 	if err := ValidateProtocol("custom-database"); err != nil {

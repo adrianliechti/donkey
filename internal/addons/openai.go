@@ -20,10 +20,11 @@ type openai struct{}
 func (openai) Type() string          { return "openai" }
 func (openai) CredentialKey() string { return "OPENAI_API_KEY" }
 
-func (o openai) Describe(context.Context) (*addonv1.DescribeResponse, error) {
+func (o openai) Describe(context.Context) (*addonv1.Offering, error) {
 	desc := description(o, "OpenAI", "The platform's AI, OpenAI-compatible — no key of your own to manage.",
-		ProtocolOpenAI, ObjectSchema(nil), "OPENAI_API_KEY")
-	// Nothing runs and nothing is stored, so there is no data to keep.
+		CategoryAI, ProtocolOpenAI, ObjectSchema(nil), "OPENAI_API_KEY")
+	// Nothing runs and nothing is stored, so there is no data to keep, and
+	// there are no parameters to update.
 	desc.Capabilities = nil
 	return desc, nil
 }

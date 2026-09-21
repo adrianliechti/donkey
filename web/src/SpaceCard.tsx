@@ -497,7 +497,7 @@ function AddMenu({ space, onAddService }: { space: string; onAddService: (type: 
         </MenuItem>
         {services.length > 0 && <div className="my-1 h-px bg-line" aria-hidden />}
         {services.map((svc) => {
-          const { Icon } = serviceUI(svc.protocol)
+          const { Icon } = serviceUI(svc.icon || svc.protocol)
           return (
             <MenuItem key={svc.type}>
               <button

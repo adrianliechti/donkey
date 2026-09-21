@@ -204,7 +204,7 @@ func (s *Server) recordedDeployPlan(ctx context.Context, app *config.AppConfig, 
 	for _, service := range copy.Addons {
 		services = append(services, PlanService{
 			Type: service.Type, Name: service.Name, Reason: "from donkey.yaml",
-			Known: knownAddon(service.Type), Selected: true,
+			Known: knownAddon(ctx, service.Type), Selected: true,
 			Exists: s.spaceHasService(ctx, copy.Space, service.Name),
 		})
 		seenTypes[service.Type] = true
@@ -215,7 +215,7 @@ func (s *Server) recordedDeployPlan(ctx context.Context, app *config.AppConfig, 
 		}
 		services = append(services, PlanService{
 			Type: service.Type, Name: service.Type, Reason: service.Reason,
-			Known: knownAddon(service.Type), Selected: false,
+			Known: knownAddon(ctx, service.Type), Selected: false,
 			Exists: s.spaceHasService(ctx, copy.Space, service.Type),
 		})
 		seenTypes[service.Type] = true

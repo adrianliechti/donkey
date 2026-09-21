@@ -522,12 +522,12 @@ func (s *Server) planServices(ctx context.Context, app *config.AppConfig, analys
 	for _, a := range app.Addons {
 		out = append(out, PlanService{
 			Type: a.Type, Name: a.Name, Reason: "from donkey.yaml",
-			Known: knownAddon(a.Type), Selected: true,
+			Known: knownAddon(ctx, a.Type), Selected: true,
 			Exists: s.spaceHasService(ctx, app.Space, a.Name),
 		})
 	}
 	for _, svc := range analysis.Services {
-		if hasAddonType(app, svc.Type) || !knownAddon(svc.Type) {
+		if hasAddonType(app, svc.Type) || !knownAddon(ctx, svc.Type) {
 			continue
 		}
 		out = append(out, PlanService{
@@ -801,8 +801,8 @@ func (s *Server) spaceHasService(ctx context.Context, space, name string) bool {
 	return err == nil && len(data) > 0
 }
 
-func knownAddon(typ string) bool {
-	_, err := addons.Get(typ)
+func knownAddon(ctx context.Context, typ string) bool {
+	_, err := addons.Get(ctx, typ)
 	return err == nil
 }
 
@@ -825,7 +825,7 @@ func modeOfConfig(app *config.AppConfig) string {
 // a service that will be created. Values remain references in reviewed config.
 func (s *Server) bindEnvironment(ctx context.Context, app *config.AppConfig) error {
 	for _, service := range app.Addons {
-		recipe, err := addons.Get(service.Type)
+		recipe, err := addons.Get(ctx, service.Type)
 		if err != nil {
 			return err
 		}
@@ -837,7 +837,11 @@ func (s *Server) bindEnvironment(ctx context.Context, app *config.AppConfig) err
 			if service.External {
 				return fmt.Errorf("external service %s must be attached to this space before deploying", service.Name)
 			}
-			values = recipe.Binding(addons.Input{})
+			desc, err := recipe.Describe(ctx)
+			if err != nil {
+				return err
+			}
+			values = addons.EnvTemplate(desc)
 		}
 		if err := addons.BindEnvironment(app, service.Name, values); err != nil {
 			return err

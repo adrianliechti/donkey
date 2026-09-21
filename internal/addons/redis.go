@@ -16,9 +16,9 @@ type redis struct{}
 func (redis) Type() string          { return "redis" }
 func (redis) CredentialKey() string { return "REDIS_PASSWORD" }
 
-func (r redis) Describe(context.Context) (*addonv1.DescribeResponse, error) {
+func (r redis) Describe(context.Context) (*addonv1.Offering, error) {
 	return description(r, "Redis", "A fast key-value store for caches, sessions and queues.",
-		ProtocolRedis, ObjectSchema(map[string]any{
+		CategoryCache, ProtocolRedis, ObjectSchema(map[string]any{
 			ParamVersion: VersionParameter("7.4.11", "A tag of the redis image."),
 			ParamStorage: StorageParameter("1Gi"),
 		}),

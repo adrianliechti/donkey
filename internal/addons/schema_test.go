@@ -10,16 +10,16 @@ import (
 )
 
 func TestBuiltinDescriptorsAreValid(t *testing.T) {
-	for _, a := range Types() {
+	for _, a := range Types(context.Background()) {
 		desc, err := a.Describe(context.Background())
 		if err != nil {
 			t.Fatal(err)
 		}
-		if desc.Type != a.Type() || desc.Title == "" || desc.Protocol == "" || len(desc.Env) == 0 {
-			t.Fatalf("%s: incomplete descriptor %+v", a.Type(), desc)
-		}
-		if err := validateDescription(a.Type(), desc); err != nil {
+		if err := validateOffering(desc); err != nil {
 			t.Fatalf("%s: %v", a.Type(), err)
+		}
+		if desc.Id != a.Type() || desc.Title == "" || desc.Protocol == "" || desc.Category == "" || len(desc.Env) == 0 {
+			t.Fatalf("%s: incomplete descriptor %+v", a.Type(), desc)
 		}
 		params, err := ResolveParameters(desc.Parameters, nil)
 		if err != nil {
@@ -74,7 +74,7 @@ func TestParameterResolutionDefaultsCoercionAndErrors(t *testing.T) {
 }
 
 func TestInstanceParametersKeepStoredValuesAndRefuseImmutableChanges(t *testing.T) {
-	desc := &addonv1.DescribeResponse{Parameters: MustStruct(ObjectSchema(map[string]any{
+	desc := &addonv1.Offering{Parameters: MustStruct(ObjectSchema(map[string]any{
 		ParamVersion: VersionParameter("18.6", "tag"),
 		ParamStorage: StorageParameter("1Gi"),
 	}))}
@@ -97,9 +97,9 @@ func TestInstanceParametersKeepStoredValuesAndRefuseImmutableChanges(t *testing.
 
 func TestSchemaSubsetIsEnforced(t *testing.T) {
 	for name, schema := range map[string]map[string]any{
-		"not an object": {"type": "string"},
-		"nested object": ObjectSchema(map[string]any{"limits": map[string]any{"type": "object"}}),
-		"reference":     ObjectSchema(map[string]any{"size": map[string]any{"$ref": "#/$defs/size"}}),
+		"not an object":    {"type": "string"},
+		"nested object":    ObjectSchema(map[string]any{"limits": map[string]any{"type": "object"}}),
+		"reference":        ObjectSchema(map[string]any{"size": map[string]any{"$ref": "#/$defs/size"}}),
 		"array of objects": ObjectSchema(map[string]any{"rules": map[string]any{"type": "array", "items": map[string]any{"type": "object"}}}),
 		"invalid default":  ObjectSchema(map[string]any{"n": map[string]any{"type": "integer", "default": "one"}}),
 	} {
@@ -109,15 +109,5 @@ func TestSchemaSubsetIsEnforced(t *testing.T) {
 	}
 	if err := ValidateSchema(nil); err != nil {
 		t.Fatal(err)
-	}
-}
-
-func TestCapabilitiesAndRuntimes(t *testing.T) {
-	desc := &addonv1.DescribeResponse{Capabilities: []string{"runtime:kubernetes", CapabilityKeepData}}
-	if !SupportsRuntime(desc, "kubernetes") || SupportsRuntime(desc, "docker") || !HasCapability(desc, CapabilityKeepData) {
-		t.Fatal("capabilities misread")
-	}
-	if !SupportsRuntime(&addonv1.DescribeResponse{}, "docker") || SupportsRuntime(nil, "docker") {
-		t.Fatal("an unlisted runtime set means every runtime; nil means none")
 	}
 }

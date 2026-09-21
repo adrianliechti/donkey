@@ -49,33 +49,39 @@ func (r *Runtime) ServiceConnection(ctx context.Context, space, name string) (rt
 // its binding values.
 func (r *Runtime) EnsureService(ctx context.Context, space string, spec rt.ServiceSpec) (map[string]string, map[string]any, error) {
 	ns := r.ns(space)
-	addon, err := addons.Get(spec.Type)
-	if err != nil {
-		return nil, nil, rt.UserError{Err: err}
-	}
 	if err := config.ValidateServiceName(spec.Name); err != nil {
 		return nil, nil, rt.UserError{Err: err}
 	}
 	if err := r.opts.Placement.ValidateNames(space, spec.Name); err != nil {
 		return nil, nil, rt.UserError{Err: err}
 	}
-	desc, err := addon.Describe(ctx)
-	if err != nil {
-		return nil, nil, err
-	}
-	if !addons.SupportsRuntime(desc, "kubernetes") {
-		return nil, nil, rt.UserError{Err: fmt.Errorf("the %s service is not offered on Kubernetes", spec.Type)}
-	}
-	if err := r.ensureSpaceHome(ctx, space); err != nil {
-		return nil, nil, err
-	}
+	// The record comes first: an instance a provider created resolves
+	// through its recorded offering when the provider is not answering.
 	previous, err := r.pluginState(ctx, space, spec.Name)
 	if err != nil {
 		return nil, nil, err
 	}
-	plugin, isPlugin := addon.(*addons.Plugin)
-	if previous != nil && (previous.Type != spec.Type || !isPlugin || spec.External) {
+	if previous != nil && previous.Type != spec.Type {
 		return nil, nil, fmt.Errorf("remove service %s before changing its provisioner", spec.Name)
+	}
+	addon, err := addons.Lookup(ctx, spec.Type, previous)
+	if err != nil {
+		return nil, nil, rt.UserError{Err: err}
+	}
+	desc, err := addon.Describe(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := r.ensureSpaceHome(ctx, space); err != nil {
+		return nil, nil, err
+	}
+	plugin, isPlugin := addon.(*addons.Plugin)
+	builtin, _ := addon.(addons.Builtin)
+	if previous != nil && (!isPlugin || spec.External) {
+		return nil, nil, fmt.Errorf("remove service %s before changing its provisioner", spec.Name)
+	}
+	if isPlugin && spec.External {
+		return nil, nil, rt.UserError{Err: fmt.Errorf("the %s service is provisioned by provider %s; external URL bindings are not supported for it", spec.Type, plugin.Provider())}
 	}
 	var binding map[string]string
 	var params addons.Parameters
@@ -86,7 +92,7 @@ func (r *Runtime) EnsureService(ctx context.Context, space string, spec rt.Servi
 			return nil, nil, err
 		}
 	case spec.External:
-		binding, err = addon.ExternalBinding(spec.URL)
+		binding, err = builtin.ExternalBinding(spec.URL)
 		if err != nil {
 			return nil, nil, rt.UserError{Err: err}
 		}
@@ -111,11 +117,11 @@ func (r *Runtime) EnsureService(ctx context.Context, space string, spec rt.Servi
 				return nil, nil, err
 			}
 		}
-		in, err := r.provisionService(ctx, space, ns, spec, desc)
+		in, err := r.provisionService(ctx, space, ns, spec, builtin, desc)
 		if err != nil {
 			return nil, nil, err
 		}
-		binding, params = addon.Binding(in), in.Parameters
+		binding, params = builtin.Binding(in), in.Parameters
 	}
 	// Re-creating an external service may change its address — the copies the
 	// attached apps hold have to follow, and their pods restart to see the
@@ -141,11 +147,7 @@ func (r *Runtime) EnsureService(ctx context.Context, space string, spec rt.Servi
 
 // provisionService creates (or re-applies) one space-owned addon instance
 // with its canonical binding secret, and waits until it serves.
-func (r *Runtime) provisionService(ctx context.Context, space, ns string, spec rt.ServiceSpec, desc *addonv1.DescribeResponse) (addons.Input, error) {
-	addon, err := addons.Get(spec.Type)
-	if err != nil {
-		return addons.Input{}, err
-	}
+func (r *Runtime) provisionService(ctx context.Context, space, ns string, spec rt.ServiceSpec, addon addons.Builtin, desc *addonv1.Offering) (addons.Input, error) {
 	// An existing instance keeps its credential and, unless asked
 	// otherwise, its parameters.
 	existing, err := r.ServiceConnection(ctx, space, spec.Name)

@@ -70,7 +70,7 @@ func run() error {
 	}
 	options = append(options, authOptions(token)...)
 	server := grpc.NewServer(options...)
-	addonv1.RegisterAddonPluginServer(server, &mariaDB{client: client, namespace: namespace, installation: installation})
+	addonv1.RegisterServiceProviderServer(server, &mariaDB{client: client, namespace: namespace, installation: installation})
 	healthServer := health.NewServer()
 	healthServer.SetServingStatus("", healthv1.HealthCheckResponse_SERVING)
 	healthv1.RegisterHealthServer(server, healthServer)
@@ -81,7 +81,7 @@ func run() error {
 		defer timer.Stop()
 		server.GracefulStop()
 	}()
-	log.Printf("MariaDB addon plugin listening on %s; database namespace %s", address, namespace)
+	log.Printf("MariaDB service provider listening on %s; database namespace %s", address, namespace)
 	return server.Serve(listener)
 }
 

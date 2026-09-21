@@ -339,7 +339,7 @@ func (s *Server) deployApp(ctx context.Context, out *lineStreamer, dir string, a
 	// An unknown addon type has to stop the deploy here, not after minutes
 	// of building.
 	for _, a := range app.Addons {
-		if _, err := addons.Get(a.Type); err != nil {
+		if _, err := addons.Get(ctx, a.Type); err != nil {
 			return fail(err)
 		}
 	}

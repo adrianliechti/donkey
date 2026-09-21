@@ -32,9 +32,9 @@ func (rustfs) CredentialKey() string { return "AWS_SECRET_ACCESS_KEY" }
 // The default version pins an exact release: upstream is still in its
 // prerelease line, where patch jumps can carry breaking changes a data store
 // must not pick up on a restart.
-func (r rustfs) Describe(context.Context) (*addonv1.DescribeResponse, error) {
+func (r rustfs) Describe(context.Context) (*addonv1.Offering, error) {
 	return description(r, "RustFS", "S3-compatible object storage — buckets and files, in one small server.",
-		ProtocolS3, ObjectSchema(map[string]any{
+		CategoryStorage, ProtocolS3, ObjectSchema(map[string]any{
 			ParamVersion: VersionParameter("1.0.0-rc.3", "A tag of the rustfs/rustfs image; exact releases only, prereleases may break on upgrade."),
 			ParamStorage: StorageParameter("1Gi"),
 		}),

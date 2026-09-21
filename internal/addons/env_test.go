@@ -1,6 +1,7 @@
 package addons
 
 import (
+	"context"
 	"testing"
 
 	"github.com/adrianliechti/donkey/internal/config"
@@ -9,8 +10,9 @@ import (
 func TestSelectedServicesReplaceStaleEnvWithReferences(t *testing.T) {
 	app := &config.AppConfig{Env: map[string]string{"DATABASE_URL": "postgres://localhost/old", "OPENAI_BASE_URL": "http://localhost:1234", "AWS_ENDPOINT_URL_S3": "http://localhost:9000", "LOG_LEVEL": "debug", "REDIS_URL": "redis://localhost:6379"}, Addons: []config.AddonConfig{{Name: "cache", Type: "redis"}, {Name: "db", Type: "postgres"}, {Name: "ai", Type: "openai"}, {Name: "objects", Type: "rustfs"}}}
 	for _, service := range app.Addons {
-		recipe, _ := Get(service.Type)
-		if err := BindEnvironment(app, service.Name, recipe.Binding(Input{})); err != nil {
+		recipe, _ := Get(context.Background(), service.Type)
+		desc, _ := recipe.Describe(context.Background())
+		if err := BindEnvironment(app, service.Name, EnvTemplate(desc)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -20,8 +22,9 @@ func TestSelectedServicesReplaceStaleEnvWithReferences(t *testing.T) {
 		}
 	}
 	for _, service := range app.Addons {
-		recipe, _ := Get(service.Type)
-		if err := BindEnvironment(app, service.Name, recipe.Binding(Input{})); err != nil {
+		recipe, _ := Get(context.Background(), service.Type)
+		desc, _ := recipe.Describe(context.Background())
+		if err := BindEnvironment(app, service.Name, EnvTemplate(desc)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -33,7 +36,7 @@ func TestSelectedServicesReplaceStaleEnvWithReferences(t *testing.T) {
 func TestExternalServiceKeepsAppCredentials(t *testing.T) {
 	for _, typ := range []string{"openai", "rustfs"} {
 		t.Run(typ, func(t *testing.T) {
-			recipe, _ := Get(typ)
+			recipe := builtins[typ]
 			values, err := recipe.ExternalBinding("https://service.example.com")
 			if err != nil {
 				t.Fatal(err)

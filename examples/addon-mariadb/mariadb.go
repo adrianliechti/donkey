@@ -64,7 +64,7 @@ var (
 )
 
 type mariaDB struct {
-	addonv1.UnimplementedAddonPluginServer
+	addonv1.UnimplementedServiceProviderServer
 	client                  dynamic.Interface
 	namespace, installation string
 	// One lock per instance: two requests for the same disk must not race on
@@ -78,38 +78,46 @@ func (m *mariaDB) lock(name string) func() {
 	return mu.(*sync.Mutex).Unlock
 }
 
-func (m *mariaDB) Describe(context.Context, *addonv1.DescribeRequest) (*addonv1.DescribeResponse, error) {
+// Offerings is the provider's catalog: one MariaDB offering. A provider may
+// list any number; each carries its own schema, contract and capabilities.
+func (m *mariaDB) Offerings(context.Context, *addonv1.OfferingsRequest) (*addonv1.OfferingsResponse, error) {
 	schema, err := structpb.NewStruct(parameters)
 	if err != nil {
 		return nil, err
 	}
-	return &addonv1.DescribeResponse{
-		Type: "mariadb", Title: "MariaDB", Description: "A MariaDB database provisioned in a separate namespace.",
+	return &addonv1.OfferingsResponse{Offerings: []*addonv1.Offering{{
+		Id: "mariadb", Title: "MariaDB", Description: "A MariaDB database provisioned in a separate namespace.",
+		Category: "database", Tags: []string{"sql", "mysql"}, DocumentationUrl: "https://mariadb.org/documentation/",
 		Protocol: "mysql", Parameters: schema, Env: env,
-		Capabilities: []string{"runtime:kubernetes", "keep-data"},
-	}, nil
+		// A disk can grow and a version can move on in place; data and
+		// credentials survive a keep-data removal.
+		Capabilities: &addonv1.Capabilities{RetainData: true, Update: true},
+	}}}, nil
 }
 
 func (m *mariaDB) validate(i *addonv1.Instance) error {
-	if i == nil || i.Runtime != "kubernetes" {
-		return status.Error(codes.InvalidArgument, "this example requires the Kubernetes runtime")
+	if i == nil || i.Kubernetes == nil {
+		return status.Error(codes.InvalidArgument, "this example requires a Kubernetes installation")
 	}
 	if i.Installation != m.installation {
 		return status.Error(codes.PermissionDenied, "unknown installation")
 	}
-	for _, value := range []string{i.Installation, i.Space, i.Name, i.Namespace} {
+	if i.Offering != "mariadb" {
+		return status.Error(codes.InvalidArgument, "unknown offering")
+	}
+	for _, value := range []string{i.Installation, i.Space, i.Name, i.Kubernetes.Namespace} {
 		if value == "" || len(validation.IsDNS1123Label(value)) != 0 {
 			return status.Error(codes.InvalidArgument, "invalid instance identity")
 		}
 	}
-	if !maps.Equal(i.ConsumerLabels, map[string]string{"donkey.local/installation": i.Installation, "donkey.local/space": i.Space}) {
+	if !maps.Equal(i.Kubernetes.ConsumerLabels, map[string]string{"donkey.local/installation": i.Installation, "donkey.local/space": i.Space}) {
 		return status.Error(codes.InvalidArgument, "consumer labels must select exactly this installation and space")
 	}
 	return nil
 }
 
 // provisionParameters reads the request's parameters. Donkey validated them
-// against Describe's schema and applied its defaults; the plugin still
+// against the offering's schema and applied its defaults; the plugin still
 // checks what it relies on, as any server should.
 func provisionParameters(request *addonv1.ProvisionRequest) (string, resource.Quantity, error) {
 	params := map[string]any{}
@@ -149,7 +157,9 @@ func instanceLabels(i *addonv1.Instance) map[string]string {
 }
 
 // Provision streams progress and ends with the result once MariaDB answers.
-func (m *mariaDB) Provision(request *addonv1.ProvisionRequest, stream addonv1.AddonPlugin_ProvisionServer) error {
+// Every reason (create, update, resume, retry) takes the same path: the
+// objects are applied idempotently and existing credentials are kept.
+func (m *mariaDB) Provision(request *addonv1.ProvisionRequest, stream addonv1.ServiceProvider_ProvisionServer) error {
 	ctx := stream.Context()
 	if request == nil {
 		return status.Error(codes.InvalidArgument, "missing request")
@@ -245,7 +255,6 @@ func (m *mariaDB) Provision(request *addonv1.ProvisionRequest, stream addonv1.Ad
 	}
 	return stream.Send(&addonv1.ProvisionEvent{Result: &addonv1.ProvisionResponse{
 		Env:        map[string]string{"DATABASE_URL": connection.String(), "MYSQL_HOST": host, "MYSQL_PORT": "3306", "MYSQL_DATABASE": "app", "MYSQL_USER": "donkey", "MYSQL_PASSWORD": password},
-		Urls:       []string{"mysql://" + host + ":3306/app"},
 		Parameters: effective,
 		Endpoints: []*addonv1.Endpoint{{Host: host, Port: databasePort, Protocol: "TCP", Target: &addonv1.Endpoint_Kubernetes{Kubernetes: &addonv1.KubernetesTarget{
 			Namespace: m.namespace, PodLabels: labels, Port: databasePort,
@@ -275,7 +284,7 @@ func (m *mariaDB) objects(i *addonv1.Instance, version string, size resource.Qua
 				PodSelector: metav1.LabelSelector{MatchLabels: labels},
 				PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
 				Ingress: []networkingv1.NetworkPolicyIngressRule{{Ports: []networkingv1.NetworkPolicyPort{{Protocol: &tcp, Port: &port}}, From: []networkingv1.NetworkPolicyPeer{
-					{NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": i.Namespace}}, PodSelector: &metav1.LabelSelector{MatchLabels: maps.Clone(i.ConsumerLabels)}},
+					{NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": i.Kubernetes.Namespace}}, PodSelector: &metav1.LabelSelector{MatchLabels: maps.Clone(i.Kubernetes.ConsumerLabels)}},
 					{NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": i.Installation}}, PodSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"donkey.local/installation": i.Installation, "donkey.local/role": "server"}}},
 				}}},
 			},

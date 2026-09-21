@@ -26,8 +26,8 @@ type Metadata struct {
 }
 
 // MetadataFor records a descriptor's identity and the parameters in use.
-func MetadataFor(desc *addonv1.DescribeResponse, params Parameters) Metadata {
-	return Metadata{Type: desc.GetType(), Protocol: NormalizeProtocol(desc.GetProtocol()), Parameters: params}
+func MetadataFor(desc *addonv1.Offering, params Parameters) Metadata {
+	return Metadata{Type: desc.GetId(), Protocol: NormalizeProtocol(desc.GetProtocol()), Parameters: params}
 }
 
 // Resolve preserves an explicit protocol, including an unknown one. Only

@@ -484,11 +484,15 @@ a JSON Schema, which the console renders as a form and the CLI takes as
 `--storage` for those two). What was chosen is recorded with the service and
 kept when it is stopped and re-added.
 
-Out-of-tree services can join this catalog through the versioned
-[gRPC addon API](pkg/addons/v1/README.md): a plugin describes its own
+Out-of-tree services join this catalog through the versioned
+[gRPC addon provider API](pkg/addons/v1/README.md): a provider lists any
+number of offerings (databases, caches, APIs…), each describing its own
 parameters the same way, streams provisioning progress, and returns app
-environment variables, connection URLs, and explicit network destinations.
-Configure `addonPlugins` in the server installation settings; the
+environment variables and explicit network destinations. Providers are only
+called when something needs them, never at startup, and every instance
+records the offering it was created with, so a provider that is down slows
+nothing but its own provisioning. Configure `addonPlugins` in the server
+installation settings; the
 [MariaDB example](examples/addon-mariadb/README.md) provisions in a separate
 namespace and works with restricted Kubernetes egress.
 

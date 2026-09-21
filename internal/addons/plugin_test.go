@@ -7,7 +7,9 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/adrianliechti/donkey/internal/config"
 	addonv1 "github.com/adrianliechti/donkey/pkg/addons/v1"
@@ -17,56 +19,35 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-type testPluginServer struct {
-	addonv1.UnimplementedAddonPluginServer
-	typ          string
-	protocol     string
-	schema       map[string]any
-	capabilities []string
-	messages     []string
-	provision    func(context.Context, *addonv1.ProvisionRequest) (*addonv1.ProvisionResponse, error)
-	deleted      chan *addonv1.DeprovisionRequest
+type testProviderServer struct {
+	addonv1.UnimplementedServiceProviderServer
+	offerings []*addonv1.Offering
+	messages  []string
+	provision func(context.Context, *addonv1.ProvisionRequest) (*addonv1.ProvisionResponse, error)
+	deleted   chan *addonv1.DeprovisionRequest
+	calls     atomic.Int32
 
-	mu          sync.Mutex
-	describeErr error
+	mu           sync.Mutex
+	offeringsErr error
 }
 
-func (s *testPluginServer) failDescribe(err error) {
+func (s *testProviderServer) failOfferings(err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.describeErr = err
+	s.offeringsErr = err
 }
 
-func (s *testPluginServer) Describe(context.Context, *addonv1.DescribeRequest) (*addonv1.DescribeResponse, error) {
+func (s *testProviderServer) Offerings(context.Context, *addonv1.OfferingsRequest) (*addonv1.OfferingsResponse, error) {
+	s.calls.Add(1)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.describeErr != nil {
-		return nil, s.describeErr
+	if s.offeringsErr != nil {
+		return nil, s.offeringsErr
 	}
-	protocol := s.protocol
-	if protocol == "" {
-		protocol = "mysql"
-	}
-	capabilities := s.capabilities
-	if capabilities == nil {
-		capabilities = []string{CapabilityKeepData}
-	}
-	desc := &addonv1.DescribeResponse{
-		Type: s.typ, Protocol: protocol, Title: "Test DB",
-		Env: []*addonv1.EnvVar{
-			{Name: "DATABASE_URL", Secret: true},
-			{Name: "MYSQL_PASSWORD", Secret: true},
-			{Name: "MYSQL_NOTE", Optional: true},
-		},
-		Capabilities: capabilities,
-	}
-	if s.schema != nil {
-		desc.Parameters = MustStruct(s.schema)
-	}
-	return desc, nil
+	return &addonv1.OfferingsResponse{Offerings: s.offerings}, nil
 }
 
-func (s *testPluginServer) Provision(req *addonv1.ProvisionRequest, stream addonv1.AddonPlugin_ProvisionServer) error {
+func (s *testProviderServer) Provision(req *addonv1.ProvisionRequest, stream addonv1.ServiceProvider_ProvisionServer) error {
 	for _, message := range s.messages {
 		if err := stream.Send(&addonv1.ProvisionEvent{Message: message}); err != nil {
 			return err
@@ -82,32 +63,58 @@ func (s *testPluginServer) Provision(req *addonv1.ProvisionRequest, stream addon
 	return stream.Send(&addonv1.ProvisionEvent{Result: result})
 }
 
-func (s *testPluginServer) Deprovision(_ context.Context, r *addonv1.DeprovisionRequest) (*addonv1.DeprovisionResponse, error) {
+func (s *testProviderServer) Deprovision(_ context.Context, r *addonv1.DeprovisionRequest) (*addonv1.DeprovisionResponse, error) {
 	s.deleted <- r
 	return &addonv1.DeprovisionResponse{}, nil
 }
 
-func startPlugin(t *testing.T, server *testPluginServer) string {
+// testOffering is a MySQL-speaking database with a version and a disk.
+func testOffering(id string) *addonv1.Offering {
+	return &addonv1.Offering{
+		Id: id, Title: "Test DB", Protocol: "mysql", Category: "database", Tags: []string{"sql"},
+		Parameters: MustStruct(versionSchema()),
+		Env: []*addonv1.EnvVar{
+			{Name: "DATABASE_URL", Secret: true},
+			{Name: "MYSQL_PASSWORD", Secret: true},
+			{Name: "MYSQL_NOTE", Optional: true},
+		},
+		Capabilities: &addonv1.Capabilities{RetainData: true, Update: true},
+	}
+}
+
+func startProvider(t *testing.T, server *testProviderServer) string {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	grpcServer := grpc.NewServer()
-	addonv1.RegisterAddonPluginServer(grpcServer, server)
+	addonv1.RegisterServiceProviderServer(grpcServer, server)
 	go grpcServer.Serve(listener)
 	t.Cleanup(grpcServer.Stop)
 	return listener.Addr().String()
 }
 
-func connectTestPlugin(t *testing.T, server *testPluginServer) *Plugin {
+// connectTestProvider registers a provider with no cache TTL and no
+// backoff, so every call sees the server's current answer.
+func connectTestProvider(t *testing.T, name string, server *testProviderServer) {
 	t.Helper()
-	closePlugins, err := ConnectPlugins(context.Background(), config.AddonPlugins{{Type: server.typ, Address: startPlugin(t, server), Insecure: true}})
+	ttl, backoff := offeringsTTL, backoffMin
+	offeringsTTL, backoffMin = 0, 0
+	t.Cleanup(func() { offeringsTTL, backoffMin = ttl, backoff })
+	closePlugins, err := ConnectPlugins(config.AddonPlugins{{Name: name, Address: startProvider(t, server), Insecure: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(closePlugins)
-	a, err := Get(server.typ)
+	if server.calls.Load() != 0 {
+		t.Fatal("registering a provider must not call it")
+	}
+}
+
+func getPlugin(t *testing.T, id string) *Plugin {
+	t.Helper()
+	a, err := Get(context.Background(), id)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,42 +130,56 @@ func versionSchema() map[string]any {
 
 func sampleProvisioning() *addonv1.ProvisionResponse {
 	return &addonv1.ProvisionResponse{
-		Env:  map[string]string{"DATABASE_URL": "mysql://donkey:secret@db.addons.svc:3306/app", "MYSQL_PASSWORD": "secret"},
-		Urls: []string{"mysql://db.addons.svc:3306/app"},
+		Env: map[string]string{"DATABASE_URL": "mysql://donkey:secret@db.addons.svc:3306/app", "MYSQL_PASSWORD": "secret"},
 		Endpoints: []*addonv1.Endpoint{{Host: "db.addons.svc", Port: 3306, Target: &addonv1.Endpoint_Kubernetes{
 			Kubernetes: &addonv1.KubernetesTarget{Namespace: "addons", PodLabels: map[string]string{"instance": "team-db"}},
 		}}},
 	}
 }
 
-func TestPluginGRPCLifecycleAndEnvironment(t *testing.T) {
+func TestProviderCatalogLifecycleAndEnvironment(t *testing.T) {
 	ctx := context.Background()
-	instance := &addonv1.Instance{Installation: "main", Space: "team", Name: "db", Runtime: "kubernetes", Namespace: "workloads"}
+	instance := &addonv1.Instance{Installation: "main", Space: "team", Name: "db", Offering: "testdb",
+		Kubernetes: &addonv1.KubernetesContext{Namespace: "workloads", ConsumerLabels: map[string]string{"space": "team"}}}
 	want := sampleProvisioning()
-	server := &testPluginServer{typ: "testdb", schema: versionSchema(), messages: []string{"creating", "waiting"}, deleted: make(chan *addonv1.DeprovisionRequest, 1),
+	api := &addonv1.Offering{Id: "testapi", Title: "Test API", Protocol: "openai", Category: "api", Shared: true,
+		Env: []*addonv1.EnvVar{{Name: "OPENAI_BASE_URL"}, {Name: "OPENAI_API_KEY", Secret: true}}}
+	server := &testProviderServer{offerings: []*addonv1.Offering{testOffering("testdb"), api}, messages: []string{"creating", "waiting"}, deleted: make(chan *addonv1.DeprovisionRequest, 1),
 		provision: func(ctx context.Context, req *addonv1.ProvisionRequest) (*addonv1.ProvisionResponse, error) {
 			if _, ok := ctx.Deadline(); !ok {
 				return nil, status.Error(codes.Internal, "missing deadline")
 			}
-			if !proto.Equal(instance, req.Instance) || req.Parameters.AsMap()[ParamVersion] != "11.8" {
-				return nil, status.Error(codes.InvalidArgument, "identity or parameters lost")
+			if !proto.Equal(instance, req.Instance) || req.Parameters.AsMap()[ParamVersion] != "11.8" || req.Reason != addonv1.ProvisionReason_PROVISION_REASON_CREATE {
+				return nil, status.Error(codes.InvalidArgument, "identity, parameters or reason lost")
 			}
 			return want, nil
 		}}
-	p := connectTestPlugin(t, server)
+	connectTestProvider(t, "acme", server)
+	// One provider, two catalog entries; the built-ins stay in front.
+	var ids []string
+	for _, a := range Types(ctx) {
+		ids = append(ids, a.Type())
+	}
+	if !reflect.DeepEqual(ids, []string{"openai", "postgres", "redis", "rustfs", "testdb", "testapi"}) {
+		t.Fatalf("catalog: %v", ids)
+	}
+	p := getPlugin(t, "testdb")
 	desc, err := p.Describe(ctx)
-	if err != nil || desc.Protocol != "mysql" || !HasCapability(desc, CapabilityKeepData) || !SupportsRuntime(desc, "docker") {
+	if err != nil || desc.Protocol != "mysql" || !desc.Capabilities.RetainData || p.Provider() != "acme" {
 		t.Fatalf("descriptor: %+v %v", desc, err)
 	}
-	if binding := p.Binding(Input{}); len(binding) != 3 || binding["DATABASE_URL"] != "" {
+	if shared, err := getPlugin(t, "testapi").Describe(ctx); err != nil || !shared.Shared {
+		t.Fatalf("second offering lost: %v", err)
+	}
+	if template := EnvTemplate(desc); len(template) != 3 || template["DATABASE_URL"] != "" {
 		t.Fatal("catalog must return keys without credentials")
 	}
-	params, err := ResolveParameters(desc.Parameters, map[string]any{ParamVersion: "11.8"})
-	if err != nil || params.String(ParamStorage) != "1Gi" {
+	params, reason, err := PlanProvision(desc, map[string]any{ParamVersion: "11.8"}, nil)
+	if err != nil || params.String(ParamStorage) != "1Gi" || reason != addonv1.ProvisionReason_PROVISION_REASON_CREATE {
 		t.Fatalf("defaults not applied: %v %v", params, err)
 	}
 	var progress []string
-	result, err := p.Provision(ctx, &addonv1.ProvisionRequest{Instance: instance, Parameters: params.Struct()}, func(m string) { progress = append(progress, m) })
+	result, err := p.Provision(ctx, &addonv1.ProvisionRequest{Instance: instance, Parameters: params.Struct(), Reason: reason}, func(m string) { progress = append(progress, m) })
 	if err != nil || !proto.Equal(result, want) {
 		t.Fatalf("provision: %v", err)
 	}
@@ -172,83 +193,149 @@ func TestPluginGRPCLifecycleAndEnvironment(t *testing.T) {
 	if app.Env["MYSQL_PASSWORD"] != config.EnvRef("db", "MYSQL_PASSWORD") || app.Env["DB_URL"] != config.EnvRef("db", "DATABASE_URL") {
 		t.Fatal("plugin env did not bind app aliases and canonical keys")
 	}
-	if err := p.Deprovision(ctx, instance, true); err != nil {
+	// Removal goes through the record's pinned offering: the provider's
+	// catalog is not consulted, even when it is gone.
+	record := &Provisioning{Type: "testdb", Provider: "acme", Instance: instance, Offering: desc, Info: result, Parameters: params}
+	server.failOfferings(status.Error(codes.Unavailable, "restarting"))
+	pinned, err := record.Plugin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pinned.Deprovision(ctx, instance, true); err != nil {
 		t.Fatal(err)
 	}
 	deletion := <-server.deleted
 	if !deletion.KeepData || !proto.Equal(deletion.Instance, instance) {
 		t.Fatal("deletion lost identity or retention request")
 	}
+	if params, reason, err := PlanProvision(desc, nil, &Provisioning{Stopped: true, Parameters: params}); err != nil || reason != addonv1.ProvisionReason_PROVISION_REASON_RESUME || params.String(ParamVersion) != "11.8" {
+		t.Fatalf("resume: %v %v %v", params, reason, err)
+	}
 }
 
-func TestPluginJoinsCatalogWhenItStartsAnswering(t *testing.T) {
-	server := &testPluginServer{typ: "lateplugin", deleted: make(chan *addonv1.DeprovisionRequest, 1)}
-	server.failDescribe(status.Error(codes.Unavailable, "still starting"))
-	p := connectTestPlugin(t, server)
+func TestProviderJoinsCatalogWhenItStartsAnswering(t *testing.T) {
+	server := &testProviderServer{offerings: []*addonv1.Offering{testOffering("latedb")}, deleted: make(chan *addonv1.DeprovisionRequest, 1)}
+	server.failOfferings(status.Error(codes.Unavailable, "still starting"))
+	connectTestProvider(t, "late", server)
 	ctx := context.Background()
-	if _, err := p.Describe(ctx); err == nil || !strings.Contains(err.Error(), "unavailable") {
-		t.Fatalf("unanswered plugin reported as available: %v", err)
+	entries := Types(ctx)
+	placeholder := entries[len(entries)-1]
+	if placeholder.Type() != "late" {
+		t.Fatalf("an unanswered provider must be listed under its name: %v", placeholder.Type())
 	}
-	if len(p.Binding(Input{})) != 0 {
-		t.Fatal("keys invented for an unknown plugin")
+	if _, err := placeholder.Describe(ctx); err == nil || !strings.Contains(err.Error(), "unavailable") {
+		t.Fatalf("unanswered provider reported as available: %v", err)
 	}
-	if _, err := p.Provision(ctx, &addonv1.ProvisionRequest{}, nil); err == nil {
-		t.Fatal("provisioned through an unavailable plugin")
+	if _, err := Get(ctx, "latedb"); err == nil {
+		t.Fatal("resolved an offering nobody has described")
 	}
-	server.failDescribe(nil)
-	old := describeTTL
-	describeTTL = 0
-	defer func() { describeTTL = old }()
-	if desc, err := p.Describe(ctx); err != nil || desc.Type != "lateplugin" {
-		t.Fatalf("plugin did not join once answering: %v", err)
+	server.failOfferings(nil)
+	p := getPlugin(t, "latedb")
+	if desc, err := p.Describe(ctx); err != nil || desc.Id != "latedb" {
+		t.Fatalf("provider did not join once answering: %v", err)
 	}
-	// A later outage keeps the last good description in the catalog.
-	server.failDescribe(status.Error(codes.Unavailable, "restarting"))
-	if desc, err := p.Describe(ctx); err != nil || desc.Type != "lateplugin" {
+	// A later outage keeps the last good catalog.
+	server.failOfferings(status.Error(codes.Unavailable, "restarting"))
+	if desc, err := p.Describe(ctx); err != nil || desc.Id != "latedb" {
 		t.Fatalf("transient outage dropped the catalog entry: %v", err)
 	}
+	if _, err := Get(ctx, "latedb"); err != nil {
+		t.Fatalf("transient outage broke resolution: %v", err)
+	}
 }
 
-func TestPluginStartupRejectsBuiltinOverridesAndDuplicates(t *testing.T) {
-	before := Types()
-	server := &testPluginServer{typ: "firstplugin"}
-	address := startPlugin(t, server)
-	if _, err := ConnectPlugins(context.Background(), config.AddonPlugins{{Type: "postgres", Address: address, Insecure: true}}); err == nil {
-		t.Fatal("plugin replaced a built-in addon")
+func TestProviderBackoffAndListingsDoNotBlockOnADeadProvider(t *testing.T) {
+	server := &testProviderServer{offerings: []*addonv1.Offering{testOffering("slowdb")}}
+	server.failOfferings(status.Error(codes.Unavailable, "down"))
+	connectTestProvider(t, "slow", server)
+	backoffMin = time.Hour
+	ctx := context.Background()
+	Types(ctx)
+	Types(ctx)
+	if _, err := Get(ctx, "slowdb"); err == nil {
+		t.Fatal("resolved through a dead provider")
 	}
-	if _, err := ConnectPlugins(context.Background(), config.AddonPlugins{
-		{Type: "firstplugin", Address: address, Insecure: true},
-		{Type: "firstplugin", Address: address, Insecure: true},
+	if calls := server.calls.Load(); calls != 1 {
+		t.Fatalf("a failing provider was probed %d times within its backoff", calls)
+	}
+	// With a cached catalog, a listing never waits: the refresh runs behind it.
+	backoffMin = 0
+	provider := providerNamed("slow")
+	provider.mu.Lock()
+	provider.nextTry = time.Time{}
+	provider.mu.Unlock()
+	server.failOfferings(nil)
+	getPlugin(t, "slowdb")
+	server.failOfferings(status.Error(codes.Unavailable, "down again"))
+	started := time.Now()
+	for range 5 {
+		Types(ctx)
+	}
+	if time.Since(started) > catalogWait {
+		t.Fatal("listing waited on a provider with a cached catalog")
+	}
+}
+
+func TestProviderRegistrationRejectsReservedAndDuplicateNames(t *testing.T) {
+	before := Types(context.Background())
+	server := &testProviderServer{offerings: []*addonv1.Offering{testOffering("firstdb")}}
+	address := startProvider(t, server)
+	if _, err := ConnectPlugins(config.AddonPlugins{{Name: "postgres", Address: address, Insecure: true}}); err == nil {
+		t.Fatal("a provider took a built-in's name")
+	}
+	if _, err := ConnectPlugins(config.AddonPlugins{
+		{Name: "first", Address: address, Insecure: true},
+		{Name: "first", Address: address, Insecure: true},
 	}); err == nil {
-		t.Fatal("accepted a duplicate type")
+		t.Fatal("accepted a duplicate name")
 	}
-	if !reflect.DeepEqual(Types(), before) {
+	if !reflect.DeepEqual(Types(context.Background()), before) {
 		t.Fatal("failed startup left partial catalog registration")
 	}
-	// A plugin answering with another type is registered under the
-	// configured name but never becomes available.
-	closePlugins, err := ConnectPlugins(context.Background(), config.AddonPlugins{{Type: "differenttype", Address: address, Insecure: true}})
-	if err != nil {
-		t.Fatal(err)
+}
+
+func TestProviderCatalogValidation(t *testing.T) {
+	ctx := context.Background()
+	for name, offerings := range map[string][]*addonv1.Offering{
+		"empty":        {},
+		"builtin id":   {testOffering("postgres")},
+		"duplicate id": {testOffering("dupdb"), testOffering("dupdb")},
+		"bad id":       {testOffering("Bad DB")},
+		"no env":       {{Id: "noenv", Title: "x", Protocol: "custom"}},
+		"missing url":  {{Id: "nourl", Title: "x", Protocol: "mysql", Env: []*addonv1.EnvVar{{Name: "MYSQL_PASSWORD"}}}},
+		"bad category": {func() *addonv1.Offering { o := testOffering("catdb"); o.Category = "Data Base"; return o }()},
+		"bad docs url": {func() *addonv1.Offering { o := testOffering("docdb"); o.DocumentationUrl = "ftp://x"; return o }()},
+		"bad schema": {func() *addonv1.Offering {
+			o := testOffering("schemadb")
+			o.Parameters = MustStruct(map[string]any{"type": "array"})
+			return o
+		}()},
+		"bad env key": {func() *addonv1.Offering { o := testOffering("envdb"); o.Env[0].Name = "DATABASE-URL"; return o }()},
+	} {
+		t.Run(name, func(t *testing.T) {
+			server := &testProviderServer{offerings: offerings}
+			connectTestProvider(t, "invalid", server)
+			entries := Types(ctx)
+			if _, err := entries[len(entries)-1].Describe(ctx); err == nil {
+				t.Fatal("accepted an invalid catalog")
+			}
+		})
 	}
-	a, err := Get("differenttype")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := a.Describe(context.Background()); err == nil {
-		t.Fatal("accepted a descriptor for another type")
-	}
-	closePlugins()
-	if _, err := Get("differenttype"); err == nil {
-		t.Fatal("shutdown left a closed plugin registered")
+	// Two providers must not offer the same id: the second answer is refused.
+	connectTestProvider(t, "one", &testProviderServer{offerings: []*addonv1.Offering{testOffering("shareddb")}})
+	getPlugin(t, "shareddb")
+	connectTestProvider(t, "two", &testProviderServer{offerings: []*addonv1.Offering{testOffering("shareddb")}})
+	if p := getPlugin(t, "shareddb"); p.Provider() != "one" {
+		t.Fatalf("offering resolved to the colliding provider %s", p.Provider())
 	}
 }
 
-func TestPluginPropagatesRPCFailures(t *testing.T) {
-	server := &testPluginServer{typ: "failedplugin", provision: func(context.Context, *addonv1.ProvisionRequest) (*addonv1.ProvisionResponse, error) {
+func TestProviderPropagatesRPCFailures(t *testing.T) {
+	server := &testProviderServer{offerings: []*addonv1.Offering{testOffering("faileddb")}, provision: func(context.Context, *addonv1.ProvisionRequest) (*addonv1.ProvisionResponse, error) {
 		return nil, status.Error(codes.Unavailable, "backend offline")
 	}}
-	p := connectTestPlugin(t, server)
+	connectTestProvider(t, "failing", server)
+	p := getPlugin(t, "faileddb")
 	if _, err := p.Provision(context.Background(), &addonv1.ProvisionRequest{}, nil); status.Code(err) != codes.Unavailable {
 		t.Fatalf("lost gRPC failure: %v", err)
 	}
@@ -263,12 +350,15 @@ func TestPluginPropagatesRPCFailures(t *testing.T) {
 	}
 }
 
-func TestPluginEnforcesEnvContractAndCapabilities(t *testing.T) {
+func TestProviderEnforcesEnvContractAndCapabilities(t *testing.T) {
 	response := sampleProvisioning()
-	server := &testPluginServer{typ: "contractplugin", capabilities: []string{}, provision: func(context.Context, *addonv1.ProvisionRequest) (*addonv1.ProvisionResponse, error) {
+	offering := testOffering("contractdb")
+	offering.Capabilities = nil
+	server := &testProviderServer{offerings: []*addonv1.Offering{offering}, provision: func(context.Context, *addonv1.ProvisionRequest) (*addonv1.ProvisionResponse, error) {
 		return response, nil
 	}}
-	p := connectTestPlugin(t, server)
+	connectTestProvider(t, "contract", server)
+	p := getPlugin(t, "contractdb")
 	ctx := context.Background()
 	if _, err := p.Provision(ctx, &addonv1.ProvisionRequest{}, nil); err != nil {
 		t.Fatal(err)
@@ -287,7 +377,15 @@ func TestPluginEnforcesEnvContractAndCapabilities(t *testing.T) {
 		t.Fatal("accepted a missing required key")
 	}
 	if err := p.Deprovision(ctx, &addonv1.Instance{}, true); err == nil || !strings.Contains(err.Error(), "does not retain data") {
-		t.Fatalf("keep_data sent to a plugin without the capability: %v", err)
+		t.Fatalf("keep_data sent to an offering without the capability: %v", err)
+	}
+	desc, _ := p.Describe(ctx)
+	ready := &Provisioning{Parameters: Parameters{ParamVersion: "11.8", ParamStorage: "1Gi"}, Info: response}
+	if _, reason, err := PlanProvision(desc, map[string]any{ParamVersion: "11.4"}, ready); err == nil || reason != addonv1.ProvisionReason_PROVISION_REASON_UPDATE {
+		t.Fatalf("changed parameters accepted without the update capability: %v", err)
+	}
+	if params, _, err := PlanProvision(desc, nil, ready); err != nil || params.String(ParamVersion) != "11.8" {
+		t.Fatalf("a repeat with unchanged parameters must pass: %v", err)
 	}
 }
 
@@ -312,7 +410,6 @@ func TestProvisioningRejectsInvalidBindingsAndNetworkDestinations(t *testing.T) 
 		"all internet": func(p *addonv1.ProvisionResponse) {
 			p.Endpoints[0].Target = &addonv1.Endpoint_Cidrs{Cidrs: &addonv1.CIDRTarget{Ranges: []string{"0.0.0.0/0"}}}
 		},
-		"invalid URL": func(p *addonv1.ProvisionResponse) { p.Urls = []string{"mysql://secret@:3306/app"} },
 	} {
 		t.Run(name, func(t *testing.T) {
 			p := sampleProvisioning()
@@ -335,8 +432,9 @@ func TestProvisioningRejectsInvalidBindingsAndNetworkDestinations(t *testing.T) 
 
 func TestProvisioningRecordRoundTripsThroughProtojson(t *testing.T) {
 	record := Provisioning{
-		Type: "mariadb", Protocol: "mysql",
-		Instance:   &addonv1.Instance{Installation: "main", Space: "team", Name: "db", Runtime: "kubernetes", Namespace: "ns", Labels: map[string]string{"owner": "x"}},
+		Type: "mariadb", Provider: "acme", Protocol: "mysql",
+		Instance:   &addonv1.Instance{Installation: "main", Space: "team", Name: "db", Offering: "mariadb", Kubernetes: &addonv1.KubernetesContext{Namespace: "ns"}, Labels: map[string]string{"owner": "x"}},
+		Offering:   testOffering("mariadb"),
 		Parameters: Parameters{ParamVersion: "11.8", "replicas": float64(2)},
 		Info:       sampleProvisioning(),
 		Error:      "last failure",
@@ -346,20 +444,26 @@ func TestProvisioningRecordRoundTripsThroughProtojson(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(raw), "sizeCache") || !strings.Contains(string(raw), `"podLabels"`) {
+	if strings.Contains(string(raw), "sizeCache") || !strings.Contains(string(raw), `"podLabels"`) || !strings.Contains(string(raw), `"retainData"`) {
 		t.Fatalf("record is not proto JSON: %s", raw)
 	}
 	var back Provisioning
 	if err := json.Unmarshal(raw, &back); err != nil {
 		t.Fatal(err)
 	}
-	if !proto.Equal(back.Instance, record.Instance) || !proto.Equal(back.Info, record.Info) || !reflect.DeepEqual(back.Parameters, record.Parameters) || back.Error != record.Error || back.Protocol != "mysql" {
+	if !proto.Equal(back.Instance, record.Instance) || !proto.Equal(back.Info, record.Info) || !proto.Equal(back.Offering, record.Offering) || !reflect.DeepEqual(back.Parameters, record.Parameters) || back.Error != record.Error || back.Protocol != "mysql" || back.Provider != "acme" {
 		t.Fatalf("round trip lost data: %+v", back)
 	}
 	if back.State() != StateFailed || (&Provisioning{Stopped: true}).State() != StateStopped || (&Provisioning{}).State() != StatePending || (&Provisioning{Info: sampleProvisioning()}).State() != StateReady {
 		t.Fatal("states misclassified")
 	}
+	if back.Reason() != addonv1.ProvisionReason_PROVISION_REASON_RETRY || (&Provisioning{Stopped: true}).Reason() != addonv1.ProvisionReason_PROVISION_REASON_RESUME || (&Provisioning{Info: sampleProvisioning()}).Reason() != addonv1.ProvisionReason_PROVISION_REASON_UPDATE || (*Provisioning)(nil).Reason() != addonv1.ProvisionReason_PROVISION_REASON_CREATE {
+		t.Fatal("reasons misclassified")
+	}
 	if host, port := back.Endpoint(); host != "db.addons.svc" || port != 3306 {
 		t.Fatal("primary endpoint lost")
+	}
+	if _, err := back.Plugin(); err == nil || !strings.Contains(err.Error(), "no longer has its provider") {
+		t.Fatalf("record resolved without its provider: %v", err)
 	}
 }

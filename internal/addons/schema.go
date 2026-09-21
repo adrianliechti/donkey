@@ -305,7 +305,7 @@ func CheckImmutable(s *structpb.Struct, previous, next Parameters) error {
 // already exist. Explicit values overlay the stored ones (so a partial
 // request keeps the rest), values the schema no longer knows are dropped,
 // defaults fill the gaps, and immutable values may not change.
-func ResolveInstanceParameters(desc *addonv1.DescribeResponse, given map[string]any, previous Parameters) (Parameters, error) {
+func ResolveInstanceParameters(desc *addonv1.Offering, given map[string]any, previous Parameters) (Parameters, error) {
 	c, err := compileSchema(desc.GetParameters())
 	if err != nil {
 		return nil, err

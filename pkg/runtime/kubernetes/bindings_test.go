@@ -32,7 +32,8 @@ func TestServiceBindingsSeparateSpacesInBothPlacements(t *testing.T) {
 					namespace, name = "workloads", space+"-postgres"
 				}
 				expected[space] = name + "." + namespace + ".svc"
-				addon, _ := addons.Get("postgres")
+				entry, _ := addons.Get(context.Background(), "postgres")
+				addon := entry.(addons.Builtin)
 				binding := addon.Binding(addons.Input{Name: "postgres", ObjectName: name, Namespace: namespace, Password: space})
 				data := map[string][]byte{}
 				for key, value := range binding {

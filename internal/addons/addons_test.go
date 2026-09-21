@@ -7,7 +7,7 @@ import (
 )
 
 // defaultParameters resolves a type's schema with no input: its defaults.
-func defaultParameters(t *testing.T, a Addon) Parameters {
+func defaultParameters(t *testing.T, a Builtin) Parameters {
 	t.Helper()
 	desc, err := a.Describe(context.Background())
 	if err != nil {
@@ -29,7 +29,8 @@ var input = Input{
 // defaults — a type whose default storage doesn't parse would fail its very
 // first provisioning.
 func TestRegistryDefaultsProvision(t *testing.T) {
-	for _, a := range Types() {
+	for _, entry := range Types(context.Background()) {
+		a := entry.(Builtin)
 		in := input
 		in.Name = a.Type()
 		in = in.WithParameters(defaultParameters(t, a))
@@ -65,14 +66,14 @@ func TestManagedAddonDefaultVersions(t *testing.T) {
 		"redis":    "7.4.11",
 		"rustfs":   "1.0.0-rc.3",
 	} {
-		if got := defaultParameters(t, registry[typ]).String(ParamVersion); got != want {
+		if got := defaultParameters(t, builtins[typ]).String(ParamVersion); got != want {
 			t.Errorf("%s default version = %q, want %q", typ, got, want)
 		}
 	}
 }
 
 func TestPostgresBindingContract(t *testing.T) {
-	a := registry["postgres"]
+	a := builtins["postgres"]
 	got := a.Binding(input)
 	// The host is the service's plain name — reachable the way siblings
 	// reach each other.
@@ -95,7 +96,7 @@ func TestManagedAddonImageRepositoryOverride(t *testing.T) {
 		"redis":    "registry.example.com/mirror/library/redis",
 		"rustfs":   "registry.example.com/mirror/rustfs/rustfs",
 	} {
-		a := registry[typ]
+		a := builtins[typ]
 		in := input
 		in.Version = defaultParameters(t, a).String(ParamVersion)
 		in.ImageRepository = repository
@@ -112,7 +113,7 @@ func TestManagedAddonImageRepositoryOverride(t *testing.T) {
 // External and provisioned bindings are freely swappable, so both must
 // speak the same set of keys.
 func TestPostgresExternalMatchesProvisioned(t *testing.T) {
-	a := registry["postgres"]
+	a := builtins["postgres"]
 	ext, err := a.ExternalBinding("postgres://u:p%40ss@db.example.com/mydb")
 	if err != nil {
 		t.Fatal(err)
@@ -143,7 +144,7 @@ func TestPostgresExternalMatchesProvisioned(t *testing.T) {
 // points at donkey-server's proxy and carries a stand-in key, never the
 // real one.
 func TestOpenAIBinding(t *testing.T) {
-	a := registry["openai"]
+	a := builtins["openai"]
 	in := input
 	in.Name = "openai"
 	in.AIProxyURL = "http://donkey-server.donkey-system.svc/ai/v1"
@@ -170,7 +171,7 @@ func TestOpenAIBinding(t *testing.T) {
 }
 
 func TestGetUnknownListsTypes(t *testing.T) {
-	_, err := Get("mariadb")
+	_, err := Get(context.Background(), "mariadb")
 	if err == nil {
 		t.Fatal("expected an error")
 	}

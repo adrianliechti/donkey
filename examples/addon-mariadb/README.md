@@ -1,8 +1,9 @@
-# MariaDB addon plugin
+# MariaDB addon provider
 
-This independent gRPC service provisions MariaDB in `donkey-addons`, separate
-from the namespaces containing Donkey apps. It imports only the public
-[addon API](../../pkg/addons/v1/README.md) module
+This independent gRPC service offers one catalog entry, `mariadb`, and
+provisions it in `donkey-addons`, separate from the namespaces containing
+Donkey apps. It imports only the public
+[addon provider API](../../pkg/addons/v1/README.md) module
 (`github.com/adrianliechti/donkey/pkg/addons`), so its code can live in
 another repository without changing Donkey. Copy the Go files into your own
 module and depend on that module plus the gRPC and Kubernetes client
@@ -14,11 +15,13 @@ credentials make repeat provisioning safe. The example runs one replica and
 serializes mutations per instance; use distributed coordination before
 scaling it.
 
-`Describe` offers two parameters: `version` (a choice of MariaDB releases)
-and `storage` (a disk size). The console renders them from that schema; the
-CLI takes `--version`, `--storage` or `--param storage=5Gi`. `Provision`
-streams progress while it applies resources and waits for readiness, and
-reports the effective size: a disk grows to what is asked but never shrinks.
+`Offerings` lists the `mariadb` offering with two parameters: `version` (a
+choice of MariaDB releases) and `storage` (a disk size). The console renders
+them from that schema; the CLI takes `--version`, `--storage` or `--param
+storage=5Gi`. `Provision` streams progress while it applies resources and
+waits for readiness, and reports the effective size: a disk grows to what is
+asked but never shrinks. The offering declares `retain_data` and `update`,
+so a removed instance can keep its disk and a running one can grow it.
 
 ## Install
 
@@ -47,7 +50,7 @@ Add this to your existing server installation settings, then run the usual
 
 ```yaml
 addonPlugins:
-  - type: mariadb
+  - name: mariadb
     address: mariadb-plugin.donkey-addons.svc:50051
     insecure: true
 kubernetes:
@@ -93,9 +96,9 @@ non-root user is `donkey`; passwords are generated once and retained with the
 data. A service that is re-added after `--keep-data` resumes with the
 parameters it was created with.
 
-The descriptor and response declare `protocol: mysql`, which selects the
-MySQL/MariaDB web editor regardless of the plugin's type or namespace.
-The response explicitly includes a `mysql://…/app` URL, host and port 3306,
+The offering declares `protocol: mysql`, which selects the MySQL/MariaDB
+web editor regardless of the provider or its namespace. The response
+includes a `mysql://…/app` connection in `DATABASE_URL`, host and port 3306,
 and a Kubernetes destination with namespace `donkey-addons` and that
 instance's pod labels. Donkey permits egress from the `shop` space to those
 pods on TCP 3306. The plugin creates the complementary ingress rule for

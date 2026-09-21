@@ -23,7 +23,7 @@ func (r *Runtime) pluginState(space, name string) (*addons.Provisioning, error) 
 		return nil, err
 	}
 	i := state.Instance
-	if i == nil || i.Installation != dockerInstallation || i.Space != space || i.Name != name || i.Runtime != "docker" || i.Namespace != netName(space) || state.Type == "" {
+	if i == nil || i.Installation != dockerInstallation || i.Space != space || i.Name != name || i.Kubernetes != nil || state.Type == "" || i.Offering != state.Type {
 		return nil, fmt.Errorf("service %s has mismatched provisioning identity", name)
 	}
 	return &state, nil
@@ -33,7 +33,7 @@ func (r *Runtime) savePluginState(space string, state *addons.Provisioning) erro
 	return r.state.writeJSON(state, "provisioning", space, state.Instance.Name+".json")
 }
 
-func (r *Runtime) provisionPlugin(ctx context.Context, space string, spec rt.ServiceSpec, plugin *addons.Plugin, desc *addonv1.DescribeResponse, previous *addons.Provisioning) (map[string]string, addons.Parameters, error) {
+func (r *Runtime) provisionPlugin(ctx context.Context, space string, spec rt.ServiceSpec, plugin *addons.Plugin, desc *addonv1.Offering, previous *addons.Provisioning) (map[string]string, addons.Parameters, error) {
 	if _, err := r.cli.ContainerInspect(ctx, ctrName(space, spec.Name)); err == nil {
 		return nil, nil, fmt.Errorf("the name %q is already taken by a local workload", spec.Name)
 	} else if !cerrdefs.IsNotFound(err) {
@@ -48,20 +48,20 @@ func (r *Runtime) provisionPlugin(ctx context.Context, space string, spec rt.Ser
 		if len(binding) != 0 {
 			return nil, nil, fmt.Errorf("remove service %s before changing its provisioner", spec.Name)
 		}
-		state = &addons.Provisioning{Type: spec.Type, Instance: &addonv1.Instance{
-			Installation: dockerInstallation, Space: space, Name: spec.Name,
-			Runtime: "docker", Namespace: netName(space),
+		state = &addons.Provisioning{Type: spec.Type, Provider: plugin.Provider(), Instance: &addonv1.Instance{
+			Installation: dockerInstallation, Space: space, Name: spec.Name, Offering: spec.Type,
 		}}
 	}
-	params, err := addons.ResolveInstanceParameters(desc, spec.Parameters, state.Parameters)
+	params, reason, err := addons.PlanProvision(desc, spec.Parameters, previous)
 	if err != nil {
 		return nil, nil, rt.UserError{Err: err}
 	}
-	state.Parameters, state.Protocol, state.Error = params, addons.NormalizeProtocol(desc.Protocol), ""
+	request := &addonv1.ProvisionRequest{Instance: state.Instance, Parameters: params.Struct(), PreviousParameters: state.Parameters.Struct(), Reason: reason}
+	state.Parameters, state.Offering, state.Protocol, state.Error = params, desc, addons.NormalizeProtocol(desc.Protocol), ""
 	if err := r.savePluginState(space, state); err != nil {
 		return nil, nil, err
 	}
-	info, err := plugin.Provision(ctx, &addonv1.ProvisionRequest{Instance: state.Instance, Parameters: params.Struct()}, nil)
+	info, err := plugin.Provision(ctx, request, nil)
 	if err != nil {
 		state.Error = failureMessage(err)
 		if saveErr := r.savePluginState(space, state); saveErr != nil {
@@ -78,7 +78,7 @@ func (r *Runtime) provisionPlugin(ctx context.Context, space string, spec rt.Ser
 			merged[k] = v
 		}
 		if params, err = addons.ResolveParameters(desc.Parameters, merged); err != nil {
-			return nil, nil, fmt.Errorf("addon plugin %s reported effective parameters its schema rejects: %w", plugin.Type(), err)
+			return nil, nil, fmt.Errorf("addon %s reported effective parameters its schema rejects: %w", plugin.Type(), err)
 		}
 	}
 	state.Info, state.Parameters, state.Stopped, state.Error = info, params, false, ""

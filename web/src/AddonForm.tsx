@@ -1,7 +1,7 @@
 import { useState, type ReactNode } from 'react'
 import { Dialog, DialogBackdrop, DialogPanel, DialogTitle } from '@headlessui/react'
 import { ArrowLeft, ChevronDown, ChevronRight } from 'lucide-react'
-import { type AddAddonRequest, type ServiceParameters } from './api'
+import { type AddAddonRequest, type AddonType, type ServiceParameters } from './api'
 import { parameterDefault, parameterFields, type Field } from './parameters'
 import { useCatalog } from './queries'
 import { serviceUI } from './serviceProtocol'
@@ -207,38 +207,57 @@ export function AddonForm({
 
   // Step 1 — the catalog, shown only when the caller didn't preselect a type
   // (the app page's "add a service"). A space's + menu skips straight past it.
+  // Entries are grouped by category, in the server's order, so a catalog of
+  // many providers still reads as one.
   if (!chosen) {
+    const categories: { name: string; entries: AddonType[] }[] = []
+    for (const t of types) {
+      const name = t.category || 'other'
+      const group = categories.find((c) => c.name === name)
+      if (group) group.entries.push(t)
+      else categories.push({ name, entries: [t] })
+    }
     return (
       <div className="flex flex-col gap-3">
-        <div className="grid gap-2 sm:grid-cols-2">
-          {types.map((t) => {
-            const { Icon } = serviceUI(t.protocol)
-            const available = t.available !== false
-            return (
-              <button
-                key={t.type}
-                type="button"
-                disabled={!available}
-                title={available ? undefined : t.error}
-                onClick={() => {
-                  setValues({})
-                  setType(t.type)
-                }}
-                className="rounded-lg border border-line bg-surface p-3 text-left transition-colors hover:border-accent/70 hover:bg-accent-soft focus-visible:outline-2 focus-visible:outline-accent-strong disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-line disabled:hover:bg-surface"
-              >
-                <div className="flex items-center gap-2">
-                  <Icon className="size-4 text-muted" aria-hidden />
-                  <span className="font-mono text-sm font-bold">{t.title || t.type}</span>
-                  <span className="font-mono text-[11px] text-muted">{parameterDefault(t, 'version')}</span>
-                </div>
-                {t.description && (
-                  <p className="mt-1.5 text-xs leading-relaxed text-ink-soft">{t.description}</p>
-                )}
-                {!available && <p className="mt-1.5 text-xs text-danger">{t.error || 'Not available right now.'}</p>}
-              </button>
-            )
-          })}
-        </div>
+        {categories.map((group) => (
+          <div key={group.name}>
+            {categories.length > 1 && (
+              <p className="mb-1.5 text-[11px] font-medium uppercase tracking-wide text-muted">{group.name}</p>
+            )}
+            <div className="grid gap-2 sm:grid-cols-2">
+              {group.entries.map((t) => {
+                const { Icon } = serviceUI(t.icon || t.protocol)
+                const available = t.available !== false
+                return (
+                  <button
+                    key={t.type}
+                    type="button"
+                    disabled={!available}
+                    title={available ? undefined : t.error}
+                    onClick={() => {
+                      setValues({})
+                      setType(t.type)
+                    }}
+                    className="rounded-lg border border-line bg-surface p-3 text-left transition-colors hover:border-accent/70 hover:bg-accent-soft focus-visible:outline-2 focus-visible:outline-accent-strong disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-line disabled:hover:bg-surface"
+                  >
+                    <div className="flex items-center gap-2">
+                      <Icon className="size-4 text-muted" aria-hidden />
+                      <span className="font-mono text-sm font-bold">{t.title || t.type}</span>
+                      <span className="font-mono text-[11px] text-muted">{parameterDefault(t, 'version')}</span>
+                    </div>
+                    {t.description && (
+                      <p className="mt-1.5 text-xs leading-relaxed text-ink-soft">{t.description}</p>
+                    )}
+                    {t.provider && (
+                      <p className="mt-1 font-mono text-[10px] text-muted">via {t.provider}</p>
+                    )}
+                    {!available && <p className="mt-1.5 text-xs text-danger">{t.error || 'Not available right now.'}</p>}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+        ))}
         <div className="flex justify-end">
           <Button kind="quiet" onClick={onCancel}>
             Cancel
@@ -251,7 +270,7 @@ export function AddonForm({
   // Step 2 — configure the chosen service: a name, and whatever its schema
   // offers. Values the person did not touch are left to the server's
   // defaults, so the request says only what was chosen.
-  const { Icon: ChosenIcon } = serviceUI(chosen.protocol)
+  const { Icon: ChosenIcon } = serviceUI(chosen.icon || chosen.protocol)
   const setValue = (field: Field, value: unknown) => setValues((v) => ({ ...v, [field.name]: value }))
   const runsSomething = Boolean(chosen.parameters?.properties?.version)
   const disk = String(values.storage ?? parameterDefault(chosen, 'storage'))

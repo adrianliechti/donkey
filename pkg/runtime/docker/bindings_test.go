@@ -85,7 +85,8 @@ func TestServiceMetadataAndAIProxyCredentials(t *testing.T) {
 func TestBindingHostRewritePreservesCredentialsAndPaths(t *testing.T) {
 	for _, kind := range []string{"postgres", "redis", "rustfs"} {
 		t.Run(kind, func(t *testing.T) {
-			addon, _ := addons.Get(kind)
+			entry, _ := addons.Get(context.Background(), kind)
+			addon := entry.(addons.Builtin)
 			host := kind + ".donkey-one.svc"
 			original := addon.Binding(addons.Input{Name: kind, Namespace: "donkey-one", Password: host})
 			got := rewriteBindingHost(original, host, ctrName("one", kind))
