@@ -27,13 +27,19 @@ type InstallFile struct {
 	// DefaultBuildkitImage) — an air-gapped installation mirrors it.
 	BuildkitImage string          `json:"buildkitImage,omitempty"`
 	Registry      InstallRegistry `json:"registry,omitempty"`
+	// BusyboxImage is the runtime toolbox used for file browsing and Docker
+	// volume initialization. Set a full image reference for a private mirror.
+	BusyboxImage string `json:"busyboxImage,omitempty"`
+	// RegistryImage is Docker's optional bundled registry image. It is only
+	// used when registry.url is omitted; default registry:3.
+	RegistryImage string `json:"registryImage,omitempty"`
 	// AddonImages names mirrored repositories for the managed services the
 	// runtime pulls itself. Build registry mirrors do not cover these images:
 	// they are not part of an app build.
 	AddonImages InstallAddonImages `json:"addonImages,omitempty"`
 	// AddonImagePullSecrets names pre-existing kubernetes.io/dockerconfigjson
-	// secrets used for managed addon images. Each secret must exist in every
-	// workload namespace where an addon can run.
+	// secrets used for managed addon and file-helper images. Each secret must
+	// exist in every workload namespace where an addon or helper can run.
 	AddonImagePullSecrets []string `json:"addonImagePullSecrets,omitempty"`
 	// Domain: apps become <app>.<space>.<domain>.
 	Domain string `json:"domain,omitempty"`
@@ -788,6 +794,35 @@ func (t InstallTLS) Validate() error {
 // privileged — the one place where "whatever the registry serves today" is
 // not good enough. The digest is the multi-platform index of v0.31.2.
 const DefaultBuildkitImage = "moby/buildkit:v0.31.2@sha256:2f5adac4ecd194d9f8c10b7b5d7bceb5186853db1b26e5abd3a657af0b7e26ec"
+
+const DefaultBusyboxImage = "busybox:1.37"
+
+const DefaultRegistryImage = "registry:3"
+
+func (f InstallFile) BundledRegistryImage() string {
+	if f.RegistryImage != "" {
+		return f.RegistryImage
+	}
+	return DefaultRegistryImage
+}
+
+func ValidateBusyboxImage(image string) error {
+	return validateRuntimeImage("busyboxImage", image)
+}
+
+func ValidateRegistryImage(image string) error {
+	return validateRuntimeImage("registryImage", image)
+}
+
+func validateRuntimeImage(field, image string) error {
+	if image == "" {
+		return nil
+	}
+	if _, err := reference.ParseNormalizedNamed(image); err != nil {
+		return fmt.Errorf("%s %q is not an image reference: %w", field, image, err)
+	}
+	return nil
+}
 
 type InstallAI struct {
 	BaseURL string `json:"baseUrl,omitempty"`

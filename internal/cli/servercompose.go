@@ -206,6 +206,8 @@ func dockerComposeFiles(settings *config.InstallFile, bundledRegistry bool) (map
 		"DONKEY_TELEMETRY_OTLP_ENDPOINT": "http://" + dockerTelemetryName + ":4318",
 		"DONKEY_DEFAULT_PLATFORM":        settings.DefaultPlatform,
 		"DONKEY_POSTGRES_IMAGE":          settings.AddonImages.Postgres,
+		"DONKEY_REDIS_IMAGE":             settings.AddonImages.Redis,
+		"DONKEY_BUSYBOX_IMAGE":           settings.BusyboxImage,
 		"DONKEY_RUSTFS_IMAGE":            settings.AddonImages.RustFS,
 		"DONKEY_OIDC_ISSUER":             settings.Auth.Issuer,
 		"DONKEY_OIDC_CLIENT_ID":          clientID,
@@ -353,7 +355,7 @@ func dockerComposeFiles(settings *config.InstallFile, bundledRegistry bool) (map
 	}
 	if bundledRegistry {
 		services["registry"] = composeService{
-			Image: dockerRegistryImage, ContainerName: dockerRegistryName,
+			Image: settings.BundledRegistryImage(), ContainerName: dockerRegistryName,
 			Volumes: []string{"registry:/var/lib/registry"},
 			Ports:   []string{"127.0.0.1:" + dockerRegistryHostPort + ":5000"},
 			Restart: "unless-stopped", Networks: []string{"donkey"},

@@ -51,6 +51,95 @@ func TestExampleInstallFileIsGeneratedTemplate(t *testing.T) {
 	}
 }
 
+func TestRuntimeImageOverridesReachBothDeploymentBundles(t *testing.T) {
+	settings := &config.InstallFile{
+		Image:        "registry.example.com/donkey-server:test",
+		BusyboxImage: "jfrog.corp/dockerhub/library/busybox:1.37",
+		AddonImages:  config.InstallAddonImages{Redis: "jfrog.corp/dockerhub/library/redis"},
+		Domain:       "apps.example.com",
+		Registry:     config.InstallRegistry{Registry: config.Registry{URL: "registry.example.com/donkey"}},
+		Auth:         config.InstallAuth{Issuer: "https://id.example.com"},
+	}
+	files, err := renderKubernetesBundle(settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if text := string(files["manifests.yaml"].Data); !strings.Contains(text, "name: DONKEY_BUSYBOX_IMAGE\n") || !strings.Contains(text, "value: "+settings.BusyboxImage) {
+		t.Fatal("Kubernetes bundle did not pass busyboxImage to donkey-server")
+	}
+	if text := string(files["manifests.yaml"].Data); !strings.Contains(text, "name: DONKEY_REDIS_IMAGE\n") || !strings.Contains(text, "value: "+settings.AddonImages.Redis) {
+		t.Fatal("Kubernetes bundle did not pass addonImages.redis to donkey-server")
+	}
+	files, err = renderDockerBundle(settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var compose composeFile
+	if err := yaml.Unmarshal(files["compose.yaml"].Data, &compose); err != nil {
+		t.Fatal(err)
+	}
+	if got := compose.Services["server"].Environment["DONKEY_BUSYBOX_IMAGE"]; got != settings.BusyboxImage {
+		t.Fatalf("Compose busyboxImage = %q", got)
+	}
+	if got := compose.Services["server"].Environment["DONKEY_REDIS_IMAGE"]; got != settings.AddonImages.Redis {
+		t.Fatalf("Compose Redis image repository = %q", got)
+	}
+	// Direct Kubernetes install uses the same input as the bundle renderer.
+	input := kubernetesSystemInput(settings, false, "", "", "session", "telemetry")
+	if input.BusyboxImage != settings.BusyboxImage {
+		t.Fatal("direct install omitted busyboxImage")
+	}
+	settings.BusyboxImage = "https://jfrog.corp/busybox:1.37"
+	if err := validateKubernetesSettings(settings); err == nil {
+		t.Fatal("Kubernetes install accepted a URL instead of an image reference")
+	}
+	if err := validateDockerSettings(settings); err == nil {
+		t.Fatal("Docker install accepted a URL instead of an image reference")
+	}
+}
+
+func TestRegistryImageUsedOnlyForBundledDockerRegistry(t *testing.T) {
+	settings := &config.InstallFile{
+		Image:  "registry.example.com/donkey-server:test",
+		Domain: "apps.example.com",
+		Auth:   config.InstallAuth{Issuer: "https://id.example.com"},
+	}
+	for _, image := range []string{"", "jfrog.corp/dockerhub/library/registry:3"} {
+		settings.RegistryImage = image
+		files, err := renderDockerBundle(settings)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var compose composeFile
+		if err := yaml.Unmarshal(files["compose.yaml"].Data, &compose); err != nil {
+			t.Fatal(err)
+		}
+		want := image
+		if want == "" {
+			want = "registry:3"
+		}
+		if got := compose.Services["registry"].Image; got != want {
+			t.Fatalf("bundled registry image = %q, want %q", got, want)
+		}
+	}
+	settings.Registry.URL = "external.example.com/donkey"
+	files, err := renderDockerBundle(settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var compose composeFile
+	if err := yaml.Unmarshal(files["compose.yaml"].Data, &compose); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := compose.Services["registry"]; exists {
+		t.Fatal("registryImage started a bundled registry despite an external registry.url")
+	}
+	settings.RegistryImage = "https://jfrog.corp/dockerhub/library/registry:3"
+	if _, err := renderDockerBundle(settings); err == nil || !strings.Contains(err.Error(), "registryImage") {
+		t.Fatalf("invalid registryImage must fail before installation: %v", err)
+	}
+}
+
 func TestKubernetesRenderOmitsEverySecretValue(t *testing.T) {
 	passwordFile := filepath.Join(t.TempDir(), "registry-password")
 	const registryPassword = "registry-password-must-not-render"

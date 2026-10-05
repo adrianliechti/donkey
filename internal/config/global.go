@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/distribution/reference"
 	"sigs.k8s.io/yaml"
 )
 
@@ -136,9 +137,31 @@ func (r Registry) Credentials() (string, string, error) {
 		return "", "", err
 	}
 	if !found {
+		// A config mounted for private mirrors may have no login for an
+		// anonymous push registry, such as Docker's bundled registry.
+		if r.Username == "" {
+			return "", "", nil
+		}
 		return "", "", fmt.Errorf("docker config directory %s has no credentials for %s", r.DockerConfigDir, r.Host())
 	}
 	return username, password, nil
+}
+
+// ImageCredentials selects credentials for a runtime image pull. The push
+// registry's password is used only on that host; other hosts must have their
+// own entry in the mounted Docker config.
+func (r Registry) ImageCredentials(image string) (host, username, password string, err error) {
+	named, err := reference.ParseNormalizedNamed(image)
+	if err != nil {
+		return "", "", "", err
+	}
+	host = reference.Domain(named)
+	if registryConfigHost(host) == registryConfigHost(r.Host()) {
+		username, password, err = r.Credentials()
+	} else if r.DockerConfigDir != "" {
+		username, password, _, err = DockerConfigDirCredentials(r.DockerConfigDir, host)
+	}
+	return host, username, password, err
 }
 
 // DockerConfigDirCredentials scans mounted Docker config files and returns the

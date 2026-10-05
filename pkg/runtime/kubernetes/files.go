@@ -20,12 +20,14 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	k8sruntime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/remotecommand"
 	utilexec "k8s.io/client-go/util/exec"
 	"k8s.io/streaming/pkg/httpstream"
 
+	"github.com/adrianliechti/donkey/internal/config"
 	rt "github.com/adrianliechti/donkey/pkg/runtime"
 	"github.com/adrianliechti/donkey/pkg/runtime/kubernetes/manifests"
 )
@@ -76,11 +78,17 @@ const (
 )
 
 var (
-	// FilesHelperImage is the image the helper pod runs. It only needs a
-	// shell-free toolbox (find, stat, cat, dd, mv, rm, mkdir); a mirror can be
-	// set here for clusters that can't reach Docker Hub.
-	FilesHelperImage = "busybox:1.37"
+	// FilesHelperImage is the default toolbox for clients without an explicit
+	// image. Installations configure their mirror through busyboxImage.
+	FilesHelperImage = config.DefaultBusyboxImage
 )
+
+func (c *Client) filesImage() string {
+	if c.busyboxImage != "" {
+		return c.busyboxImage
+	}
+	return FilesHelperImage
+}
 
 // filesHelperRef binds every command to the exact helper that was checked.
 // Names are deterministic and can be reused after deletion; the UID prevents
@@ -574,7 +582,7 @@ func (c *Client) filesHelper(ctx context.Context, namespace, objectName, space, 
 		return empty, err
 	case err == nil && c.requireOwnedObject("Pod", namespace, name, existing.Labels, expectedHelper) != nil:
 		return empty, c.requireOwnedObject("Pod", namespace, name, existing.Labels, expectedHelper)
-	case err == nil && helperUsable(existing):
+	case err == nil && helperUsable(existing, c.filesImage()):
 		return filesHelperRef{name: name, uid: existing.UID, space: space, app: app}, nil
 	case err == nil:
 		// Finished, expired or running the wrong image — clear it out first.
@@ -586,7 +594,22 @@ func (c *Client) filesHelper(ctx context.Context, namespace, objectName, space, 
 		}
 	}
 
-	pod := filesHelperPod(namespace, space, app, objectName, c.installation())
+	pod := c.filesHelperPod(namespace, space, app, objectName, c.installation())
+	if len(pod.Spec.ImagePullSecrets) == 0 {
+		host, username, password, err := c.filesRegistry.ImageCredentials(c.filesImage())
+		if err != nil {
+			return empty, err
+		}
+		if username != "" && password != "" {
+			secretName := manifests.PullSecretName(name)
+			secret := manifests.RegistryPullSecret(secretName, namespace,
+				manifests.Labels(space, app, manifests.RoleRegistryAuth), host, username, password)
+			if err := c.Apply(ctx, []k8sruntime.Object{secret}); err != nil {
+				return empty, err
+			}
+			pod.Spec.ImagePullSecrets = []corev1.LocalObjectReference{{Name: secretName}}
+		}
+	}
 	pod.Spec.Volumes[0].PersistentVolumeClaim.ClaimName = pvc.Name
 	c.pinToAppNode(ctx, namespace, objectName, space, app, pod)
 	created, err := pods.Create(ctx, pod, metav1.CreateOptions{})
@@ -608,11 +631,11 @@ func (c *Client) filesHelper(ctx context.Context, namespace, objectName, space, 
 }
 
 // helperUsable reports whether an existing helper can serve another request.
-func helperUsable(pod *corev1.Pod) bool {
+func helperUsable(pod *corev1.Pod, image string) bool {
 	if pod.DeletionTimestamp != nil || pod.Status.Phase != corev1.PodRunning {
 		return false
 	}
-	if len(pod.Spec.Containers) == 0 || pod.Spec.Containers[0].Image != FilesHelperImage {
+	if len(pod.Spec.Containers) == 0 || pod.Spec.Containers[0].Image != image {
 		return false
 	}
 	// The pod ends its own life after a while. Reusing one with less than a
@@ -672,7 +695,7 @@ func (c *Client) pinToAppNode(ctx context.Context, namespace, objectName, space,
 	pod.Spec.Tolerations = chosen.Spec.Tolerations
 }
 
-func filesHelperPod(namespace, space, app, objectName, installation string) *corev1.Pod {
+func (c *Client) filesHelperPod(namespace, space, app, objectName, installation string) *corev1.Pod {
 	nonRoot := true
 	user := int64(2000)
 	fsGroup := int64(2000)
@@ -684,6 +707,14 @@ func filesHelperPod(namespace, space, app, objectName, installation string) *cor
 
 	podLabels := manifests.Labels(space, app, manifests.RoleFiles)
 	podLabels[manifests.LabelInstallation] = installation
+	var pullSecrets []corev1.LocalObjectReference
+	seen := map[string]bool{}
+	for _, name := range c.filesImagePullSecrets {
+		if name != "" && !seen[name] {
+			pullSecrets = append(pullSecrets, corev1.LocalObjectReference{Name: name})
+			seen[name] = true
+		}
+	}
 	return &corev1.Pod{
 		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Pod"},
 		ObjectMeta: metav1.ObjectMeta{
@@ -695,6 +726,7 @@ func filesHelperPod(namespace, space, app, objectName, installation string) *cor
 			},
 		},
 		Spec: corev1.PodSpec{
+			ImagePullSecrets: pullSecrets,
 			// The helper exits on its own; nothing restarts it and nothing
 			// re-runs it, so a forgotten pod cannot hold the disk for long.
 			RestartPolicy:                 corev1.RestartPolicyNever,
@@ -714,7 +746,7 @@ func filesHelperPod(namespace, space, app, objectName, installation string) *cor
 			},
 			Containers: []corev1.Container{{
 				Name:    filesContainer,
-				Image:   FilesHelperImage,
+				Image:   c.filesImage(),
 				Command: []string{"sleep", strconv.Itoa(int(filesHelperLifetime.Seconds()))},
 				VolumeMounts: []corev1.VolumeMount{{
 					Name: "data", MountPath: filesMount,
@@ -771,12 +803,12 @@ func (c *Client) waitPodReady(ctx context.Context, namespace string, helper file
 		if err != nil {
 			return err
 		}
-		if helperUsable(pod) {
+		if helperUsable(pod, c.filesImage()) {
 			return nil
 		}
 		for _, cs := range pod.Status.ContainerStatuses {
 			if w := cs.State.Waiting; w != nil && (w.Reason == "ImagePullBackOff" || w.Reason == "ErrImagePull") {
-				return fmt.Errorf("the cluster couldn't download %s, the small image donkey uses to open a disk", FilesHelperImage)
+				return fmt.Errorf("the cluster couldn't download %s, the small image donkey uses to open a disk", c.filesImage())
 			}
 		}
 		if pod.Status.Phase == corev1.PodFailed || pod.Status.Phase == corev1.PodSucceeded {

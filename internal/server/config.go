@@ -70,8 +70,10 @@ type Config struct {
 	// AddonImages are repositories pulled directly by the runtime for managed
 	// services; BuildKit's registry mirrors do not participate in those pulls.
 	AddonImages config.InstallAddonImages
+	// BusyboxImage is pulled by the runtime for file and volume helpers.
+	BusyboxImage string
 	// AddonImagePullSecrets names existing secrets in each workload namespace
-	// that Kubernetes should use when pulling managed service images.
+	// that Kubernetes should use when pulling managed service and file-helper images.
 	AddonImagePullSecrets []string
 	// TLS carries the cert-manager issuer used for exact-host Certificates in
 	// Kubernetes. Docker's gateway issues certificates independently.
@@ -123,8 +125,10 @@ func FromEnv() (*Config, error) {
 		OIDCClientID:          os.Getenv("DONKEY_OIDC_CLIENT_ID"),
 		OIDCClientSecret:      os.Getenv("DONKEY_OIDC_CLIENT_SECRET"),
 		DefaultPlatform:       envOr("DONKEY_DEFAULT_PLATFORM", "linux/amd64"),
+		BusyboxImage:          envOr("DONKEY_BUSYBOX_IMAGE", config.DefaultBusyboxImage),
 		AddonImages: config.InstallAddonImages{
 			Postgres: os.Getenv("DONKEY_POSTGRES_IMAGE"),
+			Redis:    os.Getenv("DONKEY_REDIS_IMAGE"),
 			RustFS:   os.Getenv("DONKEY_RUSTFS_IMAGE"),
 		},
 		AddonImagePullSecrets: splitCommaSeparated(os.Getenv("DONKEY_ADDON_IMAGE_PULL_SECRETS")),
@@ -193,6 +197,9 @@ func FromEnv() (*Config, error) {
 		return nil, err
 	}
 	if err := c.AddonImages.Validate(); err != nil {
+		return nil, err
+	}
+	if err := config.ValidateBusyboxImage(c.BusyboxImage); err != nil {
 		return nil, err
 	}
 	if err := config.ValidateAddonImagePullSecrets(c.AddonImagePullSecrets); err != nil {

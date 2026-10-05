@@ -753,13 +753,17 @@ the saved generated Dockerfile itself must name an internal image prefix.
 `registryMirrors` is the transparent transport mapping and also covers
 hand-written Dockerfiles.
 
-One image is **not** covered by those mirrors: `buildkitImage`, which the
-cluster pulls itself. Mirror it by setting it directly. Managed PostgreSQL
-and RustFS instances are runtime pulls too, so point those at
-mirrored repositories explicitly (donkey appends the service version):
+Images pulled directly by the runtime use explicit overrides. Set
+`buildkitImage` for the build engine and `busyboxImage` for the file-browser
+toolbox and Docker volume initialization (default `busybox:1.37`). Docker's
+optional bundled registry uses `registryImage` (default `registry:3`), only
+when `registry.url` is omitted. Managed services use mirrored repositories
+with the service version appended:
 
 ```yaml
 buildkitImage: registry.example.com/dockerhub/moby/buildkit:v0.31.2
+busyboxImage: registry.example.com/dockerhub/library/busybox:1.37
+registryImage: registry.example.com/dockerhub/library/registry:3
 addonImages:
   redis: registry.example.com/mirror/library/redis
   postgres: registry.example.com/dockerhub/library/postgres
@@ -778,9 +782,19 @@ addonImagePullSecrets:
 ```
 
 These must be existing `kubernetes.io/dockerconfigjson` Secrets in every
-workload namespace where a managed addon can run. Donkey references them
-without reading or copying their contents; when the list is set, it replaces
+workload namespace where a managed addon or file helper can run. Donkey
+references them without reading or copying their contents; when the list is set, it replaces
 the pull secret donkey would generate from `registry.url` credentials.
+
+A separately hosted BusyBox mirror can also use its own credentials from
+`registry.dockerConfigSecret` (Kubernetes) or `registry.dockerConfigDir`
+(Docker). The Docker installer uses matching entries in `registry.dockerConfigDir`
+for `registryImage`, `buildkitImage` and `image` too; Compose pulls use Docker's
+login configuration. The BusyBox image reference travels to the server as
+`DONKEY_BUSYBOX_IMAGE` and the Redis repository as `DONKEY_REDIS_IMAGE`.
+Build startup verification uses the separate static image
+`docker.io/library/busybox:1.37-uclibc`, already covered by
+`build.registryMirrors`; `busyboxImage` only configures runtime helpers.
 
 The same-host rule also authenticates BuildKit mirrors. A separately hosted
 authenticated mirror can provide build credentials through an existing

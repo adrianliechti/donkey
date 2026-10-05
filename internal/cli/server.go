@@ -486,6 +486,12 @@ func validateKubernetesSettings(settings *config.InstallFile) error {
 	if err := settings.AddonImages.Validate(); err != nil {
 		return err
 	}
+	if err := config.ValidateBusyboxImage(settings.BusyboxImage); err != nil {
+		return err
+	}
+	if err := config.ValidateRegistryImage(settings.RegistryImage); err != nil {
+		return err
+	}
 	if err := config.ValidateAddonImagePullSecrets(settings.AddonImagePullSecrets); err != nil {
 		return err
 	}
@@ -530,6 +536,7 @@ func kubernetesSystemInput(settings *config.InstallFile, skipNamespace bool, reg
 		AIModel:                    settings.AI.Model,
 		Build:                      settings.Build,
 		AddonImages:                settings.AddonImages,
+		BusyboxImage:               settings.BusyboxImage,
 		AddonImagePullSecrets:      settings.AddonImagePullSecrets,
 		BuildkitImage:              settings.BuildkitImage,
 	}

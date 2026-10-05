@@ -16,6 +16,7 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 
+	"github.com/adrianliechti/donkey/internal/config"
 	"github.com/adrianliechti/donkey/pkg/runtime/kubernetes/manifests"
 )
 
@@ -55,6 +56,10 @@ type Client struct {
 	Dynamic   dynamic.Interface
 	Clientset k8sclient.Interface
 	Config    *rest.Config
+
+	busyboxImage          string
+	filesRegistry         config.Registry
+	filesImagePullSecrets []string
 
 	// Installation is the installation this client speaks for — the control
 	// plane's namespace, which is unique per installation by construction.

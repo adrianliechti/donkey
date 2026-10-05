@@ -101,6 +101,8 @@ type Options struct {
 	Registry config.Registry
 	// AddonImages are direct repository overrides for managed services.
 	AddonImages config.InstallAddonImages
+	// BusyboxImage runs file browsing and volume initialization helpers.
+	BusyboxImage string
 	// PullRegistry is the same registry as the Docker daemon reaches it
 	// (e.g. 127.0.0.1:5000). Image references are rewritten from the push
 	// host to this one before running. Empty means refs run as pushed.
@@ -132,6 +134,9 @@ var _ rt.Provider = (*Runtime)(nil)
 // New connects to the Docker engine (socket or DOCKER_HOST) and returns the
 // runtime.
 func New(opts Options) (*Runtime, error) {
+	if err := config.ValidateBusyboxImage(opts.BusyboxImage); err != nil {
+		return nil, err
+	}
 	if opts.StateDir == "" {
 		opts.StateDir = "/var/lib/donkey"
 	}

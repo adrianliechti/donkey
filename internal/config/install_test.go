@@ -16,11 +16,14 @@ import (
 func TestInstallFileBuildRoundTrip(t *testing.T) {
 	const in = `
 image: ghcr.io/example/donkey-server:latest
+busyboxImage: jfrog.corp/dockerhub/library/busybox:1.37
+registryImage: jfrog.corp/dockerhub/library/registry:3
 domain: example.com
 registry:
   url: registry.example.com/donkey
 addonImages:
   postgres: registry.example.com/mirror/library/postgres
+  redis: registry.example.com/mirror/library/redis
   rustfs: registry.example.com/mirror/rustfs/rustfs
 addonImagePullSecrets:
   - registry-example-com
@@ -71,7 +74,14 @@ build:
 	if got := f.Build.RegistryMirrors["docker.io"]; got != "https://artifactory.example.com/docker-remote" {
 		t.Errorf("registryMirrors[docker.io] = %q", got)
 	}
+	if f.BusyboxImage != "jfrog.corp/dockerhub/library/busybox:1.37" {
+		t.Errorf("busyboxImage = %q", f.BusyboxImage)
+	}
+	if f.RegistryImage != "jfrog.corp/dockerhub/library/registry:3" {
+		t.Errorf("registryImage = %q", f.RegistryImage)
+	}
 	if f.AddonImages.Postgres != "registry.example.com/mirror/library/postgres" ||
+		f.AddonImages.Redis != "registry.example.com/mirror/library/redis" ||
 		f.AddonImages.RustFS != "registry.example.com/mirror/rustfs/rustfs" {
 		t.Errorf("addonImages = %+v", f.AddonImages)
 	}

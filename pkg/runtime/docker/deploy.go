@@ -382,15 +382,11 @@ func (r *Runtime) pullImage(ctx context.Context, ref string) error {
 	}
 }
 
-// imagePullOptions authenticates pulls from the enterprise registry donkey
-// pushes to. Public images and unrelated registries never receive its login.
+// imagePullOptions authenticates runtime pulls with the image host's own
+// credentials, including a BusyBox mirror on a separate registry.
 func (r *Runtime) imagePullOptions(ref string) (image.PullOptions, error) {
 	var opts image.PullOptions
-	host := r.opts.Registry.Host()
-	if host == "" || !strings.HasPrefix(ref, host+"/") {
-		return opts, nil
-	}
-	username, password, err := r.opts.Registry.Credentials()
+	host, username, password, err := r.opts.Registry.ImageCredentials(ref)
 	if err != nil {
 		return opts, err
 	}
@@ -483,7 +479,8 @@ func (r *Runtime) appMounts(ctx context.Context, space, app string, spec runSpec
 // helper. World-writable is deliberate: like the Kubernetes fsGroup, it is
 // what lets an image running as any user write to its own disk.
 func (r *Runtime) initVolumeDirs(ctx context.Context, vol string, subs []string, labels map[string]string) error {
-	if err := r.pullImage(ctx, filesImage); err != nil {
+	image := r.filesImage()
+	if err := r.pullImage(ctx, image); err != nil {
 		return err
 	}
 	args := []string{"sh", "-c", ""}
@@ -498,7 +495,7 @@ func (r *Runtime) initVolumeDirs(ctx context.Context, vol string, subs []string,
 		return err
 	}
 	if _, err := r.cli.ContainerCreate(ctx, &container.Config{
-		Image:      filesImage,
+		Image:      image,
 		Entrypoint: args,
 		Labels:     labels,
 	}, &container.HostConfig{

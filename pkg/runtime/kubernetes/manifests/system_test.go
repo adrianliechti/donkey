@@ -162,12 +162,14 @@ func TestAddonImageOverridesReachServer(t *testing.T) {
 	in := systemInput()
 	in.AddonImages = config.InstallAddonImages{
 		Postgres: "reg.example.com/mirror/library/postgres",
+		Redis:    "reg.example.com/mirror/library/redis",
 		RustFS:   "reg.example.com/mirror/rustfs/rustfs",
 	}
 	in.AddonImagePullSecrets = []string{"registry-example-com", "shared-auth"}
 	out := componentNames(in)
 	for _, want := range []string{
 		"DONKEY_POSTGRES_IMAGE", in.AddonImages.Postgres,
+		"DONKEY_REDIS_IMAGE", in.AddonImages.Redis,
 		"DONKEY_RUSTFS_IMAGE", in.AddonImages.RustFS,
 		"DONKEY_ADDON_IMAGE_PULL_SECRETS", "registry-example-com,shared-auth",
 	} {
