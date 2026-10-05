@@ -105,7 +105,8 @@ or `stopped`, so they can be retried or removed from the console and the CLI.
 
 If a provider is decommissioned or keeps failing, `donkey addon remove NAME
 --space --orphan` drops Donkey's record of an instance and leaves its backing
-service to the operator. Removing a space still requires each provider to
+service to the operator without calling `Deprovision`; it cannot be combined
+with `--keep-data`. Removing a space still requires each provider to
 answer, so orphan such instances first.
 
 Provision responses and saved state contain credentials. Treat them as
@@ -267,7 +268,8 @@ regenerate bindings with `protoc`, `protoc-gen-go`, and `protoc-gen-go-grpc`
 installed:
 
 ```sh
-go generate ./pkg/addons/v1
+cd pkg/addons
+go generate ./v1
 ```
 
 The [MariaDB example](../../../examples/addon-mariadb/README.md) includes a

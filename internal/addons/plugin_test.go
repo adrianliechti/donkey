@@ -3,6 +3,7 @@ package addons
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net"
 	"reflect"
 	"strings"
@@ -18,6 +19,146 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 )
+
+type catalogClient struct {
+	addonv1.ServiceProviderClient
+	answer func(context.Context) (*addonv1.OfferingsResponse, error)
+}
+
+func (c catalogClient) Offerings(ctx context.Context, _ *addonv1.OfferingsRequest, _ ...grpc.CallOption) (*addonv1.OfferingsResponse, error) {
+	return c.answer(ctx)
+}
+
+func TestCatalogRowsDoNotWaitAgainOrChangeDuringRefresh(t *testing.T) {
+	p := &Provider{name: "slow", inflight: make(chan struct{})}
+	row := p.entries(context.Background(), 0)[0]
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if _, err := row.Describe(ctx); err == nil {
+		t.Fatal("an unanswered provider appeared available")
+	}
+	if ctx.Err() != nil {
+		t.Fatal("describing a catalog row waited for the provider a second time")
+	}
+	o := testOffering("firstdb")
+	p.offerings = []*addonv1.Offering{o}
+	row = p.entries(ctx, 0)[0]
+	resolved := p.offering(ctx, "firstdb", 0)
+	p.offerings = []*addonv1.Offering{testOffering("seconddb")}
+	if desc, err := row.Describe(ctx); err != nil || desc.Id != "firstdb" {
+		t.Fatalf("a catalog refresh changed a row already being rendered: %v %v", desc, err)
+	}
+	if desc, err := resolved.Describe(ctx); err != nil || desc.Id != "firstdb" {
+		t.Fatalf("a catalog refresh changed a resolved provisioning contract: %v %v", desc, err)
+	}
+}
+
+func TestConcurrentCatalogsCannotClaimTheSameOffering(t *testing.T) {
+	const count = 4
+	arrived, release := make(chan struct{}, count), make(chan struct{})
+	var list []*Provider
+	for n := range count {
+		offerings := []*addonv1.Offering{testOffering("collisiondb")}
+		// The shared id is checked before the rest of each catalog. Without
+		// atomic validation/publication, several providers can claim it.
+		for i := range 50 {
+			offerings = append(offerings, testOffering(fmt.Sprintf("provider%d-db%d", n, i)))
+		}
+		list = append(list, &Provider{name: fmt.Sprintf("provider%d", n), client: catalogClient{answer: func(ctx context.Context) (*addonv1.OfferingsResponse, error) {
+			arrived <- struct{}{}
+			select {
+			case <-release:
+				return &addonv1.OfferingsResponse{Offerings: offerings}, nil
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}}})
+	}
+	providersMu.Lock()
+	before := providers
+	providers = list
+	providersMu.Unlock()
+	t.Cleanup(func() {
+		providersMu.Lock()
+		providers = before
+		providersMu.Unlock()
+	})
+	var done []chan struct{}
+	for _, p := range list {
+		p.refresh(context.Background(), 0)
+		p.mu.Lock()
+		done = append(done, p.inflight)
+		p.mu.Unlock()
+	}
+	for range count {
+		<-arrived
+	}
+	close(release)
+	for _, ch := range done {
+		<-ch
+	}
+	owners := 0
+	for _, p := range list {
+		if len(p.knownIDs()) != 0 {
+			owners++
+		}
+	}
+	if owners != 1 {
+		t.Fatalf("%d providers claimed the same offering", owners)
+	}
+}
+
+func TestExistingInstanceUsesItsRecordedContract(t *testing.T) {
+	server := &testProviderServer{offerings: []*addonv1.Offering{testOffering("recordeddb")}}
+	connectTestProvider(t, "recorded", server)
+	desc := testOffering("recordeddb")
+	desc.Parameters = MustStruct(ObjectSchema(map[string]any{ParamVersion: VersionParameter("11.4", "original")}))
+	previous := &Provisioning{Type: desc.Id, Provider: "recorded", Offering: desc, Parameters: Parameters{ParamVersion: "11.4"}}
+	a, err := Lookup(context.Background(), desc.Id, previous)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := a.Describe(context.Background()); err != nil || !proto.Equal(got, desc) {
+		t.Fatalf("instance lost its recorded contract: %v %v", got, err)
+	}
+	if calls := server.calls.Load(); calls != 0 {
+		t.Fatalf("existing instance made %d catalog calls", calls)
+	}
+}
+
+func TestDeprecatedOfferingsRejectNewInstances(t *testing.T) {
+	desc := testOffering("retireddb")
+	desc.Deprecated = true
+	if _, _, err := PlanProvision(desc, nil, nil); err == nil {
+		t.Fatal("a new instance used a deprecated offering")
+	}
+	if _, _, err := PlanProvision(desc, nil, &Provisioning{Stopped: true}); err != nil {
+		t.Fatalf("an existing deprecated instance could not resume: %v", err)
+	}
+	desc.Parameters, desc.Capabilities = nil, nil
+	if _, _, err := PlanProvision(desc, nil, &Provisioning{Info: sampleProvisioning()}); err != nil {
+		t.Fatalf("an unchanged instance without parameters needs no update capability: %v", err)
+	}
+}
+
+func TestProviderValidatesEffectiveParameters(t *testing.T) {
+	response := sampleProvisioning()
+	response.Parameters = Parameters{ParamStorage: "2Gi"}.Struct()
+	server := &testProviderServer{offerings: []*addonv1.Offering{testOffering("effectivedb")}, provision: func(context.Context, *addonv1.ProvisionRequest) (*addonv1.ProvisionResponse, error) {
+		return response, nil
+	}}
+	connectTestProvider(t, "effective", server)
+	p := getPlugin(t, "effectivedb")
+	req := &addonv1.ProvisionRequest{Parameters: Parameters{ParamVersion: "11.4", ParamStorage: "1Gi"}.Struct()}
+	result, err := p.Provision(context.Background(), req, nil)
+	if err != nil || result.GetParameters().AsMap()[ParamVersion] != "11.4" || result.GetParameters().AsMap()[ParamStorage] != "2Gi" {
+		t.Fatalf("effective parameters did not overlay the request: %v %v", result, err)
+	}
+	response.Parameters = Parameters{ParamStorage: "invalid"}.Struct()
+	if _, err := p.Provision(context.Background(), req, nil); err == nil {
+		t.Fatal("accepted effective parameters rejected by the schema")
+	}
+}
 
 type testProviderServer struct {
 	addonv1.UnimplementedServiceProviderServer
@@ -106,7 +247,18 @@ func connectTestProvider(t *testing.T, name string, server *testProviderServer) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(closePlugins)
+	p := providerNamed(name)
+	t.Cleanup(func() {
+		closePlugins()
+		// A stale-cache refresh may still be recording its failure after
+		// Close. Join it before restoring the test's TTL/backoff settings.
+		p.mu.Lock()
+		done := p.inflight
+		p.mu.Unlock()
+		if done != nil {
+			<-done
+		}
+	})
 	if server.calls.Load() != 0 {
 		t.Fatal("registering a provider must not call it")
 	}
@@ -437,6 +589,7 @@ func TestProvisioningRecordRoundTripsThroughProtojson(t *testing.T) {
 		Offering:   testOffering("mariadb"),
 		Parameters: Parameters{ParamVersion: "11.8", "replicas": float64(2)},
 		Info:       sampleProvisioning(),
+		Pending:    true,
 		Error:      "last failure",
 	}
 	record.Info.Parameters = Parameters{ParamStorage: "2Gi"}.Struct()
@@ -451,7 +604,7 @@ func TestProvisioningRecordRoundTripsThroughProtojson(t *testing.T) {
 	if err := json.Unmarshal(raw, &back); err != nil {
 		t.Fatal(err)
 	}
-	if !proto.Equal(back.Instance, record.Instance) || !proto.Equal(back.Info, record.Info) || !proto.Equal(back.Offering, record.Offering) || !reflect.DeepEqual(back.Parameters, record.Parameters) || back.Error != record.Error || back.Protocol != "mysql" || back.Provider != "acme" {
+	if !proto.Equal(back.Instance, record.Instance) || !proto.Equal(back.Info, record.Info) || !proto.Equal(back.Offering, record.Offering) || !reflect.DeepEqual(back.Parameters, record.Parameters) || back.Error != record.Error || back.Protocol != "mysql" || back.Provider != "acme" || !back.Pending {
 		t.Fatalf("round trip lost data: %+v", back)
 	}
 	if back.State() != StateFailed || (&Provisioning{Stopped: true}).State() != StateStopped || (&Provisioning{}).State() != StatePending || (&Provisioning{Info: sampleProvisioning()}).State() != StateReady {
@@ -465,5 +618,26 @@ func TestProvisioningRecordRoundTripsThroughProtojson(t *testing.T) {
 	}
 	if _, err := back.Plugin(); err == nil || !strings.Contains(err.Error(), "no longer has its provider") {
 		t.Fatalf("record resolved without its provider: %v", err)
+	}
+}
+
+func TestInterruptedUpdateRetriesWithItsPreviousResult(t *testing.T) {
+	record := &Provisioning{
+		Instance:   &addonv1.Instance{Installation: "main", Space: "team", Name: "db", Offering: "db"},
+		Parameters: Parameters{ParamVersion: "11.4", ParamStorage: "1Gi"}, Info: sampleProvisioning(), Pending: true,
+	}
+	raw, err := json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var restored Provisioning
+	if err := json.Unmarshal(raw, &restored); err != nil {
+		t.Fatal(err)
+	}
+	if restored.State() != StatePending || restored.Reason() != addonv1.ProvisionReason_PROVISION_REASON_RETRY || !proto.Equal(restored.Info, record.Info) {
+		t.Fatal("an interrupted update appeared ready or lost its previous response")
+	}
+	if _, reason, err := PlanProvision(testOffering("db"), nil, &restored); err != nil || reason != addonv1.ProvisionReason_PROVISION_REASON_RETRY {
+		t.Fatalf("interrupted update did not plan a retry: %v %v", reason, err)
 	}
 }

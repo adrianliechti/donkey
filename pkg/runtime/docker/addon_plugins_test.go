@@ -129,4 +129,21 @@ func TestDockerPluginRetainsAddressesAndLifecycleState(t *testing.T) {
 	if state, err := r.pluginState("team", "db"); err != nil || state != nil {
 		t.Fatal("full deletion retained provisioning state")
 	}
+	if _, _, err := r.provisionPlugin(ctx, "team", spec, plugin, desc, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.RemoveService(ctx, "team", "db", true, true); err == nil {
+		t.Fatal("orphaning with keep-data would retain the lifecycle record")
+	}
+	if _, err := r.RemoveService(ctx, "team", "db", false, true); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-remote.deletions:
+		t.Fatal("orphaning deprovisioned the backing service")
+	default:
+	}
+	if state, err := r.pluginState("team", "db"); err != nil || state != nil {
+		t.Fatal("orphaned service retained its lifecycle record")
+	}
 }

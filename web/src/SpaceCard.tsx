@@ -416,7 +416,9 @@ function RemoveServiceDialog({
                 It is {service.state}{service.message ? `: ${service.message}` : ''}.
               </p>
             )}
-            {keepData ? (
+            {orphan ? (
+              <p className="text-muted">The backing service and its data stay with the operator. Donkey forgets this instance.</p>
+            ) : keepData ? (
               <p className="text-muted">
                 Its disk stays — adding a service with the same name later picks the data back up.
               </p>
@@ -428,6 +430,7 @@ function RemoveServiceDialog({
             <input
               type="checkbox"
               checked={keepData}
+              disabled={orphan || busy}
               onChange={(e) => setKeepData(e.target.checked)}
               className="size-3.5 accent-accent-strong"
             />
@@ -438,7 +441,11 @@ function RemoveServiceDialog({
               <input
                 type="checkbox"
                 checked={orphan}
-                onChange={(e) => setOrphan(e.target.checked)}
+                disabled={busy}
+                onChange={(e) => {
+                  setOrphan(e.target.checked)
+                  if (e.target.checked) setKeepData(false)
+                }}
                 className="size-3.5 accent-accent-strong"
               />
               Its plugin is not answering — drop donkey's record anyway and leave the backing service to the operator
@@ -451,9 +458,11 @@ function RemoveServiceDialog({
             <Button kind="danger" onClick={remove} disabled={busy}>
               {busy
                 ? 'Removing…'
-                : keepData
-                  ? `Remove ${service.name}, keep data`
-                  : `Remove ${service.name} and its data`}
+                : orphan
+                  ? `Forget ${service.name}`
+                  : keepData
+                    ? `Remove ${service.name}, keep data`
+                    : `Remove ${service.name} and its data`}
             </Button>
           </div>
         </DialogPanel>

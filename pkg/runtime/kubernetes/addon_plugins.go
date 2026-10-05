@@ -98,6 +98,7 @@ func (r *Runtime) provisionPlugin(ctx context.Context, space string, spec rt.Ser
 	// Intent first: even a lost response leaves an identity, the offering
 	// and the parameters to retry or remove with.
 	state.Parameters, state.Offering, state.Protocol, state.Error = params, desc, addons.NormalizeProtocol(desc.Protocol), ""
+	state.Pending = true
 	intent, err := r.pluginStateSecret(state)
 	if err != nil {
 		return nil, nil, err
@@ -113,19 +114,11 @@ func (r *Runtime) provisionPlugin(ctx context.Context, space string, spec rt.Ser
 		}
 		return nil, nil, err
 	}
-	if effective := addons.ParametersFrom(info.Parameters); len(effective) > 0 {
-		merged := map[string]any{}
-		for k, v := range params {
-			merged[k] = v
-		}
-		for k, v := range effective {
-			merged[k] = v
-		}
-		if params, err = addons.ResolveParameters(desc.Parameters, merged); err != nil {
-			return nil, nil, fmt.Errorf("addon %s reported effective parameters its schema rejects: %w", plugin.Type(), err)
-		}
+	if info.Parameters != nil {
+		params = addons.ParametersFrom(info.Parameters)
 	}
 	state.Info, state.Parameters, state.Stopped, state.Error = info, params, false, ""
+	state.Pending = false
 	// Retain the successful response before policy validation or application.
 	// If either fails, reconciliation and removal still have the destinations
 	// and credentials returned by the provisioner, not merely the intent.
@@ -170,19 +163,29 @@ func (r *Runtime) deletePluginEgress(ctx context.Context, space, name string) er
 // force, a plugin that is gone or failing no longer blocks: the record is
 // dropped and the backing service left to the operator.
 func (r *Runtime) deprovisionPlugin(ctx context.Context, space, name string, keepData, force bool) error {
+	if keepData && force {
+		return rt.UserError{Err: fmt.Errorf("--orphan cannot be combined with --keep-data")}
+	}
 	state, err := r.pluginState(ctx, space, name)
-	if err != nil || state == nil {
+	if err != nil {
 		return err
 	}
-	plugin, err := state.Plugin()
-	if err == nil {
-		err = plugin.Deprovision(ctx, state.Instance, keepData)
+	if state == nil {
+		if force {
+			return rt.UserError{Err: fmt.Errorf("--orphan requires a plugin-provided service")}
+		}
+		return nil
 	}
-	if err != nil {
-		if !force {
+	if force {
+		log.Printf("service %s/%s: orphaning plugin resources", space, name)
+	} else {
+		plugin, err := state.Plugin()
+		if err == nil {
+			err = plugin.Deprovision(ctx, state.Instance, keepData)
+		}
+		if err != nil {
 			return fmt.Errorf("%w — remove with --orphan to drop donkey's record and leave the backing service behind", err)
 		}
-		log.Printf("service %s/%s: orphaning plugin resources: %v", space, name, err)
 	}
 	if err := r.deletePluginEgress(ctx, space, name); err != nil {
 		return err

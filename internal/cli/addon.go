@@ -158,13 +158,16 @@ func addonRemoveCommand() *cli.Command {
 			if name == "" {
 				return fmt.Errorf("tell donkey which service — `donkey addon list` shows them")
 			}
+			if cmd.Bool("orphan") && (!cmd.Bool("space") || cmd.Bool("keep-data")) {
+				return fmt.Errorf("--orphan requires --space and cannot be combined with --keep-data")
+			}
 			api, err := s.api()
 			if err != nil {
 				return err
 			}
 			u := s.UI
 			if cmd.Bool("space") {
-				if !cmd.Bool("keep-data") {
+				if !cmd.Bool("keep-data") && !cmd.Bool("orphan") {
 					// Data deletion needs an explicit yes (or --force); --yes
 					// answers prompts with their default, which here is "no".
 					if !cmd.Bool("force") && !u.Confirm(fmt.Sprintf("Remove %s from the space AND permanently delete its data?", name), false) {

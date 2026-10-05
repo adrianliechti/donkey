@@ -16,6 +16,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"maps"
 	"slices"
 	"sort"
 	"strings"
@@ -95,13 +96,7 @@ func sampleInput(typ string) Input {
 func description(a Builtin, title, summary, category, protocol string, schema map[string]any, secrets ...string) *addonv1.Offering {
 	binding := a.Binding(sampleInput(a.Type()))
 	var env []*addonv1.EnvVar
-	for _, key := range slices.Sorted(func(yield func(string) bool) {
-		for k := range binding {
-			if !yield(k) {
-				return
-			}
-		}
-	}) {
+	for _, key := range slices.Sorted(maps.Keys(binding)) {
 		env = append(env, &addonv1.EnvVar{Name: key, Secret: slices.Contains(secrets, key)})
 	}
 	return &addonv1.Offering{
@@ -279,20 +274,11 @@ func Get(ctx context.Context, typ string) (Addon, error) {
 }
 
 // Lookup resolves the entry for a service that may already exist. An
-// instance a provider created is resolved through that provider: its live
-// offering when the provider answers, otherwise the offering recorded at
-// provisioning time — so removing, resuming or retrying an instance never
-// waits on a provider describing itself.
+// instance a provider created uses its recorded offering, so its lifecycle
+// never depends on a catalog refresh or a change to the provider's schema.
 func Lookup(ctx context.Context, typ string, previous *Provisioning) (Addon, error) {
 	if previous == nil || previous.Provider == "" {
 		return Get(ctx, typ)
-	}
-	p := providerNamed(previous.Provider)
-	if p == nil {
-		return nil, fmt.Errorf("service %s was provisioned by provider %s, which is no longer configured", previous.Instance.GetName(), previous.Provider)
-	}
-	if live := p.offering(ctx, typ, describeTimeout); live != nil {
-		return live, nil
 	}
 	return previous.Plugin()
 }

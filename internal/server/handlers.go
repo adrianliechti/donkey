@@ -767,7 +767,7 @@ func (s *Server) handleRemoveSpaceService(w http.ResponseWriter, r *http.Request
 	orphan := r.URL.Query().Get("orphan") == "true"
 	detached, err := s.rt.RemoveService(r.Context(), space, name, keepData, orphan)
 	if err != nil {
-		writeErr(w, http.StatusBadGateway, err)
+		writeErr(w, statusFor(err), err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "detached": detached})

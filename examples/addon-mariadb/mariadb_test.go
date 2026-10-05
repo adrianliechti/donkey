@@ -114,21 +114,33 @@ func TestMariaDBProvisionAndRetentionLifecycle(t *testing.T) {
 	ctx := context.Background()
 	m := testMariaDB()
 	i := testInstance("team")
-	request := &addonv1.ProvisionRequest{Instance: i, Parameters: params(t, map[string]any{"version": "11.8", "storage": "2Gi"})}
+	request := &addonv1.ProvisionRequest{Instance: i, Parameters: params(t, map[string]any{"version": "11.4", "storage": "2Gi"}), Reason: addonv1.ProvisionReason_PROVISION_REASON_CREATE}
 	first, err := provision(ctx, m, request)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if effective := first.Parameters.AsMap(); effective["storage"] != "2Gi" || effective["version"] != "11.8" {
+	if effective := first.Parameters.AsMap(); effective["storage"] != "2Gi" || effective["version"] != "11.4" {
 		t.Fatalf("effective parameters not reported: %v", effective)
 	}
+	request.Reason = addonv1.ProvisionReason_PROVISION_REASON_RETRY
+	request.PreviousParameters = first.Parameters
 	second, err := provision(ctx, m, request)
 	if err != nil || first.Env["MYSQL_PASSWORD"] != second.Env["MYSQL_PASSWORD"] {
 		t.Fatalf("repeat provisioning changed credentials: %v", err)
 	}
+	grown, err := provision(ctx, m, &addonv1.ProvisionRequest{
+		Instance: i, Parameters: params(t, map[string]any{"version": "11.4", "storage": "5Gi"}),
+		PreviousParameters: first.Parameters, Reason: addonv1.ProvisionReason_PROVISION_REASON_UPDATE,
+	})
+	if err != nil || grown.Parameters.AsMap()["storage"] != "5Gi" || grown.Env["MYSQL_PASSWORD"] != first.Env["MYSQL_PASSWORD"] {
+		t.Fatalf("update failed to grow storage while keeping credentials: %v", err)
+	}
 	// A disk never shrinks: asking for less keeps the larger volume and says so.
-	smaller, err := provision(ctx, m, &addonv1.ProvisionRequest{Instance: i, Parameters: params(t, map[string]any{"storage": "1Gi"})})
-	if err != nil || smaller.Parameters.AsMap()["storage"] != "2Gi" {
+	smaller, err := provision(ctx, m, &addonv1.ProvisionRequest{
+		Instance: i, Parameters: params(t, map[string]any{"version": "11.4", "storage": "1Gi"}),
+		PreviousParameters: grown.Parameters, Reason: addonv1.ProvisionReason_PROVISION_REASON_UPDATE,
+	})
+	if err != nil || smaller.Parameters.AsMap()["storage"] != "5Gi" {
 		t.Fatalf("volume shrank or effective size lost: %v", err)
 	}
 	u, err := url.Parse(first.Env["DATABASE_URL"])
@@ -168,9 +180,15 @@ func TestMariaDBProvisionAndRetentionLifecycle(t *testing.T) {
 			t.Fatalf("keep_data left %s running", kind)
 		}
 	}
-	recreated, err := provision(ctx, m, &addonv1.ProvisionRequest{Instance: i})
+	recreated, err := provision(ctx, m, &addonv1.ProvisionRequest{
+		Instance: i, Parameters: grown.Parameters, PreviousParameters: grown.Parameters,
+		Reason: addonv1.ProvisionReason_PROVISION_REASON_RESUME,
+	})
 	if err != nil || recreated.Env["MYSQL_PASSWORD"] != first.Env["MYSQL_PASSWORD"] {
 		t.Fatalf("retained database credentials rotated: %v", err)
+	}
+	if effective := recreated.Parameters.AsMap(); effective["storage"] != "5Gi" || effective["version"] != "11.4" {
+		t.Fatalf("resume lost the saved effective parameters: %v", effective)
 	}
 	for range 2 {
 		if _, err := m.Deprovision(ctx, &addonv1.DeprovisionRequest{Instance: i}); err != nil {

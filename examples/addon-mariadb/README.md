@@ -23,6 +23,14 @@ waits for readiness, and reports the effective size: a disk grows to what is
 asked but never shrinks. The offering declares `retain_data` and `update`,
 so a removed instance can keep its disk and a running one can grow it.
 
+All three RPCs are defined in the public [protobuf contract](../../pkg/addons/v1/addon.proto):
+`Offerings` returns the catalog, `Provision` streams progress followed by one
+ready result, and `Deprovision` removes or stops the instance. `CREATE`,
+`UPDATE`, `RESUME`, and `RETRY` use the same idempotent provisioning path.
+Donkey saves each instance's offering and parameters, so retries and resumes
+use that recorded contract without fetching the catalog again. A provider
+upgrade must continue to accept contracts used by existing instances.
+
 ## Install
 
 Build from the Donkey repository root:
@@ -82,19 +90,24 @@ space: shop
 addons:
   - type: mariadb
     name: db
-    version: "11.8"
-    storage: 1Gi
+    parameters:
+      version: "11.8"
+      storage: 1Gi
 env:
   DB_URL: ${db.DATABASE_URL}
 ```
 
-Deploy as usual. Existing apps can also use `donkey addon add mariadb --name
-db --param storage=5Gi`. Donkey injects `DATABASE_URL`, `MYSQL_HOST`,
+The top-level `version` and `storage` shorthands remain supported. Deploy as
+usual. Existing apps can also create and attach a service with
+`donkey addon add mariadb --name db --param version=11.8 --param storage=5Gi`.
+These parameters apply when the service is created; naming an existing
+service connects the app to it without changing its settings.
+Donkey injects `DATABASE_URL`, `MYSQL_HOST`,
 `MYSQL_PORT`, `MYSQL_DATABASE`, `MYSQL_USER`, and `MYSQL_PASSWORD`. `DB_URL`
 above is an optional app-specific alias. The database is `app` and the
 non-root user is `donkey`; passwords are generated once and retained with the
 data. A service that is re-added after `--keep-data` resumes with the
-parameters it was created with.
+last effective parameters, including any disk growth reported by the provider.
 
 The offering declares `protocol: mysql`, which selects the MySQL/MariaDB
 web editor regardless of the provider or its namespace. The response
@@ -113,20 +126,24 @@ Removing the service with
 `donkey addon remove db --space` invokes `Deprovision`; `--keep-data` keeps
 the volume and its credential Secret. Re-adding resumes it with the same
 password. Deleting the entire space removes its plugin instances and data.
-If the plugin itself is gone, `--orphan` drops Donkey's record and leaves the
-MariaDB resources for you to clean up.
+To stop managing an instance, including when the plugin is gone, use
+`donkey addon remove db --space --orphan`. It drops Donkey's record without
+calling `Deprovision`, leaving MariaDB resources for the operator even if
+the plugin is healthy. It cannot be combined with `--keep-data`.
 
 ## Checks
 
 From the repository root:
 
 ```sh
-go test ./internal/addons ./pkg/runtime/kubernetes/... ./examples/addon-mariadb
+go test ./internal/addons ./pkg/runtime/docker ./pkg/runtime/kubernetes/... ./examples/addon-mariadb
 ```
 
 These tests cover the gRPC lifecycle, the parameter schema, persisted
-provisioning intent and parameters, app bindings, policy selectors and
-ports, and MariaDB credential/data retention using Kubernetes API fakes. They do not prove live CNI behavior. With your
+provisioning intent and parameters, retries and resumes, app bindings, policy
+selectors and ports, orphaning without deprovisioning, and MariaDB
+credential/data retention using Kubernetes API fakes. They do not prove
+live CNI behavior. With your
 cluster, deploy an app that uses the injected credentials and verify a SQL
 query succeeds with `restrictEgress` enabled; from another space, the same
 database destination should be denied.

@@ -364,8 +364,18 @@ func TestPluginRuntimeOrphansInstanceWhosePluginIsGone(t *testing.T) {
 	if _, err := r.RemoveService(ctx, "team", "db", false, false); err == nil || !strings.Contains(err.Error(), "--orphan") {
 		t.Fatalf("a failing plugin did not point at --orphan: %v", err)
 	}
+	if _, err := r.RemoveService(ctx, "team", "db", true, true); err == nil {
+		t.Fatal("orphaning with keep-data would leave an unusable lifecycle record")
+	}
+	// Orphaning must leave resources even if the provider recovered.
+	p.failDelete.Store(false)
 	if _, err := r.RemoveService(ctx, "team", "db", false, true); err != nil {
 		t.Fatal(err)
+	}
+	select {
+	case <-p.deletions:
+		t.Fatal("orphaning deprovisioned the backing service")
+	default:
 	}
 	if state, err := r.pluginState(ctx, "team", "db"); err != nil || state != nil {
 		t.Fatal("orphaned instance kept its record")

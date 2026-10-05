@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/jsonschema-go/jsonschema"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
@@ -51,6 +52,10 @@ var (
 )
 
 var pluginEnvName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// Validate and publish catalogs together so simultaneous refreshes cannot
+// claim the same offering id. RPCs still run independently.
+var catalogsMu sync.Mutex
 
 // Provider is one configured gRPC service and its cached catalog. It is
 // only called when something needs its offerings or an instance of them:
@@ -104,6 +109,8 @@ func (p *Provider) fetch(done chan struct{}) {
 	ctx, cancel := context.WithTimeout(context.Background(), describeTimeout)
 	defer cancel()
 	resp, err := p.client.Offerings(ctx, &addonv1.OfferingsRequest{})
+	catalogsMu.Lock()
+	defer catalogsMu.Unlock()
 	if err == nil {
 		err = validateOfferings(p, resp.GetOfferings())
 	}
@@ -146,11 +153,11 @@ func (p *Provider) catalog(ctx context.Context, wait time.Duration) ([]*addonv1.
 func (p *Provider) entries(ctx context.Context, wait time.Duration) []Addon {
 	offerings, err := p.catalog(ctx, wait)
 	if err != nil {
-		return []Addon{&Plugin{provider: p, id: p.name}}
+		return []Addon{&Plugin{provider: p, id: p.name, describeErr: err}}
 	}
 	out := make([]Addon, 0, len(offerings))
 	for _, o := range offerings {
-		out = append(out, &Plugin{provider: p, id: o.Id})
+		out = append(out, &Plugin{provider: p, id: o.Id, pinned: o})
 	}
 	return out
 }
@@ -163,7 +170,7 @@ func (p *Provider) offering(ctx context.Context, id string, wait time.Duration) 
 	}
 	for _, o := range offerings {
 		if o.Id == id {
-			return &Plugin{provider: p, id: id}
+			return &Plugin{provider: p, id: id, pinned: o}
 		}
 	}
 	return nil
@@ -180,35 +187,22 @@ func (p *Provider) knownIDs() []string {
 	return ids
 }
 
-// Plugin is one offering of a provider as a catalog entry. A pinned
-// offering (recorded when an instance was provisioned) answers Describe
-// without the provider, so an instance can be removed, resumed or retried
-// while its provider is down; the provisioning call itself reports that.
+// Plugin captures one provider offering when the catalog resolves it, or
+// from an existing instance's record. The descriptor stays consistent for
+// the whole provisioning request, even if a catalog refresh changes it.
 type Plugin struct {
-	provider *Provider
-	id       string
-	pinned   *addonv1.Offering
+	provider    *Provider
+	id          string
+	pinned      *addonv1.Offering
+	describeErr error // an unavailable catalog row must not wait again
 }
 
 func (p *Plugin) Type() string     { return p.id }
 func (p *Plugin) Provider() string { return p.provider.name }
 
-// Describe answers from the provider's cached catalog, refreshing it in the
-// background when stale, or from the pinned offering.
-func (p *Plugin) Describe(ctx context.Context) (*addonv1.Offering, error) {
-	if p.pinned != nil {
-		return p.pinned, nil
-	}
-	offerings, err := p.provider.catalog(ctx, describeTimeout)
-	if err != nil {
-		return nil, err
-	}
-	for _, o := range offerings {
-		if o.Id == p.id {
-			return o, nil
-		}
-	}
-	return nil, fmt.Errorf("provider %s no longer offers %s", p.provider.name, p.id)
+// Describe never calls the provider: catalog lookup already resolved it.
+func (p *Plugin) Describe(context.Context) (*addonv1.Offering, error) {
+	return p.pinned, p.describeErr
 }
 
 // bearerToken authenticates donkey-server to a plugin. Plaintext connections
@@ -318,6 +312,7 @@ func validateOfferings(p *Provider, offerings []*addonv1.Offering) error {
 		return fmt.Errorf("Offerings returned an empty catalog")
 	}
 	seen := map[string]bool{}
+	others := allProviders()
 	for _, o := range offerings {
 		if err := validateOffering(o); err != nil {
 			return err
@@ -326,7 +321,7 @@ func validateOfferings(p *Provider, offerings []*addonv1.Offering) error {
 			return fmt.Errorf("offering id %q is a duplicate or a built-in type", o.Id)
 		}
 		seen[o.Id] = true
-		for _, other := range allProviders() {
+		for _, other := range others {
 			if other != p && slices.Contains(other.knownIDs(), o.Id) {
 				return fmt.Errorf("offering id %q is already offered by provider %s", o.Id, other.name)
 			}
@@ -418,6 +413,20 @@ func (p *Plugin) Provision(ctx context.Context, req *addonv1.ProvisionRequest, r
 	if err := ValidateBinding(desc.Protocol, result.Env); err != nil {
 		return nil, fmt.Errorf("addon %s: %w", p.id, err)
 	}
+	if result.Parameters != nil {
+		params := ParametersFrom(req.Parameters)
+		if params == nil {
+			params = Parameters{}
+		}
+		for key, value := range result.Parameters.AsMap() {
+			params[key] = value
+		}
+		params, err := ResolveParameters(desc.Parameters, params)
+		if err != nil {
+			return nil, fmt.Errorf("addon %s reported effective parameters its schema rejects: %w", p.id, err)
+		}
+		result.Parameters = params.Struct()
+	}
 	return result, nil
 }
 
@@ -466,7 +475,10 @@ type Provisioning struct {
 	// request without explicit parameters reuses them.
 	Parameters Parameters
 	Info       *addonv1.ProvisionResponse
-	Stopped    bool
+	// Pending is saved before each RPC, including updates with an old result.
+	// If the server stops before recording success, the next call is a retry.
+	Pending bool
+	Stopped bool
 	// Error is the last provisioning failure; cleared by a success.
 	Error string
 }
@@ -481,12 +493,13 @@ type provisioningJSON struct {
 	Offering   json.RawMessage `json:"offering,omitempty"`
 	Parameters Parameters      `json:"parameters,omitempty"`
 	Info       json.RawMessage `json:"info,omitempty"`
+	Pending    bool            `json:"pending,omitempty"`
 	Stopped    bool            `json:"stopped,omitempty"`
 	Error      string          `json:"error,omitempty"`
 }
 
 func (p Provisioning) MarshalJSON() ([]byte, error) {
-	out := provisioningJSON{Type: p.Type, Provider: p.Provider, Protocol: p.Protocol, Parameters: p.Parameters, Stopped: p.Stopped, Error: p.Error}
+	out := provisioningJSON{Type: p.Type, Provider: p.Provider, Protocol: p.Protocol, Parameters: p.Parameters, Pending: p.Pending, Stopped: p.Stopped, Error: p.Error}
 	var err error
 	if p.Instance != nil {
 		if out.Instance, err = protojson.Marshal(p.Instance); err != nil {
@@ -511,7 +524,7 @@ func (p *Provisioning) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &in); err != nil {
 		return err
 	}
-	*p = Provisioning{Type: in.Type, Provider: in.Provider, Protocol: in.Protocol, Parameters: in.Parameters, Stopped: in.Stopped, Error: in.Error}
+	*p = Provisioning{Type: in.Type, Provider: in.Provider, Protocol: in.Protocol, Parameters: in.Parameters, Pending: in.Pending, Stopped: in.Stopped, Error: in.Error}
 	if len(in.Instance) > 0 {
 		p.Instance = &addonv1.Instance{}
 		if err := protojson.Unmarshal(in.Instance, p.Instance); err != nil {
@@ -543,7 +556,7 @@ func (p *Provisioning) State() string {
 		return StateStopped
 	case p.Error != "":
 		return StateFailed
-	case p.Info == nil:
+	case p.Pending || p.Info == nil:
 		return StatePending
 	default:
 		return StateReady
@@ -557,7 +570,7 @@ func (p *Provisioning) Reason() addonv1.ProvisionReason {
 		return addonv1.ProvisionReason_PROVISION_REASON_CREATE
 	case p.Stopped:
 		return addonv1.ProvisionReason_PROVISION_REASON_RESUME
-	case p.Error != "" || p.Info == nil:
+	case p.Pending || p.Error != "" || p.Info == nil:
 		return addonv1.ProvisionReason_PROVISION_REASON_RETRY
 	default:
 		return addonv1.ProvisionReason_PROVISION_REASON_UPDATE
@@ -594,8 +607,11 @@ func (p *Provisioning) Plugin() (*Plugin, error) {
 // running instance may only change parameters when its offering supports
 // updates; the schema's immutable values are enforced regardless.
 func PlanProvision(desc *addonv1.Offering, given map[string]any, previous *Provisioning) (Parameters, addonv1.ProvisionReason, error) {
-	var stored Parameters
-	if previous != nil {
+	if previous == nil && desc.GetDeprecated() {
+		return nil, addonv1.ProvisionReason_PROVISION_REASON_UNSPECIFIED, fmt.Errorf("the %s offering is deprecated; only existing instances may use it", desc.GetId())
+	}
+	stored := Parameters{}
+	if previous != nil && previous.Parameters != nil {
 		stored = previous.Parameters
 	}
 	params, err := ResolveInstanceParameters(desc, given, stored)
@@ -603,28 +619,10 @@ func PlanProvision(desc *addonv1.Offering, given map[string]any, previous *Provi
 		return nil, addonv1.ProvisionReason_PROVISION_REASON_UNSPECIFIED, err
 	}
 	reason := previous.Reason()
-	if reason == addonv1.ProvisionReason_PROVISION_REASON_UPDATE && !desc.GetCapabilities().GetUpdate() && !equalParameters(stored, params) {
+	if reason == addonv1.ProvisionReason_PROVISION_REASON_UPDATE && !desc.GetCapabilities().GetUpdate() && !jsonschema.Equal(stored, params) {
 		return nil, reason, fmt.Errorf("the %s service cannot change its parameters once it exists; remove it and add it again", desc.GetId())
 	}
 	return params, reason, nil
-}
-
-func equalParameters(a, b Parameters) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for k, v := range a {
-		if !parameterEqual(v, b[k]) {
-			return false
-		}
-	}
-	return true
-}
-
-func parameterEqual(a, b any) bool {
-	x, errX := json.Marshal(a)
-	y, errY := json.Marshal(b)
-	return errX == nil && errY == nil && string(x) == string(y)
 }
 
 // ValidateProvisioning never includes response values in errors: they may

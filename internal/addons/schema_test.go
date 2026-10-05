@@ -101,6 +101,7 @@ func TestSchemaSubsetIsEnforced(t *testing.T) {
 		"nested object":    ObjectSchema(map[string]any{"limits": map[string]any{"type": "object"}}),
 		"reference":        ObjectSchema(map[string]any{"size": map[string]any{"$ref": "#/$defs/size"}}),
 		"array of objects": ObjectSchema(map[string]any{"rules": map[string]any{"type": "array", "items": map[string]any{"type": "object"}}}),
+		"array reference":  ObjectSchema(map[string]any{"rules": map[string]any{"type": "array", "items": map[string]any{"type": "string", "$ref": "#"}}}),
 		"invalid default":  ObjectSchema(map[string]any{"n": map[string]any{"type": "integer", "default": "one"}}),
 	} {
 		if err := ValidateSchema(MustStruct(schema)); err == nil {
@@ -109,5 +110,23 @@ func TestSchemaSubsetIsEnforced(t *testing.T) {
 	}
 	if err := ValidateSchema(nil); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestArrayParametersCoerceItemsAndAllowEmptyInput(t *testing.T) {
+	schema := MustStruct(ObjectSchema(map[string]any{
+		"ports": map[string]any{"type": "array", "items": map[string]any{"type": "integer"}},
+	}))
+	for _, input := range []any{"", []any{}} {
+		params, err := ResolveParameters(schema, map[string]any{"ports": input})
+		if err != nil || !reflect.DeepEqual(params["ports"], []any{}) {
+			t.Fatalf("empty array input %v: %v %v", input, params, err)
+		}
+	}
+	for _, input := range []any{"3306, 3307", []any{"3306", 3307}} {
+		params, err := ResolveParameters(schema, map[string]any{"ports": input})
+		if err != nil || !reflect.DeepEqual(params["ports"], []any{float64(3306), float64(3307)}) {
+			t.Fatalf("array items were not coerced: %v %v", params, err)
+		}
 	}
 }

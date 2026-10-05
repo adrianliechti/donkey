@@ -156,7 +156,7 @@ func compileSchema(s *structpb.Struct) (*compiled, error) {
 		}
 		typ := prop.Type
 		if typ == "array" {
-			if prop.Items == nil || !slices.Contains(scalarTypes, prop.Items.Type) {
+			if prop.Items == nil || prop.Items.Ref != "" || !slices.Contains(scalarTypes, prop.Items.Type) {
 				return nil, fmt.Errorf("parameter %s must be an array of scalars", name)
 			}
 			continue
@@ -253,11 +253,17 @@ func coerce(prop *jsonschema.Schema, value any) any {
 		}
 	case "array":
 		if s, ok := value.(string); ok {
-			var items []any
+			items := []any{}
 			for _, part := range strings.Split(s, ",") {
 				if part = strings.TrimSpace(part); part != "" {
 					items = append(items, coerce(prop.Items, part))
 				}
+			}
+			return items
+		}
+		if items, ok := value.([]any); ok {
+			for i, item := range items {
+				items[i] = coerce(prop.Items, item)
 			}
 			return items
 		}
