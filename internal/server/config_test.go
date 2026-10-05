@@ -4,6 +4,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/adrianliechti/donkey/internal/config"
 )
 
 func TestSplitCommaSeparated(t *testing.T) {
@@ -47,6 +49,36 @@ func TestRegistryMirrorSummaryIsStableAndExplicit(t *testing.T) {
 	want := "docker.io → mirror.example.com/dockerhub, ghcr.io → mirror.example.com/ghcr"
 	if got != want {
 		t.Fatalf("mirror summary = %q, want %q", got, want)
+	}
+}
+
+func TestConfigCommonOfferings(t *testing.T) {
+	t.Setenv("DONKEY_REGISTRY_URL", "push.example.com/donkey")
+	t.Setenv("DONKEY_DOMAIN", "apps.example.com")
+	t.Setenv("DONKEY_BUILDKIT_ADDR", "tcp://donkey-buildkitd:1234")
+	t.Setenv("DONKEY_SESSION_KEY", strings.Repeat("00", 32))
+	t.Setenv("DONKEY_TELEMETRY_KEY", strings.Repeat("11", 32))
+	for _, raw := range []string{"", "[]", `["postgres","redis"]`, `["bad id"]`, `["postgres","postgres"]`, `"postgres"`} {
+		t.Run(raw, func(t *testing.T) {
+			t.Setenv("DONKEY_COMMON_OFFERINGS", raw)
+			cfg, err := FromEnv()
+			invalid := raw == `["bad id"]` || raw == `["postgres","postgres"]` || raw == `"postgres"`
+			if invalid {
+				if err == nil {
+					t.Fatal("invalid common offerings accepted")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !(config.SpaceConfig{}).OfferingAllowed(cfg.CommonOfferings, "postgres") {
+				t.Fatal("valid common offering denied")
+			}
+			if (raw == "" || raw == "[]") && !(config.SpaceConfig{}).OfferingAllowed(cfg.CommonOfferings, "custom") {
+				t.Fatal("empty common offerings must allow all")
+			}
+		})
 	}
 }
 

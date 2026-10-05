@@ -53,12 +53,13 @@ func TestExampleInstallFileIsGeneratedTemplate(t *testing.T) {
 
 func TestRuntimeImageOverridesReachBothDeploymentBundles(t *testing.T) {
 	settings := &config.InstallFile{
-		Image:        "registry.example.com/donkey-server:test",
-		BusyboxImage: "jfrog.corp/dockerhub/library/busybox:1.37",
-		AddonImages:  config.InstallAddonImages{Redis: "jfrog.corp/dockerhub/library/redis"},
-		Domain:       "apps.example.com",
-		Registry:     config.InstallRegistry{Registry: config.Registry{URL: "registry.example.com/donkey"}},
-		Auth:         config.InstallAuth{Issuer: "https://id.example.com"},
+		Image:           "registry.example.com/donkey-server:test",
+		BusyboxImage:    "jfrog.corp/dockerhub/library/busybox:1.37",
+		AddonImages:     config.InstallAddonImages{Redis: "jfrog.corp/dockerhub/library/redis"},
+		CommonOfferings: config.CommonOfferings{"postgres", "redis"},
+		Domain:          "apps.example.com",
+		Registry:        config.InstallRegistry{Registry: config.Registry{URL: "registry.example.com/donkey"}},
+		Auth:            config.InstallAuth{Issuer: "https://id.example.com"},
 	}
 	files, err := renderKubernetesBundle(settings)
 	if err != nil {
@@ -69,6 +70,9 @@ func TestRuntimeImageOverridesReachBothDeploymentBundles(t *testing.T) {
 	}
 	if text := string(files["manifests.yaml"].Data); !strings.Contains(text, "name: DONKEY_REDIS_IMAGE\n") || !strings.Contains(text, "value: "+settings.AddonImages.Redis) {
 		t.Fatal("Kubernetes bundle did not pass addonImages.redis to donkey-server")
+	}
+	if text := string(files["manifests.yaml"].Data); !strings.Contains(text, "name: DONKEY_COMMON_OFFERINGS\n") || !strings.Contains(text, settings.CommonOfferings.JSON()) {
+		t.Fatal("Kubernetes bundle omitted common offerings")
 	}
 	files, err = renderDockerBundle(settings)
 	if err != nil {
@@ -84,10 +88,16 @@ func TestRuntimeImageOverridesReachBothDeploymentBundles(t *testing.T) {
 	if got := compose.Services["server"].Environment["DONKEY_REDIS_IMAGE"]; got != settings.AddonImages.Redis {
 		t.Fatalf("Compose Redis image repository = %q", got)
 	}
+	if got := compose.Services["server"].Environment["DONKEY_COMMON_OFFERINGS"]; got != settings.CommonOfferings.JSON() {
+		t.Fatal("Compose bundle omitted common offerings")
+	}
 	// Direct Kubernetes install uses the same input as the bundle renderer.
 	input := kubernetesSystemInput(settings, false, "", "", "session", "telemetry")
 	if input.BusyboxImage != settings.BusyboxImage {
 		t.Fatal("direct install omitted busyboxImage")
+	}
+	if input.CommonOfferings.JSON() != settings.CommonOfferings.JSON() {
+		t.Fatal("direct Kubernetes install omitted common offerings")
 	}
 	settings.BusyboxImage = "https://jfrog.corp/busybox:1.37"
 	if err := validateKubernetesSettings(settings); err == nil {
@@ -137,6 +147,44 @@ func TestRegistryImageUsedOnlyForBundledDockerRegistry(t *testing.T) {
 	settings.RegistryImage = "https://jfrog.corp/dockerhub/library/registry:3"
 	if _, err := renderDockerBundle(settings); err == nil || !strings.Contains(err.Error(), "registryImage") {
 		t.Fatalf("invalid registryImage must fail before installation: %v", err)
+	}
+}
+
+func TestProxyConfigurationIsPrivateInBothBundles(t *testing.T) {
+	settings := &config.InstallFile{
+		Image: "registry.example.com/donkey-server:test", Domain: "apps.example.com",
+		Registry:      config.InstallRegistry{Registry: config.Registry{URL: "registry.example.com/donkey"}},
+		Auth:          config.InstallAuth{Issuer: "https://id.example.com"},
+		ProxyServices: config.ProxyServices{{Name: "erp", TargetURL: "https://user:private-password@enterprise.local/base", ProxyURL: "http://proxy:pa$$word@proxy.local:3128"}},
+	}
+	for _, render := range []func(*config.InstallFile) (map[string]bundleFile, error){renderKubernetesBundle, renderDockerBundle} {
+		files, err := render(settings)
+		if err != nil {
+			t.Fatal(err)
+		}
+		private := files["proxy-services.json"]
+		if private.Mode != 0o600 || string(private.Data) != settings.ProxyServices.JSON() {
+			t.Fatal("proxy credentials must be preserved in a private file")
+		}
+		for name, file := range files {
+			if name != "proxy-services.json" && (strings.Contains(string(file.Data), "private-password") || strings.Contains(string(file.Data), "pa$$word")) {
+				t.Fatalf("proxy credential leaked into %s", name)
+			}
+		}
+		if manifest, ok := files["manifests.yaml"]; ok {
+			if !strings.Contains(string(manifest.Data), "name: donkey-proxy") || !strings.Contains(string(files["apply.sh"].Data), `--from-file=services.json="$bundle_dir/proxy-services.json"`) {
+				t.Fatal("Kubernetes proxy deployment or configuration Secret is missing")
+			}
+		} else {
+			var compose composeFile
+			if err := yaml.Unmarshal(files["compose.yaml"].Data, &compose); err != nil {
+				t.Fatal(err)
+			}
+			proxy := compose.Services["proxy"]
+			if proxy.ContainerName != dockerProxyName || proxy.Environment["DONKEY_PROXY_SERVICES_FILE"] != dockerProxyConfigPath || len(proxy.Ports) != 0 {
+				t.Fatal("Compose proxy is missing or publicly exposed")
+			}
+		}
 	}
 }
 

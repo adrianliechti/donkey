@@ -152,7 +152,8 @@ func (c *Client) ListAddonBindings(ctx context.Context, namespace, space, app st
 		if c.requireOwnedObject("Secret", namespace, sec.Name, sec.Labels, identity) != nil {
 			continue
 		}
-		b := rt.ServiceBindingInfo{Name: name}
+		metadata := bindingMetadata(&sec)
+		b := rt.ServiceBindingInfo{Name: name, Type: metadata.Type, Protocol: metadata.Protocol, Parameters: metadata.Parameters}
 		for k := range sec.Data {
 			b.Keys = append(b.Keys, k)
 		}
@@ -163,8 +164,9 @@ func (c *Client) ListAddonBindings(ctx context.Context, namespace, space, app st
 	return out, nil
 }
 
-// SharedBindingValues collects one key across canonical space bindings.
-func (c *Client) SharedBindingValues(ctx context.Context, key string) ([]string, error) {
+// SharedBindingValues collects a key only from canonical bindings matching
+// the expected endpoint, so another provider's credentials are never accepted.
+func (c *Client) SharedBindingValues(ctx context.Context, key, matchKey, matchValue string) ([]string, error) {
 	selector := fmt.Sprintf("%s=%s,%s=%s,%s",
 		manifests.LabelInstallation, c.installation(),
 		manifests.LabelRole, manifests.RoleBinding, manifests.LabelAddon)
@@ -182,7 +184,7 @@ func (c *Client) SharedBindingValues(ctx context.Context, key string) ([]string,
 				manifests.AddonLabels(space, addon, manifests.RoleBinding)) != nil {
 				continue
 			}
-			if v, ok := sec.Data[key]; ok && len(v) > 0 {
+			if v, ok := sec.Data[key]; ok && len(v) > 0 && string(sec.Data[matchKey]) == matchValue {
 				out = append(out, string(v))
 			}
 		}

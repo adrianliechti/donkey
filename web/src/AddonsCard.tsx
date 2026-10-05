@@ -1,18 +1,21 @@
 import { useState } from 'react'
-import { Plus } from 'lucide-react'
-import { api, type AddAddonRequest } from './api'
+import { Link2, Loader2, Unlink2 } from 'lucide-react'
+import { api, type AddAddonRequest, type SpaceAddonEntry } from './api'
 import { AddServiceDialog } from './AddonForm'
 import { useAppServices, useInvalidateServices, useSpaceServices } from './queries'
-import { Button, ErrorNote, errText, SectionTitle, Spinner } from './ui'
+import { serviceUI } from './serviceProtocol'
+import { Chip, ErrorNote, errText, IconButton, List, ListRow, Section, SectionHeader, Spinner, StateChip, SuccessNote } from './ui'
 
 /**
- * The services this app is connected to. Services belong to the space —
- * disconnecting here never deletes anything, and the space's other services
- * are one click away.
+ * The services this app can use: every service of the space in one list,
+ * each saying whether the app is connected and what it gets from it. One
+ * action per row — Connect or Disconnect. Services belong to the space, so
+ * disconnecting never deletes anything; a new one is made from the catalog.
  */
 export function AddonsCard({ space, app }: { space: string; app: string }) {
   const [adding, setAdding] = useState(false)
-  const [busy, setBusy] = useState(false)
+  // The row whose request is running — its button shows the work.
+  const [pending, setPending] = useState('')
   const [error, setError] = useState('')
   const [note, setNote] = useState('')
 
@@ -20,13 +23,24 @@ export function AddonsCard({ space, app }: { space: string; app: string }) {
   const { data: available } = useSpaceServices(space)
   const invalidate = useInvalidateServices()
 
-  const connected = new Set((addons ?? []).map((a) => a.name))
-  const others = (available ?? []).filter((s) => !connected.has(s.name))
+  const connected = new Map((addons ?? []).map((a) => [a.name, a]))
+  // One row per space service, connected ones first. A connection whose
+  // service is not in the space listing (attached by the CLI) still shows.
+  const rows: { entry: SpaceAddonEntry; keys: string[]; on: boolean }[] = [
+    ...(available ?? []).map((entry) => ({
+      entry,
+      keys: connected.get(entry.name)?.keys ?? entry.keys,
+      on: connected.has(entry.name),
+    })),
+    ...(addons ?? [])
+      .filter((a) => !(available ?? []).some((s) => s.name === a.name))
+      .map((a) => ({ entry: { ...a, attachedTo: [app] } as SpaceAddonEntry, keys: a.keys, on: true })),
+  ].sort((a, b) => Number(b.on) - Number(a.on) || a.entry.name.localeCompare(b.entry.name))
 
-  async function run(work: () => Promise<{ ok?: boolean; restarted?: boolean } | void>, doing: string) {
-    setBusy(true)
+  async function run(name: string, work: () => Promise<{ ok?: boolean; restarted?: boolean } | void>) {
+    setPending(name)
     setError('')
-    setNote(doing)
+    setNote('')
     try {
       const res = await work()
       setAdding(false)
@@ -37,92 +51,104 @@ export function AddonsCard({ space, app }: { space: string; app: string }) {
       )
       invalidate(space)
     } catch (err) {
-      setNote('')
       setError(errText(err, 'That did not work.'))
     } finally {
-      setBusy(false)
+      setPending('')
     }
   }
 
-  const create = (req: AddAddonRequest) =>
-    run(
-      () => api.addAddon(space, app, req),
-      req.external ? '' : 'Setting up — the first time can take a minute while the cluster downloads the image.',
-    )
+  const create = (req: AddAddonRequest) => run(req.name ?? req.type ?? 'new', () => api.addAddon(space, app, req))
+  const loading = addons === null && !loadError
 
   return (
-    <section className="border-t border-line pt-5">
-      <div className="flex items-center justify-between gap-2">
-        <SectionTitle>Connected services</SectionTitle>
-        <Button kind="quiet" onClick={() => setAdding(true)}>
-          <span className="flex items-center gap-1">
-            <Plus className="size-3.5" aria-hidden /> Add a service
-          </span>
-        </Button>
-      </div>
+    <Section className="space-y-3">
+      <SectionHeader
+        title="Services"
+        description="Connecting injects the service's variables and restarts the app. Services belong to the space — disconnecting deletes nothing."
+        actions={
+          <button
+            type="button"
+            onClick={() => setAdding(true)}
+            className="rounded px-1 text-xs text-muted underline-offset-2 transition-colors hover:text-ink hover:underline focus-visible:outline-2 focus-visible:outline-accent-strong"
+          >
+            New service
+          </button>
+        }
+      />
       <ErrorNote message={error || loadError} />
-      {note && <p className="mt-2 text-xs text-ink-soft">{note}</p>}
-      {addons === null && !error && <Spinner label="Loading…" />}
-      {addons !== null && addons.length === 0 && (
-        <p className="mt-2 text-sm text-muted">Not connected to any service yet.</p>
+      {loading && <Spinner label="Loading…" />}
+      {!loading && rows.length === 0 && (
+        <p className="text-sm text-muted">
+          This space has no services yet. Make one with New service — it will be connected to {app}.
+        </p>
       )}
-      <ul className="mt-2 space-y-3">
-        {(addons ?? []).map((a) => (
-          <li key={a.name} className="border-b border-line/40 pb-3 last:border-0 last:pb-0">
-            {/* The button holds its corner whatever the key list does below —
-                nine postgres keys and one URL lay out the same way. */}
-            <div className="flex items-center justify-between gap-2">
-              <span className="font-mono text-sm font-medium">{a.name}</span>
-              <Button
-                kind="quiet"
-                disabled={busy}
-                onClick={() => run(() => api.removeAddon(space, app, a.name), '')}
+      {rows.length > 0 && (
+        // The same quiet table as the variables: one row per service, the
+        // variables it brings as chips, and the one action as an icon.
+        <List>
+          {rows.map(({ entry, keys, on }) => {
+            const { Icon } = serviceUI(entry.protocol)
+            const unready = Boolean(entry.state && entry.state !== 'ready')
+            const busy = pending === entry.name
+            return (
+              <ListRow
+                key={entry.name}
+                actions={
+                  busy ? (
+                    <span className="flex size-7 items-center justify-center text-muted">
+                      <Loader2 className="size-3.5 animate-spin" aria-hidden />
+                    </span>
+                  ) : on ? (
+                    <IconButton
+                      icon={Unlink2}
+                      size="sm"
+                      kind="danger"
+                      label={`Disconnect ${entry.name}`}
+                      disabled={pending !== ''}
+                      onClick={() => run(entry.name, () => api.removeAddon(space, app, entry.name))}
+                    />
+                  ) : (
+                    <IconButton
+                      icon={Link2}
+                      size="sm"
+                      label={`Connect ${entry.name}`}
+                      disabled={pending !== '' || unready}
+                      onClick={() => run(entry.name, () => api.addAddon(space, app, { name: entry.name }))}
+                    />
+                  )
+                }
               >
-                Disconnect
-              </Button>
-            </div>
-            <div className="mt-1.5 flex flex-wrap gap-1">
-              {a.keys.map((k) => (
-                <span
-                  key={k}
-                  className="rounded bg-raised px-1.5 py-0.5 font-mono text-[10px] text-muted"
-                >
-                  {k}
-                </span>
-              ))}
-            </div>
-          </li>
-        ))}
-      </ul>
-      {others.length > 0 && (
-        <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-line pt-3">
-          <span className="text-xs text-muted">Also in this space:</span>
-          {others.map((s) => (
-            <Button
-              key={s.name}
-              kind="quiet"
-              disabled={busy}
-              onClick={() => run(() => api.addAddon(space, app, { name: s.name }), '')}
-            >
-              <span className="font-mono text-xs">Connect {s.name}</span>
-            </Button>
-          ))}
-        </div>
+                <Icon className={`size-4 shrink-0 ${on ? 'text-ink-soft' : 'text-muted/60'}`} aria-hidden />
+                <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1">
+                  <span className={`font-mono text-sm ${on ? 'text-ink' : 'text-muted'}`}>{entry.name}</span>
+                  {entry.type && entry.type !== entry.name && (
+                    <span className="font-mono text-[11px] text-muted">{entry.type}</span>
+                  )}
+                  {unready && <StateChip state={entry.state!} />}
+                  {!on && !unready && <span className="text-xs text-muted">not connected</span>}
+                  {keys.length > 0 && (
+                    <span className="flex flex-wrap gap-1" title={on ? 'Variables the app receives' : 'Variables the app would receive'}>
+                      {keys.map((k) => <Chip key={k} dashed={!on}>{k}</Chip>)}
+                    </span>
+                  )}
+                </div>
+              </ListRow>
+            )
+          })}
+        </List>
       )}
+      <SuccessNote message={note} />
       <AddServiceDialog
+        space={space}
         open={adding}
-        title="Add a service"
-        submitLabel="Add and connect"
-        busy={busy}
+        title="New service"
+        submitLabel="Create and connect"
+        busy={pending !== ''}
         error={error}
-        note={busy ? note : ''}
+        note={pending ? 'Setting up — the first time can take a minute while the cluster downloads the image.' : ''}
         onSubmit={create}
         onClose={() => setAdding(false)}
       />
-      <p className="mt-3 text-xs text-muted">
-        The variables above are injected into the app. Services belong to the space — disconnecting
-        deletes nothing, and the space card manages the services themselves.
-      </p>
-    </section>
+    </Section>
   )
 }

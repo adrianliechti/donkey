@@ -1,20 +1,33 @@
 import { useState } from 'react'
 import { KeyRound, Plus, UserRound, Users, X } from 'lucide-react'
 import type { AccessConfig } from './api'
-import { Select } from './ui'
+import { IconButton, Input, List, ListRow, Select } from './ui'
 
 type Kind = 'users' | 'groups' | 'roles'
 type Role = 'admin' | 'developer'
 type Member = { kind: Kind; value: string; role: Role }
 const kinds = ['users', 'groups', 'roles'] as const
 const labels = { users: 'User', groups: 'Group', roles: 'IdP role' }
+const placeholders = { users: 'name@example.com', groups: 'engineering', roles: 'role from your identity provider' }
+// Without developers the list has one role, so no role column.
 const icons = { users: UserRound, groups: Users, roles: KeyRound }
-const field = 'min-w-0 rounded-md border border-line bg-surface px-2.5 py-2 text-sm focus:outline-2 focus:outline-accent-strong'
+const roleOptions: { value: Role; label: string }[] = [
+  { value: 'developer', label: 'Developer' },
+  { value: 'admin', label: 'Space admin' },
+]
 
-export function MembershipEditor({ admins, developers, onChange }: {
+/**
+ * Who has access, as one list: each member with its kind and role, and an
+ * add row at the bottom in the same shape — pick the kind, type the name,
+ * pick the role, add. Roles are quiet dropdowns, so the list reads as names
+ * first; removing is the row's hover action.
+ */
+export function MembershipEditor({ admins, developers, onChange, emptyText = 'No members yet. Platform admins always have access.' }: {
   admins: AccessConfig
   developers?: AccessConfig
   onChange: (admins: AccessConfig, developers: AccessConfig) => void
+  /** What an empty list means where the editor is used. */
+  emptyText?: string
 }) {
   const [kind, setKind] = useState<Kind>('users')
   const [value, setValue] = useState('')
@@ -41,51 +54,46 @@ export function MembershipEditor({ admins, developers, onChange }: {
     setValue('')
   }
 
+  const KindIcon = icons[kind]
+
   return (
-    <div className="space-y-3">
-      {members.length > 0 && <ul className="divide-y divide-line rounded-lg border border-line">
+    <div className="space-y-2">
+      <List>
+        {members.length === 0 && (
+          <ListRow><span className="text-sm text-muted">{emptyText}</span></ListRow>
+        )}
         {members.map((member, index) => {
           const Icon = icons[member.kind]
           return (
-            <li key={`${member.kind}:${member.value}:${member.role}`} className="flex items-center gap-2.5 px-3 py-2.5">
-              <Icon className="size-4 shrink-0 text-muted" aria-hidden />
-              <div className="min-w-0 flex-1">
-                <p className="truncate text-sm" title={member.value}>{member.value}</p>
-                <p className="text-[11px] text-muted">{labels[member.kind]}</p>
-              </div>
-              {developers && <Select<Role> ariaLabel={`Role for ${member.value}`} value={member.role} size="sm"
-                onChange={(role) => update(members.map((m, i) => i === index ? { ...m, role } : m))}
-                options={[{ value: 'developer', label: 'Developer' }, { value: 'admin', label: 'Space admin' }]} />}
-              <button type="button" onClick={() => update(members.filter((_, i) => i !== index))}
-                aria-label={`Remove ${member.value}`} className="rounded p-1 text-muted hover:bg-raised hover:text-danger">
-                <X className="size-3.5" aria-hidden />
-              </button>
-            </li>
+            <ListRow key={`${member.kind}:${member.value}:${member.role}`} actions={
+              <IconButton icon={X} size="sm" kind="danger" label={`Remove ${member.value}`}
+                onClick={() => update(members.filter((_, i) => i !== index))} />
+            }>
+              {/* The icon says what kind of member this is; a tooltip spells it out. */}
+              <Icon className="size-4 shrink-0 text-muted" aria-label={labels[member.kind]} />
+              <span className="min-w-0 flex-1 truncate text-sm" title={`${member.value} · ${labels[member.kind]}`}>{member.value}</span>
+              {developers && (
+                <Select<Role> variant="quiet" ariaLabel={`Role for ${member.value}`} value={member.role}
+                  onChange={(role) => update(members.map((m, i) => (i === index ? { ...m, role } : m)))}
+                  options={roleOptions} className="w-32" />
+              )}
+            </ListRow>
           )
         })}
-      </ul>}
-      <div className="rounded-lg border border-line bg-surface/40 p-3">
-        <div className="flex gap-2">
-          <Select<Kind> ariaLabel="Member type" value={kind} onChange={setKind}
-            options={kinds.map((kind) => ({ value: kind, label: labels[kind] }))} />
-          <input aria-label="Member identity" value={value} onChange={(e) => setValue(e.target.value)}
-            placeholder={kind === 'users' ? 'name@example.com' : kind === 'groups' ? 'engineering' : 'Role from your identity provider'}
-            autoCapitalize="none" spellCheck={false} className={`${field} flex-1`}
+        {/* The add row: the same shape as a member row, before it exists. */}
+        <ListRow className="bg-surface/40" actions={<IconButton icon={Plus} size="sm" label="Add member" onClick={add} disabled={!value.trim()} />}>
+          <KindIcon className="size-4 shrink-0 text-muted" aria-hidden />
+          <Select<Kind> variant="quiet" ariaLabel="Member type" value={kind} onChange={setKind}
+            options={kinds.map((kind) => ({ value: kind, label: labels[kind] }))} className="w-20 shrink-0" />
+          <Input bare aria-label="Member identity" value={value} onChange={(e) => setValue(e.target.value)}
+            placeholder={placeholders[kind]} autoCapitalize="none" spellCheck={false} className="flex-1 font-sans"
             onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); add() } }} />
-        </div>
-        <div className="mt-2 flex items-center justify-between gap-3">
-          {developers ? <label className="flex items-center gap-2 text-xs text-muted">
-            Access
-            <Select<Role> ariaLabel="New member role" value={role} onChange={setRole} size="sm"
-              options={[{ value: 'developer', label: 'Developer' }, { value: 'admin', label: 'Space admin' }]} />
-          </label> : <span className="text-xs text-muted">Platform admin</span>}
-          <button type="button" onClick={add} disabled={!value.trim()}
-            className="flex items-center gap-1 rounded px-2 py-1 text-xs font-medium text-accent hover:bg-accent-soft disabled:opacity-40">
-            <Plus className="size-3.5" aria-hidden /> Add member
-          </button>
-        </div>
-      </div>
-      {developers && <p className="text-xs leading-relaxed text-muted">Admins manage this space and its members. Developers manage apps and services. Platform admins always have access.</p>}
+          {developers && (
+            <Select<Role> variant="quiet" ariaLabel="New member role" value={role} onChange={setRole} options={roleOptions} className="w-32" />
+          )}
+        </ListRow>
+      </List>
+      {developers && <p className="text-xs leading-relaxed text-muted">Space admins manage members and settings. Developers manage apps and services.</p>}
     </div>
   )
 }

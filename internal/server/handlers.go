@@ -5,10 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"maps"
 	"net"
 	"net/http"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -221,12 +219,15 @@ func (s *Server) handleListAppServices(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	type entry struct {
-		Name string   `json:"name"`
-		Keys []string `json:"keys"`
+		Name       string         `json:"name"`
+		Keys       []string       `json:"keys"`
+		Type       string         `json:"type,omitempty"`
+		Protocol   string         `json:"protocol,omitempty"`
+		Parameters map[string]any `json:"parameters,omitempty"`
 	}
 	out := []entry{}
 	for _, b := range bindings {
-		out = append(out, entry{Name: b.Name, Keys: b.Keys})
+		out = append(out, entry{Name: b.Name, Keys: b.Keys, Type: b.Type, Protocol: b.Protocol, Parameters: b.Parameters})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"addons": out})
 }
@@ -392,18 +393,23 @@ func (s *Server) handlePutEnv(w http.ResponseWriter, r *http.Request) {
 type AddonRequest struct {
 	// Type is empty when the request attaches a service the space already
 	// has; naming one creates the service first if it is missing.
-	Type     string `json:"type"`
-	Name     string `json:"name"`
-	Version  string `json:"version"`
-	Storage  string `json:"storage"`
-	External bool   `json:"external"`
-	URL      string `json:"url"`
+	Type string `json:"type"`
+	Name string `json:"name"`
+	// Parameters are the type's own settings, as the catalog's schema
+	// describes them. Version and Storage are shorthand for the parameters
+	// of those names.
+	Parameters map[string]any `json:"parameters,omitempty"`
+	Version    string         `json:"version,omitempty"`
+	Storage    string         `json:"storage,omitempty"`
+	External   bool           `json:"external"`
+	URL        string         `json:"url"`
 }
 
 func (r AddonRequest) serviceSpec() runtime.ServiceSpec {
 	return runtime.ServiceSpec{
-		Type: r.Type, Name: r.Name, Version: r.Version, Storage: r.Storage,
-		External: r.External, URL: r.URL,
+		Type: r.Type, Name: r.Name,
+		Parameters: config.AddonConfig{Version: r.Version, Storage: r.Storage, Parameters: r.Parameters}.ServiceParameters(),
+		External:   r.External, URL: r.URL,
 	}
 }
 
@@ -436,6 +442,10 @@ func (s *Server) handleAddAppService(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusConflict, err)
 		return
 	}
+	if err := runtime.CheckServiceAttachment(ctx, s.rt, s.cfg.CommonOfferings, space, app, req.Name); err != nil {
+		writeErr(w, statusFor(err), err)
+		return
+	}
 
 	shared, err := s.rt.ServiceBinding(ctx, space, addons.SharedOwner, req.Name)
 	if err != nil {
@@ -443,13 +453,13 @@ func (s *Server) handleAddAppService(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	created := false
-	var version, storage string
+	var parameters map[string]any
 	if len(shared) == 0 {
 		if req.Type == "" {
 			writeErr(w, http.StatusNotFound, fmt.Errorf("the space has no service named %q — give a type to create it", req.Name))
 			return
 		}
-		shared, version, storage, err = s.rt.EnsureService(ctx, space, req.serviceSpec())
+		shared, parameters, err = s.rt.EnsureService(ctx, space, req.serviceSpec())
 		if err != nil {
 			writeErr(w, statusFor(err), err)
 			return
@@ -459,11 +469,11 @@ func (s *Server) handleAddAppService(w http.ResponseWriter, r *http.Request) {
 
 	wired, err := s.rt.AttachService(ctx, space, app, req.Name, shared)
 	if err != nil {
-		writeErr(w, http.StatusBadGateway, err)
+		writeErr(w, statusFor(err), err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok": true, "created": created, "restarted": wired, "version": version, "storage": storage,
+		"ok": true, "created": created, "restarted": wired, "parameters": parameters,
 	})
 }
 
@@ -476,31 +486,105 @@ func statusFor(err error) int {
 }
 
 // handleCatalog is the service catalog: what the console can offer, each
-// type with its defaults, its one-liner, and the env contract connected
-// apps will see — the names only, never values.
+// entry with its descriptor — title, category, protocol, the JSON Schema of
+// its parameters and the env contract connected apps will see (names only,
+// never values). A provider that has never answered is listed once, under
+// its name and marked unavailable, so the console can say so instead of
+// silently losing it; a provider with a cached catalog never delays this.
+// Deprecated offerings are left out: they serve existing instances only.
 func (s *Server) handleCatalog(w http.ResponseWriter, r *http.Request) {
+	space := r.PathValue("space")
+	var policy config.SpaceConfig
+	if space != "" {
+		var err error
+		policy, err = runtime.OfferingPolicy(r.Context(), s.rt, space)
+		if err != nil {
+			writeAccessError(w, err)
+			return
+		}
+	}
+	type envEntry struct {
+		Name        string `json:"name"`
+		Description string `json:"description,omitempty"`
+		Secret      bool   `json:"secret,omitempty"`
+		Optional    bool   `json:"optional,omitempty"`
+	}
+	type capabilities struct {
+		RetainData bool `json:"retainData"`
+		Update     bool `json:"update"`
+	}
 	type entry struct {
-		Type        string   `json:"type"`
-		Title       string   `json:"title"`
-		Version     string   `json:"version"`
-		Storage     string   `json:"storage"`
-		Description string   `json:"description"`
-		Keys        []string `json:"keys"`
+		Type               string         `json:"type"`
+		Provider           string         `json:"provider,omitempty"`
+		Protocol           string         `json:"protocol,omitempty"`
+		Title              string         `json:"title"`
+		Description        string         `json:"description"`
+		Category           string         `json:"category,omitempty"`
+		Tags               []string       `json:"tags,omitempty"`
+		Icon               string         `json:"icon,omitempty"`
+		DocumentationURL   string         `json:"documentationUrl,omitempty"`
+		Shared             bool           `json:"shared,omitempty"`
+		Parameters         map[string]any `json:"parameters,omitempty"`
+		SpaceConfiguration map[string]any `json:"spaceConfiguration,omitempty"`
+		Common             bool           `json:"common"`
+		Env                []envEntry     `json:"env"`
+		Keys               []string       `json:"keys"`
+		Capabilities       capabilities   `json:"capabilities"`
+		Available          bool           `json:"available"`
+		Error              string         `json:"error,omitempty"`
 	}
 	out := []entry{}
-	for _, a := range addons.Types() {
-		// A throwaway binding yields the contract's variable names.
-		dummy := addons.Input{
-			Space: "space", Namespace: "ns",
-			Name: a.Type(), Version: a.DefaultVersion(), Storage: a.DefaultStorage(), Password: "x",
+	for _, a := range addons.Types(r.Context()) {
+		if space != "" && !policy.OfferingAllowed(s.cfg.CommonOfferings, a.Type()) {
+			continue
 		}
-		keys := slices.Sorted(maps.Keys(a.Binding(dummy)))
-		out = append(out, entry{
-			Type: a.Type(), Title: a.Title(), Version: a.DefaultVersion(), Storage: a.DefaultStorage(),
-			Description: a.Description(), Keys: keys,
-		})
+		provider := ""
+		if p, ok := a.(*addons.Plugin); ok {
+			provider = p.Provider()
+		}
+		desc, err := a.Describe(r.Context())
+		if err != nil {
+			out = append(out, entry{Type: a.Type(), Provider: provider, Title: a.Type(), Env: []envEntry{}, Keys: []string{}, Error: err.Error()})
+			continue
+		}
+		if desc.Deprecated {
+			continue
+		}
+		e := entry{
+			Type: desc.Id, Provider: provider, Protocol: addons.NormalizeProtocol(desc.Protocol), Title: desc.Title, Description: desc.Description,
+			Category: desc.Category, Tags: desc.Tags, Icon: desc.Icon, DocumentationURL: desc.DocumentationUrl, Shared: desc.Shared,
+			Capabilities: capabilities{RetainData: desc.GetCapabilities().GetRetainData(), Update: desc.GetCapabilities().GetUpdate()},
+			Available:    true, Env: []envEntry{}, Keys: addons.EnvNames(desc),
+			Common: config.SpaceConfig{}.OfferingAllowed(s.cfg.CommonOfferings, desc.Id),
+		}
+		if desc.SpaceConfiguration != nil {
+			e.SpaceConfiguration = desc.SpaceConfiguration.AsMap()
+		}
+		if desc.Parameters != nil {
+			e.Parameters = desc.Parameters.AsMap()
+			// Apply space defaults to the form without changing the provider's
+			// descriptor or exposing its admin-managed configuration values.
+			if space != "" {
+				if properties, ok := e.Parameters["properties"].(map[string]any); ok {
+					for key, value := range policy.Offerings[desc.Id].Defaults {
+						if prop, ok := properties[key].(map[string]any); ok {
+							prop["default"] = value
+						}
+					}
+				}
+			}
+		}
+		if space != "" {
+			if _, err := addons.ResolveParameters(desc.SpaceConfiguration, policy.Offerings[desc.Id].Config); err != nil {
+				e.Available, e.Error = false, "Needs configuration from a space admin"
+			}
+		}
+		for _, v := range desc.Env {
+			e.Env = append(e.Env, envEntry{Name: v.Name, Description: v.Description, Secret: v.Secret, Optional: v.Optional})
+		}
+		out = append(out, e)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"types": out})
+	writeJSON(w, http.StatusOK, map[string]any{"types": out, "commonOfferings": s.cfg.CommonOfferings})
 }
 
 // handleRemoveAppService detaches the app from a space service — its binding copy
@@ -538,9 +622,16 @@ func (s *Server) handleListSpaceServices(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	type entry struct {
-		Name       string   `json:"name"`
-		Keys       []string `json:"keys"`
-		AttachedTo []string `json:"attachedTo"`
+		Name       string         `json:"name"`
+		Keys       []string       `json:"keys"`
+		AttachedTo []string       `json:"attachedTo"`
+		Type       string         `json:"type,omitempty"`
+		Protocol   string         `json:"protocol,omitempty"`
+		Parameters map[string]any `json:"parameters,omitempty"`
+		// State is set only for a plugin instance without a binding:
+		// pending, failed (with Message) or stopped.
+		State   string `json:"state,omitempty"`
+		Message string `json:"message,omitempty"`
 	}
 	out := []entry{}
 	for _, b := range bindings {
@@ -552,7 +643,8 @@ func (s *Server) handleListSpaceServices(w http.ResponseWriter, r *http.Request)
 		if attached == nil {
 			attached = []string{}
 		}
-		out = append(out, entry{Name: b.Name, Keys: b.Keys, AttachedTo: attached})
+		out = append(out, entry{Name: b.Name, Keys: b.Keys, Type: b.Type, Protocol: b.Protocol, AttachedTo: attached,
+			Parameters: b.Parameters, State: b.State, Message: b.Message})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"addons": out})
 }
@@ -582,12 +674,12 @@ func (s *Server) handleAddSpaceService(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusConflict, err)
 		return
 	}
-	_, version, storage, err := s.rt.EnsureService(ctx, space, req.serviceSpec())
+	_, parameters, err := s.rt.EnsureService(ctx, space, req.serviceSpec())
 	if err != nil {
 		writeErr(w, statusFor(err), err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "version": version, "storage": storage})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "parameters": parameters})
 }
 
 // handleServiceBinding hands over the binding values plus the service's
@@ -604,12 +696,12 @@ func (s *Server) handleServiceBinding(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, fmt.Errorf("%q is not a valid service name", name))
 		return
 	}
-	data, err := s.rt.ServiceBinding(r.Context(), space, addons.SharedOwner, name)
+	connection, err := s.rt.ServiceConnection(r.Context(), space, name)
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err)
 		return
 	}
-	if len(data) == 0 {
+	if len(connection.Binding) == 0 {
 		writeErr(w, http.StatusNotFound, fmt.Errorf("the space has no service named %q", name))
 		return
 	}
@@ -620,7 +712,7 @@ func (s *Server) handleServiceBinding(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadGateway, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"binding": data, "host": host, "port": port})
+	writeJSON(w, http.StatusOK, map[string]any{"binding": connection.Binding, "host": host, "port": port, "type": connection.Type, "protocol": connection.Protocol})
 }
 
 var tunnelUpgrader = websocket.Upgrader{
@@ -652,7 +744,7 @@ func (s *Server) handleServiceTunnel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Dial before upgrading, so a dead backend still gets a proper HTTP error.
-	backend, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", host, port), 10*time.Second)
+	backend, err := (&net.Dialer{Timeout: 10 * time.Second}).DialContext(r.Context(), "tcp", net.JoinHostPort(host, fmt.Sprint(port)))
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, fmt.Errorf("%s is not answering: %w", name, err))
 		return
@@ -709,9 +801,12 @@ func (s *Server) handleRemoveSpaceService(w http.ResponseWriter, r *http.Request
 		return
 	}
 	keepData := r.URL.Query().Get("keepData") == "true"
-	detached, err := s.rt.RemoveService(r.Context(), space, name, keepData)
+	// orphan drops a plugin instance whose plugin is gone or failing; its
+	// backing service is then the operator's to clean up.
+	orphan := r.URL.Query().Get("orphan") == "true"
+	detached, err := s.rt.RemoveService(r.Context(), space, name, keepData, orphan)
 	if err != nil {
-		writeErr(w, http.StatusBadGateway, err)
+		writeErr(w, statusFor(err), err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "detached": detached})

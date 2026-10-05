@@ -1,7 +1,7 @@
 import { useId } from 'react'
-import { Select } from './ui'
+import { Eyebrow, Select, inputClass as field } from './ui'
 
-const inputClass = 'min-w-0 flex-1 rounded-md border border-line bg-surface px-2 py-1.5 font-mono text-sm focus:outline-2 focus:outline-accent-strong'
+const inputClass = field('md', 'flex-1')
 
 export function HostEditor({ value, domains, onChange }: {
   value: string
@@ -12,7 +12,7 @@ export function HostEditor({ value, domains, onChange }: {
   if (domains.length === 0) {
     return (
       <div>
-        <label htmlFor={id} className="mb-1 block text-xs text-muted">Base URL</label>
+        <label htmlFor={id} className="mb-1.5 block"><Eyebrow>Base URL</Eyebrow></label>
         <div className="flex items-center gap-1.5">
           <span className="font-mono text-sm text-muted">https://</span>
           <input id={id} value={value} onChange={(e) => onChange(e.target.value)}
@@ -33,7 +33,7 @@ export function HostEditor({ value, domains, onChange }: {
 
   return (
     <div>
-      <label htmlFor={id} className="mb-1 block text-xs text-muted">Hostname</label>
+      <label htmlFor={id} className="mb-1.5 block"><Eyebrow>Hostname</Eyebrow></label>
       <div className="flex flex-wrap items-center gap-1.5">
         <span className="font-mono text-sm text-muted">https://</span>
         <input id={id} value={hostname} onChange={(e) => onChange(join(e.target.value, domain))}

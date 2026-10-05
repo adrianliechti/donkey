@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Dialog, DialogBackdrop, DialogPanel, DialogTitle } from '@headlessui/react'
 import { chat } from '@tanstack/ai'
 import { openaiCompatibleText } from '@tanstack/ai-openai/compatible'
 import { useChat } from '@tanstack/ai-react'
@@ -7,9 +6,10 @@ import { Markdown } from '@tanstack/markdown/react'
 import { highlightToHtml } from '@tanstack/highlight'
 import githubDarkTheme from '@tanstack/highlight/themes/github-dark'
 import githubLightTheme from '@tanstack/highlight/themes/github-light'
-import { Send, Sparkles, Square, Trash2, X } from 'lucide-react'
+import { Send, Square, Trash2 } from 'lucide-react'
 import { api } from './api'
-import { Button, ErrorNote, IconButton, Select, Spinner, errText, useColorScheme } from './ui'
+import { Modal, ModalBody, ModalHeader, ModalNotice } from './dialog'
+import { Button, IconButton, Input, Select, Spinner, TextArea, errText, useColorScheme } from './ui'
 
 // The highlighter emits `th-<token>` classes; the theme is a token→color
 // map. One generated stylesheet marries them — scoped under the dialog's own
@@ -34,10 +34,8 @@ function themeCssFor(theme: highlightTheme): string {
 const codeHighlighter = (code: string, lang?: string) => highlightToHtml(code, { lang })
 
 /**
- * The AI explorer: a chat against a space's openai service, spoken through
- * the same proxy and the same per-space token the apps get — what you try
- * here is exactly what an app will see. Everything renders as markdown with
- * highlighted code, streamed as it arrives.
+ * Chat with any OpenAI-compatible service through its authenticated console
+ * route. The server supplies the binding's endpoint and upstream credential.
  */
 export function AiDialog({
   space,
@@ -50,9 +48,8 @@ export function AiDialog({
   onClose: () => void
   onDelete: () => void
 }) {
-  const [token, setToken] = useState('')
   const [base, setBase] = useState('')
-  const [external, setExternal] = useState('')
+  const [loading, setLoading] = useState(true)
   const [models, setModels] = useState<string[]>([])
   const [model, setModel] = useState('')
   const [loadError, setLoadError] = useState('')
@@ -67,41 +64,25 @@ export function AiDialog({
   // The fetcher stays stable across renders; refs carry the current choice
   // so switching models applies to the next message without resetting the
   // conversation.
-  const settings = useRef({ base: '', token: '', model: '' })
-  settings.current = { base, token, model }
+  const settings = useRef({ base: '', model: '' })
+  settings.current = { base, model }
 
   useEffect(() => {
+    const controller = new AbortController()
+    setLoading(true)
+    setLoadError('')
     api
       .serviceBinding(space, service)
       .then(async (res) => {
-        const bound = res.binding.OPENAI_BASE_URL ?? ''
-        // Only the platform's own endpoint is reachable from the browser
-        // (and from this origin's CSP). A service pointing elsewhere is for
-        // apps.
-        //
-        // The key is the tell, not the address. donkey mints a per-space
-        // token for its own endpoint alone, and that endpoint accepts no
-        // other credential — so a binding carrying one is donkey's, whatever
-        // the address says (a Service on Kubernetes, a container name on
-        // Docker: both unresolvable here, and both have moved before). A
-        // service attached with --url carries an address and nothing else;
-        // that one is the apps', and they bring their own key.
-        const key = res.binding.OPENAI_API_KEY ?? ''
-        if (!key) {
-          setExternal(bound)
-          return
-        }
-        // donkey's endpoint answers on this origin under /ai/v1, which the
-        // server forwards to it — on this origin /v1 is already the admin
-        // API.
-        const sameOrigin = `${location.origin}/ai/v1`
+        if (controller.signal.aborted) return
+        const sameOrigin = `${location.origin}${api.serviceAIBase(space, service)}`
         setBase(sameOrigin)
-        setToken(key)
         const preferred = res.binding.OPENAI_MODEL
         try {
           const answer = await fetch(`${sameOrigin}/models`, {
-            headers: { Authorization: `Bearer ${key}` },
+            signal: controller.signal,
           })
+          if (!answer.ok) throw new Error('The service could not list its models.')
           const listed = ((await answer.json()).data ?? []).map((m: { id: string }) => m.id)
           // The binding's model leads: it is the one the platform vouches
           // for, whether or not the upstream's own listing mentions it.
@@ -109,26 +90,26 @@ export function AiDialog({
           setModels(list)
           setModel(preferred ?? list[0] ?? '')
         } catch {
+          if (controller.signal.aborted) return
           // No model list is not fatal — the binding's own model still works.
+          setModels(preferred ? [preferred] : [])
           setModel(preferred ?? '')
         }
       })
-      .catch((err) => setLoadError(errText(err, 'The service did not answer.')))
+      .catch((err) => { if (!controller.signal.aborted) setLoadError(errText(err, 'The service did not answer.')) })
+      .finally(() => { if (!controller.signal.aborted) setLoading(false) })
+    return () => controller.abort()
   }, [space, service])
 
   const fetcher = useCallback(
     ({ messages }: { messages: Parameters<typeof chat>[0]['messages'] }) => {
-      // Read at send time, not render time — the binding arrives after the
-      // first render, and a snapshot from back then would chat with an
-      // empty key.
-      const { base, token, model } = settings.current
+      const { base, model } = settings.current
       return chat({
         adapter: openaiCompatibleText(model, {
           baseURL: base,
-          apiKey: token,
-          // The "danger" is putting a credential in a browser — this one is
-          // the console operator's own per-space token, already visible to
-          // them via the binding API.
+          // The SDK requires a key. Authentication uses the gateway session;
+          // the server replaces this placeholder with the service's key.
+          apiKey: 'console',
           dangerouslyAllowBrowser: true,
         }),
         messages,
@@ -150,136 +131,92 @@ export function AiDialog({
     sendMessage(text)
   }
 
-  const ready = Boolean(token && model)
-
   return (
-    <Dialog open onClose={onClose} className="relative z-50">
+    <Modal onClose={onClose} size="lg" height="fill">
       <style>{themeCss}</style>
-      <DialogBackdrop
-        transition
-        className="fixed inset-0 bg-black/60 transition-opacity duration-(--duration-base) ease-emphasized data-closed:opacity-0 data-leave:duration-(--duration-fast) data-leave:ease-exit"
-      />
-      <div className="fixed inset-0 flex items-center justify-center p-4">
-        <DialogPanel
-          transition
-          className="flex h-[85vh] w-full max-w-3xl flex-col rounded-lg border border-line bg-card shadow-2xl transition duration-(--duration-base) ease-emphasized data-closed:opacity-0 data-closed:scale-95 data-leave:duration-(--duration-fast) data-leave:ease-exit"
-        >
-          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-4 py-3">
-            <div className="flex items-center gap-3">
-              <DialogTitle className="flex items-center gap-2 font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-muted">
-                <Sparkles className="size-3.5" aria-hidden />
-                {service} · {space}
-              </DialogTitle>
-              {models.length > 0 && (
-                <Select
-                  size="sm"
-                  ariaLabel="Model"
-                  value={model}
-                  onChange={setModel}
-                  options={models.map((m) => ({ value: m, label: m }))}
+      <ModalHeader eyebrow={`Chat · ${space}`} title={<span className="font-mono">{service}</span>}
+        actions={<IconButton icon={Trash2} label="Delete service" kind="danger" onClick={onDelete} />}
+        onClose={onClose} closeLabel="Close chat">
+        {models.length > 0 && (
+          <Select size="sm" ariaLabel="Model" value={model} onChange={setModel}
+            options={models.map((m) => ({ value: m, label: m }))} className="max-w-56" />
+        )}
+        {!loading && models.length === 0 && (
+          <Input size="sm" aria-label="Model" placeholder="Model name" value={model}
+            onChange={(event) => setModel(event.target.value)} className="w-44" />
+        )}
+      </ModalHeader>
+      <ModalNotice message={loadError || (error ? errText(error, 'The model did not answer.') : '')} />
+      <ModalBody padded={false}>
+        {loading ? (
+          <div className="flex flex-1 items-center justify-center">
+            <Spinner label="Opening the line…" />
+          </div>
+        ) : (
+          <>
+            <div ref={scroller} className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+              {messages.length === 0 && (
+                <div className="flex h-full items-center justify-center">
+                  <p className="max-w-sm text-center text-sm text-muted">
+                    Chat with {service} using the same connection as its apps.
+                  </p>
+                </div>
+              )}
+              <div className="space-y-3">
+                {messages.map((m) => (
+                  <div key={m.id} className={m.role === 'user' ? 'flex justify-end' : ''}>
+                    {m.role === 'user' ? (
+                      <div className="max-w-[85%] rounded-lg bg-accent-soft px-3 py-2 text-sm text-ink">
+                        {m.parts.map((p, i) => (p.type === 'text' ? <span key={i}>{p.content}</span> : null))}
+                      </div>
+                    ) : (
+                      <div className="ai-md max-w-[95%] text-sm leading-relaxed text-ink-soft">
+                        {m.parts.map((p, i) =>
+                          p.type === 'thinking' ? (
+                            <p key={i} className="italic text-muted">
+                              {p.content}
+                            </p>
+                          ) : p.type === 'text' ? (
+                            <Markdown key={i} highlighter={codeHighlighter}>
+                              {p.content}
+                            </Markdown>
+                          ) : null,
+                        )}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="shrink-0 border-t border-line px-5 py-3">
+              <div className="flex items-end gap-2">
+                <TextArea
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault()
+                      send()
+                    }
+                  }}
+                  placeholder={`Ask ${model || 'the model'}…`}
+                  aria-label="Prompt"
+                  rows={1}
+                  className="max-h-40 min-h-9 flex-1 resize-none field-sizing-content"
                 />
-              )}
-              {models.length === 0 && model && (
-                <span className="font-mono text-xs text-muted">{model}</span>
-              )}
-            </div>
-            <div className="flex items-center gap-1">
-              <IconButton icon={Trash2} label="Delete service" kind="danger" onClick={onDelete} />
-              <IconButton icon={X} label="Close" onClick={onClose} />
-            </div>
-          </div>
-
-          <div className="px-4 pt-2 empty:hidden">
-            <ErrorNote message={loadError || (error ? errText(error, 'The model did not answer.') : '')} />
-          </div>
-
-          {external ? (
-            <div className="flex flex-1 items-center justify-center p-8">
-              <p className="max-w-md text-center text-sm text-muted">
-                This service points at <span className="font-mono">{external}</span> — somewhere the
-                browser can't go. Apps use it through their binding; the explorer only speaks to the
-                platform's own proxy.
+                {isLoading ? (
+                  <Button kind="quiet" icon={Square} onClick={() => stop()}>Stop</Button>
+                ) : (
+                  <Button icon={Send} onClick={send} disabled={!input.trim() || !base || !model.trim() || Boolean(loadError)}>Send</Button>
+                )}
+              </div>
+              <p className="mt-1.5 text-xs text-muted">
+                Enter sends, Shift-Enter breaks the line. The conversation lives only in this tab.
               </p>
             </div>
-          ) : !ready && !loadError ? (
-            <div className="flex flex-1 items-center justify-center">
-              <Spinner label="Opening the line…" />
-            </div>
-          ) : (
-            <>
-              <div ref={scroller} className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
-                {messages.length === 0 && (
-                  <div className="flex h-full items-center justify-center">
-                    <p className="max-w-sm text-center text-sm text-muted">
-                      This talks to the same proxy, with the same token, that connected apps get —
-                      what works here works there. Ask something.
-                    </p>
-                  </div>
-                )}
-                <div className="space-y-3">
-                  {messages.map((m) => (
-                    <div key={m.id} className={m.role === 'user' ? 'flex justify-end' : ''}>
-                      {m.role === 'user' ? (
-                        <div className="max-w-[85%] rounded-lg bg-accent-soft px-3 py-2 text-sm text-ink">
-                          {m.parts.map((p, i) => (p.type === 'text' ? <span key={i}>{p.content}</span> : null))}
-                        </div>
-                      ) : (
-                        <div className="ai-md max-w-[95%] text-sm leading-relaxed text-ink-soft">
-                          {m.parts.map((p, i) =>
-                            p.type === 'thinking' ? (
-                              <p key={i} className="italic text-muted">
-                                {p.content}
-                              </p>
-                            ) : p.type === 'text' ? (
-                              <Markdown key={i} highlighter={codeHighlighter}>
-                                {p.content}
-                              </Markdown>
-                            ) : null,
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              </div>
-              <div className="border-t border-line p-3">
-                <div className="flex items-end gap-2">
-                  <textarea
-                    value={input}
-                    onChange={(e) => setInput(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' && !e.shiftKey) {
-                        e.preventDefault()
-                        send()
-                      }
-                    }}
-                    placeholder={`Ask ${model || 'the model'}…`}
-                    aria-label="Prompt"
-                    rows={1}
-                    className="max-h-40 min-h-0 flex-1 resize-none rounded-md border border-line bg-surface p-2 font-mono text-sm field-sizing-content focus:outline-2 focus:outline-accent-strong"
-                  />
-                  {isLoading ? (
-                    <Button kind="quiet" onClick={() => stop()}>
-                      <span className="flex items-center gap-1.5">
-                        <Square className="size-3.5" aria-hidden /> Stop
-                      </span>
-                    </Button>
-                  ) : (
-                    <Button onClick={send} disabled={!input.trim() || !ready}>
-                      <span className="flex items-center gap-1.5">
-                        <Send className="size-3.5" aria-hidden /> Send
-                      </span>
-                    </Button>
-                  )}
-                </div>
-                <p className="mt-1.5 text-xs text-muted">
-                  Enter sends, Shift-Enter breaks the line. The conversation lives only in this tab.
-                </p>
-              </div>
-            </>
-          )}
-        </DialogPanel>
-      </div>
-    </Dialog>
+          </>
+        )}
+      </ModalBody>
+    </Modal>
   )
 }

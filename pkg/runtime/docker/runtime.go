@@ -64,6 +64,7 @@ const (
 	RoleServer           = "server"
 	RoleGateway          = "gateway"
 	RoleAI               = "ai"
+	RoleProxy            = "proxy"
 	RoleTelemetry        = "telemetry"
 	RolePackages         = "packages"
 	RoleBuildkit         = "buildkitd"
@@ -100,16 +101,18 @@ type Options struct {
 	// Registry is where builds are pushed (as the build engine reaches it).
 	Registry config.Registry
 	// AddonImages are direct repository overrides for managed services.
-	AddonImages config.InstallAddonImages
+	AddonImages     config.InstallAddonImages
+	CommonOfferings config.CommonOfferings
 	// BusyboxImage runs file browsing and volume initialization helpers.
 	BusyboxImage string
 	// PullRegistry is the same registry as the Docker daemon reaches it
 	// (e.g. 127.0.0.1:5000). Image references are rewritten from the push
 	// host to this one before running. Empty means refs run as pushed.
 	PullRegistry string
-	// AIContainer is the openai addon's endpoint — the one donkey container
-	// apps are meant to reach, which is why it is not the server.
+	// AIContainer is the openai addon's shared endpoint.
 	AIContainer string
+	// ProxyContainer is the shared endpoint for configured HTTP offerings.
+	ProxyContainer string
 	// TelemetryContainer accepts app-scoped OTLP metrics on every space
 	// network.
 	TelemetryContainer string
@@ -148,6 +151,9 @@ func New(opts Options) (*Runtime, error) {
 	}
 	if opts.AIContainer == "" {
 		opts.AIContainer = "donkey-ai"
+	}
+	if opts.ProxyContainer == "" {
+		opts.ProxyContainer = "donkey-proxy"
 	}
 	if opts.TelemetryContainer == "" {
 		opts.TelemetryContainer = "donkey-telemetry"
@@ -325,12 +331,12 @@ func (r *Runtime) ensureSpace(ctx context.Context, space string) error {
 		return err
 	}
 	own, err := ownedSystemContainers(ctx, r.cli,
-		r.opts.ServerContainer, r.opts.GatewayContainer, r.opts.AIContainer, r.opts.TelemetryContainer)
+		r.opts.ServerContainer, r.opts.GatewayContainer, r.opts.AIContainer, r.opts.TelemetryContainer, r.opts.ProxyContainer)
 	if err != nil {
 		return err
 	}
 	name := netName(space)
-	_, err = r.cli.NetworkInspect(ctx, name, network.InspectOptions{})
+	nw, err := r.cli.NetworkInspect(ctx, name, network.InspectOptions{})
 	if cerrdefs.IsNotFound(err) {
 		_, err = r.cli.NetworkCreate(ctx, name, network.CreateOptions{
 			Labels: resourceLabels(space, roleSpace),
@@ -338,8 +344,14 @@ func (r *Runtime) ensureSpace(ctx context.Context, space string) error {
 		if err == nil {
 			err = r.state.writeJSON(config.DefaultSpaceConfig(space, r.opts.Domain), "spaces", space, "config.json")
 		}
+		if err == nil {
+			nw, err = r.cli.NetworkInspect(ctx, name, network.InspectOptions{})
+		}
 	}
 	if err != nil {
+		return err
+	}
+	if err := r.recordProxyNetwork(space, nw.IPAM); err != nil {
 		return err
 	}
 	for _, containerName := range own {
@@ -391,8 +403,11 @@ func (r *Runtime) DeleteSpace(ctx context.Context, space string) error {
 	if inspectErr == nil && !sameIdentity(nw.Labels, resourceLabels(space, roleSpace)) {
 		return fmt.Errorf("the network %s isn't donkey's space %s to delete", netName(space), space)
 	}
+	if err := r.deprovisionSpacePlugins(ctx, space); err != nil {
+		return err
+	}
 	own, err := ownedSystemContainers(ctx, r.cli,
-		r.opts.ServerContainer, r.opts.GatewayContainer, r.opts.AIContainer, r.opts.TelemetryContainer)
+		r.opts.ServerContainer, r.opts.GatewayContainer, r.opts.AIContainer, r.opts.TelemetryContainer, r.opts.ProxyContainer)
 	if err != nil {
 		return err
 	}
@@ -425,6 +440,9 @@ func (r *Runtime) DeleteSpace(ctx context.Context, space string) error {
 		}
 	}
 	if err := r.state.cleanupSpace(space); err != nil {
+		return err
+	}
+	if err := r.state.remove("proxy", "networks", space+".json"); err != nil {
 		return err
 	}
 	// donkey's own containers were attached to the network (to proxy and to
@@ -716,6 +734,11 @@ func (r *Runtime) ServiceBinding(ctx context.Context, space, owner, name string)
 	if err != nil {
 		return nil, err
 	}
+	if state, err := r.pluginState(space, name); err != nil {
+		return nil, err
+	} else if state != nil {
+		return binding, nil // plugin addresses are already app-reachable
+	}
 	// Older installations stored short network aliases. The server belongs
 	// to every space network, where those aliases are ambiguous. Resolve an
 	// existing managed service by its owned container name on read as well.
@@ -733,107 +756,171 @@ func (r *Runtime) ServiceBinding(ctx context.Context, space, owner, name string)
 	return scoped, nil
 }
 
+func (r *Runtime) ServiceConnection(ctx context.Context, space, name string) (rt.ServiceConnection, error) {
+	binding, err := r.ServiceBinding(ctx, space, sharedOwner, name)
+	if err != nil {
+		return rt.ServiceConnection{}, err
+	}
+	metadata, err := r.serviceMetadata(space, name, binding)
+	if err != nil {
+		return rt.ServiceConnection{}, err
+	}
+	return rt.ServiceConnection{Binding: binding, Type: metadata.Type, Protocol: metadata.Protocol, Parameters: metadata.Parameters}, nil
+}
+
+func (r *Runtime) serviceMetadata(space, name string, binding map[string]string) (addons.Metadata, error) {
+	var metadata addons.Metadata
+	_, err := r.state.readJSON(&metadata, "service-metadata", space, name+".json")
+	return metadata.Resolve(binding), err
+}
+
 func (r *Runtime) aiProxyURL() string {
 	return fmt.Sprintf("http://%s:8089/v1", r.opts.AIContainer)
 }
 
-func (r *Runtime) EnsureService(ctx context.Context, space string, spec rt.ServiceSpec) (map[string]string, string, string, error) {
-	addon, err := addons.Get(spec.Type)
-	if err != nil {
-		return nil, "", "", rt.UserError{Err: err}
-	}
+func (r *Runtime) EnsureService(ctx context.Context, space string, spec rt.ServiceSpec) (map[string]string, map[string]any, error) {
 	if err := config.ValidateServiceName(spec.Name); err != nil {
-		return nil, "", "", rt.UserError{Err: err}
+		return nil, nil, rt.UserError{Err: err}
+	}
+	// The record comes first: an instance a provider created resolves
+	// through its recorded offering when the provider is not answering.
+	previous, err := r.pluginState(space, spec.Name)
+	if err != nil {
+		return nil, nil, err
+	}
+	if previous != nil && previous.Type != spec.Type {
+		return nil, nil, fmt.Errorf("remove service %s before changing its provisioner", spec.Name)
+	}
+	addon, err := addons.Lookup(ctx, spec.Type, previous)
+	if err != nil {
+		return nil, nil, rt.UserError{Err: err}
+	}
+	desc, err := addon.Describe(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	connection, err := r.ServiceConnection(ctx, space, spec.Name)
+	if err != nil {
+		return nil, nil, err
+	}
+	if connection.Type != "" && connection.Type != spec.Type {
+		return nil, nil, rt.UserError{Err: fmt.Errorf("remove service %s before changing its offering", spec.Name)}
+	}
+	spec.Parameters, err = rt.PrepareService(ctx, r, r.opts.CommonOfferings, space, desc, spec.Parameters, previous != nil || len(connection.Binding) > 0)
+	if err != nil {
+		return nil, nil, err
 	}
 	if err := r.ensureSpace(ctx, space); err != nil {
-		return nil, "", "", err
+		return nil, nil, err
+	}
+	plugin, isPlugin := addon.(*addons.Plugin)
+	builtin, _ := addon.(addons.Builtin)
+	if previous != nil && (!isPlugin || spec.External) {
+		return nil, nil, fmt.Errorf("remove service %s before changing its provisioner", spec.Name)
+	}
+	if isPlugin && spec.External {
+		return nil, nil, rt.UserError{Err: fmt.Errorf("the %s service is provisioned by provider %s; external URL bindings are not supported for it", spec.Type, plugin.Provider())}
 	}
 	var binding map[string]string
-	var version, storage string
-	if spec.External {
-		binding, err = addon.ExternalBinding(spec.URL)
+	var params addons.Parameters
+	switch {
+	case isPlugin && !spec.External:
+		binding, params, err = r.provisionPlugin(ctx, space, spec, plugin, desc, previous)
 		if err != nil {
-			return nil, "", "", rt.UserError{Err: err}
+			return nil, nil, err
+		}
+	case spec.External:
+		binding, err = builtin.ExternalBinding(spec.URL)
+		if err != nil {
+			return nil, nil, rt.UserError{Err: err}
 		}
 		if err := r.state.setBinding(space, sharedOwner, spec.Name, binding); err != nil {
-			return nil, "", "", err
+			return nil, nil, err
 		}
-	} else {
+	default:
 		// The service takes its plain name, reachable as e.g. "postgres" the
 		// way siblings reach each other — so it must not seize a name an app
 		// already holds.
 		if info, inspectErr := r.cli.ContainerInspect(ctx, ctrName(space, spec.Name)); inspectErr == nil {
 			if info.Config == nil {
-				return nil, "", "", fmt.Errorf("the Docker container %s has no inspectable configuration", ctrName(space, spec.Name))
+				return nil, nil, fmt.Errorf("the Docker container %s has no inspectable configuration", ctrName(space, spec.Name))
 			}
 			switch {
 			case sameIdentity(info.Config.Labels, appLabels(space, spec.Name, roleWorkload)):
-				return nil, "", "", rt.UserError{Err: fmt.Errorf("the name %q is taken by an app in this space — pick another for the service", spec.Name)}
+				return nil, nil, rt.UserError{Err: fmt.Errorf("the name %q is taken by an app in this space — pick another for the service", spec.Name)}
 			case !sameIdentity(info.Config.Labels, addonLabels(space, spec.Name, roleAddon)):
-				return nil, "", "", requireIdentity("container", ctrName(space, spec.Name), info.Config.Labels,
+				return nil, nil, requireIdentity("container", ctrName(space, spec.Name), info.Config.Labels,
 					addonLabels(space, spec.Name, roleAddon))
 			}
 		} else if !cerrdefs.IsNotFound(inspectErr) {
-			return nil, "", "", inspectErr
+			return nil, nil, inspectErr
 		}
-		in := addons.Input{
-			Space: space, Namespace: netName(space),
-			Name: spec.Name, Version: spec.Version, Storage: spec.Storage,
-			ImageRepository: r.opts.AddonImages.Repository(spec.Type),
-			AIProxyURL:      r.aiProxyURL(),
-		}
-		if in.Version == "" {
-			in.Version = addon.DefaultVersion()
-		}
-		if in.Storage == "" {
-			in.Storage = addon.DefaultStorage()
-		}
+		// An existing instance keeps its credential and, unless asked
+		// otherwise, its parameters.
 		existing, err := r.state.binding(space, sharedOwner, spec.Name)
 		if err != nil {
-			return nil, "", "", err
+			return nil, nil, err
 		}
+		stored, err := r.serviceMetadata(space, spec.Name, existing)
+		if err != nil {
+			return nil, nil, err
+		}
+		params, err = addons.ResolveInstanceParameters(desc, spec.Parameters, stored.Parameters)
+		if err != nil {
+			return nil, nil, rt.UserError{Err: err}
+		}
+		in := addons.Input{
+			Space: space, Namespace: netName(space), Name: spec.Name,
+			ImageRepository: r.opts.AddonImages.Repository(spec.Type),
+			AIProxyURL:      r.aiProxyURL(),
+			ServiceProxyURL: r.serviceProxyURL(),
+		}.WithParameters(params)
 		// Reuse the credential the instance was initialized with — rotating
 		// it here would lock the service out of its own kept data.
-		if pw, ok := existing[addon.CredentialKey()]; ok {
+		if pw, ok := existing[builtin.CredentialKey()]; ok {
 			in.Password = pw
 		} else if in.Password, err = addons.NewPassword(); err != nil {
-			return nil, "", "", err
+			return nil, nil, err
 		}
-		binding = addon.Binding(in)
+		binding = builtin.Binding(in)
 		// The unique container name works for both apps in this space and
 		// the admin server, which belongs to multiple space networks.
 		binding = rewriteBindingHost(binding, in.Name+"."+in.Namespace+".svc", ctrName(space, in.Name))
 		if err := r.state.setBinding(space, sharedOwner, spec.Name, binding); err != nil {
-			return nil, "", "", err
+			return nil, nil, err
 		}
-		workload, err := addon.Workload(in)
+		workload, err := builtin.Workload(in)
 		if err != nil {
-			return nil, "", "", err
+			return nil, nil, err
 		}
 		if workload != nil {
 			if err := r.runService(ctx, space, spec.Name, in, workload, binding); err != nil {
-				return nil, "", "", err
+				return nil, nil, err
 			}
 		}
-		version, storage = in.Version, in.Storage
+	}
+	if !isPlugin || spec.External {
+		if err := r.state.writeJSON(addons.MetadataFor(desc, params), "service-metadata", space, spec.Name+".json"); err != nil {
+			return nil, nil, err
+		}
 	}
 	// Attached apps hold copies; refresh them (and restart on external
 	// changes, whose addresses may have moved).
 	attached, err := r.state.attachments(space, spec.Name)
 	if err != nil {
-		return nil, "", "", err
+		return nil, nil, err
 	}
 	for _, app := range attached {
 		if err := r.state.setBinding(space, app, spec.Name, binding); err != nil {
-			return nil, "", "", err
+			return nil, nil, err
 		}
-		if spec.External {
+		if spec.External || isPlugin {
 			if _, err := r.Restart(ctx, space, app); err != nil {
-				return nil, "", "", err
+				return nil, nil, err
 			}
 		}
 	}
-	return binding, version, storage, nil
+	return binding, params, nil
 }
 
 // Rewrite address fields only; passwords, usernames and URL paths are data.
@@ -902,6 +989,9 @@ func (r *Runtime) runService(ctx context.Context, space, name string, in addons.
 }
 
 func (r *Runtime) AttachService(ctx context.Context, space, app, name string, binding map[string]string) (bool, error) {
+	if err := rt.CheckServiceAttachment(ctx, r, r.opts.CommonOfferings, space, app, name); err != nil {
+		return false, err
+	}
 	if err := r.state.setBinding(space, app, name, binding); err != nil {
 		return false, err
 	}
@@ -930,9 +1020,21 @@ func (r *Runtime) DetachService(ctx context.Context, space, app, name string) er
 	return err
 }
 
-func (r *Runtime) RemoveService(ctx context.Context, space, name string, keepData bool) ([]string, error) {
+func (r *Runtime) RemoveService(ctx context.Context, space, name string, keepData, force bool) ([]string, error) {
+	if keepData {
+		connection, err := r.ServiceConnection(ctx, space, name)
+		if err != nil {
+			return nil, err
+		}
+		if addons.IsProxyBinding(r.serviceProxyURL(), connection.Type, connection.Binding) {
+			return nil, rt.UserError{Err: fmt.Errorf("proxy services have no stored data; remove without --keep-data to revoke access")}
+		}
+	}
 	attached, err := r.state.attachments(space, name)
 	if err != nil {
+		return nil, err
+	}
+	if err := r.deprovisionPlugin(ctx, space, name, keepData, force); err != nil {
 		return nil, err
 	}
 	for _, app := range attached {
@@ -950,6 +1052,12 @@ func (r *Runtime) RemoveService(ctx context.Context, space, name string, keepDat
 		if err := r.removeOwnedVolume(ctx, volName(space, name), addonLabels(space, name, roleStorage)); err != nil {
 			return nil, err
 		}
+		if err := r.state.remove("provisioning", space, name+".json"); err != nil {
+			return nil, err
+		}
+		if err := r.state.remove("service-metadata", space, name+".json"); err != nil {
+			return nil, err
+		}
 	}
 	return attached, nil
 }
@@ -959,6 +1067,14 @@ func (r *Runtime) ServiceAttachments(ctx context.Context, space, name string) ([
 }
 
 func (r *Runtime) ServiceEndpoint(ctx context.Context, space, name string) (string, int32, error) {
+	state, err := r.pluginState(space, name)
+	if err != nil {
+		return "", 0, err
+	}
+	if state != nil {
+		host, port := state.Endpoint()
+		return host, port, nil
+	}
 	info, err := r.cli.ContainerInspect(ctx, ctrName(space, name))
 	if cerrdefs.IsNotFound(err) {
 		return "", 0, nil
@@ -991,18 +1107,52 @@ func (r *Runtime) ListServices(ctx context.Context, space, owner string) ([]rt.S
 		if err != nil {
 			return nil, err
 		}
-		info := rt.ServiceBindingInfo{Name: name}
+		metadata, err := r.serviceMetadata(space, name, data)
+		if err != nil {
+			return nil, err
+		}
+		info := rt.ServiceBindingInfo{Name: name, Type: metadata.Type, Protocol: metadata.Protocol, Parameters: metadata.Parameters}
 		for k := range data {
 			info.Keys = append(info.Keys, k)
 		}
 		sort.Strings(info.Keys)
 		out = append(out, info)
 	}
+	if owner == sharedOwner {
+		// The space's own view also shows plugin instances that have no
+		// binding yet (or any more): pending, failed and stopped ones.
+		bound := map[string]bool{}
+		for _, b := range out {
+			bound[b.Name] = true
+		}
+		unbound, err := r.unboundPluginServices(space, bound)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, unbound...)
+		sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	}
 	return out, nil
 }
 
-func (r *Runtime) SharedServiceValues(ctx context.Context, key string) ([]string, error) {
-	return r.state.bindingValues(key)
+func (r *Runtime) AIProxyTokens(ctx context.Context) ([]string, error) {
+	return r.state.bindingValues("OPENAI_API_KEY", "OPENAI_BASE_URL", r.aiProxyURL())
+}
+
+func (r *Runtime) serviceProxyURL() string {
+	name := r.opts.ProxyContainer
+	if name == "" {
+		name = "donkey-proxy"
+	}
+	return "http://" + name + ":8091"
+}
+
+// SetProxyServices updates the shared proxy's read-only configuration file.
+func (r *Runtime) SetProxyServices(services config.ProxyServices) error {
+	if err := services.Validate(); err != nil {
+		return err
+	}
+	return r.state.writeJSON(services, "proxy", "services.json")
 }
 
 // --- Health ---------------------------------------------------------------
@@ -1187,7 +1337,7 @@ func ownedSystemContainers(ctx context.Context, cli *client.Client, names ...str
 // failure it prevents is silent and total: every app in a space stops
 // answering, with nothing in its own logs to say why.
 func (r *Runtime) ReconcileOwnNetworks(ctx context.Context, every time.Duration) {
-	own := []string{r.opts.ServerContainer, r.opts.GatewayContainer, r.opts.AIContainer, r.opts.TelemetryContainer}
+	own := []string{r.opts.ServerContainer, r.opts.GatewayContainer, r.opts.AIContainer, r.opts.TelemetryContainer, r.opts.ProxyContainer}
 	for {
 		if err := AttachOwnContainers(ctx, r.cli, own...); err != nil && ctx.Err() == nil {
 			log.Printf("couldn't attach donkey's containers to the space networks: %v", err)

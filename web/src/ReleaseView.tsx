@@ -7,17 +7,32 @@ import {
   CircleAlert,
   Database,
   ExternalLink,
-  Layers3,
   Loader2,
-  Package,
   Rocket,
   Terminal,
+  Wrench,
   XCircle,
 } from 'lucide-react'
 import type { DeployResult, DeployStage, DeployUpdate, Plan, PlanSignal } from './api'
 import { DiffView } from './DiffView'
 import { FindingsList } from './FindingsList'
-import { Button, Card, SectionTitle } from './ui'
+import {
+  Button,
+  Callout,
+  Chip,
+  CodeCard,
+  Disclosure,
+  Eyebrow,
+  List,
+  ListRow,
+  Section,
+  SectionHeader,
+} from './ui'
+
+// A release reads top to bottom like the Overview tab: a status callout,
+// then plain titled sections — build, services, problems, repairs — and the
+// log at the end. Nothing here is a card: sections are divided by rules,
+// groups that need an outline are lists, and only the log is a frame.
 
 const stages: { id: DeployStage; label: string; detail: string }[] = [
   { id: 'detecting', label: 'Inspect source', detail: 'Confirm the reviewed build plan' },
@@ -34,195 +49,146 @@ function statusText(stage: DeployStage | undefined, result?: DeployResult): stri
 }
 
 function StateIcon({ state }: { state: 'complete' | 'current' | 'failed' | 'waiting' }) {
-  if (state === 'complete') return <Check className="size-3.5 text-success" aria-hidden />
-  if (state === 'failed') return <XCircle className="size-3.5 text-danger" aria-hidden />
-  if (state === 'current') return <Loader2 className="size-3.5 animate-spin text-accent" aria-hidden />
-  return <Circle className="size-3.5 text-line-strong" aria-hidden />
+  if (state === 'complete') return <Check className="size-4 shrink-0 text-success" aria-hidden />
+  if (state === 'failed') return <XCircle className="size-4 shrink-0 text-danger" aria-hidden />
+  if (state === 'current') return <Loader2 className="size-4 shrink-0 animate-spin text-accent" aria-hidden />
+  return <Circle className="size-4 shrink-0 text-line-strong" aria-hidden />
 }
 
-function ReleaseState({ plan, update, result }: { plan: Plan; update: DeployUpdate; result?: DeployResult }) {
-  const current = Math.max(
-    0,
-    stages.findIndex((stage) => stage.id === (update.stage ?? 'detecting')),
-  )
+// Status: where the release stands and the steps it went through.
+function ReleaseState({ update, result }: { update: DeployUpdate; result?: DeployResult }) {
+  const current = Math.max(0, stages.findIndex((stage) => stage.id === (update.stage ?? 'detecting')))
   const failed = Boolean(result && !result.ok)
 
   return (
-    <Card className={`overflow-hidden ${failed ? 'border-danger/40' : result?.ok ? 'border-success/40' : ''}`}>
-      <div className="flex items-start justify-between gap-3 border-b border-line px-4 py-3">
-        <div>
-          <SectionTitle>Deployment state</SectionTitle>
-          <p
-            aria-live="polite"
-            className={`mt-1 text-sm font-medium ${failed ? 'text-danger' : result?.ok ? 'text-success' : 'text-ink'}`}
-          >
-            {statusText(update.stage, result)}
-          </p>
-        </div>
-        {result?.ok ? (
-          <CheckCircle2 className="size-5 text-success" aria-hidden />
+    <div className="space-y-3">
+      <Callout
+        tone={failed ? 'danger' : result?.ok ? 'success' : 'info'}
+        icon={failed ? CircleAlert : result?.ok ? CheckCircle2 : Rocket}
+        title={<span aria-live="polite">{statusText(update.stage, result)}</span>}
+      >
+        {result?.ok && result.url ? (
+          <a href={result.url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 font-mono text-xs text-accent-strong hover:underline">
+            {result.url} <ExternalLink className="size-3" aria-hidden />
+          </a>
         ) : failed ? (
-          <CircleAlert className="size-5 text-danger" aria-hidden />
-        ) : (
-          <Rocket className="size-5 text-accent" aria-hidden />
-        )}
-      </div>
-      <div className="px-4 py-3">
-        <dl className="mb-4 grid grid-cols-2 gap-x-4 gap-y-2 text-xs">
-          <div>
-            <dt className="text-muted">App</dt>
-            <dd className="mt-0.5 truncate font-mono text-ink">{plan.app.name}</dd>
-          </div>
-          <div>
-            <dt className="text-muted">Space</dt>
-            <dd className="mt-0.5 truncate font-mono text-ink">{plan.app.space}</dd>
-          </div>
-          <div>
-            <dt className="text-muted">Port</dt>
-            <dd className="mt-0.5 font-mono text-ink">{plan.app.port}</dd>
-          </div>
-          <div>
-            <dt className="text-muted">Access</dt>
-            <dd className="mt-0.5 font-mono text-ink">{plan.app.exposure}</dd>
-          </div>
-        </dl>
-        <ol className="space-y-2.5">
-          {stages.map((stage, index) => {
-            let state: 'complete' | 'current' | 'failed' | 'waiting' = 'waiting'
-            if (result?.ok || index < current) state = 'complete'
-            else if (index === current) state = failed ? 'failed' : 'current'
-            return (
-              <li key={stage.id} className="flex items-start gap-2.5">
-                <span className="mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full border border-line bg-surface">
-                  <StateIcon state={state} />
-                </span>
-                <span className="min-w-0">
-                  <span className={`block text-sm ${state === 'waiting' ? 'text-muted' : 'text-ink'}`}>
-                    {stage.label}
-                  </span>
-                  <span className="block text-xs text-muted">{stage.detail}</span>
-                </span>
-              </li>
-            )
-          })}
-        </ol>
-        {result?.imageRef && (
-          <p className="mt-3 break-all rounded-md bg-surface px-2.5 py-2 font-mono text-[10px] text-muted">
-            {result.imageRef}
-          </p>
-        )}
-      </div>
-    </Card>
+          <span className="whitespace-pre-wrap break-words">{result?.error || 'The release did not complete.'}</span>
+        ) : undefined}
+      </Callout>
+      <List>
+        {stages.map((stage, index) => {
+          let state: 'complete' | 'current' | 'failed' | 'waiting' = 'waiting'
+          if (result?.ok || index < current) state = 'complete'
+          else if (index === current) state = failed ? 'failed' : 'current'
+          return (
+            <ListRow key={stage.id}>
+              <StateIcon state={state} />
+              <span className={`text-sm ${state === 'waiting' ? 'text-muted' : 'text-ink'}`}>{stage.label}</span>
+              <span className="min-w-0 flex-1 truncate text-xs text-muted">{stage.detail}</span>
+            </ListRow>
+          )
+        })}
+      </List>
+    </div>
   )
 }
 
-function SignalChips({ signals }: { signals: PlanSignal[] }) {
+export function SignalChips({ signals }: { signals: PlanSignal[] }) {
   return (
-    <div className="flex flex-wrap gap-1.5">
+    <span className="flex flex-wrap gap-1.5">
       {signals.map((signal, index) => (
-        <span
-          key={`${signal.value}-${index}`}
-          title={signal.evidence ? `Detected from ${signal.evidence}` : undefined}
-          className="rounded border border-line bg-raised px-2 py-1 font-mono text-[11px] text-ink-soft"
-        >
+        <Chip key={`${signal.value}-${index}`} title={signal.evidence ? `Detected from ${signal.evidence}` : undefined}>
           {signal.value}
-        </span>
+        </Chip>
       ))}
-    </div>
+    </span>
   )
 }
 
-function DetailGroup({ label, children }: { label: string; children: React.ReactNode }) {
+const exposureLabel: Record<Plan['app']['exposure'], string> = {
+  protected: 'behind the login',
+  public: 'public',
+  internal: 'internal',
+}
+
+// One row of the build facts: the label in a fixed column, the value beside
+// it — so the facts read down one edge instead of as scattered groups.
+function Fact({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div>
-      <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted">{label}</p>
-      {children}
-    </div>
+    <>
+      <dt className="text-xs text-muted">{label}</dt>
+      <dd className="min-w-0 text-sm text-ink">{children}</dd>
+    </>
   )
 }
 
-function DetectionDetails({ plan, update }: { plan: Plan; update: DeployUpdate }) {
+// Build: how the image was made and how it runs, as one list of facts.
+// What the app *is* lives on the Overview tab.
+function DetectionDetails({ plan, update, result }: { plan: Plan; update: DeployUpdate; result?: DeployResult }) {
   const stack = [...(plan.build.runtimes ?? []), ...(plan.build.frameworks ?? [])]
+  const versions = plan.build.versions ?? []
   const images = update.baseImages?.length ? update.baseImages : (plan.build.baseImages ?? [])
   const packageManagers = plan.build.packageManagers ?? []
   const packages = plan.build.systemPackages ?? []
 
   return (
-    <Card className="space-y-4 p-4">
-      <SectionTitle>
-        <span className="flex items-center gap-1.5">
-          <Layers3 className="size-3.5" aria-hidden /> Detection & build
-        </span>
-      </SectionTitle>
-
-      {plan.appType && (
-        <DetailGroup label="Application">
-          <p className="text-sm text-ink">{plan.appType}</p>
-          {plan.notes && <p className="mt-1 text-xs leading-relaxed text-muted">{plan.notes}</p>}
-        </DetailGroup>
-      )}
-
-      <DetailGroup label="Build plan">
-        <p className="text-sm text-ink-soft">{plan.build.summary}</p>
-      </DetailGroup>
-
-      {stack.length > 0 && (
-        <DetailGroup label="Detected stack">
-          <SignalChips signals={stack} />
-        </DetailGroup>
-      )}
-
-      {(plan.build.versions ?? []).length > 0 && (
-        <DetailGroup label="Pinned versions">
-          <SignalChips signals={plan.build.versions ?? []} />
-        </DetailGroup>
-      )}
-
-      <DetailGroup label="Base image">
-        {images.length > 0 ? (
-          <div className="space-y-1">
-            {images.map((image) => (
-              <p key={image} className="break-all rounded bg-surface px-2 py-1.5 font-mono text-xs text-emphasis">
-                {image}
-              </p>
-            ))}
-          </div>
-        ) : (
-          <p className="text-xs text-muted">
-            {plan.build.strategy === 'ai'
-              ? 'Chosen when donkey writes the Dockerfile; it will appear here before the build starts.'
-              : 'No FROM instruction was found.'}
-          </p>
+    <Section className="space-y-3">
+      <SectionHeader title="Build" />
+      <dl className="grid grid-cols-[6.5rem_minmax(0,1fr)] items-baseline gap-x-4 gap-y-3">
+        <Fact label="Recipe">
+          <span className="font-mono text-xs">{plan.build.summary}</span>
+        </Fact>
+        {stack.length > 0 && (
+          <Fact label="Stack">
+            <SignalChips signals={stack} />
+          </Fact>
         )}
-      </DetailGroup>
-
-      {(packageManagers.length > 0 || packages.length > 0) && (
-        <DetailGroup label="Packages">
-          {packageManagers.length > 0 && <SignalChips signals={packageManagers} />}
-          {packages.length > 0 && (
-            <ul className={`${packageManagers.length > 0 ? 'mt-2' : ''} space-y-2`}>
-              {packages.map((item) => (
-                <li key={item.dependency} className="rounded-md border border-line bg-surface/60 px-2.5 py-2">
-                  <p className="flex items-center gap-1.5 font-mono text-xs text-ink">
-                    <Package className="size-3.5 text-accent" aria-hidden /> {item.dependency}
-                  </p>
-                  {(item.build ?? []).length > 0 && (
-                    <p className="mt-1 text-[11px] text-muted">
-                      build: <span className="font-mono text-ink-soft">{item.build?.join(' ')}</span>
-                    </p>
-                  )}
-                  {(item.runtime ?? []).length > 0 && (
-                    <p className="mt-0.5 text-[11px] text-muted">
-                      runtime: <span className="font-mono text-ink-soft">{item.runtime?.join(' ')}</span>
-                    </p>
-                  )}
-                </li>
-              ))}
-            </ul>
+        {versions.length > 0 && (
+          <Fact label="Versions">
+            <SignalChips signals={versions} />
+          </Fact>
+        )}
+        <Fact label="Base image">
+          {images.length > 0 ? (
+            images.map((image) => (
+              <span key={image} className="block break-all font-mono text-xs">{image}</span>
+            ))
+          ) : (
+            <span className="text-xs text-muted">
+              {plan.build.strategy === 'ai'
+                ? 'Chosen when donkey writes the Dockerfile; it appears here before the build starts.'
+                : 'No FROM instruction was found.'}
+            </span>
           )}
-        </DetailGroup>
-      )}
-    </Card>
+        </Fact>
+        {(packageManagers.length > 0 || packages.length > 0) && (
+          <Fact label="Packages">
+            <span className="flex flex-col gap-1.5">
+              {packageManagers.length > 0 && <SignalChips signals={packageManagers} />}
+              {packages.map((item) => (
+                <span key={item.dependency} className="font-mono text-xs">
+                  {item.dependency}
+                  {(item.build ?? []).length > 0 && <span className="text-muted"> · build </span>}
+                  {item.build?.join(' ')}
+                  {(item.runtime ?? []).length > 0 && <span className="text-muted"> · runtime </span>}
+                  {item.runtime?.join(' ')}
+                </span>
+              ))}
+            </span>
+          </Fact>
+        )}
+        <Fact label="Runs">
+          <span className="text-xs">
+            port <span className="font-mono">{plan.app.port}</span> · {exposureLabel[plan.app.exposure]}
+          </span>
+        </Fact>
+        {result?.imageRef && (
+          <Fact label="Image">
+            <span className="break-all font-mono text-xs">{result.imageRef}</span>
+          </Fact>
+        )}
+      </dl>
+    </Section>
   )
 }
 
@@ -230,109 +196,85 @@ function ServicesNeeded({ plan }: { plan: Plan }) {
   const services = plan.services ?? []
   const storage = plan.app.storage ?? []
   return (
-    <Card className="space-y-3 p-4">
-      <SectionTitle>
-        <span className="flex items-center gap-1.5">
-          <Database className="size-3.5" aria-hidden /> Backing services
-        </span>
-      </SectionTitle>
+    <Section className="space-y-3">
+      <SectionHeader title="Services" />
       {services.length === 0 ? (
-        <p className="text-xs text-muted">No backing service dependencies were detected.</p>
+        <p className="text-sm text-muted">No backing service dependencies were detected.</p>
       ) : (
-        <ul className="space-y-2">
+        <List>
           {services.map((service) => {
             const state = !service.known
               ? 'unsupported'
               : !service.selected
                 ? 'not included'
                 : service.exists
-                  ? 'connect existing'
-                  : 'create with release'
-            const tone = service.selected && service.known ? 'text-success' : 'text-muted'
+                  ? 'connects to the existing one'
+                  : 'created with the release'
+            const on = service.selected && service.known
             return (
-              <li key={service.name} className="rounded-md border border-line bg-surface/50 px-2.5 py-2">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="flex min-w-0 items-center gap-1.5 font-mono text-xs text-ink">
-                    <Database className={`size-3.5 shrink-0 ${tone}`} aria-hidden />
-                    <span className="truncate">{service.name}</span>
-                    {service.type !== service.name && <span className="text-muted">({service.type})</span>}
-                  </span>
-                  <span className={`shrink-0 text-[10px] ${tone}`}>{state}</span>
+              <ListRow key={service.name}>
+                <Database className={`size-4 shrink-0 ${on ? 'text-ink-soft' : 'text-muted/60'}`} aria-hidden />
+                <div className="min-w-0 flex-1">
+                  <span className={`font-mono text-sm ${on ? 'text-ink' : 'text-muted'}`}>{service.name}</span>
+                  {service.type !== service.name && <span className="ml-2 font-mono text-[11px] text-muted">{service.type}</span>}
+                  {service.reason && <p className="truncate text-xs text-muted">{service.reason}</p>}
                 </div>
-                {service.reason && <p className="mt-1 text-[11px] leading-relaxed text-muted">{service.reason}</p>}
-              </li>
+                <span className={`shrink-0 text-xs ${on ? 'text-success' : 'text-muted'}`}>{state}</span>
+              </ListRow>
             )
           })}
-        </ul>
+        </List>
       )}
       {storage.length > 0 && (
-        <p className="flex items-start gap-1.5 border-t border-line pt-2 text-xs text-muted">
-          <Box className="mt-0.5 size-3.5 shrink-0" aria-hidden />
-          <span>
-            One {plan.app.storageSize || '1Gi'} disk keeps{' '}
-            <span className="font-mono text-ink-soft">{storage.join(', ')}</span>.
-          </span>
+        <p className="text-xs text-muted">
+          <Box className="mr-1.5 inline size-3.5 align-[-3px]" aria-hidden />
+          One {plan.app.storageSize || '1Gi'} disk keeps <span className="font-mono text-ink-soft">{storage.join(', ')}</span>.
         </p>
       )}
-    </Card>
+    </Section>
   )
 }
 
+// Problems only appear when there is one: the status callout already says
+// when everything went well.
 function Problems({ plan, result }: { plan: Plan; result?: DeployResult }) {
   const findings = (plan.findings ?? []).filter((finding) => finding.level !== 'info')
+  const proposals = result?.proposals ?? []
   const failed = Boolean(result && !result.ok)
-  if (!failed && findings.length === 0) {
-    return (
-      <Card className="flex items-center gap-2 border-success/25 p-4 text-sm text-success">
-        <CheckCircle2 className="size-4 shrink-0" aria-hidden /> No problems detected before release.
-      </Card>
-    )
-  }
+  if (findings.length === 0 && !(failed && (result?.diagnosis || proposals.length > 0))) return null
   return (
-    <Card className="space-y-3 p-4">
-      <div className="flex items-center justify-between gap-2">
-        <SectionTitle>Problems</SectionTitle>
-        <span className={`text-xs ${failed ? 'text-danger' : 'text-accent'}`}>
-          {failed ? 'release stopped' : `${findings.length} need attention`}
-        </span>
-      </div>
-      {failed && (
-        <div className="rounded-md border border-danger/35 bg-danger/5 px-3 py-2.5">
-          <p className="flex items-start gap-2 text-sm text-danger">
-            <CircleAlert className="mt-0.5 size-4 shrink-0" aria-hidden />
-            <span className="whitespace-pre-wrap break-words">
-              {result?.error || 'The release did not complete.'}
-            </span>
-          </p>
-          {result?.diagnosis && (
-            <div className="mt-2 border-t border-danger/20 pt-2">
-              <p className="text-[10px] font-semibold uppercase tracking-wider text-muted">Diagnosis</p>
-              <p className="mt-1 text-sm leading-relaxed text-ink-soft">{result.diagnosis}</p>
-            </div>
-          )}
+    <Section className="space-y-3">
+      <SectionHeader title="Problems" />
+      {failed && result?.diagnosis && (
+        <div className="space-y-1">
+          <Eyebrow>Diagnosis</Eyebrow>
+          <p className="text-sm leading-relaxed text-ink">{result.diagnosis}</p>
         </div>
       )}
       <FindingsList findings={findings} />
-      {(result?.proposals ?? []).length > 0 && (
-        <div className="space-y-2 border-t border-line pt-3">
-          <p className="text-[10px] font-semibold uppercase tracking-wider text-muted">Suggested fixes</p>
-          {(result?.proposals ?? []).map((proposal, index) => (
-            <div key={index} className="rounded-md border border-line bg-surface px-3 py-2 text-sm">
-              {proposal.type === 'set_env' && (
-                <code className="break-all font-mono text-xs text-accent">
-                  donkey env set {proposal.key}={proposal.value}
-                </code>
-              )}
-              {proposal.type === 'edit_file' && (
-                <span className="font-mono text-xs text-accent">{proposal.path}</span>
-              )}
-              <p className="mt-1 text-xs leading-relaxed text-ink-soft">{proposal.explanation}</p>
-              {proposal.diff && <DiffView diff={proposal.diff} />}
-            </div>
-          ))}
+      {proposals.length > 0 && (
+        <div className="space-y-1.5">
+          <Eyebrow>Suggested fixes</Eyebrow>
+          <List>
+            {proposals.map((proposal, index) => (
+              <ListRow key={index} className="items-start">
+                <Wrench className="mt-0.5 size-4 shrink-0 text-muted" aria-hidden />
+                <div className="min-w-0 flex-1 space-y-1">
+                  {proposal.type === 'set_env' && (
+                    <code className="block break-all font-mono text-xs text-ink">
+                      donkey env set {proposal.key}={proposal.value}
+                    </code>
+                  )}
+                  {proposal.type === 'edit_file' && <span className="block font-mono text-xs text-ink">{proposal.path}</span>}
+                  <p className="text-xs leading-relaxed text-muted">{proposal.explanation}</p>
+                  {proposal.diff && <DiffView diff={proposal.diff} />}
+                </div>
+              </ListRow>
+            ))}
+          </List>
         </div>
       )}
-    </Card>
+    </Section>
   )
 }
 
@@ -355,22 +297,17 @@ function ReleaseLog({
   }, [lines, buildLog])
 
   return (
-    <Card
-      className={`flex min-h-[34rem] flex-col overflow-hidden ${
-        sticky ? 'lg:sticky lg:top-20 lg:h-[calc(100vh-7rem)] lg:max-h-[52rem]' : 'h-[min(44rem,70vh)]'
-      }`}
-    >
-      <div className="flex items-center justify-between gap-3 border-b border-line px-4 py-3">
-        <SectionTitle>
-          <span className="flex items-center gap-1.5">
-            <Terminal className="size-3.5" aria-hidden /> Deployment log
-          </span>
-        </SectionTitle>
-        <span className="flex items-center gap-1.5 text-xs text-muted">
+    <CodeCard
+      icon={Terminal}
+      title="Deployment log"
+      className={sticky ? 'min-h-[34rem] lg:sticky lg:top-20 lg:h-[calc(100vh-7rem)] lg:max-h-[52rem]' : 'max-h-[min(44rem,70vh)]'}
+      meta={
+        <>
           <span className={`size-1.5 rounded-full ${running ? 'animate-pulse bg-accent' : 'bg-muted'}`} aria-hidden />
           {running ? 'live' : 'finished'}
-        </span>
-      </div>
+        </>
+      }
+    >
       <div
         ref={pane}
         role="log"
@@ -380,7 +317,7 @@ function ReleaseLog({
           const el = pane.current
           if (el) pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48
         }}
-        className="min-h-0 flex-1 overflow-auto bg-well p-4 font-mono text-xs leading-relaxed focus-visible:outline-2 focus-visible:outline-inset focus-visible:outline-accent-strong"
+        className="h-full focus-visible:outline-2 focus-visible:outline-inset focus-visible:outline-accent-strong"
       >
         {lines.length === 0 && !buildLog && (
           <p className="flex items-center gap-2 text-muted">
@@ -400,13 +337,11 @@ function ReleaseLog({
         {buildLog && (
           <div className={`${lines.length > 0 ? 'mt-4 border-t border-line/70 pt-3' : ''}`}>
             <p className="mb-2 text-[10px] uppercase tracking-wider text-muted">Build output</p>
-            <pre className="whitespace-pre-wrap break-words text-[11px] leading-relaxed text-ink-soft">
-              {buildLog}
-            </pre>
+            <pre className="whitespace-pre-wrap break-words text-ink-soft">{buildLog}</pre>
           </div>
         )}
       </div>
-    </Card>
+    </CodeCard>
   )
 }
 
@@ -432,58 +367,49 @@ export function ReleaseView({
   layout?: 'split' | 'stacked'
 }) {
   const running = result === undefined
+  const actions = result && (onOpen || onBackToReview || onDeployAnother) && (
+    <div className="flex flex-wrap items-center justify-end gap-2">
+      {result.ok ? (
+        <>
+          {onDeployAnother && <Button kind="quiet" onClick={onDeployAnother}>Deploy another</Button>}
+          {onOpen && <Button onClick={onOpen}>Open the app page</Button>}
+        </>
+      ) : (
+        <>
+          {onDeployAnother && <Button kind="quiet" onClick={onDeployAnother}>Pick something else</Button>}
+          {onBackToReview && <Button onClick={onBackToReview}>Back to review</Button>}
+        </>
+      )}
+    </div>
+  )
   const details = (
-    <div className="space-y-4">
-      <ReleaseState plan={plan} update={update} result={result} />
-      <DetectionDetails plan={plan} update={update} />
+    <div className="flex flex-col gap-5">
+      <ReleaseState update={update} result={result} />
+      <DetectionDetails plan={plan} update={update} result={result} />
       <ServicesNeeded plan={plan} />
       <Problems plan={plan} result={result} />
-
       {Boolean(update.changes?.length) && (
-        <Card className="space-y-3 p-4">
-          <SectionTitle>Automatic repairs</SectionTitle>
-          <p className="text-xs text-muted">Applied to this build. Keep these changes with the Dockerfile to reproduce it.</p>
-          {update.changes?.map((change, index) => (
-            <details key={`${change.path}-${index}`} className="rounded-md border border-line p-3">
-              <summary className="cursor-pointer font-mono text-xs">{change.path}</summary>
-              <div className="mt-3"><DiffView diff={change.diff} /></div>
-            </details>
-          ))}
-        </Card>
+        <Section className="space-y-3">
+          <SectionHeader
+            title="Automatic repairs"
+            description="Applied to this build. Keep these changes with the Dockerfile to reproduce it."
+          />
+          <div className="flex flex-col gap-2">
+            {update.changes?.map((change, index) => (
+              <Disclosure key={`${change.path}-${index}`} summary={<span className="font-mono">{change.path}</span>}>
+                <DiffView diff={change.diff} />
+              </Disclosure>
+            ))}
+          </div>
+        </Section>
       )}
-
-      {result && (result.url || onOpen || onBackToReview || onDeployAnother) && (
-        <div className="flex flex-wrap items-center justify-end gap-2">
-          {result.ok ? (
-            <>
-              {result.url && (
-                <a
-                  href={result.url}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="mr-auto flex min-w-0 items-center gap-1.5 truncate font-mono text-xs text-accent-strong hover:underline"
-                >
-                  <span className="truncate">{result.url}</span>
-                  <ExternalLink className="size-3.5 shrink-0" aria-hidden />
-                </a>
-              )}
-              {onDeployAnother && <Button kind="quiet" onClick={onDeployAnother}>Deploy another</Button>}
-              {onOpen && <Button onClick={onOpen}>Open the app page</Button>}
-            </>
-          ) : (
-            <>
-              {onDeployAnother && <Button kind="quiet" onClick={onDeployAnother}>Pick something else</Button>}
-              {onBackToReview && <Button onClick={onBackToReview}>Back to review</Button>}
-            </>
-          )}
-        </div>
-      )}
+      {actions}
     </div>
   )
 
   if (layout === 'stacked') {
     return (
-      <div className="space-y-4">
+      <div className="flex flex-col gap-5">
         {details}
         <ReleaseLog lines={lines} buildLog={buildLog} running={running} sticky={false} />
       </div>
@@ -491,7 +417,7 @@ export function ReleaseView({
   }
 
   return (
-    <div className="grid items-start gap-4 lg:grid-cols-2">
+    <div className="grid items-start gap-6 lg:grid-cols-2">
       <ReleaseLog lines={lines} buildLog={buildLog} running={running} />
       {details}
     </div>

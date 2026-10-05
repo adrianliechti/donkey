@@ -52,6 +52,9 @@
   /* Health semantics */
   --color-success: light-dark(oklch(59.6% 0.145 163.225), oklch(76.5% 0.177 163.223)); /* emerald-600 / 400 */
   --color-danger: light-dark(oklch(57.7% 0.245 27.325), oklch(70.4% 0.191 22.216)); /* red-600 / 400 */
+  /* Warnings — the app will run and still not work. Amber, so a warning
+     never looks like a selection (blue) or a failure (red). */
+  --color-warning: light-dark(oklch(66.6% 0.179 58.318), oklch(82.8% 0.189 84.429)); /* amber-600 / 400 */
 
   --font-sans: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
   --font-mono: 'JetBrains Mono Variable', ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas,
@@ -73,8 +76,32 @@ html {
   background: var(--color-surface);
   color: var(--color-ink);
   color-scheme: light dark;
+  /* Locking the page scroll under a drawer must not shift the layout where
+   * scrollbars take room. */
+  scrollbar-gutter: stable;
   /* Lets height animate to and from `auto`. */
   interpolate-size: allow-keywords;
+}
+
+/* Panels and dialogs do not rubber-band. The page may (it is a document);
+ * the overlays are tools, and in Safari a bouncing drawer tears the sticky
+ * header off its content. Every inner scroll area keeps its overscroll to
+ * itself, so hitting the end of a list never moves what is behind it. A base
+ * default, so one pane can still opt into handing its scroll on (the log
+ * pane, with `overscroll-y-auto`). */
+@layer base {
+  .overflow-auto,
+  .overflow-y-auto,
+  .overflow-y-scroll {
+    overscroll-behavior: none;
+  }
+}
+
+/* Native checkboxes and radios take the ink, like the switch and the primary
+ * button — one accent for "on". */
+input[type='checkbox'],
+input[type='radio'] {
+  accent-color: var(--color-ink);
 }
 
 /* One-color brand mark: face it back toward the wordmark/content, and let
@@ -97,42 +124,6 @@ html {
   background-size: 22px 22px;
 }
 
-/* The app and deploy drawers. data-closing swaps the entrance for the exit;
-   its animationend is what commits the route change. */
-.panel-drawer {
-  animation: panel-in var(--duration-panel) var(--ease-emphasized) both;
-}
-.panel-drawer[data-closing] {
-  animation: panel-out var(--duration-panel-exit) var(--ease-exit) both;
-}
-.panel-scrim {
-  animation: scrim-in var(--duration-panel) var(--ease-emphasized) both;
-}
-.panel-scrim[data-closing] {
-  animation: scrim-out var(--duration-panel-exit) var(--ease-exit) both;
-}
-
-@keyframes panel-in {
-  from {
-    translate: 100% 0;
-  }
-}
-@keyframes panel-out {
-  to {
-    translate: 100% 0;
-  }
-}
-@keyframes scrim-in {
-  from {
-    opacity: 0;
-  }
-}
-@keyframes scrim-out {
-  to {
-    opacity: 0;
-  }
-}
-
 /* Reduced motion drops travel, not cross-fades: opacity and colour keep their
    (quick) transitions, transforms don't. */
 @media (prefers-reduced-motion: reduce) {
@@ -143,12 +134,5 @@ html {
     animation-iteration-count: 1 !important;
     transition-property: opacity, color, background-color, border-color, box-shadow, outline-color !important;
     transition-duration: var(--duration-fast) !important;
-  }
-  /* Shortened, not removed: animationend still has to fire to close a drawer. */
-  .panel-drawer,
-  .panel-drawer[data-closing],
-  .panel-scrim,
-  .panel-scrim[data-closing] {
-    animation-duration: 1ms !important;
   }
 }

@@ -45,7 +45,7 @@ type Config struct {
 	// runtime only — Docker spaces are separate networks and isolated as is).
 	IsolateSpaces bool
 	// RestrictEgress adds the egress half of that fence — a space's pods reach
-	// only their own space, donkey-ai, donkey-telemetry and DNS, never the
+	// only their own space, donkey-ai, donkey-proxy, donkey-telemetry and DNS, never the
 	// internet. Off by default; only meaningful with IsolateSpaces.
 	RestrictEgress bool
 	// AIURL is donkey-ai's address — the console's /ai/v1 calls are
@@ -75,6 +75,12 @@ type Config struct {
 	// AddonImagePullSecrets names existing secrets in each workload namespace
 	// that Kubernetes should use when pulling managed service and file-helper images.
 	AddonImagePullSecrets []string
+	AddonPlugins          config.AddonPlugins
+	CommonOfferings       config.CommonOfferings
+	ProxyServices         config.ProxyServices
+	// Runtime names the provider in use (kubernetes or docker); the catalog
+	// hides services a plugin does not offer there.
+	Runtime string
 	// TLS carries the cert-manager issuer used for exact-host Certificates in
 	// Kubernetes. Docker's gateway issues certificates independently.
 	TLS config.InstallTLS
@@ -149,6 +155,42 @@ func FromEnv() (*Config, error) {
 		if err := json.Unmarshal([]byte(raw), &c.RegistryMirrors); err != nil {
 			return nil, fmt.Errorf("DONKEY_REGISTRY_MIRRORS is not a JSON object of registry-to-mirror mappings: %w", err)
 		}
+	}
+	if raw := os.Getenv("DONKEY_ADDON_PLUGINS"); raw != "" {
+		if err := json.Unmarshal([]byte(raw), &c.AddonPlugins); err != nil {
+			return nil, fmt.Errorf("DONKEY_ADDON_PLUGINS must be a JSON array of addon plugin configurations: %w", err)
+		}
+	}
+	if err := c.AddonPlugins.Validate(); err != nil {
+		return nil, err
+	}
+	if raw := os.Getenv("DONKEY_COMMON_OFFERINGS"); raw != "" {
+		if err := json.Unmarshal([]byte(raw), &c.CommonOfferings); err != nil {
+			return nil, fmt.Errorf("DONKEY_COMMON_OFFERINGS must be a JSON array of offering ids: %w", err)
+		}
+	}
+	if err := c.CommonOfferings.Validate(); err != nil {
+		return nil, err
+	}
+	proxyServices := []byte(os.Getenv("DONKEY_PROXY_SERVICES"))
+	if file := os.Getenv("DONKEY_PROXY_SERVICES_FILE"); file != "" {
+		var err error
+		proxyServices, err = os.ReadFile(file)
+		if err != nil {
+			return nil, fmt.Errorf("reading proxy service configuration: %w", err)
+		}
+	}
+	if len(proxyServices) > 0 {
+		if err := json.Unmarshal(proxyServices, &c.ProxyServices); err != nil {
+			return nil, fmt.Errorf("proxy service configuration must be a JSON array")
+		}
+	}
+	if err := c.ProxyServices.Validate(); err != nil {
+		return nil, err
+	}
+	c.Runtime = os.Getenv("DONKEY_RUNTIME")
+	if c.Runtime == "" {
+		c.Runtime = "kubernetes"
 	}
 	// The build environment is a map, so it travels as JSON — the same way
 	// DONKEY_PLATFORM_ADMINS does.

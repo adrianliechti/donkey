@@ -123,11 +123,15 @@ func (s *Server) routes() http.Handler {
 	// names (services, databases, tables, buckets) live in the path; leaf
 	// items with arbitrary names (object keys, row keys) ride in query/body.
 	mux.Handle("GET /v1/catalog", s.auth(s.handleCatalog))
+	mux.Handle("GET /v1/spaces/{space}/catalog", s.auth(s.handleCatalog))
 	mux.Handle("GET /v1/spaces/{space}/services", s.auth(s.handleListSpaceServices))
 	mux.Handle("POST /v1/spaces/{space}/services", s.auth(s.handleAddSpaceService))
 	mux.Handle("DELETE /v1/spaces/{space}/services/{service}", s.auth(s.handleRemoveSpaceService))
 	mux.Handle("GET /v1/spaces/{space}/services/{service}/binding", s.auth(s.handleServiceBinding))
+	mux.Handle("POST /v1/spaces/{space}/services/{service}/http/request", s.auth(s.handleServiceHTTPRequest))
 	mux.Handle("GET /v1/spaces/{space}/services/{service}/tunnel", s.auth(s.handleServiceTunnel))
+	mux.Handle("GET /v1/spaces/{space}/services/{service}/ai/models", s.auth(s.handleServiceAI))
+	mux.Handle("POST /v1/spaces/{space}/services/{service}/ai/chat/completions", s.auth(s.handleServiceAI))
 	// The bucket browser, for services that speak S3.
 	mux.Handle("GET /v1/spaces/{space}/services/{service}/buckets", s.auth(s.handleS3Buckets))
 	mux.Handle("POST /v1/spaces/{space}/services/{service}/buckets", s.auth(s.handleS3CreateBucket))

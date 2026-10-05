@@ -375,6 +375,8 @@ func (c *Client) PutEnv(ctx context.Context, space, app string, env map[string]s
 type AddAddonResult struct {
 	Created   bool `json:"created"`
 	Restarted bool `json:"restarted"`
+	// Parameters are the resolved values a created service runs with.
+	Parameters map[string]any `json:"parameters,omitempty"`
 }
 
 func (c *Client) AddAddon(ctx context.Context, space, app string, req server.AddonRequest) (AddAddonResult, error) {
@@ -391,7 +393,14 @@ func (c *Client) RemoveAddon(ctx context.Context, space, app, addon string) erro
 
 // SpaceAddon is one service of a space and the apps using it.
 type SpaceAddon struct {
-	Name       string   `json:"name"`
+	Name       string         `json:"name"`
+	Type       string         `json:"type,omitempty"`
+	Protocol   string         `json:"protocol,omitempty"`
+	Parameters map[string]any `json:"parameters,omitempty"`
+	// State is set for a plugin instance without a binding: pending,
+	// failed (see Message) or stopped.
+	State      string   `json:"state,omitempty"`
+	Message    string   `json:"message,omitempty"`
 	Keys       []string `json:"keys"`
 	AttachedTo []string `json:"attachedTo"`
 }
@@ -407,9 +416,11 @@ func (c *Client) SpaceAddons(ctx context.Context, space string) ([]SpaceAddon, e
 // AddonBindingInfo is a service's contract with values, plus its in-cluster
 // address (empty for one running elsewhere).
 type AddonBindingInfo struct {
-	Binding map[string]string `json:"binding"`
-	Host    string            `json:"host"`
-	Port    int               `json:"port"`
+	Type     string            `json:"type"`
+	Protocol string            `json:"protocol"`
+	Binding  map[string]string `json:"binding"`
+	Host     string            `json:"host"`
+	Port     int               `json:"port"`
 }
 
 func (c *Client) AddonBinding(ctx context.Context, space, addon string) (AddonBindingInfo, error) {
@@ -448,10 +459,15 @@ func (c *Client) DialAddonTunnel(ctx context.Context, space, addon string) (*web
 
 // RemoveSpaceAddon removes a service from the space, detaching every app
 // that uses it.
-func (c *Client) RemoveSpaceAddon(ctx context.Context, space, addon string, keepData bool) error {
+// RemoveSpaceAddon removes a service from its space. orphan drops a plugin
+// instance whose plugin is gone or failing, leaving its backing service.
+func (c *Client) RemoveSpaceAddon(ctx context.Context, space, addon string, keepData, orphan bool) error {
 	q := url.Values{}
 	if keepData {
 		q.Set("keepData", "true")
+	}
+	if orphan {
+		q.Set("orphan", "true")
 	}
 	return c.doJSON(ctx, http.MethodDelete, "/v1/spaces/"+url.PathEscape(space)+"/services/"+addon, q, nil, nil)
 }

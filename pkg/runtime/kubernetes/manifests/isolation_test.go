@@ -74,8 +74,8 @@ func TestSpaceIsolationPolicyRestrictsEgressToDNSSpaceAndPlatform(t *testing.T) 
 	if len(p.Spec.Ingress) != 1 || len(p.Spec.Ingress[0].From) != 3 {
 		t.Errorf("egress restriction must not change the ingress rule: %+v", p.Spec.Ingress)
 	}
-	if len(p.Spec.Egress) != 4 {
-		t.Fatalf("got %d egress rules, want DNS + same-space + AI + telemetry", len(p.Spec.Egress))
+	if len(p.Spec.Egress) != 5 {
+		t.Fatalf("got %d egress rules, want DNS + same-space + AI + telemetry + service proxy", len(p.Spec.Egress))
 	}
 
 	// DNS: any destination, both protocols on 53, and no peer restriction.
@@ -103,10 +103,10 @@ func TestSpaceIsolationPolicyRestrictsEgressToDNSSpaceAndPlatform(t *testing.T) 
 		t.Errorf("same-space egress peer = %+v", same)
 	}
 
-	// The two platform endpoints are separate so each gets only its actual
+	// The platform endpoints are separate so each gets only its actual
 	// workload port (NetworkPolicy sees the target Pod port after Service
 	// translation).
-	for i, name := range []string{AIAppName, TelemetryAppName} {
+	for i, name := range []string{AIAppName, TelemetryAppName, ProxyAppName} {
 		rule := p.Spec.Egress[i+2]
 		if len(rule.To) != 1 || len(rule.Ports) != 1 {
 			t.Fatalf("platform rule %d = %+v, want one peer and one port", i, rule)
@@ -120,6 +120,9 @@ func TestSpaceIsolationPolicyRestrictsEgressToDNSSpaceAndPlatform(t *testing.T) 
 		wantPort := int(aiPort)
 		if name == TelemetryAppName {
 			wantPort = int(telemetryOTLPPort)
+		}
+		if name == ProxyAppName {
+			wantPort = proxyPort
 		}
 		if got := rule.Ports[0].Port.IntValue(); got != wantPort {
 			t.Errorf("platform egress peer %d port = %d, want %d", i, got, wantPort)

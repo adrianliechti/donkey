@@ -1,38 +1,48 @@
-import { useState } from 'react'
+import { lazy, Suspense, useEffect, useState } from 'react'
 import { Link, useNavigate } from '@tanstack/react-router'
+import { Menu, MenuButton, MenuItem, MenuItems } from '@headlessui/react'
 import {
-  Dialog,
-  DialogBackdrop,
-  DialogPanel,
-  DialogTitle,
-  Menu,
-  MenuButton,
-  MenuItem,
-  MenuItems,
-} from '@headlessui/react'
-import {
-  Archive,
   Database,
   EllipsisVertical,
   HardDrive,
-  KeyRound,
+  Info,
   Network,
   Plus,
   Rocket,
-  Sparkles,
-	Settings,
+  Settings,
   Trash2,
+  TriangleAlert,
 } from 'lucide-react'
 import { api, type AddAddonRequest, type AppSummary, type SpaceAddonEntry } from './api'
-import { AddServiceDialog, typeIcons } from './AddonForm'
-import { AiDialog } from './AiDialog'
-import { DatabaseDialog } from './DatabaseDialog'
-import { RedisDialog } from './RedisDialog'
+import { AddServiceDialog } from './AddonForm'
+import { Modal, ModalBody, ModalFooter, ModalHeader, ModalNotice } from './dialog'
+import { summarizeParameters } from './parameters'
 import { useCatalog, useInvalidateServices, useSpaceServices } from './queries'
-import { S3Dialog } from './S3Dialog'
+import { serviceUI } from './serviceProtocol'
 import { SpaceTelemetry } from './TrafficPanel'
 import { SpaceSettings } from './SpaceSettings'
-import { Button, ErrorNote, ExposureBadge, ago, errText, healthLine, healthOf } from './ui'
+import { Button, Callout, ExposureBadge, Field, Input, ToggleRow, Toolbar, ago, errText, healthLine, healthOf } from './ui'
+
+// The service consoles are their own chunks (the AI chat alone brings a
+// markdown renderer). They are fetched ahead of time — when the chips appear,
+// and again on hover — so a click opens the real dialog in one motion rather
+// than a placeholder first and the dialog after it.
+const consoleModules = {
+  database: () => import('./DatabaseDialog'),
+  redis: () => import('./RedisDialog'),
+  s3: () => import('./S3Dialog'),
+  openai: () => import('./AiDialog'),
+  http: () => import('./HttpDialog'),
+}
+type ConsoleKind = keyof typeof consoleModules
+const DatabaseDialog = lazy(() => consoleModules.database().then((m) => ({ default: m.DatabaseDialog })))
+const RedisDialog = lazy(() => consoleModules.redis().then((m) => ({ default: m.RedisDialog })))
+const S3Dialog = lazy(() => consoleModules.s3().then((m) => ({ default: m.S3Dialog })))
+const AiDialog = lazy(() => consoleModules.openai().then((m) => ({ default: m.AiDialog })))
+const HttpDialog = lazy(() => consoleModules.http().then((m) => ({ default: m.HttpDialog })))
+const preloadConsole = (kind?: ConsoleKind) => {
+  if (kind) void consoleModules[kind]()
+}
 
 /**
  * One section of the paddock per space.
@@ -72,7 +82,7 @@ export function SpaceCard({
   const [typedSpace, setTypedSpace] = useState('')
 
   const { data: services, error: servicesError } = useSpaceServices(space)
-  const { data: catalog } = useCatalog()
+  const { data: catalog } = useCatalog(space)
   const invalidate = useInvalidateServices()
   const addingTitle = catalog?.find((s) => s.type === addingType)?.title || addingType
 
@@ -92,11 +102,11 @@ export function SpaceCard({
 
   return (
     <section className="py-6">
-      <div className="mb-3 flex items-center justify-between gap-3">
-        <div className="flex items-center gap-2.5">
-          <h2 className="font-mono text-base font-bold tracking-tight">{space}</h2>
+      <div className="mb-3 flex min-h-8 items-center justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-2.5">
+          <h2 className="truncate font-mono text-base font-bold tracking-tight">{space}</h2>
         </div>
-        <div className="flex items-center gap-0.5">
+        <Toolbar>
           <SpaceTelemetry space={space} />
           <span className="mx-1 h-4 w-px bg-line" aria-hidden />
           <AddMenu space={space} onAddService={(type) => setAddingType(type)} />
@@ -109,7 +119,7 @@ export function SpaceCard({
               setDeletingSpace(true)
             }}
           />}
-        </div>
+        </Toolbar>
       </div>
 
       <SpaceServices space={space} services={services} onChanged={() => invalidate(space)} />
@@ -131,106 +141,92 @@ export function SpaceCard({
       </div>
 
       {deletingSpace && (
-        <Dialog
-          open
+        <Modal
           onClose={() => {
             if (!busy) {
               setDeletingSpace(false)
               setTypedSpace('')
             }
           }}
-          className="relative z-50"
+          size="sm"
         >
-          <DialogBackdrop
-            transition
-            className="fixed inset-0 bg-black/60 transition-opacity duration-(--duration-base) ease-emphasized data-closed:opacity-0 data-leave:duration-(--duration-fast) data-leave:ease-exit"
-          />
-          <div className="fixed inset-0 flex items-start justify-center p-4 pt-[18vh]">
-            <DialogPanel
-              transition
-              className="w-full max-w-md rounded-lg border border-line bg-card p-4 shadow-2xl transition duration-(--duration-base) ease-emphasized data-closed:opacity-0 data-closed:scale-95 data-leave:duration-(--duration-fast) data-leave:ease-exit"
+          <ModalHeader eyebrow="Delete space" title={<>Remove <span className="font-mono">{space}</span></>}
+            onClose={() => { setDeletingSpace(false); setTypedSpace('') }} closeDisabled={busy} />
+          <ModalNotice message={error} />
+          <ModalBody className="space-y-4">
+            <Callout tone="danger" icon={TriangleAlert} title="This cannot be undone.">
+              Every app disk and all managed-service data in the space is deleted. There is no keep-data option.
+            </Callout>
+            <dl className="space-y-2 text-sm">
+              <div className="flex gap-3">
+                <dt className="w-16 shrink-0 text-muted">Apps</dt>
+                <dd className="min-w-0 font-mono text-ink">
+                  {everyApp.length > 0 ? everyApp.map((app) => app.name).join(', ') : <span className="font-sans text-muted">none</span>}
+                </dd>
+              </div>
+              <div className="flex gap-3">
+                <dt className="w-16 shrink-0 text-muted">Services</dt>
+                <dd className="min-w-0 font-mono text-ink">
+                  {services === null ? (
+                    <span className={`font-sans ${servicesError ? 'text-danger' : 'text-muted'}`}>
+                      {servicesError
+                        ? 'The inventory could not be loaded. The server still removes every owned service.'
+                        : 'Loading…'}
+                    </span>
+                  ) : services.length > 0 ? (
+                    services.map((s) => s.name).join(', ')
+                  ) : (
+                    <span className="font-sans text-muted">none</span>
+                  )}
+                </dd>
+              </div>
+            </dl>
+            <Field label={<>Type <span className="normal-case tracking-normal text-ink">{space}</span> to confirm</>}>
+              <Input
+                autoFocus
+                value={typedSpace}
+                onChange={(event) => setTypedSpace(event.target.value)}
+                disabled={busy}
+              />
+            </Field>
+          </ModalBody>
+          <ModalFooter>
+            <Button
+              kind="quiet"
+              onClick={() => {
+                setDeletingSpace(false)
+                setTypedSpace('')
+              }}
+              disabled={busy}
             >
-              <DialogTitle className="font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-muted">
-                Remove the space {space}
-              </DialogTitle>
-              <ErrorNote message={error} />
-              <div className="mt-3 space-y-2 text-sm text-ink-soft">
-                <p>This permanently removes the space and every Donkey-managed resource in it.</p>
-                {everyApp.length > 0 ? (
-                  <p className="text-danger">
-                    Its {everyApp.length === 1 ? 'app' : 'apps'}{' '}
-                    <span className="font-mono">{everyApp.map((app) => app.name).join(', ')}</span> will be deleted.
-                  </p>
-                ) : (
-                  <p className="text-muted">It holds no apps.</p>
-                )}
-                {services === null ? (
-                  <p className={servicesError ? 'text-danger' : 'text-muted'}>
-                    {servicesError
-                      ? 'The managed-service inventory could not be loaded. The server will still remove every owned service.'
-                      : 'Loading the managed-service inventory…'}
-                  </p>
-                ) : services.length > 0 ? (
-                  <p className="text-danger">
-                    Its {services.length === 1 ? 'service' : 'services'}{' '}
-                    <span className="font-mono">{services.map((s) => s.name).join(', ')}</span>{' '}
-                    and all their data will be deleted with it.
-                  </p>
-                ) : (
-                  <p className="text-muted">It holds no managed services.</p>
-                )}
-                <p className="text-danger">
-                  All app disks and managed-service data will be deleted. This action has no keep-data option.
-                </p>
-              </div>
-              <label className="mt-3 block text-sm text-ink-soft">
-                Type <span className="font-mono font-bold">{space}</span> to confirm
-                <input
-                  autoFocus
-                  value={typedSpace}
-                  onChange={(event) => setTypedSpace(event.target.value)}
-                  disabled={busy}
-                  className="mt-1 w-full rounded-md border border-line bg-canvas px-2 py-1 font-mono text-sm"
-                />
-              </label>
-              <div className="mt-4 flex justify-end gap-2">
-                <Button
-                  kind="quiet"
-                  onClick={() => {
-                    setDeletingSpace(false)
-                    setTypedSpace('')
-                  }}
-                  disabled={busy}
-                >
-                  Cancel
-                </Button>
-                <Button
-                  kind="danger"
-                  disabled={busy || (services === null && !servicesError) || typedSpace.trim() !== space}
-                  onClick={async () => {
-                    setBusy(true)
-                    setError('')
-                    try {
-                      await api.deleteSpace(space)
-                      setDeletingSpace(false)
-                      setTypedSpace('')
-                      onChanged()
-                    } catch (err) {
-                      setError(errText(err, 'Removing did not work.'))
-                    } finally {
-                      setBusy(false)
-                    }
-                  }}
-                >
-                  {busy ? 'Removing…' : `Remove ${space}`}
-                </Button>
-              </div>
-            </DialogPanel>
-          </div>
-        </Dialog>
+              Cancel
+            </Button>
+            <Button
+              kind="danger"
+              disabled={busy || (services === null && !servicesError) || typedSpace.trim() !== space}
+              onClick={async () => {
+                setBusy(true)
+                setError('')
+                try {
+                  await api.deleteSpace(space)
+                  setDeletingSpace(false)
+                  setTypedSpace('')
+                  onChanged()
+                } catch (err) {
+                  setError(errText(err, 'Removing did not work.'))
+                } finally {
+                  setBusy(false)
+                }
+              }}
+            >
+              {busy ? 'Removing…' : `Remove ${space}`}
+            </Button>
+          </ModalFooter>
+        </Modal>
       )}
 
       <AddServiceDialog
+        space={space}
         open={addingType !== null}
         title={addingType ? `Add ${addingTitle} to ${space}` : ''}
         submitLabel="Add"
@@ -264,48 +260,58 @@ function SpaceServices({
 }) {
   const [removing, setRemoving] = useState<SpaceAddonEntry | null>(null)
   const [browsing, setBrowsing] = useState<SpaceAddonEntry | null>(null)
-  const [redisBrowsing, setRedisBrowsing] = useState<SpaceAddonEntry | null>(null)
-  const [storeBrowsing, setStoreBrowsing] = useState<SpaceAddonEntry | null>(null)
-  const [chatting, setChatting] = useState<SpaceAddonEntry | null>(null)
+
+  // Warm the consoles this space can open, once the browser is idle.
+  useEffect(() => {
+    const kinds = [...new Set((services ?? []).map((svc) => serviceUI(svc.protocol).console).filter(Boolean))] as ConsoleKind[]
+    if (kinds.length === 0) return
+    const idle = window.requestIdleCallback ?? ((cb: () => void) => window.setTimeout(cb, 500))
+    const handle = idle(() => kinds.forEach(preloadConsole))
+    return () => (window.cancelIdleCallback ?? window.clearTimeout)(handle as number)
+  }, [services])
 
   if (!services || services.length === 0) return null
 
-  // Each service opens one console, which is where it is managed and removed.
-  const consoleFor = (svc: SpaceAddonEntry) => {
-    if (svc.keys.includes('DATABASE_URL'))
-      return { Icon: Database, open: () => setBrowsing(svc), label: `Browse the ${svc.name} database` }
-    if (svc.keys.includes('REDIS_URL'))
-      return { Icon: KeyRound, open: () => setRedisBrowsing(svc), label: `Browse the ${svc.name} keys` }
-    if (svc.keys.includes('AWS_ENDPOINT_URL_S3'))
-      return { Icon: Archive, open: () => setStoreBrowsing(svc), label: `Browse the ${svc.name} buckets` }
-    if (svc.keys.includes('OPENAI_BASE_URL'))
-      return { Icon: Sparkles, open: () => setChatting(svc), label: `Try ${svc.name} in a chat` }
-    return null
+  const consoleKind = serviceUI(browsing?.protocol).console
+  const consoleProps = {
+    space, service: browsing?.name ?? '',
+    onClose: () => setBrowsing(null),
+    onDelete: () => { setRemoving(browsing); setBrowsing(null) },
   }
   const chip =
-    'inline-flex items-center gap-1.5 rounded border border-line bg-raised px-2 py-1 font-mono text-xs text-ink-soft'
+    'inline-flex h-8 items-center gap-1.5 rounded-md border border-line bg-raised px-2.5 font-mono text-xs text-ink-soft'
 
   return (
     <div className="mb-3">
       <div className="flex flex-wrap items-center gap-2">
         {services.map((svc) => {
-          const view = consoleFor(svc)
+          const view = serviceUI(svc.protocol)
+          const settings = summarizeParameters(svc.parameters)
           const used =
-            svc.attachedTo.length > 0
+            (svc.attachedTo.length > 0
               ? `Used by ${svc.attachedTo.join(', ')}`
-              : 'Not connected to any app yet'
-          // No console to hold a Remove: keep a direct one.
-          if (!view) {
+              : 'Not connected to any app yet') + (settings ? ` · ${settings}` : '')
+          // A plugin instance that is still being set up, failed, or was
+          // stopped with its data kept has nothing to browse: say what it is
+          // and offer the way out.
+          const unready = svc.state && svc.state !== 'ready'
+          if (!view.console || unready) {
+            const note = unready ? `${svc.state}${svc.message ? `: ${svc.message}` : ''}` : ''
             return (
-              <span key={svc.name} className={chip} title={used}>
-                <Database className="size-3" aria-hidden />
+              <span key={svc.name} className={`${chip} ${svc.state === 'failed' ? 'border-danger/50' : ''}`} title={note ? `${note} — ${used}` : used}>
+                <view.Icon className="size-3" aria-hidden />
                 {svc.name}
+                {unready && (
+                  <span className={`rounded px-1 text-[10px] uppercase tracking-wide ${svc.state === 'failed' ? 'bg-danger/10 text-danger' : 'bg-line/60 text-muted'}`}>
+                    {svc.state}
+                  </span>
+                )}
                 <button
                   type="button"
                   title={`Remove ${svc.name} from ${space}`}
                   aria-label={`Remove ${svc.name} from ${space}`}
                   onClick={() => setRemoving(svc)}
-                  className="rounded p-0.5 text-muted hover:bg-danger/10 hover:text-danger"
+                  className="-mr-1 rounded p-0.5 text-muted hover:bg-danger/10 hover:text-danger"
                 >
                   <Trash2 className="size-3" aria-hidden />
                 </button>
@@ -316,9 +322,11 @@ function SpaceServices({
             <button
               key={svc.name}
               type="button"
-              onClick={view.open}
-              title={`${view.label} — ${used}`}
-              className={`${chip} transition-colors duration-(--duration-fast) hover:border-accent/70 hover:bg-accent-soft hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-strong`}
+              onClick={() => setBrowsing(svc)}
+              onMouseEnter={() => preloadConsole(view.console)}
+              onFocus={() => preloadConsole(view.console)}
+              title={`Open ${svc.name} ${view.noun} — ${used}`}
+              className={`${chip} outline-none transition-colors duration-(--duration-fast) hover:border-line-strong hover:bg-line/60 hover:text-ink focus-visible:border-ink/40 focus-visible:text-ink`}
             >
               <view.Icon className="size-3" aria-hidden />
               {svc.name}
@@ -326,44 +334,15 @@ function SpaceServices({
           )
         })}
       </div>
-      {browsing && (
-        <DatabaseDialog
-          space={space}
-          service={browsing.name}
-          onClose={() => setBrowsing(null)}
-          onDelete={() => {
-            setRemoving(browsing)
-            setBrowsing(null)
-          }}
-        />
-      )}
-      {storeBrowsing && (
-        <S3Dialog
-          space={space}
-          service={storeBrowsing.name}
-          onClose={() => setStoreBrowsing(null)}
-          onDelete={() => {
-            setRemoving(storeBrowsing)
-            setStoreBrowsing(null)
-          }}
-        />
-      )}
-      {redisBrowsing && (
-        <RedisDialog space={space} service={redisBrowsing.name}
-          onClose={() => setRedisBrowsing(null)}
-          onDelete={() => { setRemoving(redisBrowsing); setRedisBrowsing(null) }} />
-      )}
-      {chatting && (
-        <AiDialog
-          space={space}
-          service={chatting.name}
-          onClose={() => setChatting(null)}
-          onDelete={() => {
-            setRemoving(chatting)
-            setChatting(null)
-          }}
-        />
-      )}
+      {/* No placeholder: the chunk is normally already here (see above), and
+          a second dialog fading in behind the first would only flicker. */}
+      <Suspense fallback={null}>
+        {browsing && consoleKind === 'database' && <DatabaseDialog {...consoleProps} protocol={browsing.protocol} />}
+        {browsing && consoleKind === 's3' && <S3Dialog {...consoleProps} />}
+        {browsing && consoleKind === 'redis' && <RedisDialog {...consoleProps} />}
+        {browsing && consoleKind === 'openai' && <AiDialog {...consoleProps} />}
+        {browsing && consoleKind === 'http' && <HttpDialog {...consoleProps} />}
+      </Suspense>
       {removing && (
         <RemoveServiceDialog
           space={space}
@@ -396,14 +375,20 @@ function RemoveServiceDialog({
   onRemoved: () => void
 }) {
   const [keepData, setKeepData] = useState(false)
+  // A plugin-provided service whose plugin is gone or failing cannot be
+  // removed properly; once the server says so, offer to drop donkey's record
+  // and leave the backing service behind.
+  const [orphan, setOrphan] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const canOrphan = error.includes('--orphan')
+  const isProxy = service.protocol === 'http'
 
   async function remove() {
     setBusy(true)
     setError('')
     try {
-      await api.removeSpaceAddon(space, service.name, keepData)
+      await api.removeSpaceAddon(space, service.name, keepData, orphan)
       onRemoved()
     } catch (err) {
       setError(errText(err, 'Removing did not work.'))
@@ -413,89 +398,102 @@ function RemoveServiceDialog({
   }
 
   return (
-    <Dialog open onClose={() => !busy && onClose()} className="relative z-50">
-      <DialogBackdrop
-            transition
-            className="fixed inset-0 bg-black/60 transition-opacity duration-(--duration-base) ease-emphasized data-closed:opacity-0 data-leave:duration-(--duration-fast) data-leave:ease-exit"
+    <Modal onClose={() => !busy && onClose()} size="sm">
+      <ModalHeader eyebrow={`Remove service · ${space}`} title={<span className="font-mono">{service.name}</span>}
+        onClose={onClose} closeDisabled={busy} />
+      <ModalNotice message={error} />
+      <ModalBody className="space-y-4">
+        <div className="space-y-2 text-sm text-ink-soft">
+          {service.attachedTo.length > 0 ? (
+            <p>
+              <span className="font-mono text-ink">{service.attachedTo.join(', ')}</span>{' '}
+              {service.attachedTo.length === 1 ? 'is' : 'are'} connected — {service.attachedTo.length === 1 ? 'it' : 'they'} will restart
+              without its variables.
+            </p>
+          ) : (
+            <p>No app is connected to it.</p>
+          )}
+          {service.state && service.state !== 'ready' && (
+            <p className="text-muted">
+              It is {service.state}{service.message ? `: ${service.message}` : ''}.
+            </p>
+          )}
+        </div>
+        {!isProxy && !orphan && (
+          <ToggleRow
+            label="Keep its data"
+            description="Adding a service with the same name later picks the data back up."
+            checked={keepData}
+            disabled={busy}
+            onChange={setKeepData}
           />
-      <div className="fixed inset-0 flex items-start justify-center p-4 pt-[18vh]">
-        <DialogPanel
-              transition
-              className="w-full max-w-md rounded-lg border border-line bg-card p-4 shadow-2xl transition duration-(--duration-base) ease-emphasized data-closed:opacity-0 data-closed:scale-95 data-leave:duration-(--duration-fast) data-leave:ease-exit"
-            >
-          <DialogTitle className="font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-muted">
-            Remove {service.name} from {space}
-          </DialogTitle>
-          <ErrorNote message={error} />
-          <div className="mt-3 space-y-2 text-sm text-ink-soft">
-            {service.attachedTo.length > 0 ? (
-              <p>
-                <span className="font-mono">{service.attachedTo.join(', ')}</span>{' '}
-                {service.attachedTo.length === 1 ? 'is' : 'are'} connected — {service.attachedTo.length === 1 ? 'it' : 'they'} will restart
-                without its variables.
-              </p>
-            ) : (
-              <p>No app is connected to it.</p>
-            )}
-            {keepData ? (
-              <p className="text-muted">
-                Its disk stays — adding a service with the same name later picks the data back up.
-              </p>
-            ) : (
-              <p className="text-danger">Its disk and everything on it will be deleted.</p>
-            )}
-          </div>
-          <label className="mt-3 flex items-center gap-1.5 text-xs text-ink-soft">
-            <input
-              type="checkbox"
-              checked={keepData}
-              onChange={(e) => setKeepData(e.target.checked)}
-              className="size-3.5 accent-accent-strong"
-            />
-            Keep its data
-          </label>
-          <div className="mt-4 flex justify-end gap-2">
-            <Button kind="quiet" onClick={onClose} disabled={busy}>
-              Cancel
-            </Button>
-            <Button kind="danger" onClick={remove} disabled={busy}>
-              {busy
-                ? 'Removing…'
-                : keepData
-                  ? `Remove ${service.name}, keep data`
-                  : `Remove ${service.name} and its data`}
-            </Button>
-          </div>
-        </DialogPanel>
-      </div>
-    </Dialog>
+        )}
+        {canOrphan && (
+          <ToggleRow
+            label="Forget it anyway"
+            description="Its plugin is not answering. Drop donkey's record and leave the backing service to the operator."
+            checked={orphan}
+            disabled={busy}
+            onChange={(on) => {
+              setOrphan(on)
+              if (on) setKeepData(false)
+            }}
+          />
+        )}
+        {orphan ? (
+          <Callout icon={Info}>The backing service and its data stay with the operator. Donkey forgets this instance.</Callout>
+        ) : isProxy ? (
+          <Callout icon={Info}>Removing this service revokes this space's access to the API.</Callout>
+        ) : !keepData ? (
+          <Callout tone="danger" icon={TriangleAlert}>Its disk and everything on it will be deleted.</Callout>
+        ) : null}
+      </ModalBody>
+      <ModalFooter>
+        <Button kind="quiet" onClick={onClose} disabled={busy}>
+          Cancel
+        </Button>
+        <Button kind="danger" onClick={remove} disabled={busy}>
+          {busy
+            ? 'Removing…'
+            : orphan
+              ? `Forget ${service.name}`
+              : keepData
+                ? `Remove ${service.name}, keep data`
+                : `Remove ${service.name} and its data`}
+        </Button>
+      </ModalFooter>
+    </Modal>
   )
 }
+
+// Menu triggers match IconButton exactly, so a portlet of mixed buttons and
+// menus reads as one row.
+const menuTrigger =
+  'flex size-8 shrink-0 items-center justify-center rounded-md text-muted hover:bg-line/60 hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-strong data-open:bg-line/60 data-open:text-ink'
+const menuPanel = 'z-50 mt-1 overflow-hidden rounded-lg border border-line bg-card py-1 shadow-xl focus:outline-none'
+const menuItem = 'flex min-h-9 w-full items-center gap-2 px-3 text-left text-sm text-ink-soft data-focus:bg-accent-soft data-focus:text-ink'
 
 // The space's "+" — everything you can add here, named. An app goes to the
 // deploy flow; each service in the catalog is its own entry, so a two-click
 // "pick from a grid" popup is gone: click the one you want and configure it.
 function AddMenu({ space, onAddService }: { space: string; onAddService: (type: string) => void }) {
   const navigate = useNavigate()
-  const { data: catalog } = useCatalog()
+  const { data: catalog } = useCatalog(space)
   const services = catalog ?? []
   return (
     <Menu>
       <MenuButton
         title={`Add to ${space}`}
         aria-label={`Add to ${space}`}
-        className="flex items-center rounded-md p-1.5 text-muted hover:bg-line/60 hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-strong data-open:bg-line/60 data-open:text-ink"
+        className={menuTrigger}
       >
         <Plus className="size-4" aria-hidden />
       </MenuButton>
-      <MenuItems
-        anchor="bottom end"
-        className="z-50 mt-1 w-72 overflow-hidden rounded-md border border-line bg-card py-1 shadow-lg focus:outline-none"
-      >
+      <MenuItems anchor="bottom end" className={`${menuPanel} w-72`}>
         <MenuItem>
           <button
             type="button"
-            onClick={() => navigate({ to: '/deploy/$space', params: { space } })}
+            onClick={() => navigate({ to: '/deploy/$space', params: { space }, resetScroll: false })}
             className="flex w-full items-start gap-2.5 px-3 py-2 text-left data-focus:bg-accent-soft"
           >
             <Rocket className="mt-0.5 size-4 shrink-0 text-muted" aria-hidden />
@@ -507,17 +505,19 @@ function AddMenu({ space, onAddService }: { space: string; onAddService: (type: 
         </MenuItem>
         {services.length > 0 && <div className="my-1 h-px bg-line" aria-hidden />}
         {services.map((svc) => {
-          const Icon = typeIcons[svc.type] ?? Database
+          const { Icon } = serviceUI(svc.icon || svc.protocol)
           return (
             <MenuItem key={svc.type}>
               <button
                 type="button"
                 onClick={() => onAddService(svc.type)}
+                disabled={svc.available === false}
                 className="flex w-full items-start gap-2.5 px-3 py-2 text-left data-focus:bg-accent-soft"
               >
                 <Icon className="mt-0.5 size-4 shrink-0 text-muted" aria-hidden />
                 <span className="min-w-0">
                   <span className="block text-sm font-medium text-ink">{svc.title || svc.type}</span>
+                  {svc.available === false && <span className="block text-xs text-muted">{svc.error || 'Unavailable'}</span>}
                   {svc.description && (
                     <span className="block text-xs text-muted">{svc.description}</span>
                   )}
@@ -539,25 +539,22 @@ function SpaceMenu({ space, onDelete, onSettings }: { space: string; onDelete: (
       <MenuButton
         title={`More actions for ${space}`}
         aria-label={`More actions for ${space}`}
-        className="flex items-center rounded-md p-1.5 text-muted hover:bg-line/60 hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-strong data-open:bg-line/60 data-open:text-ink"
+        className={menuTrigger}
       >
         <EllipsisVertical className="size-4" aria-hidden />
       </MenuButton>
-      <MenuItems
-        anchor="bottom end"
-        className="z-50 mt-1 w-48 overflow-hidden rounded-md border border-line bg-card py-1 shadow-lg focus:outline-none"
-      >
-		<MenuItem>
-		  <button type="button" onClick={onSettings}
-		    className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-ink-soft data-focus:bg-accent-soft">
-		    <Settings className="size-4" aria-hidden /> Space settings
-		  </button>
-		</MenuItem>
+      <MenuItems anchor="bottom end" className={`${menuPanel} w-52`}>
+        <MenuItem>
+          <button type="button" onClick={onSettings} className={menuItem}>
+            <Settings className="size-4" aria-hidden /> Space settings
+          </button>
+        </MenuItem>
+        <div className="my-1 h-px bg-line" aria-hidden />
         <MenuItem>
           <button
             type="button"
             onClick={onDelete}
-            className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-danger data-focus:bg-danger/10"
+            className={`${menuItem} text-danger data-focus:bg-danger/10 data-focus:text-danger`}
           >
             <Trash2 className="size-4" aria-hidden /> Delete space
           </button>
@@ -580,18 +577,22 @@ function AppCard({ app }: { app: AppSummary }) {
 
   return (
     <div
-      className={`rounded-lg border bg-card transition-[color,background-color,border-color,box-shadow,translate] duration-(--duration-fast) ease-emphasized hover:shadow-sm motion-safe:hover:-translate-y-px ${edge}`}
+      className={`rounded-lg border bg-card transition-[color,background-color,border-color,box-shadow,translate] duration-(--duration-fast) ease-emphasized hover:shadow-sm motion-safe:hover:-translate-y-px has-[a:focus-visible]:border-ink/40 has-[a:focus-visible]:shadow-sm ${edge}`}
     >
       {/* A real router Link: modifier clicks, middle clicks and copy-link
           behave like the web, with none of the hand-rolled handling. */}
       <Link
         to="/app/$space/$name/{-$tab}"
         params={{ space: app.space || 'default', name: app.name, tab: undefined }}
-        className="block p-3.5 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent-strong"
+        // The panel slides over the fleet; the fleet must stay where it was.
+        resetScroll={false}
+        // Focus comes back here when the panel closes; it shows as the
+        // card's border, not a blue ring around it.
+        className="block p-3.5 outline-none"
       >
         <div className="flex items-center justify-between gap-2">
           <span className="truncate font-mono text-sm font-bold">{app.name}</span>
-		  <ExposureBadge exposure={app.exposure} mode={app.mode} />
+          <ExposureBadge exposure={app.exposure} mode={app.mode} />
         </div>
 
         <div className="mt-2 space-y-1 text-xs">

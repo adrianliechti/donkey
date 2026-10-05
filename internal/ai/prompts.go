@@ -341,8 +341,8 @@ that require live services or secrets are checked at rollout. So:
   ` + "`npm ci` (only with package-lock.json), `pnpm install --frozen-lockfile`," + `
   ` + "`yarn install --immutable`, `bun install --frozen-lockfile`, `uv sync --frozen`," + `
   ` + "`poetry install --no-root`, `pipenv install --deploy`, `bundle install`." + `
-  With no lockfile, use the forgiving form (` + "`npm install`" + `) — the strict one
-  fails outright.
+  With no lockfile, or one the scan reports out of sync, use the forgiving
+  form (` + "`npm install`" + `) — the strict one fails outright.
 - Every build stage already receives donkey's internal package endpoints.
   Preserve NPM_CONFIG_REGISTRY, PIP_INDEX_URL, GOPROXY, DONKEY_NUGET_SOURCE,
   MAVEN_REPO_CENTRAL and MVNW_REPOURL; never add a public registry URL or

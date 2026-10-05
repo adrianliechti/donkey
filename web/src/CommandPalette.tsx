@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Dialog, DialogBackdrop, DialogPanel } from '@headlessui/react'
 import {
+  Dialog,
+  DialogBackdrop,
+  DialogPanel,
   Combobox,
   ComboboxInput,
   ComboboxOption,
@@ -9,6 +11,7 @@ import {
 import { useNavigate } from '@tanstack/react-router'
 import { Activity, Boxes, Search, UploadCloud } from 'lucide-react'
 import { useFleet } from './queries'
+import { backdropClass } from './dialog'
 import { StatusDot, healthOf } from './ui'
 
 // One search box for the whole console: ⌘K anywhere, type a few letters, hit
@@ -100,20 +103,17 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
       }}
       className="relative z-[60]"
     >
-      <DialogBackdrop
-        transition
-        className="fixed inset-0 bg-black/60 transition-opacity duration-(--duration-base) ease-emphasized data-closed:opacity-0 data-leave:duration-(--duration-fast) data-leave:ease-exit"
-      />
-      <div className="fixed inset-0 flex items-start justify-center p-4 pt-[12vh]">
+      <DialogBackdrop transition className={backdropClass} />
+      <div className="fixed inset-0 flex items-start justify-center p-4 sm:pt-[8vh]">
         <DialogPanel
           transition
-          className="w-full max-w-xl overflow-hidden rounded-xl border border-line bg-card shadow-2xl transition duration-(--duration-base) ease-emphasized data-closed:scale-95 data-closed:opacity-0 data-leave:duration-(--duration-fast) data-leave:ease-exit"
+          className="w-full max-w-xl overflow-hidden rounded-xl border border-line bg-card shadow-2xl transition duration-(--duration-base) ease-emphasized data-closed:scale-[.98] data-closed:opacity-0 data-leave:duration-(--duration-fast) data-leave:ease-exit"
         >
           <Combobox<Item | null>
             immediate
             onChange={(item) => item?.run()}
           >
-            <div className="flex items-center gap-2 border-b border-line px-3">
+            <div className="flex h-14 items-center gap-2 border-b border-line px-5">
               <Search className="size-4 shrink-0 text-muted" aria-hidden />
               <ComboboxInput
                 autoFocus
@@ -121,7 +121,7 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
                 placeholder="Jump to an app, space, or action…"
                 displayValue={() => ''}
                 onChange={(e) => setQuery(e.target.value)}
-                className="w-full bg-transparent py-3 text-sm text-ink placeholder:text-muted focus:outline-none"
+                className="w-full bg-transparent text-sm text-ink placeholder:text-muted focus:outline-none"
               />
               <kbd className="hidden rounded border border-line px-1.5 py-0.5 font-mono text-[10px] text-muted sm:inline">
                 esc
@@ -129,13 +129,13 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
             </div>
             <ComboboxOptions static className="max-h-80 overflow-y-auto py-1">
               {results.length === 0 ? (
-                <p className="px-4 py-6 text-center text-sm text-muted">Nothing matches “{query}”.</p>
+                <p className="px-5 py-6 text-center text-sm text-muted">Nothing matches “{query}”.</p>
               ) : (
                 results.map((item) => (
                   <ComboboxOption
                     key={item.key}
                     value={item}
-                    className="flex cursor-default items-center gap-2.5 px-4 py-2 text-sm text-ink-soft data-focus:bg-accent-soft data-focus:text-ink"
+                    className="flex h-9 cursor-default items-center gap-2.5 px-5 text-sm text-ink-soft data-focus:bg-accent-soft data-focus:text-ink"
                   >
                     <span className="flex size-4 shrink-0 items-center justify-center">{item.icon}</span>
                     <span className="truncate font-mono text-ink">{item.label}</span>

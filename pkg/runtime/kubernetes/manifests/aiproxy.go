@@ -12,8 +12,8 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 )
 
-// donkey-ai is the openai addon's endpoint — the one donkey endpoint tenant
-// code is *meant* to reach. It runs as its own workload, with its own
+// donkey-ai is the openai addon's shared endpoint. It runs apart from the
+// admin API as its own workload, with its own
 // identity, because of what that means: a flaw in the part apps can talk to
 // must not sit in the process that can write to the cluster. It holds the
 // platform's AI credential and read-only access to the binding Secrets, and
@@ -48,9 +48,14 @@ func aiServiceAccount(in SystemInput) *corev1.ServiceAccount {
 // every app there is exactly one place to look, so this grants nothing
 // cluster-wide at all.
 func aiTokenAccess(in SystemInput) []runtime.Object {
+	return bindingTokenAccess(in, AIAppName)
+}
+
+// bindingTokenAccess grants a shared endpoint only read access to bindings.
+func bindingTokenAccess(in SystemInput, name string, extraResources ...string) []runtime.Object {
 	rules := []rbacv1.PolicyRule{{
 		APIGroups: []string{""},
-		Resources: []string{"secrets"},
+		Resources: append([]string{"secrets"}, extraResources...),
 		Verbs:     []string{"get", "list", "watch"},
 	}}
 	if !in.Shared() {
@@ -60,36 +65,36 @@ func aiTokenAccess(in SystemInput) []runtime.Object {
 			&rbacv1.ClusterRole{
 				TypeMeta: metav1.TypeMeta{APIVersion: "rbac.authorization.k8s.io/v1", Kind: "ClusterRole"},
 				ObjectMeta: metav1.ObjectMeta{
-					Name:   clusterScopedName(AIAppName, in.Namespace),
-					Labels: SystemLabels(AIAppName),
+					Name:   clusterScopedName(name, in.Namespace),
+					Labels: SystemLabels(name),
 				},
 				Rules: rules,
 			},
 			&rbacv1.ClusterRoleBinding{
 				TypeMeta: metav1.TypeMeta{APIVersion: "rbac.authorization.k8s.io/v1", Kind: "ClusterRoleBinding"},
 				ObjectMeta: metav1.ObjectMeta{
-					Name:   clusterScopedName(AIAppName, in.Namespace),
-					Labels: SystemLabels(AIAppName),
+					Name:   clusterScopedName(name, in.Namespace),
+					Labels: SystemLabels(name),
 				},
 				RoleRef: rbacv1.RoleRef{
 					APIGroup: "rbac.authorization.k8s.io", Kind: "ClusterRole",
-					Name: clusterScopedName(AIAppName, in.Namespace),
+					Name: clusterScopedName(name, in.Namespace),
 				},
-				Subjects: []rbacv1.Subject{{Kind: "ServiceAccount", Name: AIAppName, Namespace: in.Namespace}},
+				Subjects: []rbacv1.Subject{{Kind: "ServiceAccount", Name: name, Namespace: in.Namespace}},
 			},
 		}
 	}
 	return []runtime.Object{
 		&rbacv1.Role{
 			TypeMeta:   metav1.TypeMeta{APIVersion: "rbac.authorization.k8s.io/v1", Kind: "Role"},
-			ObjectMeta: metav1.ObjectMeta{Name: AIAppName, Namespace: in.WorkloadNamespace, Labels: SystemLabels(AIAppName)},
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: in.WorkloadNamespace, Labels: SystemLabels(name)},
 			Rules:      rules,
 		},
 		&rbacv1.RoleBinding{
 			TypeMeta:   metav1.TypeMeta{APIVersion: "rbac.authorization.k8s.io/v1", Kind: "RoleBinding"},
-			ObjectMeta: metav1.ObjectMeta{Name: AIAppName, Namespace: in.WorkloadNamespace, Labels: SystemLabels(AIAppName)},
-			RoleRef:    rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "Role", Name: AIAppName},
-			Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: AIAppName, Namespace: in.Namespace}},
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: in.WorkloadNamespace, Labels: SystemLabels(name)},
+			RoleRef:    rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "Role", Name: name},
+			Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: name, Namespace: in.Namespace}},
 		},
 	}
 }
@@ -153,9 +158,8 @@ func aiDeployment(in SystemInput) *appsv1.Deployment {
 	}
 }
 
-// aiNetworkPolicy admits the apps this endpoint exists for — it is the one
-// donkey workload tenant pods may reach, which is exactly why it is not the
-// one holding cluster write — and donkey-server, which forwards the console's
+// aiNetworkPolicy admits the apps this endpoint exists for, apart from the
+// admin API holding cluster write, and donkey-server, which forwards the console's
 // /ai/v1 here so the console's chat stays on its own origin.
 func aiNetworkPolicy(in SystemInput) *networkPolicy {
 	return ingressPolicy(in, AIAppName, aiPort,

@@ -336,14 +336,6 @@ func (s *Server) deployApp(ctx context.Context, out *lineStreamer, dir string, a
 	if data, err := s.rt.ServiceBinding(ctx, space, addons.SharedOwner, app.Name); err == nil && len(data) > 0 {
 		return fail(fmt.Errorf("a service named %q already runs in this space — the app needs another name", app.Name))
 	}
-	// An unknown addon type has to stop the deploy here, not after minutes
-	// of building.
-	for _, a := range app.Addons {
-		if _, err := addons.Get(a.Type); err != nil {
-			return fail(err)
-		}
-	}
-
 	if err := s.bindEnvironment(ctx, app); err != nil {
 		return fail(err)
 	}

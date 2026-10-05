@@ -100,6 +100,9 @@ func (r *Runtime) Deploy(ctx context.Context, spec rt.DeploySpec, out rt.Progres
 	// created on the spot when missing; the app keeps a current copy of each
 	// binding.
 	for _, a := range app.Addons {
+		if err := rt.CheckServiceAttachment(ctx, r, r.opts.CommonOfferings, space, app.Name, a.Name); err != nil {
+			return err
+		}
 		shared, err := r.state.binding(space, sharedOwner, a.Name)
 		if err != nil {
 			return err
@@ -109,7 +112,7 @@ func (r *Runtime) Deploy(ctx context.Context, spec rt.DeploySpec, out rt.Progres
 				return fmt.Errorf("addon %s runs elsewhere and its address isn't stored in donkey.yaml — connect it once with `donkey addon attach %s --url …`", a.Name, a.Type)
 			}
 			out.Line("Setting up %s (%s) for the space — the first time can take a minute…", a.Name, a.Type)
-			if shared, _, _, err = r.EnsureService(ctx, space, rt.ServiceSpec{Type: a.Type, Name: a.Name, Version: a.Version, Storage: a.Storage}); err != nil {
+			if shared, _, err = r.EnsureService(ctx, space, rt.ServiceSpec{Type: a.Type, Name: a.Name, Parameters: a.ServiceParameters()}); err != nil {
 				return err
 			}
 			out.Line("✓ %s is ready.", a.Name)

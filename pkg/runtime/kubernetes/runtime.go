@@ -28,7 +28,8 @@ type Options struct {
 	// Registry feeds the per-app image pull secret.
 	Registry config.Registry
 	// AddonImages are direct repository overrides for managed services.
-	AddonImages config.InstallAddonImages
+	AddonImages     config.InstallAddonImages
+	CommonOfferings config.CommonOfferings
 	// BusyboxImage is the file-browser helper's toolbox.
 	BusyboxImage string
 	// AddonImagePullSecrets are existing secrets referenced by managed service
@@ -233,6 +234,9 @@ func (r *Runtime) ReconcileSpaceIsolation(ctx context.Context) error {
 		if err := r.syncSpaceIsolation(ctx, space); err != nil {
 			return err
 		}
+		if err := r.reconcilePluginEgress(ctx, space); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -240,6 +244,20 @@ func (r *Runtime) ReconcileSpaceIsolation(ctx context.Context) error {
 func (r *Runtime) DeleteSpace(ctx context.Context, space string) error {
 	if err := r.ValidateSpace(space); err != nil {
 		return err
+	}
+	if !r.opts.Placement.Shared() {
+		if _, err := r.c.ownedSpaceNamespace(ctx, r.ns(space), space); err != nil {
+			return err
+		}
+	}
+	names, err := r.pluginServiceNames(ctx, space)
+	if err != nil {
+		return err
+	}
+	for _, name := range names {
+		if err := r.deprovisionPlugin(ctx, space, name, false, false); err != nil {
+			return err
+		}
 	}
 	// Public traffic objects go first, so a partial deletion never leaves the
 	// gateway pointing at a disappearing workload.

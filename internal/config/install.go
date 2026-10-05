@@ -41,6 +41,13 @@ type InstallFile struct {
 	// secrets used for managed addon and file-helper images. Each secret must
 	// exist in every workload namespace where an addon or helper can run.
 	AddonImagePullSecrets []string `json:"addonImagePullSecrets,omitempty"`
+	// AddonPlugins registers services provisioned by independent gRPC servers.
+	AddonPlugins AddonPlugins `json:"addonPlugins,omitempty"`
+	// CommonOfferings are available in every space. Empty allows all; space
+	// admins can add offerings to a nonempty common catalog in space settings.
+	CommonOfferings CommonOfferings `json:"commonOfferings,omitempty"`
+	// ProxyServices registers fixed HTTP endpoints as offerings.
+	ProxyServices ProxyServices `json:"proxyServices,omitempty"`
 	// Domain: apps become <app>.<space>.<domain>.
 	Domain string `json:"domain,omitempty"`
 	// ServerHost is where the API and console live (default: the domain
@@ -621,7 +628,7 @@ type InstallKubernetes struct {
 	IsolateSpaces *bool `json:"isolateSpaces,omitempty"`
 	// RestrictEgress adds the egress half of the fence: a space's pods reach
 	// only their own space, the platform services an app uses (donkey-ai,
-	// donkey-telemetry) and DNS — never the public internet or another space.
+	// donkey-proxy, donkey-telemetry) and DNS — never the public internet or another space.
 	//
 	// Off by default and a plain bool, unlike IsolateSpaces: cutting outbound
 	// traffic breaks any app that calls a third-party API at runtime, so it is

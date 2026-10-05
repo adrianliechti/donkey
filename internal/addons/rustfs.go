@@ -1,9 +1,12 @@
 package addons
 
 import (
+	"context"
 	"fmt"
 	"net/url"
 	"strings"
+
+	addonv1 "github.com/adrianliechti/donkey/pkg/addons/v1"
 )
 
 const (
@@ -23,18 +26,20 @@ const rfImage = "rustfs/rustfs"
 
 type rustfs struct{}
 
-func (rustfs) Type() string  { return "rustfs" }
-func (rustfs) Title() string { return "RustFS" }
-func (rustfs) Description() string {
-	return "S3-compatible object storage — buckets and files, in one small server."
-}
+func (rustfs) Type() string          { return "rustfs" }
 func (rustfs) CredentialKey() string { return "AWS_SECRET_ACCESS_KEY" }
 
-// DefaultVersion pins an exact release: upstream is still in its prerelease line,
-// where patch jumps can carry breaking changes a data store must not pick
-// up on a restart.
-func (rustfs) DefaultVersion() string { return "1.0.0-rc.3" }
-func (rustfs) DefaultStorage() string { return "1Gi" }
+// The default version pins an exact release: upstream is still in its
+// prerelease line, where patch jumps can carry breaking changes a data store
+// must not pick up on a restart.
+func (r rustfs) Describe(context.Context) (*addonv1.Offering, error) {
+	return description(r, "RustFS", "S3-compatible object storage — buckets and files, in one small server.",
+		CategoryStorage, ProtocolS3, ObjectSchema(map[string]any{
+			ParamVersion: VersionParameter("1.0.0-rc.3", "A tag of the rustfs/rustfs image; exact releases only, prereleases may break on upgrade."),
+			ParamStorage: StorageParameter("1Gi"),
+		}),
+		"AWS_SECRET_ACCESS_KEY"), nil
+}
 
 func (rustfs) Binding(in Input) map[string]string {
 	// The service is named plainly after itself, so siblings in the space

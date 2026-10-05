@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Dialog, DialogBackdrop, DialogPanel, DialogTitle } from '@headlessui/react'
 import {
   getCoreRowModel,
   getSortedRowModel,
@@ -8,13 +7,12 @@ import {
   type Row,
   type SortingState,
 } from '@tanstack/react-table'
-import { Check, ChevronLeft, ChevronRight, Plus, RefreshCw, Table2, Terminal, Trash2, X } from 'lucide-react'
+import { Check, ChevronLeft, ChevronRight, Plus, RefreshCw, Terminal, Trash2, X } from 'lucide-react'
 import { api, type DbCell, type DbDatabase, type DbRowsPage, type DbTable } from './api'
 import { DataGrid } from './DataGrid'
-import { Button, ErrorNote, IconButton, Select, Spinner, errText } from './ui'
+import { Modal, ModalBody, ModalHeader, ModalNotice, SplitPane } from './dialog'
+import { Button, ErrorNote, Eyebrow, Field, IconButton, Input, Select, Spinner, TextArea, errText } from './ui'
 
-const inputStyle =
-  'rounded border border-line bg-surface px-1.5 py-1 font-mono text-xs focus:outline-2 focus:outline-accent-strong'
 
 // Names the create forms accept — plain lowercase identifiers sidestep the
 // whole quoting swamp, and match what the addon's own objects use anyway.
@@ -65,6 +63,7 @@ function EditableCell({
         if (e.key === 'Escape') {
           // This Escape is ours (revert the cell) — without stopping it,
           // the dialog underneath reads it as "close".
+          e.preventDefault()
           e.stopPropagation()
           setValue(initial)
           e.currentTarget.blur()
@@ -80,7 +79,7 @@ function EditableCell({
 }
 
 /**
- * The database browser: a space service's postgres, one page of rows at a
+ * The database browser: a space service's database, one page of rows at a
  * time, edited in place through the server. The binding's database is only
  * the default — the header picks any of the service's databases, or makes a
  * new one. The SQL view is the escape hatch for everything the forms don't
@@ -90,14 +89,20 @@ function EditableCell({
 export function DatabaseDialog({
   space,
   service,
+  protocol: initialProtocol = 'postgres',
   onClose,
   onDelete,
 }: {
   space: string
   service: string
+  /** A first guess from the listing; the server's own answer wins once the
+   *  databases load. */
+  protocol?: string
   onClose: () => void
   onDelete: () => void
 }) {
+  const [protocol, setProtocol] = useState(initialProtocol)
+  const mysql = protocol === 'mysql'
   const [databases, setDatabases] = useState<DbDatabase[]>([])
   const [db, setDb] = useState('')
   const [defaultDb, setDefaultDb] = useState('')
@@ -119,6 +124,7 @@ export function DatabaseDialog({
         setDatabases(res.databases ?? [])
         setDb(res.default)
         setDefaultDb(res.default)
+        if (res.protocol) setProtocol(res.protocol)
       })
       .catch((err) => setError(errText(err, 'The database did not answer.')))
   }, [space, service])
@@ -195,149 +201,111 @@ export function DatabaseDialog({
   }
 
   return (
-    <Dialog open onClose={onClose} className="relative z-50">
-      <DialogBackdrop
-        transition
-        className="fixed inset-0 bg-black/60 transition-opacity duration-(--duration-base) ease-emphasized data-closed:opacity-0 data-leave:duration-(--duration-fast) data-leave:ease-exit"
-      />
-      <div className="fixed inset-0 flex items-center justify-center p-4">
-        <DialogPanel
-          transition
-          className="flex h-[85vh] w-full max-w-5xl flex-col rounded-lg border border-line bg-card shadow-2xl transition duration-(--duration-base) ease-emphasized data-closed:opacity-0 data-closed:scale-95 data-leave:duration-(--duration-fast) data-leave:ease-exit"
-        >
-          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-4 py-3">
-            <div className="flex items-center gap-3">
-              <DialogTitle className="flex items-center gap-2 font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-muted">
-                <Table2 className="size-3.5" aria-hidden />
-                {service} · {space}
-              </DialogTitle>
-              {droppingDb ? (
-                <div className="flex items-center gap-1.5">
-                  <span className="text-xs text-danger">
-                    Delete <span className="font-mono">{db}</span> and everything in it?
-                  </span>
-                  <Button kind="danger" onClick={dropDatabase} disabled={busy}>
-                    {busy ? 'Deleting…' : `Delete ${db}`}
-                  </Button>
-                  <IconButton
-                    icon={X}
-                    label="Keep the database"
-                    onClick={() => setDroppingDb(false)}
-                    disabled={busy}
-                  />
-                </div>
-              ) : newDb === null ? (
-                <div className="flex items-center gap-1">
-                  {databases.length > 0 && db && (
-                    <Select
-                      size="sm"
-                      ariaLabel="Database"
-                      value={db}
-                      onChange={(d) => {
-                        setDb(d)
-                        setCurrent(null)
-                        setView('tables')
-                      }}
-                      options={databases.map((d) => ({
-                        value: d.name,
-                        label: `${d.name} · ${fmtBytes(d.size)}`,
-                      }))}
-                    />
-                  )}
-                  <IconButton icon={Plus} label="New database" onClick={() => setNewDb('')} />
-                  {db && db !== defaultDb && (
-                    <IconButton
-                      icon={Trash2}
-                      label={`Delete the database ${db}`}
-                      kind="danger"
-                      onClick={() => setDroppingDb(true)}
-                    />
-                  )}
-                </div>
-              ) : (
-                <form
-                  onSubmit={(e) => {
-                    e.preventDefault()
-                    createDatabase()
-                  }}
-                  className="flex items-center gap-1.5"
-                >
-                  <input
-                    autoFocus
-                    value={newDb}
-                    onChange={(e) => setNewDb(e.target.value)}
-                    placeholder="new_database"
-                    aria-label="New database name"
-                    className={`${inputStyle} w-36`}
-                  />
-                  <Button type="submit" disabled={busy || !newDb.trim()}>
-                    {busy ? 'Creating…' : 'Create'}
-                  </Button>
-                  <IconButton
-                    icon={X}
-                    label="Cancel"
-                    onClick={() => setNewDb(null)}
-                    disabled={busy}
-                  />
-                </form>
-              )}
-            </div>
-            <div className="flex items-center gap-1">
-              <IconButton
-                icon={view === 'sql' ? Table2 : Terminal}
-                label={view === 'sql' ? 'Browse tables' : 'Run SQL'}
-                onClick={() => setView(view === 'sql' ? 'tables' : 'sql')}
+    <Modal onClose={onClose} size="xl" height="fill">
+      <ModalHeader eyebrow={`${mysql ? 'MySQL' : 'Postgres'} · ${space}`} title={<span className="font-mono">{service}</span>}
+        actions={<>
+          <IconButton
+            icon={Terminal}
+            label={view === 'sql' ? 'Browse tables' : 'Run SQL'}
+            active={view === 'sql'}
+            onClick={() => setView(view === 'sql' ? 'tables' : 'sql')}
+          />
+          <IconButton icon={Trash2} label="Delete service" kind="danger" onClick={onDelete} />
+        </>}
+        onClose={onClose} closeLabel="Close database browser">
+        {droppingDb ? (
+          <div className="flex items-center gap-1.5">
+            <span className="text-xs text-danger">
+              Delete <span className="font-mono">{db}</span> and everything in it?
+            </span>
+            <Button kind="danger" size="sm" onClick={dropDatabase} disabled={busy}>
+              {busy ? 'Deleting…' : `Delete ${db}`}
+            </Button>
+            <IconButton icon={X} label="Keep the database" onClick={() => setDroppingDb(false)} disabled={busy} />
+          </div>
+        ) : newDb === null ? (
+          <div className="flex items-center gap-1">
+            {databases.length > 0 && db && (
+              <Select
+                variant="quiet"
+                ariaLabel="Database"
+                value={db}
+                onChange={(d) => {
+                  setDb(d)
+                  setCurrent(null)
+                  setView('tables')
+                }}
+                options={databases.map((d) => ({
+                  value: d.name,
+                  label: `${d.name} · ${fmtBytes(d.size)}`,
+                }))}
+                className="max-w-56"
               />
-              <IconButton icon={Trash2} label="Delete service" kind="danger" onClick={onDelete} />
-              <IconButton icon={X} label="Close" onClick={onClose} />
-            </div>
+            )}
+            <IconButton icon={Plus} label="New database" onClick={() => setNewDb('')} />
+            {db && db !== defaultDb && (
+              <IconButton icon={Trash2} label={`Delete the database ${db}`} kind="danger" onClick={() => setDroppingDb(true)} />
+            )}
           </div>
-          <div className="px-4 pt-2 empty:hidden">
-            <ErrorNote message={error} />
-          </div>
-
-          {view === 'sql' ? (
-            <SqlView key={`${db}:${seedSql}`} space={space} service={service} db={db} initial={seedSql} onChanged={loadTables} />
-          ) : view === 'create' ? (
-            <CreateTableView
-              space={space}
-              service={service}
-              db={db}
-              onDone={(name) => {
-                loadTables()
-                setCurrent({ schema: 'public', name, rows: 0 })
-                setView('tables')
+        ) : (
+          <form
+            onSubmit={(e) => {
+              e.preventDefault()
+              createDatabase()
+            }}
+            className="flex items-center gap-1.5"
+          >
+            <Input
+              size="sm"
+              autoFocus
+              value={newDb}
+              onChange={(e) => setNewDb(e.target.value)}
+              placeholder="new_database"
+              aria-label="New database name"
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') {
+                  // Ours: drop the new-database form, keep the dialog.
+                  e.preventDefault()
+                  setNewDb(null)
+                }
               }}
-              onCancel={() => setView('tables')}
+              className="w-40"
             />
-          ) : (
-            <div className="flex min-h-0 flex-1">
-              <aside className="w-52 shrink-0 overflow-y-auto border-r border-line p-2">
-                <div className="flex items-center justify-between px-1 pb-1">
-                  <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-muted">
-                    Tables
-                  </span>
-                  <div className="flex items-center">
-                    <button
-                      type="button"
-                      onClick={() => setView('create')}
-                      title="New table"
-                      aria-label="New table"
-                      className="rounded p-1 text-muted hover:bg-line/50 hover:text-ink"
-                    >
-                      <Plus className="size-3" aria-hidden />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={loadTables}
-                      title="Refresh tables"
-                      aria-label="Refresh tables"
-                      className="rounded p-1 text-muted hover:bg-line/50"
-                    >
-                      <RefreshCw className="size-3" aria-hidden />
-                    </button>
-                  </div>
+            <Button size="sm" type="submit" disabled={busy || !newDb.trim()}>
+              {busy ? 'Creating…' : 'Create'}
+            </Button>
+            <IconButton icon={X} label="Cancel" onClick={() => setNewDb(null)} disabled={busy} />
+          </form>
+        )}
+      </ModalHeader>
+      <ModalNotice message={error} />
+      <ModalBody padded={false}>
+        {view === 'sql' ? (
+          <SqlView key={`${db}:${seedSql}`} space={space} service={service} db={db} initial={seedSql} onChanged={loadTables} />
+        ) : view === 'create' ? (
+          <CreateTableView
+            space={space}
+            service={service}
+            db={db}
+            mysql={mysql}
+            onDone={(name) => {
+              loadTables()
+              setCurrent({ schema: mysql ? db : 'public', name, rows: 0 })
+              setView('tables')
+            }}
+            onCancel={() => setView('tables')}
+          />
+        ) : (
+          <SplitPane
+            sidebar={<>
+              <div className="flex h-12 shrink-0 items-center justify-between border-b border-line pl-3 pr-2">
+                <Eyebrow>Tables</Eyebrow>
+                <div className="flex items-center">
+                  <IconButton icon={Plus} size="sm" label="New table" onClick={() => setView('create')} />
+                  <IconButton icon={RefreshCw} size="sm" label="Refresh tables" onClick={loadTables} />
                 </div>
+              </div>
+              <div className="min-h-0 flex-1 overflow-y-auto p-2">
                 {tables === null && <Spinner label="Loading…" />}
                 {tables !== null && tables.length === 0 && (
                   <p className="px-1 text-xs text-muted">Nothing here yet.</p>
@@ -348,7 +316,7 @@ export function DatabaseDialog({
                     // own list row, compactly.
                     <div
                       key={`${t.schema}.${t.name}`}
-                      className="flex w-full items-center justify-between gap-1 rounded-md bg-danger/10 px-2 py-1.5 font-mono text-xs text-danger"
+                      className="flex h-8 w-full items-center justify-between gap-1 rounded-md bg-danger/10 px-2 font-mono text-xs text-danger"
                     >
                       <span className="truncate">drop {t.name}?</span>
                       <span className="flex shrink-0 gap-0.5">
@@ -376,7 +344,7 @@ export function DatabaseDialog({
                   ) : (
                     <div
                       key={`${t.schema}.${t.name}`}
-                      className={`group/tbl flex w-full items-center rounded-md pr-1 ${
+                      className={`group/tbl flex h-8 w-full items-center rounded-md pr-0.5 ${
                         current?.schema === t.schema && current?.name === t.name
                           ? 'bg-accent-soft text-ink'
                           : 'text-ink-soft hover:bg-line/40'
@@ -385,77 +353,74 @@ export function DatabaseDialog({
                       <button
                         type="button"
                         onClick={() => setCurrent(t)}
-                        className="flex min-w-0 flex-1 items-baseline justify-between gap-2 px-2 py-1.5 text-left font-mono text-xs"
+                        className="flex h-full min-w-0 flex-1 items-center justify-between gap-2 px-2 text-left font-mono text-xs"
                       >
                         <span className="truncate">
-                          {t.schema !== 'public' ? `${t.schema}.` : ''}
+                          {t.schema !== 'public' && t.schema !== db ? `${t.schema}.` : ''}
                           {t.name}
                         </span>
                         <span className="text-[10px] text-muted">~{t.rows}</span>
                       </button>
-                      <button
-                        type="button"
-                        title={`Drop the table ${t.name}`}
-                        aria-label={`Drop the table ${t.name}`}
+                      <IconButton
+                        icon={Trash2}
+                        size="sm"
+                        kind="danger"
+                        label={`Drop the table ${t.name}`}
                         onClick={() => setDroppingTable(t)}
-                        className="invisible rounded p-1 text-muted hover:bg-danger/10 hover:text-danger group-hover/tbl:visible"
-                      >
-                        <Trash2 className="size-3" aria-hidden />
-                      </button>
+                        className=""
+                      />
                     </div>
                   ),
                 )}
-              </aside>
-              {current ? (
-                <TableView
-                  key={`${db}.${current.schema}.${current.name}`}
-                  space={space}
-                  service={service}
-                  db={db}
-                  table={current}
-                />
-              ) : tables !== null && tables.length === 0 ? (
-                <div className="flex flex-1 items-center justify-center p-8">
-                  <div className="max-w-md text-center">
-                    <p className="text-sm text-ink-soft">
-                      <span className="font-mono">{db}</span> is empty — brand new, so that's right.
-                      Apps that run migrations create their tables on first start, or you can make
-                      one now.
-                    </p>
-                    <div className="mt-4 flex justify-center gap-2">
-                      <Button onClick={() => setView('create')}>
-                        <span className="flex items-center gap-1">
-                          <Plus className="size-3.5" aria-hidden /> New table
-                        </span>
-                      </Button>
-                      <Button
-                        kind="quiet"
-                        onClick={() => {
-                          setSeedSql(
-                            'create table notes (\n  id bigint generated always as identity primary key,\n  text text not null,\n  at timestamptz default now()\n);',
-                          )
-                          setView('sql')
-                        }}
-                      >
-                        Write it in SQL
-                      </Button>
-                    </div>
-                    <p className="mt-4 text-xs text-muted">
-                      Only your tables show here — postgres' own bookkeeping (pg_catalog,
-                      information_schema) is hidden on purpose.
-                    </p>
+              </div>
+            </>}
+          >
+            {current ? (
+              <TableView
+                key={`${db}.${current.schema}.${current.name}`}
+                space={space}
+                service={service}
+                db={db}
+                table={current}
+              />
+            ) : tables !== null && tables.length === 0 ? (
+              <div className="flex flex-1 items-center justify-center p-8">
+                <div className="max-w-md text-center">
+                  <p className="text-sm text-ink-soft">
+                    <span className="font-mono">{db}</span> is empty — brand new, so that's right.
+                    Apps that run migrations create their tables on first start, or you can make
+                    one now.
+                  </p>
+                  <div className="mt-4 flex justify-center gap-2">
+                    <Button icon={Plus} onClick={() => setView('create')}>New table</Button>
+                    <Button
+                      kind="quiet"
+                      onClick={() => {
+                        setSeedSql(
+                          mysql
+                            ? 'create table notes (\n  id bigint auto_increment primary key,\n  text text not null,\n  at datetime default current_timestamp\n);'
+                            : 'create table notes (\n  id bigint generated always as identity primary key,\n  text text not null,\n  at timestamptz default now()\n);',
+                        )
+                        setView('sql')
+                      }}
+                    >
+                      Write it in SQL
+                    </Button>
                   </div>
+                  <p className="mt-4 text-xs text-muted">
+                    Only tables available to this service are shown.
+                  </p>
                 </div>
-              ) : (
-                <div className="flex flex-1 items-center justify-center text-sm text-muted">
-                  Pick a table on the left.
-                </div>
-              )}
-            </div>
-          )}
-        </DialogPanel>
-      </div>
-    </Dialog>
+              </div>
+            ) : (
+              <div className="flex flex-1 items-center justify-center text-sm text-muted">
+                Pick a table on the left.
+              </div>
+            )}
+          </SplitPane>
+        )}
+      </ModalBody>
+    </Modal>
   )
 }
 
@@ -470,6 +435,20 @@ const columnTypes = [
   { value: 'date', label: 'date' },
   { value: 'jsonb', label: 'json' },
   { value: 'uuid', label: 'uuid' },
+]
+
+const mysqlColumnTypes = [
+  { value: 'auto', label: 'auto id' },
+  { value: 'text', label: 'text' },
+  { value: 'varchar(255)', label: 'short text' },
+  { value: 'integer', label: 'integer' },
+  { value: 'bigint', label: 'bigint' },
+  { value: 'boolean', label: 'boolean' },
+  { value: 'decimal(20,6)', label: 'decimal' },
+  { value: 'datetime(6)', label: 'timestamp' },
+  { value: 'date', label: 'date' },
+  { value: 'json', label: 'json' },
+  { value: 'char(36)', label: 'uuid' },
 ]
 
 interface ColumnDraft {
@@ -488,12 +467,14 @@ function CreateTableView({
   space,
   service,
   db,
+  mysql,
   onDone,
   onCancel,
 }: {
   space: string
   service: string
   db: string
+  mysql: boolean
   onDone: (table: string) => void
   onCancel: () => void
 }) {
@@ -524,13 +505,14 @@ function CreateTableView({
         return
       }
     }
+    const quote = (ident: string) => mysql ? `\`${ident}\`` : `"${ident}"`
     const defs = used.map((c) => {
-      const type = c.type === 'auto' ? 'bigint generated always as identity' : c.type
-      return `  "${c.name}" ${type}${c.required && c.type !== 'auto' ? ' not null' : ''}`
+      const type = c.type === 'auto' ? (mysql ? 'bigint auto_increment' : 'bigint generated always as identity') : c.type
+      return `  ${quote(c.name)} ${type}${c.required && c.type !== 'auto' ? ' not null' : ''}`
     })
-    const pk = used.filter((c) => c.pk).map((c) => `"${c.name}"`)
+    const pk = used.filter((c) => c.pk).map((c) => quote(c.name))
     if (pk.length > 0) defs.push(`  primary key (${pk.join(', ')})`)
-    const sql = `create table "${name}" (\n${defs.join(',\n')}\n)`
+    const sql = `create table ${quote(name)} (\n${defs.join(',\n')}\n)`
     setBusy(true)
     setError('')
     try {
@@ -544,46 +526,41 @@ function CreateTableView({
   }
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-4">
-      <label className="flex flex-col gap-1.5">
-        <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-muted">
-          Table name
-        </span>
-        <input
+    <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-5 py-4">
+      <Field label="Table name" className="w-56">
+        <Input
           autoFocus
           value={name}
           onChange={(e) => setName(e.target.value)}
           placeholder="notes"
-          className={`${inputStyle} w-56 px-2 py-1.5 text-sm`}
         />
-      </label>
+      </Field>
       <div className="flex flex-col gap-1.5">
-        <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-muted">
-          Columns
-        </span>
+        <Eyebrow>Columns</Eyebrow>
         <div className="flex flex-col gap-1.5">
           {columns.map((c, i) => (
             <div key={i} className="flex flex-wrap items-center gap-2">
-              <input
+              <Input
+                size="sm"
                 value={c.name}
                 onChange={(e) => patch(i, { name: e.target.value })}
                 placeholder="column_name"
                 aria-label={`Column ${i + 1} name`}
-                className={`${inputStyle} w-44`}
+                className="w-44"
               />
               <Select
                 size="sm"
                 ariaLabel={`Column ${i + 1} type`}
                 value={c.type}
                 onChange={(t) => patch(i, { type: t })}
-                options={columnTypes}
+                options={mysql ? mysqlColumnTypes : columnTypes}
               />
               <label className="flex items-center gap-1 text-xs text-ink-soft">
                 <input
                   type="checkbox"
                   checked={c.pk}
                   onChange={(e) => patch(i, { pk: e.target.checked })}
-                  className="size-3.5 accent-accent-strong"
+                  className="size-3.5"
                 />
                 key
               </label>
@@ -593,31 +570,29 @@ function CreateTableView({
                     type="checkbox"
                     checked={c.required}
                     onChange={(e) => patch(i, { required: e.target.checked })}
-                    className="size-3.5 accent-accent-strong"
+                    className="size-3.5"
                   />
                   required
                 </label>
               )}
-              <button
-                type="button"
-                title="Remove column"
-                aria-label={`Remove column ${i + 1}`}
+              <IconButton
+                icon={Trash2}
+                size="sm"
+                kind="danger"
+                label={`Remove column ${i + 1}`}
                 onClick={() => setColumns(columns.filter((_, ci) => ci !== i))}
-                className="rounded p-1 text-muted hover:bg-danger/10 hover:text-danger"
-              >
-                <Trash2 className="size-3" aria-hidden />
-              </button>
+              />
             </div>
           ))}
         </div>
         <div>
           <Button
             kind="quiet"
+            size="sm"
+            icon={Plus}
             onClick={() => setColumns([...columns, { name: '', type: 'text', pk: false, required: false }])}
           >
-            <span className="flex items-center gap-1">
-              <Plus className="size-3.5" aria-hidden /> Add column
-            </span>
+            Add column
           </Button>
         </div>
       </div>
@@ -664,8 +639,8 @@ function TableView({
 
   const limit = 50
 
-  const order = sorting.length > 0 ? { column: sorting[0].id, desc: sorting[0].desc } : undefined
   const load = useCallback(() => {
+    const order = sorting.length > 0 ? { column: sorting[0].id, desc: sorting[0].desc } : undefined
     api
       .dbRows(space, service, db, table.schema, table.name, limit, offset, order)
       .then((res) => {
@@ -673,7 +648,7 @@ function TableView({
         setError('')
       })
       .catch((err) => setError(errText(err, 'Loading rows did not work.')))
-  }, [space, service, db, table.schema, table.name, offset, order?.column, order?.desc])
+  }, [space, service, db, table.schema, table.name, offset, sorting])
 
   useEffect(() => {
     load()
@@ -783,6 +758,7 @@ function TableView({
           <div className="flex gap-1">
             <Button
               kind="danger"
+              size="sm"
               onClick={() =>
                 run(() =>
                   api.dbDeleteRow(space, service, db, table.schema, table.name, {
@@ -794,7 +770,7 @@ function TableView({
             >
               Delete
             </Button>
-            <IconButton icon={X} label="Keep the row" onClick={() => setDeleting(null)} disabled={busy} />
+            <IconButton icon={X} size="sm" label="Keep the row" onClick={() => setDeleting(null)} disabled={busy} />
           </div>
         ) : editable ? (
           // invisible, not hidden: the button keeps its space at all times,
@@ -838,7 +814,7 @@ function TableView({
 
   return (
     <div className="flex min-w-0 flex-1 flex-col">
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line px-3 py-2">
+      <div className="flex h-12 shrink-0 flex-wrap items-center justify-between gap-2 border-b border-line px-3">
         <span className="font-mono text-xs text-ink-soft">
           {page.total} {page.total === 1 ? 'row' : 'rows'}
           {editable ? (
@@ -847,49 +823,15 @@ function TableView({
             <span className="ml-2 text-muted">read-only (no primary key)</span>
           )}
         </span>
-        <div className="flex items-center gap-1.5">
-          <button
-            type="button"
-            onClick={() => setAdding(true)}
-            disabled={busy || adding}
-            title="Add a row"
-            aria-label="Add a row"
-            className="rounded p-1.5 text-muted hover:bg-line/50 hover:text-ink disabled:opacity-40"
-          >
-            <Plus className="size-3.5" aria-hidden />
-          </button>
-          <button
-            type="button"
-            onClick={load}
-            title="Refresh rows"
-            aria-label="Refresh rows"
-            className="rounded p-1.5 text-muted hover:bg-line/50"
-          >
-            <RefreshCw className="size-3.5" aria-hidden />
-          </button>
-          <button
-            type="button"
-            onClick={() => setOffset(Math.max(0, offset - limit))}
-            disabled={offset === 0}
-            title="Previous page"
-            aria-label="Previous page"
-            className="rounded p-1.5 text-muted hover:bg-line/50 disabled:opacity-30"
-          >
-            <ChevronLeft className="size-3.5" aria-hidden />
-          </button>
-          <span className="font-mono text-[10px] text-muted">
+        <div className="flex items-center gap-0.5">
+          <IconButton icon={Plus} size="sm" label="Add a row" onClick={() => setAdding(true)} disabled={busy || adding} />
+          <IconButton icon={RefreshCw} size="sm" label="Refresh rows" onClick={load} />
+          <span className="mx-1 h-4 w-px bg-line" aria-hidden />
+          <IconButton icon={ChevronLeft} size="sm" label="Previous page" onClick={() => setOffset(Math.max(0, offset - limit))} disabled={offset === 0} />
+          <span className="min-w-12 text-center font-mono text-[10px] text-muted">
             {page.total === 0 ? '0' : `${offset + 1}–${Math.min(offset + limit, page.total)}`}
           </span>
-          <button
-            type="button"
-            onClick={() => setOffset(offset + limit)}
-            disabled={offset + limit >= page.total}
-            title="Next page"
-            aria-label="Next page"
-            className="rounded p-1.5 text-muted hover:bg-line/50 disabled:opacity-30"
-          >
-            <ChevronRight className="size-3.5" aria-hidden />
-          </button>
+          <IconButton icon={ChevronRight} size="sm" label="Next page" onClick={() => setOffset(offset + limit)} disabled={offset + limit >= page.total} />
         </div>
       </div>
       <div className="px-3 pt-2 empty:hidden">
@@ -915,7 +857,8 @@ function TableView({
                         if (e.key === 'Escape') {
                           // Ours too: discard the pending row, keep the
                           // dialog open.
-                          e.stopPropagation()
+                          e.preventDefault()
+          e.stopPropagation()
                           setAdding(false)
                           setDraft({})
                         }
@@ -999,8 +942,9 @@ function SqlView({
   }
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-2 p-3">
-      <textarea
+    <div className="flex min-h-0 flex-1 flex-col gap-3 px-5 py-4">
+      <TextArea
+        size="sm"
         value={sql}
         onChange={(e) => setSql(e.target.value)}
         onKeyDown={(e) => {
@@ -1009,7 +953,7 @@ function SqlView({
         placeholder={`select * from … — runs against ${db}`}
         aria-label="SQL statement"
         spellCheck={false}
-        className="h-28 shrink-0 resize-y rounded-md border border-line bg-surface p-2 font-mono text-xs focus:outline-2 focus:outline-accent-strong"
+        className="h-32 shrink-0 resize-y"
       />
       <div className="flex items-center justify-between gap-2">
         <p className="text-xs text-muted">Runs exactly what you wrote, against {db} — ⌘↵ works too.</p>

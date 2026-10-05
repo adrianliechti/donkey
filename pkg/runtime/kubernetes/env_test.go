@@ -7,11 +7,38 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 
 	"github.com/adrianliechti/donkey/pkg/runtime/kubernetes/manifests"
 )
+
+func TestAttachServiceRetriesDeploymentControllerConflict(t *testing.T) {
+	labels := manifests.Labels("team", "api", manifests.RoleWorkload)
+	labels[manifests.LabelInstallation] = "donkey-system"
+	dep := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: "api", Namespace: "team", Labels: labels}, Spec: appsv1.DeploymentSpec{Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "app"}}}}}}
+	cs := fake.NewClientset(dep)
+	attempts := 0
+	cs.PrependReactor("update", "deployments", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		attempts++
+		if attempts == 1 {
+			return true, nil, apierrors.NewConflict(gvrFor["Deployment"].GroupResource(), "api", fmt.Errorf("controller updated status"))
+		}
+		return false, nil, nil
+	})
+	c := (&Client{Clientset: cs}).WithInstallation("donkey-system")
+	found, err := c.SetAddonEnvFrom(context.Background(), "team", "api", "team", "api", "api-db-binding", true)
+	if err != nil || !found || attempts != 2 {
+		t.Fatalf("attachment did not recover from conflict: found=%v attempts=%d err=%v", found, attempts, err)
+	}
+	updated, _ := cs.AppsV1().Deployments("team").Get(context.Background(), "api", metav1.GetOptions{})
+	if refs := updated.Spec.Template.Spec.Containers[0].EnvFrom; len(refs) != 1 || refs[0].SecretRef.Name != "api-db-binding" {
+		t.Fatal("retry lost or duplicated the binding")
+	}
+}
 
 func TestDetachServiceRemovesAliasesBeforeDeletingSecret(t *testing.T) {
 	for _, withEnvFrom := range []bool{true, false} {

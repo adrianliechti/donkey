@@ -16,7 +16,7 @@ export function DiffView({ diff }: { diff: string }) {
   let newNo = 0
 
   return (
-    <div className="mt-2 overflow-x-auto rounded-md border border-line bg-canvas">
+    <div className="mt-2 overflow-x-auto rounded-md bg-well">
       <table className="w-full border-collapse font-mono text-xs">
         <tbody>
           {lines.map((line, i) => {

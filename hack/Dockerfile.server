@@ -14,6 +14,8 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 COPY go.mod go.sum ./
+# The public addon API is its own module, resolved through a replace directive.
+COPY pkg/addons/go.mod pkg/addons/go.sum ./pkg/addons/
 RUN go mod download
 COPY . .
 COPY --from=web /web/dist ./web/dist

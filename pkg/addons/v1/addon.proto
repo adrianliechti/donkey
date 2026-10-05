@@ -1,0 +1,191 @@
+syntax = "proto3";
+
+package donkey.addons.v1;
+
+import "google/protobuf/struct.proto";
+
+option go_package = "github.com/adrianliechti/donkey/pkg/addons/v1;addonv1";
+
+// A provider serves a catalog of offerings and owns the resources behind
+// each provisioned instance. Donkey owns the catalog listing, app bindings
+// and consumer-side egress. Provision and Deprovision must be idempotent
+// for an Instance's identity and safe under concurrent retries.
+//
+// Donkey calls Offerings lazily, caches the answer and keeps the last good
+// one through an outage; nothing is called at startup. Every instance
+// records the offering it was provisioned with, so removing or resuming it
+// never depends on the provider describing itself again.
+service ServiceProvider {
+  // Offerings is the provider's catalog. It must not create resources or
+  // return secrets, and should answer quickly: it is called from listings.
+  rpc Offerings(OfferingsRequest) returns (OfferingsResponse);
+  // Provision streams progress and ends with the event carrying `result`,
+  // sent only once the service is ready for connections. A deadline or a
+  // lost stream may cause Donkey to repeat this request.
+  rpc Provision(ProvisionRequest) returns (stream ProvisionEvent);
+  rpc Deprovision(DeprovisionRequest) returns (DeprovisionResponse);
+}
+
+message OfferingsRequest {}
+
+message OfferingsResponse {
+  repeated Offering offerings = 1;
+}
+
+// One catalog entry. Ids must be unique across the installation; built-in
+// ids (postgres, redis, rustfs, openai) are reserved.
+message Offering {
+  // Lowercase catalog id the API, CLI and donkey.yaml speak.
+  string id = 1;
+  string title = 2;
+  string description = 3;
+  // A lowercase grouping for the catalog: database, cache, storage,
+  // messaging, ai, api, or a custom name.
+  string category = 4;
+  repeated string tags = 5;
+  // Optional icon name for consoles (a protocol name such as postgres, or a
+  // generic one such as database). Absent means the protocol's icon.
+  string icon = 6;
+  string documentation_url = 7;
+  // Application protocol used by clients and the console: postgres, mysql
+  // (including MariaDB), redis, s3, openai, or a custom lowercase name.
+  string protocol = 8;
+  // A JSON Schema (draft 2020-12; see the README for the supported subset)
+  // describing ProvisionRequest.parameters. Donkey validates requests
+  // against it, applies top-level defaults and renders it as a form.
+  // Absent or empty means the offering takes no parameters.
+  google.protobuf.Struct parameters = 9;
+  // The environment contract, used by the catalog without provisioning.
+  repeated EnvVar env = 10;
+  Capabilities capabilities = 11;
+  // Shared means provisioning grants access to one installation-wide
+  // service (an API, a gateway) rather than creating a dedicated instance.
+  bool shared = 12;
+  // Deprecated offerings stay usable for existing instances but are hidden
+  // from the catalog for new ones.
+  bool deprecated = 13;
+  // A schema for admin-managed settings in a space's offerings.<id>.config.
+  // Uses the same subset as parameters, with defaults applied by Donkey.
+  // Apps cannot supply these values. Required settings without defaults
+  // prevent new provisioning until a space admin configures the offering.
+  google.protobuf.Struct space_configuration = 14;
+}
+
+message Capabilities {
+  // Deprovision honours keep_data: the data and the credentials to reopen
+  // it survive, and a later Provision with reason RESUME reuses them.
+  bool retain_data = 1;
+  // Parameters and admin-managed space configuration of an existing instance
+  // may change in place (reason UPDATE). Without it, Donkey refuses changes.
+  bool update = 2;
+}
+
+message EnvVar {
+  string name = 1;
+  string description = 2;
+  // Secret values are masked in consoles and logs.
+  bool secret = 3;
+  // An optional variable may be absent from ProvisionResponse.env.
+  bool optional = 4;
+}
+
+message Instance {
+  // Together, installation, space and name identify an instance.
+  string installation = 1;
+  string space = 2;
+  string name = 3;
+  // The offering id this instance was created from.
+  string offering = 4;
+  // Where the consumers run, set on Kubernetes installations only. A
+  // provider that fences ingress itself may admit exactly these consumers;
+  // it says nothing about where the provider must create its service.
+  KubernetesContext kubernetes = 5;
+  // Additional context Donkey may attach in later releases (for example the
+  // space's owner). Providers must tolerate unknown keys.
+  map<string, string> labels = 6;
+}
+
+message KubernetesContext {
+  // The namespace the consumers run in.
+  string namespace = 1;
+  // Labels selecting this space's consumer pods.
+  map<string, string> consumer_labels = 2;
+}
+
+enum ProvisionReason {
+  PROVISION_REASON_UNSPECIFIED = 0;
+  // A new instance.
+  PROVISION_REASON_CREATE = 1;
+  // An existing, running instance whose parameters may have changed.
+  PROVISION_REASON_UPDATE = 2;
+  // An instance stopped with keep_data; reopen its data and credentials.
+  PROVISION_REASON_RESUME = 3;
+  // A previous attempt failed or its result was lost; finish the job.
+  PROVISION_REASON_RETRY = 4;
+}
+
+message ProvisionRequest {
+  Instance instance = 1;
+  // Validated against Offering.parameters, with defaults applied.
+  google.protobuf.Struct parameters = 2;
+  // The parameters of the last request for this instance, when it exists.
+  google.protobuf.Struct previous_parameters = 3;
+  ProvisionReason reason = 4;
+  // Admin-managed settings, validated against Offering.space_configuration.
+  // Stored with the instance for retries and resumption even if the space
+  // later removes this offering. Never part of the app's environment.
+  google.protobuf.Struct space_configuration = 5;
+  // The configuration of the previous request, when the instance exists.
+  google.protobuf.Struct previous_space_configuration = 6;
+}
+
+// Progress events carry `message`; the final event carries `result`.
+message ProvisionEvent {
+  string message = 1;
+  ProvisionResponse result = 2;
+}
+
+message ProvisionResponse {
+  // These values (including credentials) are injected into attached apps.
+  // Keys must be declared in Offering.env; non-optional keys are required.
+  map<string, string> env = 1;
+  // Every destination an app needs. Specify pods or CIDRs when egress is
+  // fenced: an address alone cannot express a portable NetworkPolicy. The
+  // first TCP endpoint is the primary connection the CLI tunnel targets.
+  repeated Endpoint endpoints = 2;
+  // The effective parameters, when they differ from the request (a grown
+  // disk, a resolved version). Absent means the request's values apply.
+  google.protobuf.Struct parameters = 3;
+}
+
+message Endpoint {
+  string host = 1; // DNS name or IP, without a scheme or port
+  int32 port = 2; // port the client dials
+  string protocol = 3; // "TCP" (also the default), "UDP", or "SCTP"
+  // The network destination for fenced egress. Kubernetes services should
+  // use pod labels, not their ClusterIP (translation is CNI-specific).
+  oneof target {
+    KubernetesTarget kubernetes = 4;
+    CIDRTarget cidrs = 5;
+  }
+}
+
+message KubernetesTarget {
+  string namespace = 1;
+  map<string, string> pod_labels = 2; // must not be empty
+  // The pod port after Service translation; zero means Endpoint.port.
+  int32 port = 3;
+}
+
+message CIDRTarget {
+  repeated string ranges = 1; // external, stable IP ranges; no DNS snapshots
+}
+
+message DeprovisionRequest {
+  Instance instance = 1;
+  // Stop the service but retain data AND the credentials needed to reuse it.
+  // Only sent for offerings declaring capabilities.retain_data.
+  bool keep_data = 2;
+}
+
+message DeprovisionResponse {}

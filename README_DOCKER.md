@@ -22,7 +22,8 @@ runtime has [its own page](README_KUBERNETES.md). A complete walkthrough is
 | app environment Secret `<app>-env` | `/var/lib/donkey/env/<space>/<app>.json` |
 | `<space>-space` ConfigMap / `config.yaml` | `/var/lib/donkey/spaces/<space>/config.json` |
 | `donkey` ConfigMap / `platform.yaml` | `/var/lib/donkey/platform/config.json` |
-| control plane in `donkey-system` | containers `donkey-server`, `donkey-gateway`, `donkey-ai`, `donkey-telemetry`, `donkey-packages`, `donkey-buildkitd` (and optionally `donkey-registry`) on the `donkey` network |
+| control plane in `donkey-system` | containers `donkey-server`, `donkey-gateway`, `donkey-ai`, `donkey-proxy`, `donkey-telemetry`, `donkey-packages`, `donkey-buildkitd` (and optionally `donkey-registry`) on the `donkey` network |
+| `donkey-proxy` Secret / `services.json` | `/var/lib/donkey/proxy/services.json`; rendered Compose mounts private `proxy-services.json` instead |
 
 The two runtimes share the rules, not the spelling. On both, identity is
 read from labels and never from a name; object names are derived from the

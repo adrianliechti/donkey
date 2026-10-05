@@ -42,7 +42,7 @@ say "installing the control plane (real install command, demo settings)"
 
 # The install applies the same :dev tag every time. Restart every service
 # using that image so a re-run consistently runs the newly built code.
-donkey_deployments=(donkey-server donkey-gateway donkey-ai donkey-telemetry donkey-packages)
+donkey_deployments=(donkey-server donkey-gateway donkey-ai donkey-proxy donkey-telemetry donkey-packages)
 kubectl --context "${CTX}" -n donkey-system rollout restart deployment "${donkey_deployments[@]}" >/dev/null
 for deployment in "${donkey_deployments[@]}"; do
   kubectl --context "${CTX}" -n donkey-system rollout status deployment "${deployment}" --timeout=180s >/dev/null

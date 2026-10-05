@@ -29,6 +29,18 @@ registry:
 
 domain: apps.example.com
 
+# Empty or omitted allows all registered offerings. A nonempty list makes
+# these available in every space; space admins can add others in settings.
+# commonOfferings: [postgres, redis, rustfs, openai]
+
+# Optional HTTP API offerings; apps use internal HTTP and the shared proxy
+# uses its system CA store for HTTPS targets and outbound proxies.
+# proxyServices:
+#   - name: enterprise-api
+#     description: Company API
+#     targetUrl: https://api.corp.example/v1
+#     proxyUrl: http://proxy.corp.example:3128
+
 tls:
   mode: cert-manager
   issuerName: platform-ca
@@ -62,6 +74,18 @@ runtime: docker
 image: ghcr.io/example/donkey-server:latest
 
 domain: apps.localhost
+
+# Empty or omitted allows all registered offerings. A nonempty list makes
+# these available in every space; space admins can add others in settings.
+# commonOfferings: [postgres, redis, rustfs, openai]
+
+# Optional HTTP API offerings; apps use internal HTTP and the shared proxy
+# uses its system CA store for HTTPS targets and outbound proxies.
+# proxyServices:
+#   - name: enterprise-api
+#     description: Company API
+#     targetUrl: https://api.corp.example/v1
+#     proxyUrl: http://proxy.corp.example:3128
 
 tls:
   mode: ca
@@ -289,6 +313,7 @@ func renderKubernetesBundle(settings *config.InstallFile) (map[string]bundleFile
 	}
 	return map[string]bundleFile{
 		"manifests.yaml":      {Data: []byte(manifestYAML)},
+		"proxy-services.json": {Data: []byte(settings.ProxyServices.JSON()), Mode: 0o600},
 		"secrets.env.example": {Data: []byte(kubernetesSecretsExample), Mode: 0o600},
 		"apply.sh":            {Data: []byte(renderKubernetesApplyScript(settings, features)), Mode: 0o755},
 		"README.md":           {Data: []byte(renderKubernetesReadme(settings))},
@@ -468,7 +493,13 @@ if [ -z "$telemetry_key" ]; then telemetry_key=$(openssl rand -hex 32); fi
   --dry-run=client -o yaml | kubectl apply -f -
 `, shellQuote(manifests.SystemRegistrySecretName), shellQuote(settings.Registry.Host()), shellQuote(settings.Registry.Username))
 	}
-	b.WriteString(`kubectl apply -f "$bundle_dir/manifests.yaml"
+	b.WriteString(`kubectl -n "$namespace" create secret generic donkey-proxy \
+  --from-file=services.json="$bundle_dir/proxy-services.json" \
+  --dry-run=client -o yaml | kubectl label --local -f - \
+  donkey.local/installation="$namespace" donkey.local/role=proxy \
+  app.kubernetes.io/managed-by=donkey app.kubernetes.io/name=donkey-proxy \
+  app.kubernetes.io/part-of=donkey -o yaml | kubectl apply -f -
+kubectl apply -f "$bundle_dir/manifests.yaml"
 kubectl -n "$namespace" rollout restart \
   deployment/donkey-packages deployment/donkey-telemetry deployment/donkey-buildkitd \
   deployment/donkey-server deployment/donkey-gateway deployment/donkey-ai >/dev/null
@@ -487,13 +518,15 @@ objects or credential values.
 
 1. Copy secrets.env.example to secrets.env and fill the values. Keep it out of
    source control. Existing Secret values are preserved when a field is empty.
-2. Review manifests.yaml.
-3. Run ./apply.sh. It creates or updates the system Secret and, when needed,
-   the registry pull Secret; then it applies the manifests and rolls the pods
+2. Review manifests.yaml and proxy-services.json. The latter holds private
+   target and outbound proxy URLs; keep it out of source control too.
+3. Run ./apply.sh. It creates or updates the system and donkey-proxy Secrets
+   and, when needed, the registry pull Secret; then it applies the manifests and rolls the pods
    which read Secret values at startup.
 
 If an external secret manager owns credentials, create %s (and %s when the
-registry is authenticated) yourself, then apply manifests.yaml directly.
+registry is authenticated) yourself, plus donkey-proxy with services.json
+containing the proxy service configuration, then apply manifests.yaml directly.
 Referenced CA, Docker-config, and addon pull Secrets from the settings file
 must already exist; donkey never copies their contents into this bundle.
 

@@ -1,31 +1,90 @@
 import { useState, type ReactNode } from 'react'
-import { Dialog, DialogBackdrop, DialogPanel, DialogTitle } from '@headlessui/react'
-import { Archive, ArrowLeft, Database, Server, Sparkles } from 'lucide-react'
-import { type AddAddonRequest } from './api'
+import { ArrowLeft, ChevronDown, ChevronRight } from 'lucide-react'
+import { type AddAddonRequest, type AddonType, type ServiceParameters } from './api'
+import { Modal, ModalBody, ModalFooter, ModalHeader, ModalNotice } from './dialog'
+import { parameterDefault, parameterFields, type Field } from './parameters'
 import { useCatalog } from './queries'
-import { Button, ErrorNote, Select, Spinner } from './ui'
-
-const inputStyle =
-  'rounded-md border border-line bg-surface px-2 py-1.5 font-mono text-sm focus:outline-2 focus:outline-accent-strong'
+import { serviceUI } from './serviceProtocol'
+import { Button, Chip, Eyebrow, ErrorNote, Input, Select, Spinner } from './ui'
 
 // A short ladder of disk sizes is easier to pick right than a free-text
 // field is to fill right; the type's own default always leads the list.
 const diskSizes = ['1Gi', '2Gi', '5Gi', '10Gi', '20Gi', '50Gi']
 
-// Each catalog entry gets a face; unknown future types fall back to a
-// plain server glyph.
-export const typeIcons: Record<string, typeof Database> = {
-  postgres: Database,
-  redis: Database,
-  rustfs: Archive,
-  openai: Sparkles,
-}
-
-function Eyebrow({ children }: { children: ReactNode }) {
+/**
+ * One control per schema property. The value is a string while it is being
+ * edited (the server coerces it against the schema); booleans are the one
+ * exception, since a checkbox has nothing to type.
+ */
+export function ParameterField({
+  field,
+  value,
+  onChange,
+  disabled,
+}: {
+  field: Field
+  value: unknown
+  onChange: (value: unknown) => void
+  disabled: boolean
+}) {
+  const { name, schema } = field
+  const label = schema.title || name
+  const fallback = schema.default === undefined || schema.default === null ? '' : String(schema.default)
+  const current = value === undefined || value === null ? fallback : String(value)
+  let control: ReactNode
+  if (schema.enum && schema.enum.length > 0) {
+    const options = schema.enum.map((v) => ({ value: String(v), label: String(v) }))
+    control = <Select ariaLabel={label} value={current} onChange={onChange} options={options} />
+  } else if (schema['x-donkey-widget'] === 'disk-size' || schema.format === 'quantity') {
+    const options = [...new Set([fallback, current, ...diskSizes])]
+      .filter(Boolean)
+      .map((s) => ({ value: s, label: s }))
+    control = <Select ariaLabel={label} value={current} onChange={onChange} options={options} />
+  } else if (schema.type === 'boolean') {
+    const checked = value === undefined || value === null ? Boolean(schema.default) : Boolean(value)
+    control = (
+      <input
+        type="checkbox"
+        aria-label={label}
+        checked={checked}
+        disabled={disabled}
+        onChange={(e) => onChange(e.target.checked)}
+        className="size-4"
+      />
+    )
+  } else if (schema.type === 'integer' || schema.type === 'number') {
+    control = (
+      <Input
+        type="number"
+        aria-label={label}
+        value={current}
+        min={schema.minimum}
+        max={schema.maximum}
+        step={schema.type === 'integer' ? 1 : 'any'}
+        disabled={disabled}
+        onChange={(e) => onChange(e.target.value)}
+        className="w-28"
+      />
+    )
+  } else {
+    // Strings, and arrays as comma-separated strings.
+    control = (
+      <Input
+        aria-label={label}
+        value={current}
+        placeholder={schema.type === 'array' ? 'one, two' : fallback}
+        disabled={disabled}
+        onChange={(e) => onChange(e.target.value)}
+        className="w-44"
+      />
+    )
+  }
   return (
-    <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-muted">
-      {children}
-    </span>
+    <label className="flex min-w-0 flex-col gap-1.5" title={schema.description}>
+      <Eyebrow>{label}</Eyebrow>
+      {schema.type === 'boolean' ? <span className="flex h-8 items-center">{control}</span> : control}
+      {schema.description && <span className="max-w-56 text-[11px] leading-4 text-muted">{schema.description}</span>}
+    </label>
   )
 }
 
@@ -37,6 +96,7 @@ function Eyebrow({ children }: { children: ReactNode }) {
  * dialog would look like nothing happened.
  */
 export function AddServiceDialog({
+  space,
   open,
   title,
   submitLabel,
@@ -47,6 +107,7 @@ export function AddServiceDialog({
   onSubmit,
   onClose,
 }: {
+  space: string
   open: boolean
   title: string
   submitLabel: string
@@ -61,56 +122,49 @@ export function AddServiceDialog({
   onClose: () => void
 }) {
   return (
-    <Dialog open={open} onClose={() => !busy && onClose()} className="relative z-50">
-      <DialogBackdrop
-        transition
-        className="fixed inset-0 bg-black/60 transition-opacity duration-(--duration-base) ease-emphasized data-closed:opacity-0 data-leave:duration-(--duration-fast) data-leave:ease-exit"
+    <Modal open={open} onClose={() => !busy && onClose()} size="md">
+      <ModalHeader eyebrow={`Add a service · ${space}`} title={title} onClose={onClose} closeDisabled={busy} />
+      <ModalNotice message={error ?? ''} />
+      {/* The form owns its footer: its buttons depend on which step it is on. */}
+      <AddonForm
+        space={space}
+        busy={busy}
+        note={note}
+        submitLabel={submitLabel}
+        initialType={initialType}
+        onSubmit={onSubmit}
+        onCancel={onClose}
       />
-      <div className="fixed inset-0 flex items-start justify-center p-4 pt-[14vh]">
-        <DialogPanel
-          transition
-          className="w-full max-w-lg rounded-lg border border-line bg-card p-4 shadow-2xl transition duration-(--duration-base) ease-emphasized data-closed:scale-95 data-closed:opacity-0 data-leave:duration-(--duration-fast) data-leave:ease-exit"
-        >
-          <DialogTitle className="font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-muted">
-            {title}
-          </DialogTitle>
-          <ErrorNote message={error ?? ''} />
-          {note && <p className="mt-2 text-xs text-ink-soft">{note}</p>}
-          <div className="mt-3">
-            <AddonForm
-              busy={busy}
-              submitLabel={submitLabel}
-              initialType={initialType}
-              onSubmit={onSubmit}
-              onCancel={onClose}
-            />
-          </div>
-        </DialogPanel>
-      </div>
-    </Dialog>
+    </Modal>
   )
 }
 
 /**
- * Configure a managed service before it is created. donkey runs it in the
- * cluster and shares it across the space; the contract strip shows the
- * variable names its apps will receive. (Attaching an external service by
- * address is a CLI-only path — `donkey addon attach`.)
+ * Configure a service before it is created. The form is the type's own
+ * parameter schema rendered: every built-in and every plugin describes what
+ * can be chosen the same way, so nothing here knows about disks or versions
+ * in particular. The contract strip shows the variable names its apps will
+ * receive. (Attaching an external service by address is a CLI-only path —
+ * `donkey addon attach`.)
  */
 export function AddonForm({
+  space,
   busy,
+  note,
   submitLabel,
   initialType,
   onSubmit,
   onCancel,
 }: {
+  space: string
   busy: boolean
+  note?: string
   submitLabel: string
   initialType?: string
   onSubmit: (req: AddAddonRequest) => void
   onCancel: () => void
 }) {
-  const { data: catalog, error: catalogError } = useCatalog()
+  const { data: catalog, error: catalogError } = useCatalog(space)
   const types = catalog ?? []
   // An errored fetch counts as loaded — the empty-catalog message says what
   // to do, a spinner would just spin.
@@ -118,137 +172,187 @@ export function AddonForm({
   // '' means the catalog step; a type name means its configuration step.
   const [type, setType] = useState(initialType ?? '')
   const [name, setName] = useState('')
-  const [storage, setStorage] = useState('')
+  const [values, setValues] = useState<ServiceParameters>({})
+  const [showAdvanced, setShowAdvanced] = useState(false)
 
   const chosen = types.find((t) => t.type === type)
-  const needsDisk = Boolean(chosen?.storage)
-  const disk = storage || chosen?.storage || ''
-  const diskOptions = [...new Set([chosen?.storage ?? '', ...diskSizes])]
-    .filter(Boolean)
-    .map((s) => ({ value: s, label: s }))
+  const { main, advanced } = parameterFields(chosen)
 
-  if (!loaded) return <Spinner label="Opening the catalog…" />
+  if (!loaded) return <ModalBody><Spinner label="Opening the catalog…" /></ModalBody>
   if (types.length === 0) {
     return (
-      <p className="py-6 text-sm text-muted">
-        The catalog didn't load — reopen this dialog, or check the server if it keeps happening.
-      </p>
+      <>
+        <ModalBody>
+          <p className="py-6 text-center text-sm text-muted">
+            {catalogError || 'No offerings are enabled in this space. Ask a space admin to add one in space settings.'}
+          </p>
+        </ModalBody>
+        <ModalFooter>
+          <Button kind="quiet" onClick={onCancel}>Close</Button>
+        </ModalFooter>
+      </>
     )
   }
 
   // Step 1 — the catalog, shown only when the caller didn't preselect a type
   // (the app page's "add a service"). A space's + menu skips straight past it.
+  // Entries are grouped by category, in the server's order, so a catalog of
+  // many providers still reads as one.
   if (!chosen) {
+    const categories: { name: string; entries: AddonType[] }[] = []
+    for (const t of types) {
+      const name = t.category || 'other'
+      const group = categories.find((c) => c.name === name)
+      if (group) group.entries.push(t)
+      else categories.push({ name, entries: [t] })
+    }
     return (
-      <div className="flex flex-col gap-3">
-        <div className="grid gap-2 sm:grid-cols-2">
-          {types.map((t) => {
-            const Icon = typeIcons[t.type] ?? Server
-            return (
-              <button
-                key={t.type}
-                type="button"
-                onClick={() => setType(t.type)}
-                className="rounded-lg border border-line bg-surface p-3 text-left transition-colors hover:border-accent/70 hover:bg-accent-soft focus-visible:outline-2 focus-visible:outline-accent-strong"
-              >
-                <div className="flex items-center gap-2">
-                  <Icon className="size-4 text-muted" aria-hidden />
-                  <span className="font-mono text-sm font-bold">{t.title || t.type}</span>
-                  <span className="font-mono text-[11px] text-muted">{t.version}</span>
-                </div>
-                {t.description && (
-                  <p className="mt-1.5 text-xs leading-relaxed text-ink-soft">{t.description}</p>
-                )}
-              </button>
-            )
-          })}
-        </div>
-        <div className="flex justify-end">
-          <Button kind="quiet" onClick={onCancel}>
-            Cancel
-          </Button>
-        </div>
-      </div>
+      <>
+      <ModalBody className="space-y-4">
+        {categories.map((group) => (
+          <div key={group.name}>
+            {categories.length > 1 && <Eyebrow className="mb-1.5">{group.name}</Eyebrow>}
+            <div className="divide-y divide-line overflow-hidden rounded-lg border border-line">
+              {group.entries.map((t) => {
+                const { Icon } = serviceUI(t.icon || t.protocol)
+                const available = t.available !== false
+                return (
+                  <button
+                    key={t.type}
+                    type="button"
+                    disabled={!available}
+                    title={available ? undefined : t.error}
+                    onClick={() => {
+                      setValues({})
+                      setType(t.type)
+                    }}
+                    className="flex w-full items-start gap-3 px-3 py-2.5 text-left transition-colors hover:bg-accent-soft/60 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent-strong disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent"
+                  >
+                    <Icon className="mt-0.5 size-4 shrink-0 text-muted" aria-hidden />
+                    <span className="min-w-0 flex-1">
+                      <span className="flex items-baseline gap-2">
+                        <span className="font-mono text-sm font-bold">{t.title || t.type}</span>
+                        <span className="font-mono text-[11px] text-muted">{parameterDefault(t, 'version')}</span>
+                        {t.provider && <span className="ml-auto font-mono text-[10px] text-muted">via {t.provider}</span>}
+                      </span>
+                      {t.description && (
+                        <span className="mt-0.5 block text-xs leading-relaxed text-ink-soft">{t.description}</span>
+                      )}
+                      {!available && <span className="mt-1 block text-xs text-danger">{t.error || 'Not available right now.'}</span>}
+                    </span>
+                    <ChevronRight className="mt-2 size-4 shrink-0 text-muted" aria-hidden />
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+        ))}
+      </ModalBody>
+      <ModalFooter>
+        <Button kind="quiet" onClick={onCancel}>
+          Cancel
+        </Button>
+      </ModalFooter>
+      </>
     )
   }
 
-  // Step 2 — configure the chosen service. Always cluster-managed, so the only
-  // choices left are a name and (for the ones that store data) a disk size.
-  const ChosenIcon = typeIcons[chosen.type] ?? Server
+  // Step 2 — configure the chosen service: a name, and whatever its schema
+  // offers. Values the person did not touch are left to the server's
+  // defaults, so the request says only what was chosen.
+  const { Icon: ChosenIcon } = serviceUI(chosen.icon || chosen.protocol)
+  const setValue = (field: Field, value: unknown) => setValues((v) => ({ ...v, [field.name]: value }))
+  const runsSomething = Boolean(chosen.parameters?.properties?.version)
+  const disk = String(values.storage ?? parameterDefault(chosen, 'storage'))
+  const envNames = (chosen.env ?? []).map((v) => v.name)
+  const keys = envNames.length > 0 ? envNames : (chosen.keys ?? [])
 
   return (
-    <div className="flex flex-col gap-4">
-      {/* The catalog caller can step back; the + menu caller has nowhere to
-          go back to, so it just names the type it opened on. */}
-      <div className="flex items-center gap-2">
-        {!initialType && (
-          <button
-            type="button"
-            onClick={() => setType('')}
-            disabled={busy}
-            className="flex items-center gap-1 rounded-md px-1.5 py-1 text-xs text-muted hover:bg-line/50 hover:text-ink focus-visible:outline-2 focus-visible:outline-accent-strong"
-          >
-            <ArrowLeft className="size-3.5" aria-hidden /> All services
-          </button>
-        )}
-        <span className="flex items-center gap-2 rounded-md border border-accent/40 bg-accent-soft px-2 py-1">
-          <ChosenIcon className="size-3.5 text-accent" aria-hidden />
-          <span className="font-mono text-sm font-bold">{chosen.title || chosen.type}</span>
-          <span className="font-mono text-[11px] text-muted">{chosen.version}</span>
-        </span>
-      </div>
+    <>
+    <ModalBody className="space-y-4">
+      {/* The catalog caller can step back; the + menu caller opened on this
+          type, and the dialog title already names it. */}
+      {!initialType && (
+        <div className="flex items-center gap-2 text-sm">
+          <Button kind="quiet" size="sm" icon={ArrowLeft} onClick={() => setType('')} disabled={busy}>
+            All services
+          </Button>
+          <ChosenIcon className="size-4 text-muted" aria-hidden />
+          <span className="font-mono font-semibold">{chosen.title || chosen.type}</span>
+          <span className="font-mono text-xs text-muted">{parameterDefault(chosen, 'version')}</span>
+        </div>
+      )}
 
-      <div className="flex flex-wrap items-end gap-3">
-        <label className="flex flex-col gap-1.5">
+      {chosen.available === false && <ErrorNote message={chosen.error || 'This service is not available right now.'} />}
+
+      <div className="flex flex-wrap items-start gap-3">
+        <label className="flex min-w-0 flex-col gap-1.5">
           <Eyebrow>Name · optional</Eyebrow>
-          <input
+          <Input
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder={chosen.type}
-            className={`${inputStyle} w-44`}
+            className="w-44"
           />
         </label>
-        {needsDisk && (
-          <div className="flex flex-col gap-1.5">
-            <Eyebrow>Disk</Eyebrow>
-            <Select ariaLabel="Disk size" value={disk} onChange={setStorage} options={diskOptions} />
-          </div>
-        )}
+        {main.map((field) => (
+          <ParameterField key={field.name} field={field} value={values[field.name]} onChange={(v) => setValue(field, v)} disabled={busy} />
+        ))}
       </div>
 
-      <div className="rounded-md border border-line/60 bg-raised/60 px-3 py-2.5">
-        <Eyebrow>Your apps will see</Eyebrow>
-        <p className="mt-1 font-mono text-[11px] leading-5 text-ink-soft">
-          {(chosen.keys ?? []).join(' · ')}
-        </p>
-      </div>
-
-      <div className="mt-1 flex flex-col gap-3 border-t border-line/60 pt-3">
-        <p className="text-xs text-muted">
-          {chosen.version
-            ? `Runs in the cluster${needsDisk ? ` on a ${disk} disk` : ''}, shared by every app in the space.`
-            : 'Provided by the platform — nothing runs in your space.'}
-        </p>
-        <div className="flex justify-end gap-2">
-          <Button kind="quiet" onClick={onCancel} disabled={busy}>
-            Cancel
-          </Button>
-          <Button
-            onClick={() =>
-              onSubmit({
-                type: chosen.type,
-                name: name.trim() || undefined,
-                storage: needsDisk && storage ? storage : undefined,
-                external: false,
-                url: undefined,
-              })
-            }
-            disabled={busy}
+      {advanced.length > 0 && (
+        <div className="flex flex-col gap-3">
+          <button
+            type="button"
+            onClick={() => setShowAdvanced((s) => !s)}
+            className="flex w-fit items-center gap-1 text-xs text-muted hover:text-ink"
           >
-            {busy ? 'Adding…' : submitLabel}
-          </Button>
+            {showAdvanced ? <ChevronDown className="size-3.5" aria-hidden /> : <ChevronRight className="size-3.5" aria-hidden />}
+            Advanced settings
+          </button>
+          {showAdvanced && (
+            <div className="flex flex-wrap items-start gap-3">
+              {advanced.map((field) => (
+                <ParameterField key={field.name} field={field} value={values[field.name]} onChange={(v) => setValue(field, v)} disabled={busy} />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      <div className="space-y-1.5">
+        <Eyebrow>Your apps will see</Eyebrow>
+        <div className="flex flex-wrap gap-1">
+          {keys.map((k) => <Chip key={k}>{k}</Chip>)}
         </div>
       </div>
-    </div>
+      {note && <p className="text-xs text-ink-soft">{note}</p>}
+    </ModalBody>
+    <ModalFooter
+      note={
+        runsSomething
+          ? `Runs in the cluster${disk ? ` on a ${disk} disk` : ''}, shared by every app in the space.`
+          : 'Provided by the platform — nothing runs in your space.'
+      }
+    >
+      <Button kind="quiet" onClick={onCancel} disabled={busy}>
+        Cancel
+      </Button>
+      <Button
+        onClick={() =>
+          onSubmit({
+            type: chosen.type,
+            name: name.trim() || undefined,
+            parameters: Object.keys(values).length > 0 ? values : undefined,
+            external: false,
+            url: undefined,
+          })
+        }
+        disabled={busy || chosen.available === false}
+      >
+        {busy ? 'Adding…' : submitLabel}
+      </Button>
+    </ModalFooter>
+    </>
   )
 }

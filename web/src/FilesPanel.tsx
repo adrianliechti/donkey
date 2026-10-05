@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
+  Check,
   ChevronRight,
   Download,
   File,
@@ -10,9 +11,10 @@ import {
   RefreshCw,
   Trash2,
   Upload,
+  X,
 } from 'lucide-react'
 import { api, type FileListing } from './api'
-import { Button, ErrorNote, errText, Spinner } from './ui'
+import { Button, ErrorNote, errText, IconButton, Input, List, ListRow, SectionHeader, Spinner } from './ui'
 
 function humanSize(n: number): string {
   if (n < 1024) return `${n} B`
@@ -87,100 +89,65 @@ export function FilesPanel({ space, app }: { space: string; app: string }) {
   if (noDisk) return null
 
   const crumbs = path === '' ? [] : path.split('/')
+  const empty = listing && listing.entries.length === 0 && (listing.folders?.length ?? 0) === 0
+
+  // Inline editors claim Escape ("cancel this edit") so the drawer stays.
+  const cancelOnEscape = (cancel: () => void) => (e: React.KeyboardEvent) => {
+    if (e.key === 'Escape') {
+      e.preventDefault()
+      cancel()
+    }
+  }
 
   return (
-    <div className="space-y-3">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        {/* The breadcrumb is enough context inside the Files tab. */}
-        <nav className="flex flex-wrap items-center gap-1 text-xs" aria-label="Disk path">
-          <button
-            type="button"
-            onClick={() => setPath('')}
-            className="flex items-center gap-1 rounded px-1 py-0.5 font-mono text-muted hover:bg-line/50 hover:text-ink"
-          >
-            <HardDrive className="size-3.5" aria-hidden /> disk
-          </button>
-          {crumbs.map((part, i) => (
-            <span key={i} className="flex items-center gap-1">
-              <ChevronRight className="size-3 text-muted" aria-hidden />
-              <button
-                type="button"
-                onClick={() => setPath(crumbs.slice(0, i + 1).join('/'))}
-                className="rounded px-1 py-0.5 font-mono hover:bg-line/50"
-              >
-                {part}
-              </button>
-            </span>
-          ))}
-        </nav>
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={() => fileInput.current?.click()}
-            className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted hover:bg-line/50 focus-visible:outline-2 focus-visible:outline-accent-strong"
-          >
-            <Upload className="size-3.5" aria-hidden /> Upload
-          </button>
-          <button
-            type="button"
-            onClick={() => setNewFolder('')}
-            className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted hover:bg-line/50 focus-visible:outline-2 focus-visible:outline-accent-strong"
-          >
-            <FolderPlus className="size-3.5" aria-hidden /> New folder
-          </button>
-          <button
-            type="button"
-            onClick={load}
-            title="Refresh files"
-            aria-label="Refresh files"
-            className="flex items-center rounded-md p-1.5 text-xs text-muted hover:bg-line/50 focus-visible:outline-2 focus-visible:outline-accent-strong"
-          >
-            <RefreshCw className="size-3.5" aria-hidden />
-          </button>
-          <input
-            ref={fileInput}
-            type="file"
-            multiple
-            className="hidden"
-            onChange={(e) => {
-              if (e.target.files?.length) upload(e.target.files)
-              e.target.value = ''
-            }}
-          />
-        </div>
-      </div>
+    <section className="space-y-3">
+      <SectionHeader
+        title="Files"
+        actions={
+          <>
+            <IconButton icon={Upload} label="Upload files (or drop them on the list)" onClick={() => fileInput.current?.click()} />
+            <IconButton icon={FolderPlus} label="New folder" onClick={() => setNewFolder('')} />
+            <IconButton icon={RefreshCw} label="Refresh files" onClick={load} />
+          </>
+        }
+      />
+      <input
+        ref={fileInput}
+        type="file"
+        multiple
+        className="hidden"
+        onChange={(e) => {
+          if (e.target.files?.length) upload(e.target.files)
+          e.target.value = ''
+        }}
+      />
+      <nav className="flex min-h-7 flex-wrap items-center gap-1 text-xs" aria-label="Disk path">
+        <button
+          type="button"
+          onClick={() => setPath('')}
+          className="flex h-7 items-center gap-1 rounded px-1.5 font-mono text-muted hover:bg-line/50 hover:text-ink"
+        >
+          <HardDrive className="size-3.5" aria-hidden /> disk
+        </button>
+        {crumbs.map((part, i) => (
+          <span key={i} className="flex items-center gap-1">
+            <ChevronRight className="size-3 text-muted" aria-hidden />
+            <button
+              type="button"
+              onClick={() => setPath(crumbs.slice(0, i + 1).join('/'))}
+              className="h-7 rounded px-1.5 font-mono hover:bg-line/50"
+            >
+              {part}
+            </button>
+          </span>
+        ))}
+        {busy && <span className="ml-auto text-muted">{busy}</span>}
+      </nav>
 
       <ErrorNote message={error} />
-      {busy && <p className="text-xs text-muted">{busy}</p>}
+      {listing === null && !error && <Spinner label="Opening the disk…" />}
 
-      {newFolder !== null && (
-        <form
-          className="flex items-center gap-2"
-          onSubmit={(e) => {
-            e.preventDefault()
-            const name = newFolder.trim()
-            if (!name) return
-            setNewFolder(null)
-            run('Creating…', () => api.makeFolder(space, app, path ? `${path}/${name}` : name))
-          }}
-        >
-          <input
-            value={newFolder}
-            onChange={(e) => setNewFolder(e.target.value)}
-            placeholder="folder name"
-            autoFocus
-            aria-label="Name of the new folder"
-            className="flex-1 rounded-md border border-line bg-surface px-2 py-1 font-mono text-sm focus:outline-2 focus:outline-accent-strong"
-          />
-          <Button kind="quiet" type="submit" disabled={newFolder.trim() === ''}>
-            Create
-          </Button>
-          <Button kind="quiet" onClick={() => setNewFolder(null)}>
-            Cancel
-          </Button>
-        </form>
-      )}
-
+      {/* One list; dropping files onto it uploads them into this folder. */}
       <div
         onDragOver={(e) => {
           e.preventDefault()
@@ -192,125 +159,101 @@ export function FilesPanel({ space, app }: { space: string; app: string }) {
           setDragOver(false)
           if (e.dataTransfer.files.length) upload(e.dataTransfer.files)
         }}
-        className={`rounded-md border border-dashed p-1 transition-colors ${
-          dragOver ? 'border-accent-strong bg-accent-soft' : 'border-transparent'
-        }`}
+        className={`rounded-lg transition-[outline-color] ${dragOver ? 'outline-2 outline-dashed outline-offset-2 outline-accent' : ''}`}
       >
-        {listing === null && !error && <Spinner label="Opening the disk…" />}
-
-        {/* The top level shows donkey's own folder names, so say which app
-            path each one is mounted at. */}
-        {listing?.folders && listing.folders.length > 0 && (
-          <ul className="mb-2 space-y-1">
-            {listing.folders.map((f) => (
-              <li key={f.name}>
-                <button
-                  onClick={() => setPath(f.name)}
-                  className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-accent-soft/60"
-                >
-                  <Folder className="size-4 shrink-0 text-accent-strong" aria-hidden />
-                  <span className="font-mono text-sm font-medium">{f.name}</span>
-                  <span className="text-xs text-muted">→ {f.path} in the app</span>
+        {listing && (
+          <List>
+            {newFolder !== null && (
+              <ListRow className="bg-surface/40" actions={
+                <>
+                  <IconButton icon={Check} size="sm" label="Create folder" disabled={newFolder.trim() === ''} onClick={() => {
+                    const name = newFolder.trim()
+                    if (!name) return
+                    setNewFolder(null)
+                    run('Creating…', () => api.makeFolder(space, app, path ? `${path}/${name}` : name))
+                  }} />
+                  <IconButton icon={X} size="sm" label="Cancel" onClick={() => setNewFolder(null)} />
+                </>
+              }>
+                <FolderPlus className="size-4 shrink-0 text-muted" aria-hidden />
+                <Input bare autoFocus value={newFolder} placeholder="Folder name" aria-label="Name of the new folder"
+                  onChange={(e) => setNewFolder(e.target.value)}
+                  onKeyDown={(e) => {
+                    cancelOnEscape(() => setNewFolder(null))(e)
+                    if (e.key === 'Enter' && newFolder.trim()) {
+                      const name = newFolder.trim()
+                      setNewFolder(null)
+                      run('Creating…', () => api.makeFolder(space, app, path ? `${path}/${name}` : name))
+                    }
+                  }}
+                  className="flex-1" />
+              </ListRow>
+            )}
+            {/* The top level shows donkey's own folder names, so say which
+                app path each one is mounted at. */}
+            {(listing.folders ?? []).map((f) => (
+              <ListRow key={f.name}>
+                <button type="button" onClick={() => setPath(f.name)} className="flex min-w-0 flex-1 items-center gap-3 text-left">
+                  <Folder className="size-4 shrink-0 text-accent" aria-hidden />
+                  <span className="font-mono text-sm">{f.name}</span>
+                  <span className="truncate text-xs text-muted">mounted at {f.path}</span>
                 </button>
-              </li>
+              </ListRow>
             ))}
-          </ul>
-        )}
-
-        {listing && listing.entries.length === 0 && (listing.folders?.length ?? 0) === 0 && (
-          <p className="px-2 py-6 text-center text-sm text-muted">
-            Nothing here yet — drop a file to upload it.
-          </p>
-        )}
-
-        <ul className="divide-y divide-line">
-          {listing?.entries.map((e) => {
-            const full = path ? `${path}/${e.name}` : e.name
-            if (renaming?.name === e.name) {
-              return (
-                <li key={e.name} className="px-2 py-1.5">
-                  <form
-                    className="flex items-center gap-2"
-                    onSubmit={(ev) => {
-                      ev.preventDefault()
-                      const next = renaming.value.trim()
-                      setRenaming(null)
-                      if (next && next !== e.name) {
-                        run('Renaming…', () =>
-                          api.moveFile(space, app, full, path ? `${path}/${next}` : next),
-                        )
-                      }
-                    }}
-                  >
-                    <input
-                      value={renaming.value}
+            {listing.entries.map((e) => {
+              const full = path ? `${path}/${e.name}` : e.name
+              if (renaming?.name === e.name) {
+                const commit = () => {
+                  const next = renaming.value.trim()
+                  setRenaming(null)
+                  if (next && next !== e.name) {
+                    run('Renaming…', () => api.moveFile(space, app, full, path ? `${path}/${next}` : next))
+                  }
+                }
+                return (
+                  <ListRow key={e.name} className="bg-surface/40" actions={
+                    <>
+                      <IconButton icon={Check} size="sm" label="Rename" onClick={commit} />
+                      <IconButton icon={X} size="sm" label="Cancel" onClick={() => setRenaming(null)} />
+                    </>
+                  }>
+                    <Pencil className="size-4 shrink-0 text-muted" aria-hidden />
+                    <Input bare autoFocus value={renaming.value} aria-label={`New name for ${e.name}`}
                       onChange={(ev) => setRenaming({ name: e.name, value: ev.target.value })}
-                      autoFocus
-                      aria-label={`New name for ${e.name}`}
-                      className="flex-1 rounded-md border border-line bg-surface px-2 py-1 font-mono text-sm focus:outline-2 focus:outline-accent-strong"
-                    />
-                    <Button kind="quiet" type="submit">
-                      Rename
-                    </Button>
-                    <Button kind="quiet" onClick={() => setRenaming(null)}>
-                      Cancel
-                    </Button>
-                  </form>
-                </li>
-              )
-            }
-            if (deleting === e.name) {
+                      onKeyDown={(ev) => {
+                        cancelOnEscape(() => setRenaming(null))(ev)
+                        if (ev.key === 'Enter') commit()
+                      }}
+                      className="flex-1" />
+                  </ListRow>
+                )
+              }
+              if (deleting === e.name) {
+                return (
+                  <ListRow key={e.name} className="bg-danger/10" actions={
+                    <>
+                      <Button kind="danger" size="sm" onClick={() => {
+                        setDeleting('')
+                        run('Removing…', () => api.removeFile(space, app, full))
+                      }}>Delete</Button>
+                      <IconButton icon={X} size="sm" label="Keep it" onClick={() => setDeleting('')} />
+                    </>
+                  }>
+                    <Trash2 className="size-4 shrink-0 text-danger" aria-hidden />
+                    <span className="min-w-0 flex-1 truncate text-sm text-danger">
+                      Delete <span className="font-mono">{e.name}</span>{e.isDir ? ' and everything in it' : ''}? A redeploy does not bring it back.
+                    </span>
+                  </ListRow>
+                )
+              }
               return (
-                <li key={e.name} className="flex flex-wrap items-center gap-2 px-2 py-1.5">
-                  <span className="flex-1 truncate font-mono text-sm text-danger">
-                    Delete {e.name}
-                    {e.isDir ? ' and everything in it' : ''}? Nothing on the disk comes back with a
-                    redeploy.
-                  </span>
-                  <Button
-                    kind="danger"
-                    onClick={() => {
-                      setDeleting('')
-                      run('Removing…', () => api.removeFile(space, app, full))
-                    }}
-                  >
-                    Delete
-                  </Button>
-                  <Button kind="quiet" onClick={() => setDeleting('')}>
-                    Cancel
-                  </Button>
-                </li>
-              )
-            }
-            return (
-              <li key={e.name} className="flex items-center gap-2 px-2 py-1.5">
-                {e.isDir ? (
-                  <button
-                    onClick={() => setPath(full)}
-                    className="flex min-w-0 flex-1 items-center gap-2 text-left hover:underline"
-                  >
-                    <Folder className="size-4 shrink-0 text-accent-strong" aria-hidden />
-                    <span className="truncate font-mono text-sm">{e.name}</span>
-                  </button>
-                ) : (
-                  <span className="flex min-w-0 flex-1 items-center gap-2">
-                    <File className="size-4 shrink-0 text-muted" aria-hidden />
-                    <span className="truncate font-mono text-sm">{e.name}</span>
-                  </span>
-                )}
-                <span className="shrink-0 text-xs text-muted">{e.isDir ? '—' : humanSize(e.size)}</span>
-                <span className="hidden shrink-0 text-xs text-muted sm:inline">
-                  {new Date(e.modTime).toLocaleDateString()}
-                </span>
-                <span className="flex shrink-0 items-center gap-0.5">
-                  {!e.isDir && (
-                    <button
-                      aria-label={`Download ${e.name}`}
-                      className="rounded p-1 text-muted hover:bg-line/50 hover:text-ink"
-                      onClick={() =>
+                <ListRow key={e.name} actions={
+                  <>
+                    {!e.isDir && (
+                      <IconButton icon={Download} size="sm" label={`Download ${e.name}`} onClick={() =>
                         run(`Downloading ${e.name}…`, async () => {
-                          // The download carries the token, so it goes through
-                          // the API client and comes back as a blob.
+                          // The download carries the session, so it goes
+                          // through the API client and comes back as a blob.
                           const url = URL.createObjectURL(await api.downloadFile(space, app, full))
                           const a = document.createElement('a')
                           a.href = url
@@ -318,38 +261,42 @@ export function FilesPanel({ space, app }: { space: string; app: string }) {
                           a.click()
                           URL.revokeObjectURL(url)
                         })
-                      }
-                    >
-                      <Download className="size-4" aria-hidden />
+                      } />
+                    )}
+                    <IconButton icon={Pencil} size="sm" label={`Rename ${e.name}`} onClick={() => setRenaming({ name: e.name, value: e.name })} />
+                    <IconButton icon={Trash2} size="sm" kind="danger" label={`Delete ${e.name}`} onClick={() => setDeleting(e.name)} />
+                  </>
+                }>
+                  {e.isDir ? (
+                    <button type="button" onClick={() => setPath(full)} className="flex min-w-0 flex-1 items-center gap-3 text-left hover:underline">
+                      <Folder className="size-4 shrink-0 text-accent" aria-hidden />
+                      <span className="truncate font-mono text-sm">{e.name}</span>
                     </button>
+                  ) : (
+                    <span className="flex min-w-0 flex-1 items-center gap-3">
+                      <File className="size-4 shrink-0 text-muted" aria-hidden />
+                      <span className="truncate font-mono text-sm">{e.name}</span>
+                    </span>
                   )}
-                  <button
-                    onClick={() => setRenaming({ name: e.name, value: e.name })}
-                    aria-label={`Rename ${e.name}`}
-                    className="rounded p-1 text-muted hover:bg-line/50 hover:text-ink"
-                  >
-                    <Pencil className="size-4" aria-hidden />
-                  </button>
-                  <button
-                    onClick={() => setDeleting(e.name)}
-                    aria-label={`Delete ${e.name}`}
-                    className="rounded p-1 text-muted hover:bg-danger/10 hover:text-danger"
-                  >
-                    <Trash2 className="size-4" aria-hidden />
-                  </button>
-                </span>
-              </li>
-            )
-          })}
-        </ul>
-
-        {listing?.truncated && (
-          <p className="px-2 py-2 text-xs text-muted">
-            This folder holds more files than the console lists at once — open a subfolder to see the
-            rest.
-          </p>
+                  <span className="shrink-0 text-xs text-muted">{e.isDir ? '' : humanSize(e.size)}</span>
+                  <span className="hidden w-20 shrink-0 text-right text-xs text-muted sm:inline">
+                    {new Date(e.modTime).toLocaleDateString()}
+                  </span>
+                </ListRow>
+              )
+            })}
+            {empty && newFolder === null && (
+              <ListRow><span className="text-sm text-muted">Nothing here yet — drop a file onto this list to upload it.</span></ListRow>
+            )}
+          </List>
         )}
       </div>
-    </div>
+
+      {listing?.truncated && (
+        <p className="text-xs text-muted">
+          This folder holds more files than the console lists at once — open a subfolder to see the rest.
+        </p>
+      )}
+    </section>
   )
 }

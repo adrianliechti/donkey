@@ -53,6 +53,8 @@ const (
 	dockerServerName      = "donkey-server"
 	dockerGatewayName     = "donkey-gateway"
 	dockerAIName          = "donkey-ai"
+	dockerProxyName       = "donkey-proxy"
+	dockerProxyConfigPath = "/etc/donkey/proxy/services.json"
 	dockerTelemetryName   = "donkey-telemetry"
 	dockerTelemetryVolume = "donkey-telemetry"
 	dockerPackagesName    = "donkey-packages"
@@ -311,6 +313,9 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 		"DONKEY_REDIS_IMAGE":             settings.AddonImages.Redis,
 		"DONKEY_BUSYBOX_IMAGE":           settings.BusyboxImage,
 		"DONKEY_RUSTFS_IMAGE":            settings.AddonImages.RustFS,
+		"DONKEY_ADDON_PLUGINS":           settings.AddonPlugins.JSON(),
+		"DONKEY_COMMON_OFFERINGS":        settings.CommonOfferings.JSON(),
+		"DONKEY_PROXY_SERVICES":          settings.ProxyServices.JSON(),
 		"DONKEY_OIDC_ISSUER":             settings.Auth.Issuer,
 		"DONKEY_OIDC_CLIENT_ID":          settings.Auth.ClientID,
 		"DONKEY_OIDC_CLIENT_SECRET":      settings.Auth.ClientSecret,
@@ -458,6 +463,13 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 		return err
 	}
 
+	if err := replaceInfraContainer(ctx, cli, infraContainer{
+		Name: dockerProxyName, Image: settings.Image, RegistryAuth: serverPullAuth, Cmd: []string{"proxy"},
+		Env:    map[string]string{"DONKEY_RUNTIME": "docker", "DONKEY_STATE_DIR": dockerDataDir, "DONKEY_LISTEN": ":8091", "DONKEY_PROXY_SERVICES_FILE": dockerDataDir + "/proxy/services.json", "DONKEY_TELEMETRY_KEY": telemetryKey},
+		Mounts: []mount.Mount{{Type: mount.TypeVolume, Source: dockerDataVolume, Target: dockerDataDir, ReadOnly: true}}, PullAlways: true,
+	}); err != nil {
+		return err
+	}
 	u.Info("Waiting for the server to come up…")
 	if err := waitDockerHealthy(ctx, cli, dockerPackagesName, 90*time.Second); err != nil {
 		return err
@@ -474,10 +486,13 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 	if err := waitDockerRunning(ctx, cli, dockerAIName, 90*time.Second); err != nil {
 		return err
 	}
-	// Both containers were just recreated, which dropped the space networks
+	if err := waitDockerRunning(ctx, cli, dockerProxyName, 90*time.Second); err != nil {
+		return err
+	}
+	// Recreating the shared containers dropped the space networks
 	// they were on. Re-attach them, or every app deployed before this install
 	// stays unreachable until it is redeployed.
-	if err := docker.AttachOwnContainers(ctx, cli, dockerServerName, dockerGatewayName, dockerAIName, dockerTelemetryName); err != nil {
+	if err := docker.AttachOwnContainers(ctx, cli, dockerServerName, dockerGatewayName, dockerAIName, dockerTelemetryName, dockerProxyName); err != nil {
 		return err
 	}
 	u.Success("Control plane is running.")
@@ -544,6 +559,15 @@ func validateDockerSettings(settings *config.InstallFile) error {
 		return err
 	}
 	if err := settings.Build.Packages.ValidateRuntime("docker"); err != nil {
+		return err
+	}
+	if err := settings.AddonPlugins.Validate(); err != nil {
+		return err
+	}
+	if err := settings.CommonOfferings.Validate(); err != nil {
+		return err
+	}
+	if err := settings.ProxyServices.Validate(); err != nil {
 		return err
 	}
 	if err := settings.AddonImages.Validate(); err != nil {
@@ -640,6 +664,7 @@ func dockerInstallContainers(bundledRegistry bool) []dockerOwnedResource {
 		{name: dockerServerName, role: docker.RoleServer},
 		{name: dockerGatewayName, role: docker.RoleGateway},
 		{name: dockerAIName, role: docker.RoleAI},
+		{name: dockerProxyName, role: docker.RoleProxy},
 	}
 	if bundledRegistry {
 		resources = append(resources, dockerOwnedResource{name: dockerRegistryName, role: docker.RoleRegistry})

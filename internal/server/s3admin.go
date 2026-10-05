@@ -24,7 +24,6 @@ import (
 	"github.com/minio/minio-go/v7/pkg/s3utils"
 
 	"github.com/adrianliechti/donkey/internal/addons"
-	"github.com/adrianliechti/donkey/internal/config"
 	"github.com/adrianliechti/donkey/pkg/runtime"
 )
 
@@ -32,36 +31,19 @@ import (
 // the binding's own values — the browser sees exactly the store the apps
 // see.
 func (s *Server) s3Connect(ctx context.Context, r *http.Request) (*minio.Client, error) {
-	space, err := s.space(r)
-	if err != nil {
-		return nil, runtime.UserError{Err: err}
-	}
-	name := r.PathValue("service")
-	if !config.ValidName(name) {
-		return nil, runtime.UserError{Err: fmt.Errorf("%q is not a valid service name", name)}
-	}
-	data, err := s.rt.ServiceBinding(ctx, space, addons.SharedOwner, name)
+	service, err := s.serviceConnection(ctx, r, addons.ProtocolS3)
 	if err != nil {
 		return nil, err
 	}
-	if len(data) == 0 {
-		return nil, runtime.UserError{Err: fmt.Errorf("the space has no service named %q", name)}
-	}
-	endpoint, ok := data["AWS_ENDPOINT_URL_S3"]
-	if !ok {
-		return nil, runtime.UserError{Err: fmt.Errorf("%s doesn't speak S3 — only services with an AWS_ENDPOINT_URL_S3 binding can be browsed", name)}
-	}
-	u, err := url.Parse(endpoint)
-	if err != nil || u.Host == "" {
-		return nil, runtime.UserError{Err: fmt.Errorf("the service's endpoint %q is not a usable URL", endpoint)}
-	}
+	data := service.Binding
+	u, _ := url.Parse(data["AWS_ENDPOINT_URL_S3"]) // validated by serviceConnection
 	client, err := minio.New(u.Host, &minio.Options{
-		Creds:  credentials.NewStaticV4(data["AWS_ACCESS_KEY_ID"], data["AWS_SECRET_ACCESS_KEY"], ""),
+		Creds:  credentials.NewStaticV4(data["AWS_ACCESS_KEY_ID"], data["AWS_SECRET_ACCESS_KEY"], data["AWS_SESSION_TOKEN"]),
 		Secure: u.Scheme == "https",
 		Region: data["AWS_REGION"],
 	})
 	if err != nil {
-		return nil, fmt.Errorf("%s is not reachable: %w", name, err)
+		return nil, fmt.Errorf("%s is not reachable: %w", r.PathValue("service"), err)
 	}
 	return client, nil
 }

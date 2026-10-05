@@ -129,6 +129,8 @@ func dockerComposeFiles(settings *config.InstallFile, bundledRegistry bool) (map
 		Mirrors:           settings.Build.RegistryMirrors,
 	}
 	files := map[string]bundleFile{}
+	files["proxy-services.json"] = bundleFile{Data: []byte(settings.ProxyServices.JSON()), Mode: 0o600}
+	proxyConfigMount := "./proxy-services.json:" + dockerProxyConfigPath + ":ro"
 	caMount := ""
 	if settings.Registry.CAFile != "" {
 		ca, err := os.ReadFile(settings.Registry.CAFile)
@@ -209,6 +211,9 @@ func dockerComposeFiles(settings *config.InstallFile, bundledRegistry bool) (map
 		"DONKEY_REDIS_IMAGE":             settings.AddonImages.Redis,
 		"DONKEY_BUSYBOX_IMAGE":           settings.BusyboxImage,
 		"DONKEY_RUSTFS_IMAGE":            settings.AddonImages.RustFS,
+		"DONKEY_ADDON_PLUGINS":           settings.AddonPlugins.JSON(),
+		"DONKEY_COMMON_OFFERINGS":        settings.CommonOfferings.JSON(),
+		"DONKEY_PROXY_SERVICES_FILE":     dockerProxyConfigPath,
 		"DONKEY_OIDC_ISSUER":             settings.Auth.Issuer,
 		"DONKEY_OIDC_CLIENT_ID":          clientID,
 		"DONKEY_OIDC_CLIENT_SECRET":      clientSecret,
@@ -253,6 +258,7 @@ func dockerComposeFiles(settings *config.InstallFile, bundledRegistry bool) (map
 	serverVolumes := []string{
 		"/var/run/docker.sock:/var/run/docker.sock",
 		"data:" + dockerDataDir,
+		proxyConfigMount,
 	}
 	if caMount != "" {
 		serverEnv["DONKEY_REGISTRY_CA_FILE"] = dockerRegistryCAPath
@@ -301,6 +307,11 @@ func dockerComposeFiles(settings *config.InstallFile, bundledRegistry bool) (map
 	telemetryHealth.Test = []string{"CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9090/readyz"}
 
 	services := map[string]composeService{
+		"proxy": {
+			Image: settings.Image, ContainerName: dockerProxyName, Command: []string{"proxy"}, Restart: "unless-stopped",
+			Environment: map[string]string{"DONKEY_RUNTIME": "docker", "DONKEY_STATE_DIR": dockerDataDir, "DONKEY_LISTEN": ":8091", "DONKEY_PROXY_SERVICES_FILE": dockerProxyConfigPath, "DONKEY_TELEMETRY_KEY": "${DONKEY_TELEMETRY_KEY:-}"},
+			Volumes:     []string{"data:" + dockerDataDir + ":ro", proxyConfigMount}, Networks: []string{"donkey"},
+		},
 		"packages": {
 			Image: settings.Image, ContainerName: dockerPackagesName, Command: []string{"packages"},
 			Environment: packagesEnv, Volumes: packagesVolumes, Restart: "unless-stopped",
@@ -578,7 +589,8 @@ apps to them. App images use %s.
    and creates session and telemetry keys only when no prior value exists. It
    first refuses any same-named container, network or volume that does not
    carry Donkey's exact control-plane ownership labels.
-2. Review compose.yaml and buildkitd.toml.
+2. Review compose.yaml, buildkitd.toml and proxy-services.json. Keep the last
+   file private: it may contain target or outbound proxy credentials.
 3. Run ./up.sh.
 
 The server API is also bound to 127.0.0.1:8088; public traffic enters on ports

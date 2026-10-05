@@ -11,6 +11,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/retry"
 
 	"github.com/adrianliechti/donkey/pkg/runtime/kubernetes/manifests"
 )
@@ -82,6 +83,16 @@ func (c *Client) SetEnv(ctx context.Context, namespace, space, app, objectName s
 // app without a deploy (the template change triggers the rollout). Returns
 // false when the app isn't deployed yet — the next deploy wires it instead.
 func (c *Client) SetAddonEnvFrom(ctx context.Context, namespace, objectName, space, app, secret string, add bool) (bool, error) {
+	var found bool
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var err error
+		found, err = c.setAddonEnvFrom(ctx, namespace, objectName, space, app, secret, add)
+		return err
+	})
+	return found, err
+}
+
+func (c *Client) setAddonEnvFrom(ctx context.Context, namespace, objectName, space, app, secret string, add bool) (bool, error) {
 	deps := c.Clientset.AppsV1().Deployments(namespace)
 	dep, err := deps.Get(ctx, objectName, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {

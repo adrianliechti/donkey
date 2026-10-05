@@ -47,9 +47,7 @@ func envOr(key, def string) string {
 // the valid per-space tokens — the only thing this process asks the cluster
 // for, and read-only.
 func Run(ctx context.Context, cfg *Config, provider rt.Provider) error {
-	handler, err := Handler(cfg.UpstreamURL, cfg.UpstreamKey, func(ctx context.Context) ([]string, error) {
-		return provider.SharedServiceValues(ctx, "OPENAI_API_KEY")
-	})
+	handler, err := Handler(cfg.UpstreamURL, cfg.UpstreamKey, provider.AIProxyTokens)
 	if err != nil {
 		return err
 	}

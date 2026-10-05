@@ -272,8 +272,31 @@ type AddonConfig struct {
 	Name     string `json:"name,omitempty"`
 	Type     string `json:"type"`
 	External bool   `json:"external,omitempty"`
-	Version  string `json:"version,omitempty"`
-	Storage  string `json:"storage,omitempty"`
+	// Version and Storage are shorthand for the parameters of those names.
+	Version string `json:"version,omitempty"`
+	Storage string `json:"storage,omitempty"`
+	// Parameters are the service type's own settings, as its catalog schema
+	// describes them (`donkey addon add` records what was chosen).
+	Parameters map[string]any `json:"parameters,omitempty"`
+}
+
+// ServiceParameters merges the shorthand fields into the parameters; nil
+// means "the type's defaults, or what the instance already has".
+func (a AddonConfig) ServiceParameters() map[string]any {
+	out := map[string]any{}
+	for k, v := range a.Parameters {
+		out[k] = v
+	}
+	if a.Version != "" {
+		out["version"] = a.Version
+	}
+	if a.Storage != "" {
+		out["storage"] = a.Storage
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 type Resources struct {

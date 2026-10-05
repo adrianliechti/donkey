@@ -16,6 +16,7 @@ import (
 
 	"github.com/adrianliechti/donkey/internal/addons"
 	"github.com/adrianliechti/donkey/internal/ai"
+	"github.com/adrianliechti/donkey/pkg/runtime"
 )
 
 type redisTestRuntime struct {
@@ -28,6 +29,11 @@ func (r redisTestRuntime) ServiceBinding(_ context.Context, space, owner, name s
 		return map[string]string{"REDIS_URL": r.url}, nil
 	}
 	return nil, nil
+}
+
+func (r redisTestRuntime) ServiceConnection(ctx context.Context, space, name string) (runtime.ServiceConnection, error) {
+	binding, err := r.ServiceBinding(ctx, space, addons.SharedOwner, name)
+	return runtime.ServiceConnection{Binding: binding, Type: "redis-provider", Protocol: addons.ProtocolRedis}, err
 }
 
 func redisTestServer(t *testing.T) (*Server, *miniredis.Miniredis, *redis.Client) {

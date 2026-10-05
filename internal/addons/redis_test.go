@@ -9,7 +9,7 @@ import (
 func TestRedisBindingAndAuthentication(t *testing.T) {
 	r := redis{}
 	in := input
-	in.Name, in.Version, in.Password = "cache", r.DefaultVersion(), "p@ss/word,with punctuation"
+	in.Name, in.Version, in.Password = "cache", defaultParameters(t, r).String(ParamVersion), "p@ss/word,with punctuation"
 	values := r.Binding(in)
 	u, err := url.Parse(values["REDIS_URL"])
 	if err != nil {

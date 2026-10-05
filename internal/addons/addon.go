@@ -1,28 +1,44 @@
 // Package addons is donkey's attached-resource model: an addon is a canonical
 // env contract (DATABASE_URL and friends) injected into the app. Provisioned
 // or remote, the app sees the same contract, so the two are swappable.
-// Runtime-neutral: an addon describes a Workload, each provider materializes
-// it its own way.
+//
+// The catalog has two kinds of entries. Built-ins describe a runtime-neutral
+// Workload that each runtime provider materializes its own way. Offerings
+// come from configured providers (independent gRPC services) that provision
+// their own resources. Both present themselves through the same descriptor
+// (addonv1.Offering): title, protocol, the JSON Schema of the parameters
+// and the environment contract. The catalog, the console form and the CLI
+// are driven by that descriptor alone.
 package addons
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"maps"
+	"slices"
 	"sort"
 	"strings"
+	"sync"
+
+	addonv1 "github.com/adrianliechti/donkey/pkg/addons/v1"
 )
 
-// Addon provisions an instance of a service type.
+// Addon is one catalog entry donkey can provision.
 type Addon interface {
-	// Type is the lowercase slug the API and CLI speak (postgres, rustfs…).
+	// Type is the lowercase id the API and CLI speak (postgres, mariadb…).
 	Type() string
-	// Title is the product's own name for the catalog and console
-	// (PostgreSQL, RustFS, OpenAI) — Type is the id, Title is what a person
-	// reads.
-	Title() string
-	// Description is the catalog's one-liner: what a person gets.
-	Description() string
+	// Describe is the catalog descriptor. Built-ins answer statically; an
+	// offering answers from its provider's cached catalog and may fail
+	// while the provider has never answered.
+	Describe(ctx context.Context) (*addonv1.Offering, error)
+}
+
+// Builtin is an addon donkey materializes itself: it renders the binding
+// and, unless binding-only, a Workload for the runtime to run.
+type Builtin interface {
+	Addon
 	Binding(in Input) map[string]string
 	// ExternalBinding derives the same contract from a connection URL, so a
 	// remote service binds exactly like a provisioned one.
@@ -32,8 +48,62 @@ type Addon interface {
 	// CredentialKey is the binding entry the instance was initialized with.
 	// Re-adds reuse it: rotating would lock the service out of its own data.
 	CredentialKey() string
-	DefaultVersion() string
-	DefaultStorage() string
+}
+
+// Catalog categories of the built-ins.
+const (
+	CategoryDatabase = "database"
+	CategoryCache    = "cache"
+	CategoryStorage  = "storage"
+	CategoryAI       = "ai"
+)
+
+// EnvNames lists the declared environment keys, sorted.
+func EnvNames(desc *addonv1.Offering) []string {
+	if desc == nil {
+		return nil
+	}
+	names := make([]string, 0, len(desc.Env))
+	for _, v := range desc.Env {
+		names = append(names, v.Name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// EnvTemplate is a binding with the declared keys and no values: what a
+// service will inject, for planning before it exists.
+func EnvTemplate(desc *addonv1.Offering) map[string]string {
+	values := map[string]string{}
+	for _, name := range EnvNames(desc) {
+		values[name] = ""
+	}
+	return values
+}
+
+// sampleInput yields a throwaway binding: the contract's variable names,
+// never real values.
+func sampleInput(typ string) Input {
+	return Input{
+		Space: "space", Namespace: "ns", Name: typ,
+		Version: "sample", Storage: "1Gi", Password: "x", AIProxyURL: "http://ai.example/v1",
+	}
+}
+
+// description builds a built-in catalog entry. The env contract is derived
+// from a sample binding; the named keys are marked secret. Built-ins keep
+// their data on removal and re-apply changed parameters in place.
+func description(a Builtin, title, summary, category, protocol string, schema map[string]any, secrets ...string) *addonv1.Offering {
+	binding := a.Binding(sampleInput(a.Type()))
+	var env []*addonv1.EnvVar
+	for _, key := range slices.Sorted(maps.Keys(binding)) {
+		env = append(env, &addonv1.EnvVar{Name: key, Secret: slices.Contains(secrets, key)})
+	}
+	return &addonv1.Offering{
+		Id: a.Type(), Title: title, Description: summary, Category: category, Protocol: protocol,
+		Parameters: MustStruct(schema), Env: env,
+		Capabilities: &addonv1.Capabilities{RetainData: true, Update: true},
+	}
 }
 
 // Workload is one provisioned service instance, free of runtime vocabulary.
@@ -69,6 +139,9 @@ type Input struct {
 	// shares one namespace and every object carries its space — "shop-
 	// postgres" rather than "postgres". Empty means the two are the same.
 	ObjectName string
+	// Parameters are the resolved values of the descriptor's schema. Version
+	// and Storage are the two every built-in reads, lifted out for brevity.
+	Parameters Parameters
 	Version    string
 	Storage    string
 	Password   string
@@ -78,6 +151,16 @@ type Input struct {
 	// AIProxyURL is where donkey-server's AI proxy is reachable from apps —
 	// the runtime provider fills it in (its address is runtime vocabulary).
 	AIProxyURL string
+	// ServiceProxyURL is the installation's HTTP service proxy endpoint.
+	ServiceProxyURL string
+}
+
+// WithParameters lifts the well-known parameters into their fields.
+func (in Input) WithParameters(p Parameters) Input {
+	in.Parameters = p
+	in.Version = p.String(ParamVersion)
+	in.Storage = p.String(ParamStorage)
+	return in
 }
 
 // ImageRef combines the installation's optional mirror path with the
@@ -99,39 +182,115 @@ func (in Input) HostName() string {
 	return in.Name
 }
 
-// Registry holds the addon types donkey knows.
-var Registry = map[string]Addon{
+// builtins are the addon types donkey runs itself; their ids are reserved.
+var builtins = map[string]Builtin{
 	"postgres": postgres{},
 	"redis":    redis{},
 	"rustfs":   rustfs{},
 	"openai":   openai{},
 }
 
-// Types lists the registered addon types, sorted.
-func Types() []Addon {
-	names := make([]string, 0, len(Registry))
-	for t := range Registry {
+var (
+	providersMu sync.RWMutex
+	providers   []*Provider
+)
+
+// IsBuiltin reports whether an id names a built-in type.
+func IsBuiltin(typ string) bool {
+	_, ok := builtins[typ]
+	return ok || proxyBuiltin(typ) != nil
+}
+
+func builtinTypes() []Addon {
+	local := maps.Clone(builtins)
+	maps.Copy(local, proxyBuiltins())
+	names := make([]string, 0, len(local))
+	for t := range local {
 		names = append(names, t)
 	}
 	sort.Strings(names)
 	out := make([]Addon, 0, len(names))
 	for _, t := range names {
-		out = append(out, Registry[t])
+		out = append(out, local[t])
 	}
 	return out
 }
 
-func Get(typ string) (Addon, error) {
-	a, ok := Registry[typ]
-	if !ok {
-		known := make([]string, 0, len(Registry))
-		for t := range Registry {
-			known = append(known, t)
+func allProviders() []*Provider {
+	providersMu.RLock()
+	defer providersMu.RUnlock()
+	return slices.Clone(providers)
+}
+
+func providerNamed(name string) *Provider {
+	for _, p := range allProviders() {
+		if p.name == name {
+			return p
 		}
-		sort.Strings(known)
-		return nil, fmt.Errorf("donkey doesn't know the addon type %q (available: %s)", typ, strings.Join(known, ", "))
 	}
-	return a, nil
+	return nil
+}
+
+// Types lists the catalog: the built-ins, then every provider's offerings.
+// It never blocks on a provider longer than catalogWait: a provider with a
+// cached catalog answers from it (refreshing in the background when stale),
+// and one that has never answered is listed as a single unavailable entry.
+func Types(ctx context.Context) []Addon {
+	out := builtinTypes()
+	for _, p := range allProviders() {
+		out = append(out, p.entries(ctx, catalogWait)...)
+	}
+	return out
+}
+
+// Get resolves an id to its catalog entry. Providers without a cached
+// catalog are asked now (bounded by describeTimeout); one that keeps
+// failing is not asked again before its backoff elapses.
+func Get(ctx context.Context, typ string) (Addon, error) {
+	if b, ok := builtins[typ]; ok {
+		return b, nil
+	}
+	if p := proxyBuiltin(typ); p != nil {
+		return p, nil
+	}
+	list := allProviders()
+	results := make([]*Plugin, len(list))
+	var wg sync.WaitGroup
+	for i, p := range list {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			results[i] = p.offering(ctx, typ, describeTimeout)
+		}()
+	}
+	wg.Wait()
+	for _, found := range results {
+		if found != nil {
+			return found, nil
+		}
+	}
+	known := make([]string, 0, len(builtins))
+	for t := range builtins {
+		known = append(known, t)
+	}
+	for t := range proxyBuiltins() {
+		known = append(known, t)
+	}
+	for _, p := range list {
+		known = append(known, p.knownIDs()...)
+	}
+	sort.Strings(known)
+	return nil, fmt.Errorf("donkey doesn't know the addon type %q (available: %s)", typ, strings.Join(known, ", "))
+}
+
+// Lookup resolves the entry for a service that may already exist. An
+// instance a provider created uses its recorded offering, so its lifecycle
+// never depends on a catalog refresh or a change to the provider's schema.
+func Lookup(ctx context.Context, typ string, previous *Provisioning) (Addon, error) {
+	if previous == nil || previous.Provider == "" {
+		return Get(ctx, typ)
+	}
+	return previous.Plugin()
 }
 
 // SharedOwner is the owner value that asks for a space's own service binding

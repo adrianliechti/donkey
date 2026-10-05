@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Globe, Lock, Network, Plus, X } from 'lucide-react'
+import { Globe, Lock, Network, type LucideIcon } from 'lucide-react'
 import { api, type AccessConfig, type AppMode, type Exposure, type NetworkInfo } from './api'
 import { HostEditor } from './HostEditor'
-import { APP_MODES, Button, ErrorNote, errText, loginHint, SectionTitle, Spinner } from './ui'
+import { MembershipEditor } from './MembershipEditor'
+import { APP_MODES, Button, ChoiceCards, Eyebrow, ErrorNote, errText, loginHint, Section, SectionHeader, Spinner, SuccessNote, ToggleRow } from './ui'
 
 /**
  * How the app is reached, changed on the spot — no deploy.
@@ -78,22 +79,22 @@ export function NetworkCard({
     }
   }
 
-  const options: { id: Exposure; icon: React.ReactNode; label: string; hint: string }[] = [
+  const options: { value: Exposure; icon: LucideIcon; label: string; hint: string }[] = [
     {
-      id: 'protected',
-      icon: <Lock className="size-4" aria-hidden />,
+      value: 'protected',
+      icon: Lock,
       label: 'Behind the login',
       hint: `${loginHint(mode)} Narrow it further below.`,
     },
     {
-      id: 'public',
-      icon: <Globe className="size-4" aria-hidden />,
+      value: 'public',
+      icon: Globe,
       label: 'Public',
       hint: 'Anyone with the address can reach it. What webhook senders and open APIs need.',
     },
     {
-      id: 'internal',
-      icon: <Network className="size-4" aria-hidden />,
+      value: 'internal',
+      icon: Network,
       label: 'Internal',
       hint: `No address, no certificate — only the apps of ${space} reach it, as http://${app}.`,
     },
@@ -101,51 +102,22 @@ export function NetworkCard({
 
   return (
     <>
-      <section>
-        <SectionTitle>Ingress</SectionTitle>
+      <Section className="space-y-5">
+        <SectionHeader
+          title="Ingress"
+          description="Applies immediately, without a deploy. An explicit setting in donkey.yaml wins again at the next deploy."
+        />
         {net === null && !error && <Spinner label="Loading…" />}
         <ErrorNote message={error} />
         {net !== null && (
-          <div className="mt-3 space-y-4">
-            <div className="grid gap-2 sm:grid-cols-2" role="radiogroup" aria-label="Kind of app">
-              {APP_MODES.map((m) => (
-                <button
-                  key={m.value}
-                  role="radio"
-                  aria-checked={mode === m.value}
-                  onClick={() => setMode(m.value)}
-                  className={`rounded-lg border p-3 text-left transition-colors focus-visible:outline-2 focus-visible:outline-accent-strong ${
-                    mode === m.value ? 'border-accent bg-accent-soft' : 'border-line hover:border-line-strong'
-                  }`}
-                >
-                  <span className={`flex items-center gap-1.5 text-sm font-medium ${mode === m.value ? 'text-accent' : ''}`}>
-                    <m.icon className="size-4" aria-hidden /> {m.label}
-                  </span>
-                  <span className="mt-1 block text-xs leading-snug text-muted">{m.hint}</span>
-                </button>
-              ))}
+          <>
+            <div className="space-y-1.5">
+              <Eyebrow>Kind of app</Eyebrow>
+              <ChoiceCards label="Kind of app" value={mode} onChange={setMode} options={APP_MODES} />
             </div>
-
-            <div className="grid gap-2 sm:grid-cols-3" role="radiogroup" aria-label="Exposure">
-              {options.map((o) => (
-                <button
-                  key={o.id}
-                  role="radio"
-                  aria-checked={exposure === o.id}
-                  onClick={() => setExposure(o.id)}
-                  className={`rounded-lg border p-3 text-left transition-colors focus-visible:outline-2 focus-visible:outline-accent-strong ${
-                    exposure === o.id
-                      ? 'border-accent bg-accent-soft'
-                      : 'border-line hover:border-line-strong'
-                  }`}
-                >
-                  <span className={`flex items-center gap-1.5 text-sm font-medium ${exposure === o.id ? 'text-accent' : ''}`}>
-                    {o.icon}
-                    {o.label}
-                  </span>
-                  <span className="mt-1 block text-xs leading-snug text-muted">{o.hint}</span>
-                </button>
-              ))}
+            <div className="space-y-1.5">
+              <Eyebrow>Who can reach it</Eyebrow>
+              <ChoiceCards label="Exposure" value={exposure} onChange={setExposure} options={options} columns="sm:grid-cols-3" />
             </div>
 
             {exposure !== 'internal' && (
@@ -153,9 +125,9 @@ export function NetworkCard({
             )}
 
             {(net.routes ?? []).length > 0 && (
-              <div>
-                <span className="text-sm font-medium">Shared addresses</span>
-                <ul className="mt-1 space-y-1">
+              <div className="space-y-1.5">
+                <Eyebrow>Shared addresses</Eyebrow>
+                <ul className="space-y-1">
                   {(net.routes ?? []).map((r) => (
                     <li key={r.host + r.path} className="font-mono text-xs text-ink-soft">
                       https://{r.host}
@@ -163,47 +135,30 @@ export function NetworkCard({
                     </li>
                   ))}
                 </ul>
-                <p className="mt-1 text-xs text-muted">
-                  From <code className="font-mono">routes:</code> in donkey.yaml — they follow the
-                  exposure above.
+                <p className="text-xs text-muted">
+                  From <code className="font-mono">routes:</code> in donkey.yaml — they follow the exposure above.
                 </p>
               </div>
             )}
 
             {exposure !== 'internal' && (
-              <label className="flex cursor-pointer items-start gap-2.5 rounded-md border border-line px-3 py-2.5">
-                <input
-                  type="checkbox"
-                  checked={cors === 'allowAll'}
-                  onChange={(event) => setCors(event.target.checked ? 'allowAll' : '')}
-                  className="mt-0.5 size-4 shrink-0 accent-accent-strong"
-                />
-                <span>
-                  <span className="block text-sm font-medium">Allow calls from any browser origin</span>
-                  <span className="block text-xs text-muted">
-                    The gateway answers CORS preflights and adds Access-Control-Allow-Origin: *.
-                  </span>
-                </span>
-              </label>
+              <ToggleRow
+                label="Allow calls from any browser origin"
+                description="The gateway answers CORS preflights and adds Access-Control-Allow-Origin: *."
+                checked={cors === 'allowAll'}
+                onChange={(on) => setCors(on ? 'allowAll' : '')}
+              />
             )}
 
-            <div className="flex flex-wrap items-center justify-between gap-2 border-t border-line pt-3">
-              <p className="text-xs text-muted">
-                Applies immediately, without a deploy. An explicit setting in donkey.yaml wins again
-                at the next deploy.
-              </p>
+            <div className="flex items-center justify-end gap-3">
+              <SuccessNote message={note} />
               <Button onClick={apply} disabled={!dirty || busy || (exposure !== 'internal' && !host.trim())}>
                 {busy ? 'Applying…' : 'Apply'}
               </Button>
             </div>
-            {note && (
-              <p role="status" className="text-sm text-success">
-                {note}
-              </p>
-            )}
-          </div>
+          </>
         )}
-      </section>
+      </Section>
 
       {net && exposure === 'protected' && (
         <AccessCard space={space} app={app} initial={net.access ?? null} />
@@ -213,34 +168,33 @@ export function NetworkCard({
 }
 
 /**
- * Who may open the app, once they are signed in. Empty lists mean everyone
- * the identity provider knows — donkey's default promise.
+ * Who may open the app, once they are signed in. An empty list means
+ * everyone the identity provider knows — donkey's default promise. The same
+ * member list as a space's access, without roles.
  */
 function AccessCard({ space, app, initial }: { space: string; app: string; initial: AccessConfig | null }) {
-  const [users, setUsers] = useState<string[]>(initial?.users ?? [])
-  const [groups, setGroups] = useState<string[]>(initial?.groups ?? [])
-  const [roles, setRoles] = useState<string[]>(initial?.roles ?? [])
+  const [access, setAccess] = useState<AccessConfig>(initial ?? {})
   const [dirty, setDirty] = useState(false)
   const [busy, setBusy] = useState(false)
   const [note, setNote] = useState('')
   const [error, setError] = useState('')
 
   useEffect(() => {
-    setUsers(initial?.users ?? [])
-    setGroups(initial?.groups ?? [])
-    setRoles(initial?.roles ?? [])
+    setAccess(initial ?? {})
     setDirty(false)
   }, [initial])
+
+  const count = (access.users?.length ?? 0) + (access.groups?.length ?? 0) + (access.roles?.length ?? 0)
 
   async function save() {
     setBusy(true)
     setError('')
     setNote('')
     try {
-      await api.setAccess(space, app, { users, groups, roles })
+      await api.setAccess(space, app, { users: access.users ?? [], groups: access.groups ?? [], roles: access.roles ?? [] })
       setDirty(false)
       setNote(
-        users.length + groups.length + roles.length === 0
+        count === 0
           ? 'Saved — every signed-in user may open the app again.'
           : 'Saved — the gateway enforces the new list within seconds.',
       )
@@ -251,128 +205,31 @@ function AccessCard({ space, app, initial }: { space: string; app: string; initi
     }
   }
 
-  const restricted = users.length + groups.length + roles.length > 0
-
   return (
-    <section className="border-t border-line pt-5">
-      <SectionTitle>Access</SectionTitle>
-      <p className="mt-2 text-sm text-ink-soft">
-        {restricted
-          ? 'Only the people below may open the app. A visitor passes by matching any list.'
-          : 'Everyone the identity provider signs in may open the app. Add people, groups or roles to narrow it.'}
-      </p>
-      <div className="mt-3 space-y-3">
-        <ListEditor
-          label="Members"
-          placeholder="ada@example.com"
-          hint="Email addresses, as the identity provider reports them."
-          values={users}
-          onChange={(v) => {
-            setUsers(v)
-            setDirty(true)
-          }}
-        />
-        <ListEditor
-          label="Groups"
-          placeholder="engineering"
-          hint="Matched against the groups claim of the sign-in."
-          values={groups}
-          onChange={(v) => {
-            setGroups(v)
-            setDirty(true)
-          }}
-        />
-        <ListEditor
-          label="Roles"
-          placeholder="admin"
-          hint="Matched against the roles claim (Entra app roles, Keycloak realm roles)."
-          values={roles}
-          onChange={(v) => {
-            setRoles(v)
-            setDirty(true)
-          }}
-        />
-      </div>
-      <div className="mt-3 flex items-center justify-end gap-2 border-t border-line pt-3">
+    <Section className="space-y-3">
+      <SectionHeader
+        title="Access"
+        description={
+          count > 0
+            ? 'Only the people below may open the app. Users match by email, groups and roles by the claims of the sign-in.'
+            : 'Everyone the identity provider signs in may open the app. Add users, groups or roles to narrow it.'
+        }
+      />
+      <MembershipEditor
+        admins={access}
+        emptyText="Everyone who signs in."
+        onChange={(next) => {
+          setAccess(next)
+          setDirty(true)
+        }}
+      />
+      <ErrorNote message={error} />
+      <div className="flex items-center justify-end gap-3">
+        <SuccessNote message={note} />
         <Button onClick={save} disabled={!dirty || busy}>
           {busy ? 'Saving…' : 'Save access'}
         </Button>
       </div>
-      {note && (
-        <p role="status" className="mt-2 text-sm text-success">
-          {note}
-        </p>
-      )}
-      <ErrorNote message={error} />
-    </section>
-  )
-}
-
-function ListEditor({
-  label,
-  placeholder,
-  hint,
-  values,
-  onChange,
-}: {
-  label: string
-  placeholder: string
-  hint: string
-  values: string[]
-  onChange: (values: string[]) => void
-}) {
-  const [draft, setDraft] = useState('')
-
-  function add(e?: React.FormEvent) {
-    e?.preventDefault()
-    const value = draft.trim()
-    if (!value || values.includes(value)) {
-      setDraft('')
-      return
-    }
-    onChange([...values, value])
-    setDraft('')
-  }
-
-  return (
-    <div>
-      <span className="text-sm font-medium">{label}</span>
-      <div className="mt-1 flex flex-wrap items-center gap-1.5">
-        {values.map((v) => (
-          <span
-            key={v}
-            className="inline-flex items-center gap-1 rounded-md bg-raised px-2 py-1 font-mono text-xs"
-          >
-            {v}
-            <button
-              type="button"
-              aria-label={`Remove ${v}`}
-              onClick={() => onChange(values.filter((x) => x !== v))}
-              className="rounded p-0.5 text-muted hover:bg-danger/20 hover:text-danger"
-            >
-              <X className="size-3" aria-hidden />
-            </button>
-          </span>
-        ))}
-        <form onSubmit={add} className="flex items-center gap-1">
-          <input
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            placeholder={placeholder}
-            aria-label={`Add to ${label}`}
-            className="w-44 rounded-md border border-line bg-surface px-2 py-1 font-mono text-xs placeholder:text-muted/60 focus:outline-2 focus:outline-accent-strong"
-          />
-          <button
-            type="submit"
-            aria-label={`Add to ${label}`}
-            disabled={draft.trim() === ''}
-            className="rounded-md border border-line p-1 text-muted hover:bg-raised hover:text-ink disabled:opacity-40"
-          >
-            <Plus className="size-3.5" aria-hidden />
-          </button>
-        </form>
-      </div>
-      <p className="mt-1 text-xs text-muted">{hint}</p>
-    </div>
+    </Section>
   )
 }

@@ -22,7 +22,8 @@ import (
 // Egress (kubernetes.restrictEgress) is the opt-in half, off by default
 // because it is the disruptive one: it confines a space's pods to their own
 // space, the platform services an app legitimately uses (donkey-ai for the
-// openai addon, donkey-telemetry for metrics) and DNS — and cuts everything
+// openai addon, donkey-proxy for configured HTTP services, donkey-telemetry
+// for metrics) and DNS — and cuts everything
 // else, the public internet included. An app that calls a third-party API at
 // runtime needs it left off. When it is off the policy carries no egress
 // section at all, so egress stays wide open.
@@ -82,6 +83,7 @@ func SpaceIsolationPolicy(space, namespace, installation string, restrictEgress 
 	dns := intstr.FromInt32(dnsPort)
 	ai := intstr.FromInt32(aiPort)
 	otlp := intstr.FromInt32(telemetryOTLPPort)
+	proxy := intstr.FromInt32(proxyPort)
 	policy.Spec.PolicyTypes = append(policy.Spec.PolicyTypes, networkingv1.PolicyTypeEgress)
 	policy.Spec.Egress = []networkingv1.NetworkPolicyEgressRule{
 		{
@@ -110,5 +112,9 @@ func SpaceIsolationPolicy(space, namespace, installation string, restrictEgress 
 			Ports: []networkingv1.NetworkPolicyPort{{Protocol: &tcp, Port: &otlp}},
 		},
 	}
+	policy.Spec.Egress = append(policy.Spec.Egress, networkingv1.NetworkPolicyEgressRule{
+		To:    []networkingv1.NetworkPolicyPeer{systemPeer(installation, ProxyAppName)},
+		Ports: []networkingv1.NetworkPolicyPort{{Protocol: &tcp, Port: &proxy}},
+	})
 	return policy
 }

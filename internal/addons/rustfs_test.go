@@ -1,12 +1,13 @@
 package addons
 
 import (
+	"context"
 	"strings"
 	"testing"
 )
 
 func TestRustfsBinding(t *testing.T) {
-	a := Registry["rustfs"]
+	a := builtins["rustfs"]
 	in := input
 	in.Name = "rustfs"
 	got := a.Binding(in)
@@ -29,7 +30,7 @@ func TestRustfsBinding(t *testing.T) {
 }
 
 func TestRustfsExternalBinding(t *testing.T) {
-	a := Registry["rustfs"]
+	a := builtins["rustfs"]
 	got, err := a.ExternalBinding("https://s3.example.com/")
 	if err != nil {
 		t.Fatal(err)
@@ -56,7 +57,7 @@ func TestRustfsExternalBinding(t *testing.T) {
 }
 
 func TestGetListsRustfs(t *testing.T) {
-	_, err := Get("miniofs")
+	_, err := Get(context.Background(), "miniofs")
 	if err == nil {
 		t.Fatal("expected an error")
 	}

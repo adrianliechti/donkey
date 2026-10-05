@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -15,17 +16,9 @@ import (
 // namespace ownership annotation is the deletion authority; labels alone are
 // never enough to make somebody else's namespace deletable.
 func (c *Client) DeleteSpace(ctx context.Context, namespace, space string) error {
-	ns, err := c.Clientset.CoreV1().Namespaces().Get(ctx, namespace, metav1.GetOptions{})
-	if apierrors.IsNotFound(err) {
-		return nil
-	}
-	if err != nil {
+	ns, err := c.ownedSpaceNamespace(ctx, namespace, space)
+	if err != nil || ns == nil {
 		return err
-	}
-	if ns.Annotations[manifests.AnnotationManaged] != "true" || !c.ours(ns.Labels) ||
-		ns.Labels[manifests.LabelSpace] != space ||
-		ns.Labels[manifests.LabelRole] != manifests.RoleSpace {
-		return fmt.Errorf("that namespace isn't this installation's to delete")
 	}
 	deleteOptions := metav1.DeleteOptions{}
 	if uid := ns.UID; uid != "" {
@@ -36,6 +29,24 @@ func (c *Client) DeleteSpace(ctx context.Context, namespace, space string) error
 		return nil
 	}
 	return err
+}
+
+// Check the deletion boundary before any plugin or traffic side effects, and
+// check it again when deleting the namespace itself.
+func (c *Client) ownedSpaceNamespace(ctx context.Context, namespace, space string) (*corev1.Namespace, error) {
+	ns, err := c.Clientset.CoreV1().Namespaces().Get(ctx, namespace, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if ns.Annotations[manifests.AnnotationManaged] != "true" || !c.ours(ns.Labels) ||
+		ns.Labels[manifests.LabelSpace] != space ||
+		ns.Labels[manifests.LabelRole] != manifests.RoleSpace {
+		return nil, fmt.Errorf("that namespace isn't this installation's to delete")
+	}
+	return ns, nil
 }
 
 // DeleteSpaceObjects removes a logical space from a shared namespace. The

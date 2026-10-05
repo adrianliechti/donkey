@@ -2,6 +2,7 @@ import { useState } from 'react'
 import {
   Activity,
   BadgeCheck,
+  Box,
   ExternalLink,
   FileText,
   Globe2,
@@ -11,33 +12,40 @@ import {
   RotateCw,
   ScrollText,
   SlidersHorizontal,
+  Stethoscope,
   UploadCloud,
   X,
 } from 'lucide-react'
 import { api, type EndpointState, type EndpointStatus } from './api'
 import { AddonsCard } from './AddonsCard'
 import { DangerZone } from './DangerZone'
-import { DiagnoseCard } from './DiagnoseCard'
+import { DiagnosisSection } from './DiagnoseCard'
 import { EnvEditor } from './EnvEditor'
 import { FilesPanel } from './FilesPanel'
 import { LogsPanel } from './LogsPanel'
 import { NetworkCard } from './NetworkCard'
 import { StoredRelease } from './StoredRelease'
 import { TrafficPanel } from './TrafficPanel'
-import { useAppStatus } from './queries'
+import { DrawerBody } from './dialog'
+import { useAppBuild, useAppBuilds, useAppStatus } from './queries'
+import { SignalChips } from './ReleaseView'
 import {
   ago,
-  Button,
   Card,
   ErrorNote,
   errText,
   ExposureBadge,
   healthLine,
   healthOf,
-  SectionTitle,
+  IconButton,
+  List,
+  ListRow,
+  Section,
+  SectionHeader,
   Spinner,
   StateChip,
   StatusDot,
+  Toolbar,
 } from './ui'
 
 // The app panel slides over the fleet. Each tab is one job — glance, read,
@@ -60,12 +68,14 @@ export function AppDetail({
   app,
   tab,
   onTab,
+  onDeploy,
   onBack,
 }: {
   space: string
   app: string
   tab: AppTab
   onTab: (tab: AppTab) => void
+  onDeploy: () => void
   onBack: () => void
 }) {
   const { data: status, error, reload } = useAppStatus(space, app)
@@ -75,13 +85,15 @@ export function AppDetail({
   const shown: AppTab = tab === 'files' && !status?.hasStorage ? 'overview' : tab
 
   return (
-    <div className="flex min-h-full flex-col">
-      <div className="sticky top-0 z-10 border-b border-line bg-card/95 backdrop-blur">
+    <>
+      {/* The header never scrolls; only the tab body below it does. */}
+      <div className={`shrink-0 ${status?.found ? '' : 'border-b border-line'}`}>
+        {/* The same title row as every dialog: identity left, portlet right. */}
         <div className="flex items-start justify-between gap-3 px-5 pt-4">
           <div className="min-w-0">
             <div className="flex items-center gap-2.5">
               <h1 className="truncate font-mono text-xl font-bold tracking-tight">{app}</h1>
-			  {status?.found && <ExposureBadge exposure={status.exposure} mode={status.mode} />}
+              {status?.found && <ExposureBadge exposure={status.exposure} mode={status.mode} />}
             </div>
             {status?.found && (
               <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-ink-soft">
@@ -93,65 +105,61 @@ export function AppDetail({
                 {(status.restarts ?? 0) > 0 && (
                   <span className="text-xs text-danger">{status.restarts} restarts</span>
                 )}
-                {status.image && (
-                  <span className="hidden font-mono text-xs text-muted sm:inline">
-                    {status.image.split('/').pop()}
-                  </span>
+                {/* The one way to the diagnosis, the same on every tab: it
+                    lives on Logs, next to the evidence it reads. */}
+                {!status.healthy && (
+                  <button
+                    type="button"
+                    onClick={() => onTab('logs')}
+                    className="flex items-center gap-1 text-xs text-danger underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-accent-strong"
+                  >
+                    <Stethoscope className="size-3.5" aria-hidden /> Diagnose
+                  </button>
                 )}
               </div>
             )}
           </div>
-          <div className="flex shrink-0 items-center gap-1.5">
-            <button
-              onClick={onBack}
-              title="Close (Esc)"
-              aria-label="Close the app panel"
-              className="rounded-md p-1.5 text-muted hover:bg-raised hover:text-ink focus-visible:outline-2 focus-visible:outline-accent-strong"
-            >
-              <X className="size-4" aria-hidden />
-            </button>
-          </div>
-        </div>
-
-        {status?.found && (
-          <div className="flex flex-wrap items-center gap-2 px-5 pt-3">
-            {/* An anchor (opens a new tab), dressed exactly like the quiet
-                Restart/Deploy buttons beside it so the action row is uniform. */}
-            {status.url && (
+          {/* The same icon portlet as every dialog header. -mr-2: the close
+              glyph lines up with the content edge, not its hit area. */}
+          <Toolbar className="-mr-2">
+            {status?.found && status.url && (
+              /* An anchor (opens a new tab), dressed as an icon button. */
               <a
                 href={status.url}
                 target="_blank"
                 rel="noreferrer"
-                className="flex items-center gap-1.5 rounded-md border border-line bg-transparent px-3 py-1.5 text-sm text-ink-soft transition-colors hover:bg-line/50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-strong"
+                title="Open the app in a new tab"
+                aria-label="Open the app in a new tab"
+                className="flex size-8 shrink-0 items-center justify-center rounded-md text-muted transition-colors hover:bg-line/60 hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-strong"
               >
-                Open app <ExternalLink className="size-3.5" aria-hidden />
+                <ExternalLink className="size-4" aria-hidden />
               </a>
             )}
-            <RestartButton space={space} app={app} onRestarted={reload} />
-            <Button
-              kind="quiet"
-              onClick={() => {
-                location.hash = `#/deploy/${encodeURIComponent(space)}/${encodeURIComponent(app)}`
-              }}
-            >
-              <span className="flex items-center gap-1.5">
-                <UploadCloud className="size-3.5" aria-hidden /> Deploy
-              </span>
-            </Button>
-          </div>
-        )}
+            {status?.found && <RestartButton space={space} app={app} onRestarted={reload} />}
+            {status?.found && <IconButton icon={UploadCloud} label="Deploy a new version" onClick={onDeploy} />}
+            <span className="mx-0.5 h-4 w-px bg-line" aria-hidden />
+            <IconButton icon={X} label="Close the app panel (Esc)" onClick={onBack} />
+          </Toolbar>
+        </div>
 
         {status?.found && (
           /* Files is only offered when there is a disk to browse — an app
              without one has nothing on it a redeploy would not rebuild. */
-          <nav className="mt-3 flex gap-1 overflow-x-auto px-5" role="tablist">
+          // The bar's bottom line is an inset shadow, painted under the tabs,
+          // so the active underline sits on it without spilling out: nothing
+          // overflows vertically, and the bar only scrolls sideways when the
+          // tabs are wider than the panel (phones).
+          <nav
+            className="mt-3 flex gap-1 overflow-x-auto overflow-y-hidden overscroll-x-contain px-5 shadow-[inset_0_-1px_0_var(--color-line)] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+            role="tablist"
+          >
             {TABS.filter((t) => t.id !== 'files' || status.hasStorage).map((t) => (
               <button
                 key={t.id}
                 role="tab"
                 aria-selected={shown === t.id}
                 onClick={() => onTab(t.id)}
-                className={`-mb-px flex shrink-0 items-center gap-1.5 border-b-2 px-3 py-2 text-sm transition-colors focus-visible:outline-2 focus-visible:outline-accent-strong ${
+                className={`flex h-10 shrink-0 items-center gap-1.5 border-b-2 px-3 text-sm transition-colors focus-visible:outline-2 focus-visible:outline-accent-strong ${
                   shown === t.id
                     ? 'border-accent font-medium text-ink'
                     : 'border-transparent text-muted hover:border-line hover:text-ink'
@@ -165,7 +173,8 @@ export function AppDetail({
         )}
       </div>
 
-      <div className="flex-1 space-y-5 px-5 py-5">
+      {/* Keyed by tab: each tab opens scrolled to its top. */}
+      <DrawerBody key={shown}>
         <ErrorNote message={error} />
         {status === null && !error && <Spinner label="Asking the cluster…" />}
 
@@ -183,19 +192,21 @@ export function AppDetail({
 
         {status?.found && (
           <>
-            {/* A broken app is the reason people open this panel — the offer
-                to explain it belongs above every tab. */}
-            {!status.healthy && <DiagnoseCard space={space} app={app} />}
-
             {shown === 'overview' && (
               <>
+                <AboutApp space={space} app={app} onOpenBuild={() => onTab('release')} />
                 <InstancesCard pods={status.pods} />
                 {status.endpoint && <EndpointCard endpoint={status.endpoint} />}
                 <AddonsCard space={space} app={app} />
               </>
             )}
             {shown === 'release' && <StoredRelease space={space} app={app} />}
-            {shown === 'logs' && <LogsPanel space={space} app={app} />}
+            {shown === 'logs' && (
+              <>
+                {!status.healthy && <DiagnosisSection space={space} app={app} image={status.image} />}
+                <LogsPanel space={space} app={app} />
+              </>
+            )}
             {shown === 'traffic' && <TrafficPanel space={space} app={app} />}
             {shown === 'files' && <FilesPanel space={space} app={app} />}
             {shown === 'variables' && <EnvEditor space={space} app={app} onSaved={reload} />}
@@ -207,18 +218,53 @@ export function AppDetail({
             )}
           </>
         )}
-      </div>
-    </div>
+      </DrawerBody>
+    </>
+  )
+}
+
+// About: what the app is, in the words donkey used when it read the code
+// for the latest build. Nothing shows until a build with a plan exists.
+function AboutApp({ space, app, onOpenBuild }: { space: string; app: string; onOpenBuild: () => void }) {
+  const { data: history } = useAppBuilds(space, app)
+  const latest = history?.builds?.[0]
+  const { data: release } = useAppBuild(space, app, latest?.sequence ?? null)
+  const plan = release?.plan
+  if (!latest || !plan || (!plan.appType && !plan.notes)) return null
+  const stack = [...(plan.build.runtimes ?? []), ...(plan.build.frameworks ?? [])]
+
+  return (
+    <Section className="space-y-2">
+      <SectionHeader
+        title="About"
+        actions={
+          <button
+            type="button"
+            onClick={onOpenBuild}
+            className="rounded px-1 text-xs text-muted underline-offset-2 transition-colors hover:text-ink hover:underline focus-visible:outline-2 focus-visible:outline-accent-strong"
+          >
+            Build #{latest.sequence}
+          </button>
+        }
+      />
+      {plan.appType && <p className="text-sm text-ink">{plan.appType}</p>}
+      {plan.notes && <p className="text-xs leading-relaxed text-muted">{plan.notes}</p>}
+      {stack.length > 0 && (
+        <div className="pt-1">
+          <SignalChips signals={stack} />
+        </div>
+      )}
+    </Section>
   )
 }
 
 const endpointStyle: Record<EndpointState, { chip: string; icon: string }> = {
-  ready: { chip: 'border-success/30 bg-success/10 text-success', icon: 'text-success' },
-  issuing: { chip: 'border-accent/30 bg-accent-soft text-accent', icon: 'text-accent' },
-  propagating: { chip: 'border-accent/30 bg-accent-soft text-accent', icon: 'text-accent' },
-  error: { chip: 'border-danger/30 bg-danger/10 text-danger', icon: 'text-danger' },
-  unknown: { chip: 'border-line bg-line/50 text-ink-soft', icon: 'text-muted' },
-  unmanaged: { chip: 'border-line bg-line/50 text-muted', icon: 'text-muted' },
+  ready: { chip: 'bg-success/10 text-success', icon: 'text-success' },
+  issuing: { chip: 'bg-accent-soft text-accent', icon: 'text-accent' },
+  propagating: { chip: 'bg-accent-soft text-accent', icon: 'text-accent' },
+  error: { chip: 'bg-danger/10 text-danger', icon: 'text-danger' },
+  unknown: { chip: 'bg-raised text-ink-soft', icon: 'text-muted' },
+  unmanaged: { chip: 'bg-raised text-muted', icon: 'text-muted' },
 }
 
 function EndpointStateChip({
@@ -229,7 +275,7 @@ function EndpointStateChip({
   renewing?: boolean
 }) {
   return (
-    <span className={`rounded border px-1.5 py-0.5 font-mono text-[11px] leading-4 ${endpointStyle[state].chip}`}>
+    <span className={`rounded px-1.5 py-0.5 font-mono text-[11px] leading-4 ${endpointStyle[state].chip}`}>
       {renewing && state === 'ready' ? 'ready · renewing' : state}
     </span>
   )
@@ -244,20 +290,18 @@ function EndpointCard({ endpoint }: { endpoint: EndpointStatus }) {
   const dns = endpoint.dns
 
   return (
-    <section>
-      <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <SectionTitle>Address readiness</SectionTitle>
-        <span className="break-all font-mono text-xs text-ink-soft">{endpoint.host}</span>
-      </div>
-      <div className="mt-2 divide-y divide-line/70 rounded-lg border border-line" aria-live="polite">
-        <div className="grid grid-cols-[1.25rem_minmax(0,1fr)] gap-2.5 px-3 py-3">
-          <BadgeCheck
-            className={`mt-0.5 size-4 ${endpointStyle[certificate.state].icon}`}
-            aria-hidden
-          />
-          <div className="min-w-0">
+    <Section className="space-y-3">
+      <SectionHeader
+        title="Address"
+        actions={<span className="break-all font-mono text-xs text-ink-soft">{endpoint.host}</span>}
+        description="Refreshed with app status. Managed DNS answers are checked from the control plane, including private zones."
+      />
+      <List>
+        <ListRow className="items-start">
+          <BadgeCheck className={`mt-0.5 size-4 shrink-0 ${endpointStyle[certificate.state].icon}`} aria-hidden />
+          <div className="min-w-0" aria-live="polite">
             <div className="flex flex-wrap items-center gap-2">
-              <span className="text-sm font-medium">TLS certificate</span>
+              <span className="text-sm">TLS certificate</span>
               <EndpointStateChip state={certificate.state} renewing={certificate.renewing} />
               <span className="font-mono text-[11px] text-muted">
                 {certificate.mode}
@@ -278,12 +322,12 @@ function EndpointCard({ endpoint }: { endpoint: EndpointStatus }) {
               </p>
             )}
           </div>
-        </div>
-        <div className="grid grid-cols-[1.25rem_minmax(0,1fr)] gap-2.5 px-3 py-3">
-          <Globe2 className={`mt-0.5 size-4 ${endpointStyle[dns.state].icon}`} aria-hidden />
-          <div className="min-w-0">
+        </ListRow>
+        <ListRow className="items-start">
+          <Globe2 className={`mt-0.5 size-4 shrink-0 ${endpointStyle[dns.state].icon}`} aria-hidden />
+          <div className="min-w-0" aria-live="polite">
             <div className="flex flex-wrap items-center gap-2">
-              <span className="text-sm font-medium">DNS</span>
+              <span className="text-sm">DNS</span>
               <EndpointStateChip state={dns.state} />
               {dns.recordType && dns.expected && dns.expected.length > 0 && (
                 <span className="font-mono text-[11px] text-muted">
@@ -296,47 +340,44 @@ function EndpointCard({ endpoint }: { endpoint: EndpointStatus }) {
                 </span>
               )}
             </div>
-            {dns.message && (
-              <p className="mt-1 text-xs leading-relaxed text-ink-soft">{dns.message}</p>
-            )}
+            {dns.message && <p className="mt-1 text-xs leading-relaxed text-ink-soft">{dns.message}</p>}
           </div>
-        </div>
-      </div>
-      <p className="mt-1.5 text-xs text-muted">
-        Refreshed with app status. Managed DNS answers are checked from the control plane, including
-        private zones.
-      </p>
-    </section>
+        </ListRow>
+      </List>
+    </Section>
   )
 }
 
 function InstancesCard({ pods }: { pods: string[] }) {
   return (
-    <section>
-      <SectionTitle>Instances</SectionTitle>
+    <Section className="space-y-3">
+      <SectionHeader title="Instances" />
       {pods.length === 0 ? (
-        <p className="mt-2 text-sm text-muted">
+        <p className="text-sm text-muted">
           No instances running — the app may be starting, or its rollout is stuck. The logs usually
           say why.
         </p>
       ) : (
-        <ul className="mt-2 space-y-1.5">
+        <List>
           {pods.map((p) => {
             // podSummary strings look like "name: Running (CrashLoopBackOff, 3 restarts)".
             const [name, ...rest] = p.split(': ')
             const state = rest.join(': ')
             const m = state.match(/^([^(]+?)(?:\s*\((.*)\))?$/)
             return (
-              <li key={p} className="flex flex-wrap items-center gap-2 font-mono text-xs text-ink-soft">
-                <span className="truncate">{name}</span>
-                {m && <StateChip state={m[1].trim()} />}
-                {m?.[2] && m[2].split(', ').map((note) => <StateChip key={note} state={note} />)}
-              </li>
+              <ListRow key={p}>
+                <Box className="size-4 shrink-0 text-muted" aria-hidden />
+                <span className="min-w-0 flex-1 truncate font-mono text-sm">{name}</span>
+                <span className="flex flex-wrap justify-end gap-1.5">
+                  {m && <StateChip state={m[1].trim()} />}
+                  {m?.[2] && m[2].split(', ').map((note) => <StateChip key={note} state={note} />)}
+                </span>
+              </ListRow>
             )
           })}
-        </ul>
+        </List>
       )}
-    </section>
+    </Section>
   )
 }
 
@@ -358,14 +399,15 @@ function RestartButton({ space, app, onRestarted }: { space: string; app: string
   }
 
   return (
-    <div className="flex items-center gap-2">
+    <>
       {error && <span className="text-xs text-danger">{error}</span>}
-      <Button kind="quiet" onClick={restart} disabled={busy}>
-        <span className="flex items-center gap-1.5">
-          <RotateCw className={`size-3.5 ${busy ? 'animate-spin' : ''}`} aria-hidden />
-          {busy ? 'Restarting…' : 'Restart'}
-        </span>
-      </Button>
-    </div>
+      <IconButton
+        icon={RotateCw}
+        label={busy ? 'Restarting…' : 'Restart the app'}
+        onClick={restart}
+        disabled={busy}
+        className={busy ? '[&>svg]:animate-spin' : ''}
+      />
+    </>
   )
 }

@@ -522,12 +522,12 @@ func (s *Server) planServices(ctx context.Context, app *config.AppConfig, analys
 	for _, a := range app.Addons {
 		out = append(out, PlanService{
 			Type: a.Type, Name: a.Name, Reason: "from donkey.yaml",
-			Known: knownAddon(a.Type), Selected: true,
+			Known: s.spaceHasService(ctx, app.Space, a.Name) || s.offeringAvailable(ctx, app.Space, a.Type), Selected: true,
 			Exists: s.spaceHasService(ctx, app.Space, a.Name),
 		})
 	}
 	for _, svc := range analysis.Services {
-		if hasAddonType(app, svc.Type) || !knownAddon(svc.Type) {
+		if hasAddonType(app, svc.Type) || !s.offeringAvailable(ctx, app.Space, svc.Type) {
 			continue
 		}
 		out = append(out, PlanService{
@@ -801,8 +801,8 @@ func (s *Server) spaceHasService(ctx context.Context, space, name string) bool {
 	return err == nil && len(data) > 0
 }
 
-func knownAddon(typ string) bool {
-	_, err := addons.Get(typ)
+func knownAddon(ctx context.Context, typ string) bool {
+	_, err := addons.Get(ctx, typ)
 	return err == nil
 }
 
@@ -825,8 +825,7 @@ func modeOfConfig(app *config.AppConfig) string {
 // a service that will be created. Values remain references in reviewed config.
 func (s *Server) bindEnvironment(ctx context.Context, app *config.AppConfig) error {
 	for _, service := range app.Addons {
-		recipe, err := addons.Get(service.Type)
-		if err != nil {
+		if err := runtime.CheckServiceAttachment(ctx, s.rt, s.cfg.CommonOfferings, app.Space, app.Name, service.Name); err != nil {
 			return err
 		}
 		values, err := s.rt.ServiceBinding(ctx, app.Space, addons.SharedOwner, service.Name)
@@ -837,7 +836,37 @@ func (s *Server) bindEnvironment(ctx context.Context, app *config.AppConfig) err
 			if service.External {
 				return fmt.Errorf("external service %s must be attached to this space before deploying", service.Name)
 			}
-			values = recipe.Binding(addons.Input{})
+			recipe, err := addons.Get(ctx, service.Type)
+			if err != nil {
+				return err
+			}
+			desc, err := recipe.Describe(ctx)
+			if err != nil {
+				return err
+			}
+			// A retained or failed instance can be resumed even if its offering
+			// was removed from the space catalog. The runtime uses its record.
+			existing := false
+			services, err := s.rt.ListServices(ctx, app.Space, addons.SharedOwner)
+			if err != nil {
+				return err
+			}
+			for _, saved := range services {
+				if saved.Name == service.Name && saved.Type == service.Type {
+					existing = true
+					break
+				}
+			}
+			parameters, err := runtime.PrepareService(ctx, s.rt, s.cfg.CommonOfferings, app.Space, desc, service.ServiceParameters(), existing)
+			if err != nil {
+				return err
+			}
+			if !existing {
+				if _, err := addons.ResolveParameters(desc.Parameters, parameters); err != nil {
+					return err
+				}
+			}
+			values = addons.EnvTemplate(desc)
 		}
 		if err := addons.BindEnvironment(app, service.Name, values); err != nil {
 			return err

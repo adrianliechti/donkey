@@ -13,7 +13,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { Loader2, UploadCloud } from 'lucide-react'
 import { zipSync } from 'fflate'
 import { api, type DeployResult, type DeployUpdate, type ProjectPlan, type PlanEdit } from './api'
-import { Button, Card, ErrorNote, errText } from './ui'
+import { Button, Callout, ErrorNote, Section, SectionHeader, errText } from './ui'
 import { ProjectReview } from './ProjectReview'
 import { ReleaseView } from './ReleaseView'
 import { fleetQuery, useFleet } from './queries'
@@ -277,10 +277,7 @@ export function DeployView({
   }
 
   return (
-    <div
-      className={`mx-auto space-y-5 ${phase.step === 'deploying' || phase.step === 'done' ? 'max-w-6xl' : 'max-w-2xl'}`}
-    >
-      <h1 className="text-lg font-semibold">Deploy</h1>
+    <div className="flex flex-col gap-5">
       {phase.step === 'pick' && (
         <>
           <div
@@ -332,16 +329,10 @@ export function DeployView({
         </>
       )}
       {phase.step === 'reading' && (
-        <Card className="space-y-2 p-6">
-          <p className="flex items-center gap-2 text-sm">
-            <Loader2 className="size-4 animate-spin text-accent" aria-hidden />
-            Reading <span className="font-mono">{phase.upload.label}</span>…
-          </p>
-          <p className="text-xs text-muted">
-            Finding runnable apps, shared packages, service dependencies and the URLs that connect
-            them. This takes a moment.
-          </p>
-        </Card>
+        <Callout tone="info" icon={Loader2} title={<>Reading <span className="font-mono">{phase.upload.label}</span>…</>}>
+          Finding runnable apps, shared packages, service dependencies and the URLs that connect
+          them. This takes a moment.
+        </Callout>
       )}
       {phase.step === 'review' && (
         <ProjectReview
@@ -366,13 +357,13 @@ export function DeployView({
             const status = progress[app.app.name]
             if (!status)
               return (
-                <Card key={app.id} className="p-4 text-sm text-muted">
-                  {app.app.name} — waiting to deploy
-                </Card>
+                <Section key={app.id}>
+                  <SectionHeader title={app.app.name} description="Waiting to deploy." />
+                </Section>
               )
             return (
-              <div key={app.id} className="space-y-2">
-                <h2 className="text-sm font-semibold">{app.app.name}</h2>
+              <Section key={app.id} className="space-y-4">
+                <SectionHeader title={app.app.name} />
                 <ReleaseView
                   plan={app}
                   lines={status.lines}
@@ -381,7 +372,7 @@ export function DeployView({
                   result={status.result}
                   onOpen={() => onDeployed(status.result?.space || app.app.space, app.app.name)}
                 />
-              </div>
+              </Section>
             )
           })}
           {phase.step === 'done' && (
