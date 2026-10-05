@@ -65,6 +65,20 @@ export const doctorQuery = queryOptions({
   refetchInterval: 60_000,
 })
 
+// The assistant's reading of a failing app. Each run is a model call over
+// the app's real logs, so it is cached per deployed image: opening Logs again
+// does not ask again, a new deploy does, and "Check again" is the explicit
+// re-run.
+export const diagnosisQuery = (space: string, app: string, image: string) =>
+  queryOptions({
+    queryKey: ['diagnosis', space, app, image],
+    queryFn: () => api.diagnose(space, app),
+    staleTime: Infinity,
+    gcTime: 30 * 60_000,
+    retry: false,
+    refetchOnWindowFocus: false,
+  })
+
 export const appServicesQuery = (space: string, app: string) =>
   queryOptions({
     queryKey: ['app-services', space, app],
@@ -118,6 +132,12 @@ export function useAppBuilds(space: string, app: string) {
 
 export function useAppBuild(space: string, app: string, sequence: number | null) {
   return present(useQuery({ ...buildQuery(space, app, sequence ?? 0), enabled: sequence !== null }))
+}
+
+// enabled=false only reads what an earlier run left in the cache.
+export function useDiagnosis(space: string, app: string, image: string, enabled = true) {
+  const q = useQuery({ ...diagnosisQuery(space, app, image), enabled })
+  return { ...present(q), fetching: q.isFetching }
 }
 
 export function useTraffic(space: string, app = '', source: TrafficSource = 'edge', range: TrafficRange = '30d') {

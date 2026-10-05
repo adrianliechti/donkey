@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Trash2, TriangleAlert } from 'lucide-react'
 import { api } from './api'
-import { Button, ErrorNote, errText, SectionTitle } from './ui'
+import { Button, Callout, ErrorNote, errText, IconButton, Section, SectionHeader, ToggleRow } from './ui'
 
 export function DangerZone({ space, app, onDestroyed }: { space: string; app: string; onDestroyed: () => void }) {
   const [confirming, setConfirming] = useState(false)
@@ -22,46 +22,38 @@ export function DangerZone({ space, app, onDestroyed }: { space: string; app: st
   }
 
   return (
-    <section className="border-t border-danger/30 pt-5">
-      <SectionTitle>Remove</SectionTitle>
-      {!confirming ? (
-        <div className="mt-2 flex items-center justify-between gap-4">
-          <p className="text-sm text-ink-soft">
+    <Section tone="danger" className="space-y-3">
+      <SectionHeader
+        title="Remove"
+        actions={
+          !confirming && (
+            <IconButton icon={Trash2} kind="danger" label="Remove app…" onClick={() => setConfirming(true)} />
+          )
+        }
+        description={
+          <>
             Takes <span className="font-mono">{app}</span> off the cluster. A later{' '}
-            <code className="font-mono text-xs">donkey deploy</code> brings it back.
-          </p>
-          <Button kind="danger" onClick={() => setConfirming(true)}>
-            <span className="flex items-center gap-1.5">
-              <Trash2 className="size-3.5" aria-hidden /> Remove app
-            </span>
-          </Button>
-        </div>
-      ) : (
-        <div className="mt-2 space-y-3">
-          <p className="flex items-center gap-2 text-sm font-medium text-danger">
-            <TriangleAlert className="size-4" aria-hidden />
-            Remove {app} and everything donkey created for it?
-          </p>
-          <label className="flex items-center gap-2 text-sm text-ink-soft">
-            <input
-              type="checkbox"
-              checked={keepData}
-              onChange={(e) => setKeepData(e.target.checked)}
-              className="size-4 accent-accent-strong"
-            />
-            Keep its disk (the space's services are never touched)
-          </label>
-          <div className="flex gap-2">
-            <Button kind="danger" onClick={destroy} disabled={busy}>
-              {busy ? 'Removing…' : keepData ? 'Remove app, keep its data' : 'Remove app and its data'}
-            </Button>
+            <code className="font-mono">donkey deploy</code> brings it back.
+          </>
+        }
+      />
+      {confirming && (
+        <>
+          <Callout tone="danger" icon={TriangleAlert} title={`Remove ${app} and everything donkey created for it?`}>
+            The space's services are never touched.
+          </Callout>
+          <ToggleRow label="Keep its disk" description="Redeploying later picks the data back up." checked={keepData} onChange={setKeepData} />
+          <ErrorNote message={error} />
+          <div className="flex justify-end gap-2">
             <Button kind="quiet" onClick={() => setConfirming(false)} disabled={busy}>
               Cancel
             </Button>
+            <Button kind="danger" onClick={destroy} disabled={busy}>
+              {busy ? 'Removing…' : keepData ? 'Remove app, keep its data' : 'Remove app and its data'}
+            </Button>
           </div>
-          <ErrorNote message={error} />
-        </div>
+        </>
       )}
-    </section>
+    </Section>
   )
 }

@@ -1,11 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
-import { Dialog, DialogBackdrop, DialogPanel, DialogTitle } from '@headlessui/react'
-import { Globe, Send, Trash2, X } from 'lucide-react'
+import { Send, Trash2 } from 'lucide-react'
 import { api, type ServiceHTTPResponse } from './api'
-import { Button, ErrorNote, IconButton, Select, Spinner, errText } from './ui'
+import { Modal, ModalBody, ModalHeader, ModalNotice } from './dialog'
+import { Button, Disclosure, Field, IconButton, Input, Select, Spinner, TextArea, errText, wellClass } from './ui'
 
 const methods = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS']
-const field = 'w-full rounded border border-line bg-surface px-2 py-1.5 font-mono text-xs focus:outline-2 focus:outline-accent-strong'
 
 function parseHeaders(raw: string): Record<string, string> {
   const headers: Record<string, string> = {}
@@ -27,6 +26,11 @@ function responseBody(body: string) {
   catch { return body }
 }
 
+/**
+ * The request tester for a restricted HTTP service: compose a request on the
+ * left, read the answer on the right. The server makes the call with the
+ * service's credential, so the console never sees it.
+ */
 export function HttpDialog({ space, service, onClose, onDelete }: {
   space: string; service: string; onClose: () => void; onDelete: () => void
 }) {
@@ -70,70 +74,68 @@ export function HttpDialog({ space, service, onClose, onDelete }: {
     }
   }
 
-  return <Dialog open onClose={onClose} className="relative z-50">
-    <DialogBackdrop className="fixed inset-0 bg-black/60" />
-    <div className="fixed inset-0 flex items-center justify-center p-4">
-      <DialogPanel className="flex max-h-[calc(100dvh-2rem)] w-full max-w-5xl flex-col overflow-hidden rounded-lg border border-line bg-card shadow-2xl">
-        <div className="flex shrink-0 items-center justify-between gap-3 border-b border-line px-4 py-3">
-          <DialogTitle className="flex min-w-0 items-center gap-2 font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-muted">
-            <Globe className="size-3.5 shrink-0" aria-hidden /><span className="truncate">{service} · {space}</span>
-          </DialogTitle>
-          <div className="flex items-center gap-1">
-            <IconButton icon={Trash2} label={`Remove ${service}`} kind="danger" onClick={onDelete} />
-            <IconButton icon={X} label="Close request tester" onClick={onClose} />
-          </div>
-        </div>
-        <div className="min-h-0 overflow-y-auto p-4">
-          <ErrorNote message={error} />
-          {loading ? <Spinner label="Loading service…" /> : <>
-            <form onSubmit={(event) => { event.preventDefault(); void send() }}>
-              <fieldset disabled={busy || !baseURL} className="min-w-0 space-y-3">
-                <div className="flex flex-wrap items-end gap-2">
-                  <label className="space-y-1 text-xs text-muted">Method
-                    <Select ariaLabel="HTTP method" value={method} onChange={setMethod} size="sm" options={methods.map((value) => ({ value, label: value }))} />
-                  </label>
-                  <label className="min-w-48 flex-1 space-y-1 text-xs text-muted">URL
-                    <input aria-label="Request URL" value={url} onChange={(event) => setURL(event.target.value)} className={field}
+  const ok = response && response.status < 400
+
+  return (
+    <Modal onClose={onClose} size="xl" height="fill">
+      <ModalHeader eyebrow={`Request tester · ${space}`} title={<span className="font-mono">{service}</span>}
+        actions={<IconButton icon={Trash2} label={`Remove ${service}`} kind="danger" onClick={onDelete} />}
+        onClose={onClose} closeLabel="Close request tester" />
+      <ModalNotice message={error} />
+      <ModalBody padded={false}>
+        {loading ? <div className="flex flex-1 items-center justify-center"><Spinner label="Loading service…" /></div> : (
+          <div className="grid min-h-0 flex-1 lg:grid-cols-2">
+            {/* Request */}
+            <form className="flex min-h-0 flex-col overflow-y-auto border-b border-line lg:border-b-0 lg:border-r"
+              onSubmit={(event) => { event.preventDefault(); void send() }}>
+              <fieldset disabled={busy || !baseURL} className="flex min-w-0 flex-1 flex-col gap-4 px-5 py-4">
+                <div className="flex items-end gap-2">
+                  <Field label="Method">
+                    <Select ariaLabel="HTTP method" value={method} onChange={setMethod} options={methods.map((value) => ({ value, label: value }))} className="w-28" />
+                  </Field>
+                  <Field label="Path" className="flex-1">
+                    <Input aria-label="Request URL" value={url} onChange={(event) => setURL(event.target.value)}
                       placeholder="/customers?limit=10" autoCapitalize="none" spellCheck={false} />
-                  </label>
-                  <Button type="submit"><span className="flex items-center gap-1.5"><Send className="size-3.5" aria-hidden />{busy ? 'Sending…' : 'Send'}</span></Button>
+                  </Field>
+                  <Button type="submit" icon={Send}>{busy ? 'Sending…' : 'Send'}</Button>
                 </div>
-                <p className="break-all text-xs text-muted">Paths are relative to <span className="font-mono">{baseURL}</span></p>
-                <label className="block space-y-1 text-xs text-muted">Headers
-                  <textarea aria-label="Request headers" value={headers} onChange={(event) => setHeaders(event.target.value)}
-                    rows={3} placeholder={'Accept: application/json\nAuthorization: Bearer …'} spellCheck={false} className={field} />
-                  <span className="block">One header per line: Name: value.</span>
-                </label>
-                <details>
-                  <summary className="cursor-pointer text-xs font-medium">Request body (optional)</summary>
-                  <textarea aria-label="Request body" value={body} onChange={(event) => setBody(event.target.value)} rows={5}
-                    placeholder={'{"message": "hello"}'} spellCheck={false} className={`${field} mt-3`} />
-                </details>
+                <p className="-mt-2 break-all text-xs text-muted">Paths are relative to <span className="font-mono text-ink-soft">{baseURL || '—'}</span></p>
+                <Field label="Headers" hint="One header per line: Name: value.">
+                  <TextArea size="sm" aria-label="Request headers" value={headers} onChange={(event) => setHeaders(event.target.value)}
+                    rows={4} placeholder={'Accept: application/json\nAuthorization: Bearer …'} spellCheck={false} />
+                </Field>
+                <Field label="Body" hint="Sent as written. Leave empty for GET and HEAD." className="min-h-0 flex-1">
+                  <TextArea size="sm" aria-label="Request body" value={body} onChange={(event) => setBody(event.target.value)}
+                    rows={8} placeholder={'{"message": "hello"}'} spellCheck={false} className="min-h-32 flex-1 resize-none" />
+                </Field>
               </fieldset>
             </form>
-            <section aria-label="Response" className="mt-4 border-t border-line pt-3">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <h2 className="text-sm font-semibold">Response</h2>
+
+            {/* Response */}
+            <section aria-label="Response" className="flex min-h-0 flex-col">
+              <div className="flex min-h-14 shrink-0 items-center justify-between gap-3 border-b border-line px-5">
+                <h2 className="font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-muted">Response</h2>
                 <div aria-live="polite" className="flex items-center gap-3 text-xs">
-                  {busy ? <Spinner label="Waiting for response…" /> : response && <>
-                    <span className={`rounded-md px-2 py-1 font-mono font-medium ${response.status < 400 ? 'bg-success/10 text-success' : 'bg-danger/10 text-danger'}`}>{response.status} {response.statusText}</span>
-                    <span className="text-muted">{response.durationMs} ms</span>
+                  {busy ? <Spinner inline label="Waiting…" /> : response && <>
+                    <span className={`rounded-md px-2 py-1 font-mono font-medium ${ok ? 'bg-success/10 text-success' : 'bg-danger/10 text-danger'}`}>{response.status} {response.statusText}</span>
+                    <span className="font-mono text-muted">{response.durationMs} ms</span>
                   </>}
                 </div>
               </div>
-              {!response && !busy && <p className="mt-3 text-sm text-muted">Send a request to check the service connection.</p>}
-              {response && <div className="mt-3 space-y-3">
-                <details>
-                  <summary className="cursor-pointer text-xs font-medium">Response headers</summary>
-                  <pre className="mt-2 overflow-x-auto rounded-lg border border-line bg-surface p-3 font-mono text-xs">{Object.entries(response.headers).map(([name, values]) => values.map((value) => `${name}: ${value}`).join('\n')).join('\n')}</pre>
-                </details>
-                {response.truncated && <p className="text-xs text-muted">Showing the first 1 MiB of the response.</p>}
-                <pre className="max-h-80 overflow-auto whitespace-pre-wrap break-words rounded border border-line bg-surface p-3 font-mono text-xs">{response.body ? responseBody(response.body) : '(empty body)'}</pre>
-              </div>}
+              <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+                {!response && !busy && <p className="py-12 text-center text-sm text-muted">Send a request to check the service connection.</p>}
+                {response && <div className="space-y-4">
+                  <Disclosure summary={<>Headers <span className="text-muted">({Object.keys(response.headers).length})</span></>}>
+                    <pre className={wellClass}>{Object.entries(response.headers).map(([name, values]) => values.map((value) => `${name}: ${value}`).join('\n')).join('\n')}</pre>
+                  </Disclosure>
+                  {response.truncated && <p className="text-xs text-muted">Showing the first 1 MiB of the response.</p>}
+                  <pre className={`${wellClass} whitespace-pre-wrap break-words`}>{response.body ? responseBody(response.body) : '(empty body)'}</pre>
+                </div>}
+              </div>
             </section>
-          </>}
-        </div>
-      </DialogPanel>
-    </div>
-  </Dialog>
+          </div>
+        )}
+      </ModalBody>
+    </Modal>
+  )
 }

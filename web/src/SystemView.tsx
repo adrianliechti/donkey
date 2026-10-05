@@ -1,23 +1,18 @@
 import { RefreshCw } from 'lucide-react'
 import { useDoctor } from './queries'
-import { Card, CheckIcon, ErrorNote, SectionTitle, Spinner, UpdatedAgo } from './ui'
+import { Card, CheckIcon, ErrorNote, SectionTitle, Spinner, Toolbar, UpdatedAgo, IconButton } from './ui'
 
 export function SystemView() {
   const { data: report, error, updatedAt, reload } = useDoctor()
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-lg font-semibold">System</h1>
-        <div className="flex items-center gap-3">
+      <div className="flex min-h-8 items-center justify-between gap-3">
+        <h1 className="font-mono text-base font-bold tracking-tight">System</h1>
+        <Toolbar className="gap-3">
           <UpdatedAgo at={updatedAt} />
-          <button
-            onClick={reload}
-            className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted hover:bg-line/50 focus-visible:outline-2 focus-visible:outline-accent-strong"
-          >
-            <RefreshCw className="size-3.5" aria-hidden /> Check again
-          </button>
-        </div>
+          <IconButton icon={RefreshCw} label="Check again" onClick={reload} />
+        </Toolbar>
       </div>
       <ErrorNote message={error} />
       {report === null && !error && <Spinner label="Checking the control plane… (this probes everything, up to 15s)" />}

@@ -3,6 +3,7 @@ package ai
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path"
 	"path/filepath"
@@ -164,13 +165,48 @@ func (s *scanner) read(rel string) string {
 
 // packageJSON is the part of a Node manifest that changes the build.
 type packageJSON struct {
-	Main            string            `json:"main"`
-	PackageManager  string            `json:"packageManager"`
-	Scripts         map[string]string `json:"scripts"`
-	Dependencies    map[string]string `json:"dependencies"`
-	DevDependencies map[string]string `json:"devDependencies"`
-	Engines         map[string]string `json:"engines"`
-	Workspaces      json.RawMessage   `json:"workspaces"`
+	Main                 string            `json:"main"`
+	PackageManager       string            `json:"packageManager"`
+	Scripts              map[string]string `json:"scripts"`
+	Dependencies         map[string]string `json:"dependencies"`
+	DevDependencies      map[string]string `json:"devDependencies"`
+	OptionalDependencies map[string]string `json:"optionalDependencies"`
+	Engines              map[string]string `json:"engines"`
+	DevEngines           struct {
+		Runtime        devEngines `json:"runtime"`
+		PackageManager devEngines `json:"packageManager"`
+	} `json:"devEngines"`
+	Workspaces json.RawMessage `json:"workspaces"`
+}
+
+type devEngine struct {
+	Name    string `json:"name"`
+	Version string `json:"version"`
+}
+
+func (e devEngine) String() string {
+	if e.Version == "" {
+		return e.Name
+	}
+	return e.Name + "@" + e.Version
+}
+
+// devEngines is npm's devEngines entry for one tool: a single object, or a
+// list of acceptable ones. Anything else is ignored rather than allowed to
+// fail the whole manifest.
+type devEngines []devEngine
+
+func (d *devEngines) UnmarshalJSON(b []byte) error {
+	var one devEngine
+	if json.Unmarshal(b, &one) == nil {
+		*d = devEngines{one}
+		return nil
+	}
+	var many []devEngine
+	if json.Unmarshal(b, &many) == nil {
+		*d = many
+	}
+	return nil
 }
 
 func (s *scanner) packageJSON() *packageJSON {
@@ -367,6 +403,11 @@ func (s *scanner) packageManager(out *Signals) {
 		if pkg.PackageManager != "" {
 			add("Node: "+pkg.PackageManager+" (declared, wins over lockfiles)", "package.json > packageManager")
 		}
+		for _, e := range pkg.DevEngines.PackageManager {
+			if e.Name != "" {
+				add("Node: "+e.String()+" (declared in devEngines, wins over lockfiles)", "package.json > devEngines.packageManager")
+			}
+		}
 		switch {
 		case s.has("pnpm-lock.yaml") != "":
 			add("Node: pnpm", "pnpm-lock.yaml")
@@ -377,7 +418,12 @@ func (s *scanner) packageManager(out *Signals) {
 		case s.has("yarn.lock") != "":
 			add("Node: yarn 1", "yarn.lock")
 		case s.has("package-lock.json") != "":
-			add("Node: npm", "package-lock.json")
+			if missing := s.npmLockMissing(pkg); len(missing) > 0 {
+				add("Node: npm, but package-lock.json is out of sync with package.json (it does not record "+
+					strings.Join(missing, ", ")+") — `npm ci` fails on it, use `npm install`", "package-lock.json")
+			} else {
+				add("Node: npm", "package-lock.json")
+			}
 		default:
 			add("Node: npm (no lockfile found — prefer `npm install` over `npm ci`)", "package.json")
 		}
@@ -428,6 +474,93 @@ func (s *scanner) packageManager(out *Signals) {
 			break
 		}
 	}
+}
+
+// npmLockMissing names the dependencies package.json declares that
+// package-lock.json does not record — what a manifest edited by hand, or by an
+// assistant, looks like. `npm ci` refuses such a lockfile outright. Only the
+// root entry of a v2/v3 lockfile is read; a v1 lockfile says nothing here.
+func (s *scanner) npmLockMissing(pkg *packageJSON) []string {
+	f, err := os.Open(filepath.Join(s.dir, "package-lock.json"))
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	root := npmLockRoot(json.NewDecoder(io.LimitReader(f, 64<<20)))
+	if root == nil {
+		return nil
+	}
+	var missing []string
+	for _, deps := range []map[string]string{pkg.Dependencies, pkg.DevDependencies, pkg.OptionalDependencies} {
+		for name := range deps {
+			if !root.records(name) {
+				missing = append(missing, name)
+			}
+		}
+	}
+	sort.Strings(missing)
+	return slices.Compact(missing)
+}
+
+// npmLockEntry is a lockfile's packages[""]: the project's own manifest as of
+// the last install.
+type npmLockEntry struct {
+	Dependencies         map[string]string `json:"dependencies"`
+	DevDependencies      map[string]string `json:"devDependencies"`
+	OptionalDependencies map[string]string `json:"optionalDependencies"`
+	PeerDependencies     map[string]string `json:"peerDependencies"`
+}
+
+func (e *npmLockEntry) records(name string) bool {
+	for _, deps := range []map[string]string{e.Dependencies, e.DevDependencies, e.OptionalDependencies, e.PeerDependencies} {
+		if _, ok := deps[name]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+// npmLockRoot decodes packages[""] and stops there. A lockfile runs to
+// megabytes, and npm writes the root entry first.
+func npmLockRoot(dec *json.Decoder) *npmLockEntry {
+	if t, err := dec.Token(); err != nil || t != json.Delim('{') {
+		return nil
+	}
+	for dec.More() {
+		key, err := dec.Token()
+		if err != nil {
+			return nil
+		}
+		if key != "packages" {
+			var skip json.RawMessage
+			if dec.Decode(&skip) != nil {
+				return nil
+			}
+			continue
+		}
+		if t, err := dec.Token(); err != nil || t != json.Delim('{') {
+			return nil
+		}
+		for dec.More() {
+			name, err := dec.Token()
+			if err != nil {
+				return nil
+			}
+			if name == "" {
+				var root npmLockEntry
+				if dec.Decode(&root) != nil {
+					return nil
+				}
+				return &root
+			}
+			var skip json.RawMessage
+			if dec.Decode(&skip) != nil {
+				return nil
+			}
+		}
+		return nil
+	}
+	return nil
 }
 
 // versionFiles are where a toolchain version gets pinned, and what it pins.
@@ -486,8 +619,15 @@ func (s *scanner) versions(out *Signals) {
 	if f := s.has("mise.toml", ".mise.toml"); f != "" {
 		out.Versions = append(out.Versions, Signal{Value: "mise config present — read it for pinned tool versions", Evidence: f})
 	}
-	if pkg := s.packageJSON(); pkg != nil && pkg.Engines != nil {
-		add("node", pkg.Engines["node"], "package.json > engines.node")
+	if pkg := s.packageJSON(); pkg != nil {
+		if pkg.Engines != nil {
+			add("node", pkg.Engines["node"], "package.json > engines.node")
+		}
+		for _, e := range pkg.DevEngines.Runtime {
+			if e.Name != "" {
+				add(e.Name, e.Version, "package.json > devEngines.runtime")
+			}
+		}
 	}
 	if m := goDirectiveRe.FindStringSubmatch(s.read("go.mod")); m != nil {
 		add("go", m[1], "go.mod")
@@ -827,7 +967,10 @@ func (s *scanner) staticSite(out *Signals) {
 	}
 
 	// Frameworks that always produce a server disqualify the app outright,
-	// whatever else is in the dependency list.
+	// whatever else is in the dependency list. TanStack Start counts as a
+	// devDependency too: railpack reads that as a static site, but the build
+	// still writes dist/client and dist/server, with no index.html for a web
+	// server to serve.
 	alwaysServer := []string{"nuxt", "@remix-run/node", "@tanstack/react-start", "@nestjs/core"}
 	if slices.ContainsFunc(alwaysServer, pkg.hasDep) {
 		return
@@ -911,6 +1054,18 @@ func (s *scanner) startCommands(out *Signals) {
 		}
 		if pkg.hasDep("@nestjs/core") {
 			add("node dist/main.js", "package.json depends on @nestjs/core")
+		}
+		// TanStack Start builds its server into dist/server and the browser
+		// bundle into dist/client; srvx comes with it and serves both. With
+		// Nitro, the build is one self-contained server in .output instead.
+		if pkg.hasDep("@tanstack/react-start") {
+			cmd := "npx srvx --prod -s ../client dist/server/server.js (TanStack Start's built server; -s is relative to dist/server)"
+			if pkg.hasDep("nitro") {
+				cmd = "node .output/server/index.mjs (TanStack Start built with Nitro)"
+			} else if _, prod := pkg.Dependencies["@tanstack/react-start"]; !prod {
+				cmd += " — @tanstack/react-start is only a devDependency, and srvx arrives with it, so the runtime image must keep dev dependencies"
+			}
+			add(cmd, "package.json depends on @tanstack/react-start")
 		}
 	}
 	if f := s.has("manage.py"); f != "" {

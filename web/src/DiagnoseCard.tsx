@@ -1,82 +1,66 @@
-import { useState } from 'react'
-import { Stethoscope } from 'lucide-react'
-import { api, type Diagnosis } from './api'
-import { Button, Card, ErrorNote, errText } from './ui'
+import { CircleAlert, Loader2, RefreshCw, Wrench } from 'lucide-react'
 import { DiffView } from './DiffView'
+import { useDiagnosis } from './queries'
+import { Callout, ErrorNote, Eyebrow, IconButton, List, ListRow, Section, SectionHeader, wellClass } from './ui'
 
-// DiagnoseCard is the "explain what's wrong" moment: the same evidence a
-// failed rollout collects, read by the assistant on demand.
-export function DiagnoseCard({ space, app }: { space: string; app: string }) {
-  const [result, setResult] = useState<Diagnosis | null>(null)
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState('')
-
-  async function run() {
-    setBusy(true)
-    setError('')
-    try {
-      setResult(await api.diagnose(space, app))
-    } catch (err) {
-      setError(errText(err, 'The diagnosis did not work.'))
-    } finally {
-      setBusy(false)
-    }
-  }
+// The diagnosis of an app that isn't fully up, at the top of the Logs tab:
+// the same evidence a failed rollout collects, read by the assistant as soon
+// as the tab opens — no button to find first. The raw logs follow below it.
+export function DiagnosisSection({ space, app, image }: { space: string; app: string; image: string }) {
+  const { data: result, error, reload, fetching } = useDiagnosis(space, app, image)
+  const proposals = result?.proposals ?? []
+  const events = result?.events ?? []
+  const reading = fetching && !result
 
   return (
-    <Card className="border-accent/60 bg-accent-soft/60 p-4">
-      <div className="flex items-center justify-between gap-3">
-        <div className="flex items-center gap-2 text-sm font-medium">
-          <Stethoscope className="size-4 text-accent-strong" aria-hidden />
-          This app isn't fully up.
-        </div>
-        <Button kind="quiet" onClick={run} disabled={busy}>
-          {busy ? 'Reading the evidence…' : result ? 'Check again' : 'Explain what’s wrong'}
-        </Button>
-      </div>
+    <Section className="space-y-3">
+      <SectionHeader
+        title="Diagnosis"
+        actions={
+          <IconButton icon={RefreshCw} label={fetching ? 'Reading the evidence…' : 'Check again'} onClick={reload}
+            disabled={fetching} className={fetching ? '[&>svg]:animate-spin' : ''} />
+        }
+      />
+      <Callout
+        tone="danger"
+        icon={reading ? Loader2 : CircleAlert}
+        title="This app isn't fully up."
+      >
+        {reading
+          ? 'Reading the logs and cluster events…'
+          : result?.diagnosis || (result?.assistantError
+            ? `The assistant couldn't be reached (${result.assistantError}). The raw evidence is below.`
+            : undefined)}
+      </Callout>
       <ErrorNote message={error} />
-      {result && (
-        <div className="mt-3 space-y-3">
-          {result.diagnosis && <p className="text-sm">{result.diagnosis}</p>}
-          {result.assistantError && (
-            <p className="text-xs text-muted">
-              The assistant couldn't be reached ({result.assistantError}) — the raw evidence is below.
-            </p>
-          )}
-          {(result.proposals ?? []).map((p, i) => (
-            <div key={i} className="rounded-md border border-line bg-card px-3 py-2 text-sm">
-              {p.type === 'set_env' && (
-                <code className="font-mono text-xs">
-                  donkey env set {p.key}={p.value}
-                </code>
-              )}
-              {p.type === 'edit_file' && (
-                <span className="font-mono text-xs">{p.path}</span>
-              )}
-              <p className="mt-0.5 text-xs text-ink-soft">{p.explanation}</p>
-              {p.diff && <DiffView diff={p.diff} />}
-            </div>
-          ))}
-          {(result.events ?? []).length > 0 && (
-            <details className="text-xs text-ink-soft">
-              <summary className="cursor-pointer text-muted">Cluster events</summary>
-              <ul className="mt-1 space-y-0.5 font-mono">
-                {(result.events ?? []).map((e) => (
-                  <li key={e}>{e}</li>
-                ))}
-              </ul>
-            </details>
-          )}
-          {result.logs && (
-            <details className="text-xs">
-              <summary className="cursor-pointer text-muted">Last lines from the app</summary>
-              <pre className="mt-1 max-h-48 overflow-auto rounded bg-well p-2 font-mono text-emphasis whitespace-pre-wrap">
-                {result.logs}
-              </pre>
-            </details>
-          )}
+      {proposals.length > 0 && (
+        <div className="space-y-1.5">
+          <Eyebrow>Suggested fixes</Eyebrow>
+          <List>
+            {proposals.map((p, i) => (
+              <ListRow key={i} className="items-start">
+                <Wrench className="mt-0.5 size-4 shrink-0 text-muted" aria-hidden />
+                <div className="min-w-0 flex-1 space-y-1">
+                  {p.type === 'set_env' && (
+                    <code className="block break-all font-mono text-xs text-ink">
+                      donkey env set {p.key}={p.value}
+                    </code>
+                  )}
+                  {p.type === 'edit_file' && <span className="block font-mono text-xs text-ink">{p.path}</span>}
+                  <p className="text-xs text-muted">{p.explanation}</p>
+                  {p.diff && <DiffView diff={p.diff} />}
+                </div>
+              </ListRow>
+            ))}
+          </List>
         </div>
       )}
-    </Card>
+      {events.length > 0 && (
+        <div className="space-y-1.5">
+          <Eyebrow>Cluster events</Eyebrow>
+          <pre className={`${wellClass} whitespace-pre-wrap`}>{events.join('\n')}</pre>
+        </div>
+      )}
+    </Section>
   )
 }

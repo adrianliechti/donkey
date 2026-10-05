@@ -71,6 +71,19 @@ func TestPackageManagerPrecedence(t *testing.T) {
 			},
 			want: "pnpm@9.1.0 (declared, wins over lockfiles)",
 		},
+		"devEngines names the manager as an object": {
+			files: map[string]string{
+				"package.json": `{"devEngines":{"packageManager":{"name":"pnpm","version":"10.4.1"}}}`,
+			},
+			want: "Node: pnpm@10.4.1 (declared in devEngines, wins over lockfiles)",
+		},
+		"devEngines names the manager in a list": {
+			files: map[string]string{
+				"package.json": `{"devEngines":{"packageManager":[{"name":"bun"}]}}`,
+				"yarn.lock":    "",
+			},
+			want: "Node: bun (declared in devEngines, wins over lockfiles)",
+		},
 		"uv lock": {
 			files: map[string]string{"pyproject.toml": "", "uv.lock": ""},
 			want:  "Python: uv",
@@ -93,13 +106,89 @@ func TestPackageManagerPrecedence(t *testing.T) {
 	}
 }
 
+// A lockfile that predates an edit to package.json makes `npm ci` fail before
+// it installs anything, and the build log only says the two disagree. The
+// scanner reads the lockfile's own record of the manifest and says which
+// dependencies it is missing.
+func TestNpmLockfileOutOfSync(t *testing.T) {
+	const lock = `{"name":"app","lockfileVersion":3,"packages":{"":{"dependencies":{"dayjs":"1.11.13"},"devDependencies":{"vite":"^7"}},"node_modules/dayjs":{"version":"1.11.13"}}}`
+	for name, tc := range map[string]struct {
+		pkg, lock string
+		want      string // empty: the lockfile must not be called out of sync
+	}{
+		"a dependency added without reinstalling": {
+			pkg:  `{"dependencies":{"dayjs":"1.11.13","is-number":"7.0.0"},"devDependencies":{"vite":"^7"}}`,
+			lock: lock,
+			want: "does not record is-number",
+		},
+		"a missing devDependency counts too": {
+			pkg:  `{"dependencies":{"dayjs":"1.11.13"},"devDependencies":{"vite":"^7","vitest":"^3"}}`,
+			lock: lock,
+			want: "does not record vitest",
+		},
+		"in sync": {
+			pkg:  `{"dependencies":{"dayjs":"1.11.13"},"devDependencies":{"vite":"^7"}}`,
+			lock: lock,
+		},
+		// Removing a dependency leaves an extra entry behind, which npm ci
+		// tolerates.
+		"a removed dependency is not a conflict": {
+			pkg:  `{"dependencies":{"dayjs":"1.11.13"}}`,
+			lock: lock,
+		},
+		// npm 6 lockfiles have no packages[""] entry to compare against.
+		"a v1 lockfile is not judged": {
+			pkg:  `{"dependencies":{"dayjs":"1.11.13","is-number":"7.0.0"}}`,
+			lock: `{"name":"app","lockfileVersion":1,"dependencies":{"dayjs":{"version":"1.11.13"}}}`,
+		},
+		"an unreadable lockfile is not judged": {
+			pkg:  `{"dependencies":{"dayjs":"1.11.13"}}`,
+			lock: `{"packages":{"": `,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := values(Scan(write(t, map[string]string{
+				"package.json":      tc.pkg,
+				"package-lock.json": tc.lock,
+			})).PackageManager)
+			if !strings.Contains(got, "Node: npm") {
+				t.Fatalf("npm should still be the package manager:\n%s", got)
+			}
+			if tc.want == "" {
+				if strings.Contains(got, "out of sync") {
+					t.Errorf("the lockfile should not be called out of sync:\n%s", got)
+				}
+				return
+			}
+			if !strings.Contains(got, tc.want) || !strings.Contains(got, "use `npm install`") {
+				t.Errorf("want %q and the npm install advice, got:\n%s", tc.want, got)
+			}
+		})
+	}
+}
+
+// devEngines is free-form enough that a manifest can carry a shape npm would
+// reject. That must cost the devEngines signal, not everything else in the
+// file.
+func TestMalformedDevEnginesKeepsTheManifest(t *testing.T) {
+	got := Scan(write(t, map[string]string{
+		"package.json": `{"scripts":{"start":"node app.js"},"devEngines":{"packageManager":"pnpm","runtime":[1,2]}}`,
+	}))
+	if !strings.Contains(values(got.StartCommands), "node app.js") {
+		t.Errorf("the start script should survive a malformed devEngines:\n%s", values(got.StartCommands))
+	}
+	if strings.Contains(values(got.PackageManager), "devEngines") {
+		t.Errorf("a malformed devEngines should not be reported:\n%s", values(got.PackageManager))
+	}
+}
+
 // Version pins are scattered across a dozen conventions and each one names a
 // different file. Every hit has to carry the file it came from, because the
 // files disagree and only the model can weigh them.
 func TestVersionPins(t *testing.T) {
 	dir := write(t, map[string]string{
 		".nvmrc":         "20.11.0\n",
-		"package.json":   `{"engines":{"node":">=22"}}`,
+		"package.json":   `{"engines":{"node":">=22"},"devEngines":{"runtime":{"name":"node","version":"22.11.0"}}}`,
 		"go.mod":         "module x\n\ngo 1.23.4\n",
 		"pyproject.toml": `requires-python = ">=3.11"`,
 		".tool-versions": "python 3.12.1\nruby 3.3.0\n",
@@ -109,6 +198,7 @@ func TestVersionPins(t *testing.T) {
 	for _, want := range []string{
 		"node 20.11.0 [.nvmrc]",
 		"node >=22 [package.json > engines.node]",
+		"node 22.11.0 [package.json > devEngines.runtime]",
 		"go 1.23.4 [go.mod]",
 		"python >=3.11 [pyproject.toml > requires-python]",
 		"python 3.12.1 [.tool-versions]",
@@ -223,6 +313,16 @@ func TestStaticSiteDetection(t *testing.T) {
 		"nuxt always emits a server": {
 			files: map[string]string{
 				"package.json": `{"dependencies":{"nuxt":"^3","vite":"^5"}}`,
+			},
+			wantNone: true,
+		},
+		// railpack serves this one as a static site and suggests moving the
+		// dependency. The build output says otherwise: dist/client and
+		// dist/server, and no index.html at the top of either.
+		"tanstack start as a devDependency still builds a server": {
+			files: map[string]string{
+				"package.json":   `{"dependencies":{"react":"^19"},"devDependencies":{"@tanstack/react-start":"^1","vite":"^7"}}`,
+				"vite.config.ts": "export default { plugins: [tanstackStart()] }",
 			},
 			wantNone: true,
 		},
@@ -360,6 +460,42 @@ func TestStartCommandOrder(t *testing.T) {
 	}
 	if !strings.Contains(values(got), "node dist/main.js") {
 		t.Errorf("the start script should still be listed:\n%s", values(got))
+	}
+}
+
+// TanStack Start has no start script by default and its server lands where no
+// generic rule looks, so the scanner names it — and says when a devDependency
+// would take the server away with the pruned dev dependencies.
+func TestTanstackStartCommand(t *testing.T) {
+	for name, tc := range map[string]struct {
+		pkg   string
+		want  string
+		avoid string
+	}{
+		"srvx serves the default build": {
+			pkg:   `{"dependencies":{"@tanstack/react-start":"^1"}}`,
+			want:  "npx srvx --prod -s ../client dist/server/server.js",
+			avoid: "devDependency",
+		},
+		"nitro builds its own server": {
+			pkg:   `{"dependencies":{"@tanstack/react-start":"^1","nitro":"^3"}}`,
+			want:  "node .output/server/index.mjs",
+			avoid: "srvx",
+		},
+		"a devDependency has to survive into the runtime image": {
+			pkg:  `{"devDependencies":{"@tanstack/react-start":"^1","vite":"^7"}}`,
+			want: "only a devDependency, and srvx arrives with it",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := values(Scan(write(t, map[string]string{"package.json": tc.pkg})).StartCommands)
+			if !strings.Contains(got, tc.want) {
+				t.Errorf("want %q in:\n%s", tc.want, got)
+			}
+			if tc.avoid != "" && strings.Contains(got, tc.avoid) {
+				t.Errorf("did not want %q in:\n%s", tc.avoid, got)
+			}
+		})
 	}
 }
 

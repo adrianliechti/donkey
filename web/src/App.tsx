@@ -14,16 +14,17 @@ import {
   useParams,
 } from '@tanstack/react-router'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { Activity, ArrowLeft, Search, X } from 'lucide-react'
+import { Activity, ArrowLeft, Search } from 'lucide-react'
 import { setUnauthorizedHandler, type AppSummary } from './api'
 import { AppDetail, type AppTab } from './AppDetail'
 import { AppsList } from './AppsList'
 import { CommandPalette } from './CommandPalette'
 import { DeployView } from './DeployView'
+import { Drawer, DrawerBody, PaneHeader } from './dialog'
 import { fleetQuery, statusQuery, useFleet } from './queries'
 import { SpaceCard } from './SpaceCard'
 import { SystemView } from './SystemView'
-import { DonkeyLogo, ErrorNote, Spinner, healthOf, type Health } from './ui'
+import { DonkeyLogo, ErrorNote, IconButton, Spinner, Toolbar, healthOf, type Health } from './ui'
 import { UserMenu } from './UserMenu'
 import { PlatformSettings } from './PlatformSettings'
 
@@ -79,25 +80,11 @@ function Shell() {
           </div>
           {/* A uniform icon toolbar. Deploying lives inside a space now (its
               Add menu), so there is no global Deploy here. */}
-          <div className="flex shrink-0 items-center gap-1">
-            <button
-              type="button"
-              title="Search — ⌘K"
-              aria-label="Search apps and spaces"
-              onClick={() => setPaletteOpen(true)}
-              className="flex items-center rounded-md p-1.5 text-muted hover:bg-line/60 hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-strong"
-            >
-              <Search className="size-5" aria-hidden />
-            </button>
-            {fleet?.platformAdmin && <button
-              type="button"
-              title="System health"
-              aria-label="System health"
-              onClick={() => navigate({ to: '/system' })}
-              className="flex items-center rounded-md p-1.5 text-muted hover:bg-line/60 hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-strong"
-            >
-              <Activity className="size-5" aria-hidden />
-            </button>}
+          <Toolbar>
+            <IconButton icon={Search} label="Search apps and spaces — ⌘K" onClick={() => setPaletteOpen(true)} />
+            {fleet?.platformAdmin && (
+              <IconButton icon={Activity} label="System health" onClick={() => navigate({ to: '/system' })} />
+            )}
             <UserMenu
               onPlatformSettings={fleet?.platformAdmin ? () => setPlatformSettingsOpen(true) : undefined}
               onSignOut={() => {
@@ -106,7 +93,7 @@ function Shell() {
                 window.location.href = '/oauth2/logout'
               }}
             />
-          </div>
+          </Toolbar>
         </div>
       </header>
 
@@ -208,79 +195,48 @@ function FleetLayout() {
   )
 }
 
-// Escape closes an overlay — but only when nothing modal sits on top of it.
-// Headless UI dialogs/menus handle their own Escape on `window`, which fires
-// after this `document` listener; without the guard, Escape from a nested
-// confirm dialog or the ⌘K palette would tear down the whole overlay instead
-// of just the thing on top. The overlay itself is one aria-modal dialog, so
-// "more than one" means something is layered above it and owns the key.
-function useEscapeToClose(close: () => void) {
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape') return
-      if (document.querySelectorAll('[role="dialog"][aria-modal="true"]').length > 1) return
-      close()
-    }
-    document.addEventListener('keydown', onKey)
-    return () => document.removeEventListener('keydown', onKey)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
-}
-
-// Navigating unmounts the panel on the spot, so the exit has to run first:
-// close() marks it closing and animationend commits the navigation. (View
-// transitions only fire when React commits inside the browser's snapshot
-// callback, which the router doesn't force — closing never animated.)
-function useDrawerClose() {
+// A drawer bound to a route: it opens with the route and, on close, slides
+// out first and navigates back to the fleet when the exit has finished.
+// Closing never resets the fleet's scroll — the panel sat on top of it.
+function useRouteDrawer() {
   const navigate = useNavigate()
-  const [closing, setClosing] = useState(false)
-  const close = () => setClosing(true)
-  const onAnimationEnd = (e: React.AnimationEvent<HTMLElement>) => {
-    // currentTarget: not a spinner finishing inside the panel.
-    if (closing && e.target === e.currentTarget) navigate({ to: '/' })
+  const [open, setOpen] = useState(true)
+  return {
+    open,
+    close: () => setOpen(false),
+    afterClose: () => navigate({ to: '/', resetScroll: false }),
   }
-  return { closing, close, onAnimationEnd }
 }
 
 // The app panel slides over the fleet instead of replacing it — the canvas
 // behind it keeps saying how everything else is doing.
 function AppOverlay({ space, name, tab }: { space: string; name: string; tab: AppTab }) {
   const navigate = useNavigate()
-  const { closing, close, onAnimationEnd } = useDrawerClose()
-  useEscapeToClose(close)
+  const drawer = useRouteDrawer()
 
   return (
-    <>
-      <div
-        className="panel-scrim fixed inset-0 z-40 bg-black/50"
-        data-closing={closing || undefined}
-        onClick={close}
-        aria-hidden
+    <Drawer {...drawer} onClose={drawer.close} label={`${name} — app details`}>
+      <AppDetail
+        // A different app resets the panel; a different tab must not.
+        key={`${space}/${name}`}
+        space={space}
+        app={name}
+        tab={tab}
+        onTab={(next) =>
+          navigate({
+            to: '/app/$space/$name/{-$tab}',
+            params: { space, name, tab: next === 'overview' ? undefined : next },
+            // Tabs change the panel, not the page: the fleet behind must
+            // not jump to the top.
+            resetScroll: false,
+          })
+        }
+        onDeploy={() =>
+          navigate({ to: '/deploy/$space/$name', params: { space, name }, resetScroll: false })
+        }
+        onBack={drawer.close}
       />
-      <aside
-        role="dialog"
-        aria-modal="true"
-        aria-label={`${name} — app details`}
-        data-closing={closing || undefined}
-        onAnimationEnd={onAnimationEnd}
-        className="panel-drawer fixed inset-y-0 right-0 z-50 flex w-full max-w-3xl flex-col overflow-y-auto border-l border-line bg-card shadow-[-24px_0_60px_rgba(0,0,0,.5)]"
-      >
-        <AppDetail
-          // A different app resets the panel; a different tab must not.
-          key={`${space}/${name}`}
-          space={space}
-          app={name}
-          tab={tab}
-          onTab={(next) =>
-            navigate({
-              to: '/app/$space/$name/{-$tab}',
-              params: { space, name, tab: next === 'overview' ? undefined : next },
-            })
-          }
-          onBack={close}
-        />
-      </aside>
-    </>
+    </Drawer>
   )
 }
 
@@ -289,46 +245,31 @@ function AppOverlay({ space, name, tab }: { space: string; name: string; tab: Ap
 // app panel, to hold the live build's split view.
 function DeployOverlay({ space, name }: { space: string; name: string }) {
   const navigate = useNavigate()
-  const { closing, close, onAnimationEnd } = useDrawerClose()
-  useEscapeToClose(close)
+  const drawer = useRouteDrawer()
 
   return (
-    <>
-      <div
-        className="panel-scrim fixed inset-0 z-40 bg-black/50"
-        data-closing={closing || undefined}
-        onClick={close}
-        aria-hidden
+    <Drawer {...drawer} onClose={drawer.close} label="Deploy an app" width="max-w-4xl">
+      <PaneHeader
+        prominent
+        eyebrow={name ? `Redeploy · ${space}` : space ? `Deploy into ${space}` : 'Deploy'}
+        title={name || 'New app'}
+        onClose={drawer.close}
+        closeLabel="Close deploy"
       />
-      <aside
-        role="dialog"
-        aria-modal="true"
-        aria-label="Deploy an app"
-        data-closing={closing || undefined}
-        onAnimationEnd={onAnimationEnd}
-        className="panel-drawer fixed inset-y-0 right-0 z-50 flex w-full max-w-4xl flex-col overflow-y-auto border-l border-line bg-card shadow-[-24px_0_60px_rgba(0,0,0,.5)]"
-      >
-        <div className="flex items-center justify-end px-4 pt-4">
-          <button
-            onClick={close}
-            title="Close (Esc)"
-            aria-label="Close deploy"
-            className="rounded-md p-1.5 text-muted hover:bg-raised hover:text-ink focus-visible:outline-2 focus-visible:outline-accent-strong"
-          >
-            <X className="size-4" aria-hidden />
-          </button>
-        </div>
-        <div className="flex-1 px-6 pb-8">
-          <DeployView
-            space={space}
-            name={name}
-            onDeployed={(s, n) =>
-              navigate({ to: '/app/$space/$name/{-$tab}', params: { space: s, name: n, tab: undefined } })
-            }
-          />
-        </div>
-      </aside>
-    </>
+      <DrawerBody>
+        <DeployView
+          space={space}
+          name={name}
+          onDeployed={(s, n) =>
+            navigate({
+              to: '/app/$space/$name/{-$tab}',
+              params: { space: s, name: n, tab: undefined },
+              resetScroll: false,
+            })
+          }
+        />
+      </DrawerBody>
+    </Drawer>
   )
 }
 

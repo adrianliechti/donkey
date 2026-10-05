@@ -1,26 +1,15 @@
 import { useState, type ReactNode } from 'react'
-import { Dialog, DialogBackdrop, DialogPanel, DialogTitle } from '@headlessui/react'
 import { ArrowLeft, ChevronDown, ChevronRight } from 'lucide-react'
 import { type AddAddonRequest, type AddonType, type ServiceParameters } from './api'
+import { Modal, ModalBody, ModalFooter, ModalHeader, ModalNotice } from './dialog'
 import { parameterDefault, parameterFields, type Field } from './parameters'
 import { useCatalog } from './queries'
 import { serviceUI } from './serviceProtocol'
-import { Button, ErrorNote, Select, Spinner } from './ui'
-
-const inputStyle =
-  'rounded-md border border-line bg-surface px-2 py-1.5 font-mono text-sm focus:outline-2 focus:outline-accent-strong'
+import { Button, Chip, Eyebrow, ErrorNote, Input, Select, Spinner } from './ui'
 
 // A short ladder of disk sizes is easier to pick right than a free-text
 // field is to fill right; the type's own default always leads the list.
 const diskSizes = ['1Gi', '2Gi', '5Gi', '10Gi', '20Gi', '50Gi']
-
-function Eyebrow({ children }: { children: ReactNode }) {
-  return (
-    <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-muted">
-      {children}
-    </span>
-  )
-}
 
 /**
  * One control per schema property. The value is a string while it is being
@@ -60,12 +49,12 @@ export function ParameterField({
         checked={checked}
         disabled={disabled}
         onChange={(e) => onChange(e.target.checked)}
-        className="size-4 accent-accent"
+        className="size-4"
       />
     )
   } else if (schema.type === 'integer' || schema.type === 'number') {
     control = (
-      <input
+      <Input
         type="number"
         aria-label={label}
         value={current}
@@ -74,26 +63,26 @@ export function ParameterField({
         step={schema.type === 'integer' ? 1 : 'any'}
         disabled={disabled}
         onChange={(e) => onChange(e.target.value)}
-        className={`${inputStyle} w-28`}
+        className="w-28"
       />
     )
   } else {
     // Strings, and arrays as comma-separated strings.
     control = (
-      <input
+      <Input
         aria-label={label}
         value={current}
         placeholder={schema.type === 'array' ? 'one, two' : fallback}
         disabled={disabled}
         onChange={(e) => onChange(e.target.value)}
-        className={`${inputStyle} w-44`}
+        className="w-44"
       />
     )
   }
   return (
-    <label className="flex flex-col gap-1.5" title={schema.description}>
+    <label className="flex min-w-0 flex-col gap-1.5" title={schema.description}>
       <Eyebrow>{label}</Eyebrow>
-      {control}
+      {schema.type === 'boolean' ? <span className="flex h-8 items-center">{control}</span> : control}
       {schema.description && <span className="max-w-56 text-[11px] leading-4 text-muted">{schema.description}</span>}
     </label>
   )
@@ -133,34 +122,20 @@ export function AddServiceDialog({
   onClose: () => void
 }) {
   return (
-    <Dialog open={open} onClose={() => !busy && onClose()} className="relative z-50">
-      <DialogBackdrop
-        transition
-        className="fixed inset-0 bg-black/60 transition-opacity duration-(--duration-base) ease-emphasized data-closed:opacity-0 data-leave:duration-(--duration-fast) data-leave:ease-exit"
+    <Modal open={open} onClose={() => !busy && onClose()} size="md">
+      <ModalHeader eyebrow={`Add a service · ${space}`} title={title} onClose={onClose} closeDisabled={busy} />
+      <ModalNotice message={error ?? ''} />
+      {/* The form owns its footer: its buttons depend on which step it is on. */}
+      <AddonForm
+        space={space}
+        busy={busy}
+        note={note}
+        submitLabel={submitLabel}
+        initialType={initialType}
+        onSubmit={onSubmit}
+        onCancel={onClose}
       />
-      <div className="fixed inset-0 flex items-start justify-center p-4 pt-[14vh]">
-        <DialogPanel
-          transition
-          className="w-full max-w-lg rounded-lg border border-line bg-card p-4 shadow-2xl transition duration-(--duration-base) ease-emphasized data-closed:scale-95 data-closed:opacity-0 data-leave:duration-(--duration-fast) data-leave:ease-exit"
-        >
-          <DialogTitle className="font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-muted">
-            {title}
-          </DialogTitle>
-          <ErrorNote message={error ?? ''} />
-          {note && <p className="mt-2 text-xs text-ink-soft">{note}</p>}
-          <div className="mt-3">
-            <AddonForm
-              space={space}
-              busy={busy}
-              submitLabel={submitLabel}
-              initialType={initialType}
-              onSubmit={onSubmit}
-              onCancel={onClose}
-            />
-          </div>
-        </DialogPanel>
-      </div>
-    </Dialog>
+    </Modal>
   )
 }
 
@@ -175,6 +150,7 @@ export function AddServiceDialog({
 export function AddonForm({
   space,
   busy,
+  note,
   submitLabel,
   initialType,
   onSubmit,
@@ -182,6 +158,7 @@ export function AddonForm({
 }: {
   space: string
   busy: boolean
+  note?: string
   submitLabel: string
   initialType?: string
   onSubmit: (req: AddAddonRequest) => void
@@ -201,12 +178,19 @@ export function AddonForm({
   const chosen = types.find((t) => t.type === type)
   const { main, advanced } = parameterFields(chosen)
 
-  if (!loaded) return <Spinner label="Opening the catalog…" />
+  if (!loaded) return <ModalBody><Spinner label="Opening the catalog…" /></ModalBody>
   if (types.length === 0) {
     return (
-      <p className="py-6 text-sm text-muted">
-        {catalogError || 'No offerings are enabled in this space. Ask a space admin to add one in space settings.'}
-      </p>
+      <>
+        <ModalBody>
+          <p className="py-6 text-center text-sm text-muted">
+            {catalogError || 'No offerings are enabled in this space. Ask a space admin to add one in space settings.'}
+          </p>
+        </ModalBody>
+        <ModalFooter>
+          <Button kind="quiet" onClick={onCancel}>Close</Button>
+        </ModalFooter>
+      </>
     )
   }
 
@@ -223,13 +207,12 @@ export function AddonForm({
       else categories.push({ name, entries: [t] })
     }
     return (
-      <div className="flex flex-col gap-3">
+      <>
+      <ModalBody className="space-y-4">
         {categories.map((group) => (
           <div key={group.name}>
-            {categories.length > 1 && (
-              <p className="mb-1.5 text-[11px] font-medium uppercase tracking-wide text-muted">{group.name}</p>
-            )}
-            <div className="grid gap-2 sm:grid-cols-2">
+            {categories.length > 1 && <Eyebrow className="mb-1.5">{group.name}</Eyebrow>}
+            <div className="divide-y divide-line overflow-hidden rounded-lg border border-line">
               {group.entries.map((t) => {
                 const { Icon } = serviceUI(t.icon || t.protocol)
                 const available = t.available !== false
@@ -243,32 +226,34 @@ export function AddonForm({
                       setValues({})
                       setType(t.type)
                     }}
-                    className="rounded-lg border border-line bg-surface p-3 text-left transition-colors hover:border-accent/70 hover:bg-accent-soft focus-visible:outline-2 focus-visible:outline-accent-strong disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-line disabled:hover:bg-surface"
+                    className="flex w-full items-start gap-3 px-3 py-2.5 text-left transition-colors hover:bg-accent-soft/60 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent-strong disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent"
                   >
-                    <div className="flex items-center gap-2">
-                      <Icon className="size-4 text-muted" aria-hidden />
-                      <span className="font-mono text-sm font-bold">{t.title || t.type}</span>
-                      <span className="font-mono text-[11px] text-muted">{parameterDefault(t, 'version')}</span>
-                    </div>
-                    {t.description && (
-                      <p className="mt-1.5 text-xs leading-relaxed text-ink-soft">{t.description}</p>
-                    )}
-                    {t.provider && (
-                      <p className="mt-1 font-mono text-[10px] text-muted">via {t.provider}</p>
-                    )}
-                    {!available && <p className="mt-1.5 text-xs text-danger">{t.error || 'Not available right now.'}</p>}
+                    <Icon className="mt-0.5 size-4 shrink-0 text-muted" aria-hidden />
+                    <span className="min-w-0 flex-1">
+                      <span className="flex items-baseline gap-2">
+                        <span className="font-mono text-sm font-bold">{t.title || t.type}</span>
+                        <span className="font-mono text-[11px] text-muted">{parameterDefault(t, 'version')}</span>
+                        {t.provider && <span className="ml-auto font-mono text-[10px] text-muted">via {t.provider}</span>}
+                      </span>
+                      {t.description && (
+                        <span className="mt-0.5 block text-xs leading-relaxed text-ink-soft">{t.description}</span>
+                      )}
+                      {!available && <span className="mt-1 block text-xs text-danger">{t.error || 'Not available right now.'}</span>}
+                    </span>
+                    <ChevronRight className="mt-2 size-4 shrink-0 text-muted" aria-hidden />
                   </button>
                 )
               })}
             </div>
           </div>
         ))}
-        <div className="flex justify-end">
-          <Button kind="quiet" onClick={onCancel}>
-            Cancel
-          </Button>
-        </div>
-      </div>
+      </ModalBody>
+      <ModalFooter>
+        <Button kind="quiet" onClick={onCancel}>
+          Cancel
+        </Button>
+      </ModalFooter>
+      </>
     )
   }
 
@@ -283,37 +268,31 @@ export function AddonForm({
   const keys = envNames.length > 0 ? envNames : (chosen.keys ?? [])
 
   return (
-    <div className="flex flex-col gap-4">
-      {/* The catalog caller can step back; the + menu caller has nowhere to
-          go back to, so it just names the type it opened on. */}
-      <div className="flex items-center gap-2">
-        {!initialType && (
-          <button
-            type="button"
-            onClick={() => setType('')}
-            disabled={busy}
-            className="flex items-center gap-1 rounded-md px-1.5 py-1 text-xs text-muted hover:bg-line/50 hover:text-ink focus-visible:outline-2 focus-visible:outline-accent-strong"
-          >
-            <ArrowLeft className="size-3.5" aria-hidden /> All services
-          </button>
-        )}
-        <span className="flex items-center gap-2 rounded-md border border-accent/40 bg-accent-soft px-2 py-1">
-          <ChosenIcon className="size-3.5 text-accent" aria-hidden />
-          <span className="font-mono text-sm font-bold">{chosen.title || chosen.type}</span>
-          <span className="font-mono text-[11px] text-muted">{parameterDefault(chosen, 'version')}</span>
-        </span>
-      </div>
+    <>
+    <ModalBody className="space-y-4">
+      {/* The catalog caller can step back; the + menu caller opened on this
+          type, and the dialog title already names it. */}
+      {!initialType && (
+        <div className="flex items-center gap-2 text-sm">
+          <Button kind="quiet" size="sm" icon={ArrowLeft} onClick={() => setType('')} disabled={busy}>
+            All services
+          </Button>
+          <ChosenIcon className="size-4 text-muted" aria-hidden />
+          <span className="font-mono font-semibold">{chosen.title || chosen.type}</span>
+          <span className="font-mono text-xs text-muted">{parameterDefault(chosen, 'version')}</span>
+        </div>
+      )}
 
       {chosen.available === false && <ErrorNote message={chosen.error || 'This service is not available right now.'} />}
 
       <div className="flex flex-wrap items-start gap-3">
-        <label className="flex flex-col gap-1.5">
+        <label className="flex min-w-0 flex-col gap-1.5">
           <Eyebrow>Name · optional</Eyebrow>
-          <input
+          <Input
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder={chosen.type}
-            className={`${inputStyle} w-44`}
+            className="w-44"
           />
         </label>
         {main.map((field) => (
@@ -341,37 +320,39 @@ export function AddonForm({
         </div>
       )}
 
-      <div className="rounded-md border border-line/60 bg-raised/60 px-3 py-2.5">
+      <div className="space-y-1.5">
         <Eyebrow>Your apps will see</Eyebrow>
-        <p className="mt-1 font-mono text-[11px] leading-5 text-ink-soft">{keys.join(' · ')}</p>
-      </div>
-
-      <div className="mt-1 flex flex-col gap-3 border-t border-line/60 pt-3">
-        <p className="text-xs text-muted">
-          {runsSomething
-            ? `Runs in the cluster${disk ? ` on a ${disk} disk` : ''}, shared by every app in the space.`
-            : 'Provided by the platform — nothing runs in your space.'}
-        </p>
-        <div className="flex justify-end gap-2">
-          <Button kind="quiet" onClick={onCancel} disabled={busy}>
-            Cancel
-          </Button>
-          <Button
-            onClick={() =>
-              onSubmit({
-                type: chosen.type,
-                name: name.trim() || undefined,
-                parameters: Object.keys(values).length > 0 ? values : undefined,
-                external: false,
-                url: undefined,
-              })
-            }
-            disabled={busy || chosen.available === false}
-          >
-            {busy ? 'Adding…' : submitLabel}
-          </Button>
+        <div className="flex flex-wrap gap-1">
+          {keys.map((k) => <Chip key={k}>{k}</Chip>)}
         </div>
       </div>
-    </div>
+      {note && <p className="text-xs text-ink-soft">{note}</p>}
+    </ModalBody>
+    <ModalFooter
+      note={
+        runsSomething
+          ? `Runs in the cluster${disk ? ` on a ${disk} disk` : ''}, shared by every app in the space.`
+          : 'Provided by the platform — nothing runs in your space.'
+      }
+    >
+      <Button kind="quiet" onClick={onCancel} disabled={busy}>
+        Cancel
+      </Button>
+      <Button
+        onClick={() =>
+          onSubmit({
+            type: chosen.type,
+            name: name.trim() || undefined,
+            parameters: Object.keys(values).length > 0 ? values : undefined,
+            external: false,
+            url: undefined,
+          })
+        }
+        disabled={busy || chosen.available === false}
+      >
+        {busy ? 'Adding…' : submitLabel}
+      </Button>
+    </ModalFooter>
+    </>
   )
 }

@@ -1,9 +1,10 @@
-import { useState } from 'react'
+import { Fragment, useState } from 'react'
+import { ArrowRight } from 'lucide-react'
 import { planEdit, type PlanEdit, type ProjectPlan } from './api'
 import { PlanReview } from './PlanReview'
 import { FindingsList } from './FindingsList'
 import { DiffView } from './DiffView'
-import { Button, Card, ErrorNote, SectionTitle } from './ui'
+import { Button, Disclosure, ErrorNote, Field, Input, List, ListRow, Section, SectionHeader } from './ui'
 
 // Dirty state is a fact about the current answers, not a one-way event. Keeping
 // it as a boolean meant that changing a choice and then changing it back still
@@ -71,112 +72,118 @@ export function ProjectReview({
     }
   }
   return (
-    <div className="space-y-4">
-      <p className="text-sm text-ink-soft">
-        {plan.apps.length === 1 ? 'One app' : `${plan.apps.length} apps`} will be deployed.
-        {plan.apps.length > 1 && ' Each runs separately in the same space.'}
-      </p>
-      <fieldset disabled={busy || checking} className="space-y-4 disabled:opacity-70">
-        {!space && (
-          <label className="block text-sm">
-            <span className="mb-1 block text-xs text-muted">Space for all apps</span>
-            <input
-              value={edits[0].space}
-              list="project-spaces"
-              className="w-full rounded-md border border-line bg-surface px-2 py-1.5 font-mono text-sm"
-              onChange={(e) => change(edits.map((edit) => ({ ...edit, space: e.target.value })))}
-            />
-            <datalist id="project-spaces">
-              {spaces.map((value) => (
-                <option key={value} value={value} />
-              ))}
-            </datalist>
-          </label>
-        )}
-        {plan.apps.map((app, index) => (
-          <details
-            key={app.id}
-            open={plan.apps.length === 1 || !app.ready || undefined}
-            className="rounded-lg border border-line p-4"
-          >
-            <summary className="cursor-pointer text-sm font-medium">
-              {edits[index].name || app.app.name}{' '}
-              <span className="font-mono text-xs text-muted">{app.root || '.'}</span>
-            </summary>
-            <div className="mt-4">
-              <PlanReview
-                plan={app}
-                edit={edits[index]}
-                onEdit={(edit) => change(edits.map((prev, i) => (i === index ? edit : prev)))}
+    <div className="flex flex-col gap-5">
+      <fieldset disabled={busy || checking} className="flex min-w-0 flex-col gap-5 disabled:opacity-70">
+        <Section className="space-y-4">
+          <SectionHeader
+            title={plan.apps.length === 1 ? 'One app will be deployed' : `${plan.apps.length} apps will be deployed`}
+            description={plan.apps.length > 1 ? 'Each runs separately in the same space.' : 'Review what donkey read from the project, then deploy.'}
+          />
+          {!space && (
+            <Field label="Space for all apps">
+              <Input
+                value={edits[0].space}
+                list="project-spaces"
+                onChange={(e) => change(edits.map((edit) => ({ ...edit, space: e.target.value })))}
               />
-            </div>
-          </details>
+              <datalist id="project-spaces">
+                {spaces.map((value) => (
+                  <option key={value} value={value} />
+                ))}
+              </datalist>
+            </Field>
+          )}
+        </Section>
+        {plan.apps.map((app, index) => (
+          <Fragment key={app.id}>
+            {/* With several apps, each gets a heading of its own. */}
+            {plan.apps.length > 1 && (
+              <Section>
+                <h2 className="font-mono text-base font-bold">{edits[index].name || app.app.name}</h2>
+                <p className="font-mono text-xs text-muted">{app.root || '.'}</p>
+              </Section>
+            )}
+            <PlanReview
+              plan={app}
+              edit={edits[index]}
+              onEdit={(edit) => change(edits.map((prev, i) => (i === index ? edit : prev)))}
+            />
+          </Fragment>
         ))}
       </fieldset>
       {plan.connections.length > 0 && (
-        <Card className="space-y-3 p-4">
-          <SectionTitle>Connections</SectionTitle>
-          {plan.connections.map((c, i) => (
-            <div key={i} className="text-sm">
-              <p>
-                {c.app} → {c.target}
-              </p>
-              {c.env && (
-                <p className="break-all font-mono text-xs text-ink-soft">
-                  {c.env} = {c.value}
-                </p>
-              )}
-              <p className="text-xs text-muted">{c.reason}</p>
-            </div>
-          ))}
-          <p className="text-xs text-muted">
-            Service references are resolved when the app starts. Browser calls use the app’s own
-            address.
-          </p>
-        </Card>
+        <Section className="space-y-3">
+          <SectionHeader
+            title="Connections"
+            description="Service references are resolved when the app starts. Browser calls use the app’s own address."
+          />
+          <List>
+            {plan.connections.map((c, i) => (
+              <ListRow key={i} className="items-start">
+                <ArrowRight className="mt-0.5 size-4 shrink-0 text-muted" aria-hidden />
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm">
+                    <span className="font-mono">{c.app}</span> → <span className="font-mono">{c.target}</span>
+                  </p>
+                  {c.env && (
+                    <p className="break-all font-mono text-xs text-ink-soft">
+                      {c.env} = {c.value}
+                    </p>
+                  )}
+                  <p className="text-xs text-muted">{c.reason}</p>
+                </div>
+              </ListRow>
+            ))}
+          </List>
+        </Section>
       )}
       {plan.changes.length > 0 && (
-        <Card className="space-y-3 p-4">
-          <SectionTitle>Connection fixes</SectionTitle>
+        <Section className="space-y-3">
+          <SectionHeader title="Connection fixes" description="These changes are applied to the uploaded copy before building." />
+          <div className="flex flex-col gap-2">
+            {plan.changes.map((change) => (
+              <Disclosure key={change.file} summary={<span className="font-mono">{change.file}</span>}>
+                <DiffView diff={change.diff} />
+              </Disclosure>
+            ))}
+          </div>
+        </Section>
+      )}
+      {plan.findings.length > 0 && (
+        <Section className="space-y-3">
+          <SectionHeader title="Project checks" />
+          <FindingsList findings={plan.findings} />
+        </Section>
+      )}
+      <Section className="space-y-3">
+        <ErrorNote message={error} />
+        {changed && (
           <p className="text-xs text-muted">
-            These changes are applied to the uploaded copy before building.
+            Deploy will check these changes first. Check them now to preview updated connections and
+            deployment details.
           </p>
-          {plan.changes.map((change) => (
-            <details key={change.file}>
-              <summary className="cursor-pointer font-mono text-sm">{change.file}</summary>
-              <DiffView diff={change.diff} />
-            </details>
-          ))}
-        </Card>
-      )}
-      <FindingsList findings={plan.findings} />
-      <ErrorNote message={error} />
-      {changed && (
-        <p className="text-xs text-muted">
-          Deploy will check these changes first. Check them now to preview updated connections and
-          deployment details.
-        </p>
-      )}
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <Button kind="quiet" onClick={onStartOver} disabled={busy || checking}>
-          Pick something else
-        </Button>
-        <div className="flex gap-2">
-          <Button kind="quiet" onClick={check} disabled={busy || checking}>
-            {checking ? 'Checking…' : 'Check changes'}
+        )}
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <Button kind="quiet" onClick={onStartOver} disabled={busy || checking}>
+            Pick something else
           </Button>
-          <Button
-            onClick={() => onDeploy(edits)}
-            disabled={busy || checking || (!changed && !plan.ready)}
-          >
-            {busy
-              ? 'Preparing…'
-              : plan.apps.length > 1
-                ? `Deploy all ${plan.apps.length} apps`
-                : `Deploy ${edits[0].name || plan.apps[0].app.name}`}
-          </Button>
+          <div className="flex gap-2">
+            <Button kind="quiet" onClick={check} disabled={busy || checking}>
+              {checking ? 'Checking…' : 'Check changes'}
+            </Button>
+            <Button
+              onClick={() => onDeploy(edits)}
+              disabled={busy || checking || (!changed && !plan.ready)}
+            >
+              {busy
+                ? 'Preparing…'
+                : plan.apps.length > 1
+                  ? `Deploy all ${plan.apps.length} apps`
+                  : `Deploy ${edits[0].name || plan.apps[0].app.name}`}
+            </Button>
+          </div>
         </div>
-      </div>
+      </Section>
     </div>
   )
 }

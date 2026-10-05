@@ -1,11 +1,11 @@
 import { useState } from 'react'
-import { Dialog, DialogBackdrop, DialogPanel, DialogTitle } from '@headlessui/react'
 import { FolderPlus, RefreshCw } from 'lucide-react'
 import { api, type AppSummary, type SpaceConfig } from './api'
+import { Modal, ModalBody, ModalFooter, ModalHeader, ModalNotice } from './dialog'
 import { useFleet } from './queries'
 import { SpaceCard } from './SpaceCard'
-import { SpaceConfigEditor } from './SpaceSettings'
-import { Button, DonkeyLogo, ErrorNote, Skeleton, StatusDot, errText, healthOf, type Health } from './ui'
+import { SpaceForm } from './SpaceSettings'
+import { Button, DonkeyLogo, ErrorNote, IconButton, Skeleton, StatusDot, Toolbar, errText, healthOf, type Health } from './ui'
 
 const healthRank: Record<Health, number> = { bad: 0, unknown: 1, ok: 2 }
 
@@ -61,7 +61,7 @@ export function AppsList() {
 
   return (
     <div className="space-y-5">
-      <div className="flex flex-wrap items-center justify-between gap-3">
+      <div className="flex min-h-8 flex-wrap items-center justify-between gap-3">
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
           <h1 className="font-mono text-[11px] font-semibold uppercase tracking-[0.18em] text-muted">
             Fleet
@@ -75,26 +75,10 @@ export function AppsList() {
             />
           )}
         </div>
-        <div className="flex items-center gap-0.5">
-          {data?.platformAdmin && <button
-            type="button"
-            onClick={() => setCreating(true)}
-            title="New space"
-            aria-label="New space"
-            className="rounded-md p-1.5 text-muted hover:bg-raised focus-visible:outline-2 focus-visible:outline-accent-strong"
-          >
-            <FolderPlus className="size-4" aria-hidden />
-          </button>}
-          <button
-            type="button"
-            onClick={reload}
-            title="Refresh"
-            aria-label="Refresh"
-            className="rounded-md p-1.5 text-muted hover:bg-raised focus-visible:outline-2 focus-visible:outline-accent-strong"
-          >
-            <RefreshCw className="size-4" aria-hidden />
-          </button>
-        </div>
+        <Toolbar>
+          {data?.platformAdmin && <IconButton icon={FolderPlus} label="New space" onClick={() => setCreating(true)} />}
+          <IconButton icon={RefreshCw} label="Refresh" onClick={reload} />
+        </Toolbar>
       </div>
 
       <ErrorNote message={error} />
@@ -115,7 +99,7 @@ export function AppsList() {
           <button
             type="button"
             onClick={() => setOnlyProblems(false)}
-            className="mt-2 text-sm text-accent hover:text-accent-strong"
+            className="mt-2 text-sm text-accent underline-offset-2 hover:underline"
           >
             Show the whole fleet
           </button>
@@ -134,13 +118,9 @@ export function AppsList() {
             <code className="rounded bg-surface px-2 py-0.5 font-mono text-sm">donkey deploy</code>
           </p>
           <p className="mt-1 text-sm text-muted">— or make a space, then add an app to it:</p>
-          <button
-            type="button"
-            onClick={() => setCreating(true)}
-            className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-line px-3 py-1.5 text-sm text-ink-soft transition-colors hover:bg-line/50 focus-visible:outline-2 focus-visible:outline-accent-strong"
-          >
-            <FolderPlus className="size-4" aria-hidden /> New space
-          </button>
+          <Button kind="quiet" icon={FolderPlus} onClick={() => setCreating(true)} className="mt-3">
+            New space
+          </Button>
         </div>
       )}
 
@@ -190,32 +170,29 @@ function FleetSummary({
   onToggle: () => void
 }) {
   // When everything is healthy, the fleet says nothing next to its title —
-  // the summary earns its place only when something needs a look.
+  // the summary earns its place only when something needs a look. Even then
+  // it stays a quiet line: the red cards below are the loud part. The count
+  // itself is the filter: click it to see only those apps, again for all.
   if (attention === 0) return null
   return (
-    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
-      <span className="flex items-center gap-1.5 font-medium text-danger">
-        <StatusDot health="bad" />
-        {attention} {attention === 1 ? 'app needs attention' : 'apps need attention'}
-      </span>
-      {ok > 0 && (
-        <span className="flex items-center gap-1.5 text-ink-soft">
-          <StatusDot health="ok" />
-          {ok} running
-        </span>
-      )}
+    <div className="flex flex-wrap items-center gap-x-2 text-xs text-muted">
       <button
         type="button"
         onClick={onToggle}
         aria-pressed={onlyProblems}
-        className={`rounded-md border px-2 py-0.5 text-xs transition-colors focus-visible:outline-2 focus-visible:outline-accent-strong ${
-          onlyProblems
-            ? 'border-accent-strong bg-accent-soft text-accent-strong'
-            : 'border-line text-ink-soft hover:border-line-strong hover:text-ink'
+        title={onlyProblems ? 'Show the whole fleet' : 'Show only the apps that need attention'}
+        className={`rounded text-danger underline-offset-2 transition-colors hover:underline focus-visible:outline-2 focus-visible:outline-accent-strong ${
+          onlyProblems ? 'underline' : ''
         }`}
       >
-        {onlyProblems ? 'Showing problems' : 'Only problems'}
+        {attention} {attention === 1 ? 'needs attention' : 'need attention'}
       </button>
+      {ok > 0 && (
+        <>
+          <span aria-hidden>·</span>
+          <span>{ok} running</span>
+        </>
+      )}
     </div>
   )
 }
@@ -261,64 +238,39 @@ function NewSpaceDialog({
     }
   }
 
+  const validName = /^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$/.test(name.trim())
+
+  // The same frame, tabs and height as Space settings: a space looks the
+  // same whether it is being made or changed.
   return (
-    <Dialog open={open} onClose={() => !busy && onClose()} className="relative z-50">
-      <DialogBackdrop
-        transition
-        className="fixed inset-0 bg-black/60 transition-opacity duration-(--duration-base) ease-emphasized data-closed:opacity-0 data-leave:duration-(--duration-fast) data-leave:ease-exit"
-      />
-      <div className="fixed inset-0 overflow-y-auto p-4 pt-[8vh]">
-        <DialogPanel
-          transition
-          className="mx-auto w-full max-w-lg rounded-xl border border-line bg-card p-6 shadow-2xl transition duration-(--duration-base) ease-emphasized data-closed:opacity-0 data-closed:scale-95 data-leave:duration-(--duration-fast) data-leave:ease-exit"
-        >
-          <DialogTitle className="text-lg font-semibold tracking-tight">Create space</DialogTitle>
-          <p className="mt-1 text-sm text-muted">A home for your apps and services.</p>
-          <ErrorNote message={error} />
-          <form
-            onSubmit={(e) => {
-              e.preventDefault()
-              if (name.trim()) create()
-            }}
-            className="mt-6 flex flex-col gap-5"
-          >
-            <label className="block text-sm font-medium">
-              Space name
-              <input
-                autoFocus
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder="my-project"
-                pattern="[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?"
-                maxLength={40}
-                required
-                title="Use lowercase letters, digits and dashes, starting and ending with a letter or digit."
-                aria-describedby="space-name-help"
-                aria-label="Space name"
-                autoCapitalize="none"
-                spellCheck={false}
-                disabled={busy}
-                className="mt-2 block w-full rounded-lg border border-line bg-surface px-3 py-2.5 font-mono text-sm font-normal focus:outline-2 focus:outline-accent-strong"
-              />
-              <span id="space-name-help" className="mt-2 block text-xs font-normal text-muted">Lowercase letters, digits and dashes, up to 40 characters.</span>
-            </label>
-            <fieldset disabled={busy}>
-              <SpaceConfigEditor creating settings={effective} domainPlaceholder={!customDomains && !name.trim() && domain ? `<space>.${domain}` : undefined} onChange={(next) => {
-                if (next.domains !== effective.domains) setCustomDomains(true)
-                setSettings(next)
-              }} />
-            </fieldset>
-            <div className="flex justify-end gap-2">
-              <Button kind="quiet" onClick={onClose} disabled={busy}>
-                Cancel
-              </Button>
-              <Button type="submit" disabled={busy || name.trim() === ''}>
-                {busy ? 'Creating…' : 'Create space'}
-              </Button>
-            </div>
-          </form>
-        </DialogPanel>
-      </div>
-    </Dialog>
+    <Modal open={open} onClose={() => !busy && onClose()} size="lg" height="medium">
+      <ModalHeader eyebrow="New space"
+        title={name.trim() ? <span className="font-mono">{name.trim()}</span> : 'Create space'}
+        onClose={onClose} closeDisabled={busy} />
+      <ModalNotice message={error} />
+      <ModalBody padded={false}>
+        <SpaceForm
+          settings={effective}
+          disabled={busy}
+          name={{
+            value: name,
+            onChange: setName,
+            domainPlaceholder: !customDomains && !name.trim() && domain ? `<space>.${domain}` : undefined,
+          }}
+          onChange={(next) => {
+            if (next.domains !== effective.domains) setCustomDomains(true)
+            setSettings(next)
+          }}
+        />
+      </ModalBody>
+      <ModalFooter note="A home for your apps and services.">
+        <Button kind="quiet" onClick={onClose} disabled={busy}>
+          Cancel
+        </Button>
+        <Button onClick={create} disabled={busy || !validName}>
+          {busy ? 'Creating…' : 'Create space'}
+        </Button>
+      </ModalFooter>
+    </Modal>
   )
 }

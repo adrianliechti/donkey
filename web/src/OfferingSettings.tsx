@@ -1,12 +1,17 @@
-import { useId, useState } from 'react'
-import { Check, ChevronDown, Settings2 } from 'lucide-react'
+import { useState } from 'react'
+import { ChevronDown } from 'lucide-react'
 import { serviceUI } from './serviceProtocol'
 import { type ParametersSchema, type ServiceParameters, type SpaceOffering } from './api'
 import { ParameterField } from './AddonForm'
 import { schemaFields } from './parameters'
 import { useCatalog } from './queries'
-import { ErrorNote, Spinner } from './ui'
+import { ErrorNote, Eyebrow, IconButton, List, SectionHeader, Spinner, Toggle } from './ui'
 
+/**
+ * The values an offering is pinned to for this space. A field is either
+ * left to its default (one line: name, default, a link to change it) or set
+ * (its control, and a way back to the default).
+ */
 function OfferingValues({ schema, values, onChange }: {
   schema?: ParametersSchema
   values: ServiceParameters
@@ -14,37 +19,47 @@ function OfferingValues({ schema, values, onChange }: {
 }) {
   const fields = schemaFields(schema)
   if (!fields.length) return null
-  return <div className="space-y-3">
+  return <ul className="divide-y divide-line/60">
     {fields.map((field) => {
       const set = Object.hasOwn(values, field.name)
       const required = schema?.required?.includes(field.name)
-      return <div key={field.name} className="flex items-start gap-3">
-        <input type="checkbox" aria-label={`Set ${field.schema.title || field.name}`} checked={set}
-          className="mt-1 size-4 shrink-0 accent-accent"
-          onChange={(e) => {
-            const next = { ...values }
-            if (e.target.checked) next[field.name] = field.schema.default ?? (field.schema.type === 'boolean' ? false : '')
-            else delete next[field.name]
-            onChange(next)
-          }} />
-        {set ? <ParameterField field={field} value={values[field.name]} disabled={false}
-          onChange={(value) => onChange({ ...values, [field.name]: value })} />
-          : <div className="text-xs text-muted">
-            <span className="font-medium">{field.schema.title || field.name}</span>
-            <span className="ml-2">{field.schema.default !== undefined ? `Default: ${String(field.schema.default)}` : required ? 'Required at creation' : 'Optional'}</span>
-          </div>}
-      </div>
+      const title = field.schema.title || field.name
+      return <li key={field.name} className="flex min-h-10 flex-wrap items-center gap-x-3 gap-y-2 py-2">
+        {set ? <>
+          <ParameterField field={field} value={values[field.name]} disabled={false}
+            onChange={(value) => onChange({ ...values, [field.name]: value })} />
+          <button type="button" onClick={() => { const next = { ...values }; delete next[field.name]; onChange(next) }}
+            className="self-end pb-2 text-xs text-muted underline-offset-2 hover:text-ink hover:underline">
+            Use default
+          </button>
+        </> : <>
+          <span className="min-w-0 flex-1 text-sm">
+            <span className="text-ink">{title}</span>
+            <span className="ml-2 text-xs text-muted">
+              {field.schema.default !== undefined ? `default ${String(field.schema.default)}` : required ? 'required at creation' : 'optional'}
+            </span>
+          </span>
+          <button type="button" onClick={() => onChange({ ...values, [field.name]: field.schema.default ?? (field.schema.type === 'boolean' ? false : '') })}
+            className="text-xs text-muted underline-offset-2 hover:text-ink hover:underline">
+            Change
+          </button>
+        </>}
+      </li>
     })}
-  </div>
+  </ul>
 }
 
+/**
+ * Which services this space can create, and with what defaults. Common
+ * services are always on; the others switch on per space. A row expands to
+ * its configuration when it has any.
+ */
 export function OfferingSettings({ offerings = {}, onChange }: {
   offerings?: Record<string, SpaceOffering>
   onChange: (offerings: Record<string, SpaceOffering>) => void
 }) {
   const { data: catalog, error } = useCatalog()
   const [editing, setEditing] = useState<string | null>(null)
-  const panelId = useId()
   function update(id: string, entry?: SpaceOffering) {
     const next = { ...offerings }
     if (entry) next[id] = entry
@@ -53,60 +68,54 @@ export function OfferingSettings({ offerings = {}, onChange }: {
   }
   const ids = [...new Set([...(catalog ?? []).map((type) => type.type), ...Object.keys(offerings)])]
   return <section aria-label="Offerings" className="space-y-3">
-    <div>
-      <h3 className="text-sm font-medium">Service offerings</h3>
-      <p className="mt-1 text-xs text-muted">Common services are always available. Enable others here and configure space defaults.</p>
-    </div>
+    <SectionHeader title="Service offerings" description="Common services are always available. Switch others on for this space and pin defaults for new services." />
     <ErrorNote message={error} />
     {!catalog && !error && <Spinner label="Loading offerings…" />}
-    <div className="divide-y divide-line rounded-lg border border-line">
+    <List>
       {ids.map((id) => {
         const type = catalog?.find((item) => item.type === id)
         const entry = offerings[id]
         const enabled = type?.common || !!entry
-        const configurable = !!schemaFields(type?.spaceConfiguration).length || !!schemaFields(type?.parameters).length
+        const adminFields = schemaFields(type?.spaceConfiguration)
+        const defaultFields = schemaFields(type?.parameters)
+        const configurable = adminFields.length > 0 || defaultFields.length > 0
         const { Icon } = serviceUI(type?.protocol)
         const expanded = editing === id && enabled
-        return <div key={id}>
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-2 px-3 py-2.5">
-            <Icon className="size-4 shrink-0 text-muted" aria-hidden />
-            <div className="min-w-0 flex-1 basis-28">
-              <p className="text-xs font-medium">{type?.title || id}</p>
-              {type?.description && <p className="mt-0.5 truncate text-[11px] text-muted" title={type.description}>{type.description}</p>}
-              {!type && <p className="mt-0.5 text-[11px] text-muted">Unavailable · saved settings kept</p>}
+        return <li key={id}>
+          <div className="flex min-h-11 items-center gap-3 py-2 pl-3 pr-1.5">
+            <Icon className={`size-4 shrink-0 ${enabled ? 'text-ink-soft' : 'text-muted/60'}`} aria-hidden />
+            <div className="min-w-0 flex-1">
+              <span className={`text-sm ${enabled ? 'text-ink' : 'text-muted'}`}>{type?.title || id}</span>
+              {type?.description && <span className="ml-2 hidden text-xs text-muted sm:inline">{type.description}</span>}
+              {!type && <span className="ml-2 text-xs text-muted">unavailable · saved settings kept</span>}
             </div>
-            {type?.common ? <span title="Available in every space" className="inline-flex items-center gap-1 text-[11px] text-muted">
-              <Check className="size-3 text-success" aria-hidden /> Common
-            </span> : <label className="flex items-center gap-1.5 text-[11px] text-muted">
-              <input type="checkbox" checked={!!entry} aria-label={`Enable ${type?.title || id}`}
-                onChange={(e) => { update(id, e.target.checked ? {} : undefined); if (!e.target.checked && editing === id) setEditing(null) }} className="size-3.5 accent-accent" />
-              Enabled
-            </label>}
-            {configurable && <button type="button" disabled={!enabled} aria-label={`Configure ${type?.title || id}`}
-              aria-expanded={expanded} aria-controls={`${panelId}-${id}`} onClick={() => setEditing(expanded ? null : id)}
-              className="flex items-center gap-1 rounded px-1.5 py-1 text-[11px] text-muted hover:bg-raised hover:text-ink disabled:opacity-30">
-              <Settings2 className="size-3" aria-hidden /> Configure
-              <ChevronDown className={`size-3 transition-transform ${expanded ? 'rotate-180' : ''}`} aria-hidden />
-            </button>}
+            {type?.common
+              ? <span className="text-xs text-muted">included</span>
+              : <Toggle size="sm" label={`Enable ${type?.title || id}`} checked={!!entry}
+                  onChange={(on) => { update(id, on ? {} : undefined); if (!on && editing === id) setEditing(null) }} />}
+            <IconButton icon={ChevronDown} size="sm" label={`Configure ${type?.title || id}`}
+              disabled={!enabled || !configurable} active={expanded}
+              onClick={() => setEditing(expanded ? null : id)}
+              className={`${configurable ? '' : 'invisible'} [&>svg]:transition-transform ${expanded ? '[&>svg]:rotate-180' : ''}`} />
           </div>
-          {expanded && configurable && <div id={`${panelId}-${id}`} className="space-y-4 border-t border-line bg-surface/50 p-3">
-            {!!schemaFields(type?.spaceConfiguration).length && <div className="space-y-2">
-              <h4 className="text-xs font-medium">Admin configuration</h4>
-              <p className="text-[11px] text-muted">Required before creating a service. Apps cannot override these values.</p>
+          {expanded && configurable && <div className="space-y-4 border-t border-line/60 bg-surface/40 px-3 py-3 pl-10">
+            {adminFields.length > 0 && <div>
+              <Eyebrow>Admin configuration</Eyebrow>
+              <p className="mt-0.5 text-xs text-muted">Required before creating a service. Apps cannot override these values.</p>
               <OfferingValues schema={type?.spaceConfiguration} values={entry?.config ?? {}}
                 onChange={(config) => update(id, { ...entry, config })} />
             </div>}
-            {!!schemaFields(type?.parameters).length && <div className="space-y-2">
-              <h4 className="text-xs font-medium">Defaults for new services</h4>
-              <p className="text-[11px] text-muted">Apps can override these values. Existing services keep their parameters.</p>
+            {defaultFields.length > 0 && <div>
+              <Eyebrow>Defaults for new services</Eyebrow>
+              <p className="mt-0.5 text-xs text-muted">Apps can override these values. Existing services keep their parameters.</p>
               <OfferingValues schema={type?.parameters} values={entry?.defaults ?? {}}
                 onChange={(defaults) => update(id, { ...entry, defaults })} />
             </div>}
             {type?.common && entry && <button type="button" onClick={() => { update(id); setEditing(null) }}
-              className="text-[11px] text-muted hover:text-ink">Reset to common defaults</button>}
+              className="text-xs text-muted underline-offset-2 hover:text-ink hover:underline">Reset to common defaults</button>}
           </div>}
-        </div>
+        </li>
       })}
-    </div>
+    </List>
   </section>
 }

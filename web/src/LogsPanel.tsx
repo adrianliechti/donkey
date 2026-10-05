@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { RefreshCw } from 'lucide-react'
+import { ArrowDownToLine, RefreshCw } from 'lucide-react'
 import { api } from './api'
-import { ErrorNote, errText, Select } from './ui'
+import { ErrorNote, errText, IconButton, Section, SectionHeader, Select } from './ui'
 
 export function LogsPanel({ space, app }: { space: string; app: string }) {
   const [logs, setLogs] = useState('')
@@ -54,45 +54,50 @@ export function LogsPanel({ space, app }: { space: string; app: string }) {
   const streamError = logs.trim().startsWith('error:') ? logs.trim() : ''
 
   return (
-    <div className="space-y-3">
-      <div className="flex flex-wrap items-center justify-end gap-2">
-        <label className="flex items-center gap-1.5 text-xs text-ink-soft">
-          <input
-            type="checkbox"
-            checked={follow}
-            onChange={(e) => setFollow(e.target.checked)}
-            className="size-3.5 accent-accent-strong"
-          />
-          Follow
-        </label>
-        <Select
-          size="sm"
-          ariaLabel="How far back"
-          value={since}
-          onChange={setSince}
-          options={[
-            { value: '', label: 'all' },
-            { value: '5m', label: 'last 5 min' },
-            { value: '1h', label: 'last hour' },
-          ]}
-        />
-        <Select
-          size="sm"
-          ariaLabel="How many lines"
-          value={tail}
-          onChange={setTail}
-          options={[100, 200, 500].map((n) => ({ value: n, label: `last ${n}` }))}
-        />
-        <button
-          type="button"
-          onClick={load}
-          title="Refresh logs"
-          aria-label="Refresh logs"
-          className="flex items-center rounded-md p-1.5 text-xs text-muted hover:bg-line/50 focus-visible:outline-2 focus-visible:outline-accent-strong"
-        >
-          <RefreshCw className={`size-3.5 ${busy && !follow ? 'animate-spin' : ''}`} aria-hidden />
-        </button>
-      </div>
+    // The pane takes whatever height the panel has left: logs are read by
+    // the screenful, so the box grows with the window instead of staying a
+    // fixed strip.
+    // Exactly as tall as the panel's visible area, below whatever comes
+    // first (a diagnosis): scrolling the panel moves the diagnosis away and
+    // leaves the logs filling the whole height. The pane hands its scroll on
+    // at either end, so scrolling up past the first line brings it back.
+    // After a diagnosis it is taller by its divider and top padding, so once
+    // scrolled those sit just out of view and the tab looks like it does
+    // for a healthy app.
+    <Section className="flex h-full min-h-72 shrink-0 flex-col gap-3 [&:not(:first-child)]:h-[calc(100%+1.25rem+1px)]">
+      <SectionHeader
+        title="Logs"
+        actions={
+          <>
+            <Select
+              variant="quiet"
+              ariaLabel="How far back"
+              value={since}
+              onChange={setSince}
+              options={[
+                { value: '', label: 'all' },
+                { value: '5m', label: 'last 5 min' },
+                { value: '1h', label: 'last hour' },
+              ]}
+            />
+            <Select
+              variant="quiet"
+              ariaLabel="How many lines"
+              value={tail}
+              onChange={setTail}
+              options={[100, 200, 500].map((n) => ({ value: n, label: `last ${n}` }))}
+            />
+            <span className="mx-1 h-4 w-px bg-line" aria-hidden />
+            <IconButton
+              icon={ArrowDownToLine}
+              label={follow ? 'Stop following new lines' : 'Follow new lines'}
+              active={follow}
+              onClick={() => setFollow(!follow)}
+            />
+            <IconButton icon={RefreshCw} label="Refresh logs" onClick={load} className={busy && !follow ? '[&>svg]:animate-spin' : ''} />
+          </>
+        }
+      />
       <ErrorNote message={error || streamError} />
       {!streamError && (
         <pre
@@ -103,7 +108,7 @@ export function LogsPanel({ space, app }: { space: string; app: string }) {
             const pane = paneRef.current
             if (pane) pinnedRef.current = pane.scrollHeight - pane.scrollTop - pane.clientHeight < 40
           }}
-          className="h-80 overflow-auto rounded-md bg-well p-3 font-mono text-xs leading-relaxed text-emphasis whitespace-pre-wrap focus-visible:outline-2 focus-visible:outline-accent-strong"
+          className="min-h-0 flex-1 overflow-auto overscroll-y-auto rounded-lg border border-line bg-well p-3 font-mono text-xs leading-relaxed text-emphasis whitespace-pre-wrap focus-visible:outline-2 focus-visible:outline-accent-strong"
         >
           {logs ||
             (busy
@@ -111,6 +116,6 @@ export function LogsPanel({ space, app }: { space: string; app: string }) {
               : 'Nothing here yet — the app has not written any output.')}
         </pre>
       )}
-    </div>
+    </Section>
   )
 }
