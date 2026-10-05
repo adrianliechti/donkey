@@ -39,7 +39,6 @@ const (
 	dockerDataDir    = "/var/lib/donkey"
 
 	dockerRegistryName   = "donkey-registry"
-	dockerRegistryImage  = "registry:3"
 	dockerRegistryVolume = "donkey-registry"
 	// The registry publishes on the host's loopback so the Docker daemon
 	// can pull what the build engine pushed — localhost registries are
@@ -149,6 +148,13 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 	if err != nil {
 		return err
 	}
+	var bundledRegistryPullAuth string
+	if bundledRegistry {
+		bundledRegistryPullAuth, err = registryPullAuth(settings.Registry.Registry, registryUsername, registryPassword, settings.BundledRegistryImage())
+		if err != nil {
+			return err
+		}
+	}
 	if settings.Build.Packages.Password == "" && settings.Build.Packages.NeedsPassword() {
 		settings.Build.Packages.Password = existingContainerEnv(ctx, cli, dockerPackagesName, "DONKEY_PACKAGES_PASSWORD")
 	}
@@ -176,8 +182,9 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 		// The registry: no host port beyond the loopback, no credentials — it
 		// only exists on donkey's networks and the host's own daemon.
 		if err := replaceInfraContainer(ctx, cli, infraContainer{
-			Name:  dockerRegistryName,
-			Image: dockerRegistryImage,
+			Name:         dockerRegistryName,
+			Image:        settings.BundledRegistryImage(),
+			RegistryAuth: bundledRegistryPullAuth,
 			Mounts: []mount.Mount{
 				{Type: mount.TypeVolume, Source: dockerRegistryVolume, Target: "/var/lib/registry"},
 			},
@@ -301,6 +308,8 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 		"DONKEY_TELEMETRY_OTLP_ENDPOINT": "http://" + dockerTelemetryName + ":4318",
 		"DONKEY_DEFAULT_PLATFORM":        settings.DefaultPlatform,
 		"DONKEY_POSTGRES_IMAGE":          settings.AddonImages.Postgres,
+		"DONKEY_REDIS_IMAGE":             settings.AddonImages.Redis,
+		"DONKEY_BUSYBOX_IMAGE":           settings.BusyboxImage,
 		"DONKEY_RUSTFS_IMAGE":            settings.AddonImages.RustFS,
 		"DONKEY_ADDON_PLUGINS":           settings.AddonPlugins.JSON(),
 		"DONKEY_OIDC_ISSUER":             settings.Auth.Issuer,
@@ -541,7 +550,13 @@ func validateDockerSettings(settings *config.InstallFile) error {
 	if err := settings.AddonPlugins.Validate(); err != nil {
 		return err
 	}
-	return settings.AddonImages.Validate()
+	if err := settings.AddonImages.Validate(); err != nil {
+		return err
+	}
+	if err := config.ValidateBusyboxImage(settings.BusyboxImage); err != nil {
+		return err
+	}
+	return config.ValidateRegistryImage(settings.RegistryImage)
 }
 
 // builderEnvMap is the builder's settings; only what was chosen travels, so
@@ -799,12 +814,19 @@ func pullInfraImage(ctx context.Context, cli *dockerclient.Client, ref, registry
 	return nil
 }
 
-// registryPullAuth authenticates Docker-daemon pulls from the configured
-// enterprise registry. The URL may include a repository prefix; Docker auth
-// is intentionally keyed to the host only.
+// registryPullAuth authenticates Docker-daemon pulls using the push registry's
+// resolved credential on that host, or a matching Docker config entry for a
+// separately hosted image mirror. Docker auth is keyed to the host only.
 func registryPullAuth(reg config.Registry, username, password, ref string) (string, error) {
 	host := reg.Host()
-	if host == "" || username == "" || password == "" || !strings.HasPrefix(ref, host+"/") {
+	if host == "" || !strings.HasPrefix(ref, host+"/") {
+		var err error
+		host, username, password, err = reg.ImageCredentials(ref)
+		if err != nil {
+			return "", err
+		}
+	}
+	if username == "" || password == "" {
 		return "", nil
 	}
 	raw, err := json.Marshal(map[string]string{

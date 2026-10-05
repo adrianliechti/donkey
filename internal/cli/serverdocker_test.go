@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"math/big"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -89,6 +91,42 @@ func TestRegistryPullAuthUsesEnterpriseHostWithPrefixedURL(t *testing.T) {
 	}
 	if public != "" {
 		t.Fatal("enterprise credentials must not be sent to a public registry")
+	}
+}
+
+func TestBundledRegistryImageUsesItsOwnMirrorCredentials(t *testing.T) {
+	t.Setenv("DONKEY_REGISTRY_PASSWORD", "")
+	dir := t.TempDir()
+	contents := `{"auths":{"jfrog.corp":{"username":"mirror-reader","password":"mirror-secret"}}}`
+	if err := os.WriteFile(filepath.Join(dir, "auth.json"), []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	reg := config.Registry{URL: "donkey-registry:5000/donkey", DockerConfigDir: dir, Insecure: true}
+	username, password, err := reg.Credentials()
+	if err != nil || username != "" || password != "" {
+		t.Fatalf("bundled push registry should remain anonymous: %q/%q, %v", username, password, err)
+	}
+	encoded, err := registryPullAuth(reg, username, password, "jfrog.corp/dockerhub/library/registry:3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := base64.URLEncoding.DecodeString(encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var auth map[string]string
+	if err := json.Unmarshal(raw, &auth); err != nil {
+		t.Fatal(err)
+	}
+	if auth["serveraddress"] != "jfrog.corp" || auth["username"] != "mirror-reader" || auth["password"] != "mirror-secret" {
+		t.Fatalf("registry image received the wrong credential: %v", auth)
+	}
+	if encoded, err := registryPullAuth(reg, "", "", "registry:3"); err != nil || encoded != "" {
+		t.Fatalf("public registry image received mirror credentials: %q, %v", encoded, err)
+	}
+	reg.Username = "explicit-push-user"
+	if _, _, err := reg.Credentials(); err == nil {
+		t.Fatal("an explicitly configured push login must not silently become anonymous")
 	}
 }
 

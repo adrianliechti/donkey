@@ -117,6 +117,7 @@ func main() {
 			StateDir:     os.Getenv("DONKEY_STATE_DIR"),
 			Registry:     cfg.Registry,
 			AddonImages:  cfg.AddonImages,
+			BusyboxImage: cfg.BusyboxImage,
 			PullRegistry: os.Getenv("DONKEY_PULL_REGISTRY"),
 			TelemetryKey: cfg.TelemetryKey,
 		})
@@ -163,6 +164,7 @@ func main() {
 			Domain:                cfg.Domain,
 			Registry:              cfg.Registry,
 			AddonImages:           cfg.AddonImages,
+			BusyboxImage:          cfg.BusyboxImage,
 			AddonImagePullSecrets: cfg.AddonImagePullSecrets,
 			TLS:                   cfg.TLS,
 			ExternalDNS:           cfg.ExternalDNS,

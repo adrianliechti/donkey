@@ -97,9 +97,10 @@ type SystemInput struct {
 	// and the proxy donkey's own processes use.
 	Build config.InstallBuild
 	// AddonImages are pulled by the runtime, outside BuildKit.
-	AddonImages config.InstallAddonImages
+	AddonImages  config.InstallAddonImages
+	BusyboxImage string
 	// AddonImagePullSecrets are existing credentials in every workload
-	// namespace, referenced by managed service pods without copying them.
+	// namespace, referenced by managed service and file-helper pods without copying them.
 	AddonImagePullSecrets []string
 	AddonPlugins          config.AddonPlugins
 
@@ -369,6 +370,8 @@ func serverDeployment(in SystemInput) *appsv1.Deployment {
 		{Name: "DONKEY_TELEMETRY_OTLP_ENDPOINT", Value: TelemetryOTLPEndpoint(in.Namespace)},
 		{Name: "DONKEY_DEFAULT_PLATFORM", Value: in.DefaultPlatform},
 		{Name: "DONKEY_POSTGRES_IMAGE", Value: in.AddonImages.Postgres},
+		{Name: "DONKEY_REDIS_IMAGE", Value: in.AddonImages.Redis},
+		{Name: "DONKEY_BUSYBOX_IMAGE", Value: in.BusyboxImage},
 		{Name: "DONKEY_RUSTFS_IMAGE", Value: in.AddonImages.RustFS},
 		{Name: "DONKEY_ADDON_IMAGE_PULL_SECRETS", Value: strings.Join(in.AddonImagePullSecrets, ",")},
 		{Name: "DONKEY_ADDON_PLUGINS", Value: in.AddonPlugins.JSON()},

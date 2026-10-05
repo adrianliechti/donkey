@@ -29,8 +29,10 @@ type Options struct {
 	Registry config.Registry
 	// AddonImages are direct repository overrides for managed services.
 	AddonImages config.InstallAddonImages
+	// BusyboxImage is the file-browser helper's toolbox.
+	BusyboxImage string
 	// AddonImagePullSecrets are existing secrets referenced by managed service
-	// pods when Kubernetes pulls their images.
+	// and file-helper pods when Kubernetes pulls their images.
 	AddonImagePullSecrets []string
 	// TLS selects the certificate source. cert-manager mode creates one
 	// exact-host Certificate per exposed app.
@@ -69,6 +71,9 @@ func NewRuntime(client *Client, opts Options) *Runtime {
 	// The client speaks for this installation, and — when the installation was
 	// given its namespaces rather than making them — sees only those.
 	client = client.ForInstallation(opts.SystemNamespace, opts.Placement.SharedNamespace)
+	client.busyboxImage = opts.BusyboxImage
+	client.filesRegistry = opts.Registry
+	client.filesImagePullSecrets = opts.AddonImagePullSecrets
 	return &Runtime{c: client, opts: opts}
 }
 

@@ -76,6 +76,38 @@ func TestRegistryCredentialsFromDockerConfig(t *testing.T) {
 	}
 }
 
+func TestRegistryImageCredentialsSelectsOnlyTheImageHost(t *testing.T) {
+	t.Setenv("DONKEY_REGISTRY_PASSWORD", "push-secret")
+	dir := t.TempDir()
+	path := filepath.Join(dir, "mirror.json")
+	if err := os.WriteFile(path, []byte(`{"auths":{"jfrog.corp":{"username":"mirror-reader","password":"mirror-secret"}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	registry := Registry{URL: "push.example.com/donkey", Username: "push-user", DockerConfigDir: dir}
+	for _, tc := range []struct {
+		image    string
+		username string
+		password string
+	}{
+		{image: "push.example.com/donkey/app:build", username: "push-user", password: "push-secret"},
+		{image: "jfrog.corp/dockerhub/library/busybox:1.37", username: "mirror-reader", password: "mirror-secret"},
+		{image: "busybox:1.37"},
+		{image: "jfrog.corp.attacker.example/busybox:1.37"},
+	} {
+		_, username, password, err := registry.ImageCredentials(tc.image)
+		if err != nil || username != tc.username || password != tc.password {
+			t.Fatalf("ImageCredentials(%q) = %q/%q, %v", tc.image, username, password, err)
+		}
+	}
+	if err := os.WriteFile(path, []byte(`{"auths":{"jfrog.corp":{"username":"mirror-reader","password":"rotated-secret"}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, _, password, err := registry.ImageCredentials("jfrog.corp/dockerhub/library/busybox:1.37")
+	if err != nil || password != "rotated-secret" {
+		t.Fatalf("mirror credential rotation was not picked up: %q, %v", password, err)
+	}
+}
+
 func TestDockerConfigDirCredentialsSelectsHost(t *testing.T) {
 	dir := t.TempDir()
 	for name, contents := range map[string]string{

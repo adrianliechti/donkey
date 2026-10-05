@@ -32,7 +32,6 @@ import (
 
 const (
 	filesMount     = "/data"
-	filesImage     = "busybox:1.37"
 	statFormat     = "%f|%s|%Y|%n"
 	filesReadyWait = 60 * time.Second
 )
@@ -49,6 +48,13 @@ const (
 )
 
 func filesHelperName(space, app string) string { return ctrName(space, app) + ".files" }
+
+func (r *Runtime) filesImage() string {
+	if r.opts.BusyboxImage != "" {
+		return r.opts.BusyboxImage
+	}
+	return config.DefaultBusyboxImage
+}
 
 // filesHelper returns a running helper container for the app's disk,
 // starting one if needed.
@@ -80,6 +86,7 @@ func (r *Runtime) filesHelper(ctx context.Context, space, app string) (string, e
 		return "", err
 	}
 	name := filesHelperName(space, app)
+	image := r.filesImage()
 	info, err := r.cli.ContainerInspect(ctx, name)
 	if err == nil && info.State != nil && info.State.Running {
 		if info.Config == nil {
@@ -89,7 +96,9 @@ func (r *Runtime) filesHelper(ctx context.Context, space, app string) (string, e
 			appLabels(space, app, roleFiles)); err != nil {
 			return "", err
 		}
-		return name, nil
+		if info.Config.Image == image {
+			return name, nil
+		}
 	}
 	if err == nil {
 		if err := r.removeOwnedContainer(ctx, name, appLabels(space, app, roleFiles)); err != nil {
@@ -98,12 +107,12 @@ func (r *Runtime) filesHelper(ctx context.Context, space, app string) (string, e
 	} else if !cerrdefs.IsNotFound(err) {
 		return "", err
 	}
-	if err := r.pullImage(ctx, filesImage); err != nil {
+	if err := r.pullImage(ctx, image); err != nil {
 		return "", err
 	}
 	labels := appLabels(space, app, roleFiles)
 	_, err = r.cli.ContainerCreate(ctx, &container.Config{
-		Image: filesImage,
+		Image: image,
 		// The helper stops by itself: browsing files once must not leave a
 		// container behind forever.
 		Entrypoint: []string{"sleep", "2700"},

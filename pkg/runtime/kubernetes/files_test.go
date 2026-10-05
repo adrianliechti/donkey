@@ -2,14 +2,21 @@ package kubernetes
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	k8sruntime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	dynamicfake "k8s.io/client-go/dynamic/fake"
 	"k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 
+	"github.com/adrianliechti/donkey/internal/config"
 	rt "github.com/adrianliechti/donkey/pkg/runtime"
 	"github.com/adrianliechti/donkey/pkg/runtime/kubernetes/manifests"
 )
@@ -212,6 +219,105 @@ func TestCapWriter(t *testing.T) {
 func TestFilesHelperName(t *testing.T) {
 	if got := filesHelperName("shop"); got != "shop-files" {
 		t.Fatalf("filesHelperName = %q", got)
+	}
+}
+
+func TestFilesHelperUsesInstallationBusyboxImage(t *testing.T) {
+	client := &Client{}
+	mirrored := NewRuntime(client, Options{
+		BusyboxImage:          "jfrog.corp/dockerhub/library/busybox:1.37",
+		AddonImagePullSecrets: []string{"jfrog-auth", "jfrog-auth"},
+	}).Client()
+	defaultClient := NewRuntime(client, Options{}).Client()
+	for _, tc := range []struct {
+		client *Client
+		image  string
+		secret string
+	}{
+		{client: mirrored, image: "jfrog.corp/dockerhub/library/busybox:1.37", secret: "jfrog-auth"},
+		{client: defaultClient, image: config.DefaultBusyboxImage},
+	} {
+		pod := tc.client.filesHelperPod("workloads", "team", "site", "team-site", "donkey-system")
+		if got := pod.Spec.Containers[0].Image; got != tc.image {
+			t.Fatalf("helper image = %q, want %q", got, tc.image)
+		}
+		if tc.secret != "" && (len(pod.Spec.ImagePullSecrets) != 1 || pod.Spec.ImagePullSecrets[0].Name != tc.secret) {
+			t.Fatalf("helper pull secrets = %v", pod.Spec.ImagePullSecrets)
+		}
+		if tc.secret == "" && len(pod.Spec.ImagePullSecrets) != 0 {
+			t.Fatal("default installation inherited another installation's credentials")
+		}
+		pod.Status.Phase = corev1.PodRunning
+		pod.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: filesContainer, Ready: true}}
+		pod.Annotations[annotationFilesExpires] = time.Now().Add(filesHelperLifetime).Format(time.RFC3339)
+		if !helperUsable(pod, tc.image) {
+			t.Fatal("a ready helper using the configured image should be reusable")
+		}
+		if helperUsable(pod, "other.example.com/busybox:1.37") {
+			t.Fatal("a helper using the previous image should be replaced")
+		}
+	}
+}
+
+func TestPrivateFilesHelperReceivesScopedPullCredentials(t *testing.T) {
+	t.Setenv("DONKEY_REGISTRY_PASSWORD", "registry-secret")
+	for _, image := range []string{"jfrog.corp/dockerhub/library/busybox:1.37", config.DefaultBusyboxImage} {
+		t.Run(image, func(t *testing.T) {
+			const namespace = "workloads"
+			storageLabels := manifests.Labels("team", "site", manifests.RoleStorage)
+			storageLabels[manifests.LabelInstallation] = "donkey-system"
+			pvc := &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{
+				Name: manifests.DataClaimName("team-site"), Namespace: namespace, Labels: storageLabels,
+			}}
+			clientset := fake.NewSimpleClientset(pvc)
+			clientset.PrependReactor("create", "pods", func(action k8stesting.Action) (bool, k8sruntime.Object, error) {
+				pod := action.(k8stesting.CreateAction).GetObject().(*corev1.Pod).DeepCopy()
+				pod.UID = types.UID("helper-uid")
+				pod.Status.Phase = corev1.PodRunning
+				pod.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: filesContainer, Ready: true}}
+				return true, pod, clientset.Tracker().Create(action.GetResource(), pod, namespace)
+			})
+			var pullSecret *corev1.Secret
+			dynamic := dynamicfake.NewSimpleDynamicClient(k8sruntime.NewScheme())
+			dynamic.PrependReactor("patch", "secrets", func(action k8stesting.Action) (bool, k8sruntime.Object, error) {
+				var object map[string]any
+				if err := json.Unmarshal(action.(k8stesting.PatchAction).GetPatch(), &object); err != nil {
+					return true, nil, err
+				}
+				pullSecret = &corev1.Secret{}
+				if err := k8sruntime.DefaultUnstructuredConverter.FromUnstructured(object, pullSecret); err != nil {
+					return true, nil, err
+				}
+				return true, &unstructured.Unstructured{Object: object}, nil
+			})
+			r := NewRuntime(&Client{Clientset: clientset, Dynamic: dynamic}, Options{
+				BusyboxImage: image,
+				Registry:     config.Registry{URL: "jfrog.corp/donkey", Username: "reader"},
+			})
+			if _, err := r.Client().filesHelper(context.Background(), namespace, "team-site", "team", "site"); err != nil {
+				t.Fatal(err)
+			}
+			pod, err := clientset.CoreV1().Pods(namespace).Get(context.Background(), "team-site-files", metav1.GetOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if pod.Spec.Containers[0].Image != image {
+				t.Fatalf("created helper image = %q", pod.Spec.Containers[0].Image)
+			}
+			if image == config.DefaultBusyboxImage {
+				if pullSecret != nil || len(pod.Spec.ImagePullSecrets) != 0 {
+					t.Fatal("public helper received enterprise credentials")
+				}
+				return
+			}
+			if pullSecret == nil || len(pod.Spec.ImagePullSecrets) != 1 || pod.Spec.ImagePullSecrets[0].Name != pullSecret.Name {
+				t.Fatal("private helper does not reference its generated pull Secret")
+			}
+			username, password, found, err := config.DockerConfigDataCredentials(pullSecret.Data[".dockerconfigjson"], "helper secret", "jfrog.corp")
+			if err != nil || !found || username != "reader" || password != "registry-secret" {
+				t.Fatalf("helper received wrong credentials: %q/%q, found=%v, %v", username, password, found, err)
+			}
+		})
 	}
 }
 
