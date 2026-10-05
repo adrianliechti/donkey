@@ -123,6 +123,7 @@ func (s *Server) routes() http.Handler {
 	// names (services, databases, tables, buckets) live in the path; leaf
 	// items with arbitrary names (object keys, row keys) ride in query/body.
 	mux.Handle("GET /v1/catalog", s.auth(s.handleCatalog))
+	mux.Handle("GET /v1/spaces/{space}/catalog", s.auth(s.handleCatalog))
 	mux.Handle("GET /v1/spaces/{space}/services", s.auth(s.handleListSpaceServices))
 	mux.Handle("POST /v1/spaces/{space}/services", s.auth(s.handleAddSpaceService))
 	mux.Handle("DELETE /v1/spaces/{space}/services/{service}", s.auth(s.handleRemoveSpaceService))

@@ -273,7 +273,7 @@ func (s *Server) readProject(ctx context.Context, dir string, reading *ai.Projec
 			// The repository reading may see a connection the per-app reading
 			// missed. Offer it once, before any review choices are made.
 			for _, sp := range state.apps {
-				if sp.root == c.App && !hasAddonType(sp.app, c.Target) {
+				if sp.root == c.App && !hasAddonType(sp.app, c.Target) && s.offeringAvailable(ctx, sp.app.Space, c.Target) {
 					sp.app.Addons = append(sp.app.Addons, config.AddonConfig{Type: c.Target, Name: c.Target})
 					sp.services = append(sp.services, PlanService{Type: c.Target, Name: c.Target, Known: true, Selected: true, Reason: c.Reason})
 				}

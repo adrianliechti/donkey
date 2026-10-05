@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react'
 import { Dialog, DialogBackdrop, DialogPanel, DialogTitle } from '@headlessui/react'
+import { useQueryClient } from '@tanstack/react-query'
 import { ChevronRight, Globe2, Plus, Users, X } from 'lucide-react'
 import { api, type SpaceConfig } from './api'
 import { MembershipEditor } from './MembershipEditor'
+import { OfferingSettings } from './OfferingSettings'
 import { Button, ErrorNote, Spinner, errText } from './ui'
 
 export function DomainSettings({ domains, onChange, placeholder }: {
@@ -54,6 +56,10 @@ export function SpaceConfigEditor({ settings, onChange, creating = false, domain
   return (
     <div className="space-y-5">
       <DomainSettings domains={settings.domains ?? []} placeholder={domainPlaceholder} onChange={(domains) => onChange({ ...settings, domains })} />
+      <details className="rounded-lg border border-line p-3">
+        <summary className="cursor-pointer text-sm font-medium">Service offerings</summary>
+        <div className="mt-3"><OfferingSettings offerings={settings.offerings} onChange={(offerings) => onChange({ ...settings, offerings })} /></div>
+      </details>
       {creating ? <details className="group rounded-lg border border-line">
         <summary className="flex cursor-pointer list-none items-center gap-2.5 px-3 py-3 text-sm [&::-webkit-details-marker]:hidden">
           <Users className="size-4 text-muted" aria-hidden />
@@ -76,6 +82,7 @@ export function SpaceConfigEditor({ settings, onChange, creating = false, domain
 export function SpaceSettings({ space, onClose, onSaved }: {
   space: string; onClose: () => void; onSaved: () => void
 }) {
+  const queryClient = useQueryClient()
   const [settings, setSettings] = useState<SpaceConfig | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -92,6 +99,7 @@ export function SpaceSettings({ space, onClose, onSaved }: {
     setError('')
     try {
       await api.setSpaceConfig(space, settings)
+      await queryClient.invalidateQueries({ queryKey: ['catalog', space] })
       onSaved()
       onClose()
     } catch (err) {

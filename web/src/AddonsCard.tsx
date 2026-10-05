@@ -110,6 +110,7 @@ export function AddonsCard({ space, app }: { space: string; app: string }) {
         </div>
       )}
       <AddServiceDialog
+        space={space}
         open={adding}
         title="Add a service"
         submitLabel="Add and connect"

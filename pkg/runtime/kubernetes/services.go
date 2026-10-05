@@ -72,6 +72,17 @@ func (r *Runtime) EnsureService(ctx context.Context, space string, spec rt.Servi
 	if err != nil {
 		return nil, nil, err
 	}
+	connection, err := r.ServiceConnection(ctx, space, spec.Name)
+	if err != nil {
+		return nil, nil, err
+	}
+	if connection.Type != "" && connection.Type != spec.Type {
+		return nil, nil, rt.UserError{Err: fmt.Errorf("remove service %s before changing its offering", spec.Name)}
+	}
+	spec.Parameters, err = rt.PrepareService(ctx, r, r.opts.CommonOfferings, space, desc, spec.Parameters, previous != nil || len(connection.Binding) > 0)
+	if err != nil {
+		return nil, nil, err
+	}
 	if err := r.ensureSpaceHome(ctx, space); err != nil {
 		return nil, nil, err
 	}
@@ -225,6 +236,9 @@ func (r *Runtime) addonImagePullCredentials(image string) (*imagePullCredentials
 }
 
 func (r *Runtime) AttachService(ctx context.Context, space, app, name string, binding map[string]string) (bool, error) {
+	if err := rt.CheckServiceAttachment(ctx, r, r.opts.CommonOfferings, space, app, name); err != nil {
+		return false, err
+	}
 	// Writes an attachment secret named from the pair — same rule as SetEnv.
 	if err := r.ValidateApp(space, app); err != nil {
 		return false, rt.UserError{Err: err}

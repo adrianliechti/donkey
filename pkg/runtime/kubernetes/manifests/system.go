@@ -103,6 +103,7 @@ type SystemInput struct {
 	// namespace, referenced by managed service and file-helper pods without copying them.
 	AddonImagePullSecrets []string
 	AddonPlugins          config.AddonPlugins
+	CommonOfferings       config.CommonOfferings
 
 	BuildkitImage string
 
@@ -375,6 +376,7 @@ func serverDeployment(in SystemInput) *appsv1.Deployment {
 		{Name: "DONKEY_RUSTFS_IMAGE", Value: in.AddonImages.RustFS},
 		{Name: "DONKEY_ADDON_IMAGE_PULL_SECRETS", Value: strings.Join(in.AddonImagePullSecrets, ",")},
 		{Name: "DONKEY_ADDON_PLUGINS", Value: in.AddonPlugins.JSON()},
+		{Name: "DONKEY_COMMON_OFFERINGS", Value: in.CommonOfferings.JSON()},
 		{Name: "DONKEY_TLS_MODE", Value: in.TLS.EffectiveMode()},
 		{Name: "DONKEY_TLS_ISSUER_NAME", Value: in.TLS.IssuerName},
 		{Name: "DONKEY_TLS_ISSUER_KIND", Value: in.TLS.IssuerKind},

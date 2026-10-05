@@ -73,6 +73,19 @@ func (r planRuntime) ServiceBinding(_ context.Context, _, owner, name string) (m
 	return nil, nil
 }
 
+func (r planRuntime) ListServices(context.Context, string, string) ([]runtime.ServiceBindingInfo, error) {
+	var out []runtime.ServiceBindingInfo
+	for _, name := range r.services {
+		out = append(out, runtime.ServiceBindingInfo{Name: name, Type: name})
+	}
+	return out, nil
+}
+
+func (r planRuntime) ServiceConnection(ctx context.Context, space, name string) (runtime.ServiceConnection, error) {
+	binding, err := r.ServiceBinding(ctx, space, addons.SharedOwner, name)
+	return runtime.ServiceConnection{Binding: binding, Type: name}, err
+}
+
 func (r planRuntime) Status(context.Context, string, string) (*runtime.AppStatus, error) {
 	if r.running != nil {
 		return r.running, nil

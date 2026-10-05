@@ -43,6 +43,7 @@ func TestSpaceConfigPersistsInConfigMapInBothModes(t *testing.T) {
 			settings.Admins.Users = []string{"owner@example.com"}
 			settings.Developers.Groups = []string{"team"}
 			settings.Domains = []string{}
+			settings.Offerings = map[string]config.SpaceOffering{"remote-db": {Defaults: map[string]any{"version": "11.4"}, Config: map[string]any{"tenant": "finance"}}}
 			if err := r.SetSpaceConfig(ctx, "team", settings); err != nil {
 				t.Fatal(err)
 			}

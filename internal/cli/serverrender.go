@@ -29,6 +29,10 @@ registry:
 
 domain: apps.example.com
 
+# Empty or omitted allows all registered offerings. A nonempty list makes
+# these available in every space; space admins can add others in settings.
+# commonOfferings: [postgres, redis, rustfs, openai]
+
 tls:
   mode: cert-manager
   issuerName: platform-ca
@@ -62,6 +66,10 @@ runtime: docker
 image: ghcr.io/example/donkey-server:latest
 
 domain: apps.localhost
+
+# Empty or omitted allows all registered offerings. A nonempty list makes
+# these available in every space; space admins can add others in settings.
+# commonOfferings: [postgres, redis, rustfs, openai]
 
 tls:
   mode: ca

@@ -113,13 +113,14 @@ func main() {
 	switch os.Getenv("DONKEY_RUNTIME") {
 	case "docker":
 		provider, err := docker.New(docker.Options{
-			Domain:       cfg.Domain,
-			StateDir:     os.Getenv("DONKEY_STATE_DIR"),
-			Registry:     cfg.Registry,
-			AddonImages:  cfg.AddonImages,
-			BusyboxImage: cfg.BusyboxImage,
-			PullRegistry: os.Getenv("DONKEY_PULL_REGISTRY"),
-			TelemetryKey: cfg.TelemetryKey,
+			Domain:          cfg.Domain,
+			StateDir:        os.Getenv("DONKEY_STATE_DIR"),
+			Registry:        cfg.Registry,
+			AddonImages:     cfg.AddonImages,
+			CommonOfferings: cfg.CommonOfferings,
+			BusyboxImage:    cfg.BusyboxImage,
+			PullRegistry:    os.Getenv("DONKEY_PULL_REGISTRY"),
+			TelemetryKey:    cfg.TelemetryKey,
 		})
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "startup error:", err)
@@ -164,6 +165,7 @@ func main() {
 			Domain:                cfg.Domain,
 			Registry:              cfg.Registry,
 			AddonImages:           cfg.AddonImages,
+			CommonOfferings:       cfg.CommonOfferings,
 			BusyboxImage:          cfg.BusyboxImage,
 			AddonImagePullSecrets: cfg.AddonImagePullSecrets,
 			TLS:                   cfg.TLS,

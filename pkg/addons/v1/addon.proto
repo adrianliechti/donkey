@@ -64,14 +64,19 @@ message Offering {
   // Deprecated offerings stay usable for existing instances but are hidden
   // from the catalog for new ones.
   bool deprecated = 13;
+  // A schema for admin-managed settings in a space's offerings.<id>.config.
+  // Uses the same subset as parameters, with defaults applied by Donkey.
+  // Apps cannot supply these values. Required settings without defaults
+  // prevent new provisioning until a space admin configures the offering.
+  google.protobuf.Struct space_configuration = 14;
 }
 
 message Capabilities {
   // Deprovision honours keep_data: the data and the credentials to reopen
   // it survive, and a later Provision with reason RESUME reuses them.
   bool retain_data = 1;
-  // Parameters of an existing instance may change in place (reason
-  // UPDATE). Without it, Donkey refuses changed parameters.
+  // Parameters and admin-managed space configuration of an existing instance
+  // may change in place (reason UPDATE). Without it, Donkey refuses changes.
   bool update = 2;
 }
 
@@ -126,6 +131,12 @@ message ProvisionRequest {
   // The parameters of the last request for this instance, when it exists.
   google.protobuf.Struct previous_parameters = 3;
   ProvisionReason reason = 4;
+  // Admin-managed settings, validated against Offering.space_configuration.
+  // Stored with the instance for retries and resumption even if the space
+  // later removes this offering. Never part of the app's environment.
+  google.protobuf.Struct space_configuration = 5;
+  // The configuration of the previous request, when the instance exists.
+  google.protobuf.Struct previous_space_configuration = 6;
 }
 
 // Progress events carry `message`; the final event carries `result`.

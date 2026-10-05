@@ -77,11 +77,17 @@ export const spaceServicesQuery = (space: string) =>
     queryFn: async () => (await api.spaceAddons(space)).addons ?? [],
   })
 
-// The catalog changes with a server release, not at runtime.
+// Providers refresh their catalogs, and admins edit availability per space.
 export const catalogQuery = queryOptions({
   queryKey: ['catalog'],
   queryFn: async () => (await api.addonTypes()).types ?? [],
-  staleTime: 60 * 60 * 1000,
+  staleTime: 30 * 1000,
+})
+
+export const spaceCatalogQuery = (space: string) => queryOptions({
+  queryKey: ['catalog', space],
+  queryFn: async () => (await api.addonTypes(space)).types ?? [],
+  staleTime: 30 * 1000,
 })
 
 // present maps a query result into the shape the console's views grew up
@@ -134,8 +140,8 @@ export function useSpaceServices(space: string) {
   return present(useQuery(spaceServicesQuery(space)))
 }
 
-export function useCatalog() {
-  return present(useQuery(catalogQuery))
+export function useCatalog(space?: string) {
+  return present(useQuery(space ? spaceCatalogQuery(space) : catalogQuery))
 }
 
 // One service change shows up in three places — the space strip, the app's

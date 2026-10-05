@@ -224,6 +224,28 @@ func ResolveParameters(s *structpb.Struct, given map[string]any) (Parameters, er
 	return Parameters(params), nil
 }
 
+// ResolveDefaults validates a partial set of admin-supplied values. Required
+// app parameters can still be supplied at creation; required configuration
+// can be completed later. Only the supplied values are returned.
+func ResolveDefaults(s *structpb.Struct, given map[string]any) (Parameters, error) {
+	if err := ValidateSchema(s); err != nil {
+		return nil, err
+	}
+	if s == nil || len(s.Fields) == 0 {
+		return ResolveParameters(s, given)
+	}
+	schema := s.AsMap()
+	delete(schema, "required")
+	if properties, ok := schema["properties"].(map[string]any); ok {
+		for _, property := range properties {
+			if prop, ok := property.(map[string]any); ok {
+				delete(prop, "default")
+			}
+		}
+	}
+	return ResolveParameters(MustStruct(schema), given)
+}
+
 // coerce meets flags and YAML halfway: "16" for a string is fine, 16 for a
 // string becomes "16", "3" for an integer becomes 3, and "a,b" fills an
 // array. Anything else is left for validation to judge.

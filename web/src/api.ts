@@ -147,6 +147,12 @@ export interface SpaceConfig {
   admins: AccessConfig
   developers: AccessConfig
   domains: string[]
+  offerings?: Record<string, SpaceOffering>
+}
+
+export interface SpaceOffering {
+  defaults?: ServiceParameters
+  config?: ServiceParameters
 }
 
 export interface PlatformConfig {
@@ -270,6 +276,8 @@ export interface AddonType {
    *  than creating a dedicated instance. */
   shared?: boolean
   parameters?: ParametersSchema
+  spaceConfiguration?: ParametersSchema
+  common?: boolean
   env?: AddonEnvVar[]
   keys?: string[]
   capabilities?: { retainData: boolean; update: boolean }
@@ -724,7 +732,8 @@ export const api = {
   // Removes the entire space boundary, including apps, services, and data.
   deleteSpace: (space: string) =>
     request<{ ok: boolean }>(`/v1/spaces/${encodeURIComponent(space)}`, { method: 'DELETE' }),
-  addonTypes: () => request<{ types: AddonType[] }>('/v1/catalog'),
+  addonTypes: (space?: string) => request<{ types: AddonType[] }>(space
+    ? `/v1/spaces/${encodeURIComponent(space)}/catalog` : '/v1/catalog'),
   // The binding with values: same authorization as the app env API.
   serviceBinding: (space: string, service: string) =>
     request<{ binding: Record<string, string>; host: string; port: number; type?: string; protocol?: string }>(

@@ -100,6 +100,9 @@ func (r *Runtime) Deploy(ctx context.Context, spec rt.DeploySpec, out rt.Progres
 	// created on the spot when missing; the app keeps a current copy of each
 	// binding.
 	for _, a := range app.Addons {
+		if err := rt.CheckServiceAttachment(ctx, r, r.opts.CommonOfferings, space, app.Name, a.Name); err != nil {
+			return err
+		}
 		shared, err := r.state.binding(space, sharedOwner, a.Name)
 		if err != nil {
 			return err

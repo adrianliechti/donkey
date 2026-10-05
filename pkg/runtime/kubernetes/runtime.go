@@ -28,7 +28,8 @@ type Options struct {
 	// Registry feeds the per-app image pull secret.
 	Registry config.Registry
 	// AddonImages are direct repository overrides for managed services.
-	AddonImages config.InstallAddonImages
+	AddonImages     config.InstallAddonImages
+	CommonOfferings config.CommonOfferings
 	// BusyboxImage is the file-browser helper's toolbox.
 	BusyboxImage string
 	// AddonImagePullSecrets are existing secrets referenced by managed service

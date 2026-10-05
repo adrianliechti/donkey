@@ -128,6 +128,15 @@ func (s *Server) handlePutSpaceConfig(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
+	previous, err := s.rt.SpaceConfig(r.Context(), r.PathValue("space"))
+	if err != nil {
+		writeAccessError(w, err)
+		return
+	}
+	if err := s.validateSpaceOfferings(r.Context(), &access, previous); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
 	if !s.platformAdmin(r.Context()) {
 		id := requestIdentity(r.Context())
 		if id == nil || access.Role(id) != config.SpaceAdmin {

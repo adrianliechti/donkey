@@ -43,6 +43,9 @@ type InstallFile struct {
 	AddonImagePullSecrets []string `json:"addonImagePullSecrets,omitempty"`
 	// AddonPlugins registers services provisioned by independent gRPC servers.
 	AddonPlugins AddonPlugins `json:"addonPlugins,omitempty"`
+	// CommonOfferings are available in every space. Empty allows all; space
+	// admins can add offerings to a nonempty common catalog in space settings.
+	CommonOfferings CommonOfferings `json:"commonOfferings,omitempty"`
 	// Domain: apps become <app>.<space>.<domain>.
 	Domain string `json:"domain,omitempty"`
 	// ServerHost is where the API and console live (default: the domain

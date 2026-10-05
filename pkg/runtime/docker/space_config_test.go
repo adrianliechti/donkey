@@ -40,6 +40,7 @@ func TestExistingSpacesMigrateWithoutResettingSettings(t *testing.T) {
 	}
 	settings.Admins.Users = []string{"owner@example.com"}
 	settings.Domains = []string{"custom.example.org"}
+	settings.Offerings = map[string]config.SpaceOffering{"remote-db": {Defaults: map[string]any{"version": "11.4"}, Config: map[string]any{"tenant": "finance"}}}
 	if err := r.SetSpaceConfig(ctx, "old", settings); err != nil {
 		t.Fatal(err)
 	}

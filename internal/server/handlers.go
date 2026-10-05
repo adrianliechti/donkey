@@ -442,6 +442,10 @@ func (s *Server) handleAddAppService(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusConflict, err)
 		return
 	}
+	if err := runtime.CheckServiceAttachment(ctx, s.rt, s.cfg.CommonOfferings, space, app, req.Name); err != nil {
+		writeErr(w, statusFor(err), err)
+		return
+	}
 
 	shared, err := s.rt.ServiceBinding(ctx, space, addons.SharedOwner, req.Name)
 	if err != nil {
@@ -465,7 +469,7 @@ func (s *Server) handleAddAppService(w http.ResponseWriter, r *http.Request) {
 
 	wired, err := s.rt.AttachService(ctx, space, app, req.Name, shared)
 	if err != nil {
-		writeErr(w, http.StatusBadGateway, err)
+		writeErr(w, statusFor(err), err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -489,6 +493,16 @@ func statusFor(err error) int {
 // silently losing it; a provider with a cached catalog never delays this.
 // Deprecated offerings are left out: they serve existing instances only.
 func (s *Server) handleCatalog(w http.ResponseWriter, r *http.Request) {
+	space := r.PathValue("space")
+	var policy config.SpaceConfig
+	if space != "" {
+		var err error
+		policy, err = runtime.OfferingPolicy(r.Context(), s.rt, space)
+		if err != nil {
+			writeAccessError(w, err)
+			return
+		}
+	}
 	type envEntry struct {
 		Name        string `json:"name"`
 		Description string `json:"description,omitempty"`
@@ -500,25 +514,30 @@ func (s *Server) handleCatalog(w http.ResponseWriter, r *http.Request) {
 		Update     bool `json:"update"`
 	}
 	type entry struct {
-		Type             string         `json:"type"`
-		Provider         string         `json:"provider,omitempty"`
-		Protocol         string         `json:"protocol,omitempty"`
-		Title            string         `json:"title"`
-		Description      string         `json:"description"`
-		Category         string         `json:"category,omitempty"`
-		Tags             []string       `json:"tags,omitempty"`
-		Icon             string         `json:"icon,omitempty"`
-		DocumentationURL string         `json:"documentationUrl,omitempty"`
-		Shared           bool           `json:"shared,omitempty"`
-		Parameters       map[string]any `json:"parameters,omitempty"`
-		Env              []envEntry     `json:"env"`
-		Keys             []string       `json:"keys"`
-		Capabilities     capabilities   `json:"capabilities"`
-		Available        bool           `json:"available"`
-		Error            string         `json:"error,omitempty"`
+		Type               string         `json:"type"`
+		Provider           string         `json:"provider,omitempty"`
+		Protocol           string         `json:"protocol,omitempty"`
+		Title              string         `json:"title"`
+		Description        string         `json:"description"`
+		Category           string         `json:"category,omitempty"`
+		Tags               []string       `json:"tags,omitempty"`
+		Icon               string         `json:"icon,omitempty"`
+		DocumentationURL   string         `json:"documentationUrl,omitempty"`
+		Shared             bool           `json:"shared,omitempty"`
+		Parameters         map[string]any `json:"parameters,omitempty"`
+		SpaceConfiguration map[string]any `json:"spaceConfiguration,omitempty"`
+		Common             bool           `json:"common"`
+		Env                []envEntry     `json:"env"`
+		Keys               []string       `json:"keys"`
+		Capabilities       capabilities   `json:"capabilities"`
+		Available          bool           `json:"available"`
+		Error              string         `json:"error,omitempty"`
 	}
 	out := []entry{}
 	for _, a := range addons.Types(r.Context()) {
+		if space != "" && !policy.OfferingAllowed(s.cfg.CommonOfferings, a.Type()) {
+			continue
+		}
 		provider := ""
 		if p, ok := a.(*addons.Plugin); ok {
 			provider = p.Provider()
@@ -536,16 +555,36 @@ func (s *Server) handleCatalog(w http.ResponseWriter, r *http.Request) {
 			Category: desc.Category, Tags: desc.Tags, Icon: desc.Icon, DocumentationURL: desc.DocumentationUrl, Shared: desc.Shared,
 			Capabilities: capabilities{RetainData: desc.GetCapabilities().GetRetainData(), Update: desc.GetCapabilities().GetUpdate()},
 			Available:    true, Env: []envEntry{}, Keys: addons.EnvNames(desc),
+			Common: config.SpaceConfig{}.OfferingAllowed(s.cfg.CommonOfferings, desc.Id),
+		}
+		if desc.SpaceConfiguration != nil {
+			e.SpaceConfiguration = desc.SpaceConfiguration.AsMap()
 		}
 		if desc.Parameters != nil {
 			e.Parameters = desc.Parameters.AsMap()
+			// Apply space defaults to the form without changing the provider's
+			// descriptor or exposing its admin-managed configuration values.
+			if space != "" {
+				if properties, ok := e.Parameters["properties"].(map[string]any); ok {
+					for key, value := range policy.Offerings[desc.Id].Defaults {
+						if prop, ok := properties[key].(map[string]any); ok {
+							prop["default"] = value
+						}
+					}
+				}
+			}
+		}
+		if space != "" {
+			if _, err := addons.ResolveParameters(desc.SpaceConfiguration, policy.Offerings[desc.Id].Config); err != nil {
+				e.Available, e.Error = false, "Needs configuration from a space admin"
+			}
 		}
 		for _, v := range desc.Env {
 			e.Env = append(e.Env, envEntry{Name: v.Name, Description: v.Description, Secret: v.Secret, Optional: v.Optional})
 		}
 		out = append(out, e)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"types": out})
+	writeJSON(w, http.StatusOK, map[string]any{"types": out, "commonOfferings": s.cfg.CommonOfferings})
 }
 
 // handleRemoveAppService detaches the app from a space service — its binding copy

@@ -31,6 +31,63 @@ Donkey from anyone else who reaches it; the file paths are read by
 donkey-server. The example provider checks the token when `PLUGIN_TOKEN` or
 `PLUGIN_TOKEN_FILE` is set.
 
+## Availability and space configuration
+
+Provider registration is installation-wide. `commonOfferings` in the install
+file chooses the offerings available in every space:
+
+```yaml
+commonOfferings: [postgres, redis, rustfs, openai]
+```
+
+An omitted or empty list allows **all** offerings, including plugins. With a
+nonempty list, space admins can enable additional offerings in space settings,
+beside membership and domains. The space's `config.yaml` can contain:
+
+```yaml
+offerings:
+  mariadb:
+    defaults:
+      storage: 10Gi
+    config:
+      storageClass: fast
+  corporate-api:
+    config:
+      tenant: finance
+      plan: enterprise
+```
+
+An entry enables the offering in this space, including an empty entry `{}`.
+An entry for a common offering customizes it. `defaults` overrides the
+provider's parameter defaults for **new** services; explicit app parameters
+win, and existing instances keep their saved parameters.
+
+`Offering.space_configuration` is a separate JSON Schema, using the same
+subset as `parameters`. Its values come only from `offerings.<id>.config`,
+which only space and platform admins can edit. Required values without
+defaults show **Needs configuration** in the space catalog and block new
+provisioning. Partial configuration can be saved for completion later;
+unknown names and invalid values are rejected.
+
+`ProvisionRequest.space_configuration` carries the resolved settings;
+`previous_space_configuration` carries the settings of the previous request.
+Apps cannot supply them through parameters, and Donkey does not include them
+in service listings, app bindings, or the app environment. The provider
+chooses the app's environment through its declared response contract.
+
+Donkey records configuration before calling the provider. If the space later
+removes the offering entry, existing instances reuse their saved configuration
+for retries and resumption and remain removable. Existing app connections keep
+working; new instances and new connections must use the current space catalog.
+Changes to admin settings take effect on the next explicit provisioning request;
+they do not automatically reprovision existing services. Immutable settings and
+the offering's `update` capability apply to admin configuration too.
+
+`GET /v1/catalog` describes the registered catalog.
+`GET /v1/spaces/{space}/catalog` returns the available offerings for that space,
+with its parameter defaults and configuration readiness, without configuration
+values. Installers pass `commonOfferings` as JSON in `DONKEY_COMMON_OFFERINGS`.
+
 ## When Donkey calls a provider
 
 Nothing is called at startup: registering a provider only prepares a lazy
@@ -57,7 +114,8 @@ another provider already serves, is rejected as a whole.
 1. `Offerings` returns the catalog: for each offering its `id`, `title`,
    `description`, `category`, `tags`, optional `icon` and
    `documentation_url`, the application `protocol`, the JSON Schema of its
-   `parameters`, the environment contract `env`, its `capabilities`, and
+   `parameters` and `space_configuration`, the environment contract `env`,
+   its `capabilities`, and
    whether it is `shared` (provisioning grants access to one
    installation-wide service, such as an API, rather than creating a
    dedicated instance) or `deprecated` (usable for existing instances,
@@ -66,7 +124,8 @@ another provider already serves, is rejected as a whole.
 2. `Provision` receives a stable identity (`installation`, `space`, `name`,
    `offering`), on Kubernetes the consumers' namespace and pod labels, the
    `parameters` validated against the schema with defaults applied, the
-   `previous_parameters` of the last request for the instance, and a
+   `previous_parameters` of the last request for the instance, separate admin
+   settings in `space_configuration` and `previous_space_configuration`, and a
    `reason`: `CREATE` for a new instance, `UPDATE` for a running one whose
    parameters may have changed, `RESUME` for one stopped with `keep_data`,
    `RETRY` after a failed or lost attempt. It streams `ProvisionEvent`s:
@@ -86,8 +145,8 @@ another provider already serves, is rejected as a whole.
    bounds this RPC to two minutes.
 
 Capabilities are explicit flags. `retain_data` says `Deprovision` honours
-`keep_data`. `update` says a running instance accepts changed parameters in
-place; without it, Donkey refuses a change and asks for the service to be
+`keep_data`. `update` says a running instance accepts changed parameters and
+admin configuration in place; without it, Donkey refuses a change and asks for the service to be
 removed and added again (values marked immutable in the schema are refused
 regardless).
 

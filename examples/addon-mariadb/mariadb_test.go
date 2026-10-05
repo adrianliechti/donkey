@@ -114,13 +114,24 @@ func TestMariaDBProvisionAndRetentionLifecycle(t *testing.T) {
 	ctx := context.Background()
 	m := testMariaDB()
 	i := testInstance("team")
-	request := &addonv1.ProvisionRequest{Instance: i, Parameters: params(t, map[string]any{"version": "11.4", "storage": "2Gi"}), Reason: addonv1.ProvisionReason_PROVISION_REASON_CREATE}
+	request := &addonv1.ProvisionRequest{Instance: i, Parameters: params(t, map[string]any{"version": "11.4", "storage": "2Gi"}), Reason: addonv1.ProvisionReason_PROVISION_REASON_CREATE,
+		SpaceConfiguration: params(t, map[string]any{"storageClass": "fast"})}
 	first, err := provision(ctx, m, request)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if effective := first.Parameters.AsMap(); effective["storage"] != "2Gi" || effective["version"] != "11.4" {
 		t.Fatalf("effective parameters not reported: %v", effective)
+	}
+	disk, err := m.resource("PersistentVolumeClaim").Get(ctx, instanceName(i), metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if class, _, _ := unstructured.NestedString(disk.Object, "spec", "storageClassName"); class != "fast" {
+		t.Fatal("admin storage class was not used")
+	}
+	if _, err := provision(ctx, m, &addonv1.ProvisionRequest{Instance: i, SpaceConfiguration: params(t, map[string]any{"storageClass": "slow"})}); status.Code(err) != codes.FailedPrecondition {
+		t.Fatal("existing disk changed storage class:", err)
 	}
 	request.Reason = addonv1.ProvisionReason_PROVISION_REASON_RETRY
 	request.PreviousParameters = first.Parameters

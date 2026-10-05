@@ -100,7 +100,8 @@ type Options struct {
 	// Registry is where builds are pushed (as the build engine reaches it).
 	Registry config.Registry
 	// AddonImages are direct repository overrides for managed services.
-	AddonImages config.InstallAddonImages
+	AddonImages     config.InstallAddonImages
+	CommonOfferings config.CommonOfferings
 	// BusyboxImage runs file browsing and volume initialization helpers.
 	BusyboxImage string
 	// PullRegistry is the same registry as the Docker daemon reaches it
@@ -784,6 +785,17 @@ func (r *Runtime) EnsureService(ctx context.Context, space string, spec rt.Servi
 	if err != nil {
 		return nil, nil, err
 	}
+	connection, err := r.ServiceConnection(ctx, space, spec.Name)
+	if err != nil {
+		return nil, nil, err
+	}
+	if connection.Type != "" && connection.Type != spec.Type {
+		return nil, nil, rt.UserError{Err: fmt.Errorf("remove service %s before changing its offering", spec.Name)}
+	}
+	spec.Parameters, err = rt.PrepareService(ctx, r, r.opts.CommonOfferings, space, desc, spec.Parameters, previous != nil || len(connection.Binding) > 0)
+	if err != nil {
+		return nil, nil, err
+	}
 	if err := r.ensureSpace(ctx, space); err != nil {
 		return nil, nil, err
 	}
@@ -962,6 +974,9 @@ func (r *Runtime) runService(ctx context.Context, space, name string, in addons.
 }
 
 func (r *Runtime) AttachService(ctx context.Context, space, app, name string, binding map[string]string) (bool, error) {
+	if err := rt.CheckServiceAttachment(ctx, r, r.opts.CommonOfferings, space, app, name); err != nil {
+		return false, err
+	}
 	if err := r.state.setBinding(space, app, name, binding); err != nil {
 		return false, err
 	}

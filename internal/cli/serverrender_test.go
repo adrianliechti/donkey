@@ -53,12 +53,13 @@ func TestExampleInstallFileIsGeneratedTemplate(t *testing.T) {
 
 func TestRuntimeImageOverridesReachBothDeploymentBundles(t *testing.T) {
 	settings := &config.InstallFile{
-		Image:        "registry.example.com/donkey-server:test",
-		BusyboxImage: "jfrog.corp/dockerhub/library/busybox:1.37",
-		AddonImages:  config.InstallAddonImages{Redis: "jfrog.corp/dockerhub/library/redis"},
-		Domain:       "apps.example.com",
-		Registry:     config.InstallRegistry{Registry: config.Registry{URL: "registry.example.com/donkey"}},
-		Auth:         config.InstallAuth{Issuer: "https://id.example.com"},
+		Image:           "registry.example.com/donkey-server:test",
+		BusyboxImage:    "jfrog.corp/dockerhub/library/busybox:1.37",
+		AddonImages:     config.InstallAddonImages{Redis: "jfrog.corp/dockerhub/library/redis"},
+		CommonOfferings: config.CommonOfferings{"postgres", "redis"},
+		Domain:          "apps.example.com",
+		Registry:        config.InstallRegistry{Registry: config.Registry{URL: "registry.example.com/donkey"}},
+		Auth:            config.InstallAuth{Issuer: "https://id.example.com"},
 	}
 	files, err := renderKubernetesBundle(settings)
 	if err != nil {
@@ -69,6 +70,9 @@ func TestRuntimeImageOverridesReachBothDeploymentBundles(t *testing.T) {
 	}
 	if text := string(files["manifests.yaml"].Data); !strings.Contains(text, "name: DONKEY_REDIS_IMAGE\n") || !strings.Contains(text, "value: "+settings.AddonImages.Redis) {
 		t.Fatal("Kubernetes bundle did not pass addonImages.redis to donkey-server")
+	}
+	if text := string(files["manifests.yaml"].Data); !strings.Contains(text, "name: DONKEY_COMMON_OFFERINGS\n") || !strings.Contains(text, settings.CommonOfferings.JSON()) {
+		t.Fatal("Kubernetes bundle omitted common offerings")
 	}
 	files, err = renderDockerBundle(settings)
 	if err != nil {
@@ -84,10 +88,16 @@ func TestRuntimeImageOverridesReachBothDeploymentBundles(t *testing.T) {
 	if got := compose.Services["server"].Environment["DONKEY_REDIS_IMAGE"]; got != settings.AddonImages.Redis {
 		t.Fatalf("Compose Redis image repository = %q", got)
 	}
+	if got := compose.Services["server"].Environment["DONKEY_COMMON_OFFERINGS"]; got != settings.CommonOfferings.JSON() {
+		t.Fatal("Compose bundle omitted common offerings")
+	}
 	// Direct Kubernetes install uses the same input as the bundle renderer.
 	input := kubernetesSystemInput(settings, false, "", "", "session", "telemetry")
 	if input.BusyboxImage != settings.BusyboxImage {
 		t.Fatal("direct install omitted busyboxImage")
+	}
+	if input.CommonOfferings.JSON() != settings.CommonOfferings.JSON() {
+		t.Fatal("direct Kubernetes install omitted common offerings")
 	}
 	settings.BusyboxImage = "https://jfrog.corp/busybox:1.37"
 	if err := validateKubernetesSettings(settings); err == nil {

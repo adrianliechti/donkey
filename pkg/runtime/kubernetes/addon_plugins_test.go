@@ -42,13 +42,19 @@ type runtimePlugin struct {
 	failCatalog   atomic.Bool
 	omitPolicy    atomic.Bool
 	noUpdate      atomic.Bool
+	requireConfig atomic.Bool
 }
 
 func (p *runtimePlugin) Offerings(context.Context, *addonv1.OfferingsRequest) (*addonv1.OfferingsResponse, error) {
 	if p.failCatalog.Load() {
 		return nil, status.Error(codes.Unavailable, "provider down")
 	}
-	return &addonv1.OfferingsResponse{Offerings: []*addonv1.Offering{{
+	var configuration map[string]any
+	if p.requireConfig.Load() {
+		configuration = addons.ObjectSchema(map[string]any{"tenant": map[string]any{"type": "string", "pattern": "^[a-z]+$", addons.KeywordImmutable: true}})
+		configuration["required"] = []any{"tenant"}
+	}
+	response := &addonv1.OfferingsResponse{Offerings: []*addonv1.Offering{{
 		Id: "remote-db", Protocol: "mysql", Title: "Remote DB", Category: "database",
 		Parameters: addons.MustStruct(addons.ObjectSchema(map[string]any{
 			addons.ParamVersion: addons.VersionParameter("11.8", "release"),
@@ -56,7 +62,11 @@ func (p *runtimePlugin) Offerings(context.Context, *addonv1.OfferingsRequest) (*
 		})),
 		Env:          []*addonv1.EnvVar{{Name: "DATABASE_URL", Secret: true}, {Name: "MYSQL_PASSWORD", Secret: true}},
 		Capabilities: &addonv1.Capabilities{RetainData: true, Update: !p.noUpdate.Load()},
-	}}}, nil
+	}}}
+	if configuration != nil {
+		response.Offerings[0].SpaceConfiguration = addons.MustStruct(configuration)
+	}
+	return response, nil
 }
 
 func (p *runtimePlugin) Provision(r *addonv1.ProvisionRequest, stream addonv1.ServiceProvider_ProvisionServer) error {
@@ -124,6 +134,100 @@ func connectRuntimePlugin(t *testing.T) *runtimePlugin {
 	}
 	t.Cleanup(closePlugins)
 	return p
+}
+
+func TestSpaceOfferingsGateCreationAndPreserveAdminConfiguration(t *testing.T) {
+	ctx := context.Background()
+	p := connectRuntimePlugin(t)
+	p.requireConfig.Store(true)
+	r := NewRuntime(pluginTestClient(t), Options{SystemNamespace: "main", Placement: manifests.Placement{NamespacePrefix: "donkey-"}, CommonOfferings: config.CommonOfferings{"postgres"}})
+	if err := r.ensureSpaceHome(ctx, "team"); err != nil {
+		t.Fatal(err)
+	}
+	spec := rt.ServiceSpec{Type: "remote-db", Name: "db"}
+	if _, _, err := r.EnsureService(ctx, "team", spec); err == nil {
+		t.Fatal("offering outside the catalog was provisioned")
+	}
+	settings, err := r.SpaceConfig(ctx, "team")
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings.Offerings = map[string]config.SpaceOffering{"remote-db": {Defaults: map[string]any{"version": "11.4", "storage": "2Gi"}}}
+	if err := r.SetSpaceConfig(ctx, "team", settings); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := r.EnsureService(ctx, "team", spec); err == nil {
+		t.Fatal("missing required configuration was provisioned")
+	}
+	select {
+	case <-p.requests:
+		t.Fatal("rejected provisioning reached the provider")
+	default:
+	}
+	entry := settings.Offerings["remote-db"]
+	entry.Config = map[string]any{"tenant": "finance"}
+	settings.Offerings["remote-db"] = entry
+	if err := r.SetSpaceConfig(ctx, "team", settings); err != nil {
+		t.Fatal(err)
+	}
+	// App parameters cannot impersonate the admin configuration.
+	if _, _, err := r.EnsureService(ctx, "team", rt.ServiceSpec{Type: "remote-db", Name: "rogue", Parameters: map[string]any{"tenant": "other"}}); err == nil {
+		t.Fatal("app supplied admin configuration through parameters")
+	}
+	p.failProvision.Store(true)
+	spec.Parameters = map[string]any{"version": "11.8"}
+	if _, _, err := r.EnsureService(ctx, "team", spec); err == nil {
+		t.Fatal("expected failed first attempt")
+	}
+	request := lastRequest(t, p)
+	if request.Parameters.AsMap()["version"] != "11.8" || request.Parameters.AsMap()["storage"] != "2Gi" || request.SpaceConfiguration.AsMap()["tenant"] != "finance" {
+		t.Fatalf("default precedence or config separation failed: %v", request)
+	}
+	state, err := r.pluginState(ctx, "team", "db")
+	if err != nil || state.SpaceConfiguration["tenant"] != "finance" || !state.Pending {
+		t.Fatalf("intent lost config: %+v %v", state, err)
+	}
+	settings.Offerings = nil
+	if err := r.SetSpaceConfig(ctx, "team", settings); err != nil {
+		t.Fatal(err)
+	}
+	p.failProvision.Store(false)
+	spec.Parameters = nil
+	binding, parameters, err := r.EnsureService(ctx, "team", spec)
+	if err != nil || parameters["storage"] != "2Gi" {
+		t.Fatalf("retry lost saved defaults: %v %v", parameters, err)
+	}
+	request = lastRequest(t, p)
+	if request.Reason != addonv1.ProvisionReason_PROVISION_REASON_RETRY || request.SpaceConfiguration.AsMap()["tenant"] != "finance" || request.PreviousSpaceConfiguration.AsMap()["tenant"] != "finance" {
+		t.Fatalf("retry lost admin configuration: %v", request)
+	}
+	if _, err := r.AttachService(ctx, "team", "newapp", "db", binding); err == nil {
+		t.Fatal("removed offering admitted a new consumer")
+	}
+	settings.Offerings = map[string]config.SpaceOffering{"remote-db": entry}
+	if err := r.SetSpaceConfig(ctx, "team", settings); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.AttachService(ctx, "team", "api", "db", binding); err != nil {
+		t.Fatal(err)
+	}
+	settings.Offerings = nil
+	if err := r.SetSpaceConfig(ctx, "team", settings); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.AttachService(ctx, "team", "api", "db", binding); err != nil {
+		t.Fatal("existing consumer disrupted:", err)
+	}
+	if _, err := r.RemoveService(ctx, "team", "db", true, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := r.EnsureService(ctx, "team", spec); err != nil {
+		t.Fatal("removed offering cannot resume:", err)
+	}
+	request = lastRequest(t, p)
+	if request.Reason != addonv1.ProvisionReason_PROVISION_REASON_RESUME || request.SpaceConfiguration.AsMap()["tenant"] != "finance" {
+		t.Fatalf("resume lost admin configuration: %v", request)
+	}
 }
 
 // Both client flavors share one tracker. This exercises the actual apply,

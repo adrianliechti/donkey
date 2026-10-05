@@ -210,6 +210,7 @@ func dockerComposeFiles(settings *config.InstallFile, bundledRegistry bool) (map
 		"DONKEY_BUSYBOX_IMAGE":           settings.BusyboxImage,
 		"DONKEY_RUSTFS_IMAGE":            settings.AddonImages.RustFS,
 		"DONKEY_ADDON_PLUGINS":           settings.AddonPlugins.JSON(),
+		"DONKEY_COMMON_OFFERINGS":        settings.CommonOfferings.JSON(),
 		"DONKEY_OIDC_ISSUER":             settings.Auth.Issuer,
 		"DONKEY_OIDC_CLIENT_ID":          clientID,
 		"DONKEY_OIDC_CLIENT_SECRET":      clientSecret,

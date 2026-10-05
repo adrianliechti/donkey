@@ -56,7 +56,13 @@ func (r *Runtime) provisionPlugin(ctx context.Context, space string, spec rt.Ser
 	if err != nil {
 		return nil, nil, rt.UserError{Err: err}
 	}
-	request := &addonv1.ProvisionRequest{Instance: state.Instance, Parameters: params.Struct(), PreviousParameters: state.Parameters.Struct(), Reason: reason}
+	configuration, err := rt.SpaceConfiguration(ctx, r, space, desc, previous)
+	if err != nil {
+		return nil, nil, err
+	}
+	request := &addonv1.ProvisionRequest{Instance: state.Instance, Parameters: params.Struct(), PreviousParameters: state.Parameters.Struct(), Reason: reason,
+		SpaceConfiguration: configuration.Struct(), PreviousSpaceConfiguration: state.SpaceConfiguration.Struct()}
+	state.SpaceConfiguration = configuration
 	state.Parameters, state.Offering, state.Protocol, state.Error = params, desc, addons.NormalizeProtocol(desc.Protocol), ""
 	state.Pending = true
 	if err := r.savePluginState(space, state); err != nil {

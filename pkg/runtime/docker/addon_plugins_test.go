@@ -24,15 +24,19 @@ type dockerPluginServer struct {
 func (*dockerPluginServer) Offerings(context.Context, *addonv1.OfferingsRequest) (*addonv1.OfferingsResponse, error) {
 	return &addonv1.OfferingsResponse{Offerings: []*addonv1.Offering{{
 		Id: "docker-testdb", Protocol: "mysql", Title: "Remote DB", Category: "database",
-		Parameters:   addons.MustStruct(addons.ObjectSchema(map[string]any{addons.ParamVersion: addons.VersionParameter("1", "tag")})),
-		Env:          []*addonv1.EnvVar{{Name: "DATABASE_URL", Secret: true}},
-		Capabilities: &addonv1.Capabilities{RetainData: true},
+		Parameters:         addons.MustStruct(addons.ObjectSchema(map[string]any{addons.ParamVersion: addons.VersionParameter("1", "tag")})),
+		SpaceConfiguration: addons.MustStruct(addons.ObjectSchema(map[string]any{"tenant": map[string]any{"type": "string", "default": "common"}})),
+		Env:                []*addonv1.EnvVar{{Name: "DATABASE_URL", Secret: true}},
+		Capabilities:       &addonv1.Capabilities{RetainData: true},
 	}}}, nil
 }
 
 func (*dockerPluginServer) Provision(r *addonv1.ProvisionRequest, stream addonv1.ServiceProvider_ProvisionServer) error {
 	if r.Instance.Kubernetes != nil || r.Instance.Offering != "docker-testdb" || r.Instance.Installation != dockerInstallation {
 		return status.Error(codes.InvalidArgument, "wrong identity")
+	}
+	if r.SpaceConfiguration.AsMap()["tenant"] != "common" {
+		return status.Error(codes.InvalidArgument, "missing space configuration")
 	}
 	return stream.Send(&addonv1.ProvisionEvent{Result: &addonv1.ProvisionResponse{
 		Env:       map[string]string{"DATABASE_URL": "mysql://donkey:secret@db:3306/app"},
@@ -104,7 +108,7 @@ func TestDockerPluginRetainsAddressesAndLifecycleState(t *testing.T) {
 		t.Fatal("lost retention flag")
 	}
 	stored, err := r.pluginState("team", "db")
-	if err != nil || stored == nil || !stored.Stopped {
+	if err != nil || stored == nil || !stored.Stopped || stored.SpaceConfiguration["tenant"] != "common" {
 		t.Fatal("lost retained state")
 	}
 	if values, err := r.ServiceBinding(ctx, "team", sharedOwner, "db"); err != nil || len(values) != 0 {

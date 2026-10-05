@@ -15,6 +15,27 @@ type SpaceConfig struct {
 	// Domains lists domain suffixes. Each suffix admits itself and its
 	// subdomains; an empty list allows any hostname.
 	Domains []string `json:"domains" yaml:"domains"`
+	// Offerings adds to the common catalog and customizes offerings in this
+	// space. Config belongs to admins; Defaults may be overridden by apps.
+	Offerings map[string]SpaceOffering `json:"offerings,omitempty" yaml:"offerings,omitempty"`
+}
+
+type SpaceOffering struct {
+	Defaults map[string]any `json:"defaults,omitempty" yaml:"defaults,omitempty"`
+	Config   map[string]any `json:"config,omitempty" yaml:"config,omitempty"`
+}
+
+func (a SpaceConfig) OfferingAllowed(common CommonOfferings, offering string) bool {
+	if len(common) == 0 {
+		return true
+	}
+	for _, id := range common {
+		if id == offering {
+			return true
+		}
+	}
+	_, enabled := a.Offerings[offering]
+	return enabled
 }
 
 func DefaultSpaceConfig(space, domain string) SpaceConfig {
@@ -41,6 +62,14 @@ func (a SpaceConfig) Role(id *identity.Identity) string {
 }
 
 func (a SpaceConfig) Validate() error {
+	if len(a.Offerings) > 256 {
+		return fmt.Errorf("offerings supports at most 256 entries")
+	}
+	for id := range a.Offerings {
+		if !ValidName(id) {
+			return fmt.Errorf("offering %q must be a lowercase name", id)
+		}
+	}
 	if len(a.Domains) > 64 {
 		return fmt.Errorf("domains supports at most 64 domain suffixes")
 	}

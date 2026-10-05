@@ -360,6 +360,9 @@ func validateOffering(o *addonv1.Offering) error {
 	if err := ValidateSchema(o.Parameters); err != nil {
 		return fmt.Errorf("offering %s: invalid parameter schema: %w", o.Id, err)
 	}
+	if err := ValidateSchema(o.SpaceConfiguration); err != nil {
+		return fmt.Errorf("offering %s: invalid space configuration schema: %w", o.Id, err)
+	}
 	return nil
 }
 
@@ -370,6 +373,11 @@ func (p *Plugin) Provision(ctx context.Context, req *addonv1.ProvisionRequest, r
 	if err != nil {
 		return nil, err
 	}
+	configuration, err := ResolveParameters(desc.SpaceConfiguration, ParametersFrom(req.SpaceConfiguration))
+	if err != nil {
+		return nil, fmt.Errorf("offering %s needs configuration from a space admin", p.id)
+	}
+	req.SpaceConfiguration = configuration.Struct()
 	if report == nil {
 		report = func(message string) { log.Printf("addon %s: %s", p.id, message) }
 	}
@@ -473,8 +481,9 @@ type Provisioning struct {
 	Offering *addonv1.Offering
 	// Parameters are what the instance was (last) provisioned with; a repeat
 	// request without explicit parameters reuses them.
-	Parameters Parameters
-	Info       *addonv1.ProvisionResponse
+	Parameters         Parameters
+	SpaceConfiguration Parameters
+	Info               *addonv1.ProvisionResponse
 	// Pending is saved before each RPC, including updates with an old result.
 	// If the server stops before recording success, the next call is a retry.
 	Pending bool
@@ -486,20 +495,21 @@ type Provisioning struct {
 // The proto messages are persisted with protojson: encoding/json does not
 // round-trip oneofs or well-known types such as Struct.
 type provisioningJSON struct {
-	Type       string          `json:"type"`
-	Provider   string          `json:"provider,omitempty"`
-	Protocol   string          `json:"protocol,omitempty"`
-	Instance   json.RawMessage `json:"instance"`
-	Offering   json.RawMessage `json:"offering,omitempty"`
-	Parameters Parameters      `json:"parameters,omitempty"`
-	Info       json.RawMessage `json:"info,omitempty"`
-	Pending    bool            `json:"pending,omitempty"`
-	Stopped    bool            `json:"stopped,omitempty"`
-	Error      string          `json:"error,omitempty"`
+	Type               string          `json:"type"`
+	Provider           string          `json:"provider,omitempty"`
+	Protocol           string          `json:"protocol,omitempty"`
+	Instance           json.RawMessage `json:"instance"`
+	Offering           json.RawMessage `json:"offering,omitempty"`
+	Parameters         Parameters      `json:"parameters,omitempty"`
+	SpaceConfiguration Parameters      `json:"spaceConfiguration,omitempty"`
+	Info               json.RawMessage `json:"info,omitempty"`
+	Pending            bool            `json:"pending,omitempty"`
+	Stopped            bool            `json:"stopped,omitempty"`
+	Error              string          `json:"error,omitempty"`
 }
 
 func (p Provisioning) MarshalJSON() ([]byte, error) {
-	out := provisioningJSON{Type: p.Type, Provider: p.Provider, Protocol: p.Protocol, Parameters: p.Parameters, Pending: p.Pending, Stopped: p.Stopped, Error: p.Error}
+	out := provisioningJSON{Type: p.Type, Provider: p.Provider, Protocol: p.Protocol, Parameters: p.Parameters, SpaceConfiguration: p.SpaceConfiguration, Pending: p.Pending, Stopped: p.Stopped, Error: p.Error}
 	var err error
 	if p.Instance != nil {
 		if out.Instance, err = protojson.Marshal(p.Instance); err != nil {
@@ -524,7 +534,7 @@ func (p *Provisioning) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &in); err != nil {
 		return err
 	}
-	*p = Provisioning{Type: in.Type, Provider: in.Provider, Protocol: in.Protocol, Parameters: in.Parameters, Pending: in.Pending, Stopped: in.Stopped, Error: in.Error}
+	*p = Provisioning{Type: in.Type, Provider: in.Provider, Protocol: in.Protocol, Parameters: in.Parameters, SpaceConfiguration: in.SpaceConfiguration, Pending: in.Pending, Stopped: in.Stopped, Error: in.Error}
 	if len(in.Instance) > 0 {
 		p.Instance = &addonv1.Instance{}
 		if err := protojson.Unmarshal(in.Instance, p.Instance); err != nil {
@@ -623,6 +633,29 @@ func PlanProvision(desc *addonv1.Offering, given map[string]any, previous *Provi
 		return nil, reason, fmt.Errorf("the %s service cannot change its parameters once it exists; remove it and add it again", desc.GetId())
 	}
 	return params, reason, nil
+}
+
+// PlanSpaceConfiguration preserves saved admin settings when no space entry
+// remains. An explicit entry replaces them, with schema defaults filling gaps.
+func PlanSpaceConfiguration(desc *addonv1.Offering, given map[string]any, configured bool, previous *Provisioning) (Parameters, error) {
+	stored := Parameters{}
+	if previous != nil && previous.SpaceConfiguration != nil {
+		stored = previous.SpaceConfiguration
+	}
+	if previous != nil && !configured {
+		given = stored
+	}
+	resolved, err := ResolveParameters(desc.SpaceConfiguration, given)
+	if err != nil {
+		return nil, fmt.Errorf("offering %s needs configuration from a space admin", desc.Id)
+	}
+	if err := CheckImmutable(desc.SpaceConfiguration, stored, resolved); err != nil {
+		return nil, fmt.Errorf("offering %s has an immutable space configuration setting; remove the service before changing it", desc.Id)
+	}
+	if previous.Reason() == addonv1.ProvisionReason_PROVISION_REASON_UPDATE && !desc.GetCapabilities().GetUpdate() && !jsonschema.Equal(stored, resolved) {
+		return nil, fmt.Errorf("the %s service cannot change its space configuration once it exists; remove it and add it again", desc.Id)
+	}
+	return resolved, nil
 }
 
 // ValidateProvisioning never includes response values in errors: they may

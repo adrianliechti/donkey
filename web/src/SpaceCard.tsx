@@ -72,7 +72,7 @@ export function SpaceCard({
   const [typedSpace, setTypedSpace] = useState('')
 
   const { data: services, error: servicesError } = useSpaceServices(space)
-  const { data: catalog } = useCatalog()
+  const { data: catalog } = useCatalog(space)
   const invalidate = useInvalidateServices()
   const addingTitle = catalog?.find((s) => s.type === addingType)?.title || addingType
 
@@ -231,6 +231,7 @@ export function SpaceCard({
       )}
 
       <AddServiceDialog
+        space={space}
         open={addingType !== null}
         title={addingType ? `Add ${addingTitle} to ${space}` : ''}
         submitLabel="Add"
@@ -476,7 +477,7 @@ function RemoveServiceDialog({
 // "pick from a grid" popup is gone: click the one you want and configure it.
 function AddMenu({ space, onAddService }: { space: string; onAddService: (type: string) => void }) {
   const navigate = useNavigate()
-  const { data: catalog } = useCatalog()
+  const { data: catalog } = useCatalog(space)
   const services = catalog ?? []
   return (
     <Menu>
@@ -512,11 +513,13 @@ function AddMenu({ space, onAddService }: { space: string; onAddService: (type: 
               <button
                 type="button"
                 onClick={() => onAddService(svc.type)}
+                disabled={svc.available === false}
                 className="flex w-full items-start gap-2.5 px-3 py-2 text-left data-focus:bg-accent-soft"
               >
                 <Icon className="mt-0.5 size-4 shrink-0 text-muted" aria-hidden />
                 <span className="min-w-0">
                   <span className="block text-sm font-medium text-ink">{svc.title || svc.type}</span>
+                  {svc.available === false && <span className="block text-xs text-muted">{svc.error || 'Unavailable'}</span>}
                   {svc.description && (
                     <span className="block text-xs text-muted">{svc.description}</span>
                   )}

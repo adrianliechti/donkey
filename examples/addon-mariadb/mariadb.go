@@ -85,10 +85,20 @@ func (m *mariaDB) Offerings(context.Context, *addonv1.OfferingsRequest) (*addonv
 	if err != nil {
 		return nil, err
 	}
+	configuration, err := structpb.NewStruct(map[string]any{
+		"type": "object", "additionalProperties": false,
+		"properties": map[string]any{"storageClass": map[string]any{
+			"type": "string", "title": "Storage class", "description": "Storage class for new database disks. Omit to use the cluster default.",
+			"pattern": `^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$`, "x-donkey-immutable": true,
+		}},
+	})
+	if err != nil {
+		return nil, err
+	}
 	return &addonv1.OfferingsResponse{Offerings: []*addonv1.Offering{{
 		Id: "mariadb", Title: "MariaDB", Description: "A MariaDB database provisioned in a separate namespace.",
 		Category: "database", Tags: []string{"sql", "mysql"}, DocumentationUrl: "https://mariadb.org/documentation/",
-		Protocol: "mysql", Parameters: schema, Env: env,
+		Protocol: "mysql", Parameters: schema, SpaceConfiguration: configuration, Env: env,
 		// A disk can grow and a version can move on in place; data and
 		// credentials survive a keep-data removal.
 		Capabilities: &addonv1.Capabilities{RetainData: true, Update: true},
@@ -171,6 +181,14 @@ func (m *mariaDB) Provision(request *addonv1.ProvisionRequest, stream addonv1.Se
 	if err != nil {
 		return err
 	}
+	var storageClass *string
+	if value, set := request.GetSpaceConfiguration().AsMap()["storageClass"]; set {
+		name, ok := value.(string)
+		if !ok || name == "" || len(validation.IsDNS1123Subdomain(name)) != 0 {
+			return status.Error(codes.InvalidArgument, "storageClass must be a storage class name")
+		}
+		storageClass = &name
+	}
 	i := request.Instance
 	name, labels := instanceName(i), instanceLabels(i)
 	defer m.lock(name)()
@@ -215,6 +233,11 @@ func (m *mariaDB) Provision(request *addonv1.ProvisionRequest, stream addonv1.Se
 		if err := runtime.DefaultUnstructuredConverter.FromUnstructured(existing.Object, &pvc); err != nil {
 			return err
 		}
+		if storageClass != nil && (pvc.Spec.StorageClassName == nil || *pvc.Spec.StorageClassName != *storageClass) {
+			return status.Error(codes.FailedPrecondition, "storage class cannot change once the database disk exists")
+		}
+		// The cluster may have assigned a default. Preserve it on retries.
+		storageClass = pvc.Spec.StorageClassName
 		// A volume never shrinks: keep the larger of the two sizes and report
 		// it back as the effective parameter.
 		if current := pvc.Spec.Resources.Requests[corev1.ResourceStorage]; current.Cmp(size) > 0 {
@@ -226,7 +249,7 @@ func (m *mariaDB) Provision(request *addonv1.ProvisionRequest, stream addonv1.Se
 	if err := stream.Send(&addonv1.ProvisionEvent{Message: "applying MariaDB " + version + " with a " + size.String() + " disk"}); err != nil {
 		return err
 	}
-	for _, object := range m.objects(i, version, size) {
+	for _, object := range m.objects(i, version, size, storageClass) {
 		if err := m.apply(ctx, object); err != nil {
 			return err
 		}
@@ -262,7 +285,7 @@ func (m *mariaDB) Provision(request *addonv1.ProvisionRequest, stream addonv1.Se
 	}})
 }
 
-func (m *mariaDB) objects(i *addonv1.Instance, version string, size resource.Quantity) []runtime.Object {
+func (m *mariaDB) objects(i *addonv1.Instance, version string, size resource.Quantity, storageClass *string) []runtime.Object {
 	name, labels := instanceName(i), instanceLabels(i)
 	meta := metav1.ObjectMeta{Name: name, Namespace: m.namespace, Labels: labels}
 	tcp, port := corev1.ProtocolTCP, intstr.FromInt(databasePort)
@@ -273,7 +296,7 @@ func (m *mariaDB) objects(i *addonv1.Instance, version string, size resource.Qua
 	return []runtime.Object{
 		&corev1.PersistentVolumeClaim{
 			TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "PersistentVolumeClaim"}, ObjectMeta: meta,
-			Spec: corev1.PersistentVolumeClaimSpec{AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+			Spec: corev1.PersistentVolumeClaimSpec{StorageClassName: storageClass, AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
 				Resources: corev1.VolumeResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceStorage: size}}},
 		},
 		// The plugin owns ingress in its namespace. Consumers and the admin

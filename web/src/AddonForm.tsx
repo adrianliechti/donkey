@@ -27,7 +27,7 @@ function Eyebrow({ children }: { children: ReactNode }) {
  * edited (the server coerces it against the schema); booleans are the one
  * exception, since a checkbox has nothing to type.
  */
-function ParameterField({
+export function ParameterField({
   field,
   value,
   onChange,
@@ -107,6 +107,7 @@ function ParameterField({
  * dialog would look like nothing happened.
  */
 export function AddServiceDialog({
+  space,
   open,
   title,
   submitLabel,
@@ -117,6 +118,7 @@ export function AddServiceDialog({
   onSubmit,
   onClose,
 }: {
+  space: string
   open: boolean
   title: string
   submitLabel: string
@@ -148,6 +150,7 @@ export function AddServiceDialog({
           {note && <p className="mt-2 text-xs text-ink-soft">{note}</p>}
           <div className="mt-3">
             <AddonForm
+              space={space}
               busy={busy}
               submitLabel={submitLabel}
               initialType={initialType}
@@ -170,19 +173,21 @@ export function AddServiceDialog({
  * `donkey addon attach`.)
  */
 export function AddonForm({
+  space,
   busy,
   submitLabel,
   initialType,
   onSubmit,
   onCancel,
 }: {
+  space: string
   busy: boolean
   submitLabel: string
   initialType?: string
   onSubmit: (req: AddAddonRequest) => void
   onCancel: () => void
 }) {
-  const { data: catalog, error: catalogError } = useCatalog()
+  const { data: catalog, error: catalogError } = useCatalog(space)
   const types = catalog ?? []
   // An errored fetch counts as loaded — the empty-catalog message says what
   // to do, a spinner would just spin.
@@ -200,7 +205,7 @@ export function AddonForm({
   if (types.length === 0) {
     return (
       <p className="py-6 text-sm text-muted">
-        The catalog didn't load — reopen this dialog, or check the server if it keeps happening.
+        {catalogError || 'No offerings are enabled in this space. Ask a space admin to add one in space settings.'}
       </p>
     )
   }

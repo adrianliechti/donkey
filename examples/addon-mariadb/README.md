@@ -18,7 +18,10 @@ scaling it.
 `Offerings` lists the `mariadb` offering with two parameters: `version` (a
 choice of MariaDB releases) and `storage` (a disk size). The console renders
 them from that schema; the CLI takes `--version`, `--storage` or `--param
-storage=5Gi`. `Provision` streams progress while it applies resources and
+storage=5Gi`. A separate admin configuration schema accepts `storageClass`;
+apps cannot override it. Omit it to use the cluster's default storage class.
+The disk keeps its storage class across retries and resumption.
+`Provision` streams progress while it applies resources and
 waits for readiness, and reports the effective size: a disk grows to what is
 asked but never shrinks. The offering declares `retain_data` and `update`,
 so a removed instance can keep its disk and a running one can grow it.
@@ -30,6 +33,29 @@ ready result, and `Deprovision` removes or stops the instance. `CREATE`,
 Donkey saves each instance's offering and parameters, so retries and resumes
 use that recorded contract without fetching the catalog again. A provider
 upgrade must continue to accept contracts used by existing instances.
+
+Provider registration is global. An empty or omitted `commonOfferings` allows
+every offering. To offer MariaDB only in selected spaces, list the common
+offerings in the installation file:
+
+```yaml
+commonOfferings: [postgres, redis, rustfs, openai]
+```
+
+Then enable and configure it in the selected space's settings:
+
+```yaml
+offerings:
+  mariadb:
+    defaults:
+      storage: 10Gi
+    config:
+      storageClass: fast
+```
+
+`defaults` sets starting app parameters; apps can override them. `config` is
+admin-owned and travels as `ProvisionRequest.space_configuration`, separate
+from app parameters. An empty `mariadb: {}` enables it with provider defaults.
 
 ## Install
 

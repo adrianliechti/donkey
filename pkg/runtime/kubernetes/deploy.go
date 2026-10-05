@@ -58,6 +58,9 @@ func (r *Runtime) Deploy(ctx context.Context, spec rt.DeploySpec, out rt.Progres
 	// the binding. An existing service is left alone: a second app naming it
 	// simply joins it.
 	for _, a := range app.Addons {
+		if err := rt.CheckServiceAttachment(ctx, r, r.opts.CommonOfferings, space, app.Name, a.Name); err != nil {
+			return err
+		}
 		shared, err := r.c.GetOwnedSecretData(ctx, ns, r.spaceBindingName(space, a.Name),
 			manifests.AddonLabels(space, a.Name, manifests.RoleBinding))
 		if err != nil {

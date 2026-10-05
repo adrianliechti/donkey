@@ -463,6 +463,11 @@ func TestProviderCatalogValidation(t *testing.T) {
 			return o
 		}()},
 		"bad env key": {func() *addonv1.Offering { o := testOffering("envdb"); o.Env[0].Name = "DATABASE-URL"; return o }()},
+		"bad config schema": {func() *addonv1.Offering {
+			o := testOffering("configdb")
+			o.SpaceConfiguration = MustStruct(map[string]any{"type": "array"})
+			return o
+		}()},
 	} {
 		t.Run(name, func(t *testing.T) {
 			server := &testProviderServer{offerings: offerings}

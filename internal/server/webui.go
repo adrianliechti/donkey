@@ -113,6 +113,10 @@ func (s *Server) handleCreateSpace(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
+	if err := s.validateSpaceOfferings(r.Context(), &req.SpaceConfig, config.SpaceConfig{}); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
 	if _, err := s.rt.SpaceConfig(r.Context(), req.Name); err == nil {
 		writeErr(w, http.StatusConflict, fmt.Errorf("the space already exists"))
 		return

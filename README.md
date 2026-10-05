@@ -858,18 +858,41 @@ idempotently (existing secrets and sessions survive; config changes roll the
 affected pods).
 
 Space permissions are always enforced. Platform admins create spaces and can
-manage every space. Space admins manage their space, its membership and domains;
+manage every space. Space admins manage their space, its membership, domains and offerings;
 developers manage its apps and services, including data and credentials. Assign
 users by email (or `sub:<subject>` when email is unavailable), groups, or
 identity-provider roles. Matching any entry grants that role; empty membership
 lists grant no access. App visitor `access` rules remain separate.
 
-Every space stores `admins`, `developers`, and `domains`. A new space starts
+Every space stores `admins`, `developers`, `domains`, and optional `offerings`. A new space starts
 with `<space>.<configured-domain>` in `domains`. Apps can use that suffix or
 any subdomain under it. Add more suffixes or clear the list to allow any domain.
 App creation shows a hostname field with a fixed suffix or domain selector;
 with no suffixes configured, it requires a full hostname. Deploys and network
 changes enforce the same rule, including shared-address routes.
+
+`commonOfferings` in the installation file selects offerings available in every
+space. An empty or omitted list allows all registered offerings. A nonempty
+list such as `[postgres, redis, rustfs, openai]` limits the common catalog;
+space admins can add others in **Space settings → Service offerings**:
+
+```yaml
+offerings:
+  mariadb:
+    defaults:
+      storage: 10Gi
+    config:
+      storageClass: fast
+```
+
+An empty entry enables an offering without extra settings. `defaults` applies
+to new services and apps may override it. `config` is admin-managed provider
+configuration, described by the offering's separate schema and sent separately
+over gRPC; apps cannot override it. Missing required configuration blocks new
+provisioning. Existing services keep their saved parameters and configuration
+for retries, resumption and removal, and existing app connections keep working
+when an offering is removed. New services and new app connections use the
+current space catalog. See [the provider contract](pkg/addons/v1/README.md#availability-and-space-configuration).
 
 Existing spaces migrate automatically at server startup: missing settings
 records are created with no space members and unrestricted domains, preserving

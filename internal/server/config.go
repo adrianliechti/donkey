@@ -76,6 +76,7 @@ type Config struct {
 	// that Kubernetes should use when pulling managed service and file-helper images.
 	AddonImagePullSecrets []string
 	AddonPlugins          config.AddonPlugins
+	CommonOfferings       config.CommonOfferings
 	// Runtime names the provider in use (kubernetes or docker); the catalog
 	// hides services a plugin does not offer there.
 	Runtime string
@@ -160,6 +161,14 @@ func FromEnv() (*Config, error) {
 		}
 	}
 	if err := c.AddonPlugins.Validate(); err != nil {
+		return nil, err
+	}
+	if raw := os.Getenv("DONKEY_COMMON_OFFERINGS"); raw != "" {
+		if err := json.Unmarshal([]byte(raw), &c.CommonOfferings); err != nil {
+			return nil, fmt.Errorf("DONKEY_COMMON_OFFERINGS must be a JSON array of offering ids: %w", err)
+		}
+	}
+	if err := c.CommonOfferings.Validate(); err != nil {
 		return nil, err
 	}
 	c.Runtime = os.Getenv("DONKEY_RUNTIME")
