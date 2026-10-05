@@ -150,6 +150,44 @@ func TestRegistryImageUsedOnlyForBundledDockerRegistry(t *testing.T) {
 	}
 }
 
+func TestProxyConfigurationIsPrivateInBothBundles(t *testing.T) {
+	settings := &config.InstallFile{
+		Image: "registry.example.com/donkey-server:test", Domain: "apps.example.com",
+		Registry:      config.InstallRegistry{Registry: config.Registry{URL: "registry.example.com/donkey"}},
+		Auth:          config.InstallAuth{Issuer: "https://id.example.com"},
+		ProxyServices: config.ProxyServices{{Name: "erp", TargetURL: "https://user:private-password@enterprise.local/base", ProxyURL: "http://proxy:pa$$word@proxy.local:3128"}},
+	}
+	for _, render := range []func(*config.InstallFile) (map[string]bundleFile, error){renderKubernetesBundle, renderDockerBundle} {
+		files, err := render(settings)
+		if err != nil {
+			t.Fatal(err)
+		}
+		private := files["proxy-services.json"]
+		if private.Mode != 0o600 || string(private.Data) != settings.ProxyServices.JSON() {
+			t.Fatal("proxy credentials must be preserved in a private file")
+		}
+		for name, file := range files {
+			if name != "proxy-services.json" && (strings.Contains(string(file.Data), "private-password") || strings.Contains(string(file.Data), "pa$$word")) {
+				t.Fatalf("proxy credential leaked into %s", name)
+			}
+		}
+		if manifest, ok := files["manifests.yaml"]; ok {
+			if !strings.Contains(string(manifest.Data), "name: donkey-proxy") || !strings.Contains(string(files["apply.sh"].Data), `--from-file=services.json="$bundle_dir/proxy-services.json"`) {
+				t.Fatal("Kubernetes proxy deployment or configuration Secret is missing")
+			}
+		} else {
+			var compose composeFile
+			if err := yaml.Unmarshal(files["compose.yaml"].Data, &compose); err != nil {
+				t.Fatal(err)
+			}
+			proxy := compose.Services["proxy"]
+			if proxy.ContainerName != dockerProxyName || proxy.Environment["DONKEY_PROXY_SERVICES_FILE"] != dockerProxyConfigPath || len(proxy.Ports) != 0 {
+				t.Fatal("Compose proxy is missing or publicly exposed")
+			}
+		}
+	}
+}
+
 func TestKubernetesRenderOmitsEverySecretValue(t *testing.T) {
 	passwordFile := filepath.Join(t.TempDir(), "registry-password")
 	const registryPassword = "registry-password-must-not-render"

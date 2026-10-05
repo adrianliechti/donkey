@@ -2,12 +2,14 @@ package docker
 
 import (
 	"context"
+	"github.com/docker/docker/api/types/network"
 	"net/http"
 	"net/url"
 	"os"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/docker/docker/client"
 
@@ -117,5 +119,54 @@ func TestBindingHostRewritePreservesCredentialsAndPaths(t *testing.T) {
 	got := rewriteBindingHost(map[string]string{"DATABASE_URL": unchanged}, "postgres", "donkey.one.postgres")
 	if got["DATABASE_URL"] != unchanged {
 		t.Fatal("external URL was rewritten")
+	}
+}
+
+func TestServiceProxyUsesSpaceNetworkIdentity(t *testing.T) {
+	r := &Runtime{state: state{dir: t.TempDir()}}
+	for space, subnets := range map[string][]network.IPAMConfig{
+		"team":  {{Subnet: "10.20.0.0/24"}, {Subnet: "fd00:1::/64"}},
+		"other": {{Subnet: "10.30.0.0/24"}},
+	} {
+		if err := r.recordProxyNetwork(space, network.IPAM{Config: subnets}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	binding := map[string]string{addons.ProxyEnvKey("erp"): addons.ProxyBindingURL(r.serviceProxyURL(), "erp")}
+	if err := r.state.setBinding("team", sharedOwner, "allowed", binding); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.state.setBinding("other", "app", "copy", binding); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		ip, id  string
+		allowed bool
+	}{
+		{"10.20.0.2", "erp", true}, {"fd00:1::2", "erp", true},
+		{"10.30.0.2", "erp", false}, {"10.20.0.2", "other", false}, {"10.40.0.2", "erp", false},
+	} {
+		got, err := r.ServiceProxyAccess(context.Background(), tc.ip, tc.id)
+		if err != nil || got != tc.allowed {
+			t.Errorf("%s/%s access = %v, %v", tc.ip, tc.id, got, err)
+		}
+	}
+	if err := r.state.writeJSON(addons.Metadata{Type: "erp", Protocol: "http"}, "service-metadata", "team", "allowed.json"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.RemoveService(context.Background(), "team", "allowed", true, false); err == nil {
+		t.Fatal("proxy access cannot be retained as data")
+	}
+	if err := r.state.removeBinding("team", sharedOwner, "allowed"); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := r.ServiceProxyAccess(context.Background(), "10.20.0.2", "erp"); err != nil || got {
+		t.Fatalf("removed grant remained authorized: %v %v", got, err)
+	}
+	if err := r.state.writeJSON(proxyNetwork{Updated: time.Now().Add(-time.Minute), CIDRs: []string{"10.20.0.0/24"}}, "proxy", "networks", "team.json"); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := r.ServiceProxyAccess(context.Background(), "10.20.0.2", "erp"); err == nil || got {
+		t.Fatalf("stale network accepted: %v %v", got, err)
 	}
 }

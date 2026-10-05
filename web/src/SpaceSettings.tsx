@@ -1,11 +1,18 @@
-import { useEffect, useState } from 'react'
-import { Dialog, DialogBackdrop, DialogPanel, DialogTitle } from '@headlessui/react'
+import { useEffect, useState, useSyncExternalStore } from 'react'
+import { Dialog, DialogBackdrop, DialogPanel, DialogTitle, Tab, TabGroup, TabList, TabPanel, TabPanels } from '@headlessui/react'
 import { useQueryClient } from '@tanstack/react-query'
-import { ChevronRight, Globe2, Plus, Users, X } from 'lucide-react'
+import { Blocks, ChevronRight, Globe2, Plus, Settings, Users, X } from 'lucide-react'
 import { api, type SpaceConfig } from './api'
 import { MembershipEditor } from './MembershipEditor'
 import { OfferingSettings } from './OfferingSettings'
-import { Button, ErrorNote, Spinner, errText } from './ui'
+import { Button, ErrorNote, IconButton, Spinner, errText } from './ui'
+
+const sections = [
+  { label: 'General', icon: Settings },
+  { label: 'Access', icon: Users },
+  { label: 'Services', icon: Blocks },
+]
+const desktopQuery = () => window.matchMedia('(min-width: 640px)')
 
 export function DomainSettings({ domains, onChange, placeholder }: {
   domains: string[]; onChange: (domains: string[]) => void; placeholder?: string
@@ -86,6 +93,15 @@ export function SpaceSettings({ space, onClose, onSaved }: {
   const [settings, setSettings] = useState<SpaceConfig | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const desktop = useSyncExternalStore(
+    (callback) => {
+      const query = desktopQuery()
+      query.addEventListener('change', callback)
+      return () => query.removeEventListener('change', callback)
+    },
+    () => desktopQuery().matches,
+    () => false,
+  )
   useEffect(() => {
     let active = true
     api.spaceConfig(space).then((value) => { if (active) setSettings(value) })
@@ -112,15 +128,47 @@ export function SpaceSettings({ space, onClose, onSaved }: {
   return (
     <Dialog open onClose={() => !busy && onClose()} className="relative z-50">
       <DialogBackdrop className="fixed inset-0 bg-black/60" />
-      <div className="fixed inset-0 overflow-y-auto p-4 pt-[10vh]">
-        <DialogPanel className="mx-auto w-full max-w-lg rounded-xl border border-line bg-card p-6 shadow-2xl">
-          <DialogTitle className="mb-4 text-base font-semibold">Settings for {space}</DialogTitle>
-          <ErrorNote message={error} />
-          {!settings && !error && <Spinner label="Loading space settings…" />}
-          <fieldset disabled={busy}>
-            {settings && <SpaceConfigEditor settings={settings} onChange={setSettings} />}
+      <div className="fixed inset-0 flex items-center justify-center p-4">
+        <DialogPanel className="flex max-h-[calc(100dvh-2rem)] w-full max-w-4xl flex-col overflow-hidden rounded-lg border border-line bg-card shadow-2xl">
+          <div className="flex shrink-0 items-center justify-between gap-3 border-b border-line px-4 py-3">
+            <DialogTitle className="flex min-w-0 items-center gap-2 font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-muted">
+              <Settings className="size-3.5 shrink-0" aria-hidden />
+              <span className="truncate" title={space}>{space} · Settings</span>
+            </DialogTitle>
+            <IconButton icon={X} label="Close space settings" onClick={onClose} disabled={busy} />
+          </div>
+          {error && <div className="px-4 pt-3"><ErrorNote message={error} /></div>}
+          <fieldset disabled={busy} className="min-h-0 min-w-0 flex-1">
+            {settings ? <TabGroup vertical={desktop} className="flex h-full min-h-0 flex-col sm:flex-row">
+              <TabList aria-label="Space settings sections" className="flex shrink-0 gap-1 border-b border-line bg-surface/50 p-2 sm:w-40 sm:flex-col sm:border-b-0 sm:border-r">
+                {sections.map(({ label, icon: Icon }) => <Tab key={label} disabled={busy}
+                  className="flex flex-1 items-center justify-center gap-2 rounded-md px-3 py-2 text-xs text-muted transition-colors hover:bg-raised hover:text-ink focus-visible:outline-2 focus-visible:outline-accent-strong data-selected:bg-accent-soft data-selected:font-medium data-selected:text-ink sm:flex-none sm:justify-start">
+                  <Icon className="size-4 shrink-0" aria-hidden />{label}
+                </Tab>)}
+              </TabList>
+              <TabPanels className="max-h-[min(32rem,calc(100dvh-11rem))] min-w-0 flex-1 overflow-y-auto p-4 sm:min-h-64 sm:p-5">
+                <TabPanel unmount={false} className="space-y-5 focus:outline-none">
+                  <DomainSettings domains={settings.domains ?? []} onChange={(domains) => setSettings({ ...settings, domains })} />
+                  {!!settings.domains?.length && <div className="border-t border-line pt-4">
+                    <p className="text-xs text-muted">Example app address</p>
+                    <p className="mt-1 break-all font-mono text-xs text-ink-soft">https://my-app.{settings.domains[0]}</p>
+                  </div>}
+                </TabPanel>
+                <TabPanel unmount={false} className="space-y-4 focus:outline-none">
+                  <div>
+                    <h2 className="text-sm font-medium">Members</h2>
+                    <p className="mt-1 text-xs text-muted">Give people and teams a role in this space.</p>
+                  </div>
+                  <MembershipEditor admins={settings.admins} developers={settings.developers}
+                    onChange={(admins, developers) => setSettings({ ...settings, admins, developers })} />
+                </TabPanel>
+                <TabPanel unmount={false} className="focus:outline-none">
+                  <OfferingSettings offerings={settings.offerings} onChange={(offerings) => setSettings({ ...settings, offerings })} />
+                </TabPanel>
+              </TabPanels>
+            </TabGroup> : <div className="p-6">{!error && <Spinner label="Loading space settings…" />}</div>}
           </fieldset>
-          <div className="mt-5 flex justify-end gap-2">
+          <div className="flex shrink-0 justify-end gap-2 border-t border-line px-4 py-3">
             <Button kind="quiet" onClick={onClose} disabled={busy}>Cancel</Button>
             <Button onClick={save} disabled={!settings || busy}>{busy ? 'Saving…' : 'Save settings'}</Button>
           </div>

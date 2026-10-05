@@ -1,4 +1,6 @@
-import { Blocks } from 'lucide-react'
+import { useId, useState } from 'react'
+import { Check, ChevronDown, Settings2 } from 'lucide-react'
+import { serviceUI } from './serviceProtocol'
 import { type ParametersSchema, type ServiceParameters, type SpaceOffering } from './api'
 import { ParameterField } from './AddonForm'
 import { schemaFields } from './parameters'
@@ -41,6 +43,8 @@ export function OfferingSettings({ offerings = {}, onChange }: {
   onChange: (offerings: Record<string, SpaceOffering>) => void
 }) {
   const { data: catalog, error } = useCatalog()
+  const [editing, setEditing] = useState<string | null>(null)
+  const panelId = useId()
   function update(id: string, entry?: SpaceOffering) {
     const next = { ...offerings }
     if (entry) next[id] = entry
@@ -49,36 +53,57 @@ export function OfferingSettings({ offerings = {}, onChange }: {
   }
   const ids = [...new Set([...(catalog ?? []).map((type) => type.type), ...Object.keys(offerings)])]
   return <section aria-label="Offerings" className="space-y-3">
-    <h3 className="flex items-center gap-2 text-sm font-medium"><Blocks className="size-4 text-muted" aria-hidden /> Offerings</h3>
-    <p className="text-xs text-muted">Common offerings are available in every space. Add others here, set defaults for new services, and configure settings that only admins can change.</p>
+    <div>
+      <h3 className="text-sm font-medium">Service offerings</h3>
+      <p className="mt-1 text-xs text-muted">Common services are always available. Enable others here and configure space defaults.</p>
+    </div>
     <ErrorNote message={error} />
     {!catalog && !error && <Spinner label="Loading offerings…" />}
-    <div className="space-y-2">
+    <div className="divide-y divide-line rounded-lg border border-line">
       {ids.map((id) => {
         const type = catalog?.find((item) => item.type === id)
         const entry = offerings[id]
-        return <div key={id} className="rounded-lg border border-line p-3">
-          <label className="flex items-center gap-2 text-sm">
-            <input type="checkbox" checked={!!entry} aria-label={type?.common ? `Customize ${type.title}` : `Enable ${type?.title || id}`}
-              onChange={(e) => update(id, e.target.checked ? {} : undefined)} className="size-4 accent-accent" />
-            <span className="flex-1 font-medium">{type?.title || id}</span>
-            <span className="text-xs text-muted">{type?.common ? 'Common · customize' : 'Enable in this space'}</span>
-          </label>
-          {entry && <div className="mt-3 space-y-3 border-t border-line pt-3">
-            {!type && <p className="text-xs text-muted">This offering is unavailable. Saved settings will be kept.</p>}
-            {schemaFields(type?.spaceConfiguration).length > 0 && <details open>
-              <summary className="mb-3 cursor-pointer text-xs font-medium">Admin configuration</summary>
-              <p className="mb-3 text-xs text-muted">Required values must be set before creating a service. Apps cannot override these settings.</p>
-              <OfferingValues schema={type?.spaceConfiguration} values={entry.config ?? {}}
+        const enabled = type?.common || !!entry
+        const configurable = !!schemaFields(type?.spaceConfiguration).length || !!schemaFields(type?.parameters).length
+        const { Icon } = serviceUI(type?.protocol)
+        const expanded = editing === id && enabled
+        return <div key={id}>
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-2 px-3 py-2.5">
+            <Icon className="size-4 shrink-0 text-muted" aria-hidden />
+            <div className="min-w-0 flex-1 basis-28">
+              <p className="text-xs font-medium">{type?.title || id}</p>
+              {type?.description && <p className="mt-0.5 truncate text-[11px] text-muted" title={type.description}>{type.description}</p>}
+              {!type && <p className="mt-0.5 text-[11px] text-muted">Unavailable · saved settings kept</p>}
+            </div>
+            {type?.common ? <span title="Available in every space" className="inline-flex items-center gap-1 text-[11px] text-muted">
+              <Check className="size-3 text-success" aria-hidden /> Common
+            </span> : <label className="flex items-center gap-1.5 text-[11px] text-muted">
+              <input type="checkbox" checked={!!entry} aria-label={`Enable ${type?.title || id}`}
+                onChange={(e) => { update(id, e.target.checked ? {} : undefined); if (!e.target.checked && editing === id) setEditing(null) }} className="size-3.5 accent-accent" />
+              Enabled
+            </label>}
+            {configurable && <button type="button" disabled={!enabled} aria-label={`Configure ${type?.title || id}`}
+              aria-expanded={expanded} aria-controls={`${panelId}-${id}`} onClick={() => setEditing(expanded ? null : id)}
+              className="flex items-center gap-1 rounded px-1.5 py-1 text-[11px] text-muted hover:bg-raised hover:text-ink disabled:opacity-30">
+              <Settings2 className="size-3" aria-hidden /> Configure
+              <ChevronDown className={`size-3 transition-transform ${expanded ? 'rotate-180' : ''}`} aria-hidden />
+            </button>}
+          </div>
+          {expanded && configurable && <div id={`${panelId}-${id}`} className="space-y-4 border-t border-line bg-surface/50 p-3">
+            {!!schemaFields(type?.spaceConfiguration).length && <div className="space-y-2">
+              <h4 className="text-xs font-medium">Admin configuration</h4>
+              <p className="text-[11px] text-muted">Required before creating a service. Apps cannot override these values.</p>
+              <OfferingValues schema={type?.spaceConfiguration} values={entry?.config ?? {}}
                 onChange={(config) => update(id, { ...entry, config })} />
-            </details>}
-            {schemaFields(type?.parameters).length > 0 && <details>
-              <summary className="cursor-pointer text-xs font-medium">Parameter defaults</summary>
-              <p className="my-3 text-xs text-muted">Apps can override these values. Existing services keep their saved parameters.</p>
-              <OfferingValues schema={type?.parameters} values={entry.defaults ?? {}}
+            </div>}
+            {!!schemaFields(type?.parameters).length && <div className="space-y-2">
+              <h4 className="text-xs font-medium">Defaults for new services</h4>
+              <p className="text-[11px] text-muted">Apps can override these values. Existing services keep their parameters.</p>
+              <OfferingValues schema={type?.parameters} values={entry?.defaults ?? {}}
                 onChange={(defaults) => update(id, { ...entry, defaults })} />
-            </details>}
-            {type && !schemaFields(type.parameters).length && !schemaFields(type.spaceConfiguration).length && <p className="text-xs text-muted">No settings needed.</p>}
+            </div>}
+            {type?.common && entry && <button type="button" onClick={() => { update(id); setEditing(null) }}
+              className="text-[11px] text-muted hover:text-ink">Reset to common defaults</button>}
           </div>}
         </div>
       })}

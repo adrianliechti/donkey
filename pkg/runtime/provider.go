@@ -124,6 +124,12 @@ type Provider interface {
 	// AIProxyTokens returns only credentials bound to this installation's AI
 	// endpoint. Other OpenAI-compatible providers must not grant proxy access.
 	AIProxyTokens(ctx context.Context) ([]string, error)
+	// ServiceProxyAccess resolves a runtime IP to its space and checks that
+	// space's canonical binding for the configured HTTP offering.
+	ServiceProxyAccess(ctx context.Context, sourceIP, offering string) (bool, error)
+	// ServiceProxySpaceAccess checks the current grant for a console request
+	// whose space was authenticated by the control plane.
+	ServiceProxySpaceAccess(ctx context.Context, space, offering string) (bool, error)
 
 	// --- Files ------------------------------------------------------------
 

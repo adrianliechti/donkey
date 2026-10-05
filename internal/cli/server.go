@@ -492,6 +492,9 @@ func validateKubernetesSettings(settings *config.InstallFile) error {
 	if err := settings.CommonOfferings.Validate(); err != nil {
 		return err
 	}
+	if err := settings.ProxyServices.Validate(); err != nil {
+		return err
+	}
 	if err := config.ValidateBusyboxImage(settings.BusyboxImage); err != nil {
 		return err
 	}
@@ -545,6 +548,7 @@ func kubernetesSystemInput(settings *config.InstallFile, skipNamespace bool, reg
 		BusyboxImage:               settings.BusyboxImage,
 		AddonImagePullSecrets:      settings.AddonImagePullSecrets,
 		AddonPlugins:               settings.AddonPlugins,
+		ProxyServices:              settings.ProxyServices,
 		CommonOfferings:            settings.CommonOfferings,
 		BuildkitImage:              settings.BuildkitImage,
 	}

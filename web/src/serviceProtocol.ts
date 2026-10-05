@@ -1,6 +1,6 @@
-import { Archive, Database, KeyRound, Server, Sparkles, type LucideIcon } from 'lucide-react'
+import { Archive, Database, Globe, KeyRound, Server, Sparkles, type LucideIcon } from 'lucide-react'
 
-type ServiceUI = { Icon: LucideIcon; console?: 'database' | 'redis' | 's3' | 'openai'; noun: string }
+type ServiceUI = { Icon: LucideIcon; console?: 'database' | 'redis' | 's3' | 'openai' | 'http'; noun: string }
 
 // Provider names are deliberately absent: compatible plugins and external
 // services share the same presentation and console.
@@ -10,6 +10,7 @@ const protocols: Record<string, ServiceUI> = {
   redis: { Icon: KeyRound, console: 'redis', noun: 'keys' },
   s3: { Icon: Archive, console: 's3', noun: 'buckets' },
   openai: { Icon: Sparkles, console: 'openai', noun: 'chat' },
+  http: { Icon: Globe, console: 'http', noun: 'request tester' },
 }
 const unknown: ServiceUI = { Icon: Server, noun: 'service' }
 

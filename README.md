@@ -64,6 +64,7 @@ five ideas:
                            │  ├─ donkey-buildkitd  image builds      │──▶ registry
                            │  ├─ donkey-packages  build package proxy│─▶ package registries
                            │  ├─ donkey-ai      openai addon endpoint│──▶ model API
+                           │  ├─ donkey-proxy   HTTP service proxy   │──▶ configured APIs
                            │  ├─ donkey-telemetry  OTLP + DuckDB     │
  browser ────80/443───────▶│  └─ donkey-gateway  TLS termination     │──OIDC──▶ Entra ID /
                            │       · ACME / CA / cert-manager        │        any IdP
@@ -116,7 +117,7 @@ five ideas:
   Views are linkable (`#/app/<space>/<name>`) and follow your light/dark
   preference.
 - **donkey-ai** — the openai addon's endpoint (same image, `ai`
-  entrypoint). It is the one donkey workload apps are *meant* to reach, so it
+  entrypoint). Apps reach it through their service bindings, so it
   runs apart from the admin API: it holds the platform's AI credential and
   read-only access to the binding Secrets, and nothing else. Apps call it with
   the per-space token their binding carries; it swaps that for the real
@@ -124,6 +125,10 @@ five ideas:
   the space's access. The console's own AI chat is browser code, so it calls
   its own origin — `donkey-server` forwards `/ai/v1` here without inspecting
   it, because on that origin `/v1` is already the admin API.
+- **donkey-proxy** — one shared HTTP service endpoint (same image, `proxy`
+  entrypoint). It reads configured targets and space bindings,
+  forwards HTTP/HTTPS through an optional outbound proxy, and uses its system
+  CA store. Apps connect over internal HTTP; they need no enterprise CA bundle.
 - **donkey-buildkitd** — a plain BuildKit deployment; the server drives it
   over gRPC with a Dockerfile (the app's own, or one donkey's assistant
   wrote), and pushes straight to the registry. It is also
@@ -517,6 +522,84 @@ token against the bindings donkey issued, swaps in the platform's actual key
 upstream, and streams the answer back (SSE included). The real key never
 leaves `donkey-system` — and never sits in the process that writes to the
 cluster — and removing the service from the space *is* the revocation.
+
+**Configured HTTP services.** Define proxy offerings in the server installation
+settings. Each gets a name and description in the catalog, while target URLs
+and outbound proxy credentials stay in the control plane:
+
+```yaml
+# With an empty commonOfferings list, every offering is available everywhere.
+# A nonempty list lets space admins enable additional offerings explicitly.
+commonOfferings: [postgres, redis, rustfs, openai]
+proxyServices:
+  - name: enterprise-api
+    description: Company API
+    targetUrl: https://api.corp.example/v1
+    proxyUrl: http://proxy.corp.example:3128  # optional; HTTP or HTTPS
+```
+
+In the space's settings, add `enterprise-api` to its offerings (or set
+`offerings: {enterprise-api: {}}` in the space config). Apps then connect it
+like any other service:
+
+```yaml
+addons:
+  - type: enterprise-api
+    name: corporate
+env:
+  CORP_BASE_URL: ${corporate.ENTERPRISE_API_URL}
+```
+
+The generated `ENTERPRISE_API_URL` points at `donkey-proxy`. Appending `customers?limit=10` to
+that URL forwards to `https://api.corp.example/v1/customers?limit=10`.
+For example, a Kubernetes binding might be:
+
+```text
+http://donkey-proxy.donkey-system.svc/services/enterprise-api/
+```
+
+No token or special request header is needed. The proxy resolves the socket's
+caller IP to a space and checks that space's provisioned service binding.
+Kubernetes uses current pod identity labels; Docker uses the space's owned
+network subnet. All apps in the granted space may use the endpoint. Attaching
+the service injects its URL into the app. Unknown callers, ambiguous identities
+and callers without a space grant are denied; forwarded IP headers are ignored.
+
+Methods, bodies, escaped paths, query strings and app Authorization headers
+are preserved. Target URL credentials, if configured, supply upstream Basic
+authentication instead. Redirects within the target base path and cookie
+paths are rewritten; response bodies and links inside them are unchanged.
+Use this for HTTP APIs whose clients accept a configurable base URL. Clients
+that require original URLs or sign the URL itself need a different integration.
+
+One shared Go reverse proxy serves all offerings and spaces. Configuration
+reloads within 30 seconds, plus Kubernetes Secret projection delay. Removing
+the service from a space revokes its grant;
+removing a global proxy entry disables its route. Changing space offerings
+controls new connections and keeps existing services available for their
+lifecycle. Apps use internal HTTP, while targets and outbound proxies may use
+HTTPS with normal certificate verification. Your enterprise system CA bundle
+must be present in the **proxy pod**; it is not needed in app pods. There is
+no separate per-offering CA setting.
+
+This endpoint is internal and needs the caller's original workload IP.
+Kubernetes authorization reads current pod and binding records; Docker's
+server refreshes a read-only network mapping every 10 seconds, which the
+proxy refuses after 30 seconds without a refresh. The proxy has no Docker
+socket. Traffic through an intermediary that replaces the source IP is denied.
+
+In rendered deployments, `proxy-services.json` is private (mode `0600`):
+Kubernetes loads it into the `donkey-proxy` Secret; Compose mounts it read-only.
+Updating target configuration does not restart the shared proxy. New offering
+names also require the admin server to reload its catalog configuration.
+
+In the web console, open the HTTP service to test a request. Choose a method,
+enter a path relative to its base URL (or its full binding URL), and add headers
+and an optional body. The result shows status, timing, response headers, and up
+to 1 MiB of response text. Requests have a 30-second timeout; redirects are shown
+without following them. The console uses your space management permission and
+a short-lived, request-specific control-plane grant through the shared proxy.
+Apps continue to use their workload IP without a credential.
 
 **Getting at a service yourself.** Services rightly have no public address,
 so donkey provides the ways in: `donkey addon tunnel NAME` opens a private

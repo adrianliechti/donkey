@@ -64,6 +64,7 @@ const (
 	RoleServer           = "server"
 	RoleGateway          = "gateway"
 	RoleAI               = "ai"
+	RoleProxy            = "proxy"
 	RoleTelemetry        = "telemetry"
 	RolePackages         = "packages"
 	RoleBuildkit         = "buildkitd"
@@ -108,9 +109,10 @@ type Options struct {
 	// (e.g. 127.0.0.1:5000). Image references are rewritten from the push
 	// host to this one before running. Empty means refs run as pushed.
 	PullRegistry string
-	// AIContainer is the openai addon's endpoint — the one donkey container
-	// apps are meant to reach, which is why it is not the server.
+	// AIContainer is the openai addon's shared endpoint.
 	AIContainer string
+	// ProxyContainer is the shared endpoint for configured HTTP offerings.
+	ProxyContainer string
 	// TelemetryContainer accepts app-scoped OTLP metrics on every space
 	// network.
 	TelemetryContainer string
@@ -149,6 +151,9 @@ func New(opts Options) (*Runtime, error) {
 	}
 	if opts.AIContainer == "" {
 		opts.AIContainer = "donkey-ai"
+	}
+	if opts.ProxyContainer == "" {
+		opts.ProxyContainer = "donkey-proxy"
 	}
 	if opts.TelemetryContainer == "" {
 		opts.TelemetryContainer = "donkey-telemetry"
@@ -326,12 +331,12 @@ func (r *Runtime) ensureSpace(ctx context.Context, space string) error {
 		return err
 	}
 	own, err := ownedSystemContainers(ctx, r.cli,
-		r.opts.ServerContainer, r.opts.GatewayContainer, r.opts.AIContainer, r.opts.TelemetryContainer)
+		r.opts.ServerContainer, r.opts.GatewayContainer, r.opts.AIContainer, r.opts.TelemetryContainer, r.opts.ProxyContainer)
 	if err != nil {
 		return err
 	}
 	name := netName(space)
-	_, err = r.cli.NetworkInspect(ctx, name, network.InspectOptions{})
+	nw, err := r.cli.NetworkInspect(ctx, name, network.InspectOptions{})
 	if cerrdefs.IsNotFound(err) {
 		_, err = r.cli.NetworkCreate(ctx, name, network.CreateOptions{
 			Labels: resourceLabels(space, roleSpace),
@@ -339,8 +344,14 @@ func (r *Runtime) ensureSpace(ctx context.Context, space string) error {
 		if err == nil {
 			err = r.state.writeJSON(config.DefaultSpaceConfig(space, r.opts.Domain), "spaces", space, "config.json")
 		}
+		if err == nil {
+			nw, err = r.cli.NetworkInspect(ctx, name, network.InspectOptions{})
+		}
 	}
 	if err != nil {
+		return err
+	}
+	if err := r.recordProxyNetwork(space, nw.IPAM); err != nil {
 		return err
 	}
 	for _, containerName := range own {
@@ -396,7 +407,7 @@ func (r *Runtime) DeleteSpace(ctx context.Context, space string) error {
 		return err
 	}
 	own, err := ownedSystemContainers(ctx, r.cli,
-		r.opts.ServerContainer, r.opts.GatewayContainer, r.opts.AIContainer, r.opts.TelemetryContainer)
+		r.opts.ServerContainer, r.opts.GatewayContainer, r.opts.AIContainer, r.opts.TelemetryContainer, r.opts.ProxyContainer)
 	if err != nil {
 		return err
 	}
@@ -429,6 +440,9 @@ func (r *Runtime) DeleteSpace(ctx context.Context, space string) error {
 		}
 	}
 	if err := r.state.cleanupSpace(space); err != nil {
+		return err
+	}
+	if err := r.state.remove("proxy", "networks", space+".json"); err != nil {
 		return err
 	}
 	// donkey's own containers were attached to the network (to proxy and to
@@ -859,6 +873,7 @@ func (r *Runtime) EnsureService(ctx context.Context, space string, spec rt.Servi
 			Space: space, Namespace: netName(space), Name: spec.Name,
 			ImageRepository: r.opts.AddonImages.Repository(spec.Type),
 			AIProxyURL:      r.aiProxyURL(),
+			ServiceProxyURL: r.serviceProxyURL(),
 		}.WithParameters(params)
 		// Reuse the credential the instance was initialized with — rotating
 		// it here would lock the service out of its own kept data.
@@ -1006,6 +1021,15 @@ func (r *Runtime) DetachService(ctx context.Context, space, app, name string) er
 }
 
 func (r *Runtime) RemoveService(ctx context.Context, space, name string, keepData, force bool) ([]string, error) {
+	if keepData {
+		connection, err := r.ServiceConnection(ctx, space, name)
+		if err != nil {
+			return nil, err
+		}
+		if addons.IsProxyBinding(r.serviceProxyURL(), connection.Type, connection.Binding) {
+			return nil, rt.UserError{Err: fmt.Errorf("proxy services have no stored data; remove without --keep-data to revoke access")}
+		}
+	}
 	attached, err := r.state.attachments(space, name)
 	if err != nil {
 		return nil, err
@@ -1113,6 +1137,22 @@ func (r *Runtime) ListServices(ctx context.Context, space, owner string) ([]rt.S
 
 func (r *Runtime) AIProxyTokens(ctx context.Context) ([]string, error) {
 	return r.state.bindingValues("OPENAI_API_KEY", "OPENAI_BASE_URL", r.aiProxyURL())
+}
+
+func (r *Runtime) serviceProxyURL() string {
+	name := r.opts.ProxyContainer
+	if name == "" {
+		name = "donkey-proxy"
+	}
+	return "http://" + name + ":8091"
+}
+
+// SetProxyServices updates the shared proxy's read-only configuration file.
+func (r *Runtime) SetProxyServices(services config.ProxyServices) error {
+	if err := services.Validate(); err != nil {
+		return err
+	}
+	return r.state.writeJSON(services, "proxy", "services.json")
 }
 
 // --- Health ---------------------------------------------------------------
@@ -1297,7 +1337,7 @@ func ownedSystemContainers(ctx context.Context, cli *client.Client, names ...str
 // failure it prevents is silent and total: every app in a space stops
 // answering, with nothing in its own logs to say why.
 func (r *Runtime) ReconcileOwnNetworks(ctx context.Context, every time.Duration) {
-	own := []string{r.opts.ServerContainer, r.opts.GatewayContainer, r.opts.AIContainer, r.opts.TelemetryContainer}
+	own := []string{r.opts.ServerContainer, r.opts.GatewayContainer, r.opts.AIContainer, r.opts.TelemetryContainer, r.opts.ProxyContainer}
 	for {
 		if err := AttachOwnContainers(ctx, r.cli, own...); err != nil && ctx.Err() == nil {
 			log.Printf("couldn't attach donkey's containers to the space networks: %v", err)

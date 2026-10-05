@@ -9,7 +9,7 @@ type Member = { kind: Kind; value: string; role: Role }
 const kinds = ['users', 'groups', 'roles'] as const
 const labels = { users: 'User', groups: 'Group', roles: 'IdP role' }
 const icons = { users: UserRound, groups: Users, roles: KeyRound }
-const field = 'min-w-0 rounded-md border border-line bg-surface px-2.5 py-2 text-sm focus:outline-2 focus:outline-accent-strong'
+const field = 'min-w-0 rounded border border-line bg-surface px-2.5 py-1.5 text-xs focus:outline-2 focus:outline-accent-strong'
 
 export function MembershipEditor({ admins, developers, onChange }: {
   admins: AccessConfig
@@ -42,7 +42,8 @@ export function MembershipEditor({ admins, developers, onChange }: {
   }
 
   return (
-    <div className="space-y-3">
+    <div className="@container space-y-3">
+      {members.length === 0 && <p className="rounded-md border border-dashed border-line px-3 py-3 text-xs text-muted">No members added. Platform admins have access.</p>}
       {members.length > 0 && <ul className="divide-y divide-line rounded-lg border border-line">
         {members.map((member, index) => {
           const Icon = icons[member.kind]
@@ -64,28 +65,28 @@ export function MembershipEditor({ admins, developers, onChange }: {
           )
         })}
       </ul>}
-      <div className="rounded-lg border border-line bg-surface/40 p-3">
-        <div className="flex gap-2">
-          <Select<Kind> ariaLabel="Member type" value={kind} onChange={setKind}
+      <div className={`grid grid-cols-[auto_minmax(0,1fr)] items-end gap-2 ${developers ? '@min-[34rem]:grid-cols-[auto_minmax(0,1fr)_auto_auto]' : '@min-[26rem]:grid-cols-[auto_minmax(0,1fr)_auto]'}`}>
+        <label className="space-y-1 text-xs text-muted">Type
+          <Select<Kind> ariaLabel="Member type" value={kind} onChange={setKind} size="sm"
             options={kinds.map((kind) => ({ value: kind, label: labels[kind] }))} />
+        </label>
+        <label className="min-w-0 space-y-1 text-xs text-muted">{labels[kind]}
           <input aria-label="Member identity" value={value} onChange={(e) => setValue(e.target.value)}
             placeholder={kind === 'users' ? 'name@example.com' : kind === 'groups' ? 'engineering' : 'Role from your identity provider'}
-            autoCapitalize="none" spellCheck={false} className={`${field} flex-1`}
+            autoCapitalize="none" spellCheck={false} className={`${field} w-full`}
             onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); add() } }} />
-        </div>
-        <div className="mt-2 flex items-center justify-between gap-3">
-          {developers ? <label className="flex items-center gap-2 text-xs text-muted">
-            Access
+        </label>
+          {developers && <label className="space-y-1 text-xs text-muted">
+            Role
             <Select<Role> ariaLabel="New member role" value={role} onChange={setRole} size="sm"
               options={[{ value: 'developer', label: 'Developer' }, { value: 'admin', label: 'Space admin' }]} />
-          </label> : <span className="text-xs text-muted">Platform admin</span>}
+          </label>}
           <button type="button" onClick={add} disabled={!value.trim()}
-            className="flex items-center gap-1 rounded px-2 py-1 text-xs font-medium text-accent hover:bg-accent-soft disabled:opacity-40">
+            className="flex min-h-8 items-center justify-end gap-1 rounded px-2 py-1 text-xs font-medium text-accent hover:bg-accent-soft disabled:opacity-40">
             <Plus className="size-3.5" aria-hidden /> Add member
           </button>
-        </div>
       </div>
-      {developers && <p className="text-xs leading-relaxed text-muted">Admins manage this space and its members. Developers manage apps and services. Platform admins always have access.</p>}
+      {developers && <p className="text-xs leading-relaxed text-muted">Space admins manage members and settings. Developers manage apps and services.</p>}
     </div>
   )
 }

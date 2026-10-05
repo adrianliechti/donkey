@@ -15,6 +15,14 @@ domain: apps.example.com
 # these available in every space; space admins can add others in settings.
 # commonOfferings: [postgres, redis, rustfs, openai]
 
+# Optional HTTP API offerings; apps use internal HTTP and the shared proxy
+# uses its system CA store for HTTPS targets and outbound proxies.
+# proxyServices:
+#   - name: enterprise-api
+#     description: Company API
+#     targetUrl: https://api.corp.example/v1
+#     proxyUrl: http://proxy.corp.example:3128
+
 tls:
   mode: cert-manager
   issuerName: platform-ca

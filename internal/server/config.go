@@ -45,7 +45,7 @@ type Config struct {
 	// runtime only — Docker spaces are separate networks and isolated as is).
 	IsolateSpaces bool
 	// RestrictEgress adds the egress half of that fence — a space's pods reach
-	// only their own space, donkey-ai, donkey-telemetry and DNS, never the
+	// only their own space, donkey-ai, donkey-proxy, donkey-telemetry and DNS, never the
 	// internet. Off by default; only meaningful with IsolateSpaces.
 	RestrictEgress bool
 	// AIURL is donkey-ai's address — the console's /ai/v1 calls are
@@ -77,6 +77,7 @@ type Config struct {
 	AddonImagePullSecrets []string
 	AddonPlugins          config.AddonPlugins
 	CommonOfferings       config.CommonOfferings
+	ProxyServices         config.ProxyServices
 	// Runtime names the provider in use (kubernetes or docker); the catalog
 	// hides services a plugin does not offer there.
 	Runtime string
@@ -169,6 +170,22 @@ func FromEnv() (*Config, error) {
 		}
 	}
 	if err := c.CommonOfferings.Validate(); err != nil {
+		return nil, err
+	}
+	proxyServices := []byte(os.Getenv("DONKEY_PROXY_SERVICES"))
+	if file := os.Getenv("DONKEY_PROXY_SERVICES_FILE"); file != "" {
+		var err error
+		proxyServices, err = os.ReadFile(file)
+		if err != nil {
+			return nil, fmt.Errorf("reading proxy service configuration: %w", err)
+		}
+	}
+	if len(proxyServices) > 0 {
+		if err := json.Unmarshal(proxyServices, &c.ProxyServices); err != nil {
+			return nil, fmt.Errorf("proxy service configuration must be a JSON array")
+		}
+	}
+	if err := c.ProxyServices.Validate(); err != nil {
 		return nil, err
 	}
 	c.Runtime = os.Getenv("DONKEY_RUNTIME")

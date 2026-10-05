@@ -155,6 +155,22 @@ export interface SpaceOffering {
   config?: ServiceParameters
 }
 
+export interface ServiceHTTPRequest {
+  method: string
+  url: string
+  headers: Record<string, string>
+  body: string
+}
+
+export interface ServiceHTTPResponse {
+  status: number
+  statusText: string
+  headers: Record<string, string[]>
+  body: string
+  truncated: boolean
+  durationMs: number
+}
+
 export interface PlatformConfig {
   admins: AccessConfig
 }
@@ -740,6 +756,10 @@ export const api = {
       servicePath(space, service, '/binding'),
     ),
   serviceAIBase: (space: string, service: string) => servicePath(space, service, '/ai'),
+  testServiceHTTP: (space: string, service: string, input: ServiceHTTPRequest, signal?: AbortSignal) =>
+    request<ServiceHTTPResponse>(servicePath(space, service, '/http/request'), {
+      method: 'POST', body: JSON.stringify(input), signal,
+    }),
   // Services belong to the space; apps hold connections to them.
   spaceAddons: (space: string) =>
     request<{ addons: SpaceAddonEntry[] }>(`/v1/spaces/${encodeURIComponent(space)}/services`),

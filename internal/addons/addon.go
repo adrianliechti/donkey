@@ -151,6 +151,8 @@ type Input struct {
 	// AIProxyURL is where donkey-server's AI proxy is reachable from apps —
 	// the runtime provider fills it in (its address is runtime vocabulary).
 	AIProxyURL string
+	// ServiceProxyURL is the installation's HTTP service proxy endpoint.
+	ServiceProxyURL string
 }
 
 // WithParameters lifts the well-known parameters into their fields.
@@ -196,18 +198,20 @@ var (
 // IsBuiltin reports whether an id names a built-in type.
 func IsBuiltin(typ string) bool {
 	_, ok := builtins[typ]
-	return ok
+	return ok || proxyBuiltin(typ) != nil
 }
 
 func builtinTypes() []Addon {
-	names := make([]string, 0, len(builtins))
-	for t := range builtins {
+	local := maps.Clone(builtins)
+	maps.Copy(local, proxyBuiltins())
+	names := make([]string, 0, len(local))
+	for t := range local {
 		names = append(names, t)
 	}
 	sort.Strings(names)
 	out := make([]Addon, 0, len(names))
 	for _, t := range names {
-		out = append(out, builtins[t])
+		out = append(out, local[t])
 	}
 	return out
 }
@@ -246,6 +250,9 @@ func Get(ctx context.Context, typ string) (Addon, error) {
 	if b, ok := builtins[typ]; ok {
 		return b, nil
 	}
+	if p := proxyBuiltin(typ); p != nil {
+		return p, nil
+	}
 	list := allProviders()
 	results := make([]*Plugin, len(list))
 	var wg sync.WaitGroup
@@ -264,6 +271,9 @@ func Get(ctx context.Context, typ string) (Addon, error) {
 	}
 	known := make([]string, 0, len(builtins))
 	for t := range builtins {
+		known = append(known, t)
+	}
+	for t := range proxyBuiltins() {
 		known = append(known, t)
 	}
 	for _, p := range list {

@@ -174,6 +174,7 @@ func (r *Runtime) provisionService(ctx context.Context, space, ns string, spec r
 		Name: spec.Name, ObjectName: r.name(space, spec.Name),
 		ImageRepository: r.opts.AddonImages.Repository(spec.Type),
 		AIProxyURL:      r.aiProxyURL(),
+		ServiceProxyURL: r.serviceProxyURL(),
 	}.WithParameters(params)
 	// Reuse the credential the instance was initialized with — rotating it
 	// here would lock the service out of its own kept data.
@@ -265,6 +266,15 @@ func (r *Runtime) DetachService(ctx context.Context, space, app, name string) er
 }
 
 func (r *Runtime) RemoveService(ctx context.Context, space, name string, keepData, force bool) ([]string, error) {
+	if keepData {
+		connection, err := r.ServiceConnection(ctx, space, name)
+		if err != nil {
+			return nil, err
+		}
+		if addons.IsProxyBinding(r.serviceProxyURL(), connection.Type, connection.Binding) {
+			return nil, rt.UserError{Err: fmt.Errorf("proxy services have no stored data; remove without --keep-data to revoke access")}
+		}
+	}
 	ns := r.ns(space)
 	attached, err := r.c.ListAddonAttachments(ctx, ns, space, name)
 	if err != nil {
@@ -352,6 +362,10 @@ func (r *Runtime) ListServices(ctx context.Context, space, owner string) ([]rt.S
 
 func (r *Runtime) AIProxyTokens(ctx context.Context) ([]string, error) {
 	return r.c.SharedBindingValues(ctx, "OPENAI_API_KEY", "OPENAI_BASE_URL", r.aiProxyURL())
+}
+
+func (r *Runtime) serviceProxyURL() string {
+	return fmt.Sprintf("http://%s.%s.svc", manifests.ProxyAppName, r.opts.SystemNamespace)
 }
 
 // aiProxyURL is where apps reach this installation's AI endpoint — its own,

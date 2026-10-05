@@ -104,6 +104,7 @@ type SystemInput struct {
 	AddonImagePullSecrets []string
 	AddonPlugins          config.AddonPlugins
 	CommonOfferings       config.CommonOfferings
+	ProxyServices         config.ProxyServices
 
 	BuildkitImage string
 
@@ -221,6 +222,7 @@ func SystemObjects(in SystemInput) []runtime.Object {
 	// admin API for exactly that reason.
 	objs = append(objs, donkeyGatewayObjects(in)...)
 	objs = append(objs, aiObjects(in)...)
+	objs = append(objs, proxyObjects(in)...)
 	return objs
 }
 
@@ -239,7 +241,7 @@ func configHash(values ...string) string {
 // (secretKeyRef values are only read at pod creation).
 func (in SystemInput) serverConfigHash() string {
 	return configHash(in.SessionKey, in.TelemetryKey, in.OIDCClientID, in.OIDCClientSecret, in.RegistryPassword, in.OpenAIAPIKey,
-		buildEnvJSON(in.Build), in.Build.Instructions, in.Build.Proxy.HTTP, in.Build.Proxy.HTTPS, in.RegistryCAFingerprint)
+		buildEnvJSON(in.Build), in.Build.Instructions, in.Build.Proxy.HTTP, in.Build.Proxy.HTTPS, in.RegistryCAFingerprint, in.ProxyServices.JSON())
 }
 
 // hashedTemplateMeta is the pod template metadata of one control-plane
@@ -377,6 +379,9 @@ func serverDeployment(in SystemInput) *appsv1.Deployment {
 		{Name: "DONKEY_ADDON_IMAGE_PULL_SECRETS", Value: strings.Join(in.AddonImagePullSecrets, ",")},
 		{Name: "DONKEY_ADDON_PLUGINS", Value: in.AddonPlugins.JSON()},
 		{Name: "DONKEY_COMMON_OFFERINGS", Value: in.CommonOfferings.JSON()},
+		{Name: "DONKEY_PROXY_SERVICES", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
+			LocalObjectReference: corev1.LocalObjectReference{Name: ProxyAppName}, Key: ProxyConfigKey,
+		}}},
 		{Name: "DONKEY_TLS_MODE", Value: in.TLS.EffectiveMode()},
 		{Name: "DONKEY_TLS_ISSUER_NAME", Value: in.TLS.IssuerName},
 		{Name: "DONKEY_TLS_ISSUER_KIND", Value: in.TLS.IssuerKind},

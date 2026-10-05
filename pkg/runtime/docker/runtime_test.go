@@ -185,6 +185,7 @@ func TestDeleteSpaceCascadesAllOwnedDockerResources(t *testing.T) {
 		opts: Options{
 			ServerContainer: "donkey-server", GatewayContainer: "donkey-gateway",
 			AIContainer: "donkey-ai", TelemetryContainer: "donkey-telemetry",
+			ProxyContainer: "donkey-proxy",
 		},
 		state: state{dir: t.TempDir()},
 	}
@@ -197,7 +198,7 @@ func TestDeleteSpaceCascadesAllOwnedDockerResources(t *testing.T) {
 	if strings.Join(removedVolumes, ",") != "donkey.team.site.data,donkey.team.postgres.data" {
 		t.Errorf("removed volumes=%v", removedVolumes)
 	}
-	if disconnected != 4 || !networkRemoved {
+	if disconnected != 5 || !networkRemoved {
 		t.Errorf("disconnected=%d networkRemoved=%v", disconnected, networkRemoved)
 	}
 }

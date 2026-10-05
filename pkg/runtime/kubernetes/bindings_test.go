@@ -109,3 +109,62 @@ func TestAIProxyTokensExcludeOtherProvidersAndAppCopies(t *testing.T) {
 		t.Fatalf("wrong proxy tokens: %v", err)
 	}
 }
+
+func TestServiceProxyUsesCurrentPodIdentityInBothPlacements(t *testing.T) {
+	for _, shared := range []string{"", "workloads"} {
+		t.Run(shared, func(t *testing.T) {
+			ctx := context.Background()
+			r := NewRuntime(&Client{Clientset: fake.NewClientset()}, Options{Placement: manifests.Placement{SharedNamespace: shared, NamespacePrefix: "donkey-"}})
+			podFor := func(space, app, ip string) *corev1.Pod {
+				labels := manifests.Labels(space, app, manifests.RoleWorkload)
+				labels[manifests.LabelInstallation] = manifests.DefaultSystemNamespace
+				return &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: app, Namespace: r.ns(space), Labels: labels}, Status: corev1.PodStatus{Phase: corev1.PodRunning, PodIP: ip, PodIPs: []corev1.PodIP{{IP: ip}, {IP: "fd00:1::" + map[string]string{"team": "1", "other": "2"}[space]}}}}
+			}
+			team, other := podFor("team", "api", "10.20.0.2"), podFor("other", "site", "10.30.0.2")
+			for _, pod := range []*corev1.Pod{team, other} {
+				if _, err := r.c.Clientset.CoreV1().Pods(pod.Namespace).Create(ctx, pod, metav1.CreateOptions{}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			binding := map[string]string{addons.ProxyEnvKey("erp"): addons.ProxyBindingURL(r.serviceProxyURL(), "erp")}
+			secret := spaceBindingSecret("team", r.name("team", "allowed"), r.ns("team"), "allowed", binding, addons.Metadata{Type: "erp", Protocol: "http"})
+			secret.Labels[manifests.LabelInstallation] = manifests.DefaultSystemNamespace
+			if _, err := r.c.Clientset.CoreV1().Secrets(secret.Namespace).Create(ctx, secret, metav1.CreateOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			copy := spaceBindingSecret("other", r.name("other", "copy"), r.ns("other"), "copy", binding, addons.Metadata{})
+			copy.Labels[manifests.LabelInstallation] = manifests.DefaultSystemNamespace
+			copy.Labels[manifests.LabelApp] = "site"
+			if _, err := r.c.Clientset.CoreV1().Secrets(copy.Namespace).Create(ctx, copy, metav1.CreateOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			for _, tc := range []struct {
+				ip, id  string
+				allowed bool
+			}{
+				{"10.20.0.2", "erp", true}, {"fd00:1::1", "erp", true}, {"10.30.0.2", "erp", false},
+				{"10.20.0.2", "other", false}, {"10.40.0.2", "erp", false},
+			} {
+				got, err := r.ServiceProxyAccess(ctx, tc.ip, tc.id)
+				if err != nil || got != tc.allowed {
+					t.Errorf("%s/%s access = %v %v", tc.ip, tc.id, got, err)
+				}
+			}
+			if _, err := r.RemoveService(ctx, "team", "allowed", true, false); err == nil {
+				t.Fatal("proxy access cannot be retained as data")
+			}
+			// Once the original pod disappears, IP reuse by a different space
+			// must not inherit its grant.
+			if err := r.c.Clientset.CoreV1().Pods(team.Namespace).Delete(ctx, team.Name, metav1.DeleteOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			other.Status.PodIP, other.Status.PodIPs = "10.20.0.2", nil
+			if _, err := r.c.Clientset.CoreV1().Pods(other.Namespace).Update(ctx, other, metav1.UpdateOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			if got, err := r.ServiceProxyAccess(ctx, "10.20.0.2", "erp"); err != nil || got {
+				t.Fatalf("reused IP inherited old space: %v %v", got, err)
+			}
+		})
+	}
+}

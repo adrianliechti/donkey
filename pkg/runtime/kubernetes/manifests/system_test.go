@@ -118,8 +118,8 @@ func TestRegistryCredentialsPullMirroredSystemImages(t *testing.T) {
 	if !strings.Contains(out, "name: "+SystemRegistrySecretName) || !strings.Contains(out, "imagePullSecrets") {
 		t.Fatalf("credentialed registry should render and reference a system pull secret:\n%s", out)
 	}
-	if n := strings.Count(out, "name: "+SystemRegistrySecretName); n != 7 {
-		t.Errorf("pull secret should be created once and referenced by six system deployments, found %d mentions", n)
+	if n := strings.Count(out, "name: "+SystemRegistrySecretName); n != 8 {
+		t.Errorf("pull secret should be created once and referenced by seven system deployments, found %d mentions", n)
 	}
 
 	plain := componentNames(systemInput())
@@ -240,8 +240,10 @@ func TestInstallTouchesOnlyItsOwnObjects(t *testing.T) {
 		// donkey-ai reads the binding Secrets to know which per-space tokens
 		// are valid; with a namespace per space those are spread across all
 		// of them, so this one is read-only and cluster-scoped.
-		"ClusterRole:" + AIAppName:        true,
-		"ClusterRoleBinding:" + AIAppName: true,
+		"ClusterRole:" + AIAppName:           true,
+		"ClusterRoleBinding:" + AIAppName:    true,
+		"ClusterRole:" + ProxyAppName:        true,
+		"ClusterRoleBinding:" + ProxyAppName: true,
 	}
 	for _, obj := range objs {
 		m, err := meta.Accessor(obj)

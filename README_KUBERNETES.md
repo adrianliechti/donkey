@@ -48,7 +48,7 @@ Donkey roles: `workload` (Deployment, Service, pods), `route` and `path-route`
 `registry-auth` (pull secret), `storage` (the data claim), `binding` (a
 service connection), `edge` (per-app certificate and DNS objects), `files`
 (the short-lived file-browser helper pod). Spaces are `space`, services
-`addon`; control-plane roles are `server`, `gateway`, `ai`, `telemetry`,
+`addon`; control-plane roles are `server`, `gateway`, `ai`, `proxy`, `telemetry`,
 `packages` and `buildkitd`, aligned with Docker while their standard `name`
 keeps the actual `donkey-*` workload name.
 
@@ -279,6 +279,7 @@ Platform resources always live in `kubernetes.system.namespace`
 |---|---|---|
 | ConfigMap | `donkey` | `platform.yaml`, `route.yaml`, `buildkitd.toml` |
 | Secret | `donkey` | Installation environment values; `Opaque` |
+| Secret | `donkey-proxy` | `services.json`: configured HTTP targets and outbound proxies; `Opaque`, reloaded by the shared proxy |
 | Secret | `donkey-registry` | `.dockerconfigjson`; `kubernetes.io/dockerconfigjson` |
 | Secret | `donkey-gateway-ca` | Built-in CA: `ca.crt`, `ca.key`; `Opaque` |
 | Secret | `donkey-gateway-acme` | ACME account, certificates and challenge cache; `Opaque` |
@@ -384,8 +385,8 @@ kubernetes:
 
 Now a space's pods reach only their own space (sibling apps and its
 services, postgres and rustfs included), the platform endpoints an app
-actually uses — donkey-ai for the openai addon and donkey-telemetry for
-metrics — and DNS. Configured addon plugins can additionally declare specific
+actually uses — donkey-ai for the openai addon, donkey-proxy for configured
+HTTP offerings and donkey-telemetry for metrics — and DNS. Configured addon plugins can additionally declare specific
 destination namespaces/pods/ports or external CIDRs. Donkey persists these
 destinations with the provisioning info and maintains separate additive
 egress policies for the owning space. Everything else, including undeclared

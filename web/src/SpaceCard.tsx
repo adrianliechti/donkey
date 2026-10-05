@@ -33,6 +33,7 @@ const DatabaseDialog = lazy(() => import('./DatabaseDialog').then((m) => ({ defa
 const RedisDialog = lazy(() => import('./RedisDialog').then((m) => ({ default: m.RedisDialog })))
 const S3Dialog = lazy(() => import('./S3Dialog').then((m) => ({ default: m.S3Dialog })))
 const AiDialog = lazy(() => import('./AiDialog').then((m) => ({ default: m.AiDialog })))
+const HttpDialog = lazy(() => import('./HttpDialog').then((m) => ({ default: m.HttpDialog })))
 
 /**
  * One section of the paddock per space.
@@ -333,6 +334,7 @@ function SpaceServices({
         {browsing && consoleKind === 's3' && <S3Dialog {...consoleProps} />}
         {browsing && consoleKind === 'redis' && <RedisDialog {...consoleProps} />}
         {browsing && consoleKind === 'openai' && <AiDialog {...consoleProps} />}
+        {browsing && consoleKind === 'http' && <HttpDialog {...consoleProps} />}
       </Suspense>
       {removing && (
         <RemoveServiceDialog
@@ -373,6 +375,7 @@ function RemoveServiceDialog({
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const canOrphan = error.includes('--orphan')
+  const isProxy = service.protocol === 'http'
 
   async function remove() {
     setBusy(true)
@@ -419,6 +422,8 @@ function RemoveServiceDialog({
             )}
             {orphan ? (
               <p className="text-muted">The backing service and its data stay with the operator. Donkey forgets this instance.</p>
+            ) : isProxy ? (
+              <p className="text-muted">Removing this service revokes this space's access to the API.</p>
             ) : keepData ? (
               <p className="text-muted">
                 Its disk stays — adding a service with the same name later picks the data back up.
@@ -427,7 +432,7 @@ function RemoveServiceDialog({
               <p className="text-danger">Its disk and everything on it will be deleted.</p>
             )}
           </div>
-          <label className="mt-3 flex items-center gap-1.5 text-xs text-ink-soft">
+          {!isProxy && <label className="mt-3 flex items-center gap-1.5 text-xs text-ink-soft">
             <input
               type="checkbox"
               checked={keepData}
@@ -436,7 +441,7 @@ function RemoveServiceDialog({
               className="size-3.5 accent-accent-strong"
             />
             Keep its data
-          </label>
+          </label>}
           {canOrphan && (
             <label className="mt-2 flex items-center gap-1.5 text-xs text-ink-soft">
               <input
