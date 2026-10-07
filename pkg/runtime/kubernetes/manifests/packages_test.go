@@ -123,3 +123,38 @@ func TestPackageDockerConfigSecretIsMountedReadOnly(t *testing.T) {
 	}
 	t.Fatal("package Docker config Secret has no volume")
 }
+
+func TestOSPackageMirrorsReachProxyAndBuilder(t *testing.T) {
+	in := systemInput()
+	before := in.packagesConfigHash()
+	in.Build.Packages.Debian = "https://debian.mirror.example/debian"
+	in.Build.Packages.Alpine = "https://alpine.mirror.example/alpinelinux"
+	if before == in.packagesConfigHash() {
+		t.Fatal("OS mirrors did not change proxy rollout hash")
+	}
+	for _, tc := range []struct {
+		env  []corev1.EnvVar
+		want map[string]string
+	}{
+		{packagesDeployment(in).Spec.Template.Spec.Containers[0].Env, map[string]string{
+			"DONKEY_PACKAGES_DEBIAN_URL": in.Build.Packages.Debian,
+			"DONKEY_PACKAGES_ALPINE_URL": in.Build.Packages.Alpine,
+		}},
+		{serverDeployment(in).Spec.Template.Spec.Containers[0].Env, map[string]string{
+			"DONKEY_BUILDER_DEBIAN_MIRROR": "true",
+			"DONKEY_BUILDER_ALPINE_MIRROR": "true",
+		}},
+	} {
+		for key, want := range tc.want {
+			found := false
+			for _, env := range tc.env {
+				if env.Name == key && env.Value == want {
+					found = true
+				}
+			}
+			if !found {
+				t.Errorf("missing %s=%s", key, want)
+			}
+		}
+	}
+}

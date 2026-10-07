@@ -1,10 +1,14 @@
 build:
+  instructions: |
+    For Debian mirror packages allow unsigned repositories: use apt-get update -o Acquire::AllowInsecureRepositories=true and apt-get install -y --allow-unauthenticated.
   packages:
     npm: https://packages.donkey-system.svc/npm
     pypi: https://packages.donkey-system.svc/pypi
     go: https://packages.donkey-system.svc/go
     maven: https://packages.donkey-system.svc/maven
     nuget: https://packages.donkey-system.svc/nuget/index.json
+    debian: https://packages.donkey-system.svc/debian-unsigned
+    alpine: https://packages.donkey-system.svc/alpine
     resourceHosts:
       - registry.npmjs.org
       - pypi.org

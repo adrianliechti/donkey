@@ -231,6 +231,13 @@ tasks:
     cmds:
       - hack/verify.sh {{.RUNTIME | default "kind"}} -run '^TestBuilder(Samples|Recovery|FastMCPOAuth)$' {{.CLI_ARGS}}
 
+  verify:os-packages:
+    desc: Install real Debian/Alpine packages through authenticated TLS mirrors in an isolated BuildKit (needs Docker and internet)
+    env:
+      DONKEY_E2E_OS_PACKAGES: 'true'
+    cmds:
+      - go test -tags e2e -count=1 -timeout 20m -v -run '^TestOSPackageMirrors$' ./internal/build
+
   prepare:monorepos:
     desc: Fetch the pinned Google microservices-demo repository for live tests
     cmds:

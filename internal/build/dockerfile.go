@@ -26,6 +26,8 @@ var packageBuildArgs = []string{
 	"MAVEN_REPO_CENTRAL",
 	"MVNW_REPOURL",
 	"DONKEY_NUGET_SOURCE",
+	"DONKEY_DEBIAN_MIRROR",
+	"DONKEY_ALPINE_MIRROR",
 }
 
 type dockerfileOverlay struct {

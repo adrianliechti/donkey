@@ -33,6 +33,8 @@ type Config struct {
 	GoUpstream       string
 	MavenUpstream    string
 	NuGetUpstream    string
+	DebianUpstream   string
+	AlpineUpstream   string
 	ResourceHosts    []string
 	CredentialHosts  []string
 	Username         string
@@ -53,6 +55,8 @@ func ConfigFromEnv() (*Config, error) {
 		Go:               goUpstream,
 		Maven:            maven,
 		NuGet:            nuget,
+		Debian:           os.Getenv("DONKEY_PACKAGES_DEBIAN_URL"),
+		Alpine:           os.Getenv("DONKEY_PACKAGES_ALPINE_URL"),
 		ResourceHosts:    splitCommaSeparated(os.Getenv("DONKEY_PACKAGES_RESOURCE_HOSTS")),
 		CredentialHosts:  splitCommaSeparated(os.Getenv("DONKEY_PACKAGES_CREDENTIAL_HOSTS")),
 		Username:         os.Getenv("DONKEY_PACKAGES_USERNAME"),
@@ -70,6 +74,8 @@ func ConfigFromEnv() (*Config, error) {
 		GoUpstream:       packages.GoUpstream(),
 		MavenUpstream:    packages.MavenUpstream(),
 		NuGetUpstream:    packages.NuGetUpstream(),
+		DebianUpstream:   packages.Debian,
+		AlpineUpstream:   packages.Alpine,
 		ResourceHosts:    packages.ResourceHosts,
 		CredentialHosts:  packages.CredentialHosts,
 		Username:         packages.Username,
@@ -83,6 +89,8 @@ func ConfigFromEnv() (*Config, error) {
 			goUpstream, config.DefaultGoUpstream,
 			maven, config.DefaultMavenUpstream,
 			nuget, config.DefaultNuGetUpstream,
+			packages.Debian, "",
+			packages.Alpine, "",
 		),
 	}, nil
 }
@@ -159,7 +167,12 @@ func handler(cfg Config, current credentials, transport http.RoundTripper) (http
 		{prefix: "/go/", raw: cfg.GoUpstream},
 		{prefix: "/maven/", raw: cfg.MavenUpstream},
 		{prefix: "/nuget/", raw: cfg.NuGetUpstream, serviceIndex: true},
+		{prefix: "/debian/", raw: cfg.DebianUpstream},
+		{prefix: "/alpine/", raw: cfg.AlpineUpstream},
 	} {
+		if route.raw == "" && (route.prefix == "/debian/" || route.prefix == "/alpine/") {
+			continue
+		}
 		upstream, err := url.Parse(route.raw)
 		if err != nil || upstream.Host == "" || (upstream.Scheme != "http" && upstream.Scheme != "https") || upstream.User != nil {
 			return nil, fmt.Errorf("package upstream %s URL %q is invalid", strings.Trim(route.prefix, "/"), route.raw)
@@ -202,6 +215,11 @@ func handler(cfg Config, current credentials, transport http.RoundTripper) (http
 				}
 			}
 			if response.Request.Method == http.MethodHead {
+				return nil
+			}
+			// APT Release/Packages and APK indexes are signed or contain hashes.
+			// Preserve every byte, even when an upstream labels them as text.
+			if request.route.prefix == "/debian/" || request.route.prefix == "/alpine/" {
 				return nil
 			}
 			contentType := response.Header.Get("Content-Type")
@@ -678,6 +696,8 @@ func Run(ctx context.Context, cfg *Config) error {
 	mux.Handle("/go/", proxy)
 	mux.Handle("/maven/", proxy)
 	mux.Handle("/nuget/", proxy)
+	mux.Handle("/debian/", proxy)
+	mux.Handle("/alpine/", proxy)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) })
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, req *http.Request) {
 		if err := ready.status(req.Context()); err != nil {

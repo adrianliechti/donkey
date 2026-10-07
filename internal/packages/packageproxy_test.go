@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/adrianliechti/donkey/internal/config"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -524,6 +526,7 @@ func TestConfigFromEnvUsesPublicDefaultsWithoutCredentials(t *testing.T) {
 	for _, name := range []string{
 		"DONKEY_PACKAGES_NPM_URL", "DONKEY_PACKAGES_PYPI_URL", "DONKEY_PACKAGES_GO_URL",
 		"DONKEY_PACKAGES_MAVEN_URL", "DONKEY_PACKAGES_NUGET_URL",
+		"DONKEY_PACKAGES_DEBIAN_URL", "DONKEY_PACKAGES_ALPINE_URL",
 		"DONKEY_PACKAGES_RESOURCE_HOSTS", "DONKEY_PACKAGES_CREDENTIAL_HOSTS",
 		"DONKEY_PACKAGES_USERNAME", "DONKEY_PACKAGES_PASSWORD", "DONKEY_PACKAGES_DOCKER_CONFIG_DIR",
 		"DONKEY_PACKAGES_DOCKER_CONFIG_HOST",
@@ -534,7 +537,7 @@ func TestConfigFromEnvUsesPublicDefaultsWithoutCredentials(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.NPMUpstream != "https://registry.npmjs.org" || cfg.PyPIUpstream != "https://pypi.org/simple" || cfg.GoUpstream != "https://proxy.golang.org" || cfg.MavenUpstream != "https://repo.maven.apache.org/maven2" || cfg.NuGetUpstream != "https://api.nuget.org/v3/index.json" {
+	if cfg.DebianUpstream != "" || cfg.AlpineUpstream != "" || cfg.NPMUpstream != "https://registry.npmjs.org" || cfg.PyPIUpstream != "https://pypi.org/simple" || cfg.GoUpstream != "https://proxy.golang.org" || cfg.MavenUpstream != "https://repo.maven.apache.org/maven2" || cfg.NuGetUpstream != "https://api.nuget.org/v3/index.json" {
 		t.Fatalf("unexpected defaults: %+v", cfg)
 	}
 }
@@ -542,7 +545,9 @@ func TestConfigFromEnvUsesPublicDefaultsWithoutCredentials(t *testing.T) {
 func TestConfigFromEnvScopesSharedCredentialsToExplicitHosts(t *testing.T) {
 	t.Setenv("DONKEY_PACKAGES_NPM_URL", "https://npm.mirror.example.com/npm")
 	t.Setenv("DONKEY_PACKAGES_PYPI_URL", "https://pypi.mirror.example.com/index/simple")
-	t.Setenv("DONKEY_PACKAGES_CREDENTIAL_HOSTS", "npm.mirror.example.com, pypi.mirror.example.com")
+	t.Setenv("DONKEY_PACKAGES_DEBIAN_URL", "https://debian.mirror.example.com/debian")
+	t.Setenv("DONKEY_PACKAGES_ALPINE_URL", "https://alpine.mirror.example.com/alpinelinux")
+	t.Setenv("DONKEY_PACKAGES_CREDENTIAL_HOSTS", "npm.mirror.example.com, pypi.mirror.example.com, debian.mirror.example.com, alpine.mirror.example.com")
 	t.Setenv("DONKEY_PACKAGES_USERNAME", "reader")
 	t.Setenv("DONKEY_PACKAGES_PASSWORD", "token")
 
@@ -550,7 +555,7 @@ func TestConfigFromEnvScopesSharedCredentialsToExplicitHosts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, host := range []string{"npm.mirror.example.com", "pypi.mirror.example.com"} {
+	for _, host := range []string{"npm.mirror.example.com", "pypi.mirror.example.com", "debian.mirror.example.com", "alpine.mirror.example.com"} {
 		username, password, ok, err := cfg.credentials(host)
 		if err != nil {
 			t.Fatal(err)
@@ -587,5 +592,59 @@ func TestConfigFromEnvMapsDockerCredentialSourceToAllowedTarget(t *testing.T) {
 	}
 	if _, _, ok, err := cfg.credentials("oci.mirror.example.com"); err != nil || ok {
 		t.Fatal("Docker credential source was treated as an allowed target")
+	}
+}
+
+func TestOSPackageRoutesPreserveIndexesAndScopeCredentials(t *testing.T) {
+	cfg := Config{
+		NPMUpstream: config.DefaultNPMUpstream, PyPIUpstream: config.DefaultPyPIUpstream,
+		GoUpstream: config.DefaultGoUpstream, MavenUpstream: config.DefaultMavenUpstream, NuGetUpstream: config.DefaultNuGetUpstream,
+		DebianUpstream: "https://debian.mirror.example/debian", AlpineUpstream: "https://alpine.mirror.example/alpinelinux",
+		CredentialHosts: []string{"debian.mirror.example", "alpine.mirror.example"}, Username: "reader", Password: "private-token",
+	}
+	for _, tc := range []struct{ path, target, body string }{
+		{"/debian/dists/bookworm/InRelease", "https://debian.mirror.example/debian/dists/bookworm/InRelease", "-----BEGIN PGP SIGNED MESSAGE-----\nOrigin: https://debian.mirror.example/debian\n"},
+		{"/debian/pool/main/libj/libjansson/libjansson4.deb", "https://debian.mirror.example/debian/pool/main/libj/libjansson/libjansson4.deb", "\x00\xffhttps://debian.mirror.example/debian"},
+		{"/alpine/v3.21/main/x86_64/APKINDEX.tar.gz", "https://alpine.mirror.example/alpinelinux/v3.21/main/x86_64/APKINDEX.tar.gz", "\x1f\x8bhttps://alpine.mirror.example/alpinelinux"},
+		{"/alpine/edge/community/aarch64/example.apk", "https://alpine.mirror.example/alpinelinux/edge/community/aarch64/example.apk", "signed-apk"},
+	} {
+		t.Run(tc.path, func(t *testing.T) {
+			transport := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				if r.URL.String() != tc.target {
+					t.Fatalf("target = %s, want %s", r.URL, tc.target)
+				}
+				u, p, ok := r.BasicAuth()
+				if !ok || u != "reader" || p != "private-token" {
+					t.Fatal("missing proxy-owned upstream credential")
+				}
+				return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/plain"}, "ETag": {"signed-index"}}, Body: io.NopCloser(strings.NewReader(tc.body)), Request: r}, nil
+			})
+			proxy, err := handler(cfg, cfg.credentials, transport)
+			if err != nil {
+				t.Fatal(err)
+			}
+			res := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodGet, tc.path, nil)
+			req.Header.Set("Authorization", "Bearer build-supplied")
+			proxy.ServeHTTP(res, req)
+			if res.Code != http.StatusOK || res.Body.String() != tc.body || res.Header().Get("ETag") != "signed-index" {
+				t.Fatalf("archive bytes/headers changed: status=%d body=%q etag=%q", res.Code, res.Body.String(), res.Header().Get("ETag"))
+			}
+		})
+	}
+	cfg.DebianUpstream, cfg.AlpineUpstream = "", ""
+	proxy, err := handler(cfg, cfg.credentials, roundTripFunc(func(*http.Request) (*http.Response, error) {
+		t.Fatal("disabled mirror contacted upstream")
+		return nil, nil
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"/debian/dists/bookworm/InRelease", "/alpine/v3.21/main/x86_64/APKINDEX.tar.gz"} {
+		res := httptest.NewRecorder()
+		proxy.ServeHTTP(res, httptest.NewRequest(http.MethodGet, path, nil))
+		if res.Code != http.StatusNotFound {
+			t.Errorf("disabled %s: status=%d", path, res.Code)
+		}
 	}
 }

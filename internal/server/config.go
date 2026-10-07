@@ -202,6 +202,8 @@ func FromEnv() (*Config, error) {
 	c.Build.VerifySeconds = envInt("DONKEY_BUILDER_VERIFY_SECONDS")
 	c.Build.Attempts = envInt("DONKEY_BUILDER_ATTEMPTS")
 	c.Build.Instructions = os.Getenv("DONKEY_BUILDER_INSTRUCTIONS")
+	c.Build.DebianMirror = os.Getenv("DONKEY_BUILDER_DEBIAN_MIRROR") == "true"
+	c.Build.AlpineMirror = os.Getenv("DONKEY_BUILDER_ALPINE_MIRROR") == "true"
 	if v := os.Getenv("DONKEY_BUILDER_VERIFY"); v != "" {
 		c.Build.Verify = new(v == "true")
 	}

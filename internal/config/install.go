@@ -180,6 +180,11 @@ type InstallPackages struct {
 	Maven string `json:"maven,omitempty"`
 	NuGet string `json:"nuget,omitempty"`
 
+	// OS package mirrors are opt-in. URLs name archive roots, without an
+	// Alpine branch or Debian suite; those come from the build's base image.
+	Debian string `json:"debian,omitempty"`
+	Alpine string `json:"alpine,omitempty"`
+
 	// ResourceHosts are additional HTTPS hosts an index may send clients to
 	// for package metadata or artifacts. They are routed back through
 	// donkey-packages but receive no credential unless also named in
@@ -243,7 +248,11 @@ func (p InstallPackages) Validate() error {
 	for name, raw := range map[string]string{
 		"npm": p.NPMUpstream(), "pypi": p.PyPIUpstream(), "go": p.GoUpstream(),
 		"maven": p.MavenUpstream(), "nuget": p.NuGetUpstream(),
+		"debian": p.Debian, "alpine": p.Alpine,
 	} {
+		if raw == "" && (name == "debian" || name == "alpine") {
+			continue
+		}
 		u, err := url.Parse(raw)
 		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
 			return fmt.Errorf("build.packages.%s %q must be an http or https URL without embedded credentials", name, raw)
@@ -373,6 +382,10 @@ func packageHost(value string) (string, error) {
 // BuildSettings is the build configuration donkey-server acts on. There is
 // one builder, so its settings sit directly under build:.
 type BuildSettings struct {
+	// Derived from InstallPackages and transported separately to the server.
+	// Upstream URLs and credentials never enter the build settings.
+	DebianMirror bool `json:"-"`
+	AlpineMirror bool `json:"-"`
 	// Env is injected into every build, under the app's own build.env.
 	// BuildKit hands it to every RUN, which is what puts a package manager's
 	// mirror in reach of build steps donkey never sees.

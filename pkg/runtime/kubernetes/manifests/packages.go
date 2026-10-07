@@ -34,6 +34,7 @@ func (in SystemInput) packagesConfigHash() string {
 	p := in.Build.Packages
 	return configHash(
 		p.NPMUpstream(), p.PyPIUpstream(), p.GoUpstream(), p.MavenUpstream(), p.NuGetUpstream(),
+		p.Debian, p.Alpine,
 		strings.Join(p.ResourceHosts, ","), strings.Join(p.CredentialHosts, ","),
 		p.Username, p.Password, p.DockerConfigSecret, p.DockerConfigHost,
 		in.Build.Proxy.HTTP, in.Build.Proxy.HTTPS, in.Build.Proxy.NoProxy,
@@ -52,6 +53,8 @@ func packagesDeployment(in SystemInput) *appsv1.Deployment {
 		{Name: "DONKEY_PACKAGES_GO_URL", Value: p.GoUpstream()},
 		{Name: "DONKEY_PACKAGES_MAVEN_URL", Value: p.MavenUpstream()},
 		{Name: "DONKEY_PACKAGES_NUGET_URL", Value: p.NuGetUpstream()},
+		{Name: "DONKEY_PACKAGES_DEBIAN_URL", Value: p.Debian},
+		{Name: "DONKEY_PACKAGES_ALPINE_URL", Value: p.Alpine},
 		{Name: "DONKEY_PACKAGES_RESOURCE_HOSTS", Value: strings.Join(p.ResourceHosts, ",")},
 		{Name: "DONKEY_PACKAGES_CREDENTIAL_HOSTS", Value: strings.Join(p.CredentialHosts, ",")},
 		{Name: "DONKEY_PACKAGES_USERNAME", Value: p.Username},

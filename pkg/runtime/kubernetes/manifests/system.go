@@ -361,6 +361,8 @@ func serverDeployment(in SystemInput) *appsv1.Deployment {
 		{Name: "DONKEY_REGISTRY_CA_FILE", Value: registryCAFile(in)},
 		{Name: "DONKEY_DOMAIN", Value: in.Domain},
 		{Name: "DONKEY_BUILDKIT_ADDR", Value: fmt.Sprintf("tcp://%s.%s.svc:%d", buildkitName, in.Namespace, buildkitPort)},
+		{Name: "DONKEY_BUILDER_DEBIAN_MIRROR", Value: strconv.FormatBool(in.Build.Packages.Debian != "")},
+		{Name: "DONKEY_BUILDER_ALPINE_MIRROR", Value: strconv.FormatBool(in.Build.Packages.Alpine != "")},
 		{Name: "DONKEY_NAMESPACE_PREFIX", Value: in.NamespacePrefix},
 		{Name: "DONKEY_SYSTEM_NAMESPACE", Value: in.Namespace},
 		{Name: "DONKEY_WORKLOAD_NAMESPACE", Value: in.WorkloadNamespace},

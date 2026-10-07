@@ -22,12 +22,17 @@ func TestConfigReadsRegistryMirrorsForBuildSessionAuth(t *testing.T) {
 	t.Setenv("DONKEY_REDIS_IMAGE", "jfrog.corp/dockerhub/library/redis")
 	t.Setenv("DONKEY_DOMAIN", "apps.example.com")
 	t.Setenv("DONKEY_BUILDKIT_ADDR", "tcp://donkey-buildkitd:1234")
+	t.Setenv("DONKEY_BUILDER_DEBIAN_MIRROR", "true")
+	t.Setenv("DONKEY_BUILDER_ALPINE_MIRROR", "true")
 	t.Setenv("DONKEY_SESSION_KEY", strings.Repeat("00", 32))
 	t.Setenv("DONKEY_TELEMETRY_KEY", strings.Repeat("11", 32))
 
 	cfg, err := FromEnv()
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !cfg.Build.DebianMirror || !cfg.Build.AlpineMirror {
+		t.Fatal("OS mirror feature flags did not reach builder settings")
 	}
 	if got := cfg.RegistryMirrors["docker.io"]; got != "https://mirror.example.com/dockerhub" {
 		t.Fatalf("docker.io mirror = %q", got)

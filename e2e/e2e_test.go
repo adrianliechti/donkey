@@ -261,7 +261,7 @@ func TestEndToEnd(t *testing.T) {
 	t.Run("clean-slate", func(t *testing.T) {
 		_ = s.api.Destroy(ctx, space, app, false)
 		_ = s.api.Destroy(ctx, space, packagesApp, false)
-		_ = s.api.RemoveSpaceAddon(ctx, space, "postgres", false)
+		_ = s.api.RemoveSpaceAddon(ctx, space, "postgres", false, false)
 		s.rawTry(http.MethodDelete, "/v1/spaces/"+space)
 	})
 
@@ -306,6 +306,23 @@ RUN printf '%s\n' \
   && dotnet restore /tmp/nuget-probe/probe.csproj --configfile /tmp/NuGet.Config \
   && touch /nuget-ok
 
+FROM debian:bookworm-slim AS debian-probe
+RUN test -n "$DONKEY_DEBIAN_MIRROR" \
+  && . /etc/os-release \
+  && rm -f /etc/apt/sources.list.d/debian.sources /etc/apt/sources.list.d/debian.list \
+  && printf 'deb %s %s main\n' "$DONKEY_DEBIAN_MIRROR" "$VERSION_CODENAME" > /etc/apt/sources.list \
+  && apt-get update -o Acquire::AllowInsecureRepositories=true \
+  && apt-get install -y --allow-unauthenticated --no-install-recommends libjansson4 \
+  && dpkg-query -W libjansson4 \
+  && touch /debian-ok
+
+FROM alpine:3.21 AS alpine-probe
+RUN test -n "$DONKEY_ALPINE_MIRROR" \
+  && sed -i -E "s#https?://.*/(v[0-9]+\\.[0-9]+|edge)/#${DONKEY_ALPINE_MIRROR}/\\1/#" /etc/apk/repositories \
+  && apk add --no-cache jansson \
+  && apk info -e jansson \
+  && touch /alpine-ok
+
 FROM busybox:1.37
 RUN test -n "$NPM_CONFIG_REGISTRY" && test -n "$PIP_INDEX_URL" && test -n "$GOPROXY"
 RUN test -n "$DONKEY_MAVEN_MIRROR" && test -n "$MAVEN_REPO_CENTRAL" && test -n "$MVNW_REPOURL" && test -n "$DONKEY_NUGET_SOURCE"
@@ -314,6 +331,8 @@ COPY --from=pypi-probe /pypi-ok /pypi-ok
 COPY --from=go-probe /go-ok /go-ok
 COPY --from=maven-probe /maven-ok /maven-ok
 COPY --from=nuget-probe /nuget-ok /nuget-ok
+COPY --from=debian-probe /debian-ok /debian-ok
+COPY --from=alpine-probe /alpine-ok /alpine-ok
 RUN mkdir -p /site && echo packages-ok > /site/index.html
 CMD ["httpd", "-f", "-p", "8080", "-h", "/site"]
 `)

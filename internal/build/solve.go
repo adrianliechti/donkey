@@ -216,5 +216,15 @@ func (b *BuildKitBuilder) buildEnv(appEnv map[string]string) map[string]string {
 	} {
 		env[key] = value
 	}
+	// Empty values deliberately override app build.env when a mirror is off.
+	for _, name := range []string{"DONKEY_DEBIAN_MIRROR", "DONKEY_ALPINE_MIRROR"} {
+		env[name] = ""
+	}
+	if b.Settings.DebianMirror {
+		env["DONKEY_DEBIAN_MIRROR"] = packagesURL + "/debian"
+	}
+	if b.Settings.AlpineMirror {
+		env["DONKEY_ALPINE_MIRROR"] = packagesURL + "/alpine"
+	}
 	return env
 }

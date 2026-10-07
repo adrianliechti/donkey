@@ -51,6 +51,8 @@ build:
     go: https://artifactory.example.com/api/go/go
     maven: https://artifactory.example.com/maven-remote
     nuget: https://artifactory.example.com/api/nuget/v3/nuget/index.json
+    debian: https://artifactory.example.com/debian
+    alpine: https://artifactory.example.com/alpinelinux
     resourceHosts:
       - artifacts.example.com
     credentialHosts:
@@ -104,7 +106,9 @@ build:
 	if f.Build.Proxy.HTTPS != "http://proxy.example.com:3128" || f.Build.Proxy.NoProxy != ".example.com,10.0.0.0/8" {
 		t.Errorf("proxy = %+v", f.Build.Proxy)
 	}
-	if f.Build.Packages.Go != "https://artifactory.example.com/api/go/go" ||
+	if f.Build.Packages.Debian != "https://artifactory.example.com/debian" ||
+		f.Build.Packages.Alpine != "https://artifactory.example.com/alpinelinux" ||
+		f.Build.Packages.Go != "https://artifactory.example.com/api/go/go" ||
 		f.Build.Packages.Maven != "https://artifactory.example.com/maven-remote" ||
 		f.Build.Packages.NuGet != "https://artifactory.example.com/api/nuget/v3/nuget/index.json" ||
 		len(f.Build.Packages.ResourceHosts) != 1 || f.Build.Packages.ResourceHosts[0] != "artifacts.example.com" ||
@@ -567,5 +571,32 @@ func TestExampleInstallFilesLoad(t *testing.T) {
 		t.Logf("%s: tls=%q externalDNS=%v system=%q workload=%q",
 			filepath.Base(m), f.TLS.EffectiveMode(), f.Gateway.ExternalDNS.Enabled(),
 			f.Kubernetes.System.Namespace, f.Kubernetes.Workload.Namespace)
+	}
+}
+
+func TestOSPackageMirrorsAreOptionalAndCredentialsAreScoped(t *testing.T) {
+	p := InstallPackages{
+		Debian: "https://debian.mirror.example/debian", Alpine: "https://alpine.mirror.example/alpinelinux",
+		CredentialHosts: []string{"debian.mirror.example", "alpine.mirror.example"}, Username: "reader", Password: "token",
+	}
+	if err := p.ValidateCredentials(); err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"debian", "alpine"} {
+		for _, raw := range []string{"ftp://mirror.example", "https://reader:token@mirror.example", "https://mirror.example/?token=secret"} {
+			bad := InstallPackages{}
+			if field == "debian" {
+				bad.Debian = raw
+			} else {
+				bad.Alpine = raw
+			}
+			if err := bad.Validate(); err == nil {
+				t.Errorf("accepted %s mirror %q", field, raw)
+			}
+		}
+	}
+	p.Debian = "http://debian.mirror.example/debian"
+	if err := p.ValidateCredentials(); err == nil {
+		t.Fatal("credentials over plaintext HTTP were accepted")
 	}
 }

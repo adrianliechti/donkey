@@ -33,6 +33,9 @@ func main() {
 		newRoute("/go", "https://proxy.golang.org"),
 		newRoute("/maven", "https://repo.maven.apache.org/maven2"),
 		newRoute("/nuget", "https://api.nuget.org/v3"),
+		newRoute("/debian", "https://deb.debian.org/debian"),
+		newRoute("/debian-unsigned", "https://deb.debian.org/debian"),
+		newRoute("/alpine", "https://dl-cdn.alpinelinux.org/alpine"),
 	}
 
 	proxy := &httputil.ReverseProxy{
@@ -56,6 +59,13 @@ func main() {
 		}
 		for _, candidate := range routes {
 			if req.URL.EscapedPath() == candidate.prefix || strings.HasPrefix(req.URL.EscapedPath(), candidate.prefix+"/") {
+				// Keep a valid Release file and its hashes, but omit signatures
+				// so tests exercise both APT opt-ins for unsigned repositories.
+				if candidate.prefix == "/debian-unsigned" &&
+					(strings.HasSuffix(req.URL.Path, "/InRelease") || strings.HasSuffix(req.URL.Path, "/Release.gpg")) {
+					http.NotFound(w, req)
+					return
+				}
 				ctx := context.WithValue(req.Context(), routeKey{}, candidate)
 				proxy.ServeHTTP(w, req.WithContext(ctx))
 				return

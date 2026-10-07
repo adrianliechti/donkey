@@ -786,6 +786,40 @@ build:
     # password: … # or DONKEY_PACKAGES_PASSWORD
 ```
 
+Debian and Alpine OS package mirrors are optional. Set archive roots under
+`build.packages`; the Dockerfile assistant configures APT/APK using the base
+image's Debian codename or existing Alpine branch and repository selections:
+
+```yaml
+build:
+  packages:
+    debian: https://debian.mirror.registry.lgt.com/debian
+    alpine: https://alpine.mirror.registry.lgt.com/alpinelinux
+    credentialHosts:
+      - debian.mirror.registry.lgt.com
+      - alpine.mirror.registry.lgt.com
+    username: uadrl@lgt.com
+    # Supply the token through DONKEY_PACKAGES_PASSWORD or Docker config.
+  instructions: |
+    For Debian packages from our mirror, allow unsigned repositories:
+    use apt-get update -o Acquire::AllowInsecureRepositories=true
+    and apt-get install -y --allow-unauthenticated.
+```
+
+The unsigned-repository instructions are optional; omit them for signed
+archives. The update flag permits untrusted indexes, while the install flag
+permits installation of unauthenticated packages. Neither changes TLS checks;
+upstream TLS uses the package proxy's existing CA configuration.
+
+Every stage receives `DONKEY_DEBIAN_MIRROR` and `DONKEY_ALPINE_MIRROR` as build
+arguments. Each is empty when its mirror is disabled; otherwise it names only
+the internal package proxy. Existing hand-written Dockerfiles must configure
+APT/APK from these variables, as the assistant does for generated recipes.
+The Debian endpoint serves the base archive's `main` component; it does not
+provide Ubuntu or a separate Debian security archive. OS package indexes and
+artifacts pass through the proxy byte-for-byte to preserve signatures and
+checksums. JFrog credentials stay in the proxy.
+
 NuGet builds receive the internal v3 service index as `DONKEY_NUGET_SOURCE`.
 Modern NuGet requires a `NuGet.Config` entry with
 `allowInsecureConnections="true"` for the cluster-local HTTP hop; the
@@ -1378,9 +1412,26 @@ network flips, files, destroy. Because it never talks to Kubernetes or
 Docker directly, one suite verifies both runtimes.
 
 Both live E2E installs put an authenticated TLS mirror in front of npm, PyPI,
-Go, Maven and NuGet. The package build therefore also verifies Docker-config
+Go, Maven, NuGet, Debian and Alpine. The package build therefore also verifies Docker-config
 credential lookup, private-CA trust, readiness authentication, cross-host
-artifact routing and the real clients for all five ecosystems.
+artifact routing and the real clients for all seven ecosystems. The Debian
+fixture omits archive signatures to exercise the operator's unsigned-package
+instructions; the Alpine fixture preserves package signatures.
+
+`task verify:os-packages` runs isolated OS package E2E tests without a running
+Donkey installation or JFrog credentials. It starts a temporary BuildKit
+container and the real package proxy, then installs `libjansson4`/`jansson`
+through an authenticated TLS mirror forwarding to the public archives. It
+checks signed Debian and Alpine installs, rejection of unsigned Debian
+archives without both APT flags, success with both flags, and rejection of
+incorrect mirror credentials. Docker and internet access are required; the
+test removes its container afterward.
+
+To also verify model-generated Debian/Alpine Dockerfiles and startup of an app
+that loads the installed library, run `DONKEY_E2E_BUILDER=true task
+verify:os-packages` with `OPENAI_API_KEY` and `DONKEY_MODEL` set (and
+`OPENAI_BASE_URL` for a custom endpoint). This live-model subtest is skipped
+unless explicitly enabled.
 
 Hostnames resolve through `sudo devkube connect`, which keeps donkey's
 hostnames in `/etc/hosts` while it runs. That is why this repo no longer

@@ -347,6 +347,34 @@ that require live services or secrets are checked at rollout. So:
   Preserve NPM_CONFIG_REGISTRY, PIP_INDEX_URL, GOPROXY, DONKEY_NUGET_SOURCE,
   MAVEN_REPO_CENTRAL and MVNW_REPOURL; never add a public registry URL or
   package credential to work around them.
+- Before each Alpine stage installs OS packages, configure its repositories
+  in the same RUN as apk add, guarded so an installation without a mirror
+  keeps the base image's repositories:
+    if [ -n "$DONKEY_ALPINE_MIRROR" ]; then
+      sed -i -E "s#https?://.*/(v[0-9]+\\.[0-9]+|edge)/#${DONKEY_ALPINE_MIRROR}/\\1/#" /etc/apk/repositories
+    fi
+  This keeps the image's branch (including edge) and main/community/testing
+  selections. Do not hard-code a branch, add public fallbacks or use
+  --allow-untrusted. TLS and authentication are handled by donkey-packages.
+- Before each Debian stage runs apt-get update/install, configure its base
+  archive in the same RUN, guarded by DONKEY_DEBIAN_MIRROR:
+    if [ -n "$DONKEY_DEBIAN_MIRROR" ]; then
+      . /etc/os-release
+      if [ "$ID" = debian ]; then
+        rm -f /etc/apt/sources.list.d/debian.sources /etc/apt/sources.list.d/debian.list
+        printf 'deb %s %s main\n' "$DONKEY_DEBIAN_MIRROR" "$VERSION_CODENAME" > /etc/apt/sources.list
+      fi
+    fi
+  The mirror is a Debian base archive, not Ubuntu or debian-security. Never
+  point an Ubuntu image at it or invent a security archive under that URL.
+  Use the base image's VERSION_CODENAME and native architecture. Signed
+  archives use the base image's Debian archive keyring. Only when the
+  installation-specific instructions explicitly permit unsigned Debian
+  packages, use apt-get update -o Acquire::AllowInsecureRepositories=true
+  and apt-get install -y --allow-unauthenticated. These are two different
+  steps; neither disables TLS certificate checks. Do this as root before
+  switching USER. Keep any separately required third-party
+  repository explicit. Never embed JFrog URLs or credentials in the recipe.
 - Maven 3 does not honor MAVEN_REPO_CENTRAL. For every Maven 3 build, create a
   settings.xml with a mirror whose mirrorOf is * and whose URL is
   ${env.DONKEY_MAVEN_MIRROR}, then pass it to mvn or ./mvnw with --settings.

@@ -21,12 +21,16 @@ cat > "${INSTALL_FILE}" <<EOF
 registry:
   caFile: ${CERT_DIR}/ca.crt
 build:
+  instructions: |
+    For Debian mirror packages allow unsigned repositories: use apt-get update -o Acquire::AllowInsecureRepositories=true and apt-get install -y --allow-unauthenticated.
   packages:
     npm: https://${HOST}/npm
     pypi: https://${HOST}/pypi
     go: https://${HOST}/go
     maven: https://${HOST}/maven
     nuget: https://${HOST}/nuget/index.json
+    debian: https://${HOST}/debian-unsigned
+    alpine: https://${HOST}/alpine
     resourceHosts:
       - registry.npmjs.org
       - pypi.org

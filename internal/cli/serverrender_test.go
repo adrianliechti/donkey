@@ -56,6 +56,7 @@ func TestRuntimeImageOverridesReachBothDeploymentBundles(t *testing.T) {
 		Image:           "registry.example.com/donkey-server:test",
 		BusyboxImage:    "jfrog.corp/dockerhub/library/busybox:1.37",
 		AddonImages:     config.InstallAddonImages{Redis: "jfrog.corp/dockerhub/library/redis"},
+		Build:           config.InstallBuild{Packages: config.InstallPackages{Debian: "https://debian.mirror.example/debian", Alpine: "https://alpine.mirror.example/alpinelinux"}},
 		CommonOfferings: config.CommonOfferings{"postgres", "redis"},
 		Domain:          "apps.example.com",
 		Registry:        config.InstallRegistry{Registry: config.Registry{URL: "registry.example.com/donkey"}},
@@ -90,6 +91,19 @@ func TestRuntimeImageOverridesReachBothDeploymentBundles(t *testing.T) {
 	}
 	if got := compose.Services["server"].Environment["DONKEY_COMMON_OFFERINGS"]; got != settings.CommonOfferings.JSON() {
 		t.Fatal("Compose bundle omitted common offerings")
+	}
+	for key, want := range map[string]string{
+		"DONKEY_PACKAGES_DEBIAN_URL": settings.Build.Packages.Debian,
+		"DONKEY_PACKAGES_ALPINE_URL": settings.Build.Packages.Alpine,
+	} {
+		if got := compose.Services["packages"].Environment[key]; got != want {
+			t.Errorf("Compose %s = %q, want %q", key, got, want)
+		}
+	}
+	for _, key := range []string{"DONKEY_BUILDER_DEBIAN_MIRROR", "DONKEY_BUILDER_ALPINE_MIRROR"} {
+		if got := compose.Services["server"].Environment[key]; got != "true" {
+			t.Errorf("Compose %s = %q, want true", key, got)
+		}
 	}
 	// Direct Kubernetes install uses the same input as the bundle renderer.
 	input := kubernetesSystemInput(settings, false, "", "", "session", "telemetry")

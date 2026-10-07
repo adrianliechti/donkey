@@ -20,17 +20,19 @@ func TestBuildEnvAlwaysAddsInternalPackageSettings(t *testing.T) {
 
 	got := builder.buildEnv(map[string]string{"SHARED": "app"})
 	want := map[string]string{
-		"NPM_CONFIG_REGISTRY": "http://donkey-packages/npm/",
-		"PIP_INDEX_URL":       "http://donkey-packages/pypi/",
-		"PIP_TRUSTED_HOST":    "donkey-packages",
-		"GOPROXY":             "http://donkey-packages/go/",
-		"GOSUMDB":             "off",
-		"GONOSUMDB":           "*",
-		"DONKEY_MAVEN_MIRROR": "http://donkey-packages/maven/",
-		"MAVEN_REPO_CENTRAL":  "http://donkey-packages/maven/",
-		"MVNW_REPOURL":        "http://donkey-packages/maven/",
-		"DONKEY_NUGET_SOURCE": "http://donkey-packages/nuget/index.json",
-		"SHARED":              "app",
+		"NPM_CONFIG_REGISTRY":  "http://donkey-packages/npm/",
+		"PIP_INDEX_URL":        "http://donkey-packages/pypi/",
+		"PIP_TRUSTED_HOST":     "donkey-packages",
+		"GOPROXY":              "http://donkey-packages/go/",
+		"GOSUMDB":              "off",
+		"GONOSUMDB":            "*",
+		"DONKEY_MAVEN_MIRROR":  "http://donkey-packages/maven/",
+		"MAVEN_REPO_CENTRAL":   "http://donkey-packages/maven/",
+		"MVNW_REPOURL":         "http://donkey-packages/maven/",
+		"DONKEY_NUGET_SOURCE":  "http://donkey-packages/nuget/index.json",
+		"DONKEY_DEBIAN_MIRROR": "",
+		"DONKEY_ALPINE_MIRROR": "",
+		"SHARED":               "app",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("buildEnv() = %#v, want %#v", got, want)
@@ -102,7 +104,7 @@ func TestInjectPackageBuildArgsIntoEveryStage(t *testing.T) {
 	if count := strings.Count(text, "ARG NPM_CONFIG_REGISTRY\n"); count != 2 {
 		t.Fatalf("package arguments were injected into %d stages, want 2:\n%s", count, text)
 	}
-	for _, name := range []string{"DONKEY_MAVEN_MIRROR", "MAVEN_REPO_CENTRAL", "MVNW_REPOURL", "DONKEY_NUGET_SOURCE"} {
+	for _, name := range []string{"DONKEY_MAVEN_MIRROR", "MAVEN_REPO_CENTRAL", "MVNW_REPOURL", "DONKEY_NUGET_SOURCE", "DONKEY_DEBIAN_MIRROR", "DONKEY_ALPINE_MIRROR"} {
 		if count := strings.Count(text, "ARG "+name+"\n"); count != 2 {
 			t.Errorf("%s was injected into %d stages, want 2", name, count)
 		}
@@ -169,5 +171,29 @@ func TestSolveOptAttestationsAndLabels(t *testing.T) {
 	}
 	if got, ok := attrs["attest:sbom"]; !ok || got != "" {
 		t.Errorf("SBOM opt-in should render the attr, got %q/%v", got, ok)
+	}
+}
+
+func TestOSPackageMirrorBuildEnvironment(t *testing.T) {
+	appEnv := map[string]string{
+		"DONKEY_DEBIAN_MIRROR": "https://bypass.example/debian",
+		"DONKEY_ALPINE_MIRROR": "https://bypass.example/alpine",
+	}
+	for _, enabled := range []bool{false, true} {
+		b := BuildKitBuilder{PackagesURL: "http://172.31.250.10:8090/", Settings: config.BuildSettings{
+			DebianMirror: enabled, AlpineMirror: enabled,
+		}}
+		got := b.buildEnv(appEnv)
+		for name, value := range map[string]string{
+			"DONKEY_DEBIAN_MIRROR": "http://172.31.250.10:8090/debian",
+			"DONKEY_ALPINE_MIRROR": "http://172.31.250.10:8090/alpine",
+		} {
+			if !enabled {
+				value = ""
+			}
+			if got[name] != value {
+				t.Errorf("enabled=%v: %s = %q, want %q", enabled, name, got[name], value)
+			}
+		}
 	}
 }
