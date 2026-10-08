@@ -20,6 +20,7 @@ import (
 	"github.com/docker/docker/pkg/stdcopy"
 
 	"github.com/adrianliechti/donkey/internal/config"
+	"github.com/adrianliechti/donkey/internal/filetransfer"
 	rt "github.com/adrianliechti/donkey/pkg/runtime"
 )
 
@@ -359,7 +360,9 @@ func (r *Runtime) WriteFile(ctx context.Context, space, app, subPath string, in 
 	dir, target := paths[0], paths[1]
 	tmp := dir + "/.donkey-upload-" + strings.ToLower(rand.Text()[:12])
 
-	if err := r.execFiles(ctx, helper, []string{"dd", "of=" + tmp, "bs=65536"}, in, nil); err != nil {
+	if err := filetransfer.Write(in, tmp, func(argv []string, stdin io.Reader, stdout io.Writer) error {
+		return r.execFiles(ctx, helper, argv, stdin, stdout)
+	}); err != nil {
 		r.removeQuietly(ctx, helper, tmp)
 		return err
 	}
@@ -369,7 +372,7 @@ func (r *Runtime) WriteFile(ctx context.Context, space, app, subPath string, in 
 		r.removeQuietly(ctx, helper, tmp)
 		return err
 	}
-	if err := r.execFiles(ctx, helper, []string{"mv", tmp, target}, nil, nil); err != nil {
+	if err := r.execFiles(ctx, helper, []string{"mv", "-fT", tmp, target}, nil, nil); err != nil {
 		r.removeQuietly(ctx, helper, tmp)
 		return err
 	}

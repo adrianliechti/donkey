@@ -28,6 +28,7 @@ import (
 	"k8s.io/streaming/pkg/httpstream"
 
 	"github.com/adrianliechti/donkey/internal/config"
+	"github.com/adrianliechti/donkey/internal/filetransfer"
 	rt "github.com/adrianliechti/donkey/pkg/runtime"
 	"github.com/adrianliechti/donkey/pkg/runtime/kubernetes/manifests"
 )
@@ -215,9 +216,9 @@ func (c *Client) WriteFile(ctx context.Context, namespace, objectName, space, ap
 	dir, target := paths[0], paths[1]
 	tmp := dir + "/.donkey-upload-" + strings.ToLower(rand.Text()[:12])
 
-	// dd reads until stdin ends, so the file is written straight from the
-	// request body; 64K blocks keep the round trips down.
-	err = c.execInPod(ctx, namespace, helper, []string{"dd", "of=" + tmp, "bs=65536"}, r, nil)
+	err = filetransfer.Write(r, tmp, func(argv []string, stdin io.Reader, stdout io.Writer) error {
+		return c.execInPod(ctx, namespace, helper, argv, stdin, stdout)
+	})
 	if err != nil {
 		c.removeQuietly(ctx, namespace, helper, tmp)
 		return err
@@ -228,7 +229,7 @@ func (c *Client) WriteFile(ctx context.Context, namespace, objectName, space, ap
 		c.removeQuietly(ctx, namespace, helper, tmp)
 		return err
 	}
-	if err := c.execInPod(ctx, namespace, helper, []string{"mv", tmp, target}, nil, nil); err != nil {
+	if err := c.execInPod(ctx, namespace, helper, []string{"mv", "-fT", tmp, target}, nil, nil); err != nil {
 		c.removeQuietly(ctx, namespace, helper, tmp)
 		return err
 	}
@@ -843,9 +844,8 @@ func (c *Client) requireFilesHelper(ctx context.Context, namespace string, helpe
 	return pod, nil
 }
 
-// execInPod runs one command in the helper pod. The command is an argv slice
-// and never a shell line, so no caller-supplied name can turn into another
-// command.
+// execInPod runs one command in the helper pod. Caller-supplied paths are argv
+// values, never interpolated into shell source.
 func (c *Client) execInPod(ctx context.Context, namespace string, helper filesHelperRef, argv []string, stdin io.Reader, stdout io.Writer) error {
 	if _, err := c.requireFilesHelper(ctx, namespace, helper); err != nil {
 		return err
