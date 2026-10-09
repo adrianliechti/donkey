@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"testing"
@@ -14,7 +15,68 @@ import (
 	"github.com/docker/docker/client"
 
 	"github.com/adrianliechti/donkey/internal/config"
+	rt "github.com/adrianliechti/donkey/pkg/runtime"
 )
+
+func TestCleanRelPath(t *testing.T) {
+	for _, tc := range []struct {
+		in, want string
+		bad      bool
+	}{
+		{"", "", false},
+		{".", "", false},
+		{"   ", "", false},
+		{"original.pdf", "original.pdf", false},
+		{"app-data//./uploads/", "app-data/uploads", false},
+		{"app-data/x/../report.pdf", "app-data/report.pdf", false},
+		{"app-data/é #?&+%25.pdf ", "app-data/é #?&+%25.pdf ", false},
+		{"app-data/ report.pdf", "app-data/ report.pdf", false},
+		{"/etc/passwd", "", true},
+		{"/data/app-data/file.pdf", "", true},
+		{"..", "", true},
+		{"../../etc/passwd", "", true},
+		{"app-data/../../etc/passwd", "", true},
+		{"app-data/a\x00b", "", true},
+	} {
+		t.Run(tc.in, func(t *testing.T) {
+			got, err := cleanRelPath(tc.in)
+			if tc.bad {
+				if !errors.Is(err, rt.ErrBadPath) {
+					t.Fatalf("path %q: got %q, %v, want ErrBadPath", tc.in, got, err)
+				}
+				return
+			}
+			if err != nil || got != tc.want || !insideVolume(volumePath(got)) {
+				t.Fatalf("path %q: got %q, %v, want %q inside the disk", tc.in, got, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestWriteFileRejectsInvalidPathBeforeContactingDocker(t *testing.T) {
+	for _, path := range []string{"", ".", "app-data/..", "/data/file.pdf", "../file.pdf", "app-data/../../file.pdf", "a\x00b"} {
+		t.Run(path, func(t *testing.T) {
+			// No Docker client: any attempt to acquire a helper would panic.
+			err := (&Runtime{}).WriteFile(context.Background(), "team", "api", path, strings.NewReader("data"))
+			if !errors.Is(err, rt.ErrBadPath) {
+				t.Fatalf("WriteFile(%q): %v, want ErrBadPath", path, err)
+			}
+		})
+	}
+}
+
+func TestInsideVolume(t *testing.T) {
+	for _, path := range []string{"/data", "/data/app-data", "/data/app-data/report.pdf"} {
+		if !insideVolume(path) {
+			t.Errorf("%q should be inside the disk", path)
+		}
+	}
+	for _, path := range []string{"", "/", "/etc/passwd", "/database/file.pdf", "/data-other/file.pdf", "data/file.pdf"} {
+		if insideVolume(path) {
+			t.Errorf("%q should be outside the disk", path)
+		}
+	}
+}
 
 func TestBusyboxImageUsedForFilesAndVolumeInitialization(t *testing.T) {
 	t.Setenv("DONKEY_REGISTRY_PASSWORD", "registry-secret")

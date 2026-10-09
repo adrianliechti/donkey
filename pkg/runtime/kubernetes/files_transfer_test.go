@@ -32,9 +32,14 @@ func (uploadFailureReader) Read([]byte) (int, error) { return 0, errors.New("upl
 // returning nil when dd exits zero, which used to commit a truncated upload.
 func TestWriteFileVerifiesUploadBeforeReplacingDestination(t *testing.T) {
 	data := bytes.Repeat([]byte{0, 255, 1, '\n', '\r'}, 40000)
-	for _, scenario := range []string{"complete", "empty", "source error", "disk truncated", "same size corruption"} {
+	for _, scenario := range []string{"complete", "empty", "special filename", "source error", "disk truncated", "same size corruption", "parent symlink escape", "target symlink escape", "sibling volume escape"} {
 		t.Run(scenario, func(t *testing.T) {
-			const namespace, target = "workloads", "/data/app-data/file.bin"
+			const namespace = "workloads"
+			rel := "app-data/file.bin"
+			if scenario == "special filename" {
+				rel = "app-data/é #?&+%25.bin "
+			}
+			target := volumePath(rel)
 			var mu sync.Mutex
 			disk := map[string][]byte{target: []byte("original")}
 			client := &Client{}
@@ -57,6 +62,9 @@ func TestWriteFileVerifiesUploadBeforeReplacingDestination(t *testing.T) {
 					argv := r.URL.Query()["command"]
 					var output string
 					if argv[0] == "sh" {
+						if strings.HasSuffix(scenario, "escape") {
+							t.Error("an upload was started outside the disk")
+						}
 						var incoming bytes.Buffer
 						for {
 							_, message, err := conn.ReadMessage()
@@ -87,9 +95,17 @@ func TestWriteFileVerifiesUploadBeforeReplacingDestination(t *testing.T) {
 						switch argv[0] {
 						case "realpath":
 							output = strings.Join(argv[1:], "\n") + "\n"
+							switch scenario {
+							case "parent symlink escape":
+								output = "/etc\n" + target + "\n"
+							case "target symlink escape":
+								output = "/data/app-data\n/etc/file.bin\n"
+							case "sibling volume escape":
+								output = "/data/app-data\n/data-other/file.bin\n"
+							}
 						case "chmod":
 						case "mv":
-							if len(argv) != 4 || argv[1] != "-fT" {
+							if len(argv) != 4 || argv[1] != "-fT" || argv[3] != target {
 								t.Errorf("unexpected mv: %v", argv)
 							} else {
 								disk[argv[3]] = disk[argv[2]]
@@ -137,8 +153,8 @@ func TestWriteFileVerifiesUploadBeforeReplacingDestination(t *testing.T) {
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
-			err = client.WriteFile(ctx, namespace, "team-site", "team", "site", "app-data/file.bin", source)
-			wantErr := scenario != "complete" && scenario != "empty"
+			err = client.WriteFile(ctx, namespace, "team-site", "team", "site", rel, source)
+			wantErr := scenario != "complete" && scenario != "empty" && scenario != "special filename"
 			if (err != nil) != wantErr {
 				t.Fatalf("WriteFile error = %v, want error %v", err, wantErr)
 			}

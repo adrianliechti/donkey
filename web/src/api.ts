@@ -650,12 +650,14 @@ function unauthorized(): ApiError {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const headers = new Headers(init?.headers)
+  // FormData needs the browser's multipart content type and boundary.
+  if (typeof init?.body === 'string' && !headers.has('Content-Type')) {
+    headers.set('Content-Type', 'application/json')
+  }
   const res = await fetch(path, {
     ...init,
-    headers: {
-      ...(init?.headers ?? {}),
-      ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
-    },
+    headers,
   })
   if (res.status === 401) throw unauthorized()
   if (!res.ok) throw new ApiError(res.status, await errorMessage(res))

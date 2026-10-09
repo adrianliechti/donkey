@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -38,6 +39,7 @@ func TestCleanRelPath(t *testing.T) {
 		{"inner traversal that stays inside", "app-data/x/../y", "app-data/y", false},
 		{"trailing slash", "app-data/", "app-data", false},
 		{"spaces in names are fine", "app-data/my file.txt", "app-data/my file.txt", false},
+		{"URL characters are literal names", "app-data/é #?&+%25.pdf ", "app-data/é #?&+%25.pdf ", false},
 		// A trailing or leading space is part of the name. Trimming it would
 		// make delete/move/upload act on the neighbouring file instead.
 		{"a trailing space is kept", "app-data/report.csv ", "app-data/report.csv ", false},
@@ -71,6 +73,18 @@ func TestCleanRelPath(t *testing.T) {
 			// Whatever comes out has to land under the mount, always.
 			if !insideVolume(volumePath(got)) {
 				t.Fatalf("%q leaves the volume as %q", tc.in, volumePath(got))
+			}
+		})
+	}
+}
+
+func TestWriteFileRejectsInvalidPathBeforeContactingKubernetes(t *testing.T) {
+	for _, path := range []string{"", ".", "app-data/..", "/data/file.pdf", "../file.pdf", "app-data/../../file.pdf", "a\x00b"} {
+		t.Run(path, func(t *testing.T) {
+			// No Kubernetes client: any attempt to acquire a helper would panic.
+			err := (&Client{}).WriteFile(context.Background(), "workloads", "team-api", "team", "api", path, strings.NewReader("data"))
+			if !errors.Is(err, rt.ErrBadPath) {
+				t.Fatalf("WriteFile(%q): %v, want ErrBadPath", path, err)
 			}
 		})
 	}
