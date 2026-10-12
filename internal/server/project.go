@@ -381,7 +381,7 @@ func (s *Server) resolveProject(ctx context.Context, id string, state *projectSt
 				block("An app and a service are both named " + service.Name + ". Give them different names.")
 			}
 			if previous, exists := services[service.Name]; exists {
-				if previous.Type != service.Type || previous.Version != "" && service.Version != "" && previous.Version != service.Version || previous.Storage != "" && service.Storage != "" && previous.Storage != service.Storage {
+				if config.NormalizeAddonType(previous.Type) != config.NormalizeAddonType(service.Type) || previous.Version != "" && service.Version != "" && previous.Version != service.Version || previous.Storage != "" && service.Storage != "" && previous.Storage != service.Storage {
 					block("Apps disagree on the settings for shared service " + service.Name + ". Use the same type, version and storage settings.")
 				}
 				if service.Version == "" {
@@ -438,7 +438,7 @@ func (s *Server) resolveProject(ctx context.Context, id string, state *projectSt
 			}
 			var matches []config.AddonConfig
 			for _, a := range app.Addons {
-				if a.Type == c.Target {
+				if config.NormalizeAddonType(a.Type) == config.NormalizeAddonType(c.Target) {
 					matches = append(matches, a)
 				}
 			}

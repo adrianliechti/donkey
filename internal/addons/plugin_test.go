@@ -312,7 +312,7 @@ func TestProviderCatalogLifecycleAndEnvironment(t *testing.T) {
 	for _, a := range Types(ctx) {
 		ids = append(ids, a.Type())
 	}
-	if !reflect.DeepEqual(ids, []string{"openai", "postgres", "redis", "rustfs", "testdb", "testapi"}) {
+	if !reflect.DeepEqual(ids, []string{"exa", "openai", "postgres", "redis", "s3", "testdb", "testapi"}) {
 		t.Fatalf("catalog: %v", ids)
 	}
 	p := getPlugin(t, "testdb")
@@ -644,5 +644,15 @@ func TestInterruptedUpdateRetriesWithItsPreviousResult(t *testing.T) {
 	}
 	if _, reason, err := PlanProvision(testOffering("db"), nil, &restored); err != nil || reason != addonv1.ProvisionReason_PROVISION_REASON_RETRY {
 		t.Fatalf("interrupted update did not plan a retry: %v %v", reason, err)
+	}
+}
+
+func TestPluginCannotReplaceLegacyS3Alias(t *testing.T) {
+	if err := validateOfferings(&Provider{name: "custom"}, []*addonv1.Offering{testOffering("rustfs")}); err == nil {
+		t.Fatal("provider replaced the built-in compatibility alias")
+	}
+	addon, err := Get(context.Background(), "rustfs")
+	if err != nil || addon.Type() != "s3" {
+		t.Fatalf("alias no longer resolves to S3: %v", err)
 	}
 }

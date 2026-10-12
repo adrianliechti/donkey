@@ -98,7 +98,7 @@ func TestSpaceCatalogFiltersOfferingsAndAppliesDefaults(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &catalog); err != nil {
 		t.Fatal(err)
 	}
-	if len(catalog.Types) != 4 {
+	if len(catalog.Types) != 5 {
 		t.Fatal("empty commonOfferings did not allow all builtins")
 	}
 	response = callAs(t, s, "dev@example.com", "GET", "/v1/spaces/other/catalog", nil)
@@ -140,5 +140,58 @@ func TestOnlyAdminsCanConfigureSpaceOfferings(t *testing.T) {
 	response = callAs(t, s, "owner@example.com", "PUT", "/v1/spaces/team/settings", body)
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "new@example.com") {
 		t.Fatal("unrelated edit blocked by retired provider:", response.Body)
+	}
+}
+
+func TestLegacyS3SettingsAndCatalogRemainEditable(t *testing.T) {
+	s, r := spaceTestServer()
+	s.cfg.CommonOfferings = config.CommonOfferings{"postgres"}
+	settings := r.settings["team"]
+	settings.Offerings = map[string]config.SpaceOffering{"rustfs": {Defaults: map[string]any{"storage": "5Gi"}}}
+	r.settings["team"] = settings
+	response := callAs(t, s, "dev@example.com", "GET", "/v1/spaces/team/catalog", nil)
+	var catalog struct {
+		Types []struct {
+			Type       string `json:"type"`
+			Parameters struct {
+				Properties map[string]struct {
+					Default any `json:"default"`
+				} `json:"properties"`
+			} `json:"parameters"`
+		} `json:"types"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &catalog); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, entry := range catalog.Types {
+		if entry.Type == "rustfs" {
+			t.Fatal("legacy catalog entry duplicated S3")
+		}
+		if entry.Type == "s3" {
+			found = true
+			if entry.Parameters.Properties["storage"].Default != "5Gi" {
+				t.Fatal("catalog lost legacy storage default")
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("legacy space grant lost S3: %s", response.Body)
+	}
+	response = callAs(t, s, "owner@example.com", "GET", "/v1/spaces/team/settings", nil)
+	var exposed config.SpaceConfig
+	if response.Code != http.StatusOK {
+		t.Fatalf("settings: %d %s", response.Code, response.Body)
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &exposed); err != nil {
+		t.Fatal(err)
+	}
+	if _, old := exposed.Offerings["rustfs"]; old || exposed.Offerings["s3"].Defaults["storage"] != "5Gi" {
+		t.Fatal("UI cannot edit S3 settings through the canonical id")
+	}
+	body, _ := json.Marshal(exposed)
+	response = callAs(t, s, "owner@example.com", "PUT", "/v1/spaces/team/settings", body)
+	if response.Code != http.StatusOK || r.settings["team"].Offerings["s3"].Defaults["storage"] != "5Gi" {
+		t.Fatalf("saving canonical settings lost defaults: %d %s", response.Code, response.Body)
 	}
 }

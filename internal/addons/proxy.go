@@ -25,7 +25,7 @@ func RegisterProxyServices(services config.ProxyServices) (func(), error) {
 	defer catalogsMu.Unlock()
 	entries := map[string]Builtin{}
 	for _, service := range services {
-		if _, reserved := builtins[service.Name]; reserved {
+		if _, reserved := builtins[config.NormalizeAddonType(service.Name)]; reserved {
 			return nil, fmt.Errorf("proxyServices: %s is a reserved built-in offering", service.Name)
 		}
 		for _, provider := range allProviders() {

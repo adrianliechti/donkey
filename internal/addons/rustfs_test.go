@@ -7,7 +7,7 @@ import (
 )
 
 func TestRustfsBinding(t *testing.T) {
-	a := builtins["rustfs"]
+	a := builtins["s3"]
 	in := input
 	in.Name = "rustfs"
 	got := a.Binding(in)
@@ -30,7 +30,7 @@ func TestRustfsBinding(t *testing.T) {
 }
 
 func TestRustfsExternalBinding(t *testing.T) {
-	a := builtins["rustfs"]
+	a := builtins["s3"]
 	got, err := a.ExternalBinding("https://s3.example.com/")
 	if err != nil {
 		t.Fatal(err)
@@ -56,12 +56,12 @@ func TestRustfsExternalBinding(t *testing.T) {
 	}
 }
 
-func TestGetListsRustfs(t *testing.T) {
+func TestGetListsS3(t *testing.T) {
 	_, err := Get(context.Background(), "miniofs")
 	if err == nil {
 		t.Fatal("expected an error")
 	}
-	if !strings.Contains(err.Error(), "rustfs") {
-		t.Fatalf("error should offer rustfs: %v", err)
+	if !strings.Contains(err.Error(), "s3") {
+		t.Fatalf("error should offer s3: %v", err)
 	}
 }

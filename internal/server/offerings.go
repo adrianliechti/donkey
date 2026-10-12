@@ -11,6 +11,7 @@ import (
 )
 
 func (s *Server) validateSpaceOfferings(ctx context.Context, settings *config.SpaceConfig, previous config.SpaceConfig) error {
+	previous = previous.NormalizeOfferings()
 	for id, entry := range settings.Offerings {
 		// Unrelated settings edits must work during a provider outage. An
 		// unchanged entry also survives removal of its provider registration.

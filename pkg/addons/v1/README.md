@@ -37,7 +37,7 @@ Provider registration is installation-wide. `commonOfferings` in the install
 file chooses the offerings available in every space:
 
 ```yaml
-commonOfferings: [postgres, redis, rustfs, openai]
+commonOfferings: [postgres, redis, s3, openai, exa]
 ```
 
 An omitted or empty list allows **all** offerings, including plugins. With a

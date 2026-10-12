@@ -116,3 +116,60 @@ func TestS3ConsoleSupportsTemporaryProviderCredentials(t *testing.T) {
 		t.Fatalf("S3 provider: %d %s", rec.Code, rec.Body.String())
 	}
 }
+
+func TestExaConsoleUsesProviderBindingAndKeepsSessionPrivate(t *testing.T) {
+	for _, key := range []string{"provider-secret", ""} {
+		t.Run(fmt.Sprintf("key=%t", key != ""), func(t *testing.T) {
+			requests := make(chan *http.Request, 2)
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests <- r.Clone(r.Context())
+				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("Set-Cookie", "upstream=private")
+				fmt.Fprint(w, `{"results":[]}`)
+			}))
+			defer upstream.Close()
+			s := planServer(consoleRuntime{connection: runtime.ServiceConnection{Type: "model-vendor", Protocol: "exa", Binding: map[string]string{
+				"EXA_BASE_URL": upstream.URL + "/provider/exa/", "EXA_API_KEY": key,
+			}}}, &ai.Analysis{})
+			for _, call := range []struct{ method, path string }{{"POST", "search"}, {"POST", "contents"}} {
+				path := "/v1/spaces/default/services/vendor/exa/" + call.path
+				req := httptest.NewRequest(call.method, path, strings.NewReader(`{"model":"test"}`))
+				rec := httptest.NewRecorder()
+				s.routes().ServeHTTP(rec, req)
+				if rec.Code != 401 {
+					t.Fatal("console accepted an unauthenticated request")
+				}
+				select {
+				case <-requests:
+					t.Fatal("unauthenticated request reached provider")
+				default:
+				}
+				req = httptest.NewRequest(call.method, path, strings.NewReader(`{"model":"test"}`))
+				asAdmin(t, req)
+				req.Header.Set("Cookie", "session=private")
+				req.Header.Set("X-Custom-Credential", "private")
+				rec = httptest.NewRecorder()
+				s.routes().ServeHTTP(rec, req)
+				if rec.Code != 200 || !strings.Contains(rec.Body.String(), "results") || rec.Header().Get("Set-Cookie") != "" {
+					t.Fatalf("proxy response: %d %s", rec.Code, rec.Body.String())
+				}
+				got := <-requests
+				if got.URL.Path != "/provider/exa/"+call.path {
+					t.Fatalf("wrong provider path %s", got.URL.Path)
+				}
+				wantAuth := ""
+				if key != "" {
+					wantAuth = key
+				}
+				if got.Header.Get("x-api-key") != wantAuth {
+					t.Fatal("proxy sent the wrong credential")
+				}
+				for _, header := range []string{"Authorization", "Cookie", "X-Access-Token", "X-Custom-Credential"} {
+					if got.Header.Get(header) != "" {
+						t.Fatalf("leaked %s to provider", header)
+					}
+				}
+			}
+		})
+	}
+}

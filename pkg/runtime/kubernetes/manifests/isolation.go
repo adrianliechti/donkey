@@ -96,7 +96,7 @@ func SpaceIsolationPolicy(space, namespace, installation string, restrictEgress 
 		},
 		{
 			// Its own space: sibling apps and the space's services
-			// (postgres, rustfs) are all same-space pods.
+			// (postgres, s3) are all same-space pods.
 			To: []networkingv1.NetworkPolicyPeer{sameSpace},
 		},
 		{

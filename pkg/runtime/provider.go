@@ -16,7 +16,7 @@ import (
 
 // Provider is one runtime. Every method takes donkey's names, never the
 // runtime's own. Methods that change shared state are serialized per app by
-// the caller, so providers need no locks of their own.
+// the caller. Providers serialize mutations of services shared by those apps.
 type Provider interface {
 	// Concurrent first sign-ins return the configuration that won initialization.
 	PlatformConfig(ctx context.Context) (config.PlatformConfig, error)
@@ -130,6 +130,9 @@ type Provider interface {
 	// ServiceProxySpaceAccess checks the current grant for a console request
 	// whose space was authenticated by the control plane.
 	ServiceProxySpaceAccess(ctx context.Context, space, offering string) (bool, error)
+
+	// ExaProxyTokens returns only tokens bound to this installation's search endpoint.
+	ExaProxyTokens(ctx context.Context) ([]string, error)
 
 	// --- Files ------------------------------------------------------------
 

@@ -78,6 +78,8 @@ func serverSettingsFlags() []cli.Flag {
 		&cli.StringFlag{Name: "oidc-client-secret", Usage: "OIDC client secret (or $DONKEY_OIDC_CLIENT_SECRET)"},
 		&cli.StringFlag{Name: "openai-base-url", Usage: "OpenAI-compatible endpoint for AI assistance (as reachable FROM the cluster)"},
 		&cli.StringFlag{Name: "openai-api-key", Usage: "API key for AI assistance (or $OPENAI_API_KEY)"},
+		&cli.StringFlag{Name: "exa-base-url", Usage: "Exa-compatible search endpoint reachable from donkey-ai"},
+		&cli.StringFlag{Name: "exa-api-key", Usage: "Search API key (or $EXA_API_KEY)"},
 		&cli.StringFlag{Name: "ai-model", Usage: "model for AI assistance"},
 	}
 }
@@ -125,6 +127,11 @@ func loadInstallSettings(cmd *cli.Command, resolveSecretEnv bool) (*config.Insta
 	strOver(&settings.AI.BaseURL, "openai-base-url")
 	strOver(&settings.AI.APIKey, "openai-api-key")
 	strOver(&settings.AI.Model, "ai-model")
+	strOver(&settings.Exa.BaseURL, "exa-base-url")
+	strOver(&settings.Exa.APIKey, "exa-api-key")
+	if settings.Exa.BaseURL == "" {
+		settings.Exa.BaseURL = os.Getenv("EXA_BASE_URL")
+	}
 	strOver(&settings.TLS.Mode, "tls-mode")
 	strOver(&settings.TLS.Email, "acme-email")
 	strOver(&settings.TLS.Directory, "acme-directory")
@@ -146,6 +153,9 @@ func loadInstallSettings(cmd *cli.Command, resolveSecretEnv bool) (*config.Insta
 	}
 	if settings.AI.APIKey == "" {
 		settings.AI.APIKey = os.Getenv("OPENAI_API_KEY")
+	}
+	if settings.Exa.APIKey == "" {
+		settings.Exa.APIKey = os.Getenv("EXA_API_KEY")
 	}
 	if settings.Build.Packages.Password == "" {
 		settings.Build.Packages.Password = os.Getenv("DONKEY_PACKAGES_PASSWORD")
@@ -252,6 +262,9 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 	}
 	if settings.AI.APIKey == "" {
 		settings.AI.APIKey = existing["OPENAI_API_KEY"]
+	}
+	if settings.Exa.APIKey == "" {
+		settings.Exa.APIKey = existing["EXA_API_KEY"]
 	}
 	// The "pending-setup" sentinel marks credentials that were never real —
 	// it must not survive into a configuration that now has a real client id.
@@ -448,6 +461,9 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 // is shared by render so a bundle cannot encode configuration the direct
 // installer would reject later.
 func validateKubernetesSettings(settings *config.InstallFile) error {
+	if err := settings.Exa.Validate(); err != nil {
+		return err
+	}
 	if missing := missingSettings(settings, false); len(missing) > 0 {
 		return fmt.Errorf("these settings are required (via -f file or flags): %v", missing)
 	}
@@ -542,6 +558,8 @@ func kubernetesSystemInput(settings *config.InstallFile, skipNamespace bool, reg
 		DefaultPlatform:            settings.DefaultPlatform,
 		OpenAIBaseURL:              settings.AI.BaseURL,
 		OpenAIAPIKey:               settings.AI.APIKey,
+		ExaBaseURL:                 settings.Exa.BaseURL,
+		ExaAPIKey:                  settings.Exa.APIKey,
 		AIModel:                    settings.AI.Model,
 		Build:                      settings.Build,
 		AddonImages:                settings.AddonImages,

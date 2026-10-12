@@ -127,9 +127,10 @@ type Options struct {
 
 // Runtime runs donkey's apps on a Docker engine.
 type Runtime struct {
-	cli   *client.Client
-	opts  Options
-	state state
+	serviceLocks addons.InstanceLocks
+	cli          *client.Client
+	opts         Options
+	state        state
 }
 
 var _ rt.Provider = (*Runtime)(nil)
@@ -377,7 +378,7 @@ func (r *Runtime) ListSpaces(ctx context.Context) ([]string, error) {
 	}
 	var out []string
 	for _, nw := range nets {
-		if space := nw.Labels[labelSpace]; space != "" &&
+		if space := nw.Labels[labelSpace]; space != "" && r.ValidateSpace(space) == nil &&
 			sameIdentity(nw.Labels, resourceLabels(space, roleSpace)) {
 			out = append(out, space)
 		}
@@ -779,9 +780,12 @@ func (r *Runtime) aiProxyURL() string {
 }
 
 func (r *Runtime) EnsureService(ctx context.Context, space string, spec rt.ServiceSpec) (map[string]string, map[string]any, error) {
+	unlock := r.serviceLocks.Lock(space, spec.Name)
+	defer unlock()
 	if err := config.ValidateServiceName(spec.Name); err != nil {
 		return nil, nil, rt.UserError{Err: err}
 	}
+	spec.Type = config.NormalizeAddonType(spec.Type)
 	// The record comes first: an instance a provider created resolves
 	// through its recorded offering when the provider is not answering.
 	previous, err := r.pluginState(space, spec.Name)
@@ -803,8 +807,8 @@ func (r *Runtime) EnsureService(ctx context.Context, space string, spec rt.Servi
 	if err != nil {
 		return nil, nil, err
 	}
-	if connection.Type != "" && connection.Type != spec.Type {
-		return nil, nil, rt.UserError{Err: fmt.Errorf("remove service %s before changing its offering", spec.Name)}
+	if err := (addons.Metadata{Type: connection.Type, Protocol: connection.Protocol}).CheckType(spec.Type); err != nil {
+		return nil, nil, rt.UserError{Err: err}
 	}
 	spec.Parameters, err = rt.PrepareService(ctx, r, r.opts.CommonOfferings, space, desc, spec.Parameters, previous != nil || len(connection.Binding) > 0)
 	if err != nil {
@@ -813,6 +817,7 @@ func (r *Runtime) EnsureService(ctx context.Context, space string, spec rt.Servi
 	if err := r.ensureSpace(ctx, space); err != nil {
 		return nil, nil, err
 	}
+
 	plugin, isPlugin := addon.(*addons.Plugin)
 	builtin, _ := addon.(addons.Builtin)
 	if previous != nil && (!isPlugin || spec.External) {
@@ -857,15 +862,7 @@ func (r *Runtime) EnsureService(ctx context.Context, space string, spec rt.Servi
 		}
 		// An existing instance keeps its credential and, unless asked
 		// otherwise, its parameters.
-		existing, err := r.state.binding(space, sharedOwner, spec.Name)
-		if err != nil {
-			return nil, nil, err
-		}
-		stored, err := r.serviceMetadata(space, spec.Name, existing)
-		if err != nil {
-			return nil, nil, err
-		}
-		params, err = addons.ResolveInstanceParameters(desc, spec.Parameters, stored.Parameters)
+		params, err = addons.ResolveInstanceParameters(desc, spec.Parameters, addons.Parameters(connection.Parameters))
 		if err != nil {
 			return nil, nil, rt.UserError{Err: err}
 		}
@@ -874,10 +871,11 @@ func (r *Runtime) EnsureService(ctx context.Context, space string, spec rt.Servi
 			ImageRepository: r.opts.AddonImages.Repository(spec.Type),
 			AIProxyURL:      r.aiProxyURL(),
 			ServiceProxyURL: r.serviceProxyURL(),
+			ExaProxyURL:     r.exaProxyURL(),
 		}.WithParameters(params)
 		// Reuse the credential the instance was initialized with — rotating
 		// it here would lock the service out of its own kept data.
-		if pw, ok := existing[builtin.CredentialKey()]; ok {
+		if pw, ok := connection.Binding[builtin.CredentialKey()]; ok {
 			in.Password = pw
 		} else if in.Password, err = addons.NewPassword(); err != nil {
 			return nil, nil, err
@@ -936,7 +934,7 @@ func rewriteBindingHost(binding map[string]string, from, to string) map[string]s
 			if host, port, err := net.SplitHostPort(value); err == nil && host == from {
 				out[key] = net.JoinHostPort(to, port)
 			}
-		case "DATABASE_URL", "JDBC_DATABASE_URL", "REDIS_URL", "AWS_ENDPOINT_URL_S3", "S3_URL", "OPENAI_BASE_URL":
+		case "DATABASE_URL", "JDBC_DATABASE_URL", "REDIS_URL", "AWS_ENDPOINT_URL_S3", "S3_URL", "OPENAI_BASE_URL", "EXA_BASE_URL":
 			prefix := ""
 			if strings.HasPrefix(value, "jdbc:") {
 				prefix, value = "jdbc:", strings.TrimPrefix(value, "jdbc:")
@@ -1021,10 +1019,15 @@ func (r *Runtime) DetachService(ctx context.Context, space, app, name string) er
 }
 
 func (r *Runtime) RemoveService(ctx context.Context, space, name string, keepData, force bool) ([]string, error) {
+	unlock := r.serviceLocks.Lock(space, name)
+	defer unlock()
 	if keepData {
 		connection, err := r.ServiceConnection(ctx, space, name)
 		if err != nil {
 			return nil, err
+		}
+		if err := (addons.Metadata{Type: connection.Type, Protocol: connection.Protocol}).CheckKeepData(ctx, keepData); err != nil {
+			return nil, rt.UserError{Err: err}
 		}
 		if addons.IsProxyBinding(r.serviceProxyURL(), connection.Type, connection.Binding) {
 			return nil, rt.UserError{Err: fmt.Errorf("proxy services have no stored data; remove without --keep-data to revoke access")}
@@ -1133,6 +1136,14 @@ func (r *Runtime) ListServices(ctx context.Context, space, owner string) ([]rt.S
 		sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	}
 	return out, nil
+}
+
+func (r *Runtime) exaProxyURL() string {
+	return strings.TrimSuffix(r.aiProxyURL(), "/v1") + "/exa"
+}
+
+func (r *Runtime) ExaProxyTokens(ctx context.Context) ([]string, error) {
+	return r.state.bindingValues("EXA_API_KEY", "EXA_BASE_URL", r.exaProxyURL())
 }
 
 func (r *Runtime) AIProxyTokens(ctx context.Context) ([]string, error) {

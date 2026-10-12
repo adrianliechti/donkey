@@ -48,6 +48,8 @@ func (r *Runtime) ServiceConnection(ctx context.Context, space, name string) (rt
 // provisioned in-cluster, or external as a binding-only Secret — and returns
 // its binding values.
 func (r *Runtime) EnsureService(ctx context.Context, space string, spec rt.ServiceSpec) (map[string]string, map[string]any, error) {
+	unlock := r.serviceLocks.Lock(space, spec.Name)
+	defer unlock()
 	ns := r.ns(space)
 	if err := config.ValidateServiceName(spec.Name); err != nil {
 		return nil, nil, rt.UserError{Err: err}
@@ -55,6 +57,7 @@ func (r *Runtime) EnsureService(ctx context.Context, space string, spec rt.Servi
 	if err := r.opts.Placement.ValidateNames(space, spec.Name); err != nil {
 		return nil, nil, rt.UserError{Err: err}
 	}
+	spec.Type = config.NormalizeAddonType(spec.Type)
 	// The record comes first: an instance a provider created resolves
 	// through its recorded offering when the provider is not answering.
 	previous, err := r.pluginState(ctx, space, spec.Name)
@@ -76,8 +79,8 @@ func (r *Runtime) EnsureService(ctx context.Context, space string, spec rt.Servi
 	if err != nil {
 		return nil, nil, err
 	}
-	if connection.Type != "" && connection.Type != spec.Type {
-		return nil, nil, rt.UserError{Err: fmt.Errorf("remove service %s before changing its offering", spec.Name)}
+	if err := (addons.Metadata{Type: connection.Type, Protocol: connection.Protocol}).CheckType(spec.Type); err != nil {
+		return nil, nil, rt.UserError{Err: err}
 	}
 	spec.Parameters, err = rt.PrepareService(ctx, r, r.opts.CommonOfferings, space, desc, spec.Parameters, previous != nil || len(connection.Binding) > 0)
 	if err != nil {
@@ -128,7 +131,7 @@ func (r *Runtime) EnsureService(ctx context.Context, space string, spec rt.Servi
 				return nil, nil, err
 			}
 		}
-		in, err := r.provisionService(ctx, space, ns, spec, builtin, desc)
+		in, err := r.provisionService(ctx, space, ns, spec, builtin, desc, connection)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -158,13 +161,9 @@ func (r *Runtime) EnsureService(ctx context.Context, space string, spec rt.Servi
 
 // provisionService creates (or re-applies) one space-owned addon instance
 // with its canonical binding secret, and waits until it serves.
-func (r *Runtime) provisionService(ctx context.Context, space, ns string, spec rt.ServiceSpec, addon addons.Builtin, desc *addonv1.Offering) (addons.Input, error) {
+func (r *Runtime) provisionService(ctx context.Context, space, ns string, spec rt.ServiceSpec, addon addons.Builtin, desc *addonv1.Offering, existing rt.ServiceConnection) (addons.Input, error) {
 	// An existing instance keeps its credential and, unless asked
 	// otherwise, its parameters.
-	existing, err := r.ServiceConnection(ctx, space, spec.Name)
-	if err != nil {
-		return addons.Input{}, err
-	}
 	params, err := addons.ResolveInstanceParameters(desc, spec.Parameters, existing.Parameters)
 	if err != nil {
 		return addons.Input{}, rt.UserError{Err: err}
@@ -175,6 +174,7 @@ func (r *Runtime) provisionService(ctx context.Context, space, ns string, spec r
 		ImageRepository: r.opts.AddonImages.Repository(spec.Type),
 		AIProxyURL:      r.aiProxyURL(),
 		ServiceProxyURL: r.serviceProxyURL(),
+		ExaProxyURL:     r.exaProxyURL(),
 	}.WithParameters(params)
 	// Reuse the credential the instance was initialized with — rotating it
 	// here would lock the service out of its own kept data.
@@ -266,10 +266,15 @@ func (r *Runtime) DetachService(ctx context.Context, space, app, name string) er
 }
 
 func (r *Runtime) RemoveService(ctx context.Context, space, name string, keepData, force bool) ([]string, error) {
+	unlock := r.serviceLocks.Lock(space, name)
+	defer unlock()
 	if keepData {
 		connection, err := r.ServiceConnection(ctx, space, name)
 		if err != nil {
 			return nil, err
+		}
+		if err := (addons.Metadata{Type: connection.Type, Protocol: connection.Protocol}).CheckKeepData(ctx, keepData); err != nil {
+			return nil, rt.UserError{Err: err}
 		}
 		if addons.IsProxyBinding(r.serviceProxyURL(), connection.Type, connection.Binding) {
 			return nil, rt.UserError{Err: fmt.Errorf("proxy services have no stored data; remove without --keep-data to revoke access")}
@@ -358,6 +363,14 @@ func (r *Runtime) ListServices(ctx context.Context, space, owner string) ([]rt.S
 		}
 	}
 	return bindings, nil
+}
+
+func (r *Runtime) exaProxyURL() string {
+	return strings.TrimSuffix(r.aiProxyURL(), "/v1") + "/exa"
+}
+
+func (r *Runtime) ExaProxyTokens(ctx context.Context) ([]string, error) {
+	return r.c.SharedBindingValues(ctx, "EXA_API_KEY", "EXA_BASE_URL", r.exaProxyURL())
 }
 
 func (r *Runtime) AIProxyTokens(ctx context.Context) ([]string, error) {

@@ -120,3 +120,22 @@ func TestConfigBusyboxImage(t *testing.T) {
 		})
 	}
 }
+
+func TestS3ServiceUsesRustFSImageEnvironment(t *testing.T) {
+	t.Setenv("DONKEY_REGISTRY_URL", "registry.example.com/donkey")
+	t.Setenv("DONKEY_DOMAIN", "apps.example.com")
+	t.Setenv("DONKEY_BUILDKIT_ADDR", "tcp://donkey-buildkitd:1234")
+	t.Setenv("DONKEY_SESSION_KEY", strings.Repeat("00", 32))
+	t.Setenv("DONKEY_TELEMETRY_KEY", strings.Repeat("11", 32))
+	const repository = "mirror.example.com/rustfs/rustfs"
+	t.Setenv("DONKEY_RUSTFS_IMAGE", repository)
+	cfg, err := FromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, typ := range []string{"s3", "rustfs"} {
+		if cfg.AddonImages.Repository(typ) != repository {
+			t.Fatalf("%s lost its RustFS image override", typ)
+		}
+	}
+}

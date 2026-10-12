@@ -1,4 +1,4 @@
-// Package aiproxy is the openai addon's endpoint: apps call it with a
+// Package aiproxy serves the openai and exa addons: apps call it with a
 // per-space token, which it checks against the bindings donkey issued and
 // swaps for the platform's real credential. The key never leaves
 // donkey-system, and removing the service revokes the space's access.
@@ -17,9 +17,9 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+
+	"github.com/adrianliechti/donkey/internal/addons"
 	"strings"
-	"sync"
-	"time"
 )
 
 // Prefix is where the proxy is mounted. donkey-ai serves it at the root of
@@ -52,6 +52,23 @@ func aiUpstreamPath(p string) (string, bool) {
 		return "", false
 	}
 	return rest, true
+}
+
+// A shared upstream key must not expose stored conversations or response IDs
+// belonging to another space. Only model discovery and fresh inference pass.
+func aiAllowedRequest(method, path string) bool {
+	if method == http.MethodGet {
+		return path == "models" || strings.HasPrefix(path, "models/")
+	}
+	if method != http.MethodPost {
+		return false
+	}
+	switch path {
+	case "chat/completions", "completions", "embeddings", "responses", "responses/input_tokens", "moderations",
+		"audio/speech", "audio/transcriptions", "audio/translations", "images/generations", "images/edits", "images/variations":
+		return true
+	}
+	return false
 }
 
 // staysClean reports whether p is a clean relative path and remains one
@@ -92,34 +109,6 @@ func staysClean(p string) bool {
 // is proxied is exactly the one that passed the checks above.
 type aiPathKey struct{}
 
-// aiTokens caches the valid per-space tokens so the hot path doesn't hit
-// the Kubernetes API per request. A short TTL keeps revocation honest.
-type aiTokens struct {
-	mu      sync.Mutex
-	until   time.Time
-	tokens  map[string]bool
-	refresh func() (map[string]bool, error)
-}
-
-func (t *aiTokens) valid(token string) (bool, error) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if time.Now().After(t.until) || t.tokens == nil {
-		fresh, err := t.refresh()
-		if err != nil {
-			return false, err
-		}
-		t.tokens = fresh
-		t.until = time.Now().Add(30 * time.Second)
-	}
-	return t.tokens[token], nil
-}
-
-// Tokens answers what per-space tokens are currently valid. It is the one
-// thing the proxy needs from the cluster — deliberately narrow, so donkey-ai
-// runs with read-only access and nothing more.
-type Tokens func(ctx context.Context) ([]string, error)
-
 // Handler is the proxy. upstream/key are the platform's own endpoint and
 // credential; valid answers which per-space tokens the bindings currently
 // hold.
@@ -129,26 +118,11 @@ func Handler(upstreamBase, upstreamKey string, valid Tokens) (http.Handler, erro
 		upstreamBase = "https://api.openai.com/v1"
 	}
 	upstream, err := url.Parse(upstreamBase)
-	if err != nil {
-		return nil, fmt.Errorf("the AI endpoint %q is not a URL: %w", upstreamBase, err)
+	if err != nil || addons.ValidateBinding(addons.ProtocolOpenAI, map[string]string{"OPENAI_BASE_URL": upstreamBase}) != nil {
+		return nil, fmt.Errorf("the AI endpoint must be an http or https URL without credentials, query or fragment")
 	}
 
-	tokens := &aiTokens{refresh: func() (map[string]bool, error) {
-		// The tokens are whatever OPENAI_API_KEY values the space bindings
-		// hold — the binding Secret is the single source of truth, so
-		// removing the service is the revocation.
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		values, err := valid(ctx)
-		if err != nil {
-			return nil, err
-		}
-		set := map[string]bool{}
-		for _, v := range values {
-			set[v] = true
-		}
-		return set, nil
-	}}
+	tokens := newTokenCache(valid)
 
 	proxy := &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
@@ -157,7 +131,20 @@ func Handler(upstreamBase, upstreamKey string, valid Tokens) (http.Handler, erro
 			pr.Out.URL.RawQuery = pr.In.URL.RawQuery
 			pr.Out.Host = upstream.Host
 			// The space's stand-in token goes no further than this hop.
+			for _, header := range []string{"Cookie", "X-Access-Token", "X-Api-Key", "Api-Key", "OpenAI-Organization", "OpenAI-Project"} {
+				pr.Out.Header.Del(header)
+			}
 			pr.Out.Header.Set("Authorization", "Bearer "+upstreamKey)
+		},
+		ModifyResponse: func(res *http.Response) error {
+			res.Header.Del("Set-Cookie")
+			if res.StatusCode >= 300 && res.StatusCode < 400 {
+				return fmt.Errorf("the AI endpoint redirected the request")
+			}
+			return nil
+		},
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			writeErr(w, http.StatusBadGateway, fmt.Errorf("the AI endpoint did not answer"))
 		},
 		// Token streams arrive as SSE — buffering them would turn streaming
 		// into one long silence followed by everything at once.
@@ -172,7 +159,7 @@ func Handler(upstreamBase, upstreamKey string, valid Tokens) (http.Handler, erro
 		}
 		ok, err := tokens.valid(token)
 		if err != nil {
-			writeErr(w, http.StatusBadGateway, err)
+			writeErr(w, http.StatusBadGateway, fmt.Errorf("could not verify the AI binding"))
 			return
 		}
 		if !ok {
@@ -187,7 +174,7 @@ func Handler(upstreamBase, upstreamKey string, valid Tokens) (http.Handler, erro
 			return
 		}
 		rest, ok := aiUpstreamPath(r.URL.Path)
-		if !ok {
+		if !ok || !aiAllowedRequest(r.Method, rest) {
 			writeErr(w, http.StatusForbidden, fmt.Errorf("the AI service proxies inference only (chat, completions, embeddings, models, responses, moderations, audio, images)"))
 			return
 		}

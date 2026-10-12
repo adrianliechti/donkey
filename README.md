@@ -50,7 +50,7 @@ five ideas:
    container's: postgres, S3-style storage, and the platform's AI are
    provisioned once per space from a small catalog, and apps *connect* —
    each gets a canonical env contract (`DATABASE_URL`, `AWS_*`,
-   `OPENAI_*`) injected, whether the service runs in the cluster or
+   `OPENAI_*`, `EXA_*`) injected, whether the service runs in the cluster or
    somewhere else. See [Services](#services).
 
 ## Components
@@ -383,7 +383,7 @@ storage:                      # one disk, each path its own folder on it
     - /app/data
 
 addons:                       # space services this app uses; the deploy
-  - type: postgres            # creates missing ones. postgres | redis | rustfs (S3)
+  - type: postgres            # creates missing ones. postgres | redis | s3 (S3)
     name: db                  # | openai (the platform's AI).
                               # apps naming the same service share it
 
@@ -419,7 +419,7 @@ still have timeouts so unreachable services can be detected and repaired.
 
 Environment values such as `${db.DATABASE_URL}` reference an addon by name
 and binding key. They are resolved at runtime, so the config contains no
-copied credential. Selecting a managed PostgreSQL, Redis, OpenAI or RustFS service
+copied credential. Selecting a managed PostgreSQL, Redis, OpenAI or S3 service
 also replaces stale values under its standard variable names with binding
 references. Custom variable names can reference those same keys. Runtime
 service references cannot be used in `build.env`; browser URL variables are
@@ -479,9 +479,25 @@ anything, and that is where the confirmation lives.
 | Type | What it is | Connected apps see |
 |---|---|---|
 | `postgres` | the relational database (its own Deployment + disk) | `DATABASE_URL`, the `PG*` family, Heroku's `JDBC_*` convention for the Java world |
-| `rustfs` | S3-compatible object storage | the AWS SDK convention (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_ENDPOINT_URL_S3`, `AWS_REGION`) + `S3_URL` |
+| `s3` | S3-compatible object storage | the AWS SDK convention (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_ENDPOINT_URL_S3`, `AWS_REGION`) + `S3_URL` |
 | `redis` | Redis with persistent storage and password authentication | `REDIS_URL`, `REDIS_ADDR`, `REDIS_HOST`, `REDIS_PORT`, `REDIS_USERNAME`, `REDIS_PASSWORD`, `REDIS_DB`, `REDIS_TLS` |
 | `openai` | the platform's AI — nothing runs in the space | `OPENAI_BASE_URL`, `OPENAI_API_KEY`, `OPENAI_MODEL` |
+| `exa` | web search and page contents — nothing runs in the space | `EXA_BASE_URL`, `EXA_API_KEY` |
+
+The `s3` addon provisions RustFS and can also attach any compatible S3
+endpoint. `rustfs` remains accepted as a legacy type alias. Existing services
+keep their names, credentials, endpoints and data volumes; changing the type
+does not rename the instance. To update an existing declaration explicitly:
+
+```yaml
+addons:
+  - type: s3
+    name: rustfs   # preserves the existing service and its data
+```
+
+New `type: s3` entries default to the service name `s3`.
+The managed server image remains `rustfs/rustfs`, configured through
+`addonImages.rustfs` (`DONKEY_RUSTFS_IMAGE` on the server).
 
 Every type describes what can be chosen for it (a version, a disk size…) as
 a JSON Schema, which the console renders as a form and the CLI takes as
@@ -530,7 +546,7 @@ and outbound proxy credentials stay in the control plane:
 ```yaml
 # With an empty commonOfferings list, every offering is available everywhere.
 # A nonempty list lets space admins enable additional offerings explicitly.
-commonOfferings: [postgres, redis, rustfs, openai]
+commonOfferings: [postgres, redis, s3, openai, exa]
 proxyServices:
   - name: enterprise-api
     title: Enterprise API  # optional; defaults to name
@@ -601,6 +617,56 @@ to 1 MiB of response text. Requests have a 30-second timeout; redirects are show
 without following them. The console uses your space management permission and
 a short-lived, request-specific control-plane grant through the shared proxy.
 Apps continue to use their workload IP without a credential.
+
+**Configuring OpenAI and Exa.** The installation file selects the upstreams:
+
+```yaml
+ai:
+  baseUrl: https://api.openai.com/v1
+  model: gpt-5.6-sol
+exa:
+  baseUrl: https://api.exa.ai
+```
+
+Supply `OPENAI_API_KEY` and the optional `EXA_API_KEY` as environment variables
+when running `donkey server install -f server-install.yaml`. The installation
+also accepts `ai.apiKey` and `exa.apiKey`, or `--openai-api-key` and
+`--exa-api-key`; environment variables keep credentials out of the settings
+file. `--openai-base-url` and `--exa-base-url` override the URLs. Exa also reads
+`EXA_BASE_URL` when `exa.baseUrl` is omitted; its default is `https://api.exa.ai`.
+Rendered Kubernetes and Compose bundles take the keys from `secrets.env` and
+preserve existing keys on upgrades. Exa is optional: without its key, its proxy
+returns a configuration error while OpenAI continues working.
+
+For a gateway running on your laptop at port 4242, Docker Desktop containers
+can use `http://host.docker.internal:4242/v1` for `ai.baseUrl`. Set `exa.baseUrl`
+to the gateway's Exa-compatible base, including any route prefix it needs.
+For Wingman, `http://host.docker.internal:4242/v1/exa` forwards search to
+`http://host.docker.internal:4242/v1/exa/search`. Use an address reachable from the
+cluster for Kubernetes; `localhost` inside a pod or container names that pod
+or container itself.
+
+Connect an app with `donkey addon add exa`, or declare it in `donkey.yaml`:
+
+```yaml
+addons:
+  - type: exa
+```
+
+The app reads the injected `EXA_BASE_URL` and sends `EXA_API_KEY` in the
+`x-api-key` header (bearer authentication also works). Configure your SDK to
+use that base URL explicitly. The platform proxy serves only `POST /search`
+and `POST /contents`, passing request and response bodies through unchanged,
+including contents requested inside a search. As with OpenAI, bindings carry
+per-space stand-in keys, the upstream key stays in `donkey-ai`, and removing
+the service revokes its token within the proxy's 30-second cache lifetime.
+The space's service chip opens a tester with **Search** and **Page contents**
+tabs; console calls use the saved binding and never forward your login session
+to the provider.
+
+To attach an independent endpoint, use
+`donkey addon attach exa --url https://search.example.com/exa`. This supplies
+`EXA_BASE_URL`; put the endpoint's own `EXA_API_KEY` in the app environment.
 
 **Getting at a service yourself.** Services rightly have no public address,
 so donkey provides the ways in: `donkey addon tunnel NAME` opens a private
@@ -991,7 +1057,7 @@ changes enforce the same rule, including shared-address routes.
 
 `commonOfferings` in the installation file selects offerings available in every
 space. An empty or omitted list allows all registered offerings. A nonempty
-list such as `[postgres, redis, rustfs, openai]` limits the common catalog;
+list such as `[postgres, redis, s3, openai, exa]` limits the common catalog;
 space admins can add others in **Space settings → Service offerings**:
 
 ```yaml
@@ -1276,7 +1342,7 @@ internal/
   build/              BuildKit gRPC builder (dockerfile.v0), startup verification, registry auth, tags
   k8s/                client-go wrapper: server-side apply, rollout wait, logs, env secrets
   k8s/manifests/      pure config→object rendering (app + control plane) — golden-tested
-  addons/             service catalog: postgres, redis, rustfs, openai (provisioned & external bindings)
+  addons/             service catalog: postgres, redis, s3, openai, exa (provisioned & external bindings)
   ai/                 Assistant interface (analysis + failure diagnosis), OpenAI impl, secret-safe summarizer, log redaction
   config/             donkey.yaml, client config, install settings file
   doctor/             client-side check engine behind `donkey doctor`
@@ -1368,7 +1434,7 @@ inspection; rerunning replaces that test space.
 
 The browser test uses the local Docker installation and demo sign-in. It uploads
 `examples/demo`, checks separate exposure choices, deploys both apps, and tests
-PostgreSQL writes, RustFS uploads/downloads, and OpenAI triage through the frontend.
+PostgreSQL writes, S3 uploads/downloads, and OpenAI triage through the frontend.
 Playwright is installed under `.build/browser`; screenshots and reviewed plans
 go to `.build/e2e`. `DONKEY_E2E_KEEP=true` keeps its `e2e-services` space running.
 

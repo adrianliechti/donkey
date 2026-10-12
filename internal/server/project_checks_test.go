@@ -130,7 +130,7 @@ func TestProjectRejectsConflictingNamesAndServices(t *testing.T) {
 		{"app names", func(apps []*storedPlan) { apps[0].app.Name = apps[1].app.Name }},
 		{"app and service", func(apps []*storedPlan) { apps[0].app.Name = "postgres" }},
 		{"service types", func(apps []*storedPlan) {
-			apps[0].app.Addons = []config.AddonConfig{{Name: "postgres", Type: "rustfs"}}
+			apps[0].app.Addons = []config.AddonConfig{{Name: "postgres", Type: "s3"}}
 		}},
 		{"service versions", func(apps []*storedPlan) {
 			apps[0].app.Addons = []config.AddonConfig{{Name: "postgres", Type: "postgres", Version: "16"}}
@@ -211,6 +211,11 @@ type reviewRuntime struct {
 	projectRuntime
 	bindings map[string]map[string]string
 	choices  map[string]consoleChoices
+}
+
+func (r reviewRuntime) ServiceConnection(ctx context.Context, space, name string) (runtime.ServiceConnection, error) {
+	binding, err := r.ServiceBinding(ctx, space, "", name)
+	return runtime.ServiceConnection{Binding: binding}, err
 }
 
 func (r reviewRuntime) ServiceBinding(_ context.Context, _, _, name string) (map[string]string, error) {

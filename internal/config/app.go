@@ -265,6 +265,15 @@ func ParseEnvRef(value string) (service, key string, ok bool) {
 
 var envRefRE = regexp.MustCompile(`^\$\{([a-z0-9][a-z0-9-]*)\.([A-Za-z_][A-Za-z0-9_]*)\}$`)
 
+// NormalizeAddonType maps historical addon types to their current catalog name.
+// Instance names are deliberately independent: renaming a type must not move data.
+func NormalizeAddonType(typ string) string {
+	if typ == "rustfs" {
+		return "s3"
+	}
+	return typ
+}
+
 type AddonConfig struct {
 	// Name is optional in donkey.yaml (it defaults to the type), so Save
 	// must be able to drop it again — omitempty keeps a minimized entry
@@ -410,6 +419,8 @@ func (c *AppConfig) ApplyDefaults() {
 		if c.Addons[i].Name == "" {
 			c.Addons[i].Name = c.Addons[i].Type
 		}
+		// Resolve the legacy default name first to preserve endpoints and disks.
+		c.Addons[i].Type = NormalizeAddonType(c.Addons[i].Type)
 	}
 }
 

@@ -221,6 +221,7 @@ func TestKubernetesRenderOmitsEverySecretValue(t *testing.T) {
 		AI: config.InstallAI{
 			BaseURL: "https://api.openai.com/v1", Model: "gpt-5.6-sol", APIKey: "openai-key-must-not-render",
 		},
+		Exa: config.InstallExa{BaseURL: "https://search.example.com/exa", APIKey: "exa-key-must-not-render"},
 		Build: config.InstallBuild{
 			BuildSettings: config.BuildSettings{
 				Env:          map[string]string{"PRIVATE_INDEX": "build-env-secret-must-not-render"},
@@ -243,7 +244,7 @@ func TestKubernetesRenderOmitsEverySecretValue(t *testing.T) {
 	for _, forbidden := range []string{
 		registryPassword,
 		settings.Auth.ClientSecret,
-		settings.AI.APIKey,
+		settings.AI.APIKey, settings.Exa.APIKey,
 		settings.Build.Env["PRIVATE_INDEX"],
 		settings.Build.Instructions,
 		settings.Build.Proxy.HTTPS,
@@ -264,8 +265,11 @@ func TestKubernetesRenderOmitsEverySecretValue(t *testing.T) {
 	if !strings.Contains(manifest, "name: donkey-registry") {
 		t.Fatal("credentialed system images do not reference the external pull Secret")
 	}
+	if !strings.Contains(manifest, "name: EXA_BASE_URL") || !strings.Contains(manifest, settings.Exa.BaseURL) || !strings.Contains(manifest, "key: EXA_API_KEY") {
+		t.Fatal("Exa endpoint or credential reference missing")
+	}
 	apply := string(files["apply.sh"].Data)
-	for _, name := range []string{"OPENAI_API_KEY", "DONKEY_SESSION_KEY", "DONKEY_TELEMETRY_KEY", "donkey"} {
+	for _, name := range []string{"OPENAI_API_KEY", "EXA_API_KEY", "DONKEY_SESSION_KEY", "DONKEY_TELEMETRY_KEY", "donkey"} {
 		if !strings.Contains(apply, name) {
 			t.Errorf("apply helper does not name %s", name)
 		}
@@ -315,6 +319,7 @@ func TestDockerRenderMatchesRuntimeTopologyWithoutSecrets(t *testing.T) {
 		AI: config.InstallAI{
 			BaseURL: "https://api.openai.com/v1", Model: "gpt-5.6-sol", APIKey: "docker-openai-key-must-not-render",
 		},
+		Exa: config.InstallExa{BaseURL: "http://host.docker.internal:4242/exa", APIKey: "docker-exa-key-must-not-render"},
 		Build: config.InstallBuild{
 			BuildSettings:   config.BuildSettings{Env: map[string]string{"TOKEN": "docker-build-secret-must-not-render"}},
 			RegistryMirrors: map[string]string{"docker.io": "https://mirror.example.com/dockerhub"},
@@ -327,7 +332,7 @@ func TestDockerRenderMatchesRuntimeTopologyWithoutSecrets(t *testing.T) {
 	}
 	all := bundleText(files)
 	for _, forbidden := range []string{
-		settings.Auth.ClientSecret, settings.AI.APIKey, settings.Build.Env["TOKEN"], settings.Build.Proxy.HTTPS,
+		settings.Auth.ClientSecret, settings.AI.APIKey, settings.Exa.APIKey, settings.Build.Env["TOKEN"], settings.Build.Proxy.HTTPS,
 	} {
 		if strings.Contains(all, forbidden) {
 			t.Errorf("Compose bundle contains secret value %q", forbidden)
@@ -351,6 +356,12 @@ func TestDockerRenderMatchesRuntimeTopologyWithoutSecrets(t *testing.T) {
 	var typed composeFile
 	if err := yaml.Unmarshal([]byte(compose), &typed); err != nil {
 		t.Fatalf("compose.yaml does not match the renderer schema: %v", err)
+	}
+	if typed.Services["ai"].Environment["EXA_BASE_URL"] != settings.Exa.BaseURL || typed.Services["ai"].Environment["EXA_API_KEY"] != "${EXA_API_KEY:-}" {
+		t.Fatal("Exa settings missing from the proxy")
+	}
+	if _, found := typed.Services["server"].Environment["EXA_API_KEY"]; found {
+		t.Fatal("Exa upstream key reached the admin API")
 	}
 	// Every compose service must carry exactly the role the direct
 	// installer (and the bundle's own preflight) expects for its container —

@@ -119,6 +119,9 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 	if settings.AI.APIKey == "" {
 		settings.AI.APIKey = existingContainerEnv(ctx, cli, dockerServerName, "OPENAI_API_KEY")
 	}
+	if settings.Exa.APIKey == "" {
+		settings.Exa.APIKey = existingContainerEnv(ctx, cli, dockerAIName, "EXA_API_KEY")
+	}
 	if settings.Auth.ClientSecret == "" {
 		settings.Auth.ClientSecret = existingContainerEnv(ctx, cli, dockerServerName, "DONKEY_OIDC_CLIENT_SECRET")
 	}
@@ -447,6 +450,8 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 		"DONKEY_LISTEN":    ":8089",
 		"OPENAI_BASE_URL":  settings.AI.BaseURL,
 		"OPENAI_API_KEY":   settings.AI.APIKey,
+		"EXA_BASE_URL":     settings.Exa.BaseURL,
+		"EXA_API_KEY":      settings.Exa.APIKey,
 	}
 	// The model API is the one thing this container talks to, and it is
 	// outside — so of all of them, this is the one that needs the proxy.
@@ -529,6 +534,9 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 // installer. Compose rendering uses the same checks without opening a Docker
 // socket or resolving credentials from the host.
 func validateDockerSettings(settings *config.InstallFile) error {
+	if err := settings.Exa.Validate(); err != nil {
+		return err
+	}
 	if err := settings.Platform.Validate(); err != nil {
 		return err
 	}

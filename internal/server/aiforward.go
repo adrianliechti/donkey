@@ -5,61 +5,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
-	"strings"
-
-	"github.com/adrianliechti/donkey/internal/addons"
 )
-
-// The authenticated service console works for any OpenAI-compatible provider.
-// The target and upstream credential come exclusively from its saved binding;
-// no operator credential or browser cookie may cross this boundary.
-func (s *Server) handleServiceAI(w http.ResponseWriter, r *http.Request) {
-	service, err := s.serviceConnection(r.Context(), r, addons.ProtocolOpenAI)
-	if err != nil {
-		writeErr(w, statusFor(err), err)
-		return
-	}
-	base, _ := url.Parse(service.Binding["OPENAI_BASE_URL"])
-	path := "/models"
-	if r.Method == http.MethodPost {
-		path = "/chat/completions"
-	}
-	proxy := &httputil.ReverseProxy{
-		Rewrite: func(pr *httputil.ProxyRequest) {
-			pr.Out.URL.Path, pr.Out.URL.RawPath = path, ""
-			pr.SetURL(base)
-			// Forward only the headers an OpenAI client needs. In particular,
-			// strip the incoming Authorization, Cookie and X-Access-Token.
-			pr.Out.Header = make(http.Header)
-			pr.Out.Header.Set("Content-Type", "application/json")
-			pr.Out.Header.Set("Accept", pr.In.Header.Get("Accept"))
-			if key := service.Binding["OPENAI_API_KEY"]; key != "" {
-				pr.Out.Header.Set("Authorization", "Bearer "+key)
-			}
-		},
-		ModifyResponse: func(res *http.Response) error {
-			res.Header.Del("Set-Cookie")
-			if r.Method != http.MethodPost || !strings.HasPrefix(res.Header.Get("Content-Type"), "text/event-stream") {
-				res.Header.Set("Content-Type", "application/json")
-			}
-			res.Header.Set("X-Content-Type-Options", "nosniff")
-			// A redirect would send the browser outside the authenticated
-			// service route; report it as an upstream failure instead.
-			if res.StatusCode >= 300 && res.StatusCode < 400 {
-				return fmt.Errorf("the service's AI endpoint redirected the request")
-			}
-			return nil
-		},
-		FlushInterval: -1,
-		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
-			// Transport errors can contain URLs; keep binding values private.
-			writeErr(w, http.StatusBadGateway, fmt.Errorf("the service's AI endpoint did not answer"))
-		},
-	}
-	// SetURL joins paths; one slash at the boundary is sufficient.
-	base.Path = strings.TrimRight(base.Path, "/")
-	proxy.ServeHTTP(w, r)
-}
 
 // Retain the public /ai/v1 forwarding route for existing clients. New consoles
 // use the authenticated per-service route above. The platform's upstream key

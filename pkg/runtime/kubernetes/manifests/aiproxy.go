@@ -100,7 +100,7 @@ func bindingTokenAccess(in SystemInput, name string, extraResources ...string) [
 }
 
 // aiConfigHash rolls the pod when the credential it swaps in changes.
-func (in SystemInput) aiConfigHash() string { return configHash(in.OpenAIAPIKey) }
+func (in SystemInput) aiConfigHash() string { return configHash(in.OpenAIAPIKey, in.ExaAPIKey) }
 
 func aiDeployment(in SystemInput) *appsv1.Deployment {
 	labels := SystemLabels(AIAppName)
@@ -112,6 +112,8 @@ func aiDeployment(in SystemInput) *appsv1.Deployment {
 		{Name: "DONKEY_LISTEN", Value: fmt.Sprintf(":%d", aiPort)},
 		{Name: "OPENAI_BASE_URL", Value: in.OpenAIBaseURL},
 		secretEnvVar("OPENAI_API_KEY", "OPENAI_API_KEY"),
+		{Name: "EXA_BASE_URL", Value: in.ExaBaseURL},
+		secretEnvVar("EXA_API_KEY", "EXA_API_KEY"),
 		// Where to look for the binding Secrets. Only the namespaces — this
 		// process never maps a space onto one.
 		{Name: "DONKEY_SYSTEM_NAMESPACE", Value: in.Namespace},

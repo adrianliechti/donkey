@@ -15,10 +15,11 @@ func (ids CommonOfferings) Validate() error {
 	}
 	seen := map[string]bool{}
 	for _, id := range ids {
-		if !ValidName(id) || seen[id] {
+		canonical := NormalizeAddonType(id)
+		if !ValidName(id) || seen[canonical] {
 			return fmt.Errorf("commonOfferings: %q must be a unique lowercase name", id)
 		}
-		seen[id] = true
+		seen[canonical] = true
 	}
 	return nil
 }

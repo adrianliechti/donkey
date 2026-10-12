@@ -25,7 +25,7 @@ every platform feature does a visible job.
   first deploy):
   - the desk itself — tickets and threads — in `postgres`, self-seeded with
     a believable backlog on first contact,
-  - per-ticket attachments in `rustfs` (plain S3 via boto3; the bucket *is*
+  - per-ticket attachments in `s3` (plain S3 via boto3; the bucket *is*
     the file store, no table mirrors it),
   - the AI through the platform's `openai` proxy: it triages tickets
     (category, priority, sentiment, a one-line summary), drafts replies as

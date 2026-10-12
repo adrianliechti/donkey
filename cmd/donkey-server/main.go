@@ -25,7 +25,7 @@ import (
 )
 
 // One binary, six roles: the control plane by default, the login gateway,
-// the OpenAI endpoint, the service proxy, the build-only package proxy, and traffic
+// the OpenAI and Exa endpoint, the service proxy, the build-only package proxy, and traffic
 // telemetry service. Separate processes keep each role down to the credentials
 // and permissions it needs while the release ships one server artifact.
 func main() {

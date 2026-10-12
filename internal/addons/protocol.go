@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"regexp"
 
+	"github.com/adrianliechti/donkey/internal/config"
 	addonv1 "github.com/adrianliechti/donkey/pkg/addons/v1"
 )
 
@@ -14,6 +15,7 @@ const (
 	ProtocolRedis    = "redis"
 	ProtocolS3       = "s3"
 	ProtocolOpenAI   = "openai"
+	ProtocolExa      = "exa"
 )
 
 // Metadata describes the service independently of who provisions it. It
@@ -33,6 +35,7 @@ func MetadataFor(desc *addonv1.Offering, params Parameters) Metadata {
 // Resolve preserves an explicit protocol, including an unknown one. Only
 // bindings that predate metadata may infer their protocol from the environment.
 func (m Metadata) Resolve(binding map[string]string) Metadata {
+	m.Type = config.NormalizeAddonType(m.Type)
 	m.Protocol = NormalizeProtocol(m.Protocol)
 	if m.Protocol == "" {
 		m.Protocol = LegacyProtocol(binding)
@@ -52,6 +55,8 @@ func ConnectionKey(protocol string) string {
 		return "AWS_ENDPOINT_URL_S3"
 	case ProtocolOpenAI:
 		return "OPENAI_BASE_URL"
+	case ProtocolExa:
+		return "EXA_BASE_URL"
 	default:
 		return ""
 	}
@@ -77,7 +82,7 @@ func ValidateBinding(protocol string, binding map[string]string) error {
 		valid = u.Scheme == "redis" || u.Scheme == "rediss"
 	case ProtocolS3:
 		valid = (u.Scheme == "http" || u.Scheme == "https") && u.User == nil && (u.Path == "" || u.Path == "/") && u.RawQuery == ""
-	case ProtocolOpenAI:
+	case ProtocolOpenAI, ProtocolExa:
 		valid = (u.Scheme == "http" || u.Scheme == "https") && u.User == nil && u.RawQuery == ""
 	}
 	if !valid {
@@ -119,7 +124,7 @@ func LegacyProtocol(binding map[string]string) string {
 		}
 	}
 	for _, entry := range []struct{ key, protocol string }{
-		{"REDIS_URL", ProtocolRedis}, {"AWS_ENDPOINT_URL_S3", ProtocolS3}, {"OPENAI_BASE_URL", ProtocolOpenAI},
+		{"REDIS_URL", ProtocolRedis}, {"AWS_ENDPOINT_URL_S3", ProtocolS3}, {"OPENAI_BASE_URL", ProtocolOpenAI}, {"EXA_BASE_URL", ProtocolExa},
 	} {
 		if binding[entry.key] != "" {
 			return entry.protocol

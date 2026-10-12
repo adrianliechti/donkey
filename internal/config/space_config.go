@@ -2,8 +2,10 @@ package config
 
 import (
 	"fmt"
-	"github.com/adrianliechti/donkey/internal/identity"
+	"maps"
 	"strings"
+
+	"github.com/adrianliechti/donkey/internal/identity"
 )
 
 // SpaceConfig grants management rights to signed-in identities. Empty lists
@@ -26,16 +28,40 @@ type SpaceOffering struct {
 }
 
 func (a SpaceConfig) OfferingAllowed(common CommonOfferings, offering string) bool {
+	offering = NormalizeAddonType(offering)
 	if len(common) == 0 {
 		return true
 	}
 	for _, id := range common {
-		if id == offering {
+		if NormalizeAddonType(id) == offering {
 			return true
 		}
 	}
-	_, enabled := a.Offerings[offering]
+	_, enabled := a.Offering(offering)
 	return enabled
+}
+
+// Offering also reads settings stored under the historical RustFS catalog id.
+func (a SpaceConfig) Offering(id string) (SpaceOffering, bool) {
+	id = NormalizeAddonType(id)
+	entry, ok := a.Offerings[id]
+	if !ok && id == "s3" {
+		entry, ok = a.Offerings["rustfs"]
+	}
+	return entry, ok
+}
+
+// NormalizeOfferings exposes one catalog id while keeping saved defaults.
+// Canonical settings take precedence if both ids were explicitly configured.
+func (a SpaceConfig) NormalizeOfferings() SpaceConfig {
+	if legacy, ok := a.Offerings["rustfs"]; ok {
+		a.Offerings = maps.Clone(a.Offerings)
+		if _, canonical := a.Offerings["s3"]; !canonical {
+			a.Offerings["s3"] = legacy
+		}
+		delete(a.Offerings, "rustfs")
+	}
+	return a
 }
 
 func DefaultSpaceConfig(space, domain string) SpaceConfig {

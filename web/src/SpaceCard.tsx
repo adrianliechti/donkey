@@ -33,6 +33,7 @@ const consoleModules = {
   s3: () => import('./S3Dialog'),
   openai: () => import('./AiDialog'),
   http: () => import('./HttpDialog'),
+  exa: () => import('./ExaDialog'),
 }
 type ConsoleKind = keyof typeof consoleModules
 const DatabaseDialog = lazy(() => consoleModules.database().then((m) => ({ default: m.DatabaseDialog })))
@@ -40,6 +41,7 @@ const RedisDialog = lazy(() => consoleModules.redis().then((m) => ({ default: m.
 const S3Dialog = lazy(() => consoleModules.s3().then((m) => ({ default: m.S3Dialog })))
 const AiDialog = lazy(() => consoleModules.openai().then((m) => ({ default: m.AiDialog })))
 const HttpDialog = lazy(() => consoleModules.http().then((m) => ({ default: m.HttpDialog })))
+const ExaDialog = lazy(() => consoleModules.exa().then((m) => ({ default: m.ExaDialog })))
 const preloadConsole = (kind?: ConsoleKind) => {
   if (kind) void consoleModules[kind]()
 }
@@ -342,6 +344,7 @@ function SpaceServices({
         {browsing && consoleKind === 'redis' && <RedisDialog {...consoleProps} />}
         {browsing && consoleKind === 'openai' && <AiDialog {...consoleProps} />}
         {browsing && consoleKind === 'http' && <HttpDialog {...consoleProps} />}
+        {browsing && consoleKind === 'exa' && <ExaDialog {...consoleProps} />}
       </Suspense>
       {removing && (
         <RemoveServiceDialog

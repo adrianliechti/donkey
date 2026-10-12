@@ -33,7 +33,7 @@ func PrepareService(ctx context.Context, r spaceConfigReader, common config.Comm
 	if !policy.OfferingAllowed(common, desc.Id) {
 		return nil, UserError{Err: fmt.Errorf("offering %s is not enabled in space %s; ask a space admin to add it", desc.Id, space)}
 	}
-	entry := policy.Offerings[desc.Id]
+	entry, _ := policy.Offering(desc.Id)
 	if _, err := addons.ResolveParameters(desc.SpaceConfiguration, entry.Config); err != nil {
 		return nil, UserError{Err: fmt.Errorf("offering %s needs configuration from a space admin", desc.Id)}
 	}
@@ -48,7 +48,7 @@ func SpaceConfiguration(ctx context.Context, r spaceConfigReader, space string, 
 	if err != nil {
 		return nil, err
 	}
-	entry, configured := policy.Offerings[desc.Id]
+	entry, configured := policy.Offering(desc.Id)
 	params, err := addons.PlanSpaceConfiguration(desc, entry.Config, configured, previous)
 	if err != nil {
 		return nil, UserError{Err: err}

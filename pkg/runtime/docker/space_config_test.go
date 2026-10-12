@@ -18,7 +18,9 @@ func TestExistingSpacesMigrateWithoutResettingSettings(t *testing.T) {
 	transport := dockerRoundTripFunc(func(req *http.Request) (*http.Response, error) {
 		switch strings.TrimPrefix(req.URL.Path, "/v1.48") {
 		case "/networks":
-			return dockerJSONResponse(200, []network.Inspect{nw}), nil
+			// A legacy network with a now-reserved space name must not block startup.
+			reserved := network.Inspect{Name: netName("donkey"), Labels: resourceLabels("donkey", roleSpace)}
+			return dockerJSONResponse(200, []network.Inspect{nw, reserved}), nil
 		case "/networks/donkey-old":
 			return dockerJSONResponse(200, nw), nil
 		default:

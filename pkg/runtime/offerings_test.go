@@ -69,3 +69,26 @@ func TestSpaceDefaultsAndNewConsumerPolicy(t *testing.T) {
 		r.attached = false
 	}
 }
+
+func TestLegacyS3DefaultsApplyOnlyAtCreation(t *testing.T) {
+	ctx := context.Background()
+	addon, err := addons.Get(ctx, "s3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	desc, err := addon.Describe(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := offeringRuntime{policy: config.SpaceConfig{Offerings: map[string]config.SpaceOffering{
+		"rustfs": {Defaults: map[string]any{"storage": "5Gi"}},
+	}}}
+	params, err := PrepareService(ctx, r, config.CommonOfferings{"postgres"}, "team", desc, nil, false)
+	if err != nil || params["storage"] != "5Gi" {
+		t.Fatalf("legacy grant or defaults lost: %v %v", params, err)
+	}
+	params, err = PrepareService(ctx, r, config.CommonOfferings{"postgres"}, "team", desc, nil, true)
+	if err != nil || len(params) != 0 {
+		t.Fatalf("legacy defaults changed an existing disk: %v %v", params, err)
+	}
+}

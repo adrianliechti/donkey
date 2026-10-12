@@ -89,6 +89,8 @@ type SystemInput struct {
 	OpenAIBaseURL string
 	OpenAIAPIKey  string
 	AIModel       string
+	ExaBaseURL    string
+	ExaAPIKey     string
 
 	// DefaultPlatform is the build platform of the cluster's nodes.
 	DefaultPlatform string
@@ -302,6 +304,7 @@ func systemSecret(in SystemInput) *corev1.Secret {
 		Data: map[string][]byte{
 			"DONKEY_REGISTRY_PASSWORD":  []byte(in.RegistryPassword),
 			"OPENAI_API_KEY":            []byte(in.OpenAIAPIKey),
+			"EXA_API_KEY":               []byte(in.ExaAPIKey),
 			"DONKEY_OIDC_CLIENT_ID":     []byte(in.OIDCClientID),
 			"DONKEY_OIDC_CLIENT_SECRET": []byte(in.OIDCClientSecret),
 			"DONKEY_SESSION_KEY":        []byte(in.SessionKey),

@@ -9,11 +9,12 @@ import (
 	"os"
 	"time"
 
+	"github.com/adrianliechti/donkey/internal/config"
 	rt "github.com/adrianliechti/donkey/pkg/runtime"
 )
 
-// Config is what donkey-ai reads from its environment. Deliberately tiny:
-// the endpoint it fronts, the credential it swaps in, and where to look for
+// Config is what donkey-ai reads from its environment:
+// the endpoints it fronts, the credentials it swaps in, and where to look for
 // the per-space tokens. No session key, no registry, no builder — this
 // process holds nothing the admin API holds.
 type Config struct {
@@ -22,6 +23,8 @@ type Config struct {
 	// credential. The credential never travels past this process.
 	UpstreamURL string
 	UpstreamKey string
+	ExaURL      string
+	ExaKey      string
 }
 
 func ConfigFromEnv() (*Config, error) {
@@ -29,9 +32,14 @@ func ConfigFromEnv() (*Config, error) {
 		Listen:      envOr("DONKEY_LISTEN", ":8089"),
 		UpstreamURL: os.Getenv("OPENAI_BASE_URL"),
 		UpstreamKey: os.Getenv("OPENAI_API_KEY"),
+		ExaURL:      os.Getenv("EXA_BASE_URL"),
+		ExaKey:      os.Getenv("EXA_API_KEY"),
 	}
 	if c.UpstreamKey == "" {
 		return nil, fmt.Errorf("OPENAI_API_KEY is required — it is the credential donkey-ai swaps each space's token for")
+	}
+	if err := (config.InstallExa{BaseURL: c.ExaURL}).Validate(); err != nil {
+		return nil, err
 	}
 	return c, nil
 }
@@ -51,7 +59,12 @@ func Run(ctx context.Context, cfg *Config, provider rt.Provider) error {
 	if err != nil {
 		return err
 	}
+	exa, err := ExaHandler(cfg.ExaURL, cfg.ExaKey, provider.ExaProxyTokens)
+	if err != nil {
+		return err
+	}
 	mux := http.NewServeMux()
+	mux.Handle(ExaPrefix, exa)
 	mux.Handle(Prefix, handler)
 	// Probes answer on the same listener: nothing here is privileged, so
 	// there is no admin surface to keep them away from.

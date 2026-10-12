@@ -24,9 +24,9 @@ storage:
   paths:
     - /app/data
 # Everything else runs on the space's services: tickets in postgres,
-# attachments in rustfs, triage and reply-drafting through the platform's
+# attachments in s3, triage and reply-drafting through the platform's
 # openai proxy. The deploy provisions them and injects each binding as env.
 addons:
   - type: postgres
-  - type: rustfs
+  - type: s3
   - type: openai

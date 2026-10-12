@@ -95,7 +95,7 @@ func TestSpaceIsolationPolicyRestrictsEgressToDNSSpaceAndPlatform(t *testing.T) 
 	}
 
 	// Same-space egress reuses the installation+space peer (covers postgres,
-	// rustfs and sibling apps — all same-space pods).
+	// S3 storage and sibling apps — all same-space pods).
 	same := p.Spec.Egress[1].To
 	if len(same) != 1 || same[0].NamespaceSelector != nil ||
 		same[0].PodSelector.MatchLabels[LabelSpace] != "acme" ||

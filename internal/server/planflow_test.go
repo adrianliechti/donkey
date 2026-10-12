@@ -169,7 +169,7 @@ func TestPlanAnswersEverything(t *testing.T) {
 		Volumes:         []ai.VolumeSuggestion{{Path: "/app/data", Reason: "writes uploads there"}},
 		Services: []ai.ServiceSuggestion{
 			{Type: "postgres", Reason: "pg import"},
-			{Type: "rustfs", Reason: "boto3 creates an S3 client"},
+			{Type: "s3", Reason: "boto3 creates an S3 client"},
 			{Type: "openai", Reason: "server.js creates an OpenAI client"},
 		},
 	})
@@ -333,5 +333,20 @@ func TestPlanForAnUnrecognizedStack(t *testing.T) {
 	}
 	if plan.App.Port != 8080 {
 		t.Errorf("the assistant's port should be adopted, got %d", plan.App.Port)
+	}
+}
+
+func TestS3PlanKeepsLegacyInstanceAndAvoidsDuplicateService(t *testing.T) {
+	for _, suggested := range []string{"s3", "rustfs"} {
+		t.Run(suggested, func(t *testing.T) {
+			s := planServer(planRuntime{spaces: []string{"default"}}, &ai.Analysis{Port: 4000, Services: []ai.ServiceSuggestion{{Type: suggested, Reason: "S3 client"}}})
+			plan := callPlan(t, s, appUpload(t, map[string]string{"donkey.yaml": "name: web\nport: 4000\naddons:\n  - type: rustfs\nenv:\n  OBJECTS_URL: ${rustfs.AWS_ENDPOINT_URL_S3}\n"}), "space=default")
+			if len(plan.Services) != 1 || plan.Services[0].Type != "s3" || plan.Services[0].Name != "rustfs" {
+				t.Fatalf("rename provisioned a second service: %+v", plan.Services)
+			}
+			if !plan.Ready || !strings.Contains(plan.Config, "${rustfs.AWS_ENDPOINT_URL_S3}") || !strings.Contains(plan.Config, "name: rustfs") {
+				t.Fatalf("legacy deployment contract changed:\n%s\n%+v", plan.Config, plan.Findings)
+			}
+		})
 	}
 }

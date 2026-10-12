@@ -16,7 +16,7 @@ import (
 // everything an admin configures about a donkey installation. Flags override
 // individual fields; secrets can come from env instead
 // (DONKEY_REGISTRY_PASSWORD, DONKEY_PACKAGES_PASSWORD,
-// DONKEY_OIDC_CLIENT_SECRET, OPENAI_API_KEY).
+// DONKEY_OIDC_CLIENT_SECRET, OPENAI_API_KEY, EXA_API_KEY).
 type InstallFile struct {
 	// Runtime is where donkey runs apps: "kubernetes" (the default) or
 	// "docker" — straight on a Docker engine, no cluster.
@@ -69,6 +69,7 @@ type InstallFile struct {
 	Auth     InstallAuth    `json:"auth,omitempty"`
 	Platform PlatformConfig `json:"platform,omitempty"`
 	AI       InstallAI      `json:"ai,omitempty"`
+	Exa      InstallExa     `json:"exa,omitempty"`
 }
 
 // InstallAddonImages overrides the image repository of each managed addon.
@@ -82,12 +83,12 @@ type InstallAddonImages struct {
 
 // Repository returns the configured repository for one addon type.
 func (i InstallAddonImages) Repository(typ string) string {
-	switch typ {
+	switch NormalizeAddonType(typ) {
 	case "postgres":
 		return i.Postgres
 	case "redis":
 		return i.Redis
-	case "rustfs":
+	case "s3":
 		return i.RustFS
 	default:
 		return ""
@@ -840,6 +841,25 @@ func validateRuntimeImage(field, image string) error {
 	}
 	if _, err := reference.ParseNormalizedNamed(image); err != nil {
 		return fmt.Errorf("%s %q is not an image reference: %w", field, image, err)
+	}
+	return nil
+}
+
+const DefaultExaBaseURL = "https://api.exa.ai"
+
+// InstallExa configures the optional search/contents upstream.
+type InstallExa struct {
+	BaseURL string `json:"baseUrl,omitempty"`
+	APIKey  string `json:"apiKey,omitempty"`
+}
+
+func (e InstallExa) Validate() error {
+	if e.BaseURL == "" {
+		return nil
+	}
+	u, err := url.Parse(e.BaseURL)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return fmt.Errorf("exa.baseUrl must be an http or https URL without credentials, query or fragment")
 	}
 	return nil
 }

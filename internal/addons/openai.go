@@ -3,7 +3,6 @@ package addons
 import (
 	"context"
 	"fmt"
-	"net/url"
 	"os"
 	"strings"
 
@@ -50,16 +49,11 @@ func (openai) Binding(in Input) map[string]string {
 // exists — a real OpenAI account, a company gateway. Keys for those belong
 // in the app's own env, not in a URL.
 func (openai) ExternalBinding(raw string) (map[string]string, error) {
-	u, err := url.Parse(raw)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
-		return nil, fmt.Errorf("that doesn't look like an OpenAI-compatible address — expected https://api.openai.com/v1")
+	binding := map[string]string{"OPENAI_BASE_URL": strings.TrimRight(raw, "/")}
+	if err := ValidateBinding(ProtocolOpenAI, binding); err != nil {
+		return nil, fmt.Errorf("expected an OpenAI-compatible http or https address without credentials, query or fragment")
 	}
-	if u.Hostname() == "" {
-		return nil, fmt.Errorf("the address names no host — expected https://api.openai.com/v1")
-	}
-	return map[string]string{
-		"OPENAI_BASE_URL": strings.TrimRight(raw, "/"),
-	}, nil
+	return binding, nil
 }
 
 // Workload is nil on purpose — the service is the platform itself.

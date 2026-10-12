@@ -600,3 +600,18 @@ func TestOSPackageMirrorsAreOptionalAndCredentialsAreScoped(t *testing.T) {
 		t.Fatal("credentials over plaintext HTTP were accepted")
 	}
 }
+
+func TestS3ServiceUsesRustFSImageMirror(t *testing.T) {
+	var images InstallAddonImages
+	if err := yaml.UnmarshalStrict([]byte("rustfs: mirror.example.com/rustfs/rustfs"), &images); err != nil {
+		t.Fatal(err)
+	}
+	if err := images.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	for _, typ := range []string{"s3", "rustfs"} {
+		if got := images.Repository(typ); got != "mirror.example.com/rustfs/rustfs" {
+			t.Fatalf("%s image repository = %q", typ, got)
+		}
+	}
+}

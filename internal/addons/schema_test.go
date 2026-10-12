@@ -25,11 +25,11 @@ func TestBuiltinDescriptorsAreValid(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: defaults do not resolve: %v", a.Type(), err)
 		}
-		if a.Type() != "openai" && (params.String(ParamVersion) == "" || params.String(ParamStorage) == "") {
+		if desc.GetCapabilities().GetRetainData() && (params.String(ParamVersion) == "" || params.String(ParamStorage) == "") {
 			t.Fatalf("%s: version and storage defaults missing: %v", a.Type(), params)
 		}
-		if a.Type() == "openai" && len(params) != 0 {
-			t.Fatalf("openai takes no parameters: %v", params)
+		if !desc.GetCapabilities().GetRetainData() && len(params) != 0 {
+			t.Fatalf("%s takes no parameters: %v", a.Type(), params)
 		}
 	}
 }

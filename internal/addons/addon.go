@@ -22,12 +22,13 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/adrianliechti/donkey/internal/config"
 	addonv1 "github.com/adrianliechti/donkey/pkg/addons/v1"
 )
 
 // Addon is one catalog entry donkey can provision.
 type Addon interface {
-	// Type is the lowercase id the API and CLI speak (postgres, mariadb…).
+	// Type is the lowercase slug the API and CLI speak (postgres, s3…).
 	Type() string
 	// Describe is the catalog descriptor. Built-ins answer statically; an
 	// offering answers from its provider's cached catalog and may fail
@@ -86,7 +87,7 @@ func EnvTemplate(desc *addonv1.Offering) map[string]string {
 func sampleInput(typ string) Input {
 	return Input{
 		Space: "space", Namespace: "ns", Name: typ,
-		Version: "sample", Storage: "1Gi", Password: "x", AIProxyURL: "http://ai.example/v1",
+		Version: "sample", Storage: "1Gi", Password: "x", AIProxyURL: "http://ai.example/v1", ExaProxyURL: "http://ai.example/exa",
 	}
 }
 
@@ -153,6 +154,9 @@ type Input struct {
 	AIProxyURL string
 	// ServiceProxyURL is the installation's HTTP service proxy endpoint.
 	ServiceProxyURL string
+
+	// ExaProxyURL is the search/contents endpoint reachable from apps.
+	ExaProxyURL string
 }
 
 // WithParameters lifts the well-known parameters into their fields.
@@ -186,8 +190,9 @@ func (in Input) HostName() string {
 var builtins = map[string]Builtin{
 	"postgres": postgres{},
 	"redis":    redis{},
-	"rustfs":   rustfs{},
+	"s3":       rustfs{},
 	"openai":   openai{},
+	"exa":      exa{},
 }
 
 var (
@@ -197,6 +202,7 @@ var (
 
 // IsBuiltin reports whether an id names a built-in type.
 func IsBuiltin(typ string) bool {
+	typ = config.NormalizeAddonType(typ)
 	_, ok := builtins[typ]
 	return ok || proxyBuiltin(typ) != nil
 }
@@ -247,6 +253,7 @@ func Types(ctx context.Context) []Addon {
 // catalog are asked now (bounded by describeTimeout); one that keeps
 // failing is not asked again before its backoff elapses.
 func Get(ctx context.Context, typ string) (Addon, error) {
+	typ = config.NormalizeAddonType(typ)
 	if b, ok := builtins[typ]; ok {
 		return b, nil
 	}

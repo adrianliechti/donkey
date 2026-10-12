@@ -39,7 +39,7 @@ every offering. To offer MariaDB only in selected spaces, list the common
 offerings in the installation file:
 
 ```yaml
-commonOfferings: [postgres, redis, rustfs, openai]
+commonOfferings: [postgres, redis, s3, openai, exa]
 ```
 
 Then enable and configure it in the selected space's settings:

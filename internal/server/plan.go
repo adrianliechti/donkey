@@ -531,11 +531,11 @@ func (s *Server) planServices(ctx context.Context, app *config.AppConfig, analys
 			continue
 		}
 		out = append(out, PlanService{
-			Type: svc.Type, Name: svc.Type, Reason: svc.Reason,
+			Type: config.NormalizeAddonType(svc.Type), Name: svc.Type, Reason: svc.Reason,
 			Known: true, Selected: true,
 			Exists: s.spaceHasService(ctx, app.Space, svc.Type),
 		})
-		app.Addons = append(app.Addons, config.AddonConfig{Type: svc.Type, Name: svc.Type})
+		app.Addons = append(app.Addons, config.AddonConfig{Type: config.NormalizeAddonType(svc.Type), Name: svc.Type})
 	}
 	return out
 }
@@ -828,10 +828,14 @@ func (s *Server) bindEnvironment(ctx context.Context, app *config.AppConfig) err
 		if err := runtime.CheckServiceAttachment(ctx, s.rt, s.cfg.CommonOfferings, app.Space, app.Name, service.Name); err != nil {
 			return err
 		}
-		values, err := s.rt.ServiceBinding(ctx, app.Space, addons.SharedOwner, service.Name)
+		connection, err := s.rt.ServiceConnection(ctx, app.Space, service.Name)
 		if err != nil {
 			return fmt.Errorf("cannot read service %s: %w", service.Name, err)
 		}
+		if err := (addons.Metadata{Type: connection.Type, Protocol: connection.Protocol}).CheckType(service.Type); err != nil {
+			return fmt.Errorf("service %s: %w", service.Name, err)
+		}
+		values := connection.Binding
 		if len(values) == 0 {
 			if service.External {
 				return fmt.Errorf("external service %s must be attached to this space before deploying", service.Name)

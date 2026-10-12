@@ -279,7 +279,7 @@ export interface AddonType {
   type: string
   /** The configured provider an offering comes from; absent for built-ins. */
   provider?: string
-  /** The product's own name for display (PostgreSQL, RustFS, OpenAI). */
+  /** The product's own name for display (PostgreSQL, S3, OpenAI). */
   title: string
   description?: string
   /** A lowercase grouping: database, cache, storage, messaging, ai, api… */
@@ -761,6 +761,10 @@ export const api = {
   testServiceHTTP: (space: string, service: string, input: ServiceHTTPRequest, signal?: AbortSignal) =>
     request<ServiceHTTPResponse>(servicePath(space, service, '/http/request'), {
       method: 'POST', body: JSON.stringify(input), signal,
+    }),
+  serviceExa: (space: string, service: string, operation: 'search' | 'contents', body: Record<string, unknown>) =>
+    request<{ results?: { title?: string; url: string; text?: string }[] }>(servicePath(space, service, `/exa/${operation}`), {
+      method: 'POST', body: JSON.stringify(body),
     }),
   // Services belong to the space; apps hold connections to them.
   spaceAddons: (space: string) =>

@@ -51,7 +51,7 @@ func projectFixture(t *testing.T) (*Server, *ai.Project, []byte) {
 			{App: "frontend", Target: "backend", Kind: "server", Env: "API_URL", Suffix: "/api"},
 			{App: "backend", Target: "postgres", Kind: "service", Env: "DB_URL", Key: "DATABASE_URL"},
 			{App: "backend", Target: "openai", Kind: "service", Env: "AI_ENDPOINT", Key: "OPENAI_BASE_URL"},
-			{App: "backend", Target: "rustfs", Kind: "service", Env: "S3_ENDPOINT", Key: "AWS_ENDPOINT_URL_S3"},
+			{App: "backend", Target: "s3", Kind: "service", Env: "S3_ENDPOINT", Key: "AWS_ENDPOINT_URL_S3"},
 		},
 	}
 	s := planServer(projectRuntime{planRuntime{spaces: []string{"default"}}}, &ai.Analysis{Port: 8080})
@@ -123,7 +123,7 @@ func TestProjectPlansEveryAppAndResolvesConnections(t *testing.T) {
 	if len(back.Routes) != 1 || back.Routes[0] != (config.RouteConfig{App: "frontend", Path: "/_donkey/backend", StripPrefix: true}) {
 		t.Fatalf("bad browser route: %+v", back.Routes)
 	}
-	for key, value := range map[string]string{"DATABASE_URL": "${postgres.DATABASE_URL}", "DB_URL": "${postgres.DATABASE_URL}", "AI_ENDPOINT": "${openai.OPENAI_BASE_URL}", "OPENAI_API_KEY": "${openai.OPENAI_API_KEY}", "OPENAI_MODEL": "${openai.OPENAI_MODEL}", "S3_ENDPOINT": "${rustfs.AWS_ENDPOINT_URL_S3}", "AWS_SECRET_ACCESS_KEY": "${rustfs.AWS_SECRET_ACCESS_KEY}"} {
+	for key, value := range map[string]string{"DATABASE_URL": "${postgres.DATABASE_URL}", "DB_URL": "${postgres.DATABASE_URL}", "AI_ENDPOINT": "${openai.OPENAI_BASE_URL}", "OPENAI_API_KEY": "${openai.OPENAI_API_KEY}", "OPENAI_MODEL": "${openai.OPENAI_MODEL}", "S3_ENDPOINT": "${s3.AWS_ENDPOINT_URL_S3}", "AWS_SECRET_ACCESS_KEY": "${s3.AWS_SECRET_ACCESS_KEY}"} {
 		if back.Env[key] != value {
 			t.Errorf("%s = %q, want %q", key, back.Env[key], value)
 		}

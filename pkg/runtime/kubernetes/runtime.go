@@ -8,6 +8,7 @@ import (
 
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"
 
+	"github.com/adrianliechti/donkey/internal/addons"
 	"github.com/adrianliechti/donkey/internal/config"
 	rt "github.com/adrianliechti/donkey/pkg/runtime"
 	"github.com/adrianliechti/donkey/pkg/runtime/kubernetes/manifests"
@@ -57,9 +58,10 @@ type Options struct {
 // a namespace, and an inherited method with the wrong meaning would satisfy
 // the interface silently.
 type Runtime struct {
-	c        *Client
-	opts     Options
-	resolver dnsResolver
+	serviceLocks addons.InstanceLocks
+	c            *Client
+	opts         Options
+	resolver     dnsResolver
 }
 
 var _ rt.Provider = (*Runtime)(nil)

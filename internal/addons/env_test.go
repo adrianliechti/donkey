@@ -8,7 +8,7 @@ import (
 )
 
 func TestSelectedServicesReplaceStaleEnvWithReferences(t *testing.T) {
-	app := &config.AppConfig{Env: map[string]string{"DATABASE_URL": "postgres://localhost/old", "OPENAI_BASE_URL": "http://localhost:1234", "AWS_ENDPOINT_URL_S3": "http://localhost:9000", "LOG_LEVEL": "debug", "REDIS_URL": "redis://localhost:6379"}, Addons: []config.AddonConfig{{Name: "cache", Type: "redis"}, {Name: "db", Type: "postgres"}, {Name: "ai", Type: "openai"}, {Name: "objects", Type: "rustfs"}}}
+	app := &config.AppConfig{Env: map[string]string{"DATABASE_URL": "postgres://localhost/old", "OPENAI_BASE_URL": "http://localhost:1234", "AWS_ENDPOINT_URL_S3": "http://localhost:9000", "LOG_LEVEL": "debug", "REDIS_URL": "redis://localhost:6379"}, Addons: []config.AddonConfig{{Name: "cache", Type: "redis"}, {Name: "db", Type: "postgres"}, {Name: "ai", Type: "openai"}, {Name: "objects", Type: "s3"}}}
 	for _, service := range app.Addons {
 		recipe, _ := Get(context.Background(), service.Type)
 		desc, _ := recipe.Describe(context.Background())
@@ -34,7 +34,7 @@ func TestSelectedServicesReplaceStaleEnvWithReferences(t *testing.T) {
 }
 
 func TestExternalServiceKeepsAppCredentials(t *testing.T) {
-	for _, typ := range []string{"openai", "rustfs"} {
+	for _, typ := range []string{"openai", "s3"} {
 		t.Run(typ, func(t *testing.T) {
 			recipe := builtins[typ]
 			values, err := recipe.ExternalBinding("https://service.example.com")

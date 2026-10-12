@@ -85,7 +85,7 @@ func TestServiceMetadataAndAIProxyCredentials(t *testing.T) {
 }
 
 func TestBindingHostRewritePreservesCredentialsAndPaths(t *testing.T) {
-	for _, kind := range []string{"postgres", "redis", "rustfs"} {
+	for _, kind := range []string{"postgres", "redis", "s3"} {
 		t.Run(kind, func(t *testing.T) {
 			entry, _ := addons.Get(context.Background(), kind)
 			addon := entry.(addons.Builtin)
@@ -168,5 +168,39 @@ func TestServiceProxyUsesSpaceNetworkIdentity(t *testing.T) {
 	}
 	if got, err := r.ServiceProxyAccess(context.Background(), "10.20.0.2", "erp"); err == nil || got {
 		t.Fatalf("stale network accepted: %v %v", got, err)
+	}
+}
+
+func TestExaProxyCredentials(t *testing.T) {
+	r := &Runtime{state: state{dir: t.TempDir()}, opts: Options{AIContainer: "donkey-ai"}}
+	ctx := context.Background()
+	for _, fixture := range []struct{ name, endpoint, key, owner string }{
+		{"platform", r.exaProxyURL(), "platform-token", sharedOwner},
+		{"vendor", "https://vendor.example/v1", "vendor-secret", sharedOwner},
+		{"copy", r.exaProxyURL(), "app-token", "api"},
+	} {
+		if err := r.state.setBinding("team", fixture.owner, fixture.name, map[string]string{"EXA_BASE_URL": fixture.endpoint, "EXA_API_KEY": fixture.key}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := r.state.writeJSON(addons.Metadata{Type: "external-model", Protocol: "custom"}, "service-metadata", "team", "vendor.json"); err != nil {
+		t.Fatal(err)
+	}
+	connection, err := r.ServiceConnection(ctx, "team", "vendor")
+	if err != nil || connection.Type != "external-model" || connection.Protocol != "custom" {
+		t.Fatalf("provider metadata: %+v %v", connection, err)
+	}
+	tokens, err := r.ExaProxyTokens(ctx)
+	if err != nil || !reflect.DeepEqual(tokens, []string{"platform-token"}) {
+		t.Fatalf("wrong proxy tokens: %v", err)
+	}
+	for _, folder := range []string{"env", "bindings", "provisioning"} {
+		if err := r.state.writeJSON(map[string]string{"secret": "private"}, folder, "team", "private.json"); err != nil {
+			t.Fatal(err)
+		}
+		info, err := os.Stat(r.state.path(folder, "team", "private.json"))
+		if err != nil || info.Mode().Perm() != 0o600 {
+			t.Fatalf("%s credentials are not private: %v", folder, err)
+		}
 	}
 }

@@ -110,7 +110,7 @@ func (s *Server) handleGetSpaceConfig(w http.ResponseWriter, r *http.Request) {
 		writeAccessError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, access)
+	writeJSON(w, http.StatusOK, access.NormalizeOfferings())
 }
 
 func (s *Server) handlePutSpaceConfig(w http.ResponseWriter, r *http.Request) {
@@ -124,6 +124,7 @@ func (s *Server) handlePutSpaceConfig(w http.ResponseWriter, r *http.Request) {
 	if access.Domains == nil {
 		access.Domains = []string{}
 	}
+	access = access.NormalizeOfferings()
 	if err := access.Validate(); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return

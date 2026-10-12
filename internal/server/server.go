@@ -132,6 +132,8 @@ func (s *Server) routes() http.Handler {
 	mux.Handle("GET /v1/spaces/{space}/services/{service}/tunnel", s.auth(s.handleServiceTunnel))
 	mux.Handle("GET /v1/spaces/{space}/services/{service}/ai/models", s.auth(s.handleServiceAI))
 	mux.Handle("POST /v1/spaces/{space}/services/{service}/ai/chat/completions", s.auth(s.handleServiceAI))
+	mux.Handle("POST /v1/spaces/{space}/services/{service}/exa/search", s.auth(s.handleServiceExa))
+	mux.Handle("POST /v1/spaces/{space}/services/{service}/exa/contents", s.auth(s.handleServiceExa))
 	// The bucket browser, for services that speak S3.
 	mux.Handle("GET /v1/spaces/{space}/services/{service}/buckets", s.auth(s.handleS3Buckets))
 	mux.Handle("POST /v1/spaces/{space}/services/{service}/buckets", s.auth(s.handleS3CreateBucket))

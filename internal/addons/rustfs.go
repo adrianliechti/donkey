@@ -3,7 +3,6 @@ package addons
 import (
 	"context"
 	"fmt"
-	"net/url"
 	"strings"
 
 	addonv1 "github.com/adrianliechti/donkey/pkg/addons/v1"
@@ -26,14 +25,14 @@ const rfImage = "rustfs/rustfs"
 
 type rustfs struct{}
 
-func (rustfs) Type() string          { return "rustfs" }
+func (rustfs) Type() string          { return "s3" }
 func (rustfs) CredentialKey() string { return "AWS_SECRET_ACCESS_KEY" }
 
 // The default version pins an exact release: upstream is still in its
 // prerelease line, where patch jumps can carry breaking changes a data store
 // must not pick up on a restart.
 func (r rustfs) Describe(context.Context) (*addonv1.Offering, error) {
-	return description(r, "RustFS", "S3-compatible object storage — buckets and files, in one small server.",
+	return description(r, "S3", "S3-compatible object storage — buckets and files, in one small server.",
 		CategoryStorage, ProtocolS3, ObjectSchema(map[string]any{
 			ParamVersion: VersionParameter("1.0.0-rc.3", "A tag of the rustfs/rustfs image; exact releases only, prereleases may break on upgrade."),
 			ParamStorage: StorageParameter("1Gi"),
@@ -43,7 +42,7 @@ func (r rustfs) Describe(context.Context) (*addonv1.Offering, error) {
 
 func (rustfs) Binding(in Input) map[string]string {
 	// The service is named plainly after itself, so siblings in the space
-	// reach it as "rustfs" — the same way they reach each other.
+	// reach it as "s3" — the same way they reach each other.
 	endpoint := fmt.Sprintf("http://%s.%s.svc:%d", in.HostName(), in.Namespace, rfPort)
 	return map[string]string{
 		// The AWS SDK convention: every S3 client picks these up without a
@@ -86,17 +85,10 @@ func (r rustfs) Workload(in Input) (*Workload, error) {
 // address. Credentials don't travel in a bare URL — the app keeps whatever
 // keys it already has.
 func (rustfs) ExternalBinding(raw string) (map[string]string, error) {
-	u, err := url.Parse(raw)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
-		return nil, fmt.Errorf("that doesn't look like an S3 endpoint — expected https://s3.example.com")
-	}
-	if u.Hostname() == "" {
-		return nil, fmt.Errorf("the S3 endpoint names no host — expected https://s3.example.com")
-	}
-	// The trailing slash has to go: SDKs join bucket paths onto it.
 	endpoint := strings.TrimRight(raw, "/")
-	return map[string]string{
-		"AWS_ENDPOINT_URL_S3": endpoint,
-		"S3_URL":              endpoint,
-	}, nil
+	binding := map[string]string{"AWS_ENDPOINT_URL_S3": endpoint, "S3_URL": endpoint}
+	if err := ValidateBinding(ProtocolS3, binding); err != nil {
+		return nil, fmt.Errorf("expected an S3 http or https endpoint without credentials, path, query or fragment")
+	}
+	return binding, nil
 }

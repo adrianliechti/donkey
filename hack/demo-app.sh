@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Connects this machine to the demo cluster and deploys the demo app: an
-# AI-run helpdesk — a FastAPI + MCP backend on postgres/rustfs/openai, and a
+# AI-run helpdesk — a FastAPI + MCP backend on postgres/s3/openai, and a
 # React dashboard in front of it.
 #
 # Assumes donkey is installed (task demo:setup) and `devkube connect` is
@@ -37,7 +37,7 @@ cat <<EOF
                   /mcp   the same desk as tools an assistant can call
                          (tickets_queue, ticket_read, ticket_reply,
                          ticket_triage, attachment_read, desk_overview)
-                Tickets live in the space's postgres, attachments in rustfs,
+                Tickets live in the space's postgres, attachments in s3,
                 and the AI triage / reply drafting / "Simulate a ticket"
                 button run through the platform's openai proxy — all
                 provisioned by the deploy, reached only via injected env.

@@ -228,7 +228,7 @@ func localURLWarnings(analysis *ai.Analysis) []Finding {
 
 func hasAddonType(app *config.AppConfig, typ string) bool {
 	for _, a := range app.Addons {
-		if a.Type == typ {
+		if config.NormalizeAddonType(a.Type) == config.NormalizeAddonType(typ) {
 			return true
 		}
 	}

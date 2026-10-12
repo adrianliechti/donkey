@@ -58,13 +58,15 @@ Report:
     PostgreSQL configuration, and equivalent connection code).
   · "redis" for Redis caches, sessions or queues (REDIS_URL/REDIS_ADDR,
     redis/ioredis clients, StackExchange.Redis and equivalent connection code).
-  · "rustfs" for S3-compatible object storage (an S3 client used for runtime
+  · "s3" for S3-compatible object storage (an S3 client used for runtime
     uploads/objects plus endpoint, bucket, or AWS S3 configuration). Do not
     infer it merely because a generic AWS SDK is installed for another AWS
     service.
   · "openai" for OpenAI-compatible inference (the running app calls an OpenAI
     SDK/API and expects OPENAI_API_KEY or OPENAI_BASE_URL). Ignore build tools,
     tests, and documentation examples that do not make a runtime call.
+  · "exa" for Exa-compatible web search and page contents (runtime calls
+    through exa-js/exa_py or the API with EXA_API_KEY/EXA_BASE_URL).
   Say in each reason which file and connection call/configuration prove it.
 - localURLs: absolute addresses written into the code that point at localhost,
   127.0.0.1, 0.0.0.0, host.docker.internal or a development port — the ones

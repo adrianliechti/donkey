@@ -1,6 +1,13 @@
 package aiproxy
 
-import "testing"
+import (
+	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+)
 
 // The proxy attaches the platform's own upstream key, so the path it forwards
 // has to stay inside the upstream's base and inside the inference surface.
@@ -71,6 +78,63 @@ func TestAIUpstreamPath(t *testing.T) {
 		}
 		if got != c.want {
 			t.Errorf("%s: got %q, want %q", c.path, got, c.want)
+		}
+	}
+}
+
+func TestOpenAIProxyRejectsStoredStateAndKeepsSessionPrivate(t *testing.T) {
+	calls := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if r.Header.Get("Authorization") != "Bearer upstream-secret" {
+			t.Error("wrong upstream credential")
+		}
+		for _, h := range []string{"Cookie", "X-Access-Token", "X-Api-Key", "Api-Key", "OpenAI-Project", "OpenAI-Organization"} {
+			if r.Header.Get(h) != "" {
+				t.Errorf("leaked %s", h)
+			}
+		}
+		w.Header().Set("Set-Cookie", "upstream=private")
+		fmt.Fprint(w, `{"ok":true}`)
+	}))
+	defer upstream.Close()
+	handler, err := Handler(upstream.URL+"/provider/v1", "upstream-secret", func(context.Context) ([]string, error) { return []string{"space-token"}, nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		method, path string
+		status       int
+	}{
+		{"GET", "/v1/models", 200},
+		{"POST", "/v1/chat/completions", 200},
+		{"POST", "/v1/responses", 200},
+		{"GET", "/v1/responses/other-space-response", 403},
+		{"POST", "/v1/responses/other-space-response/cancel", 403},
+		{"GET", "/v1/chat/completions", 403},
+		{"POST", "/v1/chat/completions/other-space-chat", 403},
+		{"POST", "/v1/models", 403},
+	} {
+		req := httptest.NewRequest(c.method, c.path, strings.NewReader(`{}`))
+		req.Header.Set("Authorization", "Bearer space-token")
+		for _, h := range []string{"Cookie", "X-Access-Token", "X-Api-Key", "Api-Key", "OpenAI-Project", "OpenAI-Organization"} {
+			req.Header.Set(h, "private")
+		}
+		out := httptest.NewRecorder()
+		handler.ServeHTTP(out, req)
+		if out.Code != c.status || out.Header().Get("Set-Cookie") != "" {
+			t.Fatalf("%s %s: %d %s", c.method, c.path, out.Code, out.Body.String())
+		}
+	}
+	if calls != 3 {
+		t.Fatalf("stored-state requests reached upstream: %d", calls)
+	}
+}
+
+func TestOpenAIProxyRejectsUnsafeUpstream(t *testing.T) {
+	for _, raw := range []string{"relative", "file:///tmp", "https://user:secret@host/v1", "https://host/v1?key=secret", "https://host/v1#secret"} {
+		if _, err := Handler(raw, "secret", nil); err == nil || strings.Contains(err.Error(), "secret") {
+			t.Fatalf("invalid URL accepted or disclosed: %q %v", raw, err)
 		}
 	}
 }

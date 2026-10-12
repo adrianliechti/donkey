@@ -447,14 +447,21 @@ func (s *Server) handleAddAppService(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	shared, err := s.rt.ServiceBinding(ctx, space, addons.SharedOwner, req.Name)
+	connection, err := s.rt.ServiceConnection(ctx, space, req.Name)
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err)
 		return
 	}
+	if req.Type != "" {
+		if err := (addons.Metadata{Type: connection.Type, Protocol: connection.Protocol}).CheckType(req.Type); err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+	}
+	shared := connection.Binding
 	created := false
 	var parameters map[string]any
-	if len(shared) == 0 {
+	if len(shared) == 0 || req.External {
 		if req.Type == "" {
 			writeErr(w, http.StatusNotFound, fmt.Errorf("the space has no service named %q — give a type to create it", req.Name))
 			return
@@ -464,7 +471,7 @@ func (s *Server) handleAddAppService(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, statusFor(err), err)
 			return
 		}
-		created = true
+		created = len(connection.Binding) == 0
 	}
 
 	wired, err := s.rt.AttachService(ctx, space, app, req.Name, shared)
@@ -550,6 +557,7 @@ func (s *Server) handleCatalog(w http.ResponseWriter, r *http.Request) {
 		if desc.Deprecated {
 			continue
 		}
+		spaceOffering, _ := policy.Offering(desc.Id)
 		e := entry{
 			Type: desc.Id, Provider: provider, Protocol: addons.NormalizeProtocol(desc.Protocol), Title: desc.Title, Description: desc.Description,
 			Category: desc.Category, Tags: desc.Tags, Icon: desc.Icon, DocumentationURL: desc.DocumentationUrl, Shared: desc.Shared,
@@ -566,7 +574,7 @@ func (s *Server) handleCatalog(w http.ResponseWriter, r *http.Request) {
 			// descriptor or exposing its admin-managed configuration values.
 			if space != "" {
 				if properties, ok := e.Parameters["properties"].(map[string]any); ok {
-					for key, value := range policy.Offerings[desc.Id].Defaults {
+					for key, value := range spaceOffering.Defaults {
 						if prop, ok := properties[key].(map[string]any); ok {
 							prop["default"] = value
 						}
@@ -575,7 +583,7 @@ func (s *Server) handleCatalog(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if space != "" {
-			if _, err := addons.ResolveParameters(desc.SpaceConfiguration, policy.Offerings[desc.Id].Config); err != nil {
+			if _, err := addons.ResolveParameters(desc.SpaceConfiguration, spaceOffering.Config); err != nil {
 				e.Available, e.Error = false, "Needs configuration from a space admin"
 			}
 		}

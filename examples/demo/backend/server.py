@@ -6,7 +6,7 @@ Every feature runs on a space service the deploy provisions from this app's
 addons (see donkey.yaml), reached only through injected env:
 
   postgres   the desk itself — tickets and their message threads
-  rustfs     per-ticket attachments, plain S3 through boto3
+  s3         per-ticket attachments, plain S3 through boto3
   openai     the platform's AI proxy — it triages new tickets (category,
              priority, sentiment, a one-line summary), drafts replies as a
              live token stream, and invents realistic incoming tickets on
@@ -193,7 +193,7 @@ def seed(conn: psycopg.Connection) -> None:
                 )
                 at += timedelta(minutes=17, hours=2)
             # A couple of hero tickets come with the file the customer
-            # attached — those live in rustfs, not in a table. Best effort:
+            # attached — those live in S3, not in a table. Best effort:
             # the desk seeds fine even while the bucket isn't there yet.
             for name, content in t.get("attachments", {}).items():
                 try:
@@ -601,9 +601,9 @@ _bucket_ready = False
 
 
 def s3() -> Any:
-    """rustfs speaks S3, so boto3 works as-is — only the endpoint needs saying."""
+    """The object store speaks S3, so boto3 works as-is — only the endpoint needs saying."""
     global _bucket_ready
-    client = boto3.client("s3", endpoint_url=need("AWS_ENDPOINT_URL_S3", "rustfs"))
+    client = boto3.client("s3", endpoint_url=need("AWS_ENDPOINT_URL_S3", "s3"))
     if not _bucket_ready:
         try:
             client.create_bucket(Bucket=BUCKET)
@@ -966,7 +966,7 @@ def api_ticket(ticket_id: int) -> dict[str, Any]:
     ticket, messages = fetch_thread(ticket_id)
     # The thread renders even while the bucket is missing — the attachments
     # strip degrades to its own hint instead of taking the page down.
-    hint = missing("AWS_ENDPOINT_URL_S3", "rustfs")
+    hint = missing("AWS_ENDPOINT_URL_S3", "s3")
     return {
         "ticket": ticket,
         "messages": messages,
@@ -1083,7 +1083,7 @@ def ticket_read(id: int) -> dict[str, Any] | str:
     if reason:
         return reason
     ticket, messages = fetch_thread(id)
-    attachments: Any = missing("AWS_ENDPOINT_URL_S3", "rustfs") or list_attachments(id)
+    attachments: Any = missing("AWS_ENDPOINT_URL_S3", "s3") or list_attachments(id)
     return {"ticket": ticket, "messages": messages, "attachments": attachments}
 
 
@@ -1129,7 +1129,7 @@ def attachment_read(id: int, name: str) -> str:
         id: the ticket's id.
         name: the attachment's name, as ticket_read reports it.
     """
-    for env, service in (("DATABASE_URL", "postgres"), ("AWS_ENDPOINT_URL_S3", "rustfs")):
+    for env, service in (("DATABASE_URL", "postgres"), ("AWS_ENDPOINT_URL_S3", "s3")):
         reason = missing(env, service)
         if reason:
             return reason

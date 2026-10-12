@@ -207,18 +207,18 @@ func (s *Server) recordedDeployPlan(ctx context.Context, app *config.AppConfig, 
 			Known: s.spaceHasService(ctx, copy.Space, service.Name) || s.offeringAvailable(ctx, copy.Space, service.Type), Selected: true,
 			Exists: s.spaceHasService(ctx, copy.Space, service.Name),
 		})
-		seenTypes[service.Type] = true
+		seenTypes[config.NormalizeAddonType(service.Type)] = true
 	}
 	for _, service := range analysis.Services {
-		if seenTypes[service.Type] {
+		if seenTypes[config.NormalizeAddonType(service.Type)] {
 			continue
 		}
 		services = append(services, PlanService{
-			Type: service.Type, Name: service.Type, Reason: service.Reason,
+			Type: config.NormalizeAddonType(service.Type), Name: service.Type, Reason: service.Reason,
 			Known: s.offeringAvailable(ctx, copy.Space, service.Type), Selected: false,
 			Exists: s.spaceHasService(ctx, copy.Space, service.Type),
 		})
-		seenTypes[service.Type] = true
+		seenTypes[config.NormalizeAddonType(service.Type)] = true
 	}
 
 	plan := &Plan{

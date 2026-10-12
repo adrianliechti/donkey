@@ -87,3 +87,18 @@ func TestLegacyProtocolUsesURLScheme(t *testing.T) {
 		}
 	}
 }
+
+func TestHTTPExternalBindingsUseConsoleValidation(t *testing.T) {
+	for _, typ := range []string{"s3", "openai", "exa"} {
+		entry, err := Get(context.Background(), typ)
+		if err != nil {
+			t.Fatal(err)
+		}
+		a := entry.(Builtin)
+		for _, raw := range []string{"https://user:secret@provider", "https://provider?key=secret", "https://provider#secret", "file:///secret"} {
+			if _, err := a.ExternalBinding(raw); err == nil || strings.Contains(err.Error(), "secret") {
+				t.Fatalf("%s accepted or disclosed an unsafe URL: %v", typ, err)
+			}
+		}
+	}
+}

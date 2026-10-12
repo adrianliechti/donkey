@@ -460,3 +460,37 @@ func TestExampleInstallFileParses(t *testing.T) {
 		t.Fatalf("example lost its key settings: %+v", f)
 	}
 }
+
+func TestLegacyS3ConfigPreservesInstanceNameAndReferences(t *testing.T) {
+	for _, name := range []string{"", "objects"} {
+		t.Run(name, func(t *testing.T) {
+			service := name
+			if service == "" {
+				service = "rustfs"
+			}
+			app := AppConfig{Name: "web", Port: 3000, Addons: []AddonConfig{{Type: "rustfs", Name: name, Version: "1.0.0-rc.3", Storage: "5Gi"}},
+				Env: map[string]string{"AWS_SECRET_ACCESS_KEY": EnvRef(service, "AWS_SECRET_ACCESS_KEY")}}
+			app.ApplyDefaults()
+			app.ApplyDefaults() // Repeated defaulting must not change the historical name.
+			if app.Addons[0].Type != "s3" || app.Addons[0].Name != service {
+				t.Fatalf("renamed the instance: %+v", app.Addons)
+			}
+			dir := t.TempDir()
+			if err := app.Save(dir); err != nil {
+				t.Fatal(err)
+			}
+			loaded, err := LoadApp(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if loaded.Addons[0].Name != service || loaded.Addons[0].Type != "s3" || loaded.Addons[0].Storage != "5Gi" || loaded.Addons[0].Version != "1.0.0-rc.3" || loaded.Env["AWS_SECRET_ACCESS_KEY"] != EnvRef(service, "AWS_SECRET_ACCESS_KEY") {
+				t.Fatalf("round trip changed the old storage contract: %+v", loaded)
+			}
+		})
+	}
+	app := AppConfig{Addons: []AddonConfig{{Type: "s3"}}}
+	app.ApplyDefaults()
+	if app.Addons[0].Name != "s3" {
+		t.Fatalf("new S3 service has a legacy name: %+v", app.Addons)
+	}
+}

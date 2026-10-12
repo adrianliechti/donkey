@@ -61,11 +61,14 @@ func (r *Runtime) Deploy(ctx context.Context, spec rt.DeploySpec, out rt.Progres
 		if err := rt.CheckServiceAttachment(ctx, r, r.opts.CommonOfferings, space, app.Name, a.Name); err != nil {
 			return err
 		}
-		shared, err := r.c.GetOwnedSecretData(ctx, ns, r.spaceBindingName(space, a.Name),
-			manifests.AddonLabels(space, a.Name, manifests.RoleBinding))
+		connection, err := r.ServiceConnection(ctx, space, a.Name)
 		if err != nil {
 			return err
 		}
+		if err := (addons.Metadata{Type: connection.Type, Protocol: connection.Protocol}).CheckType(a.Type); err != nil {
+			return rt.UserError{Err: err}
+		}
+		shared := connection.Binding
 		if len(shared) == 0 {
 			if a.External {
 				return fmt.Errorf("addon %s runs elsewhere and its address isn't stored in donkey.yaml — connect it once with `donkey addon attach %s --url …`", a.Name, a.Type)

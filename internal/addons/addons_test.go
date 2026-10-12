@@ -64,7 +64,7 @@ func TestManagedAddonDefaultVersions(t *testing.T) {
 	for typ, want := range map[string]string{
 		"postgres": "18.6",
 		"redis":    "7.4.11",
-		"rustfs":   "1.0.0-rc.3",
+		"s3":       "1.0.0-rc.3",
 	} {
 		if got := defaultParameters(t, builtins[typ]).String(ParamVersion); got != want {
 			t.Errorf("%s default version = %q, want %q", typ, got, want)
@@ -94,7 +94,7 @@ func TestManagedAddonImageRepositoryOverride(t *testing.T) {
 	for typ, repository := range map[string]string{
 		"postgres": "registry.example.com/mirror/library/postgres",
 		"redis":    "registry.example.com/mirror/library/redis",
-		"rustfs":   "registry.example.com/mirror/rustfs/rustfs",
+		"s3":       "registry.example.com/mirror/rustfs/rustfs",
 	} {
 		a := builtins[typ]
 		in := input
@@ -175,7 +175,7 @@ func TestGetUnknownListsTypes(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected an error")
 	}
-	for _, want := range []string{"rustfs", "postgres"} {
+	for _, want := range []string{"s3", "postgres"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("error should offer %s: %v", want, err)
 		}
