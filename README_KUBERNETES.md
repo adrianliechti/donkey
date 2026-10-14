@@ -103,6 +103,26 @@ kubectl get all -A -l app.kubernetes.io/instance=acme,app.kubernetes.io/name=sho
 kubectl get all -A -l app.kubernetes.io/part-of=donkey
 ```
 
+## Console API reads
+
+The portal refreshes apps and spaces together through `GET /v1/fleet` every
+10 seconds. Workload summaries use bulk lists for Deployments, pods, routes,
+storage claims and app service bindings, rather than individual reads for
+every app. A shared five-second cache coalesces concurrent portal requests;
+completed writes invalidate it. External workload changes appear after the
+cache expires and the portal next refreshes.
+
+Platform and space permissions are read fresh for every request. The display
+cache contains no credentials or membership policies, and access revocation
+does not wait for it to expire. Resource sampling also selects only this
+installation's app pods when reading the Metrics API.
+
+To check request counts without a running cluster:
+
+```sh
+go test ./internal/server -run '^$' -bench '^Benchmark(Portal|ResourceSampling)KubernetesAPI$' -benchtime=1x
+```
+
 ## Namespaces and restricted clusters
 
 By default every space gets a namespace of its own (`donkey-<space>`), created

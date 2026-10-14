@@ -13,6 +13,7 @@ import (
 )
 
 type identityContextKey struct{}
+type spaceConfigsContextKey struct{}
 
 var errSpaceForbidden = errors.New("you do not have permission to manage this space")
 
@@ -34,6 +35,9 @@ func (s *Server) spaceRole(ctx context.Context, space string) (string, error) {
 	if id == nil {
 		return "", errSpaceForbidden
 	}
+	if settings, ok := ctx.Value(spaceConfigsContextKey{}).(map[string]config.SpaceConfig); ok {
+		return settings[space].Role(id), nil
+	}
 	access, err := s.rt.SpaceConfig(ctx, space)
 	if errors.Is(err, runtime.ErrSpaceNotFound) {
 		return "", nil
@@ -42,6 +46,27 @@ func (s *Server) spaceRole(ctx context.Context, space string) (string, error) {
 		return "", err
 	}
 	return access.Role(id), nil
+}
+
+// The context value lasts for one fleet request. Permission reads are batched
+// where the runtime supports it, but never reused across HTTP requests.
+func (s *Server) listSpaceConfigs(ctx context.Context) (map[string]config.SpaceConfig, error) {
+	if provider, ok := s.rt.(runtime.SpaceConfigsProvider); ok {
+		return provider.ListSpaceConfigs(ctx)
+	}
+	spaces, err := s.rt.ListSpaces(ctx)
+	if err != nil {
+		return nil, err
+	}
+	settings := make(map[string]config.SpaceConfig, len(spaces))
+	for _, space := range spaces {
+		policy, err := s.rt.SpaceConfig(ctx, space)
+		if err != nil {
+			return nil, err
+		}
+		settings[space] = policy
+	}
+	return settings, nil
 }
 
 func (s *Server) authorizeSpace(ctx context.Context, space string, admin bool) error {
@@ -91,7 +116,7 @@ func (s *Server) authorizeRoute(w http.ResponseWriter, r *http.Request) bool {
 		return s.requireSpace(w, r, space, admin)
 	}
 	switch r.Pattern {
-	case "GET /v1/ping", "GET /v1/apps", "GET /v1/spaces", "GET /v1/catalog",
+	case "GET /v1/ping", "GET /v1/apps", "GET /v1/spaces", "GET /v1/fleet", "GET /v1/catalog",
 		"POST /v1/plans", "PUT /v1/plans/{id}", "POST /v1/deploys",
 		"POST /v1/projects/plans", "PUT /v1/projects/plans/{id}", "POST /v1/projects/deploys":
 		return true

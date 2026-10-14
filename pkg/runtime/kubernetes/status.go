@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"sort"
 
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -14,10 +16,9 @@ import (
 )
 
 func (c *Client) AppStatus(ctx context.Context, namespace, objectName, space, app string) (*rt.AppStatus, error) {
-	st := &rt.AppStatus{}
 	dep, err := c.Clientset.AppsV1().Deployments(namespace).Get(ctx, objectName, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
-		return st, nil
+		return &rt.AppStatus{}, nil
 	}
 	if err != nil {
 		return nil, err
@@ -26,6 +27,27 @@ func (c *Client) AppStatus(ctx context.Context, namespace, objectName, space, ap
 		manifests.Labels(space, app, manifests.RoleWorkload)); err != nil {
 		return nil, err
 	}
+	st := deploymentStatus(dep)
+	if pods, err := c.Clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: labels.Set(dep.Spec.Selector.MatchLabels).String(),
+	}); err == nil {
+		for i := range pods.Items {
+			p := &pods.Items[i]
+			if c.requireOwnedObject("Pod", namespace, p.Name, p.Labels,
+				manifests.Labels(space, app, manifests.RoleWorkload)) == nil {
+				addPodStatus(st, p)
+			}
+		}
+	}
+	if cm, err := c.appRouteConfigMap(ctx, namespace, objectName, space, app); err == nil {
+		addRouteStatus(st, cm)
+	}
+	return st, nil
+}
+
+// Both a single-app read and a bulk fleet snapshot use the same status rules.
+func deploymentStatus(dep *appsv1.Deployment) *rt.AppStatus {
+	st := &rt.AppStatus{}
 	st.Found = true
 	st.Image = dep.Annotations[manifests.AnnotationImage]
 	st.Mode = dep.Annotations[manifests.AnnotationMode]
@@ -45,32 +67,23 @@ func (c *Client) AppStatus(ctx context.Context, namespace, objectName, space, ap
 		dep.Status.UpdatedReplicas == st.WantReplica &&
 		dep.Status.Replicas == st.WantReplica
 
-	if pods, err := c.Clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
-		LabelSelector: labels.Set(dep.Spec.Selector.MatchLabels).String(),
-	}); err == nil {
-		for _, p := range pods.Items {
-			if c.requireOwnedObject("Pod", namespace, p.Name, p.Labels,
-				manifests.Labels(space, app, manifests.RoleWorkload)) != nil {
-				continue
-			}
-			st.Instances = append(st.Instances, podSummary(&p))
-			for _, cs := range p.Status.ContainerStatuses {
-				st.Restarts += cs.RestartCount
-			}
-			if p.CreationTimestamp.Time.After(st.StartedAt) {
-				st.StartedAt = p.CreationTimestamp.Time
-			}
-		}
+	return st
+}
+
+func addPodStatus(st *rt.AppStatus, p *corev1.Pod) {
+	st.Instances = append(st.Instances, podSummary(p))
+	for _, cs := range p.Status.ContainerStatuses {
+		st.Restarts += cs.RestartCount
 	}
-	if cm, err := c.appRouteConfigMap(ctx, namespace, objectName, space, app); err == nil {
-		if c.requireOwnedObject("ConfigMap", namespace, cm.Name, cm.Labels,
-			manifests.Labels(space, app, manifests.RoleRoute)) == nil {
-			if route, err := manifests.ReadRoute(cm); err == nil && route.Backend != "" {
-				st.PublicHost, st.Protected, st.Mode, st.CORS = route.Host, route.Login, route.Mode, route.CORS
-			}
-		}
+	if p.CreationTimestamp.Time.After(st.StartedAt) {
+		st.StartedAt = p.CreationTimestamp.Time
 	}
-	return st, nil
+}
+
+func addRouteStatus(st *rt.AppStatus, cm *corev1.ConfigMap) {
+	if route, err := manifests.ReadRoute(cm); err == nil && route.Backend != "" {
+		st.PublicHost, st.Protected, st.Mode, st.CORS = route.Host, route.Login, route.Mode, route.CORS
+	}
 }
 
 // DeploymentAnnotation reads one annotation off a Deployment; a missing

@@ -237,6 +237,7 @@ func (r *Runtime) addonImagePullCredentials(image string) (*imagePullCredentials
 }
 
 func (r *Runtime) AttachService(ctx context.Context, space, app, name string, binding map[string]string) (bool, error) {
+	defer r.InvalidateAppSummaries()
 	if err := rt.CheckServiceAttachment(ctx, r, r.opts.CommonOfferings, space, app, name); err != nil {
 		return false, err
 	}
@@ -255,6 +256,7 @@ func (r *Runtime) AttachService(ctx context.Context, space, app, name string, bi
 }
 
 func (r *Runtime) DetachService(ctx context.Context, space, app, name string) error {
+	defer r.InvalidateAppSummaries()
 	ns := r.ns(space)
 	obj := r.name(space, app)
 	// Unwire before deleting: a pod template that still references the
@@ -266,6 +268,7 @@ func (r *Runtime) DetachService(ctx context.Context, space, app, name string) er
 }
 
 func (r *Runtime) RemoveService(ctx context.Context, space, name string, keepData, force bool) ([]string, error) {
+	defer r.InvalidateAppSummaries()
 	unlock := r.serviceLocks.Lock(space, name)
 	defer unlock()
 	if keepData {

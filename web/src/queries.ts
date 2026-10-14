@@ -15,10 +15,7 @@ import { errText } from './ui'
 
 export const fleetQuery = queryOptions({
   queryKey: ['fleet'],
-  queryFn: async () => {
-    const [apps, spaces] = await Promise.all([api.apps(), api.spaces()])
-    return { apps: apps.apps, ...spaces }
-  },
+  queryFn: () => api.fleet(),
   refetchInterval: 10_000,
 })
 

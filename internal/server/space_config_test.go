@@ -121,7 +121,7 @@ func TestSpaceRBACProtectsReadWriteAndMembership(t *testing.T) {
 	if r.restarts != 1 || r.writes != 0 || r.creates != 0 {
 		t.Fatalf("unexpected mutations: %+v", r)
 	}
-	for _, path := range []string{"/v1/spaces", "/v1/apps"} {
+	for _, path := range []string{"/v1/spaces", "/v1/apps", "/v1/fleet"} {
 		r.ref = []runtime.AppRef{{Space: "other", App: "private"}}
 		rec := callAs(t, s, "dev@example.com", "GET", path, nil)
 		if rec.Code != 200 || strings.Contains(rec.Body.String(), "other") || strings.Contains(rec.Body.String(), "private") {

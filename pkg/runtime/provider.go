@@ -161,6 +161,28 @@ type ResourceSampler interface {
 	ResourceSamples(ctx context.Context) ([]ResourceSample, error)
 }
 
+// AppSummaryProvider batches the overview's status, storage and service reads.
+// Implementations may briefly cache these display values; the server always
+// resolves management permissions separately against current space settings.
+type AppSummaryProvider interface {
+	AppSummaries(ctx context.Context) ([]AppSummary, error)
+	// InvalidateAppSummaries makes completed writes visible on the next read.
+	InvalidateAppSummaries()
+}
+
+type AppSummary struct {
+	AppRef
+	Status     AppStatus
+	HasStorage bool
+	Addons     []string
+}
+
+// SpaceConfigsProvider lists space settings in bulk. These settings authorize
+// requests and must be read fresh, even when workload summaries are cached.
+type SpaceConfigsProvider interface {
+	ListSpaceConfigs(ctx context.Context) (map[string]config.SpaceConfig, error)
+}
+
 // EndpointStatusProvider is an optional runtime capability for the slower,
 // edge-specific checks shown on one app's detail page. Keeping it separate
 // from Provider.Status matters: the fleet view reads Status for every app,

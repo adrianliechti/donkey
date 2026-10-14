@@ -183,6 +183,11 @@ func (r *Runtime) SpaceConfig(ctx context.Context, space string) (config.SpaceCo
 	if err != nil {
 		return settings, err
 	}
+	return decodeSpaceConfig(cm)
+}
+
+func decodeSpaceConfig(cm *corev1.ConfigMap) (config.SpaceConfig, error) {
+	var settings config.SpaceConfig
 	raw, exists := cm.Data[spaceConfigKey]
 	if !exists {
 		raw = cm.Data["config.json"]
@@ -196,6 +201,76 @@ func (r *Runtime) SpaceConfig(ctx context.Context, space string) (config.SpaceCo
 		}
 	}
 	return settings, nil
+}
+
+var _ rt.SpaceConfigsProvider = (*Runtime)(nil)
+
+// ListSpaceConfigs keeps fleet authorization fresh with one ConfigMap list
+// and, for per-space placement, one namespace list. It shares no policy cache
+// with the workload overview. Legacy or conflicting markers use the existing
+// ownership-checked reader, so a bulk read cannot bypass migration or RBAC.
+func (r *Runtime) ListSpaceConfigs(ctx context.Context) (map[string]config.SpaceConfig, error) {
+	ns := r.opts.Placement.SharedNamespace // empty means NamespaceAll
+	list, err := r.c.Clientset.CoreV1().ConfigMaps(ns).List(ctx, metav1.ListOptions{
+		LabelSelector: fmt.Sprintf("%s=%s,%s=%s,%s", manifests.LabelInstallation, r.c.installation(),
+			manifests.LabelRole, manifests.RoleSpace, manifests.LabelSpace),
+	})
+	if err != nil {
+		return nil, err
+	}
+	markers := map[string]*corev1.ConfigMap{}
+	spaces := map[string]bool{}
+	for i := range list.Items {
+		cm := &list.Items[i]
+		space := cm.Labels[manifests.LabelSpace]
+		if space == "" || cm.Namespace != r.ns(space) || cm.DeletionTimestamp != nil ||
+			r.c.requireOwnedObject("ConfigMap", cm.Namespace, cm.Name, cm.Labels, manifests.SpaceLabels(space)) != nil {
+			continue
+		}
+		if r.opts.Placement.Shared() {
+			spaces[space] = true
+		}
+		if cm.Name == manifests.SpaceMarkerName(space) {
+			markers[space] = cm
+		}
+	}
+	if !r.opts.Placement.Shared() {
+		refs, err := r.c.ListSpaces(ctx)
+		if err != nil {
+			return nil, err
+		}
+		for _, ref := range refs {
+			if ref.Namespace == r.ns(ref.Space) {
+				spaces[ref.Space] = true
+			}
+		}
+	}
+	out := make(map[string]config.SpaceConfig, len(spaces))
+	for space := range spaces {
+		cm := markers[space]
+		_, current := mapValue(cm, spaceConfigKey)
+		_, legacy := mapValue(cm, "config.json")
+		var settings config.SpaceConfig
+		var err error
+		if cm == nil || (!current && !legacy) {
+			settings, err = r.SpaceConfig(ctx, space)
+		} else {
+			settings, err = decodeSpaceConfig(cm)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("reading space %s settings: %w", space, err)
+		}
+		out[space] = settings
+	}
+	return out, nil
+}
+
+func mapValue(cm *corev1.ConfigMap, key string) (string, bool) {
+	if cm == nil {
+		return "", false
+	}
+	value, found := cm.Data[key]
+	return value, found
 }
 
 func (r *Runtime) createSpaceConfig(ctx context.Context, space string, settings config.SpaceConfig) error {

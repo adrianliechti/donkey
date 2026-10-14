@@ -96,6 +96,7 @@ func (s *Server) routes() http.Handler {
 	mux.Handle("POST /v1/projects/deploys", s.auth(s.handleProjectDeploy))
 	// Apps live in a space, so their address does too.
 	mux.Handle("GET /v1/apps", s.auth(s.handleListApps))
+	mux.Handle("GET /v1/fleet", s.auth(s.handleFleet))
 	mux.Handle("GET /v1/spaces/{space}/apps/{app}/status", s.auth(s.handleStatus))
 	mux.Handle("GET /v1/spaces/{space}/apps/{app}/builds", s.auth(s.handleBuilds))
 	mux.Handle("GET /v1/spaces/{space}/apps/{app}/builds/{sequence}", s.auth(s.handleBuild))
@@ -265,6 +266,11 @@ func (s *Server) auth(next http.HandlerFunc) http.Handler {
 				ctx := context.WithValue(r.Context(), identityContextKey{}, id)
 				r = r.WithContext(context.WithValue(ctx, platformContextKey{}, settings))
 				if s.authorizeRoute(w, r) {
+					if r.Method != http.MethodGet && r.Method != http.MethodHead {
+						if provider, ok := s.rt.(runtime.AppSummaryProvider); ok {
+							defer provider.InvalidateAppSummaries()
+						}
+					}
 					next(w, r)
 				}
 				return

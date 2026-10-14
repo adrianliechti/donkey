@@ -3,6 +3,7 @@ package kubernetes
 import (
 	"context"
 	"math"
+	"strings"
 	"testing"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 	"k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 
 	"github.com/adrianliechti/donkey/pkg/runtime/kubernetes/manifests"
 )
@@ -68,7 +70,11 @@ func TestResourceSamplesFindInstallationStampedAppPods(t *testing.T) {
 	metric := func(name string) *unstructured.Unstructured {
 		return &unstructured.Unstructured{Object: map[string]any{
 			"apiVersion": "metrics.k8s.io/v1", "kind": "PodMetrics",
-			"metadata":  map[string]any{"name": name, "namespace": namespace},
+			"metadata": map[string]any{"name": name, "namespace": namespace, "labels": map[string]any{
+				manifests.LabelInstallation: installation,
+				manifests.LabelRole:         manifests.RoleWorkload,
+				manifests.LabelApp:          "site",
+			}},
 			"timestamp": "2026-08-28T12:34:56Z",
 			"containers": []any{map[string]any{
 				"name":  manifests.WebContainerName,
@@ -102,6 +108,20 @@ func TestResourceSamplesFindInstallationStampedAppPods(t *testing.T) {
 	if got.Space != "team" || got.App != "site" || got.Instance != "pod-uid" ||
 		got.ContainerID != "container-id" || got.CPUCores != 0.125 || got.MemoryBytes != 96*1024*1024 {
 		t.Fatalf("sample=%+v", got)
+	}
+	var metricLists int
+	for _, action := range dynamic.Actions() {
+		if list, ok := action.(k8stesting.ListAction); ok {
+			metricLists++
+			selector := list.GetListRestrictions().Labels.String()
+			if !strings.Contains(selector, manifests.LabelInstallation+"="+installation) ||
+				!strings.Contains(selector, manifests.LabelRole+"="+manifests.RoleWorkload) || action.GetNamespace() != namespace {
+				t.Fatalf("metrics read was not confined to installation app pods: %s in %q", selector, action.GetNamespace())
+			}
+		}
+	}
+	if metricLists != 1 {
+		t.Fatalf("metrics lists = %d, want one workload read", metricLists)
 	}
 }
 

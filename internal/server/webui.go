@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -56,37 +57,62 @@ func uiHandler() http.Handler {
 // handleListSpaces names every space, with or without apps — a space that
 // holds only services still needs its card in the console.
 func (s *Server) handleListSpaces(w http.ResponseWriter, r *http.Request) {
-	spaces, err := s.rt.ListSpaces(r.Context())
+	settings, err := s.listSpaceConfigs(r.Context())
 	if err != nil {
-		writeErr(w, http.StatusBadGateway, err)
+		writeAccessError(w, err)
 		return
 	}
+	writeJSON(w, http.StatusOK, s.spaceList(r.Context(), settings))
+}
+
+type spaceListResponse struct {
+	Spaces        []string            `json:"spaces"`
+	Roles         map[string]string   `json:"roles"`
+	Domains       map[string][]string `json:"domains"`
+	PlatformAdmin bool                `json:"platformAdmin"`
+	Domain        string              `json:"domain"`
+}
+
+func (s *Server) spaceList(ctx context.Context, settings map[string]config.SpaceConfig) spaceListResponse {
 	names := []string{}
 	roles := map[string]string{}
 	domains := map[string][]string{}
-	for _, space := range spaces {
-		role, err := s.spaceRole(r.Context(), space)
-		if err != nil {
-			writeAccessError(w, err)
-			return
+	for space, policy := range settings {
+		role := policy.Role(requestIdentity(ctx))
+		if s.platformAdmin(ctx) {
+			role = config.SpaceAdmin
 		}
 		if role != "" {
-			settings, err := s.rt.SpaceConfig(r.Context(), space)
-			if err != nil {
-				writeAccessError(w, err)
-				return
-			}
 			names = append(names, space)
 			roles[space] = role
-			domains[space] = append([]string{}, settings.Domains...)
+			domains[space] = append([]string{}, policy.Domains...)
 		}
 	}
 	sort.Strings(names)
-	writeJSON(w, http.StatusOK, map[string]any{
-		"spaces": names, "roles": roles, "domains": domains,
-		"platformAdmin": s.platformAdmin(r.Context()),
-		"domain":        s.cfg.Domain,
-	})
+	return spaceListResponse{
+		Spaces: names, Roles: roles, Domains: domains,
+		PlatformAdmin: s.platformAdmin(ctx), Domain: s.cfg.Domain,
+	}
+}
+
+// The portal reads apps and spaces together, sharing one fresh permission
+// snapshot and one authentication check instead of making two HTTP requests.
+func (s *Server) handleFleet(w http.ResponseWriter, r *http.Request) {
+	settings, err := s.listSpaceConfigs(r.Context())
+	if err != nil {
+		writeAccessError(w, err)
+		return
+	}
+	ctx := context.WithValue(r.Context(), spaceConfigsContextKey{}, settings)
+	apps, err := s.listAppEntries(ctx)
+	if err != nil {
+		writeAccessError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, struct {
+		Apps []AppListEntry `json:"apps"`
+		spaceListResponse
+	}{apps, s.spaceList(ctx, settings)})
 }
 
 // handleCreateSpace makes an empty space — a home to put services into
@@ -183,10 +209,40 @@ type AppListEntry struct {
 // handleListApps finds every deployed app, with the space it belongs to. The
 // console groups by space; the CLI prints the same grouping.
 func (s *Server) handleListApps(w http.ResponseWriter, r *http.Request) {
-	refs, err := s.rt.ListApps(r.Context())
+	apps, err := s.listAppEntries(r.Context())
 	if err != nil {
-		writeErr(w, http.StatusBadGateway, err)
+		writeAccessError(w, err)
 		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"apps": apps})
+}
+
+func (s *Server) listAppEntries(ctx context.Context) ([]AppListEntry, error) {
+	var refs []runtime.AppRef
+	var summaries map[runtime.AppRef]runtime.AppSummary
+	if provider, ok := s.rt.(runtime.AppSummaryProvider); ok {
+		apps, err := provider.AppSummaries(ctx)
+		if err != nil {
+			return nil, err
+		}
+		summaries = make(map[runtime.AppRef]runtime.AppSummary, len(apps))
+		for _, app := range apps {
+			refs = append(refs, app.AppRef)
+			summaries[app.AppRef] = app
+		}
+		if _, loaded := ctx.Value(spaceConfigsContextKey{}).(map[string]config.SpaceConfig); !loaded && !s.platformAdmin(ctx) {
+			settings, err := s.listSpaceConfigs(ctx)
+			if err != nil {
+				return nil, err
+			}
+			ctx = context.WithValue(ctx, spaceConfigsContextKey{}, settings)
+		}
+	} else {
+		var err error
+		refs, err = s.rt.ListApps(ctx)
+		if err != nil {
+			return nil, err
+		}
 	}
 	apps := []AppListEntry{}
 	roles := map[string]string{}
@@ -194,22 +250,34 @@ func (s *Server) handleListApps(w http.ResponseWriter, r *http.Request) {
 		role, checked := roles[ref.Space]
 		if !checked {
 			var err error
-			role, err = s.spaceRole(r.Context(), ref.Space)
+			role, err = s.spaceRole(ctx, ref.Space)
 			if err != nil {
-				writeAccessError(w, err)
-				return
+				return nil, err
 			}
 			roles[ref.Space] = role
 		}
 		if role != config.SpaceAdmin && role != config.SpaceDeveloper {
 			continue
 		}
-		st, err := s.rt.Status(r.Context(), ref.Space, ref.App)
-		if err != nil {
-			// A transient status error must not make a running app vanish
-			// from the overview.
-			apps = append(apps, AppListEntry{Name: ref.App, Space: ref.Space, Ready: "status unavailable"})
-			continue
+		var st *runtime.AppStatus
+		var hasStorage bool
+		var addonNames []string
+		if summary, ok := summaries[ref]; ok {
+			st, hasStorage, addonNames = &summary.Status, summary.HasStorage, summary.Addons
+		} else {
+			var err error
+			st, err = s.rt.Status(ctx, ref.Space, ref.App)
+			if err != nil {
+				// A transient status error must not make a running app vanish.
+				apps = append(apps, AppListEntry{Name: ref.App, Space: ref.Space, Ready: "status unavailable"})
+				continue
+			}
+			hasStorage = s.rt.HasData(ctx, ref.Space, ref.App)
+			if bindings, err := s.rt.ListServices(ctx, ref.Space, ref.App); err == nil {
+				for _, b := range bindings {
+					addonNames = append(addonNames, b.Name)
+				}
+			}
 		}
 		if !st.Found {
 			continue
@@ -223,18 +291,14 @@ func (s *Server) handleListApps(w http.ResponseWriter, r *http.Request) {
 			Restarts:   st.Restarts,
 			Exposure:   exposureOf(st),
 			Mode:       modeOfStatus(st),
-			HasStorage: s.rt.HasData(r.Context(), ref.Space, ref.App),
+			HasStorage: hasStorage,
+			Addons:     addonNames,
 		}
 		if !st.StartedAt.IsZero() {
 			entry.StartedAt = st.StartedAt.UTC().Format(time.RFC3339)
 		}
 		if st.PublicHost != "" {
 			entry.URL = s.cfg.Scheme() + "://" + st.PublicHost
-		}
-		if bindings, err := s.rt.ListServices(r.Context(), ref.Space, ref.App); err == nil {
-			for _, b := range bindings {
-				entry.Addons = append(entry.Addons, b.Name)
-			}
 		}
 		apps = append(apps, entry)
 	}
@@ -244,5 +308,5 @@ func (s *Server) handleListApps(w http.ResponseWriter, r *http.Request) {
 		}
 		return apps[i].Name < apps[j].Name
 	})
-	writeJSON(w, http.StatusOK, map[string]any{"apps": apps})
+	return apps, nil
 }

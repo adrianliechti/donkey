@@ -62,6 +62,7 @@ type Runtime struct {
 	c            *Client
 	opts         Options
 	resolver     dnsResolver
+	fleet        fleetCache
 }
 
 var _ rt.Provider = (*Runtime)(nil)
@@ -86,6 +87,16 @@ func (r *Runtime) Client() *Client { return r.c }
 
 // ns is where a space lives: all its apps share the namespace.
 func (r *Runtime) ns(space string) string { return r.opts.Placement.Namespace(space) }
+
+// Apps live only in the workload namespace in shared placement. Sweeping the
+// system namespace as well would duplicate reads for resources that cannot
+// contribute to a workload snapshot.
+func (r *Runtime) workloadNamespaces() []string {
+	if r.opts.Placement.Shared() {
+		return []string{r.opts.Placement.SharedNamespace}
+	}
+	return r.c.sweep()
+}
 
 func (r *Runtime) InternalURL(space, app string, port int) string {
 	return fmt.Sprintf("http://%s.%s.svc", r.name(space, app), r.ns(space))
@@ -244,6 +255,7 @@ func (r *Runtime) ReconcileSpaceIsolation(ctx context.Context) error {
 }
 
 func (r *Runtime) DeleteSpace(ctx context.Context, space string) error {
+	defer r.InvalidateAppSummaries()
 	if err := r.ValidateSpace(space); err != nil {
 		return err
 	}
@@ -299,6 +311,7 @@ func (r *Runtime) HasData(ctx context.Context, space, app string) bool {
 }
 
 func (r *Runtime) Restart(ctx context.Context, space, app string) (bool, error) {
+	defer r.InvalidateAppSummaries()
 	return r.c.RestartApp(ctx, r.ns(space), r.name(space, app), space, app)
 }
 
@@ -317,6 +330,7 @@ func (r *Runtime) GetEnv(ctx context.Context, space, app string) (map[string]str
 }
 
 func (r *Runtime) SetEnv(ctx context.Context, space, app string, env map[string]string) error {
+	defer r.InvalidateAppSummaries()
 	// This writes an object named from the pair, so the pair has to pass the
 	// same rules a deploy enforces — otherwise a crafted space like "a--b"
 	// plants a secret whose name another space's app could ambiguously own.

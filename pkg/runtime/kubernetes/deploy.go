@@ -19,6 +19,7 @@ import (
 // the disk, addon bindings — goes first, so the new version comes up with its
 // configuration already in place.
 func (r *Runtime) Deploy(ctx context.Context, spec rt.DeploySpec, out rt.Progress) error {
+	defer r.InvalidateAppSummaries()
 	app := spec.App
 	space := spec.Space
 	ns := r.ns(space)
@@ -210,6 +211,7 @@ func (r *Runtime) Render(spec rt.DeploySpec) (string, error) {
 }
 
 func (r *Runtime) Destroy(ctx context.Context, space, app string, keepData bool) error {
+	defer r.InvalidateAppSummaries()
 	ns, obj := r.ns(space), r.name(space, app)
 	// A file-browser helper still holding the disk would keep the volume in
 	// Terminating — and it is a Pod, which the app's own delete never covers.
@@ -413,6 +415,7 @@ func (r *Runtime) retractRemovedRoutes(ctx context.Context, ns string, in manife
 // and optional Certificate/DNSEndpoint are re-rendered from cluster state;
 // existing shared-address routes keep serving under their existing names.
 func (r *Runtime) ApplyNetwork(ctx context.Context, cfg *config.AppConfig) (string, error) {
+	defer r.InvalidateAppSummaries()
 	space, app := cfg.Space, cfg.Name
 	if err := rt.CheckAppDomain(ctx, r, cfg, space, r.opts.Domain); err != nil {
 		return "", err

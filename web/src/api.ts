@@ -677,6 +677,7 @@ export const api = {
   ping: () => request<{ ok: boolean }>('/v1/ping'),
   doctor: () => request<DoctorReport>('/v1/doctor'),
   apps: () => request<{ apps: AppSummary[] }>('/v1/apps'),
+  fleet: () => request<SpaceList & { apps: AppSummary[] }>('/v1/fleet'),
   status: async (space: string, app: string): Promise<AppStatus> => {
     const st = await request<AppStatus>(appPath(space, app, '/status'))
     return { ...st, pods: st.pods ?? [] }

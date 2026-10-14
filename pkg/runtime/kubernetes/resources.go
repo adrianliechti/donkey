@@ -38,7 +38,7 @@ type measuredPod struct {
 func (r *Runtime) ResourceSamples(ctx context.Context) ([]rt.ResourceSample, error) {
 	var samples []rt.ResourceSample
 	var failures []error
-	for _, namespace := range r.c.sweep() {
+	for _, namespace := range r.workloadNamespaces() {
 		pods, err := r.c.Clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
 			LabelSelector: fmt.Sprintf("%s=%s,%s=%s,%s",
 				manifests.LabelInstallation, r.c.installation(),
@@ -139,7 +139,12 @@ func (c *Client) listPodMetrics(ctx context.Context, namespace string) (*unstruc
 	var last error
 	for _, version := range versions {
 		gvr := schema.GroupVersionResource{Group: "metrics.k8s.io", Version: version, Resource: "pods"}
-		list, err := c.Dynamic.Resource(gvr).Namespace(namespace).List(ctx, metav1.ListOptions{})
+		// Metrics Server filters by the source pods' labels, so a cluster-wide
+		// sample need not return every other installation's pod metrics.
+		list, err := c.Dynamic.Resource(gvr).Namespace(namespace).List(ctx, metav1.ListOptions{
+			LabelSelector: fmt.Sprintf("%s=%s,%s=%s,%s",
+				manifests.LabelInstallation, c.installation(), manifests.LabelRole, manifests.RoleWorkload, manifests.LabelApp),
+		})
 		if err == nil {
 			return list, nil
 		}
