@@ -1,7 +1,9 @@
 package gateway
 
 import (
+	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,6 +21,10 @@ type session struct {
 	// Expires (Unix seconds). No silent refresh: the next navigation goes
 	// through the IdP again.
 	Expires int64 `json:"exp"`
+	// RefreshToken is the IdP's newest for this sign-in, Grant its stable
+	// name — see identity.Identity. A rotation re-seals the cookie.
+	RefreshToken string `json:"rt,omitempty"`
+	Grant        string `json:"grant,omitempty"`
 }
 
 // loginState rides in a short-lived cookie between the IdP redirect and the
@@ -56,14 +62,38 @@ const (
 	purposeLogin   = "donkey/login/v1"
 )
 
+// A session carrying the IdP's refresh token outgrows the ~4 KB browsers keep
+// per cookie, so the sealed value is split: donkey_session, donkey_session_1,
+// and so on. Small sessions stay one cookie, exactly as before.
+const (
+	sessionChunkSize = 3800
+	sessionChunks    = 6
+)
+
+// sessionCookieNames are every name a session may occupy.
+func sessionCookieNames() []string {
+	names := []string{sessionCookie}
+	for i := 1; i < sessionChunks; i++ {
+		names = append(names, sessionCookie+"_"+strconv.Itoa(i))
+	}
+	return names
+}
+
 // sessionFrom returns nil for missing, tampered or expired alike.
 func (s *Server) sessionFrom(r *http.Request) *session {
-	c, err := r.Cookie(sessionCookie)
-	if err != nil {
+	var value strings.Builder
+	for _, name := range sessionCookieNames() {
+		c, err := r.Cookie(name)
+		if err != nil {
+			break
+		}
+		value.WriteString(c.Value)
+	}
+	if value.Len() == 0 {
 		return nil
 	}
 	var sess session
-	if identity.Unseal(s.cfg.SessionKey, purposeSession, c.Value, &sess) != nil {
+	if identity.Unseal(s.cfg.SessionKey, purposeSession, value.String(), &sess) != nil {
 		return nil
 	}
 	// A blank subject is not a visitor the IdP ever vouched for.
@@ -85,23 +115,48 @@ func (s *Server) cookieDomain(host string) string {
 	return ""
 }
 
-func (s *Server) setSession(w http.ResponseWriter, sess *session, domain string) error {
+func (s *Server) setSession(w http.ResponseWriter, r *http.Request, sess *session, domain string) error {
 	value, err := identity.Seal(s.cfg.SessionKey, purposeSession, sess)
 	if err != nil {
 		return err
 	}
-	http.SetCookie(w, &http.Cookie{
-		Name:   sessionCookie,
-		Value:  value,
-		Path:   "/",
-		Domain: domain,
-		// Lax keeps the IdP redirect working.
-		Secure:   true,
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
-		MaxAge:   int(sessionTTL / time.Second),
-	})
+	names := sessionCookieNames()
+	if len(value) > sessionChunkSize*len(names) {
+		return fmt.Errorf("the session is too large for its cookies (%d bytes)", len(value))
+	}
+	for _, name := range names {
+		if value == "" {
+			// A larger session before this one may have left chunks behind;
+			// a stale tail would corrupt the next read.
+			if _, err := r.Cookie(name); err == nil {
+				clearCookie(w, name, "/", domain)
+			}
+			continue
+		}
+		chunk := value[:min(len(value), sessionChunkSize)]
+		value = value[len(chunk):]
+		http.SetCookie(w, &http.Cookie{
+			Name:   name,
+			Value:  chunk,
+			Path:   "/",
+			Domain: domain,
+			// Lax keeps the IdP redirect working.
+			Secure:   true,
+			HttpOnly: true,
+			SameSite: http.SameSiteLaxMode,
+			MaxAge:   int(sessionTTL / time.Second),
+		})
+	}
 	return nil
+}
+
+// clearSession removes every chunk the browser sent.
+func clearSession(w http.ResponseWriter, r *http.Request, domain string) {
+	for _, name := range sessionCookieNames() {
+		if _, err := r.Cookie(name); err == nil || name == sessionCookie {
+			clearCookie(w, name, "/", domain)
+		}
+	}
 }
 
 // clearCookie needs the Path and Domain the cookie was set with: different
@@ -131,5 +186,6 @@ func (s *Server) identityFrom(r *http.Request) (*session, bool) {
 	return &session{
 		Subject: id.Subject, Email: id.Email, Name: id.Name,
 		Groups: id.Groups, Roles: id.Roles, Expires: id.Expires,
+		RefreshToken: id.RefreshToken, Grant: id.Grant,
 	}, true
 }

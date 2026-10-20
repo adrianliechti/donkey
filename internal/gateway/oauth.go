@@ -65,6 +65,10 @@ type oauthAccessToken struct {
 	Roles    []string `json:"roles,omitempty"`
 	Resource string   `json:"resource"`
 	Expires  int64    `json:"exp"`
+	// RefreshToken is the IdP's, carried so an OAuth client's requests
+	// forward an access token like a browser's do.
+	RefreshToken string `json:"rt,omitempty"`
+	Grant        string `json:"grant,omitempty"`
 }
 
 type oauthRefreshToken struct {
@@ -76,6 +80,10 @@ type oauthRefreshToken struct {
 	Roles    []string `json:"roles,omitempty"`
 	Resource string   `json:"resource"`
 	Expires  int64    `json:"exp"`
+	// RefreshToken is the IdP's, carried so an OAuth client's requests
+	// forward an access token like a browser's do.
+	RefreshToken string `json:"rt,omitempty"`
+	Grant        string `json:"grant,omitempty"`
 }
 
 func routeUsesOAuth(rt route) bool {
@@ -585,7 +593,9 @@ func (s *Server) exchangeOAuthRefreshToken(w http.ResponseWriter, r *http.Reques
 	}
 	response, err := s.issueOAuthTokens(session{
 		Subject: refresh.Subject, Email: refresh.Email, Name: refresh.Name,
-		Groups: refresh.Groups, Roles: refresh.Roles,
+		Groups: refresh.Groups, Roles: refresh.Roles, Grant: refresh.Grant,
+		// The client keeps the newest IdP refresh token from here on.
+		RefreshToken: s.upstream.Latest(refresh.Grant, refresh.RefreshToken),
 	}, refresh.ClientID, refresh.Resource, true, 0)
 	if err != nil {
 		oauthError(w, http.StatusInternalServerError, "server_error", "the access token could not be refreshed")
@@ -606,6 +616,7 @@ func (s *Server) issueOAuthTokens(sess session, clientID, resource string, inclu
 	accessToken, err := identity.Seal(s.cfg.SessionKey, purposeOAuthToken, oauthAccessToken{
 		Subject: sess.Subject, Email: sess.Email, Name: sess.Name,
 		Groups: sess.Groups, Roles: sess.Roles, Resource: resource, Expires: expires,
+		RefreshToken: sess.RefreshToken, Grant: sess.Grant,
 	})
 	if err != nil {
 		return nil, err
@@ -617,7 +628,8 @@ func (s *Server) issueOAuthTokens(sess session, clientID, resource string, inclu
 		refreshToken, err := identity.Seal(s.cfg.SessionKey, purposeOAuthRefresh, oauthRefreshToken{
 			ClientID: clientID, Subject: sess.Subject, Email: sess.Email, Name: sess.Name,
 			Groups: sess.Groups, Roles: sess.Roles, Resource: resource,
-			Expires: time.Now().Add(oauthRefreshTokenTTL).Unix(),
+			Expires:      time.Now().Add(oauthRefreshTokenTTL).Unix(),
+			RefreshToken: sess.RefreshToken, Grant: sess.Grant,
 		})
 		if err != nil {
 			return nil, err
@@ -682,7 +694,8 @@ func (s *Server) serveOAuthApp(w http.ResponseWriter, r *http.Request, rt route)
 		deny(http.StatusUnauthorized, "invalid_token", "the bearer token is invalid, expired or belongs to another resource")
 		return
 	}
-	sess := &session{Subject: token.Subject, Email: token.Email, Name: token.Name, Groups: token.Groups, Roles: token.Roles, Expires: token.Expires}
+	sess := &session{Subject: token.Subject, Email: token.Email, Name: token.Name, Groups: token.Groups, Roles: token.Roles, Expires: token.Expires,
+		RefreshToken: token.RefreshToken, Grant: token.Grant}
 	if !rt.Access.Allows(sess.Email, sess.Groups, sess.Roles) {
 		w.Header().Set("WWW-Authenticate", challenge)
 		oauthError(w, http.StatusForbidden, "access_denied", "this identity is not allowed to use the API")
@@ -691,7 +704,10 @@ func (s *Server) serveOAuthApp(w http.ResponseWriter, r *http.Request, rt route)
 	if routeAllowsAllOrigins(rt) {
 		clearCORSHeaders(w.Header())
 	}
-	metrics := httpsnoop.CaptureMetrics(s.proxy(rt, sess, true), w, r)
+	// An OAuth client presents this grant for as long as its refresh token
+	// lasts, well past the access token in hand.
+	idpToken := s.idpToken(w, r, rt, sess, true, time.Now().Add(oauthRefreshTokenTTL))
+	metrics := httpsnoop.CaptureMetrics(s.proxy(rt, sess, true, idpToken), w, r)
 	if s.telemetry != nil {
 		s.telemetry.Record(r, rt, sess, metrics.Code, metrics.Duration, w.Header().Get("Content-Type"))
 	}

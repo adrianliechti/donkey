@@ -615,6 +615,15 @@ type InstallAuth struct {
 	Issuer       string `json:"issuer,omitempty"`
 	ClientID     string `json:"clientId,omitempty"`
 	ClientSecret string `json:"clientSecret,omitempty"`
+	// Scope is donkey's own API in the IdP (e.g.
+	// api://<donkey-client-id>/<scope>), asked for at login on top of
+	// openid/profile/email. Logins then keep the IdP's refresh token, and
+	// login-protected apps receive the user's access token as
+	// X-Auth-Request-Access-Token.
+	// The Trino console sends it as Authorization: Bearer to its add-on
+	// service, which handles on-behalf-of delegation downstream.
+	// Empty: none of that.
+	Scope string `json:"scope,omitempty"`
 }
 
 // InstallKubernetes says which namespaces donkey may use, and by omission

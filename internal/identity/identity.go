@@ -21,6 +21,16 @@ type Identity struct {
 	Roles   []string `json:"roles,omitempty"`
 	// Expires (Unix seconds); a token never outlives it.
 	Expires int64 `json:"exp"`
+	// RefreshToken is the IdP's, kept when the installation names a token
+	// scope so the gateway can mint access tokens for it (see Upstream), and
+	// Grant names that sign-in across rotations. Sealed like the rest: it
+	// never reaches an app, or the CLI's disk, in the clear.
+	RefreshToken string `json:"rt,omitempty"`
+	Grant        string `json:"grant,omitempty"`
+	// AccessToken is the IdP's access token for auth.scope, minted by the
+	// gateway into the short-lived token it forwards to donkey's API — the
+	// server hands it on (Trino) and never mints one itself.
+	AccessToken string `json:"at,omitempty"`
 }
 
 // Long on purpose (no daily browser round trip), bounded because sealed

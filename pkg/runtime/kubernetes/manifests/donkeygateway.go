@@ -80,6 +80,7 @@ func donkeyGatewayDeployment(in SystemInput) *appsv1.Deployment {
 		{Name: "DONKEY_TLS_LISTEN", Value: fmt.Sprintf(":%d", donkeyGatewayTLSPort)},
 		{Name: "DONKEY_HEALTH_LISTEN", Value: fmt.Sprintf(":%d", donkeyGatewayHealthPort)},
 		{Name: "DONKEY_OIDC_ISSUER", Value: in.OIDCIssuer},
+		{Name: "DONKEY_OIDC_SCOPE", Value: in.OIDCScope},
 		// The central callback lives on the base domain itself; hostnames
 		// under it share it (and one session cookie — SSO), custom domains
 		// outside keep per-host callbacks.

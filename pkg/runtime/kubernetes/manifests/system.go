@@ -77,6 +77,9 @@ type SystemInput struct {
 	OIDCIssuer       string // OIDC issuer of the login gateway
 	OIDCClientID     string
 	OIDCClientSecret string
+	// OIDCScope is donkey's own API in the IdP — the audience of the
+	// user tokens apps and viewers receive; empty forwards none.
+	OIDCScope string
 	// SessionKey seals the login gateway's session cookies (32 bytes, hex).
 	// Generated at install, reused on re-installs — rotating it signs
 	// everyone out.
@@ -395,6 +398,7 @@ func serverDeployment(in SystemInput) *appsv1.Deployment {
 		{Name: "DONKEY_EXTERNAL_DNS_RECORD_TYPE", Value: in.ExternalDNS.EffectiveRecordType()},
 		{Name: "DONKEY_EXTERNAL_DNS_TTL", Value: strconv.FormatInt(in.ExternalDNS.TTL, 10)},
 		{Name: "DONKEY_OIDC_ISSUER", Value: in.OIDCIssuer},
+		{Name: "DONKEY_OIDC_SCOPE", Value: in.OIDCScope},
 		secretEnv("DONKEY_OIDC_CLIENT_ID", "DONKEY_OIDC_CLIENT_ID"),
 		secretEnv("DONKEY_OIDC_CLIENT_SECRET", "DONKEY_OIDC_CLIENT_SECRET"),
 		{Name: "DONKEY_AI_MODEL", Value: in.AIModel},

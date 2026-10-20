@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"slices"
@@ -73,11 +74,12 @@ func (a *authenticator) ready(ctx context.Context) error {
 // callback — one redirect URI to register at the IdP — while a custom domain
 // outside it falls back to a callback on its own hostname (which the IdP
 // must then know about).
-func (a *authenticator) oauthConfig(host string) *oauth2.Config {
+func (a *authenticator) oauthConfig(host string, upstream *identity.Upstream) *oauth2.Config {
 	scopes := []string{oidc.ScopeOpenID, "profile", "email"}
 	if a.groupsScope {
 		scopes = append(scopes, "groups")
 	}
+	scopes = append(scopes, upstream.LoginScopes()...)
 	callbackHost := host
 	if a.cfg.ssoHost(host) {
 		callbackHost = a.cfg.Domain
@@ -136,7 +138,7 @@ func (s *Server) beginLogin(w http.ResponseWriter, r *http.Request, cliPort int,
 		Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode,
 		MaxAge: int(loginTTL / time.Second),
 	})
-	url := s.auth.oauthConfig(host).AuthCodeURL(state.State, oidc.Nonce(state.Nonce))
+	url := s.auth.oauthConfig(host, s.upstream).AuthCodeURL(state.State, oidc.Nonce(state.Nonce))
 	http.Redirect(w, r, url, http.StatusFound)
 }
 
@@ -176,7 +178,7 @@ func (s *Server) handleCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
-	token, err := s.auth.oauthConfig(requestHost(r)).Exchange(ctx, r.URL.Query().Get("code"))
+	token, err := s.auth.oauthConfig(requestHost(r), s.upstream).Exchange(ctx, r.URL.Query().Get("code"))
 	if err != nil {
 		s.errorPage(w, http.StatusBadGateway, "The identity provider didn't hand out a token.", err.Error())
 		return
@@ -229,7 +231,18 @@ func (s *Server) handleCallback(w http.ResponseWriter, r *http.Request) {
 		Roles:   roles,
 		Expires: time.Now().Add(sessionTTL).Unix(),
 	}
-	if err := s.setSession(w, sess, s.cookieDomain(requestHost(r))); err != nil {
+	if s.upstream.Enabled() {
+		// Kept for the token apps and viewers hand on; the login's own
+		// access token is already for the configured scope.
+		sess.RefreshToken = token.RefreshToken
+		if sess.RefreshToken == "" {
+			log.Printf("login for %s: the identity provider returned no refresh token — apps get no X-Auth-Request-Access-Token (is offline_access allowed?)", sess.Subject)
+		} else {
+			sess.Grant = identity.Grant(sess.RefreshToken)
+			s.upstream.Remember(sess.Grant, token.RefreshToken, token.AccessToken, token.Expiry, time.Unix(sess.Expires, 0))
+		}
+	}
+	if err := s.setSession(w, r, sess, s.cookieDomain(requestHost(r))); err != nil {
 		s.errorPage(w, http.StatusInternalServerError, "The session couldn't be stored.", err.Error())
 		return
 	}
@@ -239,7 +252,8 @@ func (s *Server) handleCallback(w http.ResponseWriter, r *http.Request) {
 		tok, err := identity.SealToken(s.cfg.SessionKey, identity.Identity{
 			Subject: sess.Subject, Email: sess.Email, Name: sess.Name,
 			Groups: sess.Groups, Roles: sess.Roles,
-			Expires: time.Now().Add(identity.TokenTTL).Unix(),
+			Expires:      time.Now().Add(identity.TokenTTL).Unix(),
+			RefreshToken: sess.RefreshToken, Grant: sess.Grant,
 		})
 		if err != nil {
 			s.errorPage(w, http.StatusInternalServerError, "The sign-in couldn't be handed to the CLI.", err.Error())
@@ -272,7 +286,7 @@ func loginReturnURL(cfg *Config, callbackHost string, state loginState) string {
 // handleLogout clears the session — on the shared domain that is one cookie
 // for every app, so signing out anywhere signs out everywhere.
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
-	clearCookie(w, sessionCookie, "/", s.cookieDomain(requestHost(r)))
+	clearSession(w, r, s.cookieDomain(requestHost(r)))
 	s.messagePage(w, http.StatusOK, "Signed out.", "Close the tab, or open the app again to sign back in.")
 }
 

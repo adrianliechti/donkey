@@ -9,12 +9,15 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -397,8 +400,9 @@ func TestProtocolVersionUsesOpenTelemetryValues(t *testing.T) {
 }
 
 // The proxy's identity contract: forged inbound identity is dropped on every
-// route, and the sealed credential goes only to the route marked for it —
-// an app handed one could replay its visitors against the API.
+// route, only routes behind a login learn who the visitor is, and the sealed
+// credential goes only to the route marked for it — an app handed one could
+// replay its visitors against the API.
 func TestProxyIdentityAndToken(t *testing.T) {
 	var got http.Header
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -416,20 +420,28 @@ func TestProxyIdentityAndToken(t *testing.T) {
 	send := func(rt route, sess *session) {
 		req := httptest.NewRequest(http.MethodGet, "https://app.example.com/x", nil)
 		// A hostile client types identity — all of it must vanish.
-		req.Header.Set("X-Auth-Request-User", "forged")
-		req.Header.Set("X-Access-Token", "forged")
-		s.proxy(rt, sess, false).ServeHTTP(httptest.NewRecorder(), req)
+		for _, h := range append(identityHeaders, accessTokenHeader, idpAccessTokenHeader) {
+			req.Header.Set(h, "forged")
+		}
+		s.proxy(rt, sess, false, "").ServeHTTP(httptest.NewRecorder(), req)
 	}
 
 	send(route{Backend: target}, sess)
-	if got.Get("X-Auth-Request-User") != "u1" {
-		t.Errorf("an app should see the real visitor, got %q", got.Get("X-Auth-Request-User"))
+	for _, h := range append(identityHeaders, accessTokenHeader, idpAccessTokenHeader) {
+		if got.Get(h) != "" {
+			t.Errorf("a public route must learn nothing about a signed-in visitor, got %s: %q", h, got.Get(h))
+		}
+	}
+
+	send(route{Backend: target, Login: true}, sess)
+	if got.Get("X-Auth-Request-User") != "u1" || got.Get("X-Auth-Request-Groups") != "dev" {
+		t.Errorf("an app behind a login should see the real visitor, got %q", got.Get("X-Auth-Request-User"))
 	}
 	if got.Get("X-Access-Token") != "" {
 		t.Error("an app must never receive a credential — forged or minted")
 	}
 
-	send(route{Backend: target, Token: true}, sess)
+	send(route{Backend: target, Login: true, Token: true}, sess)
 	tok := got.Get("X-Access-Token")
 	if tok == "" || tok == "forged" {
 		t.Fatalf("the API route should carry a minted token, got %q", tok)
@@ -445,9 +457,148 @@ func TestProxyIdentityAndToken(t *testing.T) {
 		t.Errorf("a forwarded token must be short-lived, got %s", remaining)
 	}
 
-	send(route{Backend: target, Token: true}, nil)
+	send(route{Backend: target, Login: true, Token: true}, nil)
 	if got.Get("X-Access-Token") != "" || got.Get("X-Auth-Request-User") != "" {
 		t.Error("no session, no identity — nothing may reach the backend")
+	}
+}
+
+// With auth.scope configured every login-protected app gets the visitor's IdP
+// access token — never the refresh token behind it, never a forged one, never
+// on a public route the session cookie merely reaches — and the API
+// route's sealed token carries the access token, never the refresh token: the
+// server hands it on and never mints one itself.
+func TestProxyForwardsIdentityProviderToken(t *testing.T) {
+	var got http.Header
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Clone()
+	}))
+	defer backend.Close()
+	target, err := url.Parse(backend.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := testServer()
+	s.upstream = &identity.Upstream{Issuer: "https://id.invalid", ClientID: "donkey", ClientSecret: "secret", Scope: "api://donkey/default"}
+	s.upstream.Remember(identity.Grant("rt-u1"), "rt-u1", "entra-u1", time.Now().Add(time.Hour), time.Now().Add(time.Hour))
+	sess := &session{Subject: "u1", Email: "u1@example.com", RefreshToken: "rt-u1", Grant: identity.Grant("rt-u1"),
+		Expires: time.Now().Add(time.Hour).Unix()}
+
+	send := func(rt route, sess *session) {
+		req := httptest.NewRequest(http.MethodGet, "https://app.example.com/x", nil)
+		req.Header.Set(idpAccessTokenHeader, "forged")
+		req.AddCookie(&http.Cookie{Name: sessionCookie, Value: "sealed-0"})
+		req.AddCookie(&http.Cookie{Name: sessionCookie + "_1", Value: "sealed-1"})
+		req.AddCookie(&http.Cookie{Name: "app", Value: "keep"})
+		rec := httptest.NewRecorder()
+		s.proxy(rt, sess, false, s.idpToken(rec, req, rt, sess, false, time.Time{})).ServeHTTP(rec, req)
+	}
+
+	send(route{Backend: target}, sess)
+	if tok := got.Get(idpAccessTokenHeader); tok != "" {
+		t.Fatalf("a public route must not receive the visitor's access token, got %q", tok)
+	}
+	if got.Get("X-Auth-Request-User") != "" {
+		t.Errorf("a public route must not learn who the visitor is")
+	}
+
+	send(route{Backend: target, Login: true}, sess)
+	if tok := got.Get(idpAccessTokenHeader); tok != "entra-u1" {
+		t.Fatalf("a login-protected app should receive the visitor's access token, got %q", tok)
+	}
+	if h := fmt.Sprint(got); strings.Contains(h, "rt-u1") || strings.Contains(h, "sealed-") {
+		t.Errorf("the refresh token or a session chunk reached the app: %s", h)
+	}
+	if !strings.Contains(got.Get("Cookie"), "app=keep") {
+		t.Errorf("the app's own cookies must survive, got %q", got.Get("Cookie"))
+	}
+
+	send(route{Backend: target, Login: true, Token: true}, sess)
+	id, err := identity.VerifyToken(testKey, got.Get("X-Access-Token"))
+	if err != nil || id.AccessToken != "entra-u1" || id.RefreshToken != "" {
+		t.Fatalf("the API's sealed token should carry the access token alone, got %+v, %v", id, err)
+	}
+
+	for _, sess := range []*session{nil, {Subject: "u2", Expires: time.Now().Add(time.Hour).Unix()}} {
+		send(route{Backend: target, Login: true}, sess)
+		if tok := got.Get(idpAccessTokenHeader); tok != "" {
+			t.Errorf("no refresh token, no access token — got %q", tok)
+		}
+	}
+
+	s.upstream = &identity.Upstream{}
+	send(route{Backend: target, Login: true}, sess)
+	if tok := got.Get(idpAccessTokenHeader); tok != "" {
+		t.Errorf("without auth.scope nothing is forwarded, got %q", tok)
+	}
+}
+
+// A session with a refresh token outgrows one cookie; it is split, read back
+// whole, and a shorter session clears the chunks a longer one left.
+func TestSessionCookieChunks(t *testing.T) {
+	s := testServer()
+	jar := func(rec *httptest.ResponseRecorder, prev []*http.Cookie) []*http.Cookie {
+		kept := map[string]*http.Cookie{}
+		for _, c := range prev {
+			kept[c.Name] = c
+		}
+		for _, c := range rec.Result().Cookies() {
+			if c.MaxAge < 0 {
+				delete(kept, c.Name)
+			} else {
+				kept[c.Name] = c
+			}
+		}
+		var out []*http.Cookie
+		for _, name := range sessionCookieNames() {
+			if c, ok := kept[name]; ok {
+				out = append(out, c)
+			}
+		}
+		return out
+	}
+	request := func(cookies []*http.Cookie) *http.Request {
+		r := httptest.NewRequest(http.MethodGet, "https://app.example.com/", nil)
+		for _, c := range cookies {
+			r.AddCookie(&http.Cookie{Name: c.Name, Value: c.Value})
+		}
+		return r
+	}
+
+	big := &session{Subject: "u1", RefreshToken: strings.Repeat("r", 9000), Expires: time.Now().Add(time.Hour).Unix()}
+	rec := httptest.NewRecorder()
+	if err := s.setSession(rec, request(nil), big, "example.com"); err != nil {
+		t.Fatal(err)
+	}
+	cookies := jar(rec, nil)
+	if len(cookies) < 3 {
+		t.Fatalf("a 9 KB refresh token should span several cookies, got %d", len(cookies))
+	}
+	for _, c := range cookies {
+		if len(c.Value) > sessionChunkSize || c.Domain != "example.com" || !c.HttpOnly || !c.Secure {
+			t.Errorf("chunk %s: %d bytes, domain %q", c.Name, len(c.Value), c.Domain)
+		}
+	}
+	if sess := s.sessionFrom(request(cookies)); sess == nil || sess.RefreshToken != big.RefreshToken {
+		t.Fatal("a chunked session should read back whole")
+	}
+
+	small := &session{Subject: "u1", Expires: time.Now().Add(time.Hour).Unix()}
+	rec = httptest.NewRecorder()
+	if err := s.setSession(rec, request(cookies), small, "example.com"); err != nil {
+		t.Fatal(err)
+	}
+	cookies = jar(rec, cookies)
+	if len(cookies) != 1 || cookies[0].Name != sessionCookie {
+		t.Fatalf("a small session must clear the stale chunks, left %d cookies", len(cookies))
+	}
+	if sess := s.sessionFrom(request(cookies)); sess == nil || sess.RefreshToken != "" {
+		t.Fatal("the small session should read back on its own")
+	}
+
+	huge := &session{Subject: "u1", RefreshToken: strings.Repeat("r", sessionChunkSize*sessionChunks)}
+	if err := s.setSession(httptest.NewRecorder(), request(nil), huge, ""); err == nil {
+		t.Error("a session beyond every chunk must fail, not truncate")
 	}
 }
 
@@ -472,5 +623,62 @@ func TestTelemetryRecordAfterShutdownDoesNotPanic(t *testing.T) {
 	// Past the queue size, so both the enqueue and the backpressure paths run.
 	for range viewQueueSize + 8 {
 		tel.Record(r, route{Space: "acme", App: "shop", Path: "/"}, nil, http.StatusOK, time.Millisecond, "text/html; charset=utf-8")
+	}
+}
+
+// The browser keeps the newest refresh token: a rotation re-seals the session
+// cookie, a request still carrying the old one is served from the cache and
+// healed, and a token-authenticated request (no cookie) is left alone.
+func TestSessionTakesRotatedRefreshToken(t *testing.T) {
+	var calls atomic.Int32
+	var issuer *httptest.Server
+	issuer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path != "/token" {
+			_ = json.NewEncoder(w).Encode(map[string]any{"issuer": issuer.URL, "token_endpoint": issuer.URL + "/token"})
+			return
+		}
+		calls.Add(1)
+		_ = r.ParseForm()
+		if r.Form.Get("refresh_token") != "rt-0" {
+			w.WriteHeader(http.StatusBadRequest)
+			fmt.Fprint(w, `{"error":"invalid_grant"}`)
+			return
+		}
+		fmt.Fprint(w, `{"access_token":"access-1","refresh_token":"rt-1","expires_in":3600}`)
+	}))
+	defer issuer.Close()
+	s := testServer()
+	s.upstream = &identity.Upstream{Issuer: issuer.URL, ClientID: "donkey", ClientSecret: "secret", Scope: "api"}
+	rt := route{Login: true}
+	sess := &session{Subject: "u1", RefreshToken: "rt-0", Grant: identity.Grant("rt-0"), Expires: time.Now().Add(time.Hour).Unix()}
+
+	sessionAfter := func(rec *httptest.ResponseRecorder) *session {
+		req := httptest.NewRequest(http.MethodGet, "https://app.example.com/", nil)
+		for _, c := range rec.Result().Cookies() {
+			req.AddCookie(c)
+		}
+		return s.sessionFrom(req)
+	}
+	for range 2 {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "https://app.example.com/", nil)
+		if tok := s.idpToken(rec, req, rt, sess, false, time.Time{}); tok != "access-1" {
+			t.Fatalf("token = %q", tok)
+		}
+		got := sessionAfter(rec)
+		if got == nil || got.RefreshToken != "rt-1" || got.Grant != sess.Grant || got.Subject != "u1" {
+			t.Fatalf("the cookie should carry the rotated refresh token under the same grant, got %+v", got)
+		}
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("the stale cookie should be served from the cache, got %d refreshes", calls.Load())
+	}
+	rec := httptest.NewRecorder()
+	if tok := s.idpToken(rec, httptest.NewRequest(http.MethodGet, "https://app.example.com/", nil), rt, sess, true, time.Time{}); tok != "access-1" {
+		t.Fatalf("a CLI token's request should get the token too, got %q", tok)
+	}
+	if len(rec.Result().Cookies()) != 0 {
+		t.Error("a token-authenticated request must not be handed a session cookie")
 	}
 }

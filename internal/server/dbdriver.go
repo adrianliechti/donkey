@@ -24,6 +24,7 @@ type databaseConn struct {
 	pg       *pgx.Conn
 	mysql    *sql.Conn
 	pool     *sql.DB
+	trino    *trinoClient
 }
 
 func connectDatabase(ctx context.Context, protocol, dsn, database string) (*databaseConn, error) {

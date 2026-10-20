@@ -1,6 +1,8 @@
 package gateway
 
 import (
+	"cmp"
+	"log"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -53,8 +55,9 @@ func (s *Server) serveApp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Who this is, decided once: the session cookie (a browser) or a sealed
-	// CLI token as Bearer. Public routes carry the identity too — an app may
-	// greet a signed-in visitor without demanding the login.
+	// CLI token as Bearer. Public routes resolve it too, but only for the
+	// gateway's own telemetry and to keep a donkey token away from the app:
+	// they never learn who the visitor is.
 	sess, fromToken := s.identityFrom(r)
 	if rt.Login {
 		// The route demands a login. If the installation cannot run one, the
@@ -90,7 +93,8 @@ func (s *Server) serveApp(w http.ResponseWriter, r *http.Request) {
 	if routeAllowsAllOrigins(rt) {
 		clearCORSHeaders(w.Header())
 	}
-	metrics := httpsnoop.CaptureMetrics(s.proxy(rt, sess, fromToken), w, r)
+	idpToken := s.idpToken(w, r, rt, sess, fromToken, time.Time{})
+	metrics := httpsnoop.CaptureMetrics(s.proxy(rt, sess, fromToken, idpToken), w, r)
 	if s.telemetry != nil {
 		s.telemetry.Record(r, rt, sess, metrics.Code, metrics.Duration, w.Header().Get("Content-Type"))
 	}
@@ -102,14 +106,23 @@ func wantsHTML(r *http.Request) bool {
 	return strings.Contains(accept, "text/html") || strings.Contains(accept, "*/*") && r.Header.Get("Sec-Fetch-Mode") == "navigate"
 }
 
-// identityHeaders is what the app learns about its visitor. Incoming values
-// are always dropped first — identity must be unforgeable.
+// identityHeaders is what an app behind a login learns about its visitor;
+// public routes learn nothing, even when the domain-wide session cookie
+// arrives with the request. Incoming values are dropped on every route —
+// identity must be unforgeable.
 var identityHeaders = []string{"X-Auth-Request-User", "X-Auth-Request-Email", "X-Auth-Request-Groups", "X-Auth-Request-Roles"}
 
 // accessTokenHeader carries a sealed credential to the one backend that
 // verifies identity itself (donkey's own API). Inbound copies are dropped on
 // every route, exactly like the identity headers.
 const accessTokenHeader = "X-Access-Token"
+
+// idpAccessTokenHeader carries the visitor's IdP access token for donkey's
+// own API (auth.scope) to login-protected routes — oauth2-proxy's name for
+// it. Apps hand it on to services that exchange it on-behalf-of for their
+// own APIs.
+// Inbound copies are dropped: whatever arrives here came from the gateway.
+const idpAccessTokenHeader = "X-Auth-Request-Access-Token"
 
 // forwardTokenTTL bounds the token the gateway mints per request. Short: it
 // exists for the hop to the backend, not for keeping — a leaked one expires
@@ -126,10 +139,47 @@ var transport = &http.Transport{
 	ForceAttemptHTTP2:   false,
 }
 
+// idpToken is the visitor's IdP access token for a login-protected route, or
+// "". Only behind a login: the domain-wide session cookie reaches public
+// routes too, and an app that never asked for a sign-in gets no token to
+// replay. A failure costs the app its token, never the visitor the page
+// (Upstream logs it, once per retry). until is how long the credential
+// behind sess can still be presented; zero means sess.Expires.
+//
+// When the IdP has rotated the refresh token, a browser's session cookie is
+// re-sealed with the new one: the browser, not the gateway, keeps it across
+// restarts.
+func (s *Server) idpToken(w http.ResponseWriter, r *http.Request, rt route, sess *session, fromToken bool, until time.Time) string {
+	if sess == nil || !rt.Login || !s.upstream.Enabled() {
+		return ""
+	}
+	if sess.RefreshToken == "" {
+		s.upstreamMissingToken.Do(func() {
+			log.Print("a sign-in has no IdP refresh token: X-Auth-Request-Access-Token is omitted; sign out and in again after configuring auth.scope")
+		})
+		return ""
+	}
+	if until.IsZero() {
+		until = time.Unix(sess.Expires, 0)
+	}
+	tok, latest, err := s.upstream.AccessToken(r.Context(), sess.Grant, sess.RefreshToken, until)
+	if err != nil {
+		return ""
+	}
+	if !fromToken && latest != sess.RefreshToken {
+		rotated := *sess
+		rotated.RefreshToken, rotated.Grant = latest, cmp.Or(sess.Grant, identity.Grant(sess.RefreshToken))
+		if err := s.setSession(w, r, &rotated, s.cookieDomain(requestHost(r))); err != nil {
+			log.Printf("the session of %s could not take the rotated refresh token: %v", sess.Subject, err)
+		}
+	}
+	return tok
+}
+
 // proxy forwards to the app. A ReverseProxy is built per request, so the
 // identity serveApp established rides in the closure — nothing is verified
-// twice.
-func (s *Server) proxy(rt route, sess *session, fromToken bool) *httputil.ReverseProxy {
+// twice. idpToken is the visitor's IdP access token, if the route gets one.
+func (s *Server) proxy(rt route, sess *session, fromToken bool, idpToken string) *httputil.ReverseProxy {
 	return &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			if fromToken {
@@ -171,10 +221,12 @@ func (s *Server) proxy(rt route, sess *session, fromToken bool) *httputil.Revers
 				pr.Out.Header.Del(h)
 			}
 			pr.Out.Header.Del(accessTokenHeader)
+			pr.Out.Header.Del(idpAccessTokenHeader)
 			// The session cookie is the gateway's, not the app's — don't leak
 			// sealed identity material into app code.
-			stripCookie(pr.Out, sessionCookie, stateCookie)
-			if sess != nil {
+			stripCookie(pr.Out, append(sessionCookieNames(), stateCookie)...)
+			// Identity is for the routes that asked for a sign-in.
+			if sess != nil && rt.Login {
 				pr.Out.Header.Set("X-Auth-Request-User", sess.Subject)
 				if sess.Email != "" {
 					pr.Out.Header.Set("X-Auth-Request-Email", sess.Email)
@@ -184,6 +236,9 @@ func (s *Server) proxy(rt route, sess *session, fromToken bool) *httputil.Revers
 				}
 				if len(sess.Roles) > 0 {
 					pr.Out.Header.Set("X-Auth-Request-Roles", strings.Join(sess.Roles, ","))
+				}
+				if idpToken != "" {
+					pr.Out.Header.Set(idpAccessTokenHeader, idpToken)
 				}
 				// The API route gets a verifiable credential, not bare
 				// headers: the server checks the seal, so an in-cluster
@@ -198,6 +253,7 @@ func (s *Server) proxy(rt route, sess *session, fromToken bool) *httputil.Revers
 					tok, err := identity.SealToken(s.cfg.SessionKey, identity.Identity{
 						Subject: sess.Subject, Email: sess.Email, Name: sess.Name,
 						Groups: sess.Groups, Roles: sess.Roles, Expires: exp,
+						AccessToken: idpToken,
 					})
 					if err == nil {
 						pr.Out.Header.Set(accessTokenHeader, tok)

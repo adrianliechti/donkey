@@ -12,6 +12,7 @@ import (
 const (
 	ProtocolPostgres = "postgres"
 	ProtocolMySQL    = "mysql"
+	ProtocolTrino    = "trino"
 	ProtocolRedis    = "redis"
 	ProtocolS3       = "s3"
 	ProtocolOpenAI   = "openai"
@@ -49,6 +50,8 @@ func ConnectionKey(protocol string) string {
 	switch NormalizeProtocol(protocol) {
 	case ProtocolPostgres, ProtocolMySQL:
 		return "DATABASE_URL"
+	case ProtocolTrino:
+		return "TRINO_URL"
 	case ProtocolRedis:
 		return "REDIS_URL"
 	case ProtocolS3:
@@ -82,7 +85,7 @@ func ValidateBinding(protocol string, binding map[string]string) error {
 		valid = u.Scheme == "redis" || u.Scheme == "rediss"
 	case ProtocolS3:
 		valid = (u.Scheme == "http" || u.Scheme == "https") && u.User == nil && (u.Path == "" || u.Path == "/") && u.RawQuery == ""
-	case ProtocolOpenAI, ProtocolExa:
+	case ProtocolOpenAI, ProtocolExa, ProtocolTrino:
 		valid = (u.Scheme == "http" || u.Scheme == "https") && u.User == nil && u.RawQuery == ""
 	}
 	if !valid {

@@ -21,7 +21,7 @@ func TestBrowserProxyPreservesAPIPathQueryAndEscaping(t *testing.T) {
 		{"/_donkey/api/health", "/health"},
 	} {
 		req := httptest.NewRequest(http.MethodGet, "https://web.example.com"+test.path, nil)
-		testServer().proxy(route{Backend: target, Path: "/_donkey/api", StripPrefix: true}, nil, false).ServeHTTP(httptest.NewRecorder(), req)
+		testServer().proxy(route{Backend: target, Path: "/_donkey/api", StripPrefix: true}, nil, false, "").ServeHTTP(httptest.NewRecorder(), req)
 		if uri != test.want || prefix != "/_donkey/api" {
 			t.Fatalf("proxy received %s (%s), want %s", uri, prefix, test.want)
 		}
@@ -50,7 +50,7 @@ func TestBrowserProxyKeepsRedirectsOnAPIRoute(t *testing.T) {
 			for _, strip := range []bool{true, false} {
 				req := httptest.NewRequest(http.MethodGet, "https://web.example.com/_donkey/api/start", nil)
 				rec := httptest.NewRecorder()
-				testServer().proxy(route{Backend: target, Path: "/_donkey/api", StripPrefix: strip}, nil, false).ServeHTTP(rec, req)
+				testServer().proxy(route{Backend: target, Path: "/_donkey/api", StripPrefix: strip}, nil, false, "").ServeHTTP(rec, req)
 				want := test.location
 				if strip {
 					want = test.want

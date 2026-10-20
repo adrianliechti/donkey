@@ -60,6 +60,10 @@ tls:
 auth:
   issuer: https://id.example.com
   clientId: donkey
+  # Optional: donkey's own API, asked for on top of openid/profile/email.
+  # Apps receive it as X-Auth-Request-Access-Token; the Trino console sends
+  # Authorization: Bearer to the add-on service for on-behalf-of delegation.
+  # scope: api://<donkey-client-id>/<scope>
 
 ai:
   baseUrl: https://api.openai.com/v1
@@ -103,6 +107,10 @@ tls:
 auth:
   issuer: https://id.example.com
   clientId: donkey
+  # Optional: donkey's own API, asked for on top of openid/profile/email.
+  # Apps receive it as X-Auth-Request-Access-Token; the Trino console sends
+  # Authorization: Bearer to the add-on service for on-behalf-of delegation.
+  # scope: api://<donkey-client-id>/<scope>
 
 ai:
   baseUrl: https://api.openai.com/v1

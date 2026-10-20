@@ -25,6 +25,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 
 	"github.com/adrianliechti/donkey/internal/config"
+	"github.com/adrianliechti/donkey/internal/identity"
 	"github.com/adrianliechti/donkey/pkg/runtime/docker"
 	k8s "github.com/adrianliechti/donkey/pkg/runtime/kubernetes"
 	"github.com/adrianliechti/donkey/pkg/runtime/kubernetes/manifests"
@@ -70,6 +71,10 @@ type Config struct {
 	OIDCIssuer       string
 	OIDCClientID     string
 	OIDCClientSecret string
+	// OIDCScope is donkey's own API (e.g. api://<donkey-client-id>/<scope>).
+	// When set, logins keep the IdP's refresh token and login-protected apps
+	// get the visitor's access token for it as X-Auth-Request-Access-Token.
+	OIDCScope string
 
 	// Domain centralizes logins: every hostname under it shares one callback
 	// and one domain-wide cookie, so there is a single redirect URI to
@@ -105,6 +110,7 @@ func FromEnv() (*Config, error) {
 		OIDCIssuer:        os.Getenv("DONKEY_OIDC_ISSUER"),
 		OIDCClientID:      os.Getenv("DONKEY_OIDC_CLIENT_ID"),
 		OIDCClientSecret:  os.Getenv("DONKEY_OIDC_CLIENT_SECRET"),
+		OIDCScope:         os.Getenv("DONKEY_OIDC_SCOPE"),
 		Domain:            os.Getenv("DONKEY_DOMAIN"),
 		TelemetryEndpoint: os.Getenv("DONKEY_TELEMETRY_OTLP_ENDPOINT"),
 	}
@@ -211,6 +217,11 @@ type Server struct {
 
 	telemetry *edgeTelemetry
 
+	// upstream mints the IdP access tokens login-protected apps and the
+	// console receive — here only; nil or unconfigured forwards none.
+	upstream             *identity.Upstream
+	upstreamMissingToken sync.Once
+
 	// OAuth authorization codes are short-lived and one-use. The gateway is
 	// deployed as one replica, so keeping them here avoids a client database
 	// while still preventing replay. Rotated refresh tokens use the same
@@ -232,6 +243,10 @@ func New(cfg *Config) (*Server, error) {
 		oauthCodes:       map[string]oauthAuthorizationCode{},
 		oauthRefreshUsed: map[string]int64{},
 		telemetry:        telemetry,
+		upstream: &identity.Upstream{
+			Issuer: cfg.OIDCIssuer, ClientID: cfg.OIDCClientID, ClientSecret: cfg.OIDCClientSecret,
+			Scope: cfg.OIDCScope,
+		},
 	}
 	switch cfg.Runtime {
 	case "docker":
@@ -343,6 +358,11 @@ func (s *Server) Run(ctx context.Context) error {
 	servers := []*http.Server{httpsSrv, httpSrv}
 	go func() {
 		log.Printf("donkey-gateway serving https on %s (tls %s; issuer %s)", s.cfg.TLSListen, s.cfg.TLSMode, s.cfg.OIDCIssuer)
+		if s.upstream.Enabled() {
+			log.Printf("IdP access-token forwarding enabled for auth.scope %s; existing sign-ins need to sign out and in again", s.cfg.OIDCScope)
+		} else {
+			log.Print("IdP access-token forwarding disabled: configure auth.scope and complete OIDC client credentials to send X-Auth-Request-Access-Token")
+		}
 		if err := httpsSrv.ListenAndServeTLS("", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errs <- err
 			return
