@@ -159,7 +159,9 @@ five ideas:
   forwards with `X-Auth-Request-*` identity headers. Those headers are
   information for the app, never authorization: donkey's own API is handed a
   short-lived sealed token instead (`X-Access-Token`) and verifies it itself,
-  so nothing in the cluster can reach it by typing a header. TLS and auth live here
+  so nothing in the cluster can reach it by typing a header. With
+  `auth.scope` set, apps also get the visitor's own IdP access token
+  (`X-Auth-Request-Access-Token`) — see below. TLS and auth live here
   because the load-balancer Service sends HTTP and HTTPS straight to it.
   Certificates can come from ACME, donkey's built-in CA, or cert-manager
   Secrets.
@@ -498,6 +500,24 @@ addons:
 New `type: s3` entries default to the service name `s3`.
 The managed server image remains `rustfs/rustfs`, configured through
 `addonImages.rustfs` (`DONKEY_RUSTFS_IMAGE` on the server).
+
+Services of protocol `trino` come from an add-on plugin (`TRINO_URL`,
+optional `TRINO_CATALOG` and `TRINO_SCHEMA`) and open in the console's Trino
+viewer. It browses catalogs, schemas and tables, previews up to 200 rows,
+and runs SQL with up to 500 result rows. It does not count entire tables.
+SQL runs with the user's permissions; table previews are read-only.
+Trino uses the same database API as PostgreSQL and MySQL: catalogs appear
+under `databases`, with schema selection on tables and queries. Unknown
+sizes and row totals are `null`; row pages report `hasMore` without counting
+the entire table.
+
+The viewer authenticates as the user, not as donkey: it sends the user's IdP
+token for donkey's API (`auth.scope`) as `X-Auth-Request-Access-Token`
+on statement, result and cancellation requests — the header apps hand on
+too — and the endpoint behind `TRINO_URL` exchanges it on-behalf-of for
+Trino's own. Without `auth.scope`, the viewer says so instead of
+connecting. donkey's own sealed token never leaves donkey, and no user token
+is stored in the service binding.
 
 Every type describes what can be chosen for it (a version, a disk size…) as
 a JSON Schema, which the console renders as a form and the CLI takes as
@@ -1126,6 +1146,39 @@ with a `host:` outside the installation's domain keep a per-host
 callback (`https://<their-domain>/oauth2/callback`) — register those
 individually.
 
+**The user's IdP token.** Services that check identity themselves (any API
+behind Entra) need a real token from the identity provider; a donkey-sealed
+token is useless to them. Donkey keeps the user's token for its own API, and
+whoever calls a downstream API exchanges it on-behalf-of with donkey's
+client ID and secret:
+
+```yaml
+auth:
+  issuer: https://login.microsoftonline.com/<tenant>/v2.0
+  clientId: <donkey-client-id>
+  scope: api://<donkey-client-id>/<scope>
+```
+
+Logins then ask for it on top of `openid profile email`, together with
+`offline_access`, and the IdP's
+refresh token is sealed alongside the identity: in the session cookie (split
+into `donkey_session`, `donkey_session_1`, … once it outgrows one cookie), in
+`donkey login`'s token and in the OAuth tokens of MCP clients. From it, donkey
+mints the user's token for its own API as needed, cached until shortly
+before it expires:
+
+- every app receives the visitor's token as `X-Auth-Request-Access-Token`
+  (whenever a signed-in visitor's request passes the gateway, public routes
+  included; inbound copies are dropped);
+- console viewers (Trino's) send the user's token the same way to the
+  service they call.
+
+The refresh token itself never leaves donkey. In Entra, donkey's app
+registration exposes an API (Application ID URI `api://<donkey-client-id>`,
+plus a scope) and holds a delegated permission, with admin consent, on every
+downstream API exchanged for. Users who signed in before the scope was set
+need to sign in once more (`donkey login` for the CLI).
+
 **Certificates and DNS.** Every request reaches donkey-gateway directly;
 `tls.mode` changes its certificate source, not the traffic path. `acme`
 requests exact-host certificates from Let's Encrypt or an internal ACME
@@ -1520,6 +1573,15 @@ company with an internal PKI uses. Tear down with `devkube --cluster donkey dele
   which strips inbound copies), but an in-cluster caller who can reach the
   Service directly can forge them. That caller sits inside the same trust
   boundary as the cluster-admin ServiceAccount below.
+- With `auth.scope` set, every app a signed-in visitor opens receives
+  that visitor's IdP access token for donkey's API (valid about an hour in
+  Entra). Exchanging it for another API takes donkey's client secret, so
+  only what holds that secret can turn it into more; donkey's own API
+  accepts only its sealed tokens — but anything else configured to accept
+  donkey's audience accepts these too.
+  The refresh token stays sealed inside donkey. Rotating the session key
+  retires donkey's copies, but the IdP's refresh tokens stay valid until
+  revoked there (in Entra: revoke the user's sessions).
 - donkey-server currently binds cluster-admin; scoping it down is on the
   list.
 - The demo IdP approves everyone by design; it never leaves `hack/demo/`.

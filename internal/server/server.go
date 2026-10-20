@@ -26,6 +26,8 @@ type Server struct {
 	plans     *planStore
 	telemetry *telemetry.Client
 	resources *telemetry.ResourceExporter
+	// upstream mints the user's IdP access token console viewers hand on.
+	upstream *identity.Upstream
 
 	// deploying lets a terminating pod finish in-flight deploys.
 	deploying sync.WaitGroup
@@ -52,6 +54,10 @@ func New(cfg *Config, rt runtime.Provider) (*Server, error) {
 		cfg: cfg, rt: rt, assistant: assistant, plans: newPlanStore(),
 		telemetry: telemetry.NewClient(cfg.TelemetryURL, cfg.TelemetryKey),
 		resources: telemetry.NewResourceExporter(cfg.TelemetryOTLPEndpoint, cfg.TelemetryKey),
+		upstream: &identity.Upstream{
+			Issuer: cfg.OIDCIssuer, ClientID: cfg.OIDCClientID, ClientSecret: cfg.OIDCClientSecret,
+			Scope: cfg.OIDCScope,
+		},
 	}, nil
 }
 
@@ -148,6 +154,7 @@ func (s *Server) routes() http.Handler {
 	mux.Handle("GET /v1/spaces/{space}/services/{service}/databases", s.auth(s.handleDbDatabases))
 	mux.Handle("POST /v1/spaces/{space}/services/{service}/databases", s.auth(s.handleDbCreateDatabase))
 	mux.Handle("DELETE /v1/spaces/{space}/services/{service}/databases/{db}", s.auth(s.handleDbDropDatabase))
+	mux.Handle("GET /v1/spaces/{space}/services/{service}/databases/{db}/schemas", s.auth(s.handleDbSchemas))
 	mux.Handle("GET /v1/spaces/{space}/services/{service}/databases/{db}/tables", s.auth(s.handleDbTables))
 	mux.Handle("DELETE /v1/spaces/{space}/services/{service}/databases/{db}/tables/{table}", s.auth(s.handleDbDropTable))
 	mux.Handle("GET /v1/spaces/{space}/services/{service}/databases/{db}/tables/{table}/rows", s.auth(s.handleDbRows))
@@ -155,6 +162,8 @@ func (s *Server) routes() http.Handler {
 	mux.Handle("PUT /v1/spaces/{space}/services/{service}/databases/{db}/tables/{table}/rows", s.auth(s.handleDbUpdateRow))
 	mux.Handle("DELETE /v1/spaces/{space}/services/{service}/databases/{db}/tables/{table}/rows", s.auth(s.handleDbDeleteRow))
 	mux.Handle("POST /v1/spaces/{space}/services/{service}/databases/{db}/query", s.auth(s.handleDbQuery))
+	// SQL without an explicit database uses the service's configured default.
+	mux.Handle("POST /v1/spaces/{space}/services/{service}/query", s.auth(s.handleDbQuery))
 	// Redis keys stay behind the same admin session as the database browser.
 	mux.Handle("GET /v1/spaces/{space}/services/{service}/keys", s.auth(s.handleRedisKeys))
 	mux.Handle("POST /v1/spaces/{space}/services/{service}/keys", s.auth(s.handleRedisSave))

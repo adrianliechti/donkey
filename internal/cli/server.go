@@ -76,6 +76,7 @@ func serverSettingsFlags() []cli.Flag {
 		&cli.StringFlag{Name: "oidc-issuer", Usage: "OIDC issuer for the login gateway (e.g. Entra ID); empty = no gateway"},
 		&cli.StringFlag{Name: "oidc-client-id", Usage: "OIDC client id for the gateway"},
 		&cli.StringFlag{Name: "oidc-client-secret", Usage: "OIDC client secret (or $DONKEY_OIDC_CLIENT_SECRET)"},
+		&cli.StringFlag{Name: "oidc-scope", Usage: "donkey's own API in the IdP; apps receive the user's token for it (e.g. api://<donkey-client-id>/<scope>)"},
 		&cli.StringFlag{Name: "openai-base-url", Usage: "OpenAI-compatible endpoint for AI assistance (as reachable FROM the cluster)"},
 		&cli.StringFlag{Name: "openai-api-key", Usage: "API key for AI assistance (or $OPENAI_API_KEY)"},
 		&cli.StringFlag{Name: "exa-base-url", Usage: "Exa-compatible search endpoint reachable from donkey-ai"},
@@ -124,6 +125,7 @@ func loadInstallSettings(cmd *cli.Command, resolveSecretEnv bool) (*config.Insta
 	strOver(&settings.Auth.Issuer, "oidc-issuer")
 	strOver(&settings.Auth.ClientID, "oidc-client-id")
 	strOver(&settings.Auth.ClientSecret, "oidc-client-secret")
+	strOver(&settings.Auth.Scope, "oidc-scope")
 	strOver(&settings.AI.BaseURL, "openai-base-url")
 	strOver(&settings.AI.APIKey, "openai-api-key")
 	strOver(&settings.AI.Model, "ai-model")
@@ -553,6 +555,7 @@ func kubernetesSystemInput(settings *config.InstallFile, skipNamespace bool, reg
 		OIDCIssuer:                 settings.Auth.Issuer,
 		OIDCClientID:               settings.Auth.ClientID,
 		OIDCClientSecret:           settings.Auth.ClientSecret,
+		OIDCScope:                  settings.Auth.Scope,
 		SessionKey:                 sessionKey,
 		TelemetryKey:               telemetryKey,
 		DefaultPlatform:            settings.DefaultPlatform,

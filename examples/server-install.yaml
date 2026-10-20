@@ -42,6 +42,10 @@ tls:
 auth:
   issuer: https://id.example.com
   clientId: donkey
+  # Optional: donkey's own API, asked for on top of openid/profile/email.
+  # Apps and viewers get the user's token for it as
+  # X-Auth-Request-Access-Token, for services that exchange it on-behalf-of.
+  # scope: api://<donkey-client-id>/<scope>
 
 ai:
   baseUrl: https://api.openai.com/v1

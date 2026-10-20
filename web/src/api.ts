@@ -576,17 +576,17 @@ export interface RedisValue {
   truncated: boolean
 }
 
-/** One database of a browsed postgres service. */
+/** A database, or a Trino catalog; unavailable sizes are null. */
 export interface DbDatabase {
   name: string
-  size: number
+  size: number | null
 }
 
 /** One table of a browsed database; rows is the planner's estimate. */
 export interface DbTable {
   schema: string
   name: string
-  rows: number
+  rows: number | null
 }
 
 /** A grid cell travels as text; null stays null. */
@@ -597,9 +597,11 @@ export interface DbRowsPage {
   /** The primary key columns — empty means the grid stays read-only. */
   key: string[]
   rows: DbCell[][]
-  total: number
+  /** Null when the backend does not count the entire table. */
+  total: number | null
   limit: number
   offset: number
+  hasMore: boolean
 }
 
 /** What a row edit sends: the path names the table, this names the row. */
@@ -812,10 +814,12 @@ export const api = {
   // server; values travel as strings (or null), which is what a grid edits.
   // Containment lives in the path (service → database → table → rows);
   // postgres details like the schema ride the query, defaulting to public.
-  dbDatabases: (space: string, service: string) =>
+  dbDatabases: (space: string, service: string, signal?: AbortSignal) =>
     request<{ databases: DbDatabase[]; default: string; protocol: string }>(
-      servicePath(space, service, '/databases'),
+      servicePath(space, service, '/databases'), { signal },
     ),
+  dbSchemas: (space: string, service: string, db: string, signal?: AbortSignal) =>
+    request<{ schemas: string[]; default: string }>(servicePath(space, service, `/databases/${encodeURIComponent(db)}/schemas`), { signal }),
   dbCreateDatabase: (space: string, service: string, name: string) =>
     request<{ ok: boolean; name: string }>(servicePath(space, service, '/databases'), {
       method: 'POST',
@@ -825,9 +829,9 @@ export const api = {
     request<{ ok: boolean }>(servicePath(space, service, `/databases/${encodeURIComponent(db)}`), {
       method: 'DELETE',
     }),
-  dbTables: (space: string, service: string, db: string) =>
+  dbTables: (space: string, service: string, db: string, schema?: string, signal?: AbortSignal) =>
     request<{ tables: DbTable[] }>(
-      servicePath(space, service, `/databases/${encodeURIComponent(db)}/tables`),
+      servicePath(space, service, `/databases/${encodeURIComponent(db)}/tables${schema === undefined ? '' : `?${new URLSearchParams({ schema })}`}`), { signal },
     ),
   dbDropTable: (space: string, service: string, db: string, schema: string, table: string) =>
     request<{ ok: boolean }>(
@@ -847,6 +851,7 @@ export const api = {
     limit: number,
     offset: number,
     order?: { column: string; desc: boolean },
+    signal?: AbortSignal,
   ) =>
     request<DbRowsPage>(
       servicePath(
@@ -856,7 +861,7 @@ export const api = {
           (order
             ? `&order=${encodeURIComponent(order.column)}&dir=${order.desc ? 'desc' : 'asc'}`
             : ''),
-      ),
+      ), { signal },
     ),
   dbInsertRow: (
     space: string,
@@ -906,12 +911,13 @@ export const api = {
       ),
       { method: 'DELETE', body: JSON.stringify(body) },
     ),
-  dbQuery: (space: string, service: string, db: string, sql: string) =>
+  dbQuery: (space: string, service: string, db: string, sql: string, signal?: AbortSignal, schema?: string) =>
     request<DbQueryResult>(
-      servicePath(space, service, `/databases/${encodeURIComponent(db)}/query`),
+      servicePath(space, service, db ? `/databases/${encodeURIComponent(db)}/query` : '/query'),
       {
         method: 'POST',
-        body: JSON.stringify({ sql }),
+        body: JSON.stringify({ sql, schema }),
+        signal,
       },
     ),
 

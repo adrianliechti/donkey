@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -448,6 +449,135 @@ func TestProxyIdentityAndToken(t *testing.T) {
 	send(route{Backend: target, Token: true}, nil)
 	if got.Get("X-Access-Token") != "" || got.Get("X-Auth-Request-User") != "" {
 		t.Error("no session, no identity — nothing may reach the backend")
+	}
+}
+
+// With auth.scope configured every app gets the visitor's IdP access
+// token — never the refresh token behind it, never a forged one — and the API
+// route's sealed token carries the refresh token so the server can mint its
+// own for viewers.
+func TestProxyForwardsIdentityProviderToken(t *testing.T) {
+	var got http.Header
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Clone()
+	}))
+	defer backend.Close()
+	target, err := url.Parse(backend.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := testServer()
+	s.upstream = &identity.Upstream{Issuer: "https://id.invalid", ClientID: "donkey", ClientSecret: "secret", Scope: "api://donkey/default"}
+	s.upstream.Remember("rt-u1", "entra-u1", time.Now().Add(time.Hour))
+	sess := &session{Subject: "u1", Email: "u1@example.com", RefreshToken: "rt-u1",
+		Expires: time.Now().Add(time.Hour).Unix()}
+
+	send := func(rt route, sess *session) {
+		req := httptest.NewRequest(http.MethodGet, "https://app.example.com/x", nil)
+		req.Header.Set(idpAccessTokenHeader, "forged")
+		req.AddCookie(&http.Cookie{Name: sessionCookie, Value: "sealed-0"})
+		req.AddCookie(&http.Cookie{Name: sessionCookie + "_1", Value: "sealed-1"})
+		req.AddCookie(&http.Cookie{Name: "app", Value: "keep"})
+		s.proxy(rt, sess, false).ServeHTTP(httptest.NewRecorder(), req)
+	}
+
+	send(route{Backend: target}, sess)
+	if tok := got.Get(idpAccessTokenHeader); tok != "entra-u1" {
+		t.Fatalf("an app should receive the visitor's access token, got %q", tok)
+	}
+	if h := fmt.Sprint(got); strings.Contains(h, "rt-u1") || strings.Contains(h, "sealed-") {
+		t.Errorf("the refresh token or a session chunk reached the app: %s", h)
+	}
+	if !strings.Contains(got.Get("Cookie"), "app=keep") {
+		t.Errorf("the app's own cookies must survive, got %q", got.Get("Cookie"))
+	}
+
+	send(route{Backend: target, Token: true}, sess)
+	id, err := identity.VerifyToken(testKey, got.Get("X-Access-Token"))
+	if err != nil || id.RefreshToken != "rt-u1" {
+		t.Fatalf("the API's sealed token should carry the refresh token, got %+v, %v", id, err)
+	}
+
+	for _, sess := range []*session{nil, {Subject: "u2", Expires: time.Now().Add(time.Hour).Unix()}} {
+		send(route{Backend: target}, sess)
+		if tok := got.Get(idpAccessTokenHeader); tok != "" {
+			t.Errorf("no refresh token, no access token — got %q", tok)
+		}
+	}
+
+	s.upstream = &identity.Upstream{}
+	send(route{Backend: target}, sess)
+	if tok := got.Get(idpAccessTokenHeader); tok != "" {
+		t.Errorf("without auth.scope nothing is forwarded, got %q", tok)
+	}
+}
+
+// A session with a refresh token outgrows one cookie; it is split, read back
+// whole, and a shorter session clears the chunks a longer one left.
+func TestSessionCookieChunks(t *testing.T) {
+	s := testServer()
+	jar := func(rec *httptest.ResponseRecorder, prev []*http.Cookie) []*http.Cookie {
+		kept := map[string]*http.Cookie{}
+		for _, c := range prev {
+			kept[c.Name] = c
+		}
+		for _, c := range rec.Result().Cookies() {
+			if c.MaxAge < 0 {
+				delete(kept, c.Name)
+			} else {
+				kept[c.Name] = c
+			}
+		}
+		var out []*http.Cookie
+		for _, name := range sessionCookieNames() {
+			if c, ok := kept[name]; ok {
+				out = append(out, c)
+			}
+		}
+		return out
+	}
+	request := func(cookies []*http.Cookie) *http.Request {
+		r := httptest.NewRequest(http.MethodGet, "https://app.example.com/", nil)
+		for _, c := range cookies {
+			r.AddCookie(&http.Cookie{Name: c.Name, Value: c.Value})
+		}
+		return r
+	}
+
+	big := &session{Subject: "u1", RefreshToken: strings.Repeat("r", 9000), Expires: time.Now().Add(time.Hour).Unix()}
+	rec := httptest.NewRecorder()
+	if err := s.setSession(rec, request(nil), big, "example.com"); err != nil {
+		t.Fatal(err)
+	}
+	cookies := jar(rec, nil)
+	if len(cookies) < 3 {
+		t.Fatalf("a 9 KB refresh token should span several cookies, got %d", len(cookies))
+	}
+	for _, c := range cookies {
+		if len(c.Value) > sessionChunkSize || c.Domain != "example.com" || !c.HttpOnly || !c.Secure {
+			t.Errorf("chunk %s: %d bytes, domain %q", c.Name, len(c.Value), c.Domain)
+		}
+	}
+	if sess := s.sessionFrom(request(cookies)); sess == nil || sess.RefreshToken != big.RefreshToken {
+		t.Fatal("a chunked session should read back whole")
+	}
+
+	small := &session{Subject: "u1", Expires: time.Now().Add(time.Hour).Unix()}
+	rec = httptest.NewRecorder()
+	if err := s.setSession(rec, request(cookies), small, "example.com"); err != nil {
+		t.Fatal(err)
+	}
+	cookies = jar(rec, cookies)
+	if len(cookies) != 1 || cookies[0].Name != sessionCookie {
+		t.Fatalf("a small session must clear the stale chunks, left %d cookies", len(cookies))
+	}
+	if sess := s.sessionFrom(request(cookies)); sess == nil || sess.RefreshToken != "" {
+		t.Fatal("the small session should read back on its own")
+	}
+
+	huge := &session{Subject: "u1", RefreshToken: strings.Repeat("r", sessionChunkSize*sessionChunks)}
+	if err := s.setSession(httptest.NewRecorder(), request(nil), huge, ""); err == nil {
+		t.Error("a session beyond every chunk must fail, not truncate")
 	}
 }
 

@@ -29,6 +29,7 @@ import { Button, Callout, ExposureBadge, Field, Input, ToggleRow, Toolbar, ago, 
 // than a placeholder first and the dialog after it.
 const consoleModules = {
   database: () => import('./DatabaseDialog'),
+  trino: () => import('./TrinoDialog'),
   redis: () => import('./RedisDialog'),
   s3: () => import('./S3Dialog'),
   openai: () => import('./AiDialog'),
@@ -37,6 +38,7 @@ const consoleModules = {
 }
 type ConsoleKind = keyof typeof consoleModules
 const DatabaseDialog = lazy(() => consoleModules.database().then((m) => ({ default: m.DatabaseDialog })))
+const TrinoDialog = lazy(() => consoleModules.trino().then((m) => ({ default: m.TrinoDialog })))
 const RedisDialog = lazy(() => consoleModules.redis().then((m) => ({ default: m.RedisDialog })))
 const S3Dialog = lazy(() => consoleModules.s3().then((m) => ({ default: m.S3Dialog })))
 const AiDialog = lazy(() => consoleModules.openai().then((m) => ({ default: m.AiDialog })))
@@ -340,6 +342,7 @@ function SpaceServices({
           a second dialog fading in behind the first would only flicker. */}
       <Suspense fallback={null}>
         {browsing && consoleKind === 'database' && <DatabaseDialog {...consoleProps} protocol={browsing.protocol} />}
+        {browsing && consoleKind === 'trino' && <TrinoDialog {...consoleProps} />}
         {browsing && consoleKind === 's3' && <S3Dialog {...consoleProps} />}
         {browsing && consoleKind === 'redis' && <RedisDialog {...consoleProps} />}
         {browsing && consoleKind === 'openai' && <AiDialog {...consoleProps} />}

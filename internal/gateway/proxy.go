@@ -111,6 +111,12 @@ var identityHeaders = []string{"X-Auth-Request-User", "X-Auth-Request-Email", "X
 // every route, exactly like the identity headers.
 const accessTokenHeader = "X-Access-Token"
 
+// idpAccessTokenHeader carries the visitor's IdP access token for donkey's
+// own API (auth.scope) to every app — oauth2-proxy's name for it. Apps
+// hand it on to services that exchange it on-behalf-of for their own APIs.
+// Inbound copies are dropped: whatever arrives here came from the gateway.
+const idpAccessTokenHeader = "X-Auth-Request-Access-Token"
+
 // forwardTokenTTL bounds the token the gateway mints per request. Short: it
 // exists for the hop to the backend, not for keeping — a leaked one expires
 // before it is worth stealing. Never longer than the session it came from.
@@ -171,9 +177,10 @@ func (s *Server) proxy(rt route, sess *session, fromToken bool) *httputil.Revers
 				pr.Out.Header.Del(h)
 			}
 			pr.Out.Header.Del(accessTokenHeader)
+			pr.Out.Header.Del(idpAccessTokenHeader)
 			// The session cookie is the gateway's, not the app's — don't leak
 			// sealed identity material into app code.
-			stripCookie(pr.Out, sessionCookie, stateCookie)
+			stripCookie(pr.Out, append(sessionCookieNames(), stateCookie)...)
 			if sess != nil {
 				pr.Out.Header.Set("X-Auth-Request-User", sess.Subject)
 				if sess.Email != "" {
@@ -184,6 +191,15 @@ func (s *Server) proxy(rt route, sess *session, fromToken bool) *httputil.Revers
 				}
 				if len(sess.Roles) > 0 {
 					pr.Out.Header.Set("X-Auth-Request-Roles", strings.Join(sess.Roles, ","))
+				}
+				// Only ever the access token: audience-bound and short-lived.
+				// The refresh token behind it stays sealed. A failure costs
+				// the app its token, never the visitor the page (Upstream
+				// logs it, once per retry).
+				if sess.RefreshToken != "" && s.upstream.Enabled() {
+					if tok, err := s.upstream.AccessToken(pr.In.Context(), sess.RefreshToken); err == nil {
+						pr.Out.Header.Set(idpAccessTokenHeader, tok)
+					}
 				}
 				// The API route gets a verifiable credential, not bare
 				// headers: the server checks the seal, so an in-cluster
@@ -198,6 +214,7 @@ func (s *Server) proxy(rt route, sess *session, fromToken bool) *httputil.Revers
 					tok, err := identity.SealToken(s.cfg.SessionKey, identity.Identity{
 						Subject: sess.Subject, Email: sess.Email, Name: sess.Name,
 						Groups: sess.Groups, Roles: sess.Roles, Expires: exp,
+						RefreshToken: sess.RefreshToken,
 					})
 					if err == nil {
 						pr.Out.Header.Set(accessTokenHeader, tok)

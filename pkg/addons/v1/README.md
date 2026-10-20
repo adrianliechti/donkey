@@ -250,6 +250,7 @@ The same protocol selects the catalog icon and console for every provider:
 | --- | --- | --- |
 | `postgres` | `DATABASE_URL` (`postgres://` or `postgresql://`) | SQL editor |
 | `mysql` | `DATABASE_URL` (`mysql://` or `mariadb://`) | SQL editor |
+| `trino` | `TRINO_URL` (HTTP/HTTPS base URL), optional `TRINO_CATALOG` and `TRINO_SCHEMA` | Catalog/schema browser and SQL runner; sends the user's IdP token as `X-Auth-Request-Access-Token` |
 | `redis` | `REDIS_URL` (`redis://` or `rediss://`) | Key browser/editor |
 | `s3` | `AWS_ENDPOINT_URL_S3` (HTTP/HTTPS origin), `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, optional `AWS_SESSION_TOKEN` and `AWS_REGION` | Bucket/object browser |
 | `openai` | `OPENAI_BASE_URL` (HTTP/HTTPS base URL), optional `OPENAI_API_KEY` and `OPENAI_MODEL` | Model chat |

@@ -21,6 +21,10 @@ type Identity struct {
 	Roles   []string `json:"roles,omitempty"`
 	// Expires (Unix seconds); a token never outlives it.
 	Expires int64 `json:"exp"`
+	// RefreshToken is the IdP's, kept when the installation names a token
+	// scope so donkey can mint access tokens for it (see Upstream). Sealed
+	// like the rest: it never reaches an app, or the CLI's disk, in the clear.
+	RefreshToken string `json:"rt,omitempty"`
 }
 
 // Long on purpose (no daily browser round trip), bounded because sealed

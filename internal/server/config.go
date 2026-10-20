@@ -60,6 +60,9 @@ type Config struct {
 	OIDCIssuer       string
 	OIDCClientID     string
 	OIDCClientSecret string
+	// OIDCScope is donkey's own API (e.g. api://<donkey-client-id>/<scope>):
+	// the user's token console viewers hand on to the services they call.
+	OIDCScope string
 
 	// DefaultPlatform is the build platform when neither the deploy nor
 	// donkey.yaml names one — matches the cluster's nodes.
@@ -130,6 +133,7 @@ func FromEnv() (*Config, error) {
 		OIDCIssuer:            os.Getenv("DONKEY_OIDC_ISSUER"),
 		OIDCClientID:          os.Getenv("DONKEY_OIDC_CLIENT_ID"),
 		OIDCClientSecret:      os.Getenv("DONKEY_OIDC_CLIENT_SECRET"),
+		OIDCScope:             os.Getenv("DONKEY_OIDC_SCOPE"),
 		DefaultPlatform:       envOr("DONKEY_DEFAULT_PLATFORM", "linux/amd64"),
 		BusyboxImage:          envOr("DONKEY_BUSYBOX_IMAGE", config.DefaultBusyboxImage),
 		AddonImages: config.InstallAddonImages{

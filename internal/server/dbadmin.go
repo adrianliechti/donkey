@@ -29,9 +29,29 @@ var plainIdent = regexp.MustCompile(`^[a-z_][a-z0-9_]*$`)
 // database the apps see. db picks one of the service's databases; empty
 // means the binding's own.
 func (s *Server) dbConnect(ctx context.Context, r *http.Request, db string) (*databaseConn, error) {
-	service, err := s.serviceConnection(ctx, r, addons.ProtocolPostgres, addons.ProtocolMySQL)
+	return s.dbConnection(ctx, r, db, false)
+}
+
+func (s *Server) dbBrowseConnect(ctx context.Context, r *http.Request, db string) (*databaseConn, error) {
+	return s.dbConnection(ctx, r, db, true)
+}
+
+func (s *Server) dbConnection(ctx context.Context, r *http.Request, db string, browse bool) (*databaseConn, error) {
+	protocols := []string{addons.ProtocolPostgres, addons.ProtocolMySQL}
+	if browse {
+		protocols = append(protocols, addons.ProtocolTrino)
+	}
+	service, err := s.serviceConnection(ctx, r, protocols...)
 	if err != nil {
 		return nil, err
+	}
+	if service.Protocol == addons.ProtocolTrino {
+		token, err := s.trinoToken(ctx)
+		if err != nil {
+			return nil, err
+		}
+		client := newTrinoClient(service.Binding, db, token)
+		return &databaseConn{protocol: service.Protocol, database: client.catalog, trino: client}, nil
 	}
 	conn, err := connectDatabase(ctx, service.Protocol, service.Binding["DATABASE_URL"], db)
 	if err != nil {
@@ -45,12 +65,16 @@ func (s *Server) dbConnect(ctx context.Context, r *http.Request, db string) (*da
 func (s *Server) handleDbDatabases(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), databaseRequestTimeout)
 	defer cancel()
-	conn, err := s.dbConnect(ctx, r, "")
+	conn, err := s.dbBrowseConnect(ctx, r, "")
 	if err != nil {
 		writeErr(w, statusFor(err), err)
 		return
 	}
 	defer conn.Close(ctx)
+	if conn.trino != nil {
+		conn.trino.serveDatabase(w, r, "databases")
+		return
+	}
 
 	query := `SELECT datname, pg_database_size(datname) FROM pg_database WHERE NOT datistemplate ORDER BY datname`
 	if conn.protocol == addons.ProtocolMySQL {
@@ -90,6 +114,47 @@ func (s *Server) handleDbDatabases(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"databases": out, "default": current, "protocol": conn.protocol})
+}
+
+// handleDbSchemas exposes schema navigation for every database protocol.
+func (s *Server) handleDbSchemas(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), databaseRequestTimeout)
+	defer cancel()
+	conn, err := s.dbBrowseConnect(ctx, r, r.PathValue("db"))
+	if err != nil {
+		writeErr(w, statusFor(err), err)
+		return
+	}
+	defer conn.Close(ctx)
+	if conn.trino != nil {
+		conn.trino.serveDatabase(w, r, "schemas")
+		return
+	}
+	query := `SELECT schema_name FROM information_schema.schemata WHERE schema_name NOT IN ('pg_catalog', 'information_schema') AND schema_name NOT LIKE 'pg_toast%' ORDER BY schema_name`
+	defaultSchema := "public"
+	if conn.protocol == addons.ProtocolMySQL {
+		query, defaultSchema = "SELECT DATABASE()", conn.database
+	}
+	rows, err := conn.Query(ctx, query)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	defer rows.Close()
+	names := []string{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			writeErr(w, http.StatusBadGateway, err)
+			return
+		}
+		names = append(names, name)
+	}
+	if err := rows.Err(); err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"schemas": names, "default": defaultSchema})
 }
 
 // handleDbCreateDatabase makes a database on the service. Plain identifiers
@@ -183,12 +248,16 @@ func (s *Server) handleDbDropTable(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleDbTables(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), databaseRequestTimeout)
 	defer cancel()
-	conn, err := s.dbConnect(ctx, r, r.PathValue("db"))
+	conn, err := s.dbBrowseConnect(ctx, r, r.PathValue("db"))
 	if err != nil {
 		writeErr(w, statusFor(err), err)
 		return
 	}
 	defer conn.Close(ctx)
+	if conn.trino != nil {
+		conn.trino.serveDatabase(w, r, "tables")
+		return
+	}
 
 	query := `
 		SELECT n.nspname, c.relname, GREATEST(c.reltuples, 0)::bigint
@@ -202,6 +271,16 @@ func (s *Server) handleDbTables(w http.ResponseWriter, r *http.Request) {
 		query = `SELECT TABLE_SCHEMA, TABLE_NAME, COALESCE(TABLE_ROWS, 0) FROM information_schema.TABLES
 		WHERE TABLE_SCHEMA = ? AND TABLE_TYPE = 'BASE TABLE' ORDER BY TABLE_NAME`
 		args = []any{conn.database}
+	}
+	if schema := r.URL.Query().Get("schema"); schema != "" {
+		if conn.protocol == addons.ProtocolMySQL && schema != conn.database {
+			writeErr(w, http.StatusBadRequest, fmt.Errorf("the schema must match the selected MySQL database"))
+			return
+		}
+		if conn.protocol == addons.ProtocolPostgres {
+			query = strings.Replace(query, "ORDER BY 1, 2", "AND n.nspname = $1 ORDER BY 1, 2", 1)
+			args = []any{schema}
+		}
 	}
 	rows, err := conn.Query(ctx, query, args...)
 	if err != nil {
@@ -302,12 +381,16 @@ func collectRows(rows *databaseRows) (columns []string, data [][]any, err error)
 func (s *Server) handleDbRows(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), databaseRequestTimeout)
 	defer cancel()
-	conn, err := s.dbConnect(ctx, r, r.PathValue("db"))
+	conn, err := s.dbBrowseConnect(ctx, r, r.PathValue("db"))
 	if err != nil {
 		writeErr(w, statusFor(err), err)
 		return
 	}
 	defer conn.Close(ctx)
+	if conn.trino != nil {
+		conn.trino.serveDatabase(w, r, "rows")
+		return
+	}
 
 	ident, err := conn.tableIdent(r.URL.Query().Get("schema"), r.PathValue("table"))
 	if err != nil {
@@ -370,7 +453,7 @@ func (s *Server) handleDbRows(w http.ResponseWriter, r *http.Request) {
 		data = [][]any{}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"columns": columns, "key": key, "rows": data, "total": total, "limit": limit, "offset": offset,
+		"columns": columns, "key": key, "rows": data, "total": total, "limit": limit, "offset": offset, "hasMore": int64(offset+limit) < total,
 	})
 }
 
@@ -530,9 +613,12 @@ func (s *Server) handleDbQuery(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), databaseRequestTimeout)
 	defer cancel()
 	var req struct {
-		SQL string `json:"sql"`
+		SQL    string  `json:"sql"`
+		Schema *string `json:"schema,omitempty"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
@@ -540,12 +626,32 @@ func (s *Server) handleDbQuery(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, fmt.Errorf("nothing to run"))
 		return
 	}
-	conn, err := s.dbConnect(ctx, r, r.PathValue("db"))
+	conn, err := s.dbBrowseConnect(ctx, r, r.PathValue("db"))
 	if err != nil {
 		writeErr(w, statusFor(err), err)
 		return
 	}
 	defer conn.Close(ctx)
+	if conn.trino != nil {
+		conn.trino.serveQuery(w, r, req.SQL, req.Schema)
+		return
+	}
+	if req.Schema != nil && *req.Schema != "" {
+		if strings.ContainsRune(*req.Schema, '\x00') {
+			writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid schema"))
+			return
+		}
+		if conn.protocol == addons.ProtocolMySQL && *req.Schema != conn.database {
+			writeErr(w, http.StatusBadRequest, fmt.Errorf("the schema must match the selected MySQL database"))
+			return
+		}
+		if conn.protocol == addons.ProtocolPostgres {
+			if _, err := conn.Exec(ctx, "SET search_path TO "+conn.quote(*req.Schema)); err != nil {
+				writeErr(w, http.StatusBadRequest, err)
+				return
+			}
+		}
+	}
 
 	rows, err := conn.Query(ctx, req.SQL)
 	if err != nil {

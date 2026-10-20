@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
   getCoreRowModel,
-  getSortedRowModel,
   useReactTable,
   type ColumnDef,
   type Row,
@@ -9,9 +8,10 @@ import {
 } from '@tanstack/react-table'
 import { Check, ChevronLeft, ChevronRight, Plus, RefreshCw, Terminal, Trash2, X } from 'lucide-react'
 import { api, type DbCell, type DbDatabase, type DbRowsPage, type DbTable } from './api'
+import { SqlView } from './SqlView'
 import { DataGrid } from './DataGrid'
 import { Modal, ModalBody, ModalHeader, ModalNotice, SplitPane } from './dialog'
-import { Button, ErrorNote, Eyebrow, Field, IconButton, Input, Select, Spinner, TextArea, errText } from './ui'
+import { Button, ErrorNote, Eyebrow, Field, IconButton, Input, Select, Spinner, errText } from './ui'
 
 
 // Names the create forms accept — plain lowercase identifiers sidestep the
@@ -237,7 +237,7 @@ export function DatabaseDialog({
                 }}
                 options={databases.map((d) => ({
                   value: d.name,
-                  label: `${d.name} · ${fmtBytes(d.size)}`,
+                  label: d.size === null ? d.name : `${d.name} · ${fmtBytes(d.size)}`,
                 }))}
                 className="max-w-56"
               />
@@ -281,7 +281,7 @@ export function DatabaseDialog({
       <ModalNotice message={error} />
       <ModalBody padded={false}>
         {view === 'sql' ? (
-          <SqlView key={`${db}:${seedSql}`} space={space} service={service} db={db} initial={seedSql} onChanged={loadTables} />
+          <SqlView key={`${db}:${seedSql}`} contextLabel={db} execute={(sql, signal) => api.dbQuery(space, service, db, sql, signal)} initial={seedSql} onChanged={loadTables} />
         ) : view === 'create' ? (
           <CreateTableView
             space={space}
@@ -359,7 +359,7 @@ export function DatabaseDialog({
                           {t.schema !== 'public' && t.schema !== db ? `${t.schema}.` : ''}
                           {t.name}
                         </span>
-                        <span className="text-[10px] text-muted">~{t.rows}</span>
+                        {t.rows !== null && <span className="text-[10px] text-muted">~{t.rows}</span>}
                       </button>
                       <IconButton
                         icon={Trash2}
@@ -816,7 +816,7 @@ function TableView({
     <div className="flex min-w-0 flex-1 flex-col">
       <div className="flex h-12 shrink-0 flex-wrap items-center justify-between gap-2 border-b border-line px-3">
         <span className="font-mono text-xs text-ink-soft">
-          {page.total} {page.total === 1 ? 'row' : 'rows'}
+          {page.total === null ? 'Row count unavailable' : `${page.total} ${page.total === 1 ? 'row' : 'rows'}`}
           {editable ? (
             <span className="ml-2 text-muted">click a cell to edit — blur saves, Esc reverts</span>
           ) : (
@@ -829,9 +829,9 @@ function TableView({
           <span className="mx-1 h-4 w-px bg-line" aria-hidden />
           <IconButton icon={ChevronLeft} size="sm" label="Previous page" onClick={() => setOffset(Math.max(0, offset - limit))} disabled={offset === 0} />
           <span className="min-w-12 text-center font-mono text-[10px] text-muted">
-            {page.total === 0 ? '0' : `${offset + 1}–${Math.min(offset + limit, page.total)}`}
+            {page.total === 0 ? '0' : `${offset + 1}–${Math.min(offset + limit, page.total ?? offset + page.rows.length)}`}
           </span>
-          <IconButton icon={ChevronRight} size="sm" label="Next page" onClick={() => setOffset(offset + limit)} disabled={offset + limit >= page.total} />
+          <IconButton icon={ChevronRight} size="sm" label="Next page" onClick={() => setOffset(offset + limit)} disabled={!page.hasMore} />
         </div>
       </div>
       <div className="px-3 pt-2 empty:hidden">
@@ -905,100 +905,4 @@ function TableView({
       </div>
     </div>
   )
-}
-
-/** The escape hatch: one statement, run as written. */
-function SqlView({
-  space,
-  service,
-  db,
-  initial = '',
-  onChanged,
-}: {
-  space: string
-  service: string
-  db: string
-  initial?: string
-  onChanged: () => void
-}) {
-  const [sql, setSql] = useState(initial)
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState('')
-  const [result, setResult] = useState<Awaited<ReturnType<typeof api.dbQuery>> | null>(null)
-
-  async function runSql() {
-    if (!sql.trim()) return
-    setBusy(true)
-    setError('')
-    try {
-      setResult(await api.dbQuery(space, service, db, sql))
-      // A CREATE/DROP just changed what the sidebar shows.
-      onChanged()
-    } catch (err) {
-      setError(errText(err, 'The statement failed.'))
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  return (
-    <div className="flex min-h-0 flex-1 flex-col gap-3 px-5 py-4">
-      <TextArea
-        size="sm"
-        value={sql}
-        onChange={(e) => setSql(e.target.value)}
-        onKeyDown={(e) => {
-          if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') runSql()
-        }}
-        placeholder={`select * from … — runs against ${db}`}
-        aria-label="SQL statement"
-        spellCheck={false}
-        className="h-32 shrink-0 resize-y"
-      />
-      <div className="flex items-center justify-between gap-2">
-        <p className="text-xs text-muted">Runs exactly what you wrote, against {db} — ⌘↵ works too.</p>
-        <Button onClick={runSql} disabled={busy || !sql.trim()}>
-          {busy ? 'Running…' : 'Run'}
-        </Button>
-      </div>
-      <ErrorNote message={error} />
-      {result && (
-        <div className="min-h-0 flex-1 overflow-auto">
-          {result.columns.length === 0 || result.rows.length === 0 ? (
-            <p className="text-sm text-ink-soft">
-              Done — {result.affected} {result.affected === 1 ? 'row' : 'rows'} affected.
-            </p>
-          ) : (
-            <>
-              {result.truncated && (
-                <p className="pb-1 text-xs text-muted">Showing the first {result.rows.length} rows.</p>
-              )}
-              <SqlResultGrid columns={result.columns} rows={result.rows} />
-            </>
-          )}
-        </div>
-      )}
-    </div>
-  )
-}
-
-
-/** SQL results, sortable client-side — the whole set is already here. */
-function SqlResultGrid({ columns, rows }: { columns: string[]; rows: DbCell[][] }) {
-  const [sorting, setSorting] = useState<SortingState>([])
-  const defs: ColumnDef<DbCell[]>[] = columns.map((c, i) => ({
-    id: c,
-    accessorFn: (r: DbCell[]) => r[i] ?? '',
-    header: c,
-    cell: ({ row }: { row: Row<DbCell[]> }) => <CellText value={row.original[i]} />,
-  }))
-  const table = useReactTable({
-    data: rows,
-    columns: defs,
-    state: { sorting },
-    onSortingChange: setSorting,
-    getCoreRowModel: getCoreRowModel(),
-    getSortedRowModel: getSortedRowModel(),
-  })
-  return <DataGrid table={table} />
 }

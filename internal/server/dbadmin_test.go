@@ -131,6 +131,10 @@ func TestDatabaseEditorIntegration(t *testing.T) {
 				t.Fatal("lost protocol")
 			}
 			prefix := "/databases/" + url.PathEscape(db)
+			schemas := databaseCall(t, s, "GET", prefix+"/schemas", nil, 200)
+			if len(schemas["schemas"].([]any)) == 0 {
+				t.Fatal("database has no browsable schemas")
+			}
 			name := fmt.Sprintf("donkey_editor_%d", time.Now().UnixNano())
 			c := &databaseConn{protocol: protocol, database: db}
 			table := c.quote(name)
