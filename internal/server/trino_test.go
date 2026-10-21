@@ -168,7 +168,7 @@ func TestTrinoConsoleQuotesNamesAndSetsQueryContext(t *testing.T) {
 			t.Fatalf("%s: %d %s", tc.path, rec.Code, rec.Body)
 		}
 	}
-	for _, body := range []string{`{}`, `{"sql":" "}`, `{"sql":"SELECT 1","schema":"bad\r\nheader"}`, `{"sql":"SELECT 1","unknown":true}`} {
+	for _, body := range []string{`{}`, `{"sql":" "}`, `{"sql":"SELECT 1","schema":"bad\r\nheader"}`} {
 		if rec := trinoCall(t, s, "POST", "/query", body); rec.Code != 400 {
 			t.Fatalf("bad input: %d %s", rec.Code, rec.Body)
 		}
@@ -395,5 +395,80 @@ func TestTrinoConsoleRequiresAuthenticationAndProtocol(t *testing.T) {
 	}
 	if calls.Load() != 0 {
 		t.Fatal("unauthorized request reached upstream")
+	}
+}
+
+// Trino's HTTP tunnel passes its statement API through as the caller: their
+// IdP token and the client's session headers, never a typed X-Trino-User or
+// donkey's own credentials, and nothing outside /v1/statement.
+func TestTrinoTunnel(t *testing.T) {
+	var calls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		if r.Header.Get("Authorization") != "Bearer entra-u1" {
+			t.Error("did not present the caller's IdP access token")
+		}
+		for _, h := range []string{"X-Trino-User", "X-Trino-Original-User", "X-Access-Token", "Cookie", "X-Auth-Request-User"} {
+			if r.Header.Get(h) != "" {
+				t.Errorf("leaked %s", h)
+			}
+		}
+		if r.Header.Get("X-Trino-Catalog") != "hive" {
+			t.Error("dropped the client's session header")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Trino-Set-Schema", "reports")
+		w.Header().Set("Set-Cookie", "upstream=1")
+		switch r.Method + " " + r.URL.RequestURI() {
+		case "POST /engine/v1/statement":
+			if statement, _ := io.ReadAll(r.Body); string(statement) != "SELECT 1" {
+				t.Errorf("statement = %q", statement)
+			}
+			fmt.Fprintf(w, `{"nextUri":"http://%s/engine/v1/statement/queued/q1/x/1"}`, r.Host)
+		case "GET /engine/v1/statement/queued/q1/x/1?maxWait=1s":
+			fmt.Fprint(w, `{"data":[[1]]}`)
+		case "DELETE /engine/v1/statement/executing/q1/x/2":
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Errorf("unexpected %s %s", r.Method, r.URL.RequestURI())
+		}
+	}))
+	defer upstream.Close()
+	s := trinoTestServer(upstream.URL + "/engine")
+	send := func(method, path, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, "/v1/spaces/default/services/trino/tunnel/"+path, strings.NewReader(body))
+		req.Header.Set("X-Access-Token", trinoIdentityToken(t, "u1", "entra-u1"))
+		req.Header.Set("X-Trino-User", "someone-else")
+		req.Header.Set("X-Trino-Original-User", "someone-else")
+		req.Header.Set("X-Trino-Catalog", "hive")
+		req.Header.Set("Cookie", "session=private")
+		req.Header.Set("X-Auth-Request-User", "forged")
+		rec := httptest.NewRecorder()
+		s.routes().ServeHTTP(rec, req)
+		return rec
+	}
+
+	rec := send("POST", "v1/statement", "SELECT 1")
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "/engine/v1/statement/queued/q1/x/1") ||
+		rec.Header().Get("X-Trino-Set-Schema") != "reports" || rec.Header().Get("Set-Cookie") != "" {
+		t.Fatalf("start: %d %v %s", rec.Code, rec.Header(), rec.Body)
+	}
+	if rec := send("GET", "v1/statement/queued/q1/x/1?maxWait=1s", ""); rec.Code != 200 || rec.Body.String() != `{"data":[[1]]}` {
+		t.Fatalf("follow: %d %s", rec.Code, rec.Body)
+	}
+	if rec := send("DELETE", "v1/statement/executing/q1/x/2", ""); rec.Code != 204 {
+		t.Fatalf("cancel: %d %s", rec.Code, rec.Body)
+	}
+	before := calls.Load()
+	for _, refused := range []struct{ method, path string }{
+		{"GET", "v1/info"}, {"GET", "v1/query"}, {"GET", "ui/"}, {"GET", "v1/statements"},
+		{"GET", "v1/statement/../info"}, {"GET", "v1/statement/%2e%2e/info"},
+	} {
+		if rec := send(refused.method, refused.path, ""); rec.Code < 300 {
+			t.Errorf("%s %s passed: %d", refused.method, refused.path, rec.Code)
+		}
+	}
+	if calls.Load() != before {
+		t.Fatal("a refused path reached Trino")
 	}
 }

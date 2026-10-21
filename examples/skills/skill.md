@@ -145,6 +145,19 @@ an app. The default address is `<app>.<space>.<domain>`.
 | `host` | Full hostname, a label under the space's domain, or `@` for the space's apex. |
 | `routes` | Serve this app under a path on another app's hostname in the same space. |
 
+Protected routes tell the app who the visitor is, with oauth2-proxy's
+header names: `X-Forwarded-User`, `X-Forwarded-Email`,
+`X-Forwarded-Preferred-Username`, `X-Forwarded-Name`, `X-Forwarded-Groups`,
+`X-Forwarded-Roles`, and the visitor's IdP access token as
+`X-Forwarded-Access-Token`. `X-Forwarded-User` is the stable user ID (the
+Entra object ID, else the IdP's subject). The same values also arrive as
+`X-Auth-Request-*`; read the `X-Forwarded-*` ones. The gateway drops
+client-sent copies of both. Public routes receive none of them, even for a
+signed-in visitor, so an app that personalizes or calls
+services as the user must stay protected. Siblings reach an app without the
+gateway: treat these headers as information about the visitor, not as
+authorization for calls from other apps.
+
 `public` cannot combine with `access`; `internal` cannot combine with `host`.
 An internal app can use `public` or `access` only when it has `routes`, where
 those settings apply. `internal` + `access` + `mode: api` is invalid. Route
@@ -179,6 +192,7 @@ to rename an existing instance.
 | `s3` | `AWS_ENDPOINT_URL_S3`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`; `S3_URL` is the same endpoint. Configure path-style addressing, e.g. `forcePathStyle: true` for the JS SDK. |
 | `openai` | Use `OPENAI_BASE_URL`, `OPENAI_API_KEY`, and `OPENAI_MODEL`. HTTP calls use a bearer token; streaming is supported. |
 | `exa` | Configure `EXA_BASE_URL` explicitly; send `EXA_API_KEY` as `x-api-key` or bearer for `POST /search` and `POST /contents` relative to that base. |
+| `trino` | `TRINO_URL` (HTTP base of the Trino endpoint), optional `TRINO_CATALOG` and `TRINO_SCHEMA`. No stored credential: queries run as the visitor, so pass the request's `X-Forwarded-Access-Token` as the Trino client's bearer/JWT token. Only protected routes have one; work without a visitor (jobs, public pages) gets no Trino access. |
 
 Managed PostgreSQL is a single instance without backups. Use an external
 database when production requirements need more. S3 has no pre-created
@@ -189,7 +203,9 @@ remain on the platform.
 The installation may offer additional provider or HTTP services and restrict
 which offerings a space can create. Use the catalog's parameters (`--param
 name=value` on `addon add`); an unavailable offering needs operator/space
-admin configuration, not a replacement guessed from its protocol.
+admin configuration, not a replacement guessed from its protocol. Trino
+comes only from such a provider offering: connect it with `addon add` using
+the catalog's type; `addon attach` does not apply.
 
 For existing apps, choose `addon add` for a platform service or `addon attach`
 for an external service. Both update `donkey.yaml` (formatting/comments may
@@ -257,8 +273,13 @@ unavailable operator-managed dependencies.
 
 `donkey logs <service-name>` shows a managed service declared by this app.
 `donkey addon tunnel <name> --port <local-port>` prints binding variables
-rewritten for localhost; the tunnel lasts while the command runs. External
-and binding-only services have no tunnel or managed logs.
+rewritten for localhost plus a ready-to-run line; the tunnel lasts while
+the command runs. Trino, the platform's OpenAI and Exa, and configured HTTP
+proxy services tunnel over HTTP: point the app's `*_URL`/`*_BASE_URL` at the
+printed local address and leave credentials as they are — donkey adds the
+user's token (Trino) or the space's key (OpenAI, Exa) itself. Services
+attached from elsewhere have no tunnel; use their own address. Only managed
+services have logs.
 
 File paths are disk-relative: `/app/data` maps to `app-data/`, and
 `/var/lib/app` to `var-lib-app/`. Start with `donkey files ls`; leading

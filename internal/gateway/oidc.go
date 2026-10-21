@@ -198,10 +198,13 @@ func (s *Server) handleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var claims struct {
-		Email             string   `json:"email"`
-		Name              string   `json:"name"`
-		PreferredUsername string   `json:"preferred_username"`
-		Groups            []string `json:"groups"`
+		Email             string `json:"email"`
+		Name              string `json:"name"`
+		PreferredUsername string `json:"preferred_username"`
+		// ObjectID is Entra's tenant-wide user ID (oid, with the profile
+		// scope); its sub is pairwise per app registration.
+		ObjectID string   `json:"oid"`
+		Groups   []string `json:"groups"`
 		// Roles is where Entra puts app roles; Keycloak nests its realm
 		// roles one level deeper — both count.
 		Roles       []string `json:"roles"`
@@ -227,16 +230,19 @@ func (s *Server) handleCallback(w http.ResponseWriter, r *http.Request) {
 		Subject: idToken.Subject,
 		Email:   claims.Email,
 		Name:    name,
-		Groups:  claims.Groups,
-		Roles:   roles,
-		Expires: time.Now().Add(sessionTTL).Unix(),
+		// Kept apart too: apps get it as X-Forwarded-Preferred-Username.
+		PreferredUsername: claims.PreferredUsername,
+		ObjectID:          claims.ObjectID,
+		Groups:            claims.Groups,
+		Roles:             roles,
+		Expires:           time.Now().Add(sessionTTL).Unix(),
 	}
 	if s.upstream.Enabled() {
 		// Kept for the token apps and viewers hand on; the login's own
 		// access token is already for the configured scope.
 		sess.RefreshToken = token.RefreshToken
 		if sess.RefreshToken == "" {
-			log.Printf("login for %s: the identity provider returned no refresh token — apps get no X-Auth-Request-Access-Token (is offline_access allowed?)", sess.Subject)
+			log.Printf("login for %s: the identity provider returned no refresh token — apps get no X-Forwarded-Access-Token (is offline_access allowed?)", sess.Subject)
 		} else {
 			sess.Grant = identity.Grant(sess.RefreshToken)
 			s.upstream.Remember(sess.Grant, token.RefreshToken, token.AccessToken, token.Expiry, time.Unix(sess.Expires, 0))
@@ -249,12 +255,9 @@ func (s *Server) handleCallback(w http.ResponseWriter, r *http.Request) {
 	// A CLI round trip ends on the loopback: the terminal gets a sealed
 	// token — and the browser keeps its session too, it just signed in.
 	if state.CLIPort != 0 {
-		tok, err := identity.SealToken(s.cfg.SessionKey, identity.Identity{
-			Subject: sess.Subject, Email: sess.Email, Name: sess.Name,
-			Groups: sess.Groups, Roles: sess.Roles,
-			Expires:      time.Now().Add(identity.TokenTTL).Unix(),
-			RefreshToken: sess.RefreshToken, Grant: sess.Grant,
-		})
+		cli := *sess
+		cli.Expires = time.Now().Add(identity.TokenTTL).Unix()
+		tok, err := identity.SealToken(s.cfg.SessionKey, cli)
 		if err != nil {
 			s.errorPage(w, http.StatusInternalServerError, "The sign-in couldn't be handed to the CLI.", err.Error())
 			return

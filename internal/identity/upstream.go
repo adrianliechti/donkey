@@ -26,7 +26,7 @@ var ErrUpstreamToken = errors.New("no identity provider token for this sign-in")
 
 // Upstream turns the IdP refresh token a login left inside donkey's sealed
 // credentials into the user's access token for donkey's own API (Scope) —
-// what login-protected apps receive as X-Auth-Request-Access-Token and the
+// what login-protected apps receive as X-Forwarded-Access-Token and the
 // Trino console sends as Authorization: Bearer to its add-on. Services
 // exchange it on-behalf-of for their own APIs.
 //
@@ -100,9 +100,6 @@ func (u *Upstream) LoginScopes() []string {
 func (u *Upstream) Remember(grant, refreshToken, accessToken string, expiry, until time.Time) {
 	if !u.Enabled() || refreshToken == "" || accessToken == "" {
 		return
-	}
-	if expiry.IsZero() {
-		expiry = time.Now().Add(5 * time.Minute)
 	}
 	u.store(grant, upstreamToken{value: accessToken, expiry: cacheUntil(expiry), refreshToken: refreshToken}, until)
 }
@@ -197,9 +194,13 @@ func latestOf(times ...time.Time) time.Time {
 }
 
 // cacheUntil retires a token upstreamSkew early, or halfway through its life
-// when that is shorter — a one-minute token must still be cached.
+// when that is shorter — a one-minute token must still be cached. A token
+// without an expiry counts as a five-minute one.
 func cacheUntil(expiry time.Time) time.Time {
 	now := time.Now()
+	if expiry.IsZero() {
+		expiry = now.Add(5 * time.Minute)
+	}
 	until := expiry.Add(-upstreamSkew)
 	if half := now.Add(expiry.Sub(now) / 2); until.Before(half) {
 		return half
@@ -260,9 +261,6 @@ func (u *Upstream) refresh(ctx context.Context, refreshToken string) (upstreamTo
 			return out, fmt.Errorf("%w: the identity provider refused a token for %s (%s: %s)", ErrUpstreamToken, u.Scope, response.ErrorCode, description)
 		}
 		return out, fmt.Errorf("the identity provider's token endpoint did not return a token")
-	}
-	if token.Expiry.IsZero() {
-		token.Expiry = time.Now().Add(5 * time.Minute)
 	}
 	out.value, out.refreshToken, out.expiry = token.AccessToken, token.RefreshToken, cacheUntil(token.Expiry)
 	return out, nil

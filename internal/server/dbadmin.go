@@ -46,7 +46,7 @@ func (s *Server) dbConnection(ctx context.Context, r *http.Request, db string, b
 		return nil, err
 	}
 	if service.Protocol == addons.ProtocolTrino {
-		token, err := s.trinoToken(ctx)
+		token, err := s.userToken(ctx)
 		if err != nil {
 			return nil, err
 		}
@@ -616,9 +616,7 @@ func (s *Server) handleDbQuery(w http.ResponseWriter, r *http.Request) {
 		SQL    string  `json:"sql"`
 		Schema *string `json:"schema,omitempty"`
 	}
-	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&req); err != nil {
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}

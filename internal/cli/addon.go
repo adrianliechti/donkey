@@ -1,20 +1,30 @@
 package cli
 
 import (
+	"bytes"
+	"cmp"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"net"
+	"net/http"
 	"net/url"
+	"os"
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gorilla/websocket"
 	"github.com/urfave/cli/v3"
 
+	"github.com/adrianliechti/donkey/internal/apiclient"
 	"github.com/adrianliechti/donkey/internal/config"
 	"github.com/adrianliechti/donkey/internal/server"
+	"github.com/adrianliechti/donkey/internal/ui"
 )
 
 func addonCommand() *cli.Command {
@@ -265,7 +275,7 @@ func addonTunnelCommand() *cli.Command {
 		Usage:     "reach a service from this machine, e.g. donkey addon tunnel postgres — nothing gets exposed",
 		ArgsUsage: "NAME",
 		Flags: []cli.Flag{
-			&cli.IntFlag{Name: "port", Usage: "local port to listen on (defaults to the service's own)"},
+			&cli.IntFlag{Name: "port", Usage: "local port to listen on (defaults to the protocol's usual one, else the service's own)"},
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 			s, err := newSession(cmd)
@@ -284,13 +294,13 @@ func addonTunnelCommand() *cli.Command {
 			if err != nil {
 				return err
 			}
+			if info.Tunnel.HTTP {
+				return httpTunnel(ctx, s, api, name, info, int(cmd.Int("port")))
+			}
 			if info.Host == "" {
 				return fmt.Errorf("%s runs elsewhere — reach it at its own address, no tunnel needed", name)
 			}
-			localPort := int(cmd.Int("port"))
-			if localPort == 0 {
-				localPort = info.Port
-			}
+			localPort := cmp.Or(int(cmd.Int("port")), info.Tunnel.Port, info.Port)
 			listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", localPort))
 			if err != nil {
 				return fmt.Errorf("port %d is taken on this machine — pick another with --port: %w", localPort, err)
@@ -298,10 +308,11 @@ func addonTunnelCommand() *cli.Command {
 			defer listener.Close()
 
 			u := s.UI
-			u.Printf("%s of space %s is now on your machine:", u.Bold(name), u.Bold(s.Space))
-			for _, k := range slices.Sorted(maps.Keys(info.Binding)) {
-				u.Printf("  %s=%s", k, localizeBinding(k, info.Binding[k], info.Host, info.Port, localPort))
+			binding := map[string]string{}
+			for k, v := range info.Binding {
+				binding[k] = localizeBinding(k, v, info.Host, info.Port, localPort)
 			}
+			printTunnel(u, s.Space, name, binding, info.Tunnel.Hint, "")
 			u.Info("The line lives only while this command runs — Ctrl-C closes it.")
 
 			go func() {
@@ -360,6 +371,108 @@ func formatParams(params map[string]any) string {
 
 // localizeBinding rewrites one binding value so it points at the tunnel's
 // local end instead of into the cluster.
+// printTunnel shows what a tunnel brought to this machine: the binding as a
+// local client needs it, and the protocol's ready-to-run way in. local is an
+// HTTP tunnel's address, the hint's $URL.
+func printTunnel(u *ui.UI, space, name string, binding map[string]string, hint, local string) {
+	u.Printf("%s of space %s is now on your machine:", u.Bold(name), u.Bold(space))
+	for _, k := range slices.Sorted(maps.Keys(binding)) {
+		u.Printf("  %s=%s", k, binding[k])
+	}
+	if hint != "" {
+		u.Printf("Connect: %s", os.Expand(hint, func(k string) string {
+			if v, ok := binding[k]; ok || k != "URL" {
+				return v
+			}
+			return local
+		}))
+	}
+}
+
+// httpTunnel serves a service's HTTP protocol on this machine, for protocols
+// whose tunnel carries requests (addons.Tunnel.HTTP): each request goes
+// through donkey, which adds what the service needs — the user's own IdP
+// token, for one — and links in the answers are pointed back here.
+func httpTunnel(ctx context.Context, s *session, api *apiclient.Client, name string, info apiclient.AddonBindingInfo, port int) error {
+	t := info.Tunnel
+	remote := strings.TrimSuffix(info.Binding[t.URLKey], "/")
+	if remote == "" {
+		return fmt.Errorf("%s has no %s to tunnel to", name, t.URLKey)
+	}
+	proxy, err := api.TunnelProxy(s.Space, name)
+	if err != nil {
+		return err
+	}
+	port = cmp.Or(port, t.Port)
+	listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	if err != nil {
+		return fmt.Errorf("port %d is taken on this machine — pick another with --port: %w", port, err)
+	}
+	local := "http://" + listener.Addr().String()
+	if len(t.Links) > 0 {
+		proxy.ModifyResponse = func(res *http.Response) error {
+			return rebaseLinks(res, t.Links, remote, local)
+		}
+	}
+
+	u := s.UI
+	binding := maps.Clone(info.Binding)
+	binding[t.URLKey] = local
+	printTunnel(u, s.Space, name, binding, t.Hint, local)
+	if t.UserToken {
+		u.Info("Requests run as you: donkey adds your sign-in to each one — point clients at it without credentials.")
+	}
+	u.Info("The line lives only while this command runs — Ctrl-C closes it.")
+
+	srv := &http.Server{Handler: proxy, ReadHeaderTimeout: 10 * time.Second}
+	go func() {
+		<-ctx.Done()
+		srv.Close()
+	}()
+	if err := srv.Serve(listener); !errors.Is(err, http.ErrServerClosed) {
+		return err
+	}
+	u.Printf("Tunnel closed.")
+	return nil
+}
+
+// rebaseLinks points the named link fields of a JSON answer from the
+// service at the tunnel, so a client keeps coming back through it. Nothing
+// else changes; rows and values pass untouched.
+func rebaseLinks(res *http.Response, fields []string, remote, local string) error {
+	if !strings.HasPrefix(res.Header.Get("Content-Type"), "application/json") {
+		return nil
+	}
+	body, err := io.ReadAll(res.Body)
+	res.Body.Close()
+	if err != nil {
+		return err
+	}
+	var page map[string]json.RawMessage
+	if json.Unmarshal(body, &page) == nil {
+		changed := false
+		for _, key := range fields {
+			var link string
+			if json.Unmarshal(page[key], &link) != nil {
+				continue
+			}
+			if rest, ok := strings.CutPrefix(link, remote); ok && strings.HasPrefix(rest, "/") {
+				page[key], _ = json.Marshal(local + rest)
+				changed = true
+			}
+		}
+		if changed {
+			if rebased, err := json.Marshal(page); err == nil {
+				body = rebased
+			}
+		}
+	}
+	res.Body = io.NopCloser(bytes.NewReader(body))
+	res.ContentLength = int64(len(body))
+	res.Header.Set("Content-Length", strconv.Itoa(len(body)))
+	return nil
+}
+
 func localizeBinding(key, value, host string, remotePort, localPort int) string {
 	remote, local := strconv.Itoa(remotePort), strconv.Itoa(localPort)
 	switch {

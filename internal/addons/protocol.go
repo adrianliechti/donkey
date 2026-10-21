@@ -17,6 +17,7 @@ const (
 	ProtocolS3       = "s3"
 	ProtocolOpenAI   = "openai"
 	ProtocolExa      = "exa"
+	ProtocolHTTP     = "http"
 )
 
 // Metadata describes the service independently of who provisions it. It

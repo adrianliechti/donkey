@@ -212,19 +212,19 @@ func trinoIdent(value string) (string, error) {
 	return `"` + strings.ReplaceAll(value, `"`, `""`) + `"`, nil
 }
 
-// trinoToken is the caller's IdP access token for donkey's API — the endpoint
-// behind TRINO_URL exchanges it on-behalf-of for Trino's. The gateway mints it
-// into the sealed token it forwards; the server never mints one. Never
-// donkey's own sealed token: nothing outside donkey can read it, and anyone
-// holding it could replay it against this API.
-func (s *Server) trinoToken(ctx context.Context) (string, error) {
+// userToken is the caller's IdP access token for donkey's API — what Trino's
+// add-on exchanges on-behalf-of for its own, and what an HTTP tunnel presents
+// for the user. The gateway mints it into the sealed token it forwards; the
+// server never mints one. Never donkey's own sealed token: nothing outside
+// donkey can read it, and anyone holding it could replay it against this API.
+func (s *Server) userToken(ctx context.Context) (string, error) {
 	if s.cfg.OIDCScope == "" {
-		return "", runtime.UserError{Err: fmt.Errorf("Trino needs the user's identity provider token, and this installation names no auth.scope")}
+		return "", runtime.UserError{Err: fmt.Errorf("this service needs the user's identity provider token, and this installation names no auth.scope")}
 	}
 	if id := requestIdentity(ctx); id != nil && id.AccessToken != "" {
 		return id.AccessToken, nil
 	}
-	return "", runtime.UserError{Err: fmt.Errorf("this request carries no identity provider token for Trino — open the console through donkey's address, or sign out and in again")}
+	return "", runtime.UserError{Err: fmt.Errorf("this request carries no identity provider token — go through donkey's address, or sign out and in again")}
 }
 
 // Each database request brings the current caller's credential. The client

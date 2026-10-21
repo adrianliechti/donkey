@@ -619,7 +619,7 @@ type InstallAuth struct {
 	// api://<donkey-client-id>/<scope>), asked for at login on top of
 	// openid/profile/email. Logins then keep the IdP's refresh token, and
 	// login-protected apps receive the user's access token as
-	// X-Auth-Request-Access-Token.
+	// X-Forwarded-Access-Token.
 	// The Trino console sends it as Authorization: Bearer to its add-on
 	// service, which handles on-behalf-of delegation downstream.
 	// Empty: none of that.

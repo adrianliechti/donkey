@@ -13,12 +13,19 @@ import (
 	"time"
 )
 
+// Identity is what the IdP said about a visitor, in every sealed form donkey
+// keeps it: the gateway's session cookie, the CLI's token, OAuth clients'
+// tokens and the short-lived hop to donkey's API all carry this one shape.
 type Identity struct {
-	Subject string   `json:"sub"`
-	Email   string   `json:"email,omitempty"`
-	Name    string   `json:"name,omitempty"`
-	Groups  []string `json:"groups,omitempty"`
-	Roles   []string `json:"roles,omitempty"`
+	Subject string `json:"sub"`
+	Email   string `json:"email,omitempty"`
+	Name    string `json:"name,omitempty"`
+	// PreferredUsername is the ID token's preferred_username claim, ObjectID
+	// Entra's oid: the tenant-wide user ID, where sub is pairwise per app.
+	PreferredUsername string   `json:"preferred_username,omitempty"`
+	ObjectID          string   `json:"oid,omitempty"`
+	Groups            []string `json:"groups,omitempty"`
+	Roles             []string `json:"roles,omitempty"`
 	// Expires (Unix seconds); a token never outlives it.
 	Expires int64 `json:"exp"`
 	// RefreshToken is the IdP's, kept when the installation names a token

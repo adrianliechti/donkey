@@ -73,7 +73,7 @@ type Config struct {
 	OIDCClientSecret string
 	// OIDCScope is donkey's own API (e.g. api://<donkey-client-id>/<scope>).
 	// When set, logins keep the IdP's refresh token and login-protected apps
-	// get the visitor's access token for it as X-Auth-Request-Access-Token.
+	// get the visitor's access token for it as X-Forwarded-Access-Token.
 	OIDCScope string
 
 	// Domain centralizes logins: every hostname under it shares one callback
@@ -360,8 +360,8 @@ func (s *Server) Run(ctx context.Context) error {
 		log.Printf("donkey-gateway serving https on %s (tls %s; issuer %s)", s.cfg.TLSListen, s.cfg.TLSMode, s.cfg.OIDCIssuer)
 		if s.upstream.Enabled() {
 			log.Printf("IdP access-token forwarding enabled for auth.scope %s; existing sign-ins need to sign out and in again", s.cfg.OIDCScope)
-		} else {
-			log.Print("IdP access-token forwarding disabled: configure auth.scope and complete OIDC client credentials to send X-Auth-Request-Access-Token")
+		} else if s.cfg.OIDCScope != "" {
+			log.Print("auth.scope is set, but the OIDC client credentials are incomplete: no X-Forwarded-Access-Token is forwarded")
 		}
 		if err := httpsSrv.ListenAndServeTLS("", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errs <- err
