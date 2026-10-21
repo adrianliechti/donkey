@@ -121,6 +121,11 @@ func Handler(upstreamBase, upstreamKey string, valid Tokens) (http.Handler, erro
 	if err != nil || addons.ValidateBinding(addons.ProtocolOpenAI, map[string]string{"OPENAI_BASE_URL": upstreamBase}) != nil {
 		return nil, fmt.Errorf("the AI endpoint must be an http or https URL without credentials, query or fragment")
 	}
+	// JoinPath on an empty path yields a relative one ("models"), which the
+	// proxy would send as is in the request line.
+	if upstream.Path == "" {
+		upstream.Path = "/"
+	}
 
 	tokens := newTokenCache(valid)
 

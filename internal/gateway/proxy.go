@@ -1,7 +1,6 @@
 package gateway
 
 import (
-	"cmp"
 	"log"
 	"net"
 	"net/http"
@@ -106,11 +105,14 @@ func wantsHTML(r *http.Request) bool {
 	return strings.Contains(accept, "text/html") || strings.Contains(accept, "*/*") && r.Header.Get("Sec-Fetch-Mode") == "navigate"
 }
 
-// identityHeaders is what an app behind a login learns about its visitor;
-// public routes learn nothing, even when the domain-wide session cookie
-// arrives with the request. Incoming values are dropped on every route —
-// identity must be unforgeable.
-var identityHeaders = []string{"X-Auth-Request-User", "X-Auth-Request-Email", "X-Auth-Request-Groups", "X-Auth-Request-Roles"}
+// An app behind a login learns its visitor from X-Forwarded-User (Entra's
+// object ID, else the sub), -Email, -Preferred-Username, -Name, -Groups,
+// -Roles and -Access-Token, each also as X-Auth-Request-* (identity.SetHeader;
+// X-Auth-Request-User stays the sub); public routes learn nothing, even
+// when the domain-wide session cookie arrives with the request. Incoming
+// identity headers are dropped on every route — identity must be
+// unforgeable, including names donkey never sets but an app may trust
+// (identity.StripHeaders).
 
 // accessTokenHeader carries a sealed credential to the one backend that
 // verifies identity itself (donkey's own API). Inbound copies are dropped on
@@ -119,10 +121,9 @@ const accessTokenHeader = "X-Access-Token"
 
 // idpAccessTokenHeader carries the visitor's IdP access token for donkey's
 // own API (auth.scope) to login-protected routes — oauth2-proxy's name for
-// it. Apps hand it on to services that exchange it on-behalf-of for their
-// own APIs.
-// Inbound copies are dropped: whatever arrives here came from the gateway.
-const idpAccessTokenHeader = "X-Auth-Request-Access-Token"
+// it, with X-Auth-Request-Access-Token beside it. Apps hand it on to
+// services that exchange it on-behalf-of for their own APIs.
+const idpAccessTokenHeader = "X-Forwarded-Access-Token"
 
 // forwardTokenTTL bounds the token the gateway mints per request. Short: it
 // exists for the hop to the backend, not for keeping — a leaked one expires
@@ -155,7 +156,7 @@ func (s *Server) idpToken(w http.ResponseWriter, r *http.Request, rt route, sess
 	}
 	if sess.RefreshToken == "" {
 		s.upstreamMissingToken.Do(func() {
-			log.Print("a sign-in has no IdP refresh token: X-Auth-Request-Access-Token is omitted; sign out and in again after configuring auth.scope")
+			log.Print("a sign-in has no IdP refresh token: X-Forwarded-Access-Token is omitted; sign out and in again after configuring auth.scope")
 		})
 		return ""
 	}
@@ -168,7 +169,7 @@ func (s *Server) idpToken(w http.ResponseWriter, r *http.Request, rt route, sess
 	}
 	if !fromToken && latest != sess.RefreshToken {
 		rotated := *sess
-		rotated.RefreshToken, rotated.Grant = latest, cmp.Or(sess.Grant, identity.Grant(sess.RefreshToken))
+		rotated.RefreshToken = latest
 		if err := s.setSession(w, r, &rotated, s.cookieDomain(requestHost(r))); err != nil {
 			log.Printf("the session of %s could not take the rotated refresh token: %v", sess.Subject, err)
 		}
@@ -217,29 +218,24 @@ func (s *Server) proxy(rt route, sess *session, fromToken bool, idpToken string)
 			// This hop is plain http behind the TLS-terminating Gateway; the
 			// app must still generate https URLs.
 			pr.Out.Header.Set("X-Forwarded-Proto", "https")
-			for _, h := range identityHeaders {
-				pr.Out.Header.Del(h)
-			}
+			identity.StripHeaders(pr.Out.Header)
 			pr.Out.Header.Del(accessTokenHeader)
-			pr.Out.Header.Del(idpAccessTokenHeader)
 			// The session cookie is the gateway's, not the app's — don't leak
 			// sealed identity material into app code.
 			stripCookie(pr.Out, append(sessionCookieNames(), stateCookie)...)
 			// Identity is for the routes that asked for a sign-in.
 			if sess != nil && rt.Login {
-				pr.Out.Header.Set("X-Auth-Request-User", sess.Subject)
-				if sess.Email != "" {
-					pr.Out.Header.Set("X-Auth-Request-Email", sess.Email)
-				}
-				if len(sess.Groups) > 0 {
-					pr.Out.Header.Set("X-Auth-Request-Groups", strings.Join(sess.Groups, ","))
-				}
-				if len(sess.Roles) > 0 {
-					pr.Out.Header.Set("X-Auth-Request-Roles", strings.Join(sess.Roles, ","))
-				}
-				if idpToken != "" {
-					pr.Out.Header.Set(idpAccessTokenHeader, idpToken)
-				}
+				identity.SetHeader(pr.Out.Header, "User", sess.Subject)
+				// Entra's sub is pairwise per app registration; its object
+				// ID is how Graph and downstream APIs know the user. The
+				// fallback X-Auth-Request-User keeps the sub it always had.
+				identity.SetForwardedHeader(pr.Out.Header, "User", sess.ObjectID)
+				identity.SetHeader(pr.Out.Header, "Email", sess.Email)
+				identity.SetHeader(pr.Out.Header, "Preferred-Username", sess.PreferredUsername)
+				identity.SetHeader(pr.Out.Header, "Name", sess.Name)
+				identity.SetHeader(pr.Out.Header, "Groups", strings.Join(sess.Groups, ","))
+				identity.SetHeader(pr.Out.Header, "Roles", strings.Join(sess.Roles, ","))
+				identity.SetHeader(pr.Out.Header, "Access-Token", idpToken)
 				// The API route gets a verifiable credential, not bare
 				// headers: the server checks the seal, so an in-cluster
 				// caller typing headers gets nothing. Only this route — an
@@ -250,11 +246,12 @@ func (s *Server) proxy(rt route, sess *session, fromToken bool, idpToken string)
 					if sess.Expires > 0 && sess.Expires < exp {
 						exp = sess.Expires
 					}
-					tok, err := identity.SealToken(s.cfg.SessionKey, identity.Identity{
-						Subject: sess.Subject, Email: sess.Email, Name: sess.Name,
-						Groups: sess.Groups, Roles: sess.Roles, Expires: exp,
-						AccessToken: idpToken,
-					})
+					forward := *sess
+					forward.Expires, forward.AccessToken = exp, idpToken
+					// The API hands the access token on; the refresh token
+					// behind it stays with the gateway.
+					forward.RefreshToken, forward.Grant = "", ""
+					tok, err := identity.SealToken(s.cfg.SessionKey, forward)
 					if err == nil {
 						pr.Out.Header.Set(accessTokenHeader, tok)
 					}

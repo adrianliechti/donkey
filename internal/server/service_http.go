@@ -12,6 +12,7 @@ import (
 	"github.com/adrianliechti/donkey/internal/addons"
 	"github.com/adrianliechti/donkey/internal/config"
 	"github.com/adrianliechti/donkey/internal/serviceproxy"
+	"github.com/adrianliechti/donkey/pkg/runtime"
 	"golang.org/x/net/http/httpguts"
 )
 
@@ -64,18 +65,9 @@ func (s *Server) handleServiceHTTPRequest(w http.ResponseWriter, r *http.Request
 		writeErr(w, http.StatusBadGateway, err)
 		return
 	}
-	configured := false
-	for _, service := range s.cfg.ProxyServices {
-		configured = configured || service.Name == connection.Type
-	}
-	if connection.Protocol != "http" || !configured {
-		writeErr(w, http.StatusBadRequest, fmt.Errorf("this service is not a configured HTTP proxy"))
-		return
-	}
-	base, err := url.Parse(connection.Binding[addons.ProxyEnvKey(connection.Type)])
-	if err != nil || base.Scheme != "http" || base.Host == "" || base.User != nil ||
-		!addons.IsProxyBinding("http://"+base.Host, connection.Type, connection.Binding) {
-		writeErr(w, http.StatusBadRequest, fmt.Errorf("the service has no proxy binding"))
+	base, err := s.proxyBase(connection)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
 	target, err := httpTestURL(base, input.URL)
@@ -124,6 +116,24 @@ func (s *Server) handleServiceHTTPRequest(w http.ResponseWriter, r *http.Request
 		"headers": response.Header, "body": string(body), "truncated": truncated,
 		"durationMs": time.Since(started).Milliseconds(),
 	})
+}
+
+// proxyBase is a configured proxy service's binding URL — the shared proxy's
+// route for it, which knows the console's grant. Anything else is refused.
+func (s *Server) proxyBase(connection runtime.ServiceConnection) (*url.URL, error) {
+	configured := false
+	for _, service := range s.cfg.ProxyServices {
+		configured = configured || service.Name == connection.Type
+	}
+	if connection.Protocol != addons.ProtocolHTTP || !configured {
+		return nil, fmt.Errorf("this service is not a configured HTTP proxy")
+	}
+	base, err := url.Parse(connection.Binding[addons.ProxyEnvKey(connection.Type)])
+	if err != nil || base.Scheme != "http" || base.Host == "" || base.User != nil ||
+		!addons.IsProxyBinding("http://"+base.Host, connection.Type, connection.Binding) {
+		return nil, fmt.Errorf("the service has no proxy binding")
+	}
+	return base, nil
 }
 
 // Only the selected binding's route is usable; neither full URLs nor relative

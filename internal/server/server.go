@@ -131,6 +131,7 @@ func (s *Server) routes() http.Handler {
 	mux.Handle("GET /v1/spaces/{space}/services/{service}/binding", s.auth(s.handleServiceBinding))
 	mux.Handle("POST /v1/spaces/{space}/services/{service}/http/request", s.auth(s.handleServiceHTTPRequest))
 	mux.Handle("GET /v1/spaces/{space}/services/{service}/tunnel", s.auth(s.handleServiceTunnel))
+	mux.Handle("/v1/spaces/{space}/services/{service}/tunnel/{path...}", s.auth(s.handleServiceHTTPTunnel))
 	mux.Handle("GET /v1/spaces/{space}/services/{service}/ai/models", s.auth(s.handleServiceAI))
 	mux.Handle("POST /v1/spaces/{space}/services/{service}/ai/chat/completions", s.auth(s.handleServiceAI))
 	mux.Handle("POST /v1/spaces/{space}/services/{service}/exa/search", s.auth(s.handleServiceExa))
@@ -269,7 +270,8 @@ func (s *Server) auth(next http.HandlerFunc) http.Handler {
 				ctx := context.WithValue(r.Context(), identityContextKey{}, id)
 				r = r.WithContext(context.WithValue(ctx, platformContextKey{}, settings))
 				if s.authorizeRoute(w, r) {
-					if r.Method != http.MethodGet && r.Method != http.MethodHead {
+					// A tunnel's requests are the service's, not changes to apps.
+					if r.Method != http.MethodGet && r.Method != http.MethodHead && !strings.Contains(r.Pattern, "/tunnel/") {
 						if provider, ok := s.rt.(runtime.AppSummaryProvider); ok {
 							defer provider.InvalidateAppSummaries()
 						}

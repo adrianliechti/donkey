@@ -35,6 +35,11 @@ func (s *Server) forwardServiceAPI(w http.ResponseWriter, r *http.Request, proto
 		return
 	}
 	base, _ := url.Parse(service.Binding[addons.ConnectionKey(protocol)])
+	// JoinPath on an empty path yields a relative one ("search"), which the
+	// proxy would send as is in the request line.
+	if base.Path == "" {
+		base.Path = "/"
+	}
 	proxy := &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.Out.URL = base.JoinPath(operation)
