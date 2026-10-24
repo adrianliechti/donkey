@@ -1,8 +1,8 @@
-import { useRef, useState, type ClipboardEvent } from 'react'
+import { useId, useState, type ClipboardEvent } from 'react'
 import { Braces, CircleSlash, X } from 'lucide-react'
 import { autoContentType, jsonProblem, prettyJSON, type BodyKind, type Draft, type Row } from './httpApi'
 import { newId } from './httpStore'
-import { Pane, PaneEmpty, PaneHeader, PaneTabs, Segmented } from './HttpWorkbench'
+import { Pane, PaneEmpty, PaneHeader, PaneTabs, Segmented } from './Workbench'
 import { Button, IconButton } from './ui'
 
 // The request pane of the HTTP console: its query parameters, headers and
@@ -101,7 +101,7 @@ function RowsTable({
   hint?: string
 }) {
   const [nextId, setNextId] = useState(newId)
-  const listId = useRef(`names-${newId()}`).current
+  const listId = useId()
   const update = (id: string, patch: Partial<Row>) => {
     if (id === nextId) {
       onChange([...rows, { id, key: '', value: '', on: true, ...patch }])
@@ -138,16 +138,27 @@ function RowsTable({
           <span role="columnheader">
             <span className="sr-only">Send</span>
           </span>
-          <span role="columnheader" className="px-2 font-mono text-[10px] font-semibold tracking-[0.14em] text-muted uppercase">
+          <span
+            role="columnheader"
+            className="px-2 font-mono text-[10px] font-semibold tracking-[0.14em] text-muted uppercase"
+          >
             Key
           </span>
-          <span role="columnheader" className="px-2 font-mono text-[10px] font-semibold tracking-[0.14em] text-muted uppercase">
+          <span
+            role="columnheader"
+            className="px-2 font-mono text-[10px] font-semibold tracking-[0.14em] text-muted uppercase"
+          >
             Value
           </span>
           <span />
         </div>
         {fixed.map((f) => (
-          <div role="row" key={f.key} className={`${grid} h-8 text-muted`} title={`Set ${f.note}; add a ${f.key} header to override it.`}>
+          <div
+            role="row"
+            key={f.key}
+            className={`${grid} h-8 text-muted`}
+            title={`Set ${f.note}; add a ${f.key} header to override it.`}
+          >
             <span className="flex justify-center">
               <input type="checkbox" checked disabled aria-label={`${f.key} is sent`} className="opacity-50" />
             </span>
@@ -233,7 +244,12 @@ function BodyEditor({ draft, onChange }: { draft: Draft; onChange: (draft: Draft
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex shrink-0 items-center justify-between gap-2 px-3 py-2">
-        <Segmented label="Body type" options={bodyKinds} value={draft.bodyKind} onChange={(bodyKind) => onChange({ ...draft, bodyKind })} />
+        <Segmented
+          label="Body type"
+          options={bodyKinds}
+          value={draft.bodyKind}
+          onChange={(bodyKind) => onChange({ ...draft, bodyKind })}
+        />
         {draft.bodyKind === 'json' && (
           <Button
             kind="quiet"
@@ -247,7 +263,9 @@ function BodyEditor({ draft, onChange }: { draft: Draft; onChange: (draft: Draft
         )}
       </div>
       {draft.bodyKind !== 'none' && bodiless && (
-        <p className="px-3 pb-2 text-xs text-muted">{draft.method} requests rarely carry a body; many services ignore it.</p>
+        <p className="px-3 pb-2 text-xs text-muted">
+          {draft.method} requests rarely carry a body; many services ignore it.
+        </p>
       )}
       {draft.bodyKind === 'none' && (
         <PaneEmpty icon={CircleSlash} title="No body">

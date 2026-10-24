@@ -75,7 +75,10 @@ function SpaceSwitcher({ current }: { current?: string }) {
     }
     const spaces = [...apps.keys()].sort((a, b) => a.localeCompare(b))
     const attention: Down[] = spaces
-      .map((space) => ({ space, apps: (apps.get(space) ?? []).filter((app) => healthOf(app.healthy, app.ready) === 'bad') }))
+      .map((space) => ({
+        space,
+        apps: (apps.get(space) ?? []).filter((app) => healthOf(app.healthy, app.ready) === 'bad'),
+      }))
       .filter((d) => d.apps.length > 0)
     return { attention, spaces, count: (space: string) => apps.get(space) ?? [] }
   }, [data])
@@ -124,7 +127,10 @@ function SpaceSwitcher({ current }: { current?: string }) {
                       </span>
                       <span className="truncate font-mono text-ink">{space}</span>
                       {deploying > 0 && (
-                        <Loader2 className="size-3.5 shrink-0 animate-spin text-accent" aria-label={`${deploying} deploying`} />
+                        <Loader2
+                          className="size-3.5 shrink-0 animate-spin text-accent"
+                          aria-label={`${deploying} deploying`}
+                        />
                       )}
                       <span className={`ml-auto shrink-0 text-xs ${downHere > 0 ? 'text-danger' : 'text-muted'}`}>
                         {downHere > 0 ? `${downHere} down` : `${apps.length} ${apps.length === 1 ? 'app' : 'apps'}`}
@@ -168,7 +174,9 @@ function AppSwitcher({ space, current, service }: { space: string; current?: str
   const { tab } = useParams({ strict: false }) as { tab?: string }
   const role = data?.roles[space] ?? 'viewer'
   const { data: services } = useSpaceServices(space, role !== 'viewer')
-  const app = service ? undefined : (data?.apps ?? []).find((a) => (a.space || 'default') === space && a.name === current)
+  const app = service
+    ? undefined
+    : (data?.apps ?? []).find((a) => (a.space || 'default') === space && a.name === current)
   const svc = service ? services?.find((s) => s.name === current) : undefined
   const deploying = current && !service ? byApp.get(`${space}/${current}`) : undefined
   const ServiceIcon = serviceUI(svc?.protocol).Icon
@@ -196,7 +204,9 @@ function AppSwitcher({ space, current, service }: { space: string; current?: str
       </MenuButton>
       <MenuItems transition anchor="bottom start" className={`${panel} w-80`}>
         <div className={list}>
-          {apps.length === 0 && !services?.length && <p className="px-2 py-5 text-center text-sm text-muted">No apps yet.</p>}
+          {apps.length === 0 && !services?.length && (
+            <p className="px-2 py-5 text-center text-sm text-muted">No apps yet.</p>
+          )}
           {apps.length > 0 && (
             <MenuSection>
               <Heading>Apps</Heading>
@@ -212,7 +222,9 @@ function AppSwitcher({ space, current, service }: { space: string; current?: str
                     </span>
                     <span className="truncate font-mono text-ink">{a.name}</span>
                     <DeployNote deploy={byApp.get(`${space}/${a.name}`)} />
-                    {a.name === current && !service && <Check className="ml-auto size-3.5 shrink-0 text-accent" aria-hidden />}
+                    {a.name === current && !service && (
+                      <Check className="ml-auto size-3.5 shrink-0 text-accent" aria-hidden />
+                    )}
                   </Link>
                 </MenuItem>
               ))}
@@ -237,7 +249,9 @@ function AppSwitcher({ space, current, service }: { space: string; current?: str
                         <view.Icon className="size-3.5 text-muted" aria-hidden />
                       </span>
                       <span className="truncate font-mono text-ink">{s.name}</span>
-                      <span className={`ml-auto shrink-0 text-xs ${s.state === 'failed' ? 'text-danger' : 'text-muted'}`}>
+                      <span
+                        className={`ml-auto shrink-0 text-xs ${s.state === 'failed' ? 'text-danger' : 'text-muted'}`}
+                      >
                         {unready ? s.state : s.attachedTo.length > 0 ? `used by ${s.attachedTo.length}` : view.noun}
                       </span>
                       {s.name === current && service && <Check className="size-3.5 shrink-0 text-accent" aria-hidden />}

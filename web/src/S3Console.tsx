@@ -12,7 +12,6 @@ import {
   FolderPlus,
   Plus,
   RefreshCw,
-  Search,
   Trash2,
   Upload,
   X,
@@ -35,6 +34,7 @@ import {
   type UploadSource,
 } from './s3Api'
 import { S3Preview } from './S3Preview'
+import { BarSearch, Row } from './Workbench'
 import { useServiceSearch, type ServiceSearch } from './serviceSearch'
 import { Button, ErrorNote, Eyebrow, Field, IconButton, Input, Spinner, Toolbar } from './ui'
 import { errText, humanSize } from './format'
@@ -69,7 +69,7 @@ export function Console({ space, service }: ConsoleProps) {
   const previewing = place.object !== undefined && bucket !== ''
 
   return (
-    <div className="flex min-h-0 flex-1 gap-4">
+    <Row>
       <BucketList
         space={space}
         service={service}
@@ -127,7 +127,7 @@ export function Console({ space, service }: ConsoleProps) {
           }}
         />
       )}
-    </div>
+    </Row>
   )
 }
 
@@ -167,11 +167,16 @@ function BucketList({
   }
 
   return (
-    <aside className={`w-full shrink-0 flex-col overflow-hidden rounded-lg border border-line md:w-64 ${className}`}>
+    <aside className={`w-full shrink-0 flex-col overflow-hidden bg-surface/60 md:w-64 ${className}`}>
       <div className="flex h-11 shrink-0 items-center justify-between gap-2 border-b border-line pr-1.5 pl-3">
         <Eyebrow>Buckets</Eyebrow>
         <Toolbar>
-          <IconButton icon={RefreshCw} label="Refresh the buckets" onClick={() => void refetch()} className={isFetching ? '[&>svg]:animate-spin' : ''} />
+          <IconButton
+            icon={RefreshCw}
+            label="Refresh the buckets"
+            onClick={() => void refetch()}
+            className={isFetching ? '[&>svg]:animate-spin' : ''}
+          />
           <IconButton icon={Plus} label="New bucket" onClick={() => onCreating(true)} />
         </Toolbar>
       </div>
@@ -205,10 +210,18 @@ function BucketList({
               aria-label="Name of the new bucket"
               className="min-w-0 flex-1"
             />
-            <IconButton icon={Check} size="sm" type="submit" label="Create the bucket" disabled={!valid || createBucket.isPending} />
+            <IconButton
+              icon={Check}
+              size="sm"
+              type="submit"
+              label="Create the bucket"
+              disabled={!valid || createBucket.isPending}
+            />
             <IconButton icon={X} size="sm" label="Cancel" onClick={close} />
           </div>
-          {name !== '' && !valid && <p className="px-0.5 text-[11px] text-muted">Lowercase letters, digits, dots and dashes; 3 to 63.</p>}
+          {name !== '' && !valid && (
+            <p className="px-0.5 text-[11px] text-muted">Lowercase letters, digits, dots and dashes; 3 to 63.</p>
+          )}
           <ErrorNote message={mutationError(createBucket, 'Creating the bucket did not work.')} />
         </form>
       )}
@@ -328,11 +341,17 @@ function DeleteBucket({
         ) : full ? (
           <div className="space-y-3">
             <p className="text-sm leading-relaxed text-ink-soft">
-              <span className="font-mono text-ink">{name}</span> still holds objects. Deleting it deletes every one of them —
-              the console cannot say how many — and none come back.
+              <span className="font-mono text-ink">{name}</span> still holds objects. Deleting it deletes every one of
+              them — the console cannot say how many — and none come back.
             </p>
             <Field label="Type the bucket's name to go ahead">
-              <Input value={typed} onChange={(e) => setTyped(e.target.value)} autoFocus aria-label="Bucket name" placeholder={name} />
+              <Input
+                value={typed}
+                onChange={(e) => setTyped(e.target.value)}
+                autoFocus
+                aria-label="Bucket name"
+                placeholder={name}
+              />
             </Field>
           </div>
         ) : (
@@ -340,7 +359,13 @@ function DeleteBucket({
         )}
         {(deleteBucket.error || peek.error) && (
           <div className="mt-3">
-            <ErrorNote message={deleteBucket.error ? mutationError(deleteBucket, 'Deleting did not work.') : errText(peek.error, 'Looking inside did not work.')} />
+            <ErrorNote
+              message={
+                deleteBucket.error
+                  ? mutationError(deleteBucket, 'Deleting did not work.')
+                  : errText(peek.error, 'Looking inside did not work.')
+              }
+            />
           </div>
         )}
       </ModalBody>
@@ -447,7 +472,11 @@ function FilesPane({
       .filter((o) => keep(o.key))
       .sort((a, b) => {
         const d =
-          sort.by === 'size' ? a.size - b.size : sort.by === 'modified' ? a.modified.localeCompare(b.modified) : byName(a.key, b.key)
+          sort.by === 'size'
+            ? a.size - b.size
+            : sort.by === 'modified'
+              ? a.modified.localeCompare(b.modified)
+              : byName(a.key, b.key)
         return dir * (d || byName(a.key, b.key))
       })
       .map((o) => ({ id: `o:${o.key}`, key: o.key, folder: false, object: o })),
@@ -514,7 +543,7 @@ function FilesPane({
 
   if (!bucket) {
     return (
-      <section className={`min-w-0 flex-1 flex-col items-center justify-center gap-3 rounded-lg border border-line p-8 text-center ${className}`}>
+      <section className={`min-w-0 flex-1 flex-col items-center justify-center gap-3 p-8 text-center ${className}`}>
         {bucketsError ? (
           <ErrorNote message={bucketsError} />
         ) : !bucketsReady ? (
@@ -535,7 +564,7 @@ function FilesPane({
   return (
     <section
       aria-label={`${bucket}/${prefix}`}
-      className={`relative min-w-0 flex-1 flex-col overflow-hidden rounded-lg border border-line ${className}`}
+      className={`relative min-w-0 flex-1 flex-col overflow-hidden ${className}`}
       onDragEnter={(e) => {
         if (!hasFiles(e)) return
         e.preventDefault()
@@ -571,24 +600,22 @@ function FilesPane({
           {crumbs.map((part, i) => (
             <span key={i} className="flex min-w-0 items-center gap-0.5">
               <ChevronRight className="size-3.5 shrink-0 text-muted" aria-hidden />
-              <Crumb onClick={i < crumbs.length - 1 ? () => onFolder(crumbs.slice(0, i + 1).join('/') + '/') : undefined}>{part}</Crumb>
+              <Crumb
+                onClick={i < crumbs.length - 1 ? () => onFolder(crumbs.slice(0, i + 1).join('/') + '/') : undefined}
+              >
+                {part}
+              </Crumb>
             </span>
           ))}
         </nav>
         <Toolbar>
-          <div className="relative">
-            <Search className="pointer-events-none absolute top-1/2 left-2 size-3.5 -translate-y-1/2 text-muted" aria-hidden />
-            <Input
-              size="sm"
-              value={text}
-              onChange={(e) => setText(e.target.value)}
-              placeholder="Filter this folder"
-              aria-label="Filter this folder"
-              className="w-44 pl-7"
-            />
-          </div>
+          <BarSearch value={text} onChange={setText} placeholder="Filter" label="Filter this folder" className="w-32" />
           <IconButton icon={FolderPlus} label="New folder" onClick={() => setNewFolder('')} />
-          <IconButton icon={Upload} label="Upload files (or drop them here)" onClick={() => fileInput.current?.click()} />
+          <IconButton
+            icon={Upload}
+            label="Upload files (or drop them here)"
+            onClick={() => fileInput.current?.click()}
+          />
           <IconButton
             icon={RefreshCw}
             label="Refresh"
@@ -623,7 +650,9 @@ function FilesPane({
               <SortHead sort={sort} by="modified" onSort={onSort} className="hidden w-44 lg:table-cell">
                 Modified
               </SortHead>
-              <th className="hidden w-24 pr-3 font-mono text-[10px] font-semibold tracking-[0.14em] text-muted uppercase sm:table-cell">Type</th>
+              <th className="hidden w-24 pr-3 font-mono text-[10px] font-semibold tracking-[0.14em] text-muted uppercase sm:table-cell">
+                Type
+              </th>
             </tr>
           </thead>
           <tbody>
@@ -684,11 +713,23 @@ function FilesPane({
                       </span>
                     </button>
                   </td>
-                  <td className="pr-3 text-right font-mono text-xs whitespace-nowrap text-muted">{row.object ? humanSize(row.object.size) : ''}</td>
-                  <td className="hidden pr-3 text-xs whitespace-nowrap text-muted lg:table-cell" title={row.object?.modified}>
-                    {row.object ? new Date(row.object.modified).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }) : ''}
+                  <td className="pr-3 text-right font-mono text-xs whitespace-nowrap text-muted">
+                    {row.object ? humanSize(row.object.size) : ''}
                   </td>
-                  <td className="hidden truncate pr-3 text-xs text-muted sm:table-cell">{row.folder ? 'Folder' : kind?.label}</td>
+                  <td
+                    className="hidden pr-3 text-xs whitespace-nowrap text-muted lg:table-cell"
+                    title={row.object?.modified}
+                  >
+                    {row.object
+                      ? new Date(row.object.modified).toLocaleString(undefined, {
+                          dateStyle: 'medium',
+                          timeStyle: 'short',
+                        })
+                      : ''}
+                  </td>
+                  <td className="hidden truncate pr-3 text-xs text-muted sm:table-cell">
+                    {row.folder ? 'Folder' : kind?.label}
+                  </td>
                 </tr>
               )
             })}
@@ -715,7 +756,12 @@ function FilesPane({
         {listing.hasNextPage && (
           <div className="flex items-center justify-center gap-3 p-3">
             {needle && <span className="text-xs text-muted">The filter covers what is loaded.</span>}
-            <Button kind="quiet" size="sm" disabled={listing.isFetchingNextPage} onClick={() => void listing.fetchNextPage()}>
+            <Button
+              kind="quiet"
+              size="sm"
+              disabled={listing.isFetchingNextPage}
+              onClick={() => void listing.fetchNextPage()}
+            >
               {listing.isFetchingNextPage ? 'Loading…' : 'Load more'}
             </Button>
           </div>
@@ -734,7 +780,13 @@ function FilesPane({
             {downloading && <span className="text-muted"> · {downloading}</span>}
           </span>
           <Toolbar>
-            <Button kind="quiet" size="sm" icon={Download} disabled={downloading !== ''} onClick={() => void download()}>
+            <Button
+              kind="quiet"
+              size="sm"
+              icon={Download}
+              disabled={downloading !== ''}
+              onClick={() => void download()}
+            >
               {picked.length === 1 && !picked[0].folder ? 'Download' : 'Download .zip'}
             </Button>
             <Button
@@ -761,7 +813,10 @@ function FilesPane({
         <div className="pointer-events-none absolute inset-2 z-20 flex items-center justify-center rounded-lg border-2 border-dashed border-accent bg-accent-soft/70">
           <p className="flex items-center gap-2 text-sm font-medium text-ink">
             <Upload className="size-4" aria-hidden />
-            Drop to upload into <span className="font-mono">{bucket}/{prefix}</span>
+            Drop to upload into{' '}
+            <span className="font-mono">
+              {bucket}/{prefix}
+            </span>
           </p>
         </div>
       )}
@@ -775,7 +830,8 @@ function FilesPane({
             setDeleting(null)
             setSelected(new Set())
             // The open object went with the selection: close it too.
-            if (current && (deleting.keys.includes(current) || deleting.prefixes.some((p) => current.startsWith(p)))) onFolder(prefix)
+            if (current && (deleting.keys.includes(current) || deleting.prefixes.some((p) => current.startsWith(p))))
+              onFolder(prefix)
           }}
         />
       )}
@@ -788,7 +844,11 @@ function FilesPane({
             setReplacing(null)
           }}
           onSkip={() => {
-            uploads.add(bucket, prefix, replacing.sources.filter((s) => !replacing.conflicts.includes(s.path)))
+            uploads.add(
+              bucket,
+              prefix,
+              replacing.sources.filter((s) => !replacing.conflicts.includes(s.path)),
+            )
             setReplacing(null)
           }}
           skippable={replacing.sources.length > replacing.conflicts.length}
@@ -933,7 +993,10 @@ function UploadTray({ uploads }: { uploads: Uploads }) {
           aria-expanded={open || failed > 0}
           className="flex min-w-0 flex-1 items-center gap-2 rounded text-left focus-visible:outline-2 focus-visible:outline-accent-strong"
         >
-          <ChevronRight className={`size-3.5 shrink-0 text-muted transition-transform ${open || failed > 0 ? 'rotate-90' : ''}`} aria-hidden />
+          <ChevronRight
+            className={`size-3.5 shrink-0 text-muted transition-transform ${open || failed > 0 ? 'rotate-90' : ''}`}
+            aria-hidden
+          />
           <span className="truncate text-ink">
             {active ? 'Uploading' : 'Uploaded'} {done} of {items.length}
             {failed > 0 && <span className="text-danger"> · {failed} failed</span>}
@@ -943,8 +1006,17 @@ function UploadTray({ uploads }: { uploads: Uploads }) {
             {humanSize(loaded)} of {humanSize(total)}
           </span>
         </button>
-        <div className="h-1 w-24 shrink-0 overflow-hidden rounded-full bg-line" role="progressbar" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100}>
-          <div className={`h-full transition-[width] ${failed > 0 ? 'bg-danger' : 'bg-accent'}`} style={{ width: `${pct}%` }} />
+        <div
+          className="h-1 w-24 shrink-0 overflow-hidden rounded-full bg-line"
+          role="progressbar"
+          aria-valuenow={pct}
+          aria-valuemin={0}
+          aria-valuemax={100}
+        >
+          <div
+            className={`h-full transition-[width] ${failed > 0 ? 'bg-danger' : 'bg-accent'}`}
+            style={{ width: `${pct}%` }}
+          />
         </div>
         {active ? (
           <Button kind="quiet" size="sm" onClick={cancel}>
@@ -1038,7 +1110,12 @@ function DeleteObjects({
         <Button kind="quiet" onClick={onClose} disabled={busy}>
           Keep {count === 1 ? 'it' : 'them'}
         </Button>
-        <Button kind="danger" icon={Trash2} disabled={busy} onClick={() => deleteMany.mutate(deletion, { onSuccess: onDeleted })}>
+        <Button
+          kind="danger"
+          icon={Trash2}
+          disabled={busy}
+          onClick={() => deleteMany.mutate(deletion, { onSuccess: onDeleted })}
+        >
           {busy ? 'Deleting…' : 'Delete'}
         </Button>
       </ModalFooter>

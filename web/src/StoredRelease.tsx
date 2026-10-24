@@ -27,7 +27,9 @@ export function StoredRelease({ space, app }: { space: string; app: string }) {
     return (
       <section className="space-y-3">
         <SectionHeader title="Deployment" />
-        <p className="text-sm text-muted">No builds are recorded for this app yet — the next deploy starts its history.</p>
+        <p className="text-sm text-muted">
+          No builds are recorded for this app yet — the next deploy starts its history.
+        </p>
       </section>
     )
   }
@@ -92,14 +94,27 @@ const fileRow = `flex min-h-11 items-center gap-3 px-3 py-2 text-sm transition-c
  * only says where the recipe sits. Builds from before the history have no
  * commit, and show nothing here.
  */
-function BuildFiles({ space, app, sequence, recipe }: { space: string; app: string; sequence: number; recipe?: string }) {
+function BuildFiles({
+  space,
+  app,
+  sequence,
+  recipe,
+}: {
+  space: string
+  app: string
+  sequence: number
+  recipe?: string
+}) {
   const { data } = useCommits(space, app)
   const commit = data?.commits.find((c) => c.builds?.some((b) => b.sequence === sequence))
   if (!commit) return null
   const params = { space, name: app, tab: 'source' as const }
   return (
     <Section className="space-y-3">
-      <SectionHeader title="Build files" description="The recipe, repairs and settings this build used, in its commit." />
+      <SectionHeader
+        title="Build files"
+        description="The recipe, repairs and settings this build used, in its commit."
+      />
       <List>
         <li>
           <Link to="/app/$space/$name/{-$tab}" params={params} search={{ commit: commit.id }} className={fileRow}>

@@ -1,6 +1,10 @@
 import { Archive, Database, Globe, KeyRound, Server, Sparkles, Search, type LucideIcon } from 'lucide-react'
 
-type ServiceUI = { Icon: LucideIcon; console?: 'database' | 'trino' | 'redis' | 's3' | 'openai' | 'http' | 'exa'; noun: string }
+type ServiceUI = {
+  Icon: LucideIcon
+  console?: 'database' | 'trino' | 'redis' | 's3' | 'openai' | 'http' | 'exa'
+  noun: string
+}
 
 // Provider names are deliberately absent: compatible plugins and external
 // services share the same presentation and console.

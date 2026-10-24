@@ -149,7 +149,10 @@ export function DataGrid({
       onKeyDown={onKeyDown}
       className="relative min-h-0 flex-1 overflow-auto outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent-strong/60"
     >
-      <table className="table-fixed border-separate border-spacing-0 font-mono text-xs [font-variant-ligatures:none]" style={{ width: total }}>
+      <table
+        className="table-fixed border-separate border-spacing-0 font-mono text-xs [font-variant-ligatures:none]"
+        style={{ width: total }}
+      >
         <colgroup>
           <col style={{ width: gutter }} />
           {columns.map((c, i) => (
@@ -170,7 +173,15 @@ export function DataGrid({
                 onResize={(w) => setWidths((current) => current.map((x, j) => (j === i ? w : x)))}
                 onFit={() =>
                   setWidths((current) =>
-                    current.map((x, j) => (j === i ? columnWidth(c.name, c.type, rows.map((r) => r[i])) : x)),
+                    current.map((x, j) =>
+                      j === i
+                        ? columnWidth(
+                            c.name,
+                            c.type,
+                            rows.map((r) => r[i]),
+                          )
+                        : x,
+                    ),
                   )
                 }
                 width={widths[i] ?? 160}
@@ -225,7 +236,13 @@ function clamp(n: number, lo: number, hi: number) {
 }
 
 function fitWidths(columns: GridColumn[], rows: SqlCell[][]) {
-  return columns.map((c, i) => columnWidth(c.name, c.type, rows.map((r) => r[i])))
+  return columns.map((c, i) =>
+    columnWidth(
+      c.name,
+      c.type,
+      rows.map((r) => r[i]),
+    ),
+  )
 }
 
 function HeaderCell({

@@ -22,7 +22,13 @@ export function NewSpaceDialog({
 }) {
   const [name, setName] = useState('')
   const [reserved, setReserved] = useState(false)
-  const [settings, setSettings] = useState<SpaceConfig>({ admins: {}, developers: {}, viewers: {}, allowPublic: false, domains: [] })
+  const [settings, setSettings] = useState<SpaceConfig>({
+    admins: {},
+    developers: {},
+    viewers: {},
+    allowPublic: false,
+    domains: [],
+  })
   const [customDomains, setCustomDomains] = useState(false)
   const create = useCreateSpace()
   const busy = create.isPending

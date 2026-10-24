@@ -109,8 +109,14 @@ export function TrafficPanel({
               <div className="flex items-center justify-between gap-3">
                 <Eyebrow>Requests by {data.granularity}</Eyebrow>
                 <span className="flex items-center gap-3 text-[11px] text-muted">
-                  <span className="flex items-center gap-1"><i className="inline-block size-2 rounded-sm bg-accent" />requests</span>
-                  <span className="flex items-center gap-1"><i className="inline-block size-2 rounded-sm bg-danger" />4xx / 5xx</span>
+                  <span className="flex items-center gap-1">
+                    <i className="inline-block size-2 rounded-sm bg-accent" />
+                    requests
+                  </span>
+                  <span className="flex items-center gap-1">
+                    <i className="inline-block size-2 rounded-sm bg-danger" />
+                    4xx / 5xx
+                  </span>
                 </span>
               </div>
               {data.totals.requests > 0 ? (
@@ -208,14 +214,22 @@ function ResourceUsage({ space, app }: { space: string; app: string }) {
             {current && !current.fresh && (
               <span className="text-xs text-danger">Last sample {ago(current.sampledAt)} ago</span>
             )}
-            <Select variant="quiet" ariaLabel="Runtime resource time range" value={range} onChange={setRange} options={resourceRangeOptions} />
+            <Select
+              variant="quiet"
+              ariaLabel="Runtime resource time range"
+              value={range}
+              onChange={setRange}
+              options={resourceRangeOptions}
+            />
           </>
         }
       />
       {error && <ErrorNote message={`Runtime usage is unavailable: ${error}`} />}
       {!data && !error && <Spinner label="Reading runtime usage…" />}
       {data && !data.available && (
-        <p className="text-sm text-muted">No container CPU or memory samples yet. Usage appears after the next runtime sample.</p>
+        <p className="text-sm text-muted">
+          No container CPU or memory samples yet. Usage appears after the next runtime sample.
+        </p>
       )}
       {data?.available && (
         <>
@@ -253,7 +267,6 @@ function ResourceUsage({ space, app }: { space: string; app: string }) {
   )
 }
 
-
 function ResourceBars({
   icon,
   label,
@@ -275,7 +288,10 @@ function ResourceBars({
   return (
     <div className="min-w-0">
       <div className="flex items-center justify-between gap-2 text-xs text-muted">
-        <span className="flex items-center gap-1.5">{icon}{label} history</span>
+        <span className="flex items-center gap-1.5">
+          {icon}
+          {label} history
+        </span>
         <span className="font-mono text-ink-soft">{measured.length ? format(latest) : '—'}</span>
       </div>
       <div
@@ -314,13 +330,14 @@ function formatBytes(bytes: number) {
   return `${value.toFixed(value >= 10 || power === 0 ? 0 : 1)} ${units[power]}`
 }
 
-
-
-
 function DailyBars({ points }: { points: TrafficPoint[] }) {
   const max = Math.max(1, ...points.map((point) => point.requests))
   return (
-    <div className="flex h-32 items-end gap-[3px]" role="img" aria-label="Requests over the selected time range; error portions are red">
+    <div
+      className="flex h-32 items-end gap-[3px]"
+      role="img"
+      aria-label="Requests over the selected time range; error portions are red"
+    >
       {points.map((point) => {
         const errors = point.clientErrors + point.serverErrors
         const height = point.requests === 0 ? 1 : Math.max(4, (point.requests / max) * 100)
@@ -344,10 +361,16 @@ function bucketLabel(bucket: string | undefined, granularity: 'hour' | 'day') {
   if (!bucket) return ''
   if (granularity === 'day') {
     const day = new Date(bucket)
-    return Number.isNaN(day.getTime()) ? bucket : new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(day)
+    return Number.isNaN(day.getTime())
+      ? bucket
+      : new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(day)
   }
   return new Intl.DateTimeFormat(undefined, {
-    month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', timeZoneName: 'short',
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    timeZoneName: 'short',
   }).format(new Date(bucket))
 }
 

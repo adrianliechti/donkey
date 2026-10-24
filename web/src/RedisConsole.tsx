@@ -12,7 +12,6 @@ import {
   Plus,
   RefreshCw,
   Rows3,
-  Search,
   Trash2,
   Type,
   X,
@@ -37,6 +36,7 @@ import {
   type RedisType,
 } from './redisApi'
 import { RedisValueView, RowsEditor, TypeBadge } from './RedisValue'
+import { Picker, Row, SearchRow } from './Workbench'
 import { useServiceSearch, type ServiceSearch } from './serviceSearch'
 import {
   Button,
@@ -89,7 +89,7 @@ export function Console({ space, service }: ConsoleProps) {
   const showing = creating || id !== undefined
 
   return (
-    <div className="flex min-h-0 flex-1 gap-4">
+    <Row>
       <KeyList
         space={space}
         service={service}
@@ -103,9 +103,7 @@ export function Console({ space, service }: ConsoleProps) {
         onNew={() => go({ ...list, new: '1' })}
         className={showing ? 'hidden md:flex' : 'flex'}
       />
-      <section
-        className={`min-w-0 flex-1 flex-col overflow-hidden rounded-lg border border-line ${showing ? 'flex' : 'hidden md:flex'}`}
-      >
+      <section className={`min-w-0 flex-1 flex-col overflow-hidden ${showing ? 'flex' : 'hidden md:flex'}`}>
         {creating ? (
           <NewKey
             space={space}
@@ -137,7 +135,7 @@ export function Console({ space, service }: ConsoleProps) {
           </div>
         )}
       </section>
-    </div>
+    </Row>
   )
 }
 
@@ -213,8 +211,8 @@ function KeyList({
   }
 
   return (
-    <aside className={`w-full shrink-0 flex-col overflow-hidden rounded-lg border border-line md:w-72 ${className}`}>
-      <div className="flex h-11 shrink-0 items-center justify-between gap-2 border-b border-line pl-2 pr-1.5">
+    <aside className={`w-full shrink-0 flex-col overflow-hidden bg-surface/60 md:w-64 ${className}`}>
+      <div className="flex min-h-11 shrink-0 items-center justify-between gap-2 border-b border-line pr-1.5 pl-1.5">
         <DatabasePicker space={space} service={service} db={place.db} onPick={onDatabase} />
         <Toolbar>
           <IconButton
@@ -226,37 +224,35 @@ function KeyList({
           <IconButton icon={Plus} label="New key" onClick={onNew} />
         </Toolbar>
       </div>
-      <div className="flex shrink-0 items-center gap-1 border-b border-line p-2">
-        <div className="relative min-w-0 flex-1">
-          <Search className="pointer-events-none absolute top-1/2 left-2 size-3.5 -translate-y-1/2 text-muted" aria-hidden />
-          <Input
-            size="sm"
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-            onKeyDown={(e) => {
-              // Enter scans now (or again); down moves into the list.
-              if (e.key === 'Enter') {
-                if (text === typed) void refetch()
-                else onFilter({ match: text || undefined })
-              }
-              if (e.key === 'ArrowDown') {
-                e.preventDefault()
-                nav.current?.querySelector<HTMLElement>('[data-key]')?.focus()
-              }
-            }}
-            placeholder="Find keys — user:*"
-            aria-label="Key pattern"
-            className="w-full pl-7"
-          />
-        </div>
-        <Select
-          variant="quiet"
-          ariaLabel="Key type"
+      <SearchRow
+        value={text}
+        onChange={setText}
+        onKeyDown={(e) => {
+          // Enter scans now (or again); down moves into the list.
+          if (e.key === 'Enter') {
+            if (text === typed) void refetch()
+            else onFilter({ match: text || undefined })
+          }
+          if (e.key === 'ArrowDown') {
+            e.preventDefault()
+            nav.current?.querySelector<HTMLElement>('[data-key]')?.focus()
+          }
+        }}
+        placeholder="Find keys"
+        label="Key pattern"
+      >
+        <Picker
+          plain
+          label="Key type"
           value={type}
           onChange={(next) => onFilter({ type: next || undefined })}
-          options={[{ value: '', label: 'all types' }, ...redisTypes.map((t) => ({ value: t, label: typeLabel[t].toLowerCase() }))]}
+          options={[
+            { value: '', label: 'all types' },
+            ...redisTypes.map((t) => ({ value: t, label: typeLabel[t].toLowerCase() })),
+          ]}
+          className="text-xs text-muted"
         />
-      </div>
+      </SearchRow>
       <nav
         ref={nav}
         aria-label="Keys"
@@ -301,7 +297,10 @@ function KeyList({
                 <TypeBadge type={k.type} />
                 <span className="min-w-0 flex-1 truncate">{k.name || '(empty name)'}</span>
                 {left !== null && (
-                  <span className="shrink-0 text-[10px] text-muted" title={left === 0 ? 'Expired' : `Expires in ${redisDuration(left)}`}>
+                  <span
+                    className="shrink-0 text-[10px] text-muted"
+                    title={left === 0 ? 'Expired' : `Expires in ${redisDuration(left)}`}
+                  >
                     {left === 0 ? 'expired' : redisDuration(left).split(' ')[0]}
                   </span>
                 )}
@@ -358,16 +357,20 @@ function DatabasePicker({
     .sort((a, b) => a - b)
     .map((n) => ({
       value: String(n),
-      label: `db ${n}${keys.has(n) ? ` · ${keys.get(n)!.toLocaleString()} keys` : data?.count ? ' · empty' : ''}${n === bound ? ' · default' : ''}`,
+      label: `db ${n}`,
+      detail: [
+        keys.has(n) ? `${keys.get(n)!.toLocaleString()} keys` : data?.count ? 'empty' : '',
+        n === bound ? 'default' : '',
+      ]
+        .filter(Boolean)
+        .join(' · '),
     }))
   return (
-    <Select
-      variant="quiet"
-      ariaLabel="Database"
+    <Picker
+      label="Database"
       value={String(current)}
       onChange={(next) => onPick(Number(next) === bound ? undefined : next)}
       options={options}
-      className="min-w-0 font-mono"
     />
   )
 }
@@ -483,7 +486,13 @@ function KeyView({
             onClick={() => void value.refetch()}
             className={value.isFetching && !value.isFetchingNextPage ? '[&>svg]:animate-spin' : ''}
           />
-          <IconButton icon={Trash2} kind="danger" label="Delete the key…" disabled={!page} onClick={() => setDeleting(true)} />
+          <IconButton
+            icon={Trash2}
+            kind="danger"
+            label="Delete the key…"
+            disabled={!page}
+            onClick={() => setDeleting(true)}
+          />
         </Toolbar>
       </header>
       {writes.change.error && !deleting && (
@@ -602,7 +611,14 @@ function Expiry({
 
   if (!open) {
     return (
-      <Button kind="quiet" size="sm" icon={Clock} onClick={() => setOpen(true)} title="Set or remove the expiry" className="tabular-nums">
+      <Button
+        kind="quiet"
+        size="sm"
+        icon={Clock}
+        onClick={() => setOpen(true)}
+        title="Set or remove the expiry"
+        className="tabular-nums"
+      >
         {left === null ? 'No expiry' : expired ? 'Expiring' : `Expires in ${redisDuration(left)}`}
       </Button>
     )
@@ -639,7 +655,13 @@ function Expiry({
         placeholder="in…"
         className="w-20"
       />
-      <Select size="sm" ariaLabel="Unit" value={unit} onChange={setUnit} options={units.map((u) => ({ value: u.value, label: u.label }))} />
+      <Select
+        size="sm"
+        ariaLabel="Unit"
+        value={unit}
+        onChange={setUnit}
+        options={units.map((u) => ({ value: u.value, label: u.label }))}
+      />
       <Button size="sm" type="submit" disabled={!valid || busy}>
         Set
       </Button>
@@ -665,12 +687,23 @@ const typeChoices: { value: RedisType; icon: typeof Type; label: string; hint: s
 ]
 
 // What each type starts with — Redis keeps no empty collection.
-const firstElements: Record<Exclude<RedisType, 'string'>, { title: string; noun: string; columns: { label: string; placeholder?: string; className?: string }[] }> = {
+const firstElements: Record<
+  Exclude<RedisType, 'string'>,
+  { title: string; noun: string; columns: { label: string; placeholder?: string; className?: string }[] }
+> = {
   hash: { title: 'Fields', noun: 'field', columns: [{ label: 'Field', className: 'w-48' }, { label: 'Value' }] },
   list: { title: 'Items, head first', noun: 'item', columns: [{ label: 'Item' }] },
   set: { title: 'Members', noun: 'member', columns: [{ label: 'Member' }] },
-  zset: { title: 'Members', noun: 'member', columns: [{ label: 'Member' }, { label: 'Score', placeholder: 'Score', className: 'w-32' }] },
-  stream: { title: 'The first entry', noun: 'field', columns: [{ label: 'Field', className: 'w-48' }, { label: 'Value' }] },
+  zset: {
+    title: 'Members',
+    noun: 'member',
+    columns: [{ label: 'Member' }, { label: 'Score', placeholder: 'Score', className: 'w-32' }],
+  },
+  stream: {
+    title: 'The first entry',
+    noun: 'field',
+    columns: [{ label: 'Field', className: 'w-48' }, { label: 'Value' }],
+  },
 }
 
 function NewKey({
@@ -697,7 +730,8 @@ function NewKey({
     if (next !== 'string') setRows([firstElements[next].columns.map(() => '')])
   }
   const items = rows.filter((r) => r.some((cell) => cell !== ''))
-  const badScore = type === 'zset' && items.some((r) => !/^\s*([+-]?inf|[+-]?(\d+\.?\d*|\.\d+)(e[+-]?\d+)?)\s*$/i.test(r[1] ?? ''))
+  const badScore =
+    type === 'zset' && items.some((r) => !/^\s*([+-]?inf|[+-]?(\d+\.?\d*|\.\d+)(e[+-]?\d+)?)\s*$/i.test(r[1] ?? ''))
   const expiry = ttl === '' ? undefined : Number(ttl)
   const badTTL = expiry !== undefined && (!Number.isInteger(expiry) || expiry < 0 || expiry > 2147483647)
   const ready = name !== '' && !badTTL && (type === 'string' || (items.length > 0 && !badScore))
@@ -709,7 +743,13 @@ function NewKey({
         e.preventDefault()
         if (!ready) return
         create.mutate(
-          { name, type, value: type === 'string' ? value : undefined, items: type === 'string' ? undefined : items, ttl: expiry },
+          {
+            name,
+            type,
+            value: type === 'string' ? value : undefined,
+            items: type === 'string' ? undefined : items,
+            ttl: expiry,
+          },
           { onSuccess: (result) => onCreated({ id: result.id }) },
         )
       }}
@@ -724,25 +764,55 @@ function NewKey({
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-5">
         <div className="max-w-3xl space-y-5">
           <Field label="Name">
-            <Input autoFocus value={name} maxLength={4096} onChange={(e) => setName(e.target.value)} placeholder="user:42:profile" />
+            <Input
+              autoFocus
+              value={name}
+              maxLength={4096}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="user:42:profile"
+            />
           </Field>
           <div className="space-y-1.5">
             <Eyebrow>Type</Eyebrow>
-            <ChoiceCards value={type} onChange={setType} options={typeChoices} label="Type" columns="grid-cols-2 lg:grid-cols-3" />
+            <ChoiceCards
+              value={type}
+              onChange={setType}
+              options={typeChoices}
+              label="Type"
+              columns="grid-cols-2 lg:grid-cols-3"
+            />
           </div>
           {type === 'string' ? (
             <Field label="Value">
-              <TextArea spellCheck={false} value={value} onChange={(e) => setValue(e.target.value)} className="min-h-40" />
+              <TextArea
+                spellCheck={false}
+                value={value}
+                onChange={(e) => setValue(e.target.value)}
+                className="min-h-40"
+              />
             </Field>
           ) : (
             <div className="space-y-1.5">
               <Eyebrow>{firstElements[type].title}</Eyebrow>
-              <RowsEditor columns={firstElements[type].columns} rows={rows} onChange={setRows} noun={firstElements[type].noun} />
+              <RowsEditor
+                columns={firstElements[type].columns}
+                rows={rows}
+                onChange={setRows}
+                noun={firstElements[type].noun}
+              />
               {badScore && <p className="text-xs text-danger">A score is a number, inf or -inf.</p>}
             </div>
           )}
           <Field label="Expiry in seconds" hint="Empty or 0: the key stays until it is deleted.">
-            <Input type="number" min="0" step="1" value={ttl} onChange={(e) => setTTL(e.target.value)} placeholder="never" className="w-40" />
+            <Input
+              type="number"
+              min="0"
+              step="1"
+              value={ttl}
+              onChange={(e) => setTTL(e.target.value)}
+              placeholder="never"
+              className="w-40"
+            />
           </Field>
           <ErrorNote message={mutationError(create, 'Creating the key did not work.')} />
         </div>

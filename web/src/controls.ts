@@ -12,8 +12,7 @@ export const controlSize: Record<ControlSize, string> = {
 
 export const iconSize: Record<ControlSize, string> = { sm: 'size-3.5', md: 'size-4' }
 
-export const focusRing =
-  'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-strong'
+export const focusRing = 'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-strong'
 
 // The text controls. Every input in the console wears this: mono, on the
 // surface colour, the accent ring on focus. Heights follow controlSize so a

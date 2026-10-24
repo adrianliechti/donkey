@@ -1,5 +1,5 @@
 import { request, servicePath, type ServiceHTTPRequest, type ServiceHTTPResponse } from './api'
-import { box, dropOldest, isRecord, listOf, newId, num, str } from './httpStore'
+import { box, newId } from './httpStore'
 import { errText } from './format'
 
 // The REST client behind an HTTP service's Requests tab. A request is sent by
@@ -52,7 +52,11 @@ export function sendHTTP(space: string, service: string, input: ServiceHTTPReque
 export function baseURLOf(binding: Record<string, string>, type: string | undefined, service: string): string {
   let key = (type || service).toUpperCase().replaceAll('-', '_')
   if (/^[0-9]/.test(key)) key = `SERVICE_${key}`
-  return binding[`${key}_URL`] ?? Object.entries(binding).find(([k, v]) => k.endsWith('_URL') && v.includes('/services/'))?.[1] ?? ''
+  return (
+    binding[`${key}_URL`] ??
+    Object.entries(binding).find(([k, v]) => k.endsWith('_URL') && v.includes('/services/'))?.[1] ??
+    ''
+  )
 }
 
 // ─── The URL and its query ─────────────────────────────────────────────
@@ -258,134 +262,16 @@ export function methodTone(method: string): string {
   }
 }
 
-// ─── What this browser keeps ───────────────────────────────────────────
+// ─── The request on the page ───────────────────────────────────────────
 
-/** A request under a name, kept until it is deleted. */
-export type Saved = { id: string; name: string; draft: Draft; savedAt: number }
+// The console is a quick tester: one request and its answer, kept in memory
+// only — they outlast a look at the Connection tab, not a reload.
+export const draftBox = (space: string, service: string) =>
+  box<Draft>(`donkey:http:draft:${space}/${service}`, () => emptyDraft(), { memory: true })
 
-/** A request as it was sent, and how it ended. */
-export type Sent = {
-  id: string
-  at: number
-  draft: Draft
-  status?: number
-  durationMs?: number
-  error?: string
-  /** The body was too large to keep in the history. */
-  bodyDropped?: boolean
-}
-
-const bodyKinds: BodyKind[] = ['none', 'json', 'text', 'form']
-
-function parseRows(raw: unknown): Row[] {
-  return listOf(raw, (r) => ({ id: str(r.id) || newId(), key: str(r.key), value: str(r.value), on: r.on !== false }))
-}
-
-function parseDraft(raw: unknown): Draft | undefined {
-  if (!isRecord(raw)) return undefined
-  const method = str(raw.method, 'GET')
-  return {
-    method: methods.includes(method) ? method : 'GET',
-    path: str(raw.path, '/'),
-    params: parseRows(raw.params),
-    headers: parseRows(raw.headers),
-    bodyKind: bodyKinds.find((k) => k === raw.bodyKind) ?? 'none',
-    body: str(raw.body),
-    form: parseRows(raw.form),
-  }
-}
-
-const storeKey = (space: string, service: string, what: string) => `donkey:http:${what}:${space}/${service}`
-
-// Saved requests are few and chosen: they are never dropped to make room.
-// Saving one that would not fit is refused instead (see fitsSaved).
-export const maxSaved = 100
-export const maxSavedBytes = 96 * 1024
-const savedBudget = 1024 * 1024
-
-/** Whether a list of saved requests fits in this browser's room for them. */
-export const fitsSaved = (list: Saved[]) => list.length <= maxSaved && JSON.stringify(list).length <= savedBudget
-
-export const savedBox = (space: string, service: string) =>
-  box<Saved[]>(
-    storeKey(space, service, 'saved'),
-    (raw) =>
-      listOf(raw, (s) => {
-        const draft = parseDraft(s.draft)
-        return draft && { id: str(s.id) || newId(), name: str(s.name, 'Request'), draft, savedAt: num(s.savedAt) ?? 0 }
-      }),
-    { maxBytes: savedBudget },
-  )
-
-// The history is the last fifty sends, newest first, each body bounded.
-export const maxHistory = 50
-const maxHistoryBody = 16 * 1024
-
-export const historyBox = (space: string, service: string) =>
-  box<Sent[]>(
-    storeKey(space, service, 'history'),
-    (raw) =>
-      listOf(raw, (h) => {
-        const draft = parseDraft(h.draft)
-        return (
-          draft && {
-            id: str(h.id) || newId(),
-            at: num(h.at) ?? 0,
-            draft,
-            status: num(h.status),
-            durationMs: num(h.durationMs),
-            error: typeof h.error === 'string' ? h.error : undefined,
-            bodyDropped: h.bodyDropped === true || undefined,
-          }
-        )
-      }),
-    { maxBytes: 512 * 1024, shrink: dropOldest },
-  )
-
-export function remember(space: string, service: string, entry: Omit<Sent, 'id' | 'at' | 'bodyDropped'>) {
-  const large = entry.draft.body.length > maxHistoryBody
-  const sent: Sent = {
-    ...entry,
-    id: newId(),
-    at: Date.now(),
-    draft: large ? { ...entry.draft, body: '' } : entry.draft,
-    bodyDropped: large || undefined,
-  }
-  historyBox(space, service).set((list) => [sent, ...list].slice(0, maxHistory))
-}
-
-// The request being written outside any saved one — the scratch pad that
-// survives a reload.
-export const scratchBox = (space: string, service: string) =>
-  box<Draft>(storeKey(space, service, 'draft'), (raw) => parseDraft(raw) ?? emptyDraft(), { maxBytes: 256 * 1024 })
-
-// Changes to a saved request not saved yet, by its id: they last while the
-// console is open, so walking back and forth between requests loses nothing.
-export const editsBox = (space: string, service: string) =>
-  box<Record<string, Draft>>(storeKey(space, service, 'edits'), () => ({}), { memory: true })
-
-/** Whether two drafts would send the same request. */
-export function sameDraft(a: Draft, b: Draft): boolean {
-  const strip = (d: Draft) => ({
-    ...d,
-    params: d.params.map(({ key, value, on }) => ({ key, value, on })),
-    headers: d.headers.map(({ key, value, on }) => ({ key, value, on })),
-    form: d.form.map(({ key, value, on }) => ({ key, value, on })),
-  })
-  return JSON.stringify(strip(a)) === JSON.stringify(strip(b))
-}
-
-/** A short name for a request: its method and path. */
-export function draftTitle(d: Draft): string {
-  return `${d.method} ${d.path || '/'}`
-}
-
-// ─── Sending ───────────────────────────────────────────────────────────
-
-// An exchange is one send and how it ended. Exchanges live in a box rather
-// than a mutation's state: a request still running when its tab is left
-// lands where the next visit finds it, and the answer follows a request
-// that is saved under a name after it was sent.
+// An exchange is one send and how it ended. It lives in a box rather than a
+// mutation's state, so a request still running when the tab is left lands
+// where the next visit finds it.
 export type Exchange = {
   id: string
   state: 'pending' | 'done' | 'failed' | 'cancelled'
@@ -395,48 +281,28 @@ export type Exchange = {
   error?: string
 }
 
-export const exchangesBox = (space: string, service: string) =>
-  box<Record<string, Exchange>>(`donkey:http:exchanges:${space}/${service}`, () => ({}), { memory: true })
+export const exchangeBox = (space: string, service: string) =>
+  box<Exchange | null>(`donkey:http:exchange:${space}/${service}`, () => null, { memory: true })
 
 const running = new Map<string, AbortController>()
 
 /** Cancels the exchange with this id, if it is still running. */
 export const cancelExchange = (id: string) => running.get(id)?.abort()
 
-// Answers can be a megabyte each; only the last few places keep theirs.
-const keptExchanges = 12
-
-/** Sends a draft from a place (a saved request, or the scratch pad). */
-export async function exchange(space: string, service: string, place: string, draft: Draft) {
-  const exchanges = exchangesBox(space, service)
+/** Sends a draft; its answer replaces the last one. */
+export async function exchange(space: string, service: string, draft: Draft) {
+  const current = exchangeBox(space, service)
   const id = newId()
   const controller = new AbortController()
   running.set(id, controller)
-  exchanges.set((all) => {
-    const kept = Object.entries(all)
-      .filter(([p]) => p !== place)
-      .sort(([, a], [, b]) => b.startedAt - a.startedAt)
-      .slice(0, keptExchanges - 1)
-    return { ...Object.fromEntries(kept), [place]: { id, state: 'pending', startedAt: Date.now(), draft } }
-  })
-  // Wherever the exchange is by now (saving moves it), it settles there.
-  const settle = (patch: Partial<Exchange>) =>
-    exchanges.set((all) => {
-      const at = Object.keys(all).find((p) => all[p].id === id)
-      return at ? { ...all, [at]: { ...all[at], ...patch } } : all
-    })
+  current.set({ id, state: 'pending', startedAt: Date.now(), draft })
+  // A newer send has taken the place by the time this one ends: it stays.
+  const settle = (patch: Partial<Exchange>) => current.set((now) => (now?.id === id ? { ...now, ...patch } : now))
   try {
-    const result = await sendHTTP(space, service, toRequest(draft), controller.signal)
-    settle({ state: 'done', result })
-    remember(space, service, { draft, status: result.status, durationMs: result.durationMs })
+    settle({ state: 'done', result: await sendHTTP(space, service, toRequest(draft), controller.signal) })
   } catch (err) {
-    if (controller.signal.aborted) {
-      settle({ state: 'cancelled' })
-    } else {
-      const error = errText(err, 'The request did not work.')
-      settle({ state: 'failed', error })
-      remember(space, service, { draft, error })
-    }
+    if (controller.signal.aborted) settle({ state: 'cancelled' })
+    else settle({ state: 'failed', error: errText(err, 'The request did not work.') })
   } finally {
     running.delete(id)
   }

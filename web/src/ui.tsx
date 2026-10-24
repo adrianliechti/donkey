@@ -4,13 +4,7 @@
 // lines up without per-call padding fiddling. Dialogs and drawers share the
 // header/body/footer frame in dialog.tsx; sections inside a panel share
 // SectionHeader (title left, action portlet right).
-import {
-  Component,
-  type InputHTMLAttributes,
-  type ReactNode,
-  type TextareaHTMLAttributes,
-  useState,
-} from 'react'
+import { Component, type InputHTMLAttributes, type ReactNode, type TextareaHTMLAttributes, useState } from 'react'
 import { Listbox, ListboxButton, ListboxOption, ListboxOptions, Switch } from '@headlessui/react'
 import {
   Check,
@@ -26,9 +20,7 @@ import {
 import type { AppMode, Exposure } from './api'
 import { type ControlSize, controlSize, fieldBase, focusRing, iconSize, inputClass } from './controls'
 import type { Health } from './vocabulary'
-
-
-
+import { useNow } from './hooks'
 
 // The source SVG stays a plain monochrome shape. Rendering it as a mask lets
 // each surface choose the color in CSS and keeps the brand mark identical
@@ -36,8 +28,6 @@ import type { Health } from './vocabulary'
 export function DonkeyLogo({ className = '' }: { className?: string }) {
   return <span className={`donkey-logo ${className}`} aria-hidden />
 }
-
-
 
 // The dots glow: on a dark field, a lit lamp reads faster than a color chip.
 const dotColor: Record<Health, string> = {
@@ -50,7 +40,6 @@ export function StatusDot({ health }: { health: Health }) {
   return <span className={`inline-block size-2.5 rounded-full ${dotColor[health]}`} aria-hidden />
 }
 
-
 // ExposureBadge marks the exception: an app anyone can reach. Behind the
 // login is the default and says nothing; an internal app shows it by having
 // no address at all.
@@ -58,7 +47,11 @@ export function ExposureBadge({ exposure, mode }: { exposure?: Exposure; mode?: 
   if (exposure !== 'public') return null
   return (
     <span
-      title={mode === 'api' ? 'Public API — anyone with the address can call it' : 'Public — anyone with the address can open it'}
+      title={
+        mode === 'api'
+          ? 'Public API — anyone with the address can call it'
+          : 'Public — anyone with the address can open it'
+      }
       className="inline-flex items-center gap-1 rounded border border-warning/40 px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wide text-warning"
     >
       <Globe className="size-3" aria-hidden />
@@ -79,10 +72,7 @@ export function CheckIcon({ ok }: { ok: boolean }) {
 // in-line status (next to a heading, inside a row).
 export function Spinner({ label, inline = false }: { label: string; inline?: boolean }) {
   return (
-    <div
-      className={`flex items-center gap-2 text-sm text-muted ${inline ? '' : 'justify-center py-10'}`}
-      role="status"
-    >
+    <div className={`flex items-center gap-2 text-sm text-muted ${inline ? '' : 'justify-center py-10'}`} role="status">
       <Loader2 className="size-4 shrink-0 animate-spin" aria-hidden /> {label}
     </div>
   )
@@ -149,9 +139,7 @@ export function Section({
   className?: string
 }) {
   const rule = tone === 'danger' ? 'border-danger/30' : 'border-line'
-  return (
-    <section className={`border-t pt-5 first:border-t-0 first:pt-0 ${rule} ${className}`}>{children}</section>
-  )
+  return <section className={`border-t pt-5 first:border-t-0 first:pt-0 ${rule} ${className}`}>{children}</section>
 }
 
 // ChoiceCards is the console's radio group: one card per option, the chosen
@@ -189,7 +177,9 @@ export function ChoiceCards<T extends string>({
             }`}
           >
             <span className="flex items-center gap-1.5 text-sm font-medium text-ink">
-              {o.icon && <o.icon className={`size-4 shrink-0 ${selected ? 'text-accent' : 'text-muted'}`} aria-hidden />}
+              {o.icon && (
+                <o.icon className={`size-4 shrink-0 ${selected ? 'text-accent' : 'text-muted'}`} aria-hidden />
+              )}
               {o.label}
             </span>
             {o.hint && <span className="mt-1 block text-xs leading-snug text-muted">{o.hint}</span>}
@@ -210,7 +200,9 @@ export function ChoiceCards<T extends string>({
 
 // List is the one outlined group: rows divided by hairlines.
 export function List({ children, className = '' }: { children: ReactNode; className?: string }) {
-  return <ul className={`divide-y divide-line/60 overflow-hidden rounded-lg border border-line ${className}`}>{children}</ul>
+  return (
+    <ul className={`divide-y divide-line/60 overflow-hidden rounded-lg border border-line ${className}`}>{children}</ul>
+  )
 }
 
 // ListRow is a row of a List. `actions` sit at the right edge, pulled out so
@@ -265,12 +257,12 @@ export function Callout({
   const t = calloutTones[tone]
   return (
     <div role={role} className={`flex items-start gap-3 rounded-lg px-3 py-2.5 text-sm ${t.box} ${className}`}>
-      {Icon && <Icon className={`mt-0.5 size-4 shrink-0 ${t.icon} ${Icon === Loader2 ? 'animate-spin' : ''}`} aria-hidden />}
+      {Icon && (
+        <Icon className={`mt-0.5 size-4 shrink-0 ${t.icon} ${Icon === Loader2 ? 'animate-spin' : ''}`} aria-hidden />
+      )}
       <div className="min-w-0 flex-1">
         {title && <p className={`font-medium ${t.title}`}>{title}</p>}
-        {children && (
-          <div className={`${title ? 'mt-0.5 text-ink-soft' : t.title} leading-relaxed`}>{children}</div>
-        )}
+        {children && <div className={`${title ? 'mt-0.5 text-ink-soft' : t.title} leading-relaxed`}>{children}</div>}
       </div>
       {action && <div className="-my-1 shrink-0 self-center">{action}</div>}
     </div>
@@ -290,8 +282,12 @@ export function StatGrid({
     <dl className={`grid gap-px overflow-hidden rounded-lg border border-line bg-line ${columns}`}>
       {stats.map((stat) => (
         <div key={stat.label} className="min-w-0 bg-card px-4 py-3">
-          <dt><Eyebrow>{stat.label}</Eyebrow></dt>
-          <dd className={`mt-1 truncate font-mono text-xl font-bold ${stat.tone === 'danger' ? 'text-danger' : 'text-ink'}`}>
+          <dt>
+            <Eyebrow>{stat.label}</Eyebrow>
+          </dt>
+          <dd
+            className={`mt-1 truncate font-mono text-xl font-bold ${stat.tone === 'danger' ? 'text-danger' : 'text-ink'}`}
+          >
             {stat.value}
           </dd>
           {stat.note && <dd className="mt-0.5 text-[11px] leading-snug text-muted">{stat.note}</dd>}
@@ -397,7 +393,9 @@ export function CodeCard({
         </SectionTitle>
         {meta && <div className="flex items-center gap-2 text-xs text-muted">{meta}</div>}
       </div>
-      <div className={`min-h-0 flex-1 overflow-auto bg-well p-4 font-mono text-xs leading-relaxed text-emphasis ${bodyClassName}`}>
+      <div
+        className={`min-h-0 flex-1 overflow-auto bg-well p-4 font-mono text-xs leading-relaxed text-emphasis ${bodyClassName}`}
+      >
         {children}
       </div>
     </Card>
@@ -524,8 +522,7 @@ export function IconButton({
   active?: boolean
   className?: string
 }) {
-  const tone =
-    kind === 'danger' ? 'hover:bg-danger/10 hover:text-danger' : 'hover:bg-line/60 hover:text-ink'
+  const tone = kind === 'danger' ? 'hover:bg-danger/10 hover:text-danger' : 'hover:bg-line/60 hover:text-ink'
   const dims = size === 'sm' ? 'size-7' : 'size-8'
   return (
     <button
@@ -593,7 +590,6 @@ export function CopyButton({ text, label = 'Copy' }: { text: string; label?: str
     />
   )
 }
-
 
 // `bare` drops the outline for an input that sits inside a list row: the
 // row is already the frame.
@@ -729,11 +725,7 @@ export function StateChip({ state }: { state: string }) {
   const bad = /crashloop|error|backoff|failed|pending|terminat/i.test(state)
   const good = /running|ready/i.test(state)
   const tone = bad ? 'bg-danger/10 text-danger' : good ? 'bg-success/10 text-success' : 'bg-raised text-ink-soft'
-  return (
-    <span className={`inline-block rounded px-1.5 py-0.5 font-mono text-[11px] leading-4 ${tone}`}>
-      {state}
-    </span>
-  )
+  return <span className={`inline-block rounded px-1.5 py-0.5 font-mono text-[11px] leading-4 ${tone}`}>{state}</span>
 }
 
 // Skeleton keeps the layout stable while first data is on its way.
@@ -741,12 +733,10 @@ export function Skeleton({ className = '' }: { className?: string }) {
   return <div className={`animate-pulse rounded-md bg-line/60 ${className}`} aria-hidden />
 }
 
-
-
-
 export function UpdatedAgo({ at }: { at: number | null }) {
+  const now = useNow(5_000)
   if (at === null) return null
-  const secs = Math.max(0, Math.round((Date.now() - at) / 1000))
+  const secs = Math.max(0, Math.round((now - at) / 1000))
   const text = secs < 5 ? 'just now' : secs < 90 ? `${secs}s ago` : `${Math.round(secs / 60)}m ago`
   return <span className="text-xs text-muted">updated {text}</span>
 }

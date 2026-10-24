@@ -69,8 +69,7 @@ export function statementRanges(text: string, dialect: SqlDialect): StatementRan
       const prefix = text[i - 1]
       const escapes =
         c !== '`' &&
-        (dialect === 'mysql' ||
-          (c === "'" && (prefix === 'E' || prefix === 'e') && !identChar.test(text[i - 2] ?? '')))
+        (dialect === 'mysql' || (c === "'" && (prefix === 'E' || prefix === 'e') && !identChar.test(text[i - 2] ?? '')))
       let j = i + 1
       while (j < n) {
         if (escapes && text[j] === '\\') j += 2

@@ -109,7 +109,8 @@ export function ServiceDetail({
           )}
         </div>
       ) : ownTab && Console ? (
-        <div className="flex min-h-0 flex-1 flex-col px-6 py-6">
+        // The console fills the sheet edge to edge; its own lines divide it.
+        <div className="flex min-h-0 flex-1 flex-col">
           <Suspense fallback={<Spinner label="Opening the console…" />}>
             <Console space={space} service={service} protocol={entry.protocol} tab={shown} />
           </Suspense>
@@ -282,7 +283,15 @@ function Command({ text }: { text: string }) {
 }
 
 // Settings: what the service is, and the way to remove it.
-function ServiceSettings({ space, entry, onRemoved }: { space: string; entry: SpaceAddonEntry; onRemoved: () => void }) {
+function ServiceSettings({
+  space,
+  entry,
+  onRemoved,
+}: {
+  space: string
+  entry: SpaceAddonEntry
+  onRemoved: () => void
+}) {
   const [removing, setRemoving] = useState(false)
   const parameters = Object.entries(entry.parameters ?? {}).filter(([, v]) => v !== undefined && v !== null && v !== '')
   return (

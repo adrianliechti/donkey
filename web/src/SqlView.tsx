@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent, type ReactNode } from 'react'
 import { useMutation } from '@tanstack/react-query'
+import { Menu, MenuButton, MenuItem, MenuItems } from '@headlessui/react'
 import { Download, History, PanelRight, Play, Trash2, TriangleAlert } from 'lucide-react'
 import { saveBlob, type DbQueryResult } from './api'
 import { DataGrid, type GridCell, type GridColumn, type GridSort } from './DataGrid'
@@ -7,13 +8,14 @@ import { SqlCellPanel } from './SqlCellPanel'
 import { SqlEditor } from './SqlEditor'
 import { onlyReads, plural, statementAt, statements, toCsv, type SqlCell, type SqlDialect } from './sqlText'
 import { useNow } from './hooks'
-import { Button, Callout, ErrorNote, Eyebrow, IconButton, Spinner, Toolbar } from './ui'
+import { Button, Callout, ErrorNote, IconButton, Spinner, Toolbar } from './ui'
 import { ago, errText } from './format'
 
-// The Query tab, for Postgres, MySQL and Trino alike: the context pickers
-// and the history on the left, the editor over the results on the right.
-// What is typed, the history and the editor's height stay in this browser
-// (localStorage, per service) — conveniences, so every access may fail.
+// The SQL editor of the database and Trino consoles: the editor over the
+// results, in the main pane beside the table list, with what ran lately a
+// menu away. What is typed, the history and the editor's height stay in this
+// browser (localStorage, per service) — conveniences, so every access may
+// fail.
 
 const historySize = 50
 const maxRemembered = 20_000
@@ -50,7 +52,6 @@ class StatementError extends Error {
 export function SqlWorkbench({
   storageKey,
   dialect,
-  context,
   target,
   run,
   onWrote,
@@ -59,14 +60,12 @@ export function SqlWorkbench({
   /** `${space}/${service}` — whose draft and history these are. */
   storageKey: string
   dialect: SqlDialect
-  /** The database (or catalog) and schema pickers, atop the sidebar. */
-  context: ReactNode
   /** What a statement runs against, in words: "app · public". */
   target: string
   run: (sql: string, signal: AbortSignal) => Promise<DbQueryResult>
   /** After a statement that may have changed something. */
   onWrote?: () => void
-  /** Text handed over from elsewhere (the Data tab's "write it in SQL"). */
+  /** Text handed over from elsewhere ("write it in SQL", "query this table"). */
   seed?: { sql: string; n: number }
 }) {
   const draftKey = `donkey.sql.draft:${storageKey}`
@@ -129,7 +128,14 @@ export function SqlWorkbench({
       { list, signal: controller.signal },
       {
         onSuccess: ({ result, ms }) =>
-          remember({ sql, at: new Date().toISOString(), target, ok: true, rows: result.rows.length, ms: Math.round(ms) }),
+          remember({
+            sql,
+            at: new Date().toISOString(),
+            target,
+            ok: true,
+            rows: result.rows.length,
+            ms: Math.round(ms),
+          }),
         onError: (err) =>
           !controller.signal.aborted &&
           remember({
@@ -171,103 +177,91 @@ export function SqlWorkbench({
   const cancelled = execution.isError && execution.variables?.signal.aborted
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-4 md:flex-row">
-      <aside className="flex max-h-64 shrink-0 flex-col overflow-hidden rounded-lg border border-line md:max-h-none md:w-64">
-        <div className="shrink-0 space-y-3 border-b border-line p-3">{context}</div>
-        <div className="flex h-10 shrink-0 items-center justify-between pr-1.5 pl-3">
-          <Eyebrow>History</Eyebrow>
-          {history.length > 0 && (
-            <IconButton
-              icon={Trash2}
-              size="sm"
-              label="Forget the history"
-              onClick={() => {
-                setHistory([])
-                store(historyKey, [])
-              }}
-            />
-          )}
-        </div>
-        <HistoryList
-          entries={history}
-          onPick={(entry) => {
-            setText(entry.sql)
-            editor.current?.focus()
-          }}
-        />
-      </aside>
-
-      <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-lg border border-line">
-        <div className="flex h-11 shrink-0 items-center justify-between gap-3 border-b border-line pr-2 pl-3">
-          <p className="min-w-0 truncate text-xs text-muted">
-            Runs against <span className="font-mono text-ink-soft">{target}</span>
-          </p>
-          <Toolbar className="gap-2">
-            <span className="hidden text-[11px] text-muted lg:inline">
-              <Kbd>⌘↵</Kbd> selection or all · <Kbd>⇧⌘↵</Kbd> statement at cursor
-            </span>
-            {execution.isPending && (
-              <Button kind="quiet" size="sm" onClick={() => pending.current?.abort()}>
-                Cancel
-              </Button>
-            )}
-            <Button
-              size="sm"
-              icon={Play}
-              disabled={execution.isPending || !text.trim()}
-              onClick={() => runFrom('selection', editor.current)}
-              title="Run the selection, or everything (⌘↵)"
-            >
-              {execution.isPending ? 'Running…' : 'Run'}
-            </Button>
-          </Toolbar>
-        </div>
-
-        <div className="flex shrink-0 flex-col" style={{ height }}>
-          <SqlEditor
-            textareaRef={editor}
-            value={text}
-            onChange={setText}
-            onRun={runFrom}
-            label={`SQL against ${target}`}
-            placeholder={placeholders[dialect]}
+    <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+      <div className="flex h-11 shrink-0 items-center justify-between gap-3 border-b border-line pr-2 pl-3">
+        <p className="min-w-0 truncate text-xs text-muted">
+          Runs against <span className="font-mono text-ink-soft">{target}</span>
+        </p>
+        <Toolbar className="gap-2">
+          <span className="hidden text-[11px] text-muted lg:inline">
+            <Kbd>⌘↵</Kbd> selection or all · <Kbd>⇧⌘↵</Kbd> statement at cursor
+          </span>
+          <HistoryMenu
+            entries={history}
+            onPick={(entry) => {
+              setText(entry.sql)
+              editor.current?.focus()
+            }}
+            onForget={() => {
+              setHistory([])
+              store(historyKey, [])
+            }}
           />
-        </div>
-        <div
-          role="separator"
-          aria-orientation="horizontal"
-          aria-label="Resize the editor"
-          onPointerDown={(e) => {
-            e.preventDefault()
-            e.currentTarget.setPointerCapture(e.pointerId)
-            resize.current = { y: e.clientY, height }
-          }}
-          onPointerMove={onResizeMove}
-          onPointerUp={() => {
-            resize.current = null
-            store('donkey.sql.editor-height', height)
-          }}
-          className="h-1.5 shrink-0 cursor-row-resize border-y border-line bg-raised/60 transition-colors hover:bg-accent/30"
-        />
+          {execution.isPending && (
+            <Button kind="quiet" size="sm" onClick={() => pending.current?.abort()}>
+              Cancel
+            </Button>
+          )}
+          <Button
+            size="sm"
+            icon={Play}
+            disabled={execution.isPending || !text.trim()}
+            onClick={() => runFrom('selection', editor.current)}
+            title="Run the selection, or everything (⌘↵)"
+          >
+            {execution.isPending ? 'Running…' : 'Run'}
+          </Button>
+        </Toolbar>
+      </div>
 
-        {execution.isPending ? (
-          <Running onCancel={() => pending.current?.abort()} />
-        ) : cancelled ? (
-          <Idle>Cancelled — nothing came back.</Idle>
-        ) : execution.isError ? (
-          <div className="min-h-0 flex-1 overflow-auto p-3">
-            <ErrorNote message={errText(execution.error, 'The statement failed.')} />
-          </div>
-        ) : execution.data ? (
-          <Results key={execution.submittedAt} outcome={execution.data} fileName={`${storageKey.split('/').pop()}-query.csv`} />
-        ) : (
-          <Idle>
-            Results show up here. <Kbd>⌘↵</Kbd> runs the selection or everything, one statement at a time;{' '}
-            <Kbd>⇧⌘↵</Kbd> just the statement at the cursor.
-          </Idle>
-        )}
-      </section>
-    </div>
+      <div className="flex shrink-0 flex-col" style={{ height }}>
+        <SqlEditor
+          textareaRef={editor}
+          value={text}
+          onChange={setText}
+          onRun={runFrom}
+          label={`SQL against ${target}`}
+          placeholder={placeholders[dialect]}
+        />
+      </div>
+      <div
+        role="separator"
+        aria-orientation="horizontal"
+        aria-label="Resize the editor"
+        onPointerDown={(e) => {
+          e.preventDefault()
+          e.currentTarget.setPointerCapture(e.pointerId)
+          resize.current = { y: e.clientY, height }
+        }}
+        onPointerMove={onResizeMove}
+        onPointerUp={() => {
+          resize.current = null
+          store('donkey.sql.editor-height', height)
+        }}
+        className="h-1.5 shrink-0 cursor-row-resize border-y border-line bg-raised/60 transition-colors hover:bg-accent/30"
+      />
+
+      {execution.isPending ? (
+        <Running onCancel={() => pending.current?.abort()} />
+      ) : cancelled ? (
+        <Idle>Cancelled — nothing came back.</Idle>
+      ) : execution.isError ? (
+        <div className="min-h-0 flex-1 overflow-auto p-3">
+          <ErrorNote message={errText(execution.error, 'The statement failed.')} />
+        </div>
+      ) : execution.data ? (
+        <Results
+          key={execution.submittedAt}
+          outcome={execution.data}
+          fileName={`${storageKey.split('/').pop()}-query.csv`}
+        />
+      ) : (
+        <Idle>
+          Results show up here. <Kbd>⌘↵</Kbd> runs the selection or everything, one statement at a time; <Kbd>⇧⌘↵</Kbd>{' '}
+          just the statement at the cursor.
+        </Idle>
+      )}
+    </section>
   )
 }
 
@@ -298,40 +292,76 @@ function Running({ onCancel }: { onCancel: () => void }) {
   )
 }
 
-function HistoryList({ entries, onPick }: { entries: HistoryEntry[]; onPick: (entry: HistoryEntry) => void }) {
+// What ran lately, a menu away: picking one puts it back in the editor.
+function HistoryMenu({
+  entries,
+  onPick,
+  onForget,
+}: {
+  entries: HistoryEntry[]
+  onPick: (entry: HistoryEntry) => void
+  onForget: () => void
+}) {
   useNow(30_000)
-  if (entries.length === 0) {
-    return (
-      <p className="flex items-start gap-2 px-3 pb-3 text-xs leading-relaxed text-muted">
-        <History className="mt-0.5 size-3.5 shrink-0" aria-hidden />
-        What you run shows up here — the last {historySize}, in this browser.
-      </p>
-    )
-  }
   return (
-    <ul className="min-h-0 flex-1 overflow-y-auto pb-1">
-      {entries.map((entry) => (
-        <li key={`${entry.at}:${entry.sql}`}>
-          <button
-            type="button"
-            onClick={() => onPick(entry)}
-            title={entry.error ?? entry.sql}
-            className="block w-full px-3 py-1.5 text-left transition-colors hover:bg-line/40 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent-strong"
-          >
-            <code className="line-clamp-2 font-mono text-[11px] leading-snug break-all text-ink-soft">{entry.sql}</code>
-            <span className="mt-0.5 flex items-center gap-1.5 text-[10px] text-muted">
-              <span>{ago(entry.at)} ago</span>
-              {entry.ok ? (
-                entry.rows !== undefined && <span>{plural(entry.rows, 'row')}</span>
-              ) : (
-                <span className="text-danger">failed</span>
-              )}
-              <span className="min-w-0 truncate font-mono">{entry.target}</span>
-            </span>
-          </button>
-        </li>
-      ))}
-    </ul>
+    <Menu>
+      <MenuButton
+        title="Recent statements"
+        aria-label="Recent statements"
+        className="flex size-7 items-center justify-center rounded-md text-muted transition-colors hover:bg-line/60 hover:text-ink focus-visible:outline-2 focus-visible:outline-accent-strong data-open:bg-line/60 data-open:text-ink"
+      >
+        <History className="size-4" aria-hidden />
+      </MenuButton>
+      <MenuItems
+        anchor="bottom end"
+        className="z-50 w-[28rem] overflow-hidden rounded-lg border border-line bg-card shadow-xl [--anchor-gap:6px] focus:outline-none"
+      >
+        {entries.length === 0 ? (
+          <p className="px-3 py-3 text-xs leading-relaxed text-muted">
+            What you run shows up here — the last {historySize}, in this browser.
+          </p>
+        ) : (
+          <>
+            <div className="max-h-96 overflow-y-auto py-1">
+              {entries.map((entry) => (
+                <MenuItem key={`${entry.at}:${entry.sql}`}>
+                  <button
+                    type="button"
+                    onClick={() => onPick(entry)}
+                    title={entry.error ?? entry.sql}
+                    className="block w-full px-3 py-1.5 text-left data-focus:bg-accent-soft"
+                  >
+                    <code className="line-clamp-2 font-mono text-[11px] leading-snug break-all text-ink-soft">
+                      {entry.sql}
+                    </code>
+                    <span className="mt-0.5 flex items-center gap-1.5 text-[10px] text-muted">
+                      <span>{ago(entry.at)} ago</span>
+                      {entry.ok ? (
+                        entry.rows !== undefined && <span>{plural(entry.rows, 'row')}</span>
+                      ) : (
+                        <span className="text-danger">failed</span>
+                      )}
+                      <span className="min-w-0 truncate font-mono">{entry.target}</span>
+                    </span>
+                  </button>
+                </MenuItem>
+              ))}
+            </div>
+            <div className="border-t border-line p-1">
+              <MenuItem>
+                <button
+                  type="button"
+                  onClick={onForget}
+                  className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-muted data-focus:bg-danger/10 data-focus:text-danger"
+                >
+                  <Trash2 className="size-3.5" aria-hidden /> Forget the history
+                </button>
+              </MenuItem>
+            </div>
+          </>
+        )}
+      </MenuItems>
+    </Menu>
   )
 }
 
@@ -341,7 +371,10 @@ const numberLike = /^-?\d+(\.\d+)?(e[+-]?\d+)?$/i
 
 function resultColumns(result: DbQueryResult): GridColumn[] {
   return result.columns.map((name, i) => {
-    const sample = result.rows.slice(0, 100).map((r) => r[i]).filter((v): v is string => v !== null)
+    const sample = result.rows
+      .slice(0, 100)
+      .map((r) => r[i])
+      .filter((v): v is string => v !== null)
     return { name, numeric: sample.length > 0 && sample.every((v) => numberLike.test(v)) }
   })
 }
@@ -409,8 +442,8 @@ function Results({ outcome, fileName }: { outcome: Outcome; fileName: string }) 
       </div>
       {result.truncated && (
         <Callout tone="warning" icon={TriangleAlert} className="m-2 mb-0 py-2 text-xs">
-          Only the first {plural(rows.length, 'row')} came back — add a <code className="font-mono">limit</code>, or narrow
-          the query, to see the ones you are after.
+          Only the first {plural(rows.length, 'row')} came back — add a <code className="font-mono">limit</code>, or
+          narrow the query, to see the ones you are after.
         </Callout>
       )}
       <div className="flex min-h-0 flex-1">

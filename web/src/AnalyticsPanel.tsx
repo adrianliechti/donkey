@@ -88,7 +88,16 @@ const GROUPS: { title: string; dimensions: AnalyticsDimension[] }[] = [
   { title: 'Technology', dimensions: ['browser', 'os', 'device'] },
 ]
 // Identifiers — paths, event names, hosts — are mono, like everywhere else.
-const MONO: AnalyticsDimension[] = ['path', 'entry', 'exit', 'referrer', 'event', 'utm_source', 'utm_medium', 'utm_campaign']
+const MONO: AnalyticsDimension[] = [
+  'path',
+  'entry',
+  'exit',
+  'referrer',
+  'event',
+  'utm_source',
+  'utm_medium',
+  'utm_campaign',
+]
 
 const SNIPPET = '<script defer src="/_donkey/s.js"></script>'
 const TRACK_EXAMPLE = `// from code
@@ -277,7 +286,9 @@ function FilterBar({
           className={`inline-flex max-w-full items-center gap-1.5 rounded-md bg-accent-soft/60 py-1 pl-2 pr-1.5 text-xs text-ink transition-colors hover:bg-accent-soft ${focusRing}`}
         >
           <span className="text-muted">{DIMENSION_LABEL[f.dimension]}</span>
-          <span className={`truncate ${MONO.includes(f.dimension) ? 'font-mono' : ''}`}>{valueText(f.dimension, f.value)}</span>
+          <span className={`truncate ${MONO.includes(f.dimension) ? 'font-mono' : ''}`}>
+            {valueText(f.dimension, f.value)}
+          </span>
           <X className="size-3.5 shrink-0 text-muted" aria-hidden />
         </button>
       ))}
@@ -311,11 +322,26 @@ const KPIS: Kpi[] = [
   { label: 'Visits', value: (t) => t.visits, format: (n) => integer.format(n) },
   { label: 'Pageviews', value: (t) => t.pageviews, format: (n) => integer.format(n) },
   { label: 'Views per visit', value: (t) => t.viewsPerVisit, format: (n) => n.toFixed(1), perVisit: true },
-  { label: 'Bounce rate', value: (t) => t.bounceRate, format: (n) => `${percent.format(n)}%`, lowerIsBetter: true, points: true, perVisit: true },
+  {
+    label: 'Bounce rate',
+    value: (t) => t.bounceRate,
+    format: (n) => `${percent.format(n)}%`,
+    lowerIsBetter: true,
+    points: true,
+    perVisit: true,
+  },
   { label: 'Visit duration', value: (t) => t.visitDurationSeconds, format: duration, perVisit: true },
 ]
 
-function Kpis({ totals, previous, range }: { totals: AnalyticsTotals; previous?: AnalyticsTotals; range: TrafficRange }) {
+function Kpis({
+  totals,
+  previous,
+  range,
+}: {
+  totals: AnalyticsTotals
+  previous?: AnalyticsTotals
+  range: TrafficRange
+}) {
   const empty = totals.visits === 0
   return (
     <div className="space-y-1.5">
@@ -369,7 +395,9 @@ function EmptyState({ filtered, onClear }: { filtered: boolean; onClear: () => v
   return (
     <div className="flex flex-col items-center gap-2 py-8 text-center">
       <ChartColumn className="size-5 text-muted" aria-hidden />
-      <p className="text-sm text-ink-soft">{filtered ? 'No visits match these filters.' : 'No visits in this range yet.'}</p>
+      <p className="text-sm text-ink-soft">
+        {filtered ? 'No visits match these filters.' : 'No visits in this range yet.'}
+      </p>
       {filtered ? (
         <Button kind="quiet" size="sm" onClick={onClear}>
           Clear filters
@@ -405,7 +433,15 @@ function VisitsChart({ series, granularity }: { series: AnalyticsPoint[]; granul
     const last = series.length - 1
     const from = active ?? last
     const next =
-      e.key === 'ArrowLeft' ? from - 1 : e.key === 'ArrowRight' ? from + 1 : e.key === 'Home' ? 0 : e.key === 'End' ? last : null
+      e.key === 'ArrowLeft'
+        ? from - 1
+        : e.key === 'ArrowRight'
+          ? from + 1
+          : e.key === 'Home'
+            ? 0
+            : e.key === 'End'
+              ? last
+              : null
     if (next === null) return
     e.preventDefault()
     setActive(Math.min(last, Math.max(0, next)))
@@ -416,8 +452,14 @@ function VisitsChart({ series, granularity }: { series: AnalyticsPoint[]; granul
       <div className="flex items-center justify-between gap-3">
         <Eyebrow>Visitors and pageviews by {granularity}</Eyebrow>
         <span className="flex items-center gap-3 text-[11px] text-muted">
-          <span className="flex items-center gap-1"><i className="inline-block size-2 rounded-sm bg-chart-visitors" />visitors</span>
-          <span className="flex items-center gap-1"><i className="inline-block size-2 rounded-sm bg-chart-views" />pageviews</span>
+          <span className="flex items-center gap-1">
+            <i className="inline-block size-2 rounded-sm bg-chart-visitors" />
+            visitors
+          </span>
+          <span className="flex items-center gap-1">
+            <i className="inline-block size-2 rounded-sm bg-chart-views" />
+            pageviews
+          </span>
         </span>
       </div>
 
@@ -425,7 +467,9 @@ function VisitsChart({ series, granularity }: { series: AnalyticsPoint[]; granul
         {/* Recessive scale: the top and the middle, nothing more. */}
         <div className="relative h-40 w-8 shrink-0 font-mono text-[10px] tabular-nums text-muted" aria-hidden>
           <span className="absolute right-0 top-0 -translate-y-1/2">{compact.format(top)}</span>
-          {Number.isInteger(half) && <span className="absolute right-0 top-1/2 -translate-y-1/2">{compact.format(half)}</span>}
+          {Number.isInteger(half) && (
+            <span className="absolute right-0 top-1/2 -translate-y-1/2">{compact.format(half)}</span>
+          )}
           <span className="absolute bottom-0 right-0 translate-y-1/2">0</span>
         </div>
         <div className="relative min-w-0 flex-1">
@@ -468,7 +512,12 @@ function VisitsChart({ series, granularity }: { series: AnalyticsPoint[]; granul
       <table className="sr-only">
         <caption>Visitors, visits and pageviews per {granularity}</caption>
         <thead>
-          <tr><th scope="col">{granularity}</th><th scope="col">Visitors</th><th scope="col">Visits</th><th scope="col">Pageviews</th></tr>
+          <tr>
+            <th scope="col">{granularity}</th>
+            <th scope="col">Visitors</th>
+            <th scope="col">Visits</th>
+            <th scope="col">Pageviews</th>
+          </tr>
         </thead>
         <tbody>
           {series.map((p) => (
@@ -493,7 +542,15 @@ function Bar({ value, top, tone }: { value: number; top: number; tone: string })
   return <span className={`absolute inset-x-0 bottom-0 rounded-t-[4px] ${tone}`} style={{ height: `${height}%` }} />
 }
 
-function ChartTooltip({ point, granularity, position }: { point: AnalyticsPoint; granularity: 'hour' | 'day'; position: number }) {
+function ChartTooltip({
+  point,
+  granularity,
+  position,
+}: {
+  point: AnalyticsPoint
+  granularity: 'hour' | 'day'
+  position: number
+}) {
   // Kept inside the plot: near either edge it hangs from that edge instead
   // of centring on the column.
   const align = position < 0.2 ? 'translate-x-0' : position > 0.8 ? '-translate-x-full' : '-translate-x-1/2'
@@ -546,7 +603,8 @@ function BreakdownCard({
   const active = filters.find((f) => f.dimension === dimension)?.value
   // Shares are of the whole, not of the leader: bars across a card add up
   // to what the headline numbers say.
-  const whole = dimension === 'path' ? report.totals.pageviews : dimension === 'event' ? report.totals.events : report.totals.visits
+  const whole =
+    dimension === 'path' ? report.totals.pageviews : dimension === 'event' ? report.totals.events : report.totals.visits
   const countLabel = dimension === 'path' ? 'Views' : dimension === 'event' ? 'Count' : 'Visits'
 
   return (
@@ -632,7 +690,11 @@ function BreakdownRow({
         type="button"
         onClick={onFilter}
         disabled={active}
-        title={active ? `Filtered by this ${DIMENSION_LABEL[dimension].toLowerCase()}` : `${text} — ${percent.format(share)}% · click to filter`}
+        title={
+          active
+            ? `Filtered by this ${DIMENSION_LABEL[dimension].toLowerCase()}`
+            : `${text} — ${percent.format(share)}% · click to filter`
+        }
         className={`group relative flex w-full items-center gap-2 px-3 py-1 text-left text-sm transition-colors hover:bg-line/30 disabled:cursor-default ${focusRing} focus-visible:-outline-offset-2`}
       >
         <span
@@ -641,8 +703,12 @@ function BreakdownRow({
           aria-hidden
         />
         <ValueLabel dimension={dimension} value={row.value} text={text} />
-        <span className="relative w-16 shrink-0 text-right font-mono text-xs tabular-nums text-muted">{integer.format(row.visitors)}</span>
-        <span className="relative w-14 shrink-0 text-right font-mono text-xs tabular-nums text-ink">{integer.format(row.count)}</span>
+        <span className="relative w-16 shrink-0 text-right font-mono text-xs tabular-nums text-muted">
+          {integer.format(row.visitors)}
+        </span>
+        <span className="relative w-14 shrink-0 text-right font-mono text-xs tabular-nums text-ink">
+          {integer.format(row.count)}
+        </span>
       </button>
     </li>
   )
@@ -662,10 +728,22 @@ function EventProperties({ properties }: { properties: AnalyticsEventProperty[] 
                 {property.values.map((v) => {
                   const share = total > 0 ? (v.count / total) * 100 : 0
                   return (
-                    <li key={v.value} className="relative flex items-center gap-2 py-0.5 text-xs" title={`${percent.format(share)}%`}>
-                      <span className="absolute inset-y-0 left-0 rounded-sm bg-accent/10" style={{ width: `${share}%` }} aria-hidden />
-                      <span className="relative min-w-0 flex-1 truncate pl-1 font-mono text-ink">{v.value || <span className="text-muted">(empty)</span>}</span>
-                      <span className="relative shrink-0 pr-1 font-mono tabular-nums text-ink">{integer.format(v.count)}</span>
+                    <li
+                      key={v.value}
+                      className="relative flex items-center gap-2 py-0.5 text-xs"
+                      title={`${percent.format(share)}%`}
+                    >
+                      <span
+                        className="absolute inset-y-0 left-0 rounded-sm bg-accent/10"
+                        style={{ width: `${share}%` }}
+                        aria-hidden
+                      />
+                      <span className="relative min-w-0 flex-1 truncate pl-1 font-mono text-ink">
+                        {v.value || <span className="text-muted">(empty)</span>}
+                      </span>
+                      <span className="relative shrink-0 pr-1 font-mono tabular-nums text-ink">
+                        {integer.format(v.count)}
+                      </span>
                     </li>
                   )
                 })}
@@ -685,7 +763,9 @@ function ValueLabel({ dimension, value, text }: { dimension: AnalyticsDimension;
   return (
     <span className="relative flex min-w-0 flex-1 items-center gap-1.5">
       {Icon && <Icon className="size-3.5 shrink-0 text-muted" aria-hidden />}
-      <span className={`truncate ${value ? 'text-ink' : 'text-muted'} ${MONO.includes(dimension) && value ? 'font-mono text-xs' : ''}`}>
+      <span
+        className={`truncate ${value ? 'text-ink' : 'text-muted'} ${MONO.includes(dimension) && value ? 'font-mono text-xs' : ''}`}
+      >
         {text}
       </span>
     </span>
@@ -703,7 +783,8 @@ function HowItsCounted({ report }: { report: AnalyticsReport | null }) {
           donkey-gateway adds one small script to the <code className="font-mono">&lt;head&gt;</code> of this app’s HTML
           pages. It sets no cookie and stores no IP address, user agent or query string: an anonymous visitor is a hash
           that changes every day, a signed-in one a hash of the sign-in that only this app’s numbers use. Navigations
-          inside a single-page app count as pageviews, and links to other sites as <code className="font-mono">outbound-link</code> events.
+          inside a single-page app count as pageviews, and links to other sites as{' '}
+          <code className="font-mono">outbound-link</code> events.
         </p>
         {definitions && (
           <dl className="grid gap-x-4 gap-y-1.5 sm:grid-cols-[max-content_1fr]">

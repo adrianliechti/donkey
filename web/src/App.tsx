@@ -257,8 +257,7 @@ const appRoute = createRoute({
     files: search.files === true || search.files === 1 || search.files === '1' ? 1 : undefined,
     path: typeof search.path === 'string' && search.path ? search.path : undefined,
   }),
-  loader: ({ context, params }) =>
-    context.queryClient.ensureQueryData(statusQuery(params.space, params.name)),
+  loader: ({ context, params }) => context.queryClient.ensureQueryData(statusQuery(params.space, params.name)),
   head: ({ params }) => ({ meta: [{ title: pageTitle(params.name) }] }),
   component: () => {
     const { space, name, tab } = appRoute.useParams()

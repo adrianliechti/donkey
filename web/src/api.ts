@@ -862,13 +862,11 @@ export const api = {
     const st = await request<AppStatus>(appPath(space, app, '/status'))
     return { ...st, pods: st.pods ?? [] }
   },
-  builds: (space: string, app: string) =>
-    request<{ builds: BuildSummary[] }>(appPath(space, app, '/builds')),
+  builds: (space: string, app: string) => request<{ builds: BuildSummary[] }>(appPath(space, app, '/builds')),
   build: (space: string, app: string, sequence: number) =>
     request<AppRelease>(appPath(space, app, `/builds/${sequence}`)),
 
-  commits: (space: string, app: string) =>
-    request<{ commits: SourceCommit[] }>(appPath(space, app, '/commits')),
+  commits: (space: string, app: string) => request<{ commits: SourceCommit[] }>(appPath(space, app, '/commits')),
   commit: (space: string, app: string, id: string) =>
     request<SourceCommitDetail>(appPath(space, app, `/commits/${id}`)),
   commitDiff: (space: string, app: string, id: string, path: string) =>
@@ -887,17 +885,10 @@ export const api = {
     downloadBlob(appPath(space, app, `/commits/${id}/file?path=${encodeURIComponent(path)}&download=true`)),
   downloadArchive: (space: string, app: string, id: string) =>
     downloadBlob(appPath(space, app, `/commits/${id}/archive`)),
-  traffic: (
-    space: string,
-    app: string,
-    source: TrafficSource = 'edge',
-    range: TrafficRange = '30d',
-  ) => {
+  traffic: (space: string, app: string, source: TrafficSource = 'edge', range: TrafficRange = '30d') => {
     const query = `?source=${source}&range=${range}`
     return request<TrafficReport>(
-      app
-        ? `${appPath(space, app, '/traffic')}${query}`
-        : `/v1/spaces/${encodeURIComponent(space)}/traffic${query}`,
+      app ? `${appPath(space, app, '/traffic')}${query}` : `/v1/spaces/${encodeURIComponent(space)}/traffic${query}`,
     )
   },
   resources: (space: string, app: string, range: ResourceRange = '4h') =>
@@ -924,8 +915,7 @@ export const api = {
     const live = await request<AnalyticsLive>(appPath(space, app, '/analytics/live'))
     return { ...live, pages: live.pages ?? [] }
   },
-  env: (space: string, app: string) =>
-    request<{ env: Record<string, string> }>(appPath(space, app, '/env')),
+  env: (space: string, app: string) => request<{ env: Record<string, string> }>(appPath(space, app, '/env')),
   setEnv: (space: string, app: string, env: Record<string, string>, restart: boolean) =>
     request<{ restarted: boolean; count: number }>(appPath(space, app, '/env'), {
       method: 'PUT',
@@ -946,7 +936,8 @@ export const api = {
   platformConfig: () => request<PlatformConfig>('/v1/platform/settings'),
   setPlatformConfig: (settings: PlatformConfig) =>
     request<PlatformConfig>('/v1/platform/settings', {
-      method: 'PUT', body: JSON.stringify(settings),
+      method: 'PUT',
+      body: JSON.stringify(settings),
     }),
   spaces: () => request<SpaceList>('/v1/spaces'),
   createSpace: (name: string, settings: SpaceConfig) =>
@@ -954,17 +945,17 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ name, ...settings }),
     }),
-  spaceConfig: (space: string) =>
-    request<SpaceConfig>(`/v1/spaces/${encodeURIComponent(space)}/settings`),
+  spaceConfig: (space: string) => request<SpaceConfig>(`/v1/spaces/${encodeURIComponent(space)}/settings`),
   setSpaceConfig: (space: string, settings: SpaceConfig) =>
     request<SpaceConfig>(`/v1/spaces/${encodeURIComponent(space)}/settings`, {
-      method: 'PUT', body: JSON.stringify(settings),
+      method: 'PUT',
+      body: JSON.stringify(settings),
     }),
   // Removes the entire space boundary, including apps, services, and data.
   deleteSpace: (space: string) =>
     request<{ ok: boolean }>(`/v1/spaces/${encodeURIComponent(space)}`, { method: 'DELETE' }),
-  addonTypes: (space?: string) => request<{ types: AddonType[] }>(space
-    ? `/v1/spaces/${encodeURIComponent(space)}/catalog` : '/v1/catalog'),
+  addonTypes: (space?: string) =>
+    request<{ types: AddonType[] }>(space ? `/v1/spaces/${encodeURIComponent(space)}/catalog` : '/v1/catalog'),
   // The binding with values: same authorization as the app env API.
   serviceBinding: (space: string, service: string) =>
     request<{ binding: Record<string, string>; host: string; port: number; type?: string; protocol?: string }>(
@@ -987,8 +978,7 @@ export const api = {
       `/v1/spaces/${encodeURIComponent(space)}/services/${encodeURIComponent(addon)}?keepData=${keepData}&orphan=${orphan}`,
       { method: 'DELETE' },
     ),
-  addons: (space: string, app: string) =>
-    request<{ addons: AddonEntry[] }>(appPath(space, app, '/services')),
+  addons: (space: string, app: string) => request<{ addons: AddonEntry[] }>(appPath(space, app, '/services')),
   // Connects the app; with a type it creates the space service first when
   // missing (which can take a minute — the request stays open throughout).
   addAddon: (space: string, app: string, req: AddAddonRequest) =>
@@ -1003,8 +993,7 @@ export const api = {
     }),
   // diagnose asks the assistant to read the app's current evidence — this
   // can take a while (a model call with real logs behind it).
-  diagnose: (space: string, app: string) =>
-    request<Diagnosis>(appPath(space, app, '/diagnose'), { method: 'POST' }),
+  diagnose: (space: string, app: string) => request<Diagnosis>(appPath(space, app, '/diagnose'), { method: 'POST' }),
 
   // The app's disk. Paths are relative to it, with no leading slash.
   files: (space: string, app: string, path: string) =>
@@ -1027,29 +1016,19 @@ export const api = {
     }),
   moveFile: (space: string, app: string, from: string, to: string) =>
     request<{ ok: boolean }>(
-      appPath(
-        space,
-        app,
-        `/files/move?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,
-      ),
+      appPath(space, app, `/files/move?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`),
       { method: 'POST' },
     ),
   makeFolder: (space: string, app: string, path: string) =>
-    request<{ ok: boolean }>(
-      appPath(space, app, `/files/folder?path=${encodeURIComponent(path)}`),
-      {
-        method: 'POST',
-      },
-    ),
+    request<{ ok: boolean }>(appPath(space, app, `/files/folder?path=${encodeURIComponent(path)}`), {
+      method: 'POST',
+    }),
 
   // plan uploads the project and asks the server to read it: how it would be
   // built, which port it listens on and why, what it needs, what will break.
   // Nothing is built and nothing on the cluster changes. It takes as long as
   // the assistant takes to read real code — tens of seconds is normal.
-  plan: async (
-    blob: Blob,
-    opts: { space?: string; name?: string; path?: string },
-  ): Promise<Plan> => {
+  plan: async (blob: Blob, opts: { space?: string; name?: string; path?: string }): Promise<Plan> => {
     const params = new URLSearchParams()
     if (opts.space) params.set('space', opts.space)
     if (opts.name) params.set('name', opts.name)
@@ -1071,10 +1050,7 @@ export const api = {
       body: JSON.stringify(edit),
     }),
 
-  projectPlan: async (
-    blob: Blob,
-    opts: { space?: string; name?: string },
-  ): Promise<ProjectPlan> => {
+  projectPlan: async (blob: Blob, opts: { space?: string; name?: string }): Promise<ProjectPlan> => {
     const params = new URLSearchParams()
     if (opts.space) params.set('space', opts.space)
     if (opts.name) params.set('name', opts.name)

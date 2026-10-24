@@ -38,6 +38,8 @@ say "installing the control plane (real install command, demo settings)"
   --oidc-client-secret "donkey-demo-secret" \
   --openai-base-url "${AI_BASE}" \
   --openai-api-key "${AI_KEY}" \
+  --exa-base-url "${EXA_BASE}" \
+  --exa-api-key "${EXA_KEY}" \
   ${AI_MODEL:+--ai-model "${AI_MODEL}"}
 
 # The install applies the same :dev tag every time. Restart every service

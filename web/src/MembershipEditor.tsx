@@ -23,7 +23,13 @@ const roleOptions: { value: Role; label: string }[] = [
  * pick the role, add. Roles are quiet dropdowns, so the list reads as names
  * first; removing is the row's hover action.
  */
-export function MembershipEditor({ admins, developers, viewers, onChange, emptyText = 'No members yet. Platform admins always have access.' }: {
+export function MembershipEditor({
+  admins,
+  developers,
+  viewers,
+  onChange,
+  emptyText = 'No members yet. Platform admins always have access.',
+}: {
   admins: AccessConfig
   developers?: AccessConfig
   viewers?: AccessConfig
@@ -64,40 +70,91 @@ export function MembershipEditor({ admins, developers, viewers, onChange, emptyT
     <div className="space-y-2">
       <List>
         {members.length === 0 && (
-          <ListRow><span className="text-sm text-muted">{emptyText}</span></ListRow>
+          <ListRow>
+            <span className="text-sm text-muted">{emptyText}</span>
+          </ListRow>
         )}
         {members.map((member, index) => {
           const Icon = icons[member.kind]
           return (
-            <ListRow key={`${member.kind}:${member.value}:${member.role}`} actions={
-              <IconButton icon={X} size="sm" kind="danger" label={`Remove ${member.value}`}
-                onClick={() => update(members.filter((_, i) => i !== index))} />
-            }>
+            <ListRow
+              key={`${member.kind}:${member.value}:${member.role}`}
+              actions={
+                <IconButton
+                  icon={X}
+                  size="sm"
+                  kind="danger"
+                  label={`Remove ${member.value}`}
+                  onClick={() => update(members.filter((_, i) => i !== index))}
+                />
+              }
+            >
               {/* The icon says what kind of member this is; a tooltip spells it out. */}
               <Icon className="size-4 shrink-0 text-muted" aria-label={labels[member.kind]} />
-              <span className="min-w-0 flex-1 truncate text-sm" title={`${member.value} · ${labels[member.kind]}`}>{member.value}</span>
+              <span className="min-w-0 flex-1 truncate text-sm" title={`${member.value} · ${labels[member.kind]}`}>
+                {member.value}
+              </span>
               {developers && (
-                <Select<Role> variant="quiet" ariaLabel={`Role for ${member.value}`} value={member.role}
+                <Select<Role>
+                  variant="quiet"
+                  ariaLabel={`Role for ${member.value}`}
+                  value={member.role}
                   onChange={(role) => update(members.map((m, i) => (i === index ? { ...m, role } : m)))}
-                  options={roleOptions} className="w-32" />
+                  options={roleOptions}
+                  className="w-32"
+                />
               )}
             </ListRow>
           )
         })}
         {/* The add row: the same shape as a member row, before it exists. */}
-        <ListRow className="bg-surface/40" actions={<IconButton icon={Plus} size="sm" label="Add member" onClick={add} disabled={!value.trim()} />}>
+        <ListRow
+          className="bg-surface/40"
+          actions={<IconButton icon={Plus} size="sm" label="Add member" onClick={add} disabled={!value.trim()} />}
+        >
           <KindIcon className="size-4 shrink-0 text-muted" aria-hidden />
-          <Select<Kind> variant="quiet" ariaLabel="Member type" value={kind} onChange={setKind}
-            options={kinds.map((kind) => ({ value: kind, label: labels[kind] }))} className="w-20 shrink-0" />
-          <Input bare aria-label="Member identity" value={value} onChange={(e) => setValue(e.target.value)}
-            placeholder={placeholders[kind]} autoCapitalize="none" spellCheck={false} className="flex-1 font-sans"
-            onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); add() } }} />
+          <Select<Kind>
+            variant="quiet"
+            ariaLabel="Member type"
+            value={kind}
+            onChange={setKind}
+            options={kinds.map((kind) => ({ value: kind, label: labels[kind] }))}
+            className="w-20 shrink-0"
+          />
+          <Input
+            bare
+            aria-label="Member identity"
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            placeholder={placeholders[kind]}
+            autoCapitalize="none"
+            spellCheck={false}
+            className="flex-1 font-sans"
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault()
+                add()
+              }
+            }}
+          />
           {developers && (
-            <Select<Role> variant="quiet" ariaLabel="New member role" value={role} onChange={setRole} options={roleOptions} className="w-32" />
+            <Select<Role>
+              variant="quiet"
+              ariaLabel="New member role"
+              value={role}
+              onChange={setRole}
+              options={roleOptions}
+              className="w-32"
+            />
           )}
         </ListRow>
       </List>
-      {developers && <p className="text-xs leading-relaxed text-muted">Space admins manage members and settings. Developers manage apps and services. Viewers open apps and see health and metrics; logs, build history and settings stay private.</p>}
+      {developers && (
+        <p className="text-xs leading-relaxed text-muted">
+          Space admins manage members and settings. Developers manage apps and services. Viewers open apps and see
+          health and metrics; logs, build history and settings stay private.
+        </p>
+      )}
     </div>
   )
 }

@@ -125,6 +125,15 @@ export const analyticsLiveQuery = (space: string, app: string) =>
     refetchInterval: 15_000,
   })
 
+// One folder of the app's disk. An app without a disk answers with an error
+// that says so — the files tab reads it as "nothing to show", not a failure.
+export const filesQuery = (space: string, app: string, path: string) =>
+  queryOptions({
+    queryKey: ['files', space, app, path],
+    queryFn: () => api.files(space, app, path),
+    retry: false,
+  })
+
 export const networkQuery = (space: string, app: string) =>
   queryOptions({
     queryKey: ['network', space, app],
@@ -182,11 +191,12 @@ export const catalogQuery = queryOptions({
   staleTime: 30 * 1000,
 })
 
-export const spaceCatalogQuery = (space: string) => queryOptions({
-  queryKey: ['catalog', space],
-  queryFn: async () => (await api.addonTypes(space)).types ?? [],
-  staleTime: 30 * 1000,
-})
+export const spaceCatalogQuery = (space: string) =>
+  queryOptions({
+    queryKey: ['catalog', space],
+    queryFn: async () => (await api.addonTypes(space)).types ?? [],
+    staleTime: 30 * 1000,
+  })
 
 // present maps a query result into the shape the console's views grew up
 // with: data-or-null, a plain error sentence, when it was last fresh,
@@ -212,7 +222,10 @@ export function useFleet() {
 export function useDeploys() {
   const qc = useQueryClient()
   const q = useQuery(deploysQuery)
-  const running = (q.data ?? []).filter((d) => !d.finishedAt).map((d) => `${d.space}/${d.app}`).join(',')
+  const running = (q.data ?? [])
+    .filter((d) => !d.finishedAt)
+    .map((d) => `${d.space}/${d.app}`)
+    .join(',')
   const [seen, setSeen] = useState(running)
   if (seen !== running) {
     setSeen(running)

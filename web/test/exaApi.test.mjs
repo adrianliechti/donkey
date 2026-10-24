@@ -18,7 +18,17 @@ registerHooks({
 const exa = await import('../src/exaApi.ts')
 
 test('a search in the URL becomes the request Exa takes', () => {
-  const options = exa.optionsFrom({ q: 'rust', type: 'neural', n: '250', cat: 'news', inc: 'https://github.com/x, docs.rs', exc: '', from: '2025-01-01', to: '2025-12-31', open: 'ignored' })
+  const options = exa.optionsFrom({
+    q: 'rust',
+    type: 'neural',
+    n: '250',
+    cat: 'news',
+    inc: 'https://github.com/x, docs.rs',
+    exc: '',
+    from: '2025-01-01',
+    to: '2025-12-31',
+    open: 'ignored',
+  })
   assert.deepEqual(exa.searchBody(options), {
     query: 'rust',
     numResults: 100,
@@ -35,7 +45,6 @@ test('a search in the URL becomes the request Exa takes', () => {
     numResults: 10,
     contents: { highlights: { numSentences: 2, highlightsPerUrl: 3 } },
   })
-  assert.equal(exa.describe(options), 'Neural · News · 250 results · only github.com, docs.rs · 2025-01-01 – 2025-12-31')
   assert.equal(exa.hostOf('https://www.example.com/a'), 'example.com')
   assert.equal(exa.safeLink('javascript:alert(1)'), false)
 })

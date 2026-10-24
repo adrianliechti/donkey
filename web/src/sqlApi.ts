@@ -73,16 +73,20 @@ export const sqlDatabasesQuery = (space: string, service: string) =>
   queryOptions({
     queryKey: [...sqlKey(space, service), 'databases'],
     queryFn: ({ signal }) =>
-      request<{ databases: DbDatabase[]; default: string; protocol: string }>(servicePath(space, service, '/databases'), {
-        signal,
-      }),
+      request<{ databases: DbDatabase[]; default: string; protocol: string }>(
+        servicePath(space, service, '/databases'),
+        {
+          signal,
+        },
+      ),
     retry,
   })
 
 export const sqlSchemasQuery = (space: string, service: string, db: string) =>
   queryOptions({
     queryKey: [...sqlKey(space, service), 'schemas', db],
-    queryFn: ({ signal }) => request<{ schemas: string[]; default: string }>(dbPath(space, service, db, '/schemas'), { signal }),
+    queryFn: ({ signal }) =>
+      request<{ schemas: string[]; default: string }>(dbPath(space, service, db, '/schemas'), { signal }),
     retry,
   })
 
@@ -114,7 +118,8 @@ export const sqlRowsQuery = (p: SqlPlace, table: string, view: SqlPageView) =>
     queryFn: ({ signal }) => {
       const params: Record<string, string> = { limit: String(view.limit), offset: String(view.offset) }
       if (view.sort) Object.assign(params, { order: view.sort, dir: view.desc ? 'desc' : 'asc' })
-      if (view.filter) Object.assign(params, { where: view.filter.column, op: view.filter.op, value: view.filter.value })
+      if (view.filter)
+        Object.assign(params, { where: view.filter.column, op: view.filter.op, value: view.filter.value })
       return request<SqlPage>(tablePath(p, table, '/rows', params), { signal })
     },
     // Another page, order or filter of the same table keeps the rows on
@@ -126,11 +131,14 @@ export const sqlRowsQuery = (p: SqlPlace, table: string, view: SqlPageView) =>
 
 /** Runs one statement against a database (or Trino catalog) and schema. */
 export function runSql(space: string, service: string, db: string, schema: string, sql: string, signal?: AbortSignal) {
-  return request<DbQueryResult>(servicePath(space, service, db ? `/databases/${encodeURIComponent(db)}/query` : '/query'), {
-    method: 'POST',
-    body: JSON.stringify({ sql, schema: schema || undefined }),
-    signal,
-  })
+  return request<DbQueryResult>(
+    servicePath(space, service, db ? `/databases/${encodeURIComponent(db)}/query` : '/query'),
+    {
+      method: 'POST',
+      body: JSON.stringify({ sql, schema: schema || undefined }),
+      signal,
+    },
+  )
 }
 
 // ─── Writes ─────────────────────────────────────────────────────────────
@@ -191,13 +199,19 @@ export function useSqlRowWrite(p: SqlPlace, table: string, page: SqlPageView) {
         return
       }
       void qc.invalidateQueries({ queryKey: rowsKey(p, table), refetchType: 'none' })
-      qc.setQueryData(sqlRowsQuery(p, table, page).queryKey, (current) =>
-        current && {
-          ...current,
-          rows: current.rows.map((r, i) =>
-            i === row ? r.map((v, ci) => (Object.hasOwn(change.values ?? {}, current.columns[ci]) ? change.values![current.columns[ci]] : v)) : r,
-          ),
-        },
+      qc.setQueryData(
+        sqlRowsQuery(p, table, page).queryKey,
+        (current) =>
+          current && {
+            ...current,
+            rows: current.rows.map((r, i) =>
+              i === row
+                ? r.map((v, ci) =>
+                    Object.hasOwn(change.values ?? {}, current.columns[ci]) ? change.values![current.columns[ci]] : v,
+                  )
+                : r,
+            ),
+          },
       )
     },
   })

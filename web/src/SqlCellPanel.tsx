@@ -100,7 +100,12 @@ export function SqlCellPanel({
           />
           <ErrorNote message={error} />
           <div className="flex items-center justify-between gap-2">
-            <Button kind="quiet" size="sm" disabled={busy || column?.nullable === false} onClick={() => void save(null)}>
+            <Button
+              kind="quiet"
+              size="sm"
+              disabled={busy || column?.nullable === false}
+              onClick={() => void save(null)}
+            >
               Set to null
             </Button>
             <div className="flex gap-1.5">
@@ -135,7 +140,11 @@ export function SqlCellPanel({
                 kind="quiet"
                 size="sm"
                 icon={Pencil}
-                onClick={() => setDraft(value !== null && structured && json !== undefined ? JSON.stringify(json, null, 2) : (value ?? ''))}
+                onClick={() =>
+                  setDraft(
+                    value !== null && structured && json !== undefined ? JSON.stringify(json, null, 2) : (value ?? ''),
+                  )
+                }
               >
                 Edit
               </Button>

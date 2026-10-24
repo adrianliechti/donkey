@@ -11,7 +11,7 @@ import {
   PanelRight,
   Plus,
   RefreshCw,
-  Search,
+  SquareTerminal,
   Table2,
   Trash2,
   X,
@@ -37,7 +37,8 @@ import {
 } from './sqlApi'
 import { isLongValue, isNumericType, plural, toCsv, type SqlCell } from './sqlText'
 import { useServiceSearch } from './serviceSearch'
-import { Button, Chip, CopyButton, ErrorNote, Eyebrow, IconButton, Input, Select, Spinner, Toolbar } from './ui'
+import { Picker, SearchRow, Sidebar } from './Workbench'
+import { Button, Chip, CopyButton, ErrorNote, Eyebrow, IconButton, Spinner, Toolbar } from './ui'
 import { errText, humanSize } from './format'
 
 // The Data tabs' pieces, shared by the database and Trino consoles: the
@@ -54,22 +55,15 @@ const compact = new Intl.NumberFormat(undefined, { notation: 'compact', maximumF
 
 /** The workbench's left pane: pickers on top, a list below. */
 export function SqlSidebar({ children }: { children: ReactNode }) {
-  return (
-    <aside className="flex max-h-72 shrink-0 flex-col overflow-hidden rounded-lg border border-line md:max-h-none md:w-64">
-      {children}
-    </aside>
-  )
+  return <Sidebar label="Tables">{children}</Sidebar>
 }
 
-/** A labelled picker in the sidebar's head: the label, then the control and its actions. */
-export function SidebarField({ label, actions, children }: { label: string; actions?: ReactNode; children: ReactNode }) {
+/** The sidebar's top bar: the pickers, and what can be done to what they pick. */
+export function SidebarBar({ children, actions }: { children: ReactNode; actions?: ReactNode }) {
   return (
-    <div className="space-y-1">
-      <div className="flex h-5 items-center justify-between">
-        <Eyebrow>{label}</Eyebrow>
-        {actions && <Toolbar className="-mr-1.5 gap-0">{actions}</Toolbar>}
-      </div>
-      {children}
+    <div className="flex min-h-11 shrink-0 items-center gap-0.5 border-b border-line pr-1.5 pl-1.5">
+      <div className="flex min-w-0 flex-1 items-center gap-0.5">{children}</div>
+      {actions && <Toolbar className="gap-0">{actions}</Toolbar>}
     </div>
   )
 }
@@ -116,42 +110,36 @@ export function TableList({
 
   return (
     <>
-      <div className="flex h-10 shrink-0 items-center justify-between border-t border-line pr-1.5 pl-3">
-        <Eyebrow>
-          Tables{tables && tables.length > 0 ? <span className="ml-1 text-muted/70">{tables.length}</span> : null}
-        </Eyebrow>
-        <Toolbar className="gap-0">
-          {onCreate && <IconButton icon={Plus} size="sm" label="New table" onClick={onCreate} />}
-          <IconButton
-            icon={RefreshCw}
-            size="sm"
-            label="Refresh the tables"
-            onClick={onRefresh}
-            className={refreshing ? '[&>svg]:animate-spin' : ''}
-          />
-        </Toolbar>
-      </div>
-      {tables !== null && tables.length > 0 && (
-        <div className="relative shrink-0 px-2 pb-2">
-          <Search className="pointer-events-none absolute top-2 left-4.5 size-3.5 text-muted" aria-hidden />
-          <Input
-            size="sm"
-            value={find}
-            onChange={(e) => setFind(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && shown[0]) onSelect(shown[0])
-              if (e.key === 'ArrowDown') step(e, 1)
-              if (e.key === 'Escape') setFind('')
-            }}
-            placeholder="Find a table…"
-            aria-label="Find a table"
-            className="w-full pl-7"
-          />
-        </div>
-      )}
+      {/* The list's head is its search: typing narrows it, the count and
+          the actions sit at its end. */}
+      <SearchRow
+        line="top"
+        value={find}
+        onChange={setFind}
+        placeholder="Find a table"
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' && shown[0]) onSelect(shown[0])
+          if (e.key === 'ArrowDown') step(e, 1)
+          if (e.key === 'Escape') setFind('')
+        }}
+      >
+        {tables && tables.length > 0 && !find && (
+          <span className="px-1 text-[11px] text-muted tabular-nums">{tables.length}</span>
+        )}
+        {onCreate && <IconButton icon={Plus} size="sm" label="New table" onClick={onCreate} />}
+        <IconButton
+          icon={RefreshCw}
+          size="sm"
+          label="Refresh the tables"
+          onClick={onRefresh}
+          className={refreshing ? '[&>svg]:animate-spin' : ''}
+        />
+      </SearchRow>
       <ErrorNoteBox message={error} />
       {tables === null && !error && <Spinner label="Loading tables…" />}
-      {tables !== null && tables.length === 0 && <div className="px-3 pb-3 text-xs leading-relaxed text-muted">{empty}</div>}
+      {tables !== null && tables.length === 0 && (
+        <div className="px-3 pb-3 text-xs leading-relaxed text-muted">{empty}</div>
+      )}
       {tables !== null && tables.length > 0 && shown.length === 0 && (
         <p className="px-3 pb-3 text-xs text-muted">No table matches “{find}”.</p>
       )}
@@ -180,7 +168,10 @@ export function TableList({
                 <Icon className={`size-3.5 shrink-0 ${current ? 'text-accent' : 'text-muted'}`} aria-hidden />
                 <span className="min-w-0 flex-1 truncate">{t.name}</span>
                 {t.rows !== null && (
-                  <span className="shrink-0 text-[10px] text-muted tabular-nums" title={`about ${t.rows.toLocaleString()} rows`}>
+                  <span
+                    className="shrink-0 text-[10px] text-muted tabular-nums"
+                    title={`about ${t.rows.toLocaleString()} rows`}
+                  >
                     {compact.format(t.rows)}
                   </span>
                 )}
@@ -190,6 +181,28 @@ export function TableList({
         })}
       </ul>
     </>
+  )
+}
+
+/**
+ * The SQL editor's place in the sidebar, between the pickers and the
+ * tables: the editor opens in the main pane, where a table would.
+ */
+export function SqlEntry({ selected, onOpen }: { selected: boolean; onOpen: () => void }) {
+  return (
+    <div className="shrink-0 p-1.5">
+      <button
+        type="button"
+        onClick={onOpen}
+        aria-current={selected || undefined}
+        className={`flex h-8 w-full items-center gap-2 rounded-md px-1.5 text-left text-sm transition-colors focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent-strong ${
+          selected ? 'bg-accent-soft text-ink' : 'text-ink-soft hover:bg-line/50 hover:text-ink'
+        }`}
+      >
+        <SquareTerminal className={`size-4 shrink-0 ${selected ? 'text-accent' : 'text-muted'}`} aria-hidden />
+        SQL
+      </button>
+    </div>
   )
 }
 
@@ -209,7 +222,7 @@ export type TrailStep = { label: string; onClick?: () => void }
 /** The main pane's empty state, centred. */
 export function PaneMessage({ children }: { children: ReactNode }) {
   return (
-    <section className="flex min-h-0 min-w-0 flex-1 items-center justify-center rounded-lg border border-line p-8">
+    <section className="flex min-h-0 min-w-0 flex-1 items-center justify-center p-8">
       <div className="max-w-md text-center text-sm leading-relaxed text-muted">{children}</div>
     </section>
   )
@@ -245,6 +258,7 @@ export function SqlTablePane({
   views = { rows: 'Rows', structure: 'Structure' },
   defaultView = 'rows',
   onDropped,
+  onQuery,
 }: {
   place: SqlPlace
   table: SqlTable
@@ -254,6 +268,8 @@ export function SqlTablePane({
   views?: { rows: string; structure: string }
   defaultView?: 'rows' | 'structure'
   onDropped?: () => void
+  /** Opens the SQL editor on a select of this table. */
+  onQuery?: () => void
 }) {
   const [search, move] = useServiceSearch()
   const view = (search.view as 'rows' | 'structure' | undefined) ?? defaultView
@@ -263,7 +279,7 @@ export function SqlTablePane({
   const setView = (next: 'rows' | 'structure') => move({ ...search, view: next === defaultView ? '' : next })
 
   return (
-    <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-lg border border-line">
+    <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
       <div className="flex min-h-11 shrink-0 flex-wrap items-center justify-between gap-x-3 gap-y-1 border-b border-line py-1 pr-1.5 pl-3">
         <div className="flex min-w-0 items-center gap-3">
           <Trail steps={[...trail, { label: table.name }]} />
@@ -279,12 +295,24 @@ export function SqlTablePane({
             ].sort((a) => (a.value === defaultView ? -1 : 1))}
           />
         </div>
-        {editable && table.kind !== 'view' && (
-          <IconButton icon={Trash2} size="sm" kind="danger" label={`Drop the table ${table.name}…`} onClick={() => setDropping(true)} />
-        )}
+        <Toolbar className="gap-0.5">
+          {onQuery && <IconButton icon={SquareTerminal} size="sm" label="Query this table" onClick={onQuery} />}
+          {editable && table.kind !== 'view' && (
+            <IconButton
+              icon={Trash2}
+              size="sm"
+              kind="danger"
+              label={`Drop the table ${table.name}…`}
+              onClick={() => setDropping(true)}
+            />
+          )}
+        </Toolbar>
       </div>
       {view === 'structure' ? (
-        <StructureView structure={structure.data} error={structure.error ? errText(structure.error, 'Reading the structure did not work.') : ''} />
+        <StructureView
+          structure={structure.data}
+          error={structure.error ? errText(structure.error, 'Reading the structure did not work.') : ''}
+        />
       ) : (
         <RowsView
           key={`${place.db}.${place.schema}.${table.name}`}
@@ -328,7 +356,10 @@ function Trail({ steps }: { steps: TrailStep[] }) {
                 {step.label}
               </button>
             ) : (
-              <span aria-current={last ? 'page' : undefined} className={`truncate px-0.5 ${last ? 'text-sm font-medium text-ink' : 'text-muted'}`}>
+              <span
+                aria-current={last ? 'page' : undefined}
+                className={`truncate px-0.5 ${last ? 'text-sm font-medium text-ink' : 'text-muted'}`}
+              >
                 {step.label}
               </span>
             )}
@@ -387,11 +418,21 @@ function RowsView({
   const pageNumber = Math.max(1, Math.floor(Number(search.page)) || 1)
   const filter: SqlFilter | undefined =
     filterable && search.where
-      ? { column: search.where, op: (ops.some((o) => o.value === search.op) ? search.op : 'eq') as SqlFilterOp, value: search.value ?? '' }
+      ? {
+          column: search.where,
+          op: (ops.some((o) => o.value === search.op) ? search.op : 'eq') as SqlFilterOp,
+          value: search.value ?? '',
+        }
       : undefined
   const sort: GridSort = search.sort ? { column: search.sort, desc: search.dir === 'desc' } : null
   // Rebuilt every render on purpose: query keys compare by value.
-  const pageView: SqlPageView = { limit: pageSize, offset: (pageNumber - 1) * pageSize, sort: sort?.column, desc: sort?.desc, filter }
+  const pageView: SqlPageView = {
+    limit: pageSize,
+    offset: (pageNumber - 1) * pageSize,
+    sort: sort?.column,
+    desc: sort?.desc,
+    filter,
+  }
   const rowsQ = useQuery(sqlRowsQuery(place, table.name, pageView))
   const page = rowsQ.data
   const write = useSqlRowWrite(place, table.name, pageView)
@@ -414,7 +455,13 @@ function RowsView({
     const known = new Map((structure?.columns ?? []).map((c) => [c.name, c]))
     return (page?.columns ?? []).map((name) => {
       const c = known.get(name)
-      return { name, type: c?.type, key: page?.key.includes(name) || c?.key, numeric: isNumericType(c?.type), nullable: c?.nullable }
+      return {
+        name,
+        type: c?.type,
+        key: page?.key.includes(name) || c?.key,
+        numeric: isNumericType(c?.type),
+        nullable: c?.nullable,
+      }
     })
   }, [page?.columns, page?.key, structure])
 
@@ -490,7 +537,9 @@ function RowsView({
         <FilterBar
           columns={page?.columns ?? structure?.columns.map((c) => c.name) ?? []}
           active={filter}
-          onApply={(f) => go({ where: f?.column, op: f && f.op !== 'eq' ? f.op : undefined, value: f?.value, page: undefined })}
+          onApply={(f) =>
+            go({ where: f?.column, op: f && f.op !== 'eq' ? f.op : undefined, value: f?.value, page: undefined })
+          }
         />
       )}
       <div className="flex min-h-0 flex-1">
@@ -498,7 +547,11 @@ function RowsView({
           {(rowsQ.error || (write.error && !inspect && deleting === null)) && (
             <div className="shrink-0 p-2 pb-0">
               <ErrorNote
-                message={rowsQ.error ? errText(rowsQ.error, 'Loading the rows did not work.') : failure(write, 'That change did not stick.')}
+                message={
+                  rowsQ.error
+                    ? errText(rowsQ.error, 'Loading the rows did not work.')
+                    : failure(write, 'That change did not stick.')
+                }
               />
             </div>
           )}
@@ -509,7 +562,11 @@ function RowsView({
               {filter ? (
                 <>
                   No rows match the filter.{' '}
-                  <button type="button" onClick={() => go({ where: undefined, op: undefined, value: undefined, page: undefined })} className="text-accent-strong hover:underline">
+                  <button
+                    type="button"
+                    onClick={() => go({ where: undefined, op: undefined, value: undefined, page: undefined })}
+                    className="text-accent-strong hover:underline"
+                  >
                     Clear it
                   </button>
                 </>
@@ -542,7 +599,12 @@ function RowsView({
               onSort={(column) => {
                 // asc → desc → the table's own order; a new order starts on
                 // its first page.
-                const next = sort?.column !== column ? { sort: column, dir: undefined } : sort.desc ? { sort: undefined, dir: undefined } : { sort: column, dir: 'desc' }
+                const next =
+                  sort?.column !== column
+                    ? { sort: column, dir: undefined }
+                    : sort.desc
+                      ? { sort: undefined, dir: undefined }
+                      : { sort: column, dir: 'desc' }
                 go({ ...next, page: undefined })
               }}
               selected={selected}
@@ -595,12 +657,7 @@ function RowsView({
                           onCancel={() => setAdding(false)}
                         />
                       )),
-                      actions: (
-                        <NewRowActions
-                          busy={write.isPending}
-                          onCancel={() => setAdding(false)}
-                        />
-                      ),
+                      actions: <NewRowActions busy={write.isPending} onCancel={() => setAdding(false)} />,
                     }
                   : undefined
               }
@@ -616,7 +673,8 @@ function RowsView({
                 e.preventDefault()
                 const values: Record<string, string> = {}
                 // Empty stays unsent, so the column's default does its job.
-                for (const [k, v] of new FormData(e.currentTarget).entries()) if (typeof v === 'string' && v !== '') values[k] = v
+                for (const [k, v] of new FormData(e.currentTarget).entries())
+                  if (typeof v === 'string' && v !== '') values[k] = v
                 write.mutate({ method: 'POST', change: { values } }, { onSuccess: () => setAdding(false) })
               }}
             />
@@ -736,29 +794,22 @@ function FilterBar({
       className={`flex min-h-10 shrink-0 flex-wrap items-center gap-1.5 border-b border-line py-1.5 pr-1.5 pl-3 ${active ? 'bg-accent-soft/30' : ''}`}
     >
       <ListFilter className={`size-3.5 shrink-0 ${active ? 'text-accent' : 'text-muted'}`} aria-hidden />
-      <Select
-        size="sm"
-        ariaLabel="Filter column"
+      <Picker
+        label="Filter column"
         value={column}
         onChange={(c) => setDraft({ ...draft, column: c })}
         options={columns.map((c) => ({ value: c, label: c }))}
         className="max-w-48"
       />
-      <Select
-        size="sm"
-        ariaLabel="Comparison"
-        value={draft.op}
-        onChange={(op) => setDraft({ ...draft, op })}
-        options={ops}
-      />
+      <Picker label="Comparison" value={draft.op} onChange={(op) => setDraft({ ...draft, op })} options={ops} />
       {!valueless(draft.op) && (
-        <Input
-          size="sm"
+        <input
           value={draft.value}
           onChange={(e) => setDraft({ ...draft, value: e.target.value })}
           placeholder="value"
           aria-label="Filter value"
-          className="w-full max-w-72 min-w-24 flex-1"
+          spellCheck={false}
+          className="h-7 w-48 min-w-24 rounded-md bg-transparent px-2 font-mono text-sm text-ink placeholder:font-sans placeholder:text-muted hover:bg-line/40 focus:bg-line/40 focus:outline-none"
         />
       )}
       <Button size="sm" kind="quiet" type="submit">
@@ -806,11 +857,23 @@ function Footer({
         {toolbar}
         <span className="mx-1 h-4 w-px bg-line" aria-hidden />
         {pageNumber > 2 && <IconButton icon={ChevronsLeft} size="sm" label="First page" onClick={() => onPage(1)} />}
-        <IconButton icon={ChevronLeft} size="sm" label="Previous page" disabled={pageNumber <= 1} onClick={() => onPage(pageNumber - 1)} />
+        <IconButton
+          icon={ChevronLeft}
+          size="sm"
+          label="Previous page"
+          disabled={pageNumber <= 1}
+          onClick={() => onPage(pageNumber - 1)}
+        />
         <span className="min-w-16 px-1 text-center text-[11px] text-muted tabular-nums">
           {pages ? `${pageNumber} / ${pages}` : `page ${pageNumber}`}
         </span>
-        <IconButton icon={ChevronRight} size="sm" label="Next page" disabled={!page.hasMore} onClick={() => onPage(pageNumber + 1)} />
+        <IconButton
+          icon={ChevronRight}
+          size="sm"
+          label="Next page"
+          disabled={!page.hasMore}
+          onClick={() => onPage(pageNumber + 1)}
+        />
       </Toolbar>
     </div>
   )
@@ -971,17 +1034,40 @@ function StructureView({ structure, error }: { structure?: SqlStructure; error: 
         <table className="w-full border-separate border-spacing-0 text-left text-xs">
           <thead>
             <tr className="[&>th]:border-b [&>th]:border-line [&>th]:px-3 [&>th]:py-2 [&>th]:font-normal">
-              <th><Eyebrow>Column</Eyebrow></th>
-              <th><Eyebrow>Type</Eyebrow></th>
-              {nullable && <th><Eyebrow>Null</Eyebrow></th>}
-              {defaults && <th><Eyebrow>Default</Eyebrow></th>}
-              {extras && <th><Eyebrow>Fills</Eyebrow></th>}
-              {comments && <th><Eyebrow>Comment</Eyebrow></th>}
+              <th>
+                <Eyebrow>Column</Eyebrow>
+              </th>
+              <th>
+                <Eyebrow>Type</Eyebrow>
+              </th>
+              {nullable && (
+                <th>
+                  <Eyebrow>Null</Eyebrow>
+                </th>
+              )}
+              {defaults && (
+                <th>
+                  <Eyebrow>Default</Eyebrow>
+                </th>
+              )}
+              {extras && (
+                <th>
+                  <Eyebrow>Fills</Eyebrow>
+                </th>
+              )}
+              {comments && (
+                <th>
+                  <Eyebrow>Comment</Eyebrow>
+                </th>
+              )}
             </tr>
           </thead>
           <tbody>
             {structure.columns.map((c) => (
-              <tr key={c.name} className="[&>td]:border-b [&>td]:border-line/60 [&>td]:px-3 [&>td]:py-1.5 last:[&>td]:border-b-0">
+              <tr
+                key={c.name}
+                className="[&>td]:border-b [&>td]:border-line/60 [&>td]:px-3 [&>td]:py-1.5 last:[&>td]:border-b-0"
+              >
                 <td className="font-mono text-ink">
                   <span className="flex items-center gap-1.5">
                     {c.name}
@@ -989,7 +1075,9 @@ function StructureView({ structure, error }: { structure?: SqlStructure; error: 
                   </span>
                 </td>
                 <td className="font-mono text-ink-soft">{c.type}</td>
-                {nullable && <td className="text-muted">{c.nullable === null ? '' : c.nullable ? 'null' : 'not null'}</td>}
+                {nullable && (
+                  <td className="text-muted">{c.nullable === null ? '' : c.nullable ? 'null' : 'not null'}</td>
+                )}
                 {defaults && (
                   <td className="max-w-72 truncate font-mono text-ink-soft" title={c.default ?? undefined}>
                     {c.default}
@@ -1082,11 +1170,20 @@ function DropTableDialog({
   const busy = drop.isPending
   return (
     <Modal onClose={busy ? () => {} : onClose} size="sm">
-      <ModalHeader title={<>Drop <span className="font-mono">{table.name}</span>?</>} onClose={onClose} closeDisabled={busy} />
+      <ModalHeader
+        title={
+          <>
+            Drop <span className="font-mono">{table.name}</span>?
+          </>
+        }
+        onClose={onClose}
+        closeDisabled={busy}
+      />
       <ModalBody className="space-y-3">
         <p className="text-sm leading-relaxed text-ink-soft">
-          The table and {table.rows !== null ? `its ${plural(table.rows, 'row')}` : 'its rows'} are gone for good. Anything that
-          depends on it — a view, a foreign key — stops the drop: that error is better than a silent cascade.
+          The table and {table.rows !== null ? `its ${plural(table.rows, 'row')}` : 'its rows'} are gone for good.
+          Anything that depends on it — a view, a foreign key — stops the drop: that error is better than a silent
+          cascade.
         </p>
         <ErrorNote message={failure(drop, 'Dropping the table did not work.')} />
       </ModalBody>

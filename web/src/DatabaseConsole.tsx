@@ -1,5 +1,4 @@
 import { useState, type ReactNode } from 'react'
-import { useNavigate } from '@tanstack/react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Plus, Trash2, X } from 'lucide-react'
 import type { ConsoleProps } from './consoles'
@@ -16,7 +15,8 @@ import {
   type SqlPlace,
   type SqlTable,
 } from './sqlApi'
-import { PaneMessage, SidebarField, SqlSidebar, SqlTablePane, TableList } from './SqlTable'
+import { PaneMessage, SidebarBar, SqlEntry, SqlSidebar, SqlTablePane, TableList } from './SqlTable'
+import { Picker, Row } from './Workbench'
 import { SqlWorkbench } from './SqlView'
 import { plural } from './sqlText'
 import { useServiceSearch, type ServiceSearch } from './serviceSearch'
@@ -24,40 +24,15 @@ import { Button, ErrorNote, Eyebrow, Field, IconButton, Input, Select, Spinner, 
 import { errText, humanSize } from './format'
 
 /**
- * The database console of a Postgres or MySQL service: Data browses and
- * edits tables, Query runs SQL. Both stand on the same place in the URL —
- * db, schema, then table and the table's view — so the database picked on
- * one tab is the one the other uses. The binding's database is only the
- * default: any of the service's databases can be opened, or made.
+ * The database console of a Postgres or MySQL service, one workbench: the
+ * databases and tables on the left, and on the right the table picked — or
+ * SQL, which sits in the same list. The place is in the URL (db, schema,
+ * then a table and its view, or sql=open), so back walks it. The binding's
+ * database is only the default: any of the service's databases can be
+ * opened, or made.
  */
-export function Console({ space, service, protocol, tab }: ConsoleProps) {
-  // A tab, once opened, stays mounted (hidden when another is showing): the
-  // query typed and its result are still there on the way back.
-  const [visited, setVisited] = useState<string[]>([tab])
-  if (!visited.includes(tab)) setVisited([...visited, tab])
-  const [seed, setSeed] = useState<{ sql: string; n: number }>()
-  const navigate = useNavigate()
-  const place = useDatabasePlace(space, service, protocol)
-
-  const writeInSql = (sql: string) => {
-    setSeed({ sql, n: (seed?.n ?? 0) + 1 })
-    void navigate({ to: '/service/$space/$name/{-$tab}', params: { space, name: service, tab: 'query' }, search: true })
-  }
-
-  return (
-    <>
-      {visited.includes('data') && (
-        <div className={tab === 'data' ? 'flex min-h-0 min-w-0 flex-1 flex-col' : 'hidden'}>
-          <DataTab place={place} onWriteSql={writeInSql} />
-        </div>
-      )}
-      {visited.includes('query') && (
-        <div className={tab === 'query' ? 'flex min-h-0 min-w-0 flex-1 flex-col' : 'hidden'}>
-          <QueryTab place={place} seed={seed} />
-        </div>
-      )}
-    </>
-  )
+export function Console({ space, service, protocol }: ConsoleProps) {
+  return <DatabaseView place={useDatabasePlace(space, service, protocol)} />
 }
 
 type DatabasePlace = ReturnType<typeof useDatabasePlace>
@@ -100,14 +75,27 @@ function useDatabasePlace(space: string, service: string, protocol?: string) {
   }
 }
 
-function DataTab({ place, onWriteSql }: { place: DatabasePlace; onWriteSql: (sql: string) => void }) {
-  const { search, move, db, schema, mysql, tables, databases } = place
+function DatabaseView({ place }: { place: DatabasePlace }) {
+  const { space, service, search, move, db, schema, mysql, tables, databases } = place
+  const qc = useQueryClient()
   const [creating, setCreating] = useState(false)
   const list = tables.data?.tables ?? null
   const selected = search.table
   const table: SqlTable | undefined = selected
     ? (list?.find((t) => t.name === selected) ?? { schema, name: selected, rows: null })
     : undefined
+
+  // The editor, once opened, stays mounted beside the tables (hidden while
+  // one shows): what was typed and what came back are there on the way back.
+  const sqlOpen = search.sql === 'open'
+  const [sqlSeen, setSqlSeen] = useState(sqlOpen)
+  if (sqlOpen && !sqlSeen) setSqlSeen(true)
+  const [seed, setSeed] = useState<{ sql: string; n: number }>()
+  const openSql = (sql?: string) => {
+    if (sql !== undefined) setSeed({ sql, n: (seed?.n ?? 0) + 1 })
+    setCreating(false)
+    move({ ...placeSearch(place), sql: 'open' })
+  }
 
   const open = (t: SqlTable) => {
     setCreating(false)
@@ -148,6 +136,11 @@ function DataTab({ place, onWriteSql }: { place: DatabasePlace; onWriteSql: (sql
         editable
         filterable
         onDropped={() => move(placeSearch(place))}
+        onQuery={() =>
+          openSql(
+            `select * from ${mysql ? quoteMy(table.name) : `${quotePg(schema)}.${quotePg(table.name)}`} limit 100;`,
+          )
+        }
       />
     )
   } else if (list && list.length === 0) {
@@ -161,37 +154,59 @@ function DataTab({ place, onWriteSql }: { place: DatabasePlace; onWriteSql: (sql
           <Button icon={Plus} onClick={() => setCreating(true)}>
             New table
           </Button>
-          <Button kind="quiet" onClick={() => onWriteSql(mysql ? sampleTable.mysql : sampleTable.postgres)}>
+          <Button kind="quiet" onClick={() => openSql(mysql ? sampleTable.mysql : sampleTable.postgres)}>
             Write it in SQL
           </Button>
         </div>
       </PaneMessage>
     )
   } else {
-    main = <PaneMessage>{list ? 'Pick a table on the left to see its rows.' : <Spinner label="Loading tables…" />}</PaneMessage>
+    main = (
+      <PaneMessage>
+        {list ? 'Pick a table on the left to see its rows, or open SQL.' : <Spinner label="Loading tables…" />}
+      </PaneMessage>
+    )
   }
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-4 md:flex-row">
+    <Row>
       <SqlSidebar>
-        <div className="shrink-0 space-y-3 p-3">
-          <DatabasePicker place={place} manage />
-        </div>
+        <DatabasePicker place={place} manage />
+        <SqlEntry selected={sqlOpen} onOpen={() => openSql()} />
         <TableList
           tables={db && schema ? list : null}
           error={tables.error ? errText(tables.error, 'Listing the tables did not work.') : ''}
-          selected={selected}
+          selected={sqlOpen ? undefined : selected}
           onSelect={open}
           onRefresh={() => void tables.refetch()}
           refreshing={tables.isFetching}
-          onCreate={() => setCreating(true)}
+          onCreate={() => {
+            setCreating(true)
+            if (sqlOpen) move(placeSearch(place))
+          }}
           empty="Nothing here yet."
         />
       </SqlSidebar>
-      {main}
-    </div>
+      {sqlSeen && db && schema && (
+        <div className={sqlOpen ? 'flex min-h-0 min-w-0 flex-1 flex-col' : 'hidden'}>
+          <SqlWorkbench
+            storageKey={`${space}/${service}`}
+            dialect={mysql ? 'mysql' : 'postgres'}
+            target={mysql ? db : `${db} · ${schema}`}
+            run={(sql, signal) => runSql(space, service, db, mysql ? '' : schema, sql, signal)}
+            onWrote={() => void qc.invalidateQueries({ queryKey: sqlKey(space, service) })}
+            seed={seed}
+          />
+        </div>
+      )}
+      {!sqlOpen && main}
+    </Row>
   )
 }
+
+// Identifiers as each dialect quotes them, for the selects the console writes.
+const quotePg = (name: string) => `"${name.replaceAll('"', '""')}"`
+const quoteMy = (name: string) => `\`${name.replaceAll('`', '``')}\``
 
 /** The search that names the open database and schema, and nothing below. */
 function placeSearch(place: DatabasePlace): ServiceSearch {
@@ -199,22 +214,6 @@ function placeSearch(place: DatabasePlace): ServiceSearch {
   if (place.search.db) out.db = place.search.db
   if (place.search.schema) out.schema = place.search.schema
   return out
-}
-
-function QueryTab({ place, seed }: { place: DatabasePlace; seed?: { sql: string; n: number } }) {
-  const qc = useQueryClient()
-  const { space, service, db, schema, mysql } = place
-  return (
-    <SqlWorkbench
-      storageKey={`${space}/${service}`}
-      dialect={mysql ? 'mysql' : 'postgres'}
-      context={<DatabasePicker place={place} />}
-      target={mysql ? db : `${db} · ${schema}`}
-      run={(sql, signal) => runSql(space, service, db, mysql ? '' : schema, sql, signal)}
-      onWrote={() => void qc.invalidateQueries({ queryKey: sqlKey(space, service) })}
-      seed={seed}
-    />
-  )
 }
 
 // Names the create forms accept — plain lowercase identifiers sidestep the
@@ -238,85 +237,101 @@ function DatabasePicker({ place, manage = false }: { place: DatabasePlace; manag
 
   return (
     <>
-      <SidebarField
-        label="Database"
-        actions={
-          manage &&
-          newName === null && (
+      {newName !== null ? (
+        <form
+          onSubmit={(e) => {
+            e.preventDefault()
+            const name = newName.trim()
+            if (!plainName.test(name)) return
+            create.mutate(name, {
+              onSuccess: () => {
+                setNewName(null)
+                move({ db: name })
+              },
+            })
+          }}
+          className="shrink-0 space-y-1.5 border-b border-line p-1.5"
+        >
+          <div className="flex items-center gap-1">
+            <Input
+              size="sm"
+              autoFocus
+              value={newName}
+              onChange={(e) => setNewName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') setNewName(null)
+              }}
+              placeholder="new_database"
+              aria-label="New database name"
+              className="w-full"
+            />
+            <Button size="sm" type="submit" disabled={create.isPending || !newName.trim() || !!nameError}>
+              {create.isPending ? 'Creating…' : 'Create'}
+            </Button>
+            <IconButton
+              icon={X}
+              size="sm"
+              label="Cancel"
+              onClick={() => setNewName(null)}
+              disabled={create.isPending}
+            />
+          </div>
+          {nameError && <p className="px-1 text-[11px] text-muted">{nameError}</p>}
+          <ErrorNote message={failure(create, 'Creating the database did not work.')} />
+        </form>
+      ) : (
+        <SidebarBar
+          actions={
+            manage && (
+              <>
+                <IconButton icon={Plus} size="sm" label="New database" onClick={() => setNewName('')} />
+                {db && db !== defaultDb && (
+                  <IconButton
+                    icon={Trash2}
+                    size="sm"
+                    kind="danger"
+                    label={`Drop the database ${db}…`}
+                    onClick={() => setDropping(true)}
+                  />
+                )}
+              </>
+            )
+          }
+        >
+          {databases.data ? (
+            <Picker
+              label="Database"
+              value={db}
+              onChange={pick}
+              options={list.map((d) => ({
+                value: d.name,
+                label: d.name,
+                detail: [d.size === null ? '' : humanSize(d.size), d.name === defaultDb ? 'default' : '']
+                  .filter(Boolean)
+                  .join(' · '),
+              }))}
+            />
+          ) : databases.error ? (
+            <p className="px-1.5 text-xs text-danger">Not answering.</p>
+          ) : (
+            <span className="px-1.5">
+              <Spinner inline label="Connecting…" />
+            </span>
+          )}
+          {!mysql && schemas.data && schemas.data.schemas.length > 1 && (
             <>
-              <IconButton icon={Plus} size="sm" label="New database" onClick={() => setNewName('')} />
-              {db && db !== defaultDb && (
-                <IconButton icon={Trash2} size="sm" kind="danger" label={`Drop the database ${db}…`} onClick={() => setDropping(true)} />
-              )}
-            </>
-          )
-        }
-      >
-        {newName !== null ? (
-          <form
-            onSubmit={(e) => {
-              e.preventDefault()
-              const name = newName.trim()
-              if (!plainName.test(name)) return
-              create.mutate(name, {
-                onSuccess: () => {
-                  setNewName(null)
-                  move({ db: name })
-                },
-              })
-            }}
-            className="space-y-1.5"
-          >
-            <div className="flex items-center gap-1">
-              <Input
-                size="sm"
-                autoFocus
-                value={newName}
-                onChange={(e) => setNewName(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Escape') setNewName(null)
-                }}
-                placeholder="new_database"
-                aria-label="New database name"
-                className="w-full"
+              <span className="font-mono text-sm text-line-strong select-none" aria-hidden>
+                /
+              </span>
+              <Picker
+                label="Schema"
+                value={schema}
+                onChange={(next) => move({ ...(search.db ? { db: search.db } : {}), schema: next })}
+                options={schemas.data.schemas.map((s) => ({ value: s, label: s }))}
               />
-              <Button size="sm" type="submit" disabled={create.isPending || !newName.trim() || !!nameError}>
-                {create.isPending ? 'Creating…' : 'Create'}
-              </Button>
-              <IconButton icon={X} size="sm" label="Cancel" onClick={() => setNewName(null)} disabled={create.isPending} />
-            </div>
-            {nameError && <p className="text-[11px] text-muted">{nameError}</p>}
-            <ErrorNote message={failure(create, 'Creating the database did not work.')} />
-          </form>
-        ) : databases.data ? (
-          <Select
-            size="sm"
-            ariaLabel="Database"
-            value={db}
-            onChange={pick}
-            options={list.map((d) => ({
-              value: d.name,
-              label: `${d.name}${d.size === null ? '' : ` · ${humanSize(d.size)}`}${d.name === defaultDb ? ' · default' : ''}`,
-            }))}
-            className="w-full"
-          />
-        ) : databases.error ? (
-          <p className="text-xs text-danger">Not answering.</p>
-        ) : (
-          <Spinner inline label="Connecting…" />
-        )}
-      </SidebarField>
-      {!mysql && schemas.data && schemas.data.schemas.length > 1 && (
-        <SidebarField label="Schema">
-          <Select
-            size="sm"
-            ariaLabel="Schema"
-            value={schema}
-            onChange={(next) => move({ ...(search.db ? { db: search.db } : {}), schema: next })}
-            options={schemas.data.schemas.map((s) => ({ value: s, label: s }))}
-            className="w-full"
-          />
-        </SidebarField>
+            </>
+          )}
+        </SidebarBar>
       )}
       <ErrorNote message={schemas.error ? errText(schemas.error, 'Listing the schemas did not work.') : ''} />
       {dropping && (
@@ -333,16 +348,33 @@ function DatabasePicker({ place, manage = false }: { place: DatabasePlace; manag
   )
 }
 
-function DropDatabaseDialog({ place, onClose, onDropped }: { place: DatabasePlace; onClose: () => void; onDropped: () => void }) {
+function DropDatabaseDialog({
+  place,
+  onClose,
+  onDropped,
+}: {
+  place: DatabasePlace
+  onClose: () => void
+  onDropped: () => void
+}) {
   const drop = useSqlDropDatabase(place.space, place.service)
   const busy = drop.isPending
   const tables = place.tables.data?.tables
   return (
     <Modal onClose={busy ? () => {} : onClose} size="sm">
-      <ModalHeader title={<>Drop the database <span className="font-mono">{place.db}</span>?</>} onClose={onClose} closeDisabled={busy} />
+      <ModalHeader
+        title={
+          <>
+            Drop the database <span className="font-mono">{place.db}</span>?
+          </>
+        }
+        onClose={onClose}
+        closeDisabled={busy}
+      />
       <ModalBody className="space-y-3">
         <p className="text-sm leading-relaxed text-ink-soft">
-          Everything in it{tables ? ` — ${plural(tables.length, 'table')}${place.mysql ? '' : ` in ${place.schema} alone`}` : ''} — is
+          Everything in it
+          {tables ? ` — ${plural(tables.length, 'table')}${place.mysql ? '' : ` in ${place.schema} alone`}` : ''} — is
           gone for good. Connected apps use <span className="font-mono">{place.defaultDb}</span>, not this one.
         </p>
         <ErrorNote message={failure(drop, 'Dropping the database did not work.')} />
@@ -362,7 +394,8 @@ function DropDatabaseDialog({ place, onClose, onDropped }: { place: DatabasePlac
 const sampleTable = {
   postgres:
     'create table notes (\n  id bigint generated always as identity primary key,\n  text text not null,\n  at timestamptz default now()\n);',
-  mysql: 'create table notes (\n  id bigint auto_increment primary key,\n  text text not null,\n  at datetime default current_timestamp\n);',
+  mysql:
+    'create table notes (\n  id bigint auto_increment primary key,\n  text text not null,\n  at datetime default current_timestamp\n);',
 }
 
 const columnTypes = [
@@ -418,17 +451,20 @@ function CreateTable({
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
 
-  const patch = (i: number, change: Partial<ColumnDraft>) => setColumns(columns.map((c, ci) => (ci === i ? { ...c, ...change } : c)))
+  const patch = (i: number, change: Partial<ColumnDraft>) =>
+    setColumns(columns.map((c, ci) => (ci === i ? { ...c, ...change } : c)))
 
   async function create() {
-    if (!plainName.test(name)) return setError('The table needs a plain name — lowercase letters, digits and underscores.')
+    if (!plainName.test(name))
+      return setError('The table needs a plain name — lowercase letters, digits and underscores.')
     const used = columns.filter((c) => c.name.trim() !== '')
     if (used.length === 0) return setError('The table needs at least one column.')
     const odd = used.find((c) => !plainName.test(c.name))
     if (odd) return setError(`"${odd.name}" won't do as a column name — lowercase letters, digits and underscores.`)
     const quote = (ident: string) => (mysql ? `\`${ident}\`` : `"${ident}"`)
     const defs = used.map((c) => {
-      const type = c.type === 'auto' ? (mysql ? 'bigint auto_increment' : 'bigint generated always as identity') : c.type
+      const type =
+        c.type === 'auto' ? (mysql ? 'bigint auto_increment' : 'bigint generated always as identity') : c.type
       return `  ${quote(c.name)} ${type}${c.required && c.type !== 'auto' ? ' not null' : ''}`
     })
     const pk = used.filter((c) => c.pk).map((c) => quote(c.name))
@@ -438,7 +474,9 @@ function CreateTable({
     setError('')
     try {
       await runSql(place.space, place.service, place.db, '', `create table ${target} (\n${defs.join(',\n')}\n)`)
-      await qc.invalidateQueries({ queryKey: sqlTablesQuery(place.space, place.service, place.db, mysql ? '' : place.schema).queryKey })
+      await qc.invalidateQueries({
+        queryKey: sqlTablesQuery(place.space, place.service, place.db, mysql ? '' : place.schema).queryKey,
+      })
       onCreated(name)
     } catch (err) {
       setError(errText(err, 'Creating the table did not work.'))
@@ -448,7 +486,7 @@ function CreateTable({
   }
 
   return (
-    <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-lg border border-line">
+    <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
       <div className="flex h-11 shrink-0 items-center justify-between border-b border-line pr-1.5 pl-3">
         <p className="text-sm font-medium text-ink">
           New table in <span className="font-mono">{mysql ? place.db : `${place.db}.${place.schema}`}</span>
@@ -485,7 +523,12 @@ function CreateTable({
                 options={mysql ? mysqlColumnTypes : columnTypes}
               />
               <label className="flex items-center gap-1 text-xs text-ink-soft">
-                <input type="checkbox" checked={c.pk} onChange={(e) => patch(i, { pk: e.target.checked })} className="size-3.5" />
+                <input
+                  type="checkbox"
+                  checked={c.pk}
+                  onChange={(e) => patch(i, { pk: e.target.checked })}
+                  className="size-3.5"
+                />
                 key
               </label>
               {c.type !== 'auto' && (

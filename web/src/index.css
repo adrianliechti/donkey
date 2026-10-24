@@ -47,7 +47,10 @@
   --color-accent: light-dark(oklch(62.3% 0.214 259.815), oklch(70.7% 0.165 254.624)); /* blue-500 / 400 */
   --color-accent-strong: light-dark(oklch(54.6% 0.245 262.881), oklch(62.3% 0.214 259.815)); /* blue-600 / 500 */
   --color-accent-soft: light-dark(oklch(93.2% 0.032 255.585), oklch(28.2% 0.091 267.935)); /* blue-100 / 950 */
-  --color-on-accent: light-dark(oklch(100% 0 0), oklch(14.7% 0.004 49.25)); /* text on an accent fill: white / stone-950 */
+  --color-on-accent: light-dark(
+    oklch(100% 0 0),
+    oklch(14.7% 0.004 49.25)
+  ); /* text on an accent fill: white / stone-950 */
 
   /* Health semantics */
   --color-success: light-dark(oklch(59.6% 0.145 163.225), oklch(76.5% 0.177 163.223)); /* emerald-600 / 400 */
@@ -64,8 +67,7 @@
   --color-chart-views: light-dark(#60a5fa, #2856d6);
 
   --font-sans: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
-  --font-mono: 'JetBrains Mono Variable', ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas,
-    monospace;
+  --font-mono: 'JetBrains Mono Variable', ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas, monospace;
 
   /* Motion: things enter decelerating, leave accelerating, and every exit is
    * shorter than its entrance. Durations are read as duration-(--duration-x). */
@@ -147,10 +149,7 @@ input[type='radio'] {
 
 /* The paddock: the dotted field app cards sit on. */
 .dotgrid {
-  background-image: radial-gradient(
-    color-mix(in srgb, var(--color-line-strong) 55%, transparent) 1px,
-    transparent 1px
-  );
+  background-image: radial-gradient(color-mix(in srgb, var(--color-line-strong) 55%, transparent) 1px, transparent 1px);
   background-size: 22px 22px;
 }
 

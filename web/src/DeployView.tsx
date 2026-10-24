@@ -23,15 +23,7 @@ import { fleetQuery, useFleet } from './queries'
 // should not ship what `donkey deploy` would leave behind. The server
 // enforces them again for any client; doing it here means the bytes never
 // leave the machine in the first place.
-const SKIP_DIRS = new Set([
-  '.git',
-  'node_modules',
-  '.venv',
-  'venv',
-  '__pycache__',
-  '.idea',
-  '.vscode',
-])
+const SKIP_DIRS = new Set(['.git', 'node_modules', '.venv', 'venv', '__pycache__', '.idea', '.vscode'])
 const SENSITIVE_EXT = ['.pem', '.key', '.p12', '.pfx']
 const SSH_KEYS = new Set(['id_rsa', 'id_dsa', 'id_ecdsa', 'id_ed25519'])
 
@@ -41,7 +33,6 @@ function sensitiveFile(name: string): boolean {
   if (SENSITIVE_EXT.some((ext) => lower.endsWith(ext))) return true
   return SSH_KEYS.has(lower) || SSH_KEYS.has(lower.replace(/\.pub$/, ''))
 }
-
 
 interface Collected {
   path: string
@@ -61,9 +52,7 @@ async function collectEntry(
     }
     const reader = (entry as FileSystemDirectoryEntry).createReader()
     for (;;) {
-      const batch = await new Promise<FileSystemEntry[]>((resolve, reject) =>
-        reader.readEntries(resolve, reject),
-      )
+      const batch = await new Promise<FileSystemEntry[]>((resolve, reject) => reader.readEntries(resolve, reject))
       if (batch.length === 0) break
       for (const e of batch) await collectEntry(e, prefix + entry.name + '/', out, skipped)
     }
@@ -73,9 +62,7 @@ async function collectEntry(
     skipped.push(prefix + entry.name)
     return
   }
-  const file = await new Promise<File>((resolve, reject) =>
-    (entry as FileSystemFileEntry).file(resolve, reject),
-  )
+  const file = await new Promise<File>((resolve, reject) => (entry as FileSystemFileEntry).file(resolve, reject))
   out.push({ path: prefix + entry.name, file })
 }
 
@@ -104,10 +91,7 @@ function zipFrom(files: Collected[], root: string, buffers: Map<string, Uint8Arr
   return new Blob([zipSync(data)], { type: 'application/zip' })
 }
 
-async function uploadFromDrop(
-  items: DataTransferItemList,
-  buffers: Map<string, Uint8Array>,
-): Promise<Upload> {
+async function uploadFromDrop(items: DataTransferItemList, buffers: Map<string, Uint8Array>): Promise<Upload> {
   const entries: FileSystemEntry[] = []
   const looseZip = items.length === 1 ? items[0].getAsFile() : null
   for (const item of Array.from(items)) {
@@ -126,9 +110,7 @@ async function uploadFromDrop(
     if (entries.length === 1 && entry.isDirectory) {
       const reader = (entry as FileSystemDirectoryEntry).createReader()
       for (;;) {
-        const batch = await new Promise<FileSystemEntry[]>((resolve, reject) =>
-          reader.readEntries(resolve, reject),
-        )
+        const batch = await new Promise<FileSystemEntry[]>((resolve, reject) => reader.readEntries(resolve, reject))
         if (batch.length === 0) break
         for (const e of batch) await collectEntry(e, '', collected, skipped)
       }
@@ -143,10 +125,7 @@ async function uploadFromDrop(
   for (const c of collected) {
     buffers.set(c.path, new Uint8Array(await c.file.arrayBuffer()))
   }
-  const label =
-    entries.length === 1
-      ? `${entries[0].name}/ (${collected.length} files)`
-      : `${collected.length} files`
+  const label = entries.length === 1 ? `${entries[0].name}/ (${collected.length} files)` : `${collected.length} files`
   return {
     blob: null,
     label,
@@ -194,8 +173,11 @@ export function DeployView({
   const buffers = useRef(new Map<string, Uint8Array>())
   const fleet = useFleet()
   const queryClient = useQueryClient()
-  const deploySpaces = fleet.data?.spaces.filter((space) =>
-    fleet.data?.platformAdmin || fleet.data?.roles[space] === 'admin' || fleet.data?.roles[space] === 'developer') ?? []
+  const deploySpaces =
+    fleet.data?.spaces.filter(
+      (space) =>
+        fleet.data?.platformAdmin || fleet.data?.roles[space] === 'admin' || fleet.data?.roles[space] === 'developer',
+    ) ?? []
 
   async function accept(makeUpload: () => Promise<Upload>) {
     setError('')
@@ -267,9 +249,7 @@ export function DeployView({
       )
       setPhase({ step: 'done', result, plan: settled, review })
     } catch (err) {
-      setError(
-        errText(err, 'The deploy did not finish. Check the app pages for the latest status.'),
-      )
+      setError(errText(err, 'The deploy did not finish. Check the app pages for the latest status.'))
       setPhase(review)
     } finally {
       queryClient.invalidateQueries({ queryKey: fleetQuery.queryKey })
@@ -316,8 +296,7 @@ export function DeployView({
               {busy ? 'Preparing the upload…' : 'Drop your project folder or a .zip here'}
             </p>
             <p className="text-xs text-muted">
-              Donkey finds each app, connects them and prepares their services. Review everything
-              before deploying.
+              Donkey finds each app, connects them and prepares their services. Review everything before deploying.
             </p>
             <input
               ref={fileInput}
@@ -336,9 +315,17 @@ export function DeployView({
         </>
       )}
       {phase.step === 'reading' && (
-        <Callout tone="info" icon={Loader2} title={<>Reading <span className="font-mono">{phase.upload.label}</span>…</>}>
-          Finding runnable apps, shared packages, service dependencies and the URLs that connect
-          them. This takes a moment.
+        <Callout
+          tone="info"
+          icon={Loader2}
+          title={
+            <>
+              Reading <span className="font-mono">{phase.upload.label}</span>…
+            </>
+          }
+        >
+          Finding runnable apps, shared packages, service dependencies and the URLs that connect them. This takes a
+          moment.
         </Callout>
       )}
       {phase.step === 'review' && (

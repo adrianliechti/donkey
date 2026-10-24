@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import {
   Dialog,
   DialogBackdrop,
@@ -38,9 +38,11 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
 
   // Selecting an item closes the palette through its own onClose, which does
   // not clear the query — so start every open from a clean, unfiltered list.
-  useEffect(() => {
+  const [wasOpen, setWasOpen] = useState(open)
+  if (open !== wasOpen) {
+    setWasOpen(open)
     if (open) setQuery('')
-  }, [open])
+  }
 
   const items = useMemo<Item[]>(() => {
     const go = (fn: () => void) => () => {
@@ -90,8 +92,15 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
         run: go(() => navigate({ to: '/system' })),
       },
     ]
-    return [...apps, ...spaces, ...actions.filter((action) =>
-      action.key === 'action:system' ? data?.platformAdmin : (data?.platformAdmin || Object.values(data?.roles ?? {}).some((role) => role !== 'viewer')))]
+    return [
+      ...apps,
+      ...spaces,
+      ...actions.filter((action) =>
+        action.key === 'action:system'
+          ? data?.platformAdmin
+          : data?.platformAdmin || Object.values(data?.roles ?? {}).some((role) => role !== 'viewer'),
+      ),
+    ]
   }, [data, navigate, onClose, openDeploy])
 
   const q = query.trim().toLowerCase()
@@ -112,10 +121,7 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
           transition
           className="w-full max-w-xl overflow-hidden rounded-xl border border-line bg-card shadow-2xl transition duration-(--duration-base) ease-emphasized data-closed:scale-[.98] data-closed:opacity-0 data-leave:duration-(--duration-fast) data-leave:ease-exit"
         >
-          <Combobox<Item | null>
-            immediate
-            onChange={(item) => item?.run()}
-          >
+          <Combobox<Item | null> immediate onChange={(item) => item?.run()}>
             <div className="flex h-14 items-center gap-2 border-b border-line px-5">
               <Search className="size-4 shrink-0 text-muted" aria-hidden />
               <ComboboxInput

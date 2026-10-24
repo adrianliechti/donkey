@@ -38,7 +38,8 @@ export function EnvEditor({ space, app, onSaved }: { space: string; app: string;
 
   function validKey(key: string): string {
     if (!KEY_RE.test(key)) return `“${key}” is not a valid variable name — letters, digits and _ only.`
-    if (key === 'PORT') return 'PORT is set by donkey from the `port` in donkey.yaml — change it there and deploy again.'
+    if (key === 'PORT')
+      return 'PORT is set by donkey from the `port` in donkey.yaml — change it there and deploy again.'
     return ''
   }
 

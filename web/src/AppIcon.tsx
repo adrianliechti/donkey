@@ -45,7 +45,15 @@ const tone: Record<Health, string> = {
  * runs and only takes a color when something is off — red when it is down,
  * amber when the cluster cannot say.
  */
-export function AppIcon({ health, stack, className = 'size-4' }: { health: Health; stack?: string; className?: string }) {
+export function AppIcon({
+  health,
+  stack,
+  className = 'size-4',
+}: {
+  health: Health
+  stack?: string
+  className?: string
+}) {
   const logo = stack ? logos[stack] : undefined
   const classes = `shrink-0 ${tone[health]} ${className}`
   if (!logo) return <AppWindow className={classes} aria-hidden />

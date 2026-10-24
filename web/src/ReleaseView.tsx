@@ -15,18 +15,7 @@ import {
 import type { DeployResult, DeployStage, DeployUpdate, Plan, PlanSignal } from './api'
 import { DiffView } from './DiffView'
 import { FindingsList } from './FindingsList'
-import {
-  Button,
-  Callout,
-  Chip,
-  CodeCard,
-  Disclosure,
-  Eyebrow,
-  List,
-  ListRow,
-  Section,
-  SectionHeader,
-} from './ui'
+import { Button, Callout, Chip, CodeCard, Disclosure, Eyebrow, List, ListRow, Section, SectionHeader } from './ui'
 
 // A release reads top to bottom like the Overview tab: a status callout,
 // then plain titled sections — build, services, problems, repairs — and the
@@ -57,7 +46,10 @@ function StateIcon({ state }: { state: 'complete' | 'current' | 'failed' | 'wait
 // release that went through needs no banner — the steps all show done, and
 // the app's address is one click away in its header.
 function ReleaseState({ update, result }: { update: DeployUpdate; result?: DeployResult }) {
-  const current = Math.max(0, stages.findIndex((stage) => stage.id === (update.stage ?? 'detecting')))
+  const current = Math.max(
+    0,
+    stages.findIndex((stage) => stage.id === (update.stage ?? 'detecting')),
+  )
   const failed = Boolean(result && !result.ok)
 
   return (
@@ -68,7 +60,9 @@ function ReleaseState({ update, result }: { update: DeployUpdate; result?: Deplo
           icon={failed ? CircleAlert : Rocket}
           title={<span aria-live="polite">{statusText(update.stage, result)}</span>}
         >
-          {failed ? <span className="whitespace-pre-wrap break-words">{result?.error || 'The release did not complete.'}</span> : undefined}
+          {failed ? (
+            <span className="whitespace-pre-wrap break-words">{result?.error || 'The release did not complete.'}</span>
+          ) : undefined}
         </Callout>
       )}
       <List>
@@ -147,7 +141,9 @@ function DetectionDetails({ plan, update, result }: { plan: Plan; update: Deploy
         <Fact label="Base image">
           {images.length > 0 ? (
             images.map((image) => (
-              <span key={image} className="block break-all font-mono text-xs">{image}</span>
+              <span key={image} className="block break-all font-mono text-xs">
+                {image}
+              </span>
             ))
           ) : (
             <span className="text-xs text-muted">
@@ -212,7 +208,9 @@ function ServicesNeeded({ plan }: { plan: Plan }) {
                 <Database className={`size-4 shrink-0 ${on ? 'text-ink-soft' : 'text-muted/60'}`} aria-hidden />
                 <div className="min-w-0 flex-1">
                   <span className={`font-mono text-sm ${on ? 'text-ink' : 'text-muted'}`}>{service.name}</span>
-                  {service.type !== service.name && <span className="ml-2 font-mono text-[11px] text-muted">{service.type}</span>}
+                  {service.type !== service.name && (
+                    <span className="ml-2 font-mono text-[11px] text-muted">{service.type}</span>
+                  )}
                   {service.reason && <p className="truncate text-xs text-muted">{service.reason}</p>}
                 </div>
                 <span className={`shrink-0 text-xs ${on ? 'text-success' : 'text-muted'}`}>{state}</span>
@@ -224,7 +222,8 @@ function ServicesNeeded({ plan }: { plan: Plan }) {
       {storage.length > 0 && (
         <p className="text-xs text-muted">
           <Box className="mr-1.5 inline size-3.5 align-[-3px]" aria-hidden />
-          One {plan.app.storageSize || '1Gi'} disk keeps <span className="font-mono text-ink-soft">{storage.join(', ')}</span>.
+          One {plan.app.storageSize || '1Gi'} disk keeps{' '}
+          <span className="font-mono text-ink-soft">{storage.join(', ')}</span>.
         </p>
       )}
     </Section>
@@ -261,7 +260,9 @@ function Problems({ plan, result }: { plan: Plan; result?: DeployResult }) {
                       donkey env set {proposal.key}={proposal.value}
                     </code>
                   )}
-                  {proposal.type === 'edit_file' && <span className="block font-mono text-xs text-ink">{proposal.path}</span>}
+                  {proposal.type === 'edit_file' && (
+                    <span className="block font-mono text-xs text-ink">{proposal.path}</span>
+                  )}
                   <p className="text-xs leading-relaxed text-muted">{proposal.explanation}</p>
                   {proposal.diff && <DiffView diff={proposal.diff} />}
                 </div>
@@ -381,12 +382,20 @@ export function ReleaseView({
     <div className="flex flex-wrap items-center justify-end gap-2">
       {result.ok ? (
         <>
-          {onDeployAnother && <Button kind="quiet" onClick={onDeployAnother}>Deploy another</Button>}
+          {onDeployAnother && (
+            <Button kind="quiet" onClick={onDeployAnother}>
+              Deploy another
+            </Button>
+          )}
           {onOpen && <Button onClick={onOpen}>Open the app page</Button>}
         </>
       ) : (
         <>
-          {onDeployAnother && <Button kind="quiet" onClick={onDeployAnother}>Pick something else</Button>}
+          {onDeployAnother && (
+            <Button kind="quiet" onClick={onDeployAnother}>
+              Pick something else
+            </Button>
+          )}
           {onBackToReview && <Button onClick={onBackToReview}>Back to review</Button>}
         </>
       )}

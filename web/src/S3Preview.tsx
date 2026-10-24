@@ -5,7 +5,17 @@ import { useState, type ReactNode } from 'react'
 import { Markdown } from '@tanstack/markdown/react'
 import { Download, Trash2, X } from 'lucide-react'
 import { prettyJson } from './redisApi'
-import { isImage, isJsonName, isMarkdown, kindOf, lastSegment, s3Api, s3DownloadUrl, useS3Info, type S3Info } from './s3Api'
+import {
+  isImage,
+  isJsonName,
+  isMarkdown,
+  kindOf,
+  lastSegment,
+  s3Api,
+  s3DownloadUrl,
+  useS3Info,
+  type S3Info,
+} from './s3Api'
 import { saveBlob } from './api'
 import { SourceCode } from './SourceCode'
 import { Button, CopyButton, ErrorNote, Eyebrow, IconButton, Select, Spinner } from './ui'
@@ -71,7 +81,7 @@ export function S3Preview({
   }
 
   return (
-    <aside className={`flex min-h-0 flex-col overflow-hidden rounded-lg border border-line ${className}`} aria-label="Object preview">
+    <aside className={`flex min-h-0 flex-col overflow-hidden ${className}`} aria-label="Object preview">
       <header className="flex min-h-11 shrink-0 items-center gap-2 border-b border-line py-1 pr-1.5 pl-3">
         <Icon className="size-4 shrink-0 text-muted" aria-hidden />
         <h3 className="min-w-0 flex-1 truncate font-mono text-sm font-semibold text-ink" title={objectKey}>
@@ -147,12 +157,17 @@ function Look({
 
   const markdown = isMarkdown(info.key)
   // Newline-delimited JSON stays one record a line.
-  const json = isJsonName(info.key, info.contentType) && !/\.(jsonl|ndjson)$/i.test(info.key) && /^\s*[[{]/.test(info.text)
+  const json =
+    isJsonName(info.key, info.contentType) && !/\.(jsonl|ndjson)$/i.test(info.key) && /^\s*[[{]/.test(info.text)
   return (
     <div className="flex min-h-0 flex-1 flex-col border-b border-line">
       {(markdown || info.truncated) && (
         <div className="flex min-h-9 shrink-0 items-center justify-between gap-2 border-b border-line pr-1.5 pl-3 text-xs text-muted">
-          <span>{info.truncated ? `The first ${humanSize(new TextEncoder().encode(info.text).length)} of ${humanSize(info.size)}` : 'Markdown'}</span>
+          <span>
+            {info.truncated
+              ? `The first ${humanSize(new TextEncoder().encode(info.text).length)} of ${humanSize(info.size)}`
+              : 'Markdown'}
+          </span>
           {markdown && (
             <Select
               variant="quiet"
@@ -174,7 +189,11 @@ function Look({
         </div>
       ) : (
         <div className="min-h-0 flex-1 overflow-auto bg-well">
-          <SourceCode path={json ? 'object.json' : info.key} text={json ? prettyJson(info.text) : info.text} className="" />
+          <SourceCode
+            path={json ? 'object.json' : info.key}
+            text={json ? prettyJson(info.text) : info.text}
+            className=""
+          />
         </div>
       )}
     </div>
@@ -188,7 +207,9 @@ function Note({ children }: { children: ReactNode }) {
 function Facts({ bucket, info, dims }: { bucket: string; info: S3Info; dims: string }) {
   const meta = Object.entries(info.metadata ?? {})
   return (
-    <dl className={`shrink-0 space-y-2.5 overflow-y-auto p-3 ${info.text !== undefined && info.size > 0 ? 'max-h-[45%]' : 'flex-1'}`}>
+    <dl
+      className={`shrink-0 space-y-2.5 overflow-y-auto p-3 ${info.text !== undefined && info.size > 0 ? 'max-h-[45%]' : 'flex-1'}`}
+    >
       <Fact label="Key" copy={info.key}>
         {info.key}
       </Fact>
