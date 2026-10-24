@@ -374,11 +374,11 @@ func (c *AppConfig) Validate() error {
 	if c.Port < 1 || c.Port > 65535 {
 		return fmt.Errorf("port must be between 1 and 65535 (the port your app listens on)")
 	}
-	// `internal` says "no address of my own"; `public` says "no login on the
-	// addresses I do have". Together they are only contradictory when the app
-	// has no routes either — then there is nothing for `public` to open up.
-	if c.Internal && c.Public && len(c.Routes) == 0 {
-		return fmt.Errorf("an internal app has no address, so `public: true` has nothing to open — drop it, or give the app a `routes:` entry on another app's address")
+	if c.Internal && len(c.Routes) > 0 {
+		return fmt.Errorf("an internal app cannot have gateway routes — remove `routes`, or set `internal: false` to expose the app")
+	}
+	if c.Internal && c.Public {
+		return fmt.Errorf("an internal app has no address, so `public: true` has nothing to open — drop one of the two")
 	}
 	if c.Mode != "" && c.Mode != AppModeWeb && c.Mode != AppModeAPI {
 		return fmt.Errorf("mode must be web or api")

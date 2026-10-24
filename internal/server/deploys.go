@@ -7,6 +7,8 @@ import (
 	"sync"
 	"time"
 	"unicode/utf8"
+
+	"github.com/adrianliechti/donkey/internal/config"
 )
 
 // The deploy board is what donkey-orchestrator is working on right now, and
@@ -171,7 +173,14 @@ func (s *Server) handleDeploys(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	roles := s.spaceList(r.Context(), settings).Roles
+	deploys := s.board.list(time.Now(), func(space string) bool { return roles[space] != "" })
+	for i := range deploys {
+		if roles[deploys[i].Space] == config.SpaceViewer {
+			// Progress and failures can contain build output and application logs.
+			deploys[i].Line, deploys[i].Error = "", ""
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"deploys": s.board.list(time.Now(), func(space string) bool { return roles[space] != "" }),
+		"deploys": deploys,
 	})
 }

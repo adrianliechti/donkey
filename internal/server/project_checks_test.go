@@ -54,7 +54,6 @@ func TestProjectKeepsExistingBrowserRoute(t *testing.T) {
 				t.Fatal(err)
 			}
 			state.apps[0].app.Public = true
-			state.apps[1].app.Internal = true
 			state.apps[1].app.Public = tc.public
 			routes := []config.RouteConfig{{App: tc.routeApp, Path: "/api"}}
 			state.apps[1].app.Routes = routes

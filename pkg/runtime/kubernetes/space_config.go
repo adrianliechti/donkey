@@ -23,6 +23,9 @@ func (r *Runtime) EnsureSpaceConfigs(ctx context.Context) error {
 	if err := r.ValidateExistingNames(ctx); err != nil {
 		return err
 	}
+	if err := r.migrateLegacyRoles(ctx); err != nil {
+		return err
+	}
 	if err := r.MigrateSystemConfig(ctx); err != nil {
 		return err
 	}

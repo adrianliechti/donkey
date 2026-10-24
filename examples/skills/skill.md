@@ -138,16 +138,15 @@ Invalid:
 
 - per-app `access` (use space membership instead)
 - `internal` with `host`
-- `internal` with `public`, unless it has `routes` (it applies there)
+- `internal` with `public` or `routes`
 - `public: true` when the space has not enabled `allowPublic`
 - a route path of `/`, or a route targeting the app itself
 
-Frontend and internal backend on one origin:
+Frontend and an externally reachable backend on one origin:
 
 ```yaml
 name: backend
 port: 8000
-internal: true
 routes:
   - app: frontend
     path: /api

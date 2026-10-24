@@ -601,15 +601,13 @@ func applyPlanEdit(sp *storedPlan, edit PlanEdit) {
 		app.Addons = append(app.Addons, config.AddonConfig{Type: svc.Type, Name: svc.Name})
 	}
 
-	if edit.Exposure != exposureOfConfig(app) {
-		switch edit.Exposure {
-		case "public":
-			app.Public, app.Internal = true, false
-		case "internal":
-			app.Public, app.Internal = false, true
-		case "protected":
-			app.Public, app.Internal = false, false
-		}
+	switch edit.Exposure {
+	case "public":
+		app.Public, app.Internal = true, false
+	case "internal":
+		app.Public, app.Internal = false, true
+	case "protected":
+		app.Public, app.Internal = false, false
 	}
 	if app.Internal {
 		app.Host = ""

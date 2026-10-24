@@ -242,11 +242,47 @@ func TestDatabaseEditorIntegration(t *testing.T) {
 			query := func(statement string) map[string]any {
 				return databaseCall(t, s, "POST", prefix+"/query", map[string]string{"sql": statement}, 200)
 			}
+			script := func(statements []string, status int) map[string]any {
+				return databaseCall(t, s, "POST", prefix+"/query", map[string]any{"statements": statements}, status)
+			}
 			query("CREATE TABLE " + table + " (tenant integer NOT NULL, id bigint NOT NULL, label text, PRIMARY KEY (tenant, id))")
 			t.Cleanup(func() { databaseCall(t, s, "DELETE", prefix+"/tables/"+name, nil, 200) })
 			queryResult := query("INSERT INTO " + table + " (tenant, id, label) VALUES (1, 9007199254740993, 'before')")
 			if queryResult["affected"] != float64(1) {
 				t.Fatalf("SQL command count: %v", queryResult)
+			}
+			// Every statement in a run must share its session. A failure closes
+			// that session, rolling back an unfinished explicit transaction.
+			for _, ending := range []string{"ROLLBACK", "COMMIT", "error"} {
+				query("UPDATE " + table + " SET label = 'before'")
+				batch := []string{"BEGIN", "UPDATE " + table + " SET label = 'changed'"}
+				status := 200
+				if ending == "error" {
+					batch = append(batch, "SELECT * FROM "+c.quote(name+"_missing"), "COMMIT")
+					status = 400
+				} else {
+					batch = append(batch, ending, "SELECT label FROM "+table)
+				}
+				result := script(batch, status)
+				want := "before"
+				if ending == "COMMIT" {
+					want = "changed"
+				}
+				if status == 200 && !strings.Contains(fmt.Sprint(result["rows"]), want) {
+					t.Fatalf("%s returned wrong last result: %v", ending, result)
+				}
+				if status == 400 && !strings.Contains(fmt.Sprint(result), "statement 3 of 4") {
+					t.Fatalf("missing statement error: %v", result)
+				}
+				if got := query("SELECT label FROM " + table); !strings.Contains(fmt.Sprint(got["rows"]), want) {
+					t.Fatalf("%s did not preserve transaction boundaries: %v", ending, got)
+				}
+			}
+			query("UPDATE " + table + " SET label = 'before'")
+			// Reject an invalid batch before executing any part of it.
+			script([]string{"UPDATE " + table + " SET label = 'invalid'", " "}, 400)
+			if got := query("SELECT label FROM " + table); !strings.Contains(fmt.Sprint(got["rows"]), "before") {
+				t.Fatalf("partially executed an invalid batch: %v", got)
 			}
 			tables := databaseCall(t, s, "GET", prefix+"/tables", nil, 200)
 			if !strings.Contains(fmt.Sprint(tables), name) {

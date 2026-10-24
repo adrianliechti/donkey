@@ -220,6 +220,21 @@ func TestProjectRejectsInvalidConnections(t *testing.T) {
 	}
 }
 
+func TestProjectRejectsBrowserConnectionToInternalApp(t *testing.T) {
+	s, _, body := projectFixture(t)
+	p := callProject(t, s, body)
+	stored, _ := s.plans.get(p.ID)
+	// A console exposure edit must not let generated routes bypass validation.
+	stored.project.apps[1].app.Internal = true
+	plan, apps, _ := s.resolveProject(context.Background(), p.ID, stored.project)
+	if plan.Ready || !Blocking(plan.Findings) {
+		t.Fatalf("internal backend received a browser route: %+v", plan)
+	}
+	if len(apps[1].app.Routes) != 0 {
+		t.Fatalf("planner added a route to an internal backend: %+v", apps[1].app.Routes)
+	}
+}
+
 func TestProjectDeploymentRejectsChangedUpload(t *testing.T) {
 	s, _, body := projectFixture(t)
 	p := callProject(t, s, body)

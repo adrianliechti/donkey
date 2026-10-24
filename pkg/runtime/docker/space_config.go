@@ -12,6 +12,9 @@ import (
 )
 
 func (r *Runtime) EnsureSpaceConfigs(ctx context.Context) error {
+	if err := r.state.migrateLegacyRoles(); err != nil {
+		return err
+	}
 	spaces, err := r.ListSpaces(ctx)
 	if err != nil {
 		return err

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 
 	"github.com/adrianliechti/donkey/internal/config"
@@ -54,7 +55,16 @@ func reconcileAppAccess(ctx context.Context, provider Provider, app AppRef) erro
 		}
 	}
 	var saved config.AccessConfig
+	var removedRoles []string
 	if value, found := console["access"]; found {
+		clean, removed, err := config.RemoveLegacyRoles(value, "")
+		if err != nil {
+			return err
+		}
+		if clean != nil {
+			value = clean
+		}
+		removedRoles = removed
 		if err := json.Unmarshal(value, &saved); err != nil {
 			return err
 		}
@@ -107,6 +117,9 @@ func reconcileAppAccess(ctx context.Context, provider Provider, app AppRef) erro
 			text := string(value)
 			if err := provider.SetAppMeta(ctx, app.Space, app.App, MetaConsole, &text); err != nil {
 				return err
+			}
+			if len(removedRoles) > 0 {
+				log.Printf("WARNING: removed unsupported legacy role grants from %s/%s console settings: %q; assign users/groups explicitly to restore access", app.Space, app.App, removedRoles)
 			}
 		}
 	}

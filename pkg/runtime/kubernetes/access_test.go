@@ -1,8 +1,11 @@
 package kubernetes
 
 import (
+	"bytes"
 	"context"
+	"log"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/adrianliechti/donkey/internal/config"
@@ -18,6 +21,10 @@ import (
 // viewer or public-access fields. Test the current-format upgrade separately
 // from the older annotation/JSON migrations.
 func TestAccessMigrationFromMainYAML(t *testing.T) {
+	var warnings bytes.Buffer
+	previous := log.Writer()
+	log.SetOutput(&warnings)
+	t.Cleanup(func() { log.SetOutput(previous) })
 	ctx := context.Background()
 	clientset := fake.NewClientset()
 	r := NewRuntime(&Client{Clientset: clientset}, Options{
@@ -25,16 +32,21 @@ func TestAccessMigrationFromMainYAML(t *testing.T) {
 	})
 	space := manifests.SpaceMarker("team", "workloads")
 	space.Labels = r.c.expectedObjectIdentity(space.Labels)
-	space.Data = map[string]string{"config.yaml": "admins:\n  users: [owner@example.com]\ndevelopers:\n  groups: [builders]\ndomains: [team.example.com]\n"}
+	space.Data = map[string]string{"config.yaml": "admins:\n  users: [owner@example.com]\n  roles: [old-owners]\ndevelopers:\n  groups: [builders]\n  roles: [old-builders]\ndomains: [team.example.com]\n"}
 	platform := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{
 		Name: manifests.SystemConfigMapName, Namespace: "donkey-system", Labels: r.c.expectedObjectIdentity(manifests.SystemLabels(manifests.ServerName)),
-	}, Data: map[string]string{"platform.yaml": "admins:\n  users: [root@example.com]\n"}}
+	}, Data: map[string]string{"platform.yaml": "admins:\n  users: [root@example.com]\n  roles: [old-root]\n"}}
 	route := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{
 		Name: "team-web-route", Namespace: "workloads", Labels: r.c.expectedObjectIdentity(manifests.Labels("team", "web", manifests.RoleRoute)),
 	}, Data: map[string]string{
 		"route.yaml":  "host: web.team.example.com\npath: /\nbackend: http://team-web.workloads.svc:80\n",
-		"access.yaml": "users: [reader@example.com]\ngroups: [builders, readers]\n",
+		"access.yaml": "users: [reader@example.com]\ngroups: [builders, readers]\nroles: [old-readers]\n",
 	}}
+	// Current YAML takes precedence over stale fallback records, even when
+	// those old records could no longer be decoded.
+	space.Data["config.json"] = `{"admins":{"roles":"stale"}}`
+	platform.Data["platform.json"] = `{"admins":{"roles":"stale"}}`
+	route.Annotations = map[string]string{manifests.AnnotationAccess: `{"roles":"stale"}`}
 	for _, cm := range []*corev1.ConfigMap{space, platform, route} {
 		if _, err := clientset.CoreV1().ConfigMaps(cm.Namespace).Create(ctx, cm, metav1.CreateOptions{}); err != nil {
 			t.Fatal(err)
@@ -52,6 +64,11 @@ func TestAccessMigrationFromMainYAML(t *testing.T) {
 		}
 		if err := rt.ReconcileAccess(ctx, r, ""); err != nil {
 			t.Fatal(err)
+		}
+	}
+	for _, name := range []string{"old-owners", "old-builders", "old-root", "old-readers"} {
+		if strings.Count(warnings.String(), name) != 1 {
+			t.Fatalf("missing or repeated migration warning for %s: %s", name, &warnings)
 		}
 	}
 	policy, err := r.SpaceConfig(ctx, "team")

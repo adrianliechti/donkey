@@ -50,6 +50,17 @@ func trinoCall(t *testing.T, s *Server, method, suffix, body string) *httptest.R
 	return rec
 }
 
+func TestTrinoRejectsBatchBeforeRunningAnyStatement(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("Trino executed part of an unsupported batch")
+	}))
+	defer upstream.Close()
+	rec := trinoCall(t, trinoTestServer(upstream.URL), "POST", "/query", `{"statements":["START TRANSACTION", "COMMIT"]}`)
+	if rec.Code != 400 || !strings.Contains(rec.Body.String(), "one statement per run") {
+		t.Fatalf("unsupported batch: %d %s", rec.Code, rec.Body)
+	}
+}
+
 func TestTrinoConsoleForwardsCurrentUserTokenOverHTTPAndHTTPS(t *testing.T) {
 	for _, tls := range []bool{false, true} {
 		t.Run(fmt.Sprintf("tls=%t", tls), func(t *testing.T) {
@@ -162,6 +173,7 @@ func TestTrinoConsoleQuotesNamesAndSetsQueryContext(t *testing.T) {
 		{"GET", `/databases/hive/tables/events/rows?schema=analytics&limit=2&offset=4&order=odd%22column&dir=desc`, "", `SELECT * FROM "hive"."analytics"."events" ORDER BY "odd""column" DESC OFFSET 4 LIMIT 3`, "hive", "analytics"},
 		{"POST", "/databases/iceberg/query", `{"sql":"SELECT * FROM events","schema":"reports"}`, `SELECT * FROM events`, "iceberg", "reports"},
 		{"POST", "/query", `{"sql":"SHOW CATALOGS","schema":""}`, `SHOW CATALOGS`, "hive", ""},
+		{"POST", "/query", `{"statements":["SHOW CATALOGS"],"schema":""}`, `SHOW CATALOGS`, "hive", ""},
 	} {
 		expectedSQL, expectedCatalog, expectedSchema = tc.sql, tc.catalog, tc.schema
 		rec := trinoCall(t, s, tc.method, tc.path, tc.body)

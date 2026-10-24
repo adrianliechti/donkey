@@ -69,7 +69,7 @@ func TestStartupMovesUsersAndGroupsAndClosesPublicRoutes(t *testing.T) {
 	r := &accessRuntime{
 		policy:  config.SpaceConfig{Admins: config.AccessConfig{Users: []string{"owner@example.com"}}, Domains: []string{"example.com"}},
 		network: NetworkState{RouteFound: true, Access: &config.AccessConfig{Users: []string{"visitor@example.com"}}, Routes: []PathRouteState{{Access: &config.AccessConfig{Groups: []string{"readers"}}}}},
-		console: `{"exposure":"public","host":"web.example.com","access":{"users":["visitor@example.com","console@example.com"]}}`,
+		console: `{"exposure":"public","host":"web.example.com","access":{"users":["visitor@example.com","console@example.com"],"roles":["old-console-readers"]}}`,
 	}
 	for range 2 {
 		if err := ReconcileAccess(context.Background(), r, ""); err != nil {

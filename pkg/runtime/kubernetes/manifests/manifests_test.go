@@ -144,9 +144,9 @@ func TestRoutesDoNotCarryAppMembership(t *testing.T) {
 	if route.Access != nil {
 		t.Fatal("app membership must be managed on the space")
 	}
-	in.App.Internal, in.App.Mode = true, config.AppModeAPI
+	in.App.Mode = config.AppModeAPI
 	if !protected(in) {
-		t.Fatal("an internal API's shared route requires login unless explicitly public")
+		t.Fatal("an API route requires login unless explicitly public")
 	}
 }
 

@@ -247,6 +247,16 @@ func TestAppValidate(t *testing.T) {
 		{"bad mode", func(c *AppConfig) { c.Mode = "grpc" }, true},
 		{"api public", func(c *AppConfig) { c.Mode, c.Public = AppModeAPI, true }, false},
 		{"api internal", func(c *AppConfig) { c.Mode, c.Internal = AppModeAPI, true }, false},
+		{"internal with routes", func(c *AppConfig) {
+			c.Internal = true
+			c.Routes = []RouteConfig{{App: "web", Path: "/api"}}
+		}, true},
+		{"public internal with routes", func(c *AppConfig) {
+			c.Internal, c.Public = true, true
+			c.Routes = []RouteConfig{{App: "web", Path: "/api"}}
+		}, true},
+		{"public internal", func(c *AppConfig) { c.Internal, c.Public = true, true }, true},
+		{"shared routes", func(c *AppConfig) { c.Routes = []RouteConfig{{App: "web", Path: "/api"}} }, false},
 		{"allow all origins", func(c *AppConfig) { c.CORS = CORSAllowAll }, false},
 		{"bad cors policy", func(c *AppConfig) { c.CORS = "sometimes" }, true},
 	}

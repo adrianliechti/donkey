@@ -1,9 +1,49 @@
 package server
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/adrianliechti/donkey/internal/config"
 )
+
+func TestDeployBoardHidesLogsFromViewers(t *testing.T) {
+	s, rt := spaceTestServer()
+	policy := rt.settings["team"]
+	policy.Viewers = config.AccessConfig{Users: []string{"viewer@example.com"}}
+	policy.Developers.Users = []string{"developer@example.com"}
+	policy.Developers.Groups = nil
+	rt.settings["team"] = policy
+	ticket := s.board.start("team", "web", "owner@example.com", "cli", time.Now())
+	ticket.line("Last lines from the app: DATABASE_URL=postgres://user:secret@db/private")
+	ticket.finish(false, "rollout failed: postgres://user:secret@db/private")
+	s.board.start("other", "hidden", "other@example.com", "cli", time.Now())
+	for _, user := range []string{"viewer@example.com", "developer@example.com", "owner@example.com"} {
+		rec := callAs(t, s, user, "GET", "/v1/deploys", nil)
+		if rec.Code != 200 {
+			t.Fatalf("%s: %d %s", user, rec.Code, rec.Body)
+		}
+		var response struct {
+			Deploys []ActiveDeploy `json:"deploys"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+			t.Fatal(err)
+		}
+		if len(response.Deploys) != 1 || response.Deploys[0].Stage != stageFailed || response.Deploys[0].FinishedAt == nil {
+			t.Fatalf("lost status or exposed another space: %s", rec.Body)
+		}
+		got := response.Deploys[0]
+		if user == "viewer@example.com" {
+			if got.Line != "" || got.Error != "" || strings.Contains(rec.Body.String(), "secret") {
+				t.Fatalf("viewer received logs: %s", rec.Body)
+			}
+		} else if got.Line == "" || got.Error == "" {
+			t.Fatalf("developer lost diagnostics: %s", rec.Body)
+		}
+	}
+}
 
 // A deploy is on the board from the moment it is accepted: queued, then the
 // pipeline's stages, then its outcome — which stays for a while, and only

@@ -186,14 +186,18 @@ func (s *Server) handlePutNetwork(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusConflict, fmt.Errorf("the app's port can't be read from the cluster — deploy it again first"))
 		return
 	}
+	net, err := s.rt.Network(ctx, space, app)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	if req.Exposure == "internal" && len(net.Routes) > 0 {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("an internal app cannot have gateway routes — remove its shared routes before changing exposure"))
+		return
+	}
 	console := s.readConsoleChoices(ctx, space, app)
 	analytics := req.Analytics
 	if analytics == nil {
-		net, err := s.rt.Network(ctx, space, app)
-		if err != nil {
-			writeErr(w, http.StatusBadGateway, err)
-			return
-		}
 		on := net.Analytics != config.AnalyticsOff
 		analytics = &on
 	}

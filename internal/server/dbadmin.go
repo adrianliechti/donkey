@@ -973,23 +973,36 @@ func (s *Server) handleDbDeleteRow(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "affected": tag.RowsAffected()})
 }
 
-// handleDbQuery runs one statement as-is — the escape hatch for everything
-// the grid doesn't do. The token holder owns this database; the server's
-// job is transport, not judgement.
+// handleDbQuery runs a script on one connection, stopping at the first error.
+// Session state and explicit transactions last for this request only.
 func (s *Server) handleDbQuery(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), databaseRequestTimeout)
 	defer cancel()
 	var req struct {
-		SQL    string  `json:"sql"`
-		Schema *string `json:"schema,omitempty"`
+		SQL        string   `json:"sql"`
+		Statements []string `json:"statements"`
+		Schema     *string  `json:"schema,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	if strings.TrimSpace(req.SQL) == "" {
+	if req.SQL != "" && req.Statements != nil {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("send sql or statements, not both"))
+		return
+	}
+	if req.SQL != "" {
+		req.Statements = []string{req.SQL}
+	}
+	if len(req.Statements) == 0 {
 		writeErr(w, http.StatusBadRequest, fmt.Errorf("nothing to run"))
 		return
+	}
+	for _, statement := range req.Statements {
+		if strings.TrimSpace(statement) == "" {
+			writeErr(w, http.StatusBadRequest, fmt.Errorf("statements must not be empty"))
+			return
+		}
 	}
 	conn, err := s.dbBrowseConnect(ctx, r, r.PathValue("db"))
 	if err != nil {
@@ -998,7 +1011,11 @@ func (s *Server) handleDbQuery(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close(ctx)
 	if conn.trino != nil {
-		conn.trino.serveQuery(w, r, req.SQL, req.Schema)
+		if len(req.Statements) != 1 {
+			writeErr(w, http.StatusBadRequest, fmt.Errorf("the Trino console supports one statement per run"))
+			return
+		}
+		conn.trino.serveQuery(w, r, req.Statements[0], req.Schema)
 		return
 	}
 	if req.Schema != nil && *req.Schema != "" {
@@ -1018,40 +1035,51 @@ func (s *Server) handleDbQuery(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	rows, err := conn.QueryText(ctx, req.SQL)
+	var result dbQueryResult
+	for i, statement := range req.Statements {
+		result, err = conn.queryResult(ctx, statement)
+		if err != nil {
+			if len(req.Statements) > 1 {
+				err = fmt.Errorf("statement %d of %d: %w", i+1, len(req.Statements), err)
+			}
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+type dbQueryResult struct {
+	Columns   []string `json:"columns"`
+	Rows      [][]any  `json:"rows"`
+	Affected  int64    `json:"affected"`
+	Truncated bool     `json:"truncated"`
+}
+
+func (conn *databaseConn) queryResult(ctx context.Context, statement string) (dbQueryResult, error) {
+	result := dbQueryResult{Columns: []string{}, Rows: [][]any{}}
+	rows, err := conn.QueryText(ctx, statement)
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, err)
-		return
+		return result, err
 	}
 	defer rows.Close()
 	const maxRows = 500
-	columns := append([]string{}, rows.columns...)
-	data := [][]any{}
-	truncated := false
+	result.Columns = append(result.Columns, rows.columns...)
 	for rows.Next() {
-		if len(data) == maxRows {
-			truncated = true
+		if len(result.Rows) == maxRows {
+			result.Truncated = true
 			break
 		}
 		row, err := rows.Cells()
 		if err != nil {
-			writeErr(w, http.StatusBadRequest, err)
-			return
+			return result, err
 		}
-		data = append(data, row)
+		result.Rows = append(result.Rows, row)
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
-		writeErr(w, http.StatusBadRequest, err)
-		return
+		return result, err
 	}
-	affected, err := conn.queryAffected(ctx, rows, len(data))
-	if err != nil {
-		writeErr(w, http.StatusBadRequest, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"columns": columns, "rows": data,
-		"affected": affected, "truncated": truncated,
-	})
+	result.Affected, err = conn.queryAffected(ctx, rows, len(result.Rows))
+	return result, err
 }

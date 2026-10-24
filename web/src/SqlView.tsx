@@ -41,14 +41,6 @@ function store(key: string, value: unknown) {
 
 type Outcome = { result: DbQueryResult; ms: number; count: number }
 
-/** A failed statement of several knows which one it was. */
-class StatementError extends Error {
-  constructor(cause: unknown, index: number, count: number) {
-    const text = errText(cause, 'The statement failed.')
-    super(count > 1 ? `Statement ${index + 1} of ${count}: ${text}` : text)
-  }
-}
-
 export function SqlWorkbench({
   storageKey,
   dialect,
@@ -62,7 +54,7 @@ export function SqlWorkbench({
   dialect: SqlDialect
   /** What a statement runs against, in words: "app · public". */
   target: string
-  run: (sql: string, signal: AbortSignal) => Promise<DbQueryResult>
+  run: (statements: string[], signal: AbortSignal) => Promise<DbQueryResult>
   /** After a statement that may have changed something. */
   onWrote?: () => void
   /** Text handed over from elsewhere ("write it in SQL", "query this table"). */
@@ -106,14 +98,10 @@ export function SqlWorkbench({
   const execution = useMutation({
     mutationFn: async ({ list, signal }: { list: string[]; signal: AbortSignal }): Promise<Outcome> => {
       const started = performance.now()
-      let result: DbQueryResult = { columns: [], rows: [], affected: 0, truncated: false }
-      for (const [i, sql] of list.entries()) {
-        try {
-          result = await run(sql, signal)
-        } catch (err) {
-          throw new StatementError(err, i, list.length)
-        }
+      if (dialect === 'trino' && list.length > 1) {
+        throw new Error('The Trino console supports one statement per run. Select a statement to run it.')
       }
+      const result = await run(list, signal)
       return { result, ms: performance.now() - started, count: list.length }
     },
   })
@@ -181,6 +169,7 @@ export function SqlWorkbench({
       <div className="flex h-11 shrink-0 items-center justify-between gap-3 border-b border-line pr-2 pl-3">
         <p className="min-w-0 truncate text-xs text-muted">
           Runs against <span className="font-mono text-ink-soft">{target}</span>
+          {dialect !== 'trino' && ' · Transactions must finish in the same run'}
         </p>
         <Toolbar className="gap-2">
           <span className="hidden text-[11px] text-muted lg:inline">

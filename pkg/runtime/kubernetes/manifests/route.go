@@ -49,9 +49,7 @@ const (
 	TokenForward = "forward"
 )
 
-// protected says visitors of this app's routes must sign in. An internal API
-// has no login boundary; if it also claims a shared-address route, that route
-// keeps the same machine-facing behavior.
+// protected says visitors of this app's routes must sign in.
 func protected(in Input) bool {
 	return !in.App.Public
 }

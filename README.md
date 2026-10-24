@@ -589,8 +589,9 @@ stateless, so an administrator does not have to create client IDs. API mode
 does not invent an OAuth scope; space membership controls authorization.
 `public: true` exposes either a web app or API without login only when its space
 has `allowPublic: true`. Public access is off by default. `internal: true` gives
-either mode no address of its own. Shared-address routes still require login
-unless the app explicitly sets `public: true`.
+either mode no gateway exposure and cannot be combined with `routes:`, `host:`
+or `public: true`. Shared-address routes require a non-internal app and still
+require login unless the app explicitly sets `public: true`.
 `cors: allowAll` makes the
 gateway answer browser preflights and adds `Access-Control-Allow-Origin: *` to
 responses. `analytics: false` keeps the gateway's
@@ -602,10 +603,10 @@ prefix. All of it can also be changed in the console's Settings tab without a
 deploy — a console choice holds until donkey.yaml itself settles the matter,
 which always wins.
 
-Those combine, and the demo uses the combination: its backend is `internal`
-(no address of its own), claims `/api` and `/mcp` on the dashboard's address,
-and is `public` so those two paths stay open for machine clients while the
-dashboard around them still asks for a login. Protection attaches per route,
+The demo backend claims `/api` and `/mcp` on the dashboard's address and is
+`public`, so those paths and its own hostname stay open for machine clients
+while the dashboard still asks for a login. It is externally reachable and
+therefore cannot be `internal`. Protection attaches per route,
 not per hostname, which is what makes that possible. The gateway does the
 forwarding, so there is no proxy to write.
 
@@ -652,10 +653,17 @@ New `type: s3` entries default to the service name `s3`.
 The managed server image remains `rustfs/rustfs`, configured through
 `addonImages.rustfs` (`DONKEY_RUSTFS_IMAGE` on the server).
 
+PostgreSQL and MySQL console scripts run on one connection per Run. Put the
+whole transaction, including `BEGIN` and `COMMIT` or `ROLLBACK`, in that run;
+connections are not retained between runs. Execution stops at the first error
+and closes the connection, rolling back any unfinished transaction. Statements
+outside an explicit transaction retain the database's normal commit behavior.
+
 Services of protocol `trino` come from an add-on plugin (`TRINO_URL`,
 optional `TRINO_CATALOG` and `TRINO_SCHEMA`) and open in the console's Trino
 viewer. It browses catalogs, schemas and tables, previews up to 200 rows,
-and runs SQL with up to 500 result rows. It does not count entire tables.
+and runs one SQL statement at a time with up to 500 result rows. It does not
+count entire tables.
 SQL runs with the user's permissions; table previews are read-only.
 Trino uses the same database API as PostgreSQL and MySQL: catalogs appear
 under `databases`, with schema selection on tables and queries. Unknown
@@ -1585,8 +1593,12 @@ Before upgrading:
   membership. Public apps become protected until an admin enables
   `allowPublic` and makes those apps public again.
 - Remove obsolete `access:` sections from app configuration before redeploying.
-  IdP `roles:` memberships are no longer supported; installations using them
-  must replace them with users/groups before this upgrade.
+  IdP `roles:` memberships are no longer supported. The upgrade removes these
+  grants and logs a warning identifying each affected record; it preserves
+  users/groups and never converts role names into groups. Assign users/groups
+  explicitly to restore access. Keep at least one platform admin listed as a
+  user or group before upgrading; removing the last admin grant does not reopen
+  first-user registration.
 
 The metadata cutover below concerns older releases; `main` already uses the
 current ownership schema and does not require deleting and recreating apps.

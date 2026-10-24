@@ -219,7 +219,7 @@ func TestRunRecordEnvResolvesAndDetaches(t *testing.T) {
 
 func TestProjectRouteUsesReviewedHostBeforeFrontendExists(t *testing.T) {
 	r := &Runtime{state: state{dir: t.TempDir()}, opts: Options{Domain: "example.com"}}
-	app := &config.AppConfig{Name: "api", Internal: true, Routes: []config.RouteConfig{{App: "web", Path: "/_donkey/api", StripPrefix: true}}}
+	app := &config.AppConfig{Name: "api", Routes: []config.RouteConfig{{App: "web", Path: "/_donkey/api", StripPrefix: true}}}
 	if err := r.applyRoutes(context.Background(), "team", app, 8080, map[string]string{"web": "custom.example.com"}); err != nil {
 		t.Fatal(err)
 	}

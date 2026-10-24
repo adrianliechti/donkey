@@ -129,13 +129,20 @@ export const sqlRowsQuery = (p: SqlPlace, table: string, view: SqlPageView) =>
     retry,
   })
 
-/** Runs one statement against a database (or Trino catalog) and schema. */
-export function runSql(space: string, service: string, db: string, schema: string, sql: string, signal?: AbortSignal) {
+/** Runs a script on one database connection (Trino accepts one statement). */
+export function runSql(
+  space: string,
+  service: string,
+  db: string,
+  schema: string,
+  sql: string | string[],
+  signal?: AbortSignal,
+) {
   return request<DbQueryResult>(
     servicePath(space, service, db ? `/databases/${encodeURIComponent(db)}/query` : '/query'),
     {
       method: 'POST',
-      body: JSON.stringify({ sql, schema: schema || undefined }),
+      body: JSON.stringify({ statements: typeof sql === 'string' ? [sql] : sql, schema: schema || undefined }),
       signal,
     },
   )
