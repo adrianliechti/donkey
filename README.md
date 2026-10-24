@@ -691,7 +691,7 @@ Apps continue to use their workload IP without a credential.
 ```yaml
 ai:
   baseUrl: https://api.openai.com/v1
-  model: gpt-5.6-sol
+  model: gpt-6-sol
 exa:
   baseUrl: https://api.exa.ai
 ```

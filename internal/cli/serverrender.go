@@ -67,7 +67,7 @@ auth:
 
 ai:
   baseUrl: https://api.openai.com/v1
-  model: gpt-5.6-sol
+  model: gpt-6-sol
 
 # Optional web search and page contents; credential from EXA_API_KEY.
 # exa:
@@ -120,7 +120,7 @@ auth:
 
 ai:
   baseUrl: https://api.openai.com/v1
-  model: gpt-5.6-sol
+  model: gpt-6-sol
 
 # Optional web search and page contents; credential from EXA_API_KEY.
 # exa:
