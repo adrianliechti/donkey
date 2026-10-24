@@ -113,7 +113,8 @@ export function FleetOverview() {
       </div>
 
       {(down.length > 0 || running.length > 0 || failedFirsts.length > 0) && (
-        <section className="grid gap-4 lg:grid-cols-2">
+        // The tiles' columns, so the boards line up with the spaces below.
+        <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
           {down.length > 0 && (
             <Board title="Needs attention" tone="danger">
               {down.map((app) => (
@@ -137,7 +138,7 @@ export function FleetOverview() {
                   )}
                   <span className="truncate font-mono text-ink">{d.app}</span>
                   <span className="truncate font-mono text-xs text-muted">{d.space}</span>
-                  <span className={`ml-auto shrink-0 text-xs ${d.finishedAt ? 'text-danger' : 'text-accent'}`}>
+                  <span className={`ml-auto shrink-0 text-xs ${d.finishedAt ? 'text-danger' : 'text-muted'}`}>
                     {stageText[d.stage]}
                   </span>
                 </BoardRow>
@@ -332,22 +333,26 @@ function AppTile({ app, deploy }: { app: AppSummary; deploy?: ActiveDeploy }) {
           </span>
           <ExposureBadge exposure={app.exposure} mode={app.mode} />
         </div>
-        <div className="mt-2 space-y-1 text-xs text-muted">
-          {app.url ? (
-            <div className="truncate font-mono">{app.url.replace(/^https?:\/\//, '')}</div>
-          ) : (
-            <div
-              className="flex items-center gap-1 truncate font-mono"
-              title="No address of its own — its siblings reach it by name"
-            >
-              <Network className="size-3 shrink-0" aria-hidden /> http://{app.name}
+        {live ? (
+          <DeployState deploy={deploy} />
+        ) : (
+          <div className="mt-2 space-y-1 text-xs text-muted">
+            {app.url ? (
+              <div className="truncate font-mono">{app.url.replace(/^https?:\/\//, '')}</div>
+            ) : (
+              <div
+                className="flex items-center gap-1 truncate font-mono"
+                title="No address of its own — its siblings reach it by name"
+              >
+                <Network className="size-3 shrink-0" aria-hidden /> http://{app.name}
+              </div>
+            )}
+            <div className={health === 'bad' ? 'text-danger' : ''}>
+              {healthLine[health](app.ready)}
+              {app.startedAt && <span className="text-muted"> · up {ago(app.startedAt)}</span>}
             </div>
-          )}
-          <div className={health === 'bad' ? 'text-danger' : ''}>
-            {healthLine[health](app.ready)}
-            {app.startedAt && <span className="text-muted"> · up {ago(app.startedAt)}</span>}
           </div>
-        </div>
+        )}
         {((app.addons ?? []).length > 0 || app.hasStorage) && (
           <div className="mt-3 flex flex-wrap gap-1.5">
             {(app.addons ?? []).map((addon) => (
@@ -366,11 +371,6 @@ function AppTile({ app, deploy }: { app: AppSummary; deploy?: ActiveDeploy }) {
           </div>
         )}
       </div>
-      {live && (
-        <div className="border-t border-line px-4 py-2.5">
-          <DeployProgress deploy={deploy} compact />
-        </div>
-      )}
       {deploy?.stage === 'failed' && (
         <div className="truncate border-t border-danger/30 px-4 py-2 text-xs text-danger" title={deploy.error}>
           Last deploy failed — the previous version keeps running
@@ -387,7 +387,7 @@ function DeployTile({ deploy }: { deploy: ActiveDeploy }) {
     <Link
       to="/app/$space/$name/{-$tab}"
       params={{ space: deploy.space, name: deploy.app, tab: undefined }}
-      className={`flex flex-col justify-between gap-3 rounded-lg border border-dashed p-4 transition-colors focus-visible:outline-2 focus-visible:outline-accent-strong ${
+      className={`block rounded-lg border border-dashed p-4 transition-colors focus-visible:outline-2 focus-visible:outline-accent-strong ${
         failed
           ? 'border-danger/50 bg-danger/[.03] hover:border-danger'
           : 'border-accent/50 bg-accent-soft/30 hover:border-accent'
@@ -408,8 +408,38 @@ function DeployTile({ deploy }: { deploy: ActiveDeploy }) {
           {failed ? 'failed' : 'first deploy'}
         </span>
       </div>
-      <DeployProgress deploy={deploy} compact />
+      <DeployState deploy={deploy} />
     </Link>
+  )
+}
+
+/**
+ * A deploy in the two lines a tile gives an app's address and health, so the
+ * tile keeps its height — and the grid its rows — while the app deploys.
+ */
+function DeployState({ deploy }: { deploy: ActiveDeploy }) {
+  useNow(deploy.finishedAt ? 30_000 : 5_000)
+  const failed = deploy.stage === 'failed'
+  const who = [deploy.by, deploy.via === 'cli' ? 'CLI' : 'console'].filter(Boolean).join(' · ')
+  return (
+    <div className="mt-2 space-y-1 text-xs">
+      <div className="flex items-center justify-between gap-3">
+        <span className={`truncate ${failed ? 'text-danger' : 'text-accent'}`}>{stageText[deploy.stage]}</span>
+        <span className="shrink-0 text-muted" title={who}>
+          {ago(deploy.startedAt)} ago
+        </span>
+      </div>
+      {failed ? (
+        <div className="truncate font-mono text-danger" title={deploy.error}>
+          {deploy.error}
+        </div>
+      ) : (
+        // A line's height, the bar centred in it.
+        <div className="grid h-4 content-center">
+          <StageBar deploy={deploy} />
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -420,7 +450,6 @@ function DeployTile({ deploy }: { deploy: ActiveDeploy }) {
 export function DeployProgress({ deploy, compact = false }: { deploy: ActiveDeploy; compact?: boolean }) {
   useNow(deploy.finishedAt ? 30_000 : 5_000) // keeps "started 2m ago" counting
   const failed = deploy.stage === 'failed'
-  const at = deploy.stage === 'done' ? STAGES.length : STAGES.findIndex((s) => s.id === deploy.stage)
   const who = [deploy.by, deploy.via === 'cli' ? 'CLI' : 'console'].filter(Boolean).join(' · ')
   return (
     <div className={compact ? 'space-y-2' : 'space-y-3'}>
@@ -430,23 +459,7 @@ export function DeployProgress({ deploy, compact = false }: { deploy: ActiveDepl
           {ago(deploy.startedAt)} ago{who && ` · ${who}`}
         </span>
       </div>
-      {/* Three segments: inspect, build, release. The current one breathes. */}
-      <div className="grid grid-cols-3 gap-1" aria-hidden>
-        {STAGES.map((stage, i) => (
-          <span
-            key={stage.id}
-            className={`h-1 rounded-full ${
-              failed && i === Math.max(at, 0)
-                ? 'bg-danger'
-                : i < at
-                  ? 'bg-accent'
-                  : i === at && !failed
-                    ? 'bg-accent/60 motion-safe:animate-pulse'
-                    : 'bg-line'
-            }`}
-          />
-        ))}
-      </div>
+      <StageBar deploy={deploy} />
       {!compact && (
         <div className="flex justify-between text-[11px] text-muted">
           {STAGES.map((stage) => (
@@ -462,6 +475,30 @@ export function DeployProgress({ deploy, compact = false }: { deploy: ActiveDepl
           {failed ? deploy.error : deploy.line}
         </p>
       )}
+    </div>
+  )
+}
+
+// Three segments: inspect, build, release. The current one breathes.
+function StageBar({ deploy }: { deploy: ActiveDeploy }) {
+  const failed = deploy.stage === 'failed'
+  const at = deploy.stage === 'done' ? STAGES.length : STAGES.findIndex((s) => s.id === deploy.stage)
+  return (
+    <div className="grid grid-cols-3 gap-1" aria-hidden>
+      {STAGES.map((stage, i) => (
+        <span
+          key={stage.id}
+          className={`h-1 rounded-full ${
+            failed && i === Math.max(at, 0)
+              ? 'bg-danger'
+              : i < at
+                ? 'bg-accent'
+                : i === at && !failed
+                  ? 'bg-accent/60 motion-safe:animate-pulse'
+                  : 'bg-line'
+          }`}
+        />
+      ))}
     </div>
   )
 }
@@ -561,9 +598,11 @@ function Summary({ items }: { items: ([string] | [string, string] | null)[] }) {
   )
 }
 
+// One tile column wide; two where a column is too narrow for a row, or where
+// two boards fill four columns.
 function Board({ title, tone, children }: { title: string; tone?: 'danger'; children: React.ReactNode }) {
   return (
-    <div className="rounded-lg border border-line bg-card">
+    <div className="rounded-lg border border-line bg-card sm:max-lg:col-span-2 2xl:col-span-2">
       <h2
         className={`border-b border-line px-4 py-2.5 font-mono text-[11px] font-semibold tracking-[0.14em] uppercase ${tone === 'danger' ? 'text-danger' : 'text-muted'}`}
       >

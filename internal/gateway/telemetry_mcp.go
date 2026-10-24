@@ -8,6 +8,7 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"net/http/httputil"
 	"strconv"
 	"strings"
 	"sync"
@@ -40,9 +41,10 @@ func (p mcpTelemetryPlugin) Observe(r *http.Request, rt route) *telemetryObserva
 	started := time.Now()
 	var mu sync.Mutex
 	var operation *mcpOperation
+	var requestBody io.ReadCloser
 	if r.Method == http.MethodPost && mediaType(r.Header.Get("Content-Type")) == "application/json" && r.Header.Get("Content-Encoding") == "" && r.Body != nil {
 		capture := &boundedCapture{}
-		r.Body = observeBody(r.Body, r.ContentLength, capture.write, func(complete bool) {
+		requestBody = observeBody(r.Body, r.ContentLength, capture.write, func(complete bool) {
 			defer func() { capture.data = nil }()
 			if !complete || capture.overflow {
 				return
@@ -81,7 +83,13 @@ func (p mcpTelemetryPlugin) Observe(r *http.Request, rt route) *telemetryObserva
 	} else if r.Method != http.MethodGet || r.Header.Get("Last-Event-ID") == "" {
 		return nil
 	}
-	return &telemetryObservation{response: func(res *http.Response) {
+	return &telemetryObservation{rewrite: func(pr *httputil.ProxyRequest) {
+		// Only tap traffic authorized for forwarding. net/http may drain a
+		// rejected request's original body after the handler has returned.
+		if requestBody != nil {
+			pr.Out.Body = requestBody
+		}
+	}, response: func(res *http.Response) {
 		// A response from the backend, never an auth rejection generated here.
 		mu.Lock()
 		op := operation

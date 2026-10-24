@@ -295,3 +295,21 @@ func TestMCPSSEParserRecoversAfterOversizedEvent(t *testing.T) {
 		t.Fatal("event payload retained")
 	}
 }
+
+func TestMCPObserverDoesNotTrackRejectedRequestBodies(t *testing.T) {
+	s, reader := mcpTelemetryServer(t, func(http.ResponseWriter, *http.Request) { t.Error("unauthorized request forwarded") })
+	rt := s.routes["tools.example"][0]
+	rt.Login = true
+	s.routes["tools.example"] = []route{rt}
+	r := httptest.NewRequest("POST", "https://tools.example/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"add"}}`))
+	r.Header.Set("Accept", "text/event-stream")
+	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set("MCP-Session-Id", "session")
+	w := httptest.NewRecorder()
+	s.serveApp(w, r)
+	_, _ = io.Copy(io.Discard, r.Body)
+	_ = r.Body.Close()
+	if w.Code != http.StatusUnauthorized || mcpObservedCount(t, reader) != 0 || len(s.telemetry.mcp.operations) != 0 {
+		t.Fatalf("rejected request entered MCP tracking: HTTP %d", w.Code)
+	}
+}
