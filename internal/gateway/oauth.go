@@ -688,7 +688,7 @@ func (s *Server) serveOAuthApp(w http.ResponseWriter, r *http.Request, rt route)
 	// An OAuth client presents this grant for as long as its refresh token
 	// lasts, well past the access token in hand.
 	idpToken := s.idpToken(w, r, rt, sess, true, time.Now().Add(oauthRefreshTokenTTL))
-	metrics := httpsnoop.CaptureMetrics(s.proxy(rt, sess, true, idpToken), w, r)
+	metrics := httpsnoop.CaptureMetrics(s.proxy(rt, sess, true, idpToken, false), w, r)
 	if s.telemetry != nil {
 		s.telemetry.Record(r, rt, sess, metrics.Code, metrics.Duration, w.Header().Get("Content-Type"))
 	}

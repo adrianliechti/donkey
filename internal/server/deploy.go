@@ -401,6 +401,9 @@ func (s *Server) deployApp(ctx context.Context, out *lineStreamer, dir string, a
 	for _, finding := range mergeAnalysis(app, analysis) {
 		out.Line("· %s", finding.Text())
 	}
+	if app.CountsVisits() {
+		out.Line("· Counting visits: donkey-gateway adds its cookieless analytics script to the app's pages (`analytics: false` in donkey.yaml turns it off)")
+	}
 	if err := app.Validate(); err != nil {
 		return fail(err)
 	}
@@ -591,6 +594,8 @@ type consoleChoices struct {
 	Exposure string `json:"exposure,omitempty"`
 	Host     string `json:"host,omitempty"`
 	CORS     string `json:"cors,omitempty"`
+	// Analytics is config.AnalyticsOff when web analytics was turned off.
+	Analytics string `json:"analytics,omitempty"`
 }
 
 func (s *Server) readConsoleChoices(ctx context.Context, space, app string) consoleChoices {
@@ -603,8 +608,8 @@ func (s *Server) readConsoleChoices(ctx context.Context, space, app string) cons
 }
 
 // adoptConsoleChoices fills what donkey.yaml leaves open from the console's
-// settings. The file wins where it speaks: mode, exposure, host or
-// a CORS policy. Adoption that would invalidate the config is
+// settings. The file wins where it speaks: mode, exposure, host, a CORS
+// policy or web analytics. Adoption that would invalidate the config is
 // dropped, and only ever the adopted values.
 func (s *Server) adoptConsoleChoices(ctx context.Context, space string, app *config.AppConfig) []string {
 	c := s.readConsoleChoices(ctx, space, app.Name)
@@ -629,6 +634,11 @@ func (s *Server) adoptConsoleChoices(ctx context.Context, space string, app *con
 		app.CORS = c.CORS
 		adoptedCORS = true
 		lines = append(lines, "Keeping the console's setting: allow browser requests from any origin")
+	}
+	if app.Analytics == nil && c.Analytics == config.AnalyticsOff {
+		off := false
+		app.Analytics = &off
+		lines = append(lines, "Keeping the console's setting: no web analytics")
 	}
 	if app.Host == "" && c.Host != "" && !app.Internal {
 		app.Host = c.Host

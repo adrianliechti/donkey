@@ -7,7 +7,7 @@ import (
 	"math"
 	"time"
 
-	collectormetricspb "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
+	metricsv1 "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
 	metricspb "go.opentelemetry.io/proto/otlp/metrics/v1"
 
 	"github.com/adrianliechti/donkey/internal/config"
@@ -27,7 +27,7 @@ type resourceGauge struct {
 // IngestResourceMetrics accepts only the gauges written with RuntimeToken.
 // One ResourceMetrics message becomes one atomic container observation; app
 // reports aggregate the fresh container identities after ingestion.
-func (s *Store) IngestResourceMetrics(ctx context.Context, req *collectormetricspb.ExportMetricsServiceRequest) (accepted, rejected int64, err error) {
+func (s *Store) IngestResourceMetrics(ctx context.Context, req *metricsv1.ExportMetricsServiceRequest) (accepted, rejected int64, err error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, 0, err

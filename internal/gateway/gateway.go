@@ -178,10 +178,13 @@ type route struct {
 	// Mode describes the route's traffic. A login-protected web route uses a
 	// browser session; a login-protected API uses OAuth. Public routes proxy
 	// directly in either mode.
-	Mode     string
-	CORS     string
-	Policy   *config.SpaceConfig
-	Platform config.PlatformConfig
+	Mode string
+	CORS string
+	// Analytics is config.AnalyticsOff when the app opted out of web
+	// analytics; see countsVisits.
+	Analytics string
+	Policy    *config.SpaceConfig
+	Platform  config.PlatformConfig
 	// Token forwards a short-lived sealed credential (X-Access-Token) to the
 	// backend. Only donkey's own API route carries it: an app given one
 	// could replay its visitors' credentials against the API.
@@ -309,7 +312,7 @@ func (f fileRoutes) list(ctx context.Context) ([]route, error) {
 			continue
 		}
 
-		r := route{Space: rec.Space, App: rec.App, Host: rec.Host, Path: rec.Path, Backend: target, Login: rec.Login, Mode: rec.Mode, CORS: rec.CORS, Token: rec.Token, StripPrefix: rec.StripPrefix}
+		r := route{Space: rec.Space, App: rec.App, Host: rec.Host, Path: rec.Path, Backend: target, Login: rec.Login, Mode: rec.Mode, CORS: rec.CORS, Analytics: rec.Analytics, Token: rec.Token, StripPrefix: rec.StripPrefix}
 		if r.Path == "" {
 			r.Path = "/"
 		}
@@ -503,7 +506,7 @@ func routeFromConfigMap(cm corev1.ConfigMap) (route, bool) {
 	}
 	return route{
 		Space: space, App: app, Host: settings.Host, Path: settings.Path, Backend: target,
-		Login: settings.Login, Mode: settings.Mode, CORS: settings.CORS, Token: systemRoute,
+		Login: settings.Login, Mode: settings.Mode, CORS: settings.CORS, Analytics: settings.Analytics, Token: systemRoute,
 		StripPrefix: settings.StripPrefix,
 	}, true
 }

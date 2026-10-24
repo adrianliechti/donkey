@@ -137,6 +137,8 @@ func (s *Server) routes() http.Handler {
 	mux.Handle("GET /v1/spaces/{space}/traffic", s.auth(s.handleTraffic))
 	mux.Handle("GET /v1/spaces/{space}/apps/{app}/traffic", s.auth(s.handleTraffic))
 	mux.Handle("GET /v1/spaces/{space}/apps/{app}/resources", s.auth(s.handleResources))
+	mux.Handle("GET /v1/spaces/{space}/apps/{app}/analytics", s.auth(s.handleAnalytics))
+	mux.Handle("GET /v1/spaces/{space}/apps/{app}/analytics/live", s.auth(s.handleAnalyticsLive))
 	// The service catalog, and the services of a space. Containers with safe
 	// names (services, databases, tables, buckets) live in the path; leaf
 	// items with arbitrary names (object keys, row keys) ride in query/body.

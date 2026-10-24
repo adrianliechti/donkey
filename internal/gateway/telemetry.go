@@ -32,33 +32,18 @@ const (
 )
 
 type edgeTelemetry struct {
-	provider  *metric.MeterProvider
-	duration  otelmetric.Float64Histogram
-	viewsURL  string
-	viewToken string
-	key       []byte
-	client    *http.Client
-	// views is never closed: request handlers send to it concurrently, and a
-	// send on a closed channel panics even inside a select with a default.
-	// Shutdown closes closing instead; the exporter drains what is buffered
-	// and signals done. Events sent after that are simply never read.
-	views     chan telemetry.ViewEvent
-	closing   chan struct{}
-	done      chan struct{}
-	closeOnce sync.Once
+	provider *metric.MeterProvider
+	duration otelmetric.Float64Histogram
+	key      []byte
+	// views are the gateway's own document loads; web are the events the
+	// analytics script sends. Both are nil while telemetry is disabled.
+	views *batchExporter[telemetry.ViewEvent]
+	web   *batchExporter[telemetry.WebEvent]
 }
 
 func newEdgeTelemetry(cfg *Config) (*edgeTelemetry, error) {
-	t := &edgeTelemetry{
-		key:       cfg.TelemetryKey,
-		views:     make(chan telemetry.ViewEvent, viewQueueSize),
-		closing:   make(chan struct{}),
-		done:      make(chan struct{}),
-		client:    &http.Client{Timeout: 5 * time.Second},
-		viewToken: telemetry.GatewayToken(cfg.TelemetryKey),
-	}
+	t := &edgeTelemetry{key: cfg.TelemetryKey}
 	if cfg.TelemetryEndpoint == "" {
-		close(t.done)
 		return t, nil
 	}
 	if len(cfg.TelemetryKey) != 32 {
@@ -66,11 +51,12 @@ func newEdgeTelemetry(cfg *Config) (*edgeTelemetry, error) {
 	}
 	base := strings.TrimSuffix(cfg.TelemetryEndpoint, "/")
 	base = strings.TrimSuffix(base, "/v1/metrics")
-	t.viewsURL = base + "/v1/donkey/views"
+	token := telemetry.GatewayToken(cfg.TelemetryKey)
+	client := &http.Client{Timeout: 5 * time.Second}
 
 	exporter, err := otlpmetrichttp.New(context.Background(),
 		otlpmetrichttp.WithEndpointURL(base+"/v1/metrics"),
-		otlpmetrichttp.WithHeaders(map[string]string{telemetry.TelemetryTokenHeader: t.viewToken}),
+		otlpmetrichttp.WithHeaders(map[string]string{telemetry.TelemetryTokenHeader: token}),
 		otlpmetrichttp.WithCompression(otlpmetrichttp.GzipCompression),
 		otlpmetrichttp.WithTemporalitySelector(metric.DeltaTemporalitySelector),
 	)
@@ -103,7 +89,12 @@ func newEdgeTelemetry(cfg *Config) (*edgeTelemetry, error) {
 		_ = t.provider.Shutdown(context.Background())
 		return nil, err
 	}
-	go t.runViewExporter()
+	t.views = newBatchExporter(base+"/v1/donkey/views", token, client, func(events []telemetry.ViewEvent) any {
+		return telemetry.ViewBatch{Events: events}
+	})
+	t.web = newBatchExporter(base+"/v1/donkey/web", token, client, func(events []telemetry.WebEvent) any {
+		return telemetry.WebBatch{Events: events}
+	})
 	return t, nil
 }
 
@@ -143,18 +134,21 @@ func (t *edgeTelemetry) Record(r *http.Request, rt route, sess *session, status 
 		subject = sess.Subject
 	}
 	appHash, spaceHash := telemetry.VisitorHashes(t.key, rt.Space, rt.App, subject)
-	event := telemetry.ViewEvent{
+	t.views.offer(telemetry.ViewEvent{
 		TimeUnixNano:     uint64(time.Now().UnixNano()),
 		Space:            rt.Space,
 		App:              rt.App,
 		AppVisitorHash:   appHash,
 		SpaceVisitorHash: spaceHash,
-	}
-	select {
-	case t.views <- event:
-	default:
-		// Traffic metrics remain complete; under sustained backpressure views
-		// are sampled by queue admission instead of delaying app responses.
+	})
+}
+
+// collectsWeb says the analytics script has somewhere to send to.
+func (t *edgeTelemetry) collectsWeb() bool { return t != nil && t.web != nil }
+
+func (t *edgeTelemetry) RecordWeb(event telemetry.WebEvent) {
+	if t.collectsWeb() {
+		t.web.offer(event)
 	}
 }
 
@@ -185,46 +179,101 @@ func protocolVersion(r *http.Request) string {
 	return fmt.Sprintf("%d.%d", r.ProtoMajor, r.ProtoMinor)
 }
 
-func (t *edgeTelemetry) runViewExporter() {
-	defer close(t.done)
+func (t *edgeTelemetry) Shutdown(ctx context.Context) error {
+	if t == nil || t.provider == nil {
+		return nil
+	}
+	t.views.close()
+	t.web.close()
+	for _, done := range []chan struct{}{t.views.done, t.web.done} {
+		select {
+		case <-done:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	if err := t.provider.ForceFlush(ctx); err != nil && !errors.Is(err, context.Canceled) {
+		return err
+	}
+	return t.provider.Shutdown(ctx)
+}
+
+// batchExporter posts events to donkey-telemetry in small JSON batches, off
+// the request path. Under sustained backpressure events are sampled by queue
+// admission instead of delaying app responses.
+type batchExporter[T any] struct {
+	url    string
+	token  string
+	client *http.Client
+	wrap   func([]T) any
+	// queue is never closed: request handlers send to it concurrently, and a
+	// send on a closed channel panics even inside a select with a default.
+	// close closes closing instead; the exporter drains what is buffered and
+	// signals done. Events sent after that are simply never read.
+	queue     chan T
+	closing   chan struct{}
+	done      chan struct{}
+	closeOnce sync.Once
+}
+
+func newBatchExporter[T any](url, token string, client *http.Client, wrap func([]T) any) *batchExporter[T] {
+	b := &batchExporter[T]{
+		url: url, token: token, client: client, wrap: wrap,
+		queue:   make(chan T, viewQueueSize),
+		closing: make(chan struct{}),
+		done:    make(chan struct{}),
+	}
+	go b.run()
+	return b
+}
+
+func (b *batchExporter[T]) offer(event T) {
+	select {
+	case b.queue <- event:
+	default:
+	}
+}
+
+func (b *batchExporter[T]) close() { b.closeOnce.Do(func() { close(b.closing) }) }
+
+func (b *batchExporter[T]) run() {
+	defer close(b.done)
 	ticker := time.NewTicker(viewFlushInterval)
 	defer ticker.Stop()
-	batch := make([]telemetry.ViewEvent, 0, viewBatchSize)
+	batch := make([]T, 0, viewBatchSize)
 	flush := func() {
 		if len(batch) == 0 {
 			return
 		}
-		if err := t.sendViews(batch); err != nil {
-			log.Printf("exporting gateway views: %v", err)
-			// Keep one bounded batch for the next tick. New view events are
+		if err := b.send(batch); err != nil {
+			log.Printf("exporting gateway telemetry to %s: %v", b.url, err)
+			// Keep one bounded batch for the next tick. New events are
 			// sampled until the service recovers rather than delaying requests.
 			return
 		}
 		batch = batch[:0]
 	}
+	add := func(event T) {
+		if len(batch) < viewBatchSize {
+			batch = append(batch, event)
+			if len(batch) >= viewBatchSize {
+				flush()
+			}
+		}
+	}
 	for {
 		select {
-		case event := <-t.views:
-			if len(batch) < viewBatchSize {
-				batch = append(batch, event)
-				if len(batch) >= viewBatchSize {
-					flush()
-				}
-			}
+		case event := <-b.queue:
+			add(event)
 		case <-ticker.C:
 			flush()
-		case <-t.closing:
+		case <-b.closing:
 			// Drain what handlers already queued, then stop. The channel
 			// stays open, so a request finishing mid-shutdown cannot panic.
 			for {
 				select {
-				case event := <-t.views:
-					if len(batch) < viewBatchSize {
-						batch = append(batch, event)
-						if len(batch) >= viewBatchSize {
-							flush()
-						}
-					}
+				case event := <-b.queue:
+					add(event)
 				default:
 					flush()
 					return
@@ -234,18 +283,18 @@ func (t *edgeTelemetry) runViewExporter() {
 	}
 }
 
-func (t *edgeTelemetry) sendViews(events []telemetry.ViewEvent) error {
+func (b *batchExporter[T]) send(events []T) error {
 	var body bytes.Buffer
-	if err := json.NewEncoder(&body).Encode(telemetry.ViewBatch{Events: events}); err != nil {
+	if err := json.NewEncoder(&body).Encode(b.wrap(events)); err != nil {
 		return err
 	}
-	req, err := http.NewRequest(http.MethodPost, t.viewsURL, &body)
+	req, err := http.NewRequest(http.MethodPost, b.url, &body)
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set(telemetry.TelemetryTokenHeader, t.viewToken)
-	response, err := t.client.Do(req)
+	req.Header.Set(telemetry.TelemetryTokenHeader, b.token)
+	response, err := b.client.Do(req)
 	if err != nil {
 		return err
 	}
@@ -255,23 +304,4 @@ func (t *edgeTelemetry) sendViews(events []telemetry.ViewEvent) error {
 		return fmt.Errorf("telemetry service returned %s", response.Status)
 	}
 	return nil
-}
-
-func (t *edgeTelemetry) Shutdown(ctx context.Context) error {
-	if t == nil {
-		return nil
-	}
-	t.closeOnce.Do(func() { close(t.closing) })
-	if t.provider == nil {
-		return nil
-	}
-	select {
-	case <-t.done:
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-	if err := t.provider.ForceFlush(ctx); err != nil && !errors.Is(err, context.Canceled) {
-		return err
-	}
-	return t.provider.Shutdown(ctx)
 }

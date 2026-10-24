@@ -11,6 +11,7 @@ import (
 
 	"github.com/felixge/httpsnoop"
 
+	"github.com/adrianliechti/donkey/internal/analytics"
 	"github.com/adrianliechti/donkey/internal/identity"
 )
 
@@ -40,6 +41,9 @@ func (s *Server) serveApp(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		s.errorPage(w, http.StatusNotFound, "Nothing is served here.",
 			"If this app was just deployed, give it a moment and reload.")
+		return
+	}
+	if strings.HasPrefix(r.URL.Path, analytics.Prefix) && s.serveAnalytics(w, r) {
 		return
 	}
 	if routeAllowsAllOrigins(rt) {
@@ -93,7 +97,8 @@ func (s *Server) serveApp(w http.ResponseWriter, r *http.Request) {
 		clearCORSHeaders(w.Header())
 	}
 	idpToken := s.idpToken(w, r, rt, sess, fromToken, time.Time{})
-	metrics := httpsnoop.CaptureMetrics(s.proxy(rt, sess, fromToken, idpToken), w, r)
+	inject := s.countsVisits(rt) && wantsDocument(r)
+	metrics := httpsnoop.CaptureMetrics(s.proxy(rt, sess, fromToken, idpToken, inject), w, r)
 	if s.telemetry != nil {
 		s.telemetry.Record(r, rt, sess, metrics.Code, metrics.Duration, w.Header().Get("Content-Type"))
 	}
@@ -179,10 +184,19 @@ func (s *Server) idpToken(w http.ResponseWriter, r *http.Request, rt route, sess
 
 // proxy forwards to the app. A ReverseProxy is built per request, so the
 // identity serveApp established rides in the closure — nothing is verified
-// twice. idpToken is the visitor's IdP access token, if the route gets one.
-func (s *Server) proxy(rt route, sess *session, fromToken bool, idpToken string) *httputil.ReverseProxy {
+// twice. idpToken is the visitor's IdP access token, if the route gets one;
+// inject adds the analytics script to the page coming back.
+func (s *Server) proxy(rt route, sess *session, fromToken bool, idpToken string, inject bool) *httputil.ReverseProxy {
+	acceptsGzip := false
 	return &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
+			if inject {
+				// Without the client's codings, the transport asks for gzip
+				// itself and hands back the page decoded — the one encoding
+				// every app server speaks and the gateway can edit.
+				acceptsGzip = analytics.AcceptsGzip(pr.In)
+				pr.Out.Header.Del("Accept-Encoding")
+			}
 			if fromToken {
 				// The token authenticated to the gateway; the app gets the
 				// identity headers, never the credential itself.
@@ -258,6 +272,9 @@ func (s *Server) proxy(rt route, sess *session, fromToken bool, idpToken string)
 			}
 		},
 		ModifyResponse: func(res *http.Response) error {
+			if inject {
+				injectScript(res, acceptsGzip)
+			}
 			if routeAllowsAllOrigins(rt) {
 				setCORSHeaders(res.Header)
 			}

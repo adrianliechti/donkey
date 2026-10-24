@@ -104,6 +104,7 @@ func (c *Client) AppNetwork(ctx context.Context, namespace, objectName, space, a
 		}
 		st.RouteFound = route.Backend != ""
 		st.Host, st.Protected, st.Mode, st.CORS, st.Access = route.Host, route.Login, route.Mode, route.CORS, route.Access
+		st.Analytics = route.Analytics
 	}
 
 	routes, err := c.Clientset.CoreV1().ConfigMaps(namespace).List(ctx, metav1.ListOptions{

@@ -127,6 +127,7 @@ func routeSettings(in Input, host, path string) config.GatewayRoute {
 	if in.App.AllowsAllOrigins() {
 		route.CORS = CORSAllowAll
 	}
+	route.Analytics = config.RouteAnalytics(in.App)
 	return route
 }
 

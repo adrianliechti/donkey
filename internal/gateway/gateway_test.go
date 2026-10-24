@@ -427,7 +427,7 @@ func TestProxyIdentityAndToken(t *testing.T) {
 			req.Header.Set(h, "forged")
 		}
 		req.Header["x-auth-request-preferred-username"] = []string{"forged"}
-		s.proxy(rt, sess, false, "").ServeHTTP(httptest.NewRecorder(), req)
+		s.proxy(rt, sess, false, "", false).ServeHTTP(httptest.NewRecorder(), req)
 	}
 
 	send(route{Backend: target}, sess)
@@ -513,7 +513,7 @@ func TestProxyForwardsIdentityProviderToken(t *testing.T) {
 		req.AddCookie(&http.Cookie{Name: sessionCookie + "_1", Value: "sealed-1"})
 		req.AddCookie(&http.Cookie{Name: "app", Value: "keep"})
 		rec := httptest.NewRecorder()
-		s.proxy(rt, sess, false, s.idpToken(rec, req, rt, sess, false, time.Time{})).ServeHTTP(rec, req)
+		s.proxy(rt, sess, false, s.idpToken(rec, req, rt, sess, false, time.Time{}), false).ServeHTTP(rec, req)
 	}
 
 	send(route{Backend: target}, sess)

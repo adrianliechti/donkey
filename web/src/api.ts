@@ -107,6 +107,87 @@ export interface TrafficReport {
   }
 }
 
+/**
+ * Web analytics come from the script donkey-gateway adds to an app's HTML
+ * pages: page views, visits and custom events, cookieless. A dimension is
+ * both a breakdown and a filter.
+ */
+export type AnalyticsDimension =
+  | 'path'
+  | 'entry'
+  | 'exit'
+  | 'referrer'
+  | 'channel'
+  | 'utm_source'
+  | 'utm_medium'
+  | 'utm_campaign'
+  | 'browser'
+  | 'os'
+  | 'device'
+  | 'country'
+  | 'language'
+  | 'event'
+
+export interface AnalyticsFilter {
+  dimension: AnalyticsDimension
+  value: string
+}
+
+export interface AnalyticsTotals {
+  visitors: number
+  visits: number
+  pageviews: number
+  events: number
+  /** Pageviews per visit, one decimal. */
+  viewsPerVisit: number
+  /** Percent of visits with one page and nothing else; lower is better. */
+  bounceRate: number
+  visitDurationSeconds: number
+}
+
+export interface AnalyticsPoint {
+  bucket: string
+  visitors: number
+  visits: number
+  pageviews: number
+}
+
+/** `count` is pageviews for `path`, events for `event`, visits otherwise. */
+export interface AnalyticsRow {
+  value: string
+  visitors: number
+  count: number
+}
+
+export interface AnalyticsEventProperty {
+  key: string
+  values: { value: string; count: number }[]
+}
+
+export interface AnalyticsReport {
+  space: string
+  app: string
+  range: TrafficRange
+  granularity: 'hour' | 'day'
+  from: string
+  to: string
+  filters: AnalyticsFilter[]
+  totals: AnalyticsTotals
+  /** The same-length window just before `from`; absent when not retained. */
+  previous?: AnalyticsTotals
+  series: AnalyticsPoint[]
+  breakdowns: Partial<Record<AnalyticsDimension, AnalyticsRow[]>>
+  /** Only with an `event` filter. */
+  eventProperties?: AnalyticsEventProperty[]
+  definitions: { visitor: string; visit: string; bounce: string; duration: string }
+}
+
+export interface AnalyticsLive {
+  visitors: number
+  windowMinutes: number
+  pages: AnalyticsRow[]
+}
+
 export interface ResourceCurrent {
   sampledAt: string
   fresh: boolean
@@ -197,6 +278,9 @@ export interface NetworkInfo {
   exposure: Exposure
   /** Allow browser code on any origin to call the app through the gateway. */
   cors: CorsPolicy
+  /** The gateway adds its analytics script to the app's HTML pages. On
+   * unless the app opted out; only web apps with an address get it. */
+  analytics: boolean
   url?: string
   /** The generated <app>.<space>.<domain> address — the input placeholder. */
   defaultHost: string
@@ -483,6 +567,7 @@ export interface NetworkOptions {
   exposure: Exposure
   host: string
   cors: CorsPolicy
+  analytics: boolean
 }
 
 // editFrom is the plan as an answer sheet: the server already decided every
@@ -792,6 +877,28 @@ export const api = {
   },
   resources: (space: string, app: string, range: ResourceRange = '4h') =>
     request<ResourceReport>(`${appPath(space, app, '/resources')}?range=${range}`),
+  // Filters repeat as filter=<dimension>:<value>; the server splits at the
+  // first colon, so a value may carry colons of its own.
+  analytics: async (
+    space: string,
+    app: string,
+    range: TrafficRange = '7d',
+    filters: AnalyticsFilter[] = [],
+  ): Promise<AnalyticsReport> => {
+    const query = new URLSearchParams({ range })
+    for (const f of filters) query.append('filter', `${f.dimension}:${f.value}`)
+    const report = await request<AnalyticsReport>(`${appPath(space, app, '/analytics')}?${query}`)
+    return {
+      ...report,
+      filters: report.filters ?? [],
+      series: report.series ?? [],
+      breakdowns: report.breakdowns ?? {},
+    }
+  },
+  analyticsLive: async (space: string, app: string): Promise<AnalyticsLive> => {
+    const live = await request<AnalyticsLive>(appPath(space, app, '/analytics/live'))
+    return { ...live, pages: live.pages ?? [] }
+  },
   env: (space: string, app: string) =>
     request<{ env: Record<string, string> }>(appPath(space, app, '/env')),
   setEnv: (space: string, app: string, env: Record<string, string>, restart: boolean) =>

@@ -7,7 +7,9 @@ func viewerRoute(pattern string) bool {
 	case "GET /v1/spaces/{space}/apps/{app}/status",
 		"GET /v1/spaces/{space}/traffic",
 		"GET /v1/spaces/{space}/apps/{app}/traffic",
-		"GET /v1/spaces/{space}/apps/{app}/resources":
+		"GET /v1/spaces/{space}/apps/{app}/resources",
+		"GET /v1/spaces/{space}/apps/{app}/analytics",
+		"GET /v1/spaces/{space}/apps/{app}/analytics/live":
 		return true
 	}
 	return false

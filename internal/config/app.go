@@ -29,6 +29,10 @@ type AppConfig struct {
 	// cross-origin access; allowAll answers preflights and emits
 	// Access-Control-Allow-Origin: *.
 	CORS string `json:"cors,omitempty"`
+	// Analytics: false keeps donkey-gateway from adding its web analytics
+	// script to the app's HTML pages. Omitted means on — for web apps with an
+	// address; API-mode and internal apps never get it.
+	Analytics *bool `json:"analytics,omitempty"`
 	// Internal keeps the app off the gateway entirely — no hostname, no
 	// certificate, no login. What a backend behind a frontend wants.
 	Internal bool        `json:"internal,omitempty"`
@@ -73,6 +77,17 @@ func (a *AppConfig) GatewayMode() string {
 }
 
 func (a *AppConfig) AllowsAllOrigins() bool { return a.CORS == CORSAllowAll }
+
+// AnalyticsEnabled says the app has not opted out of web analytics. Whether
+// the gateway actually counts anything also depends on the app being a web
+// app with an address of its own.
+func (a *AppConfig) AnalyticsEnabled() bool { return a.Analytics == nil || *a.Analytics }
+
+// CountsVisits says donkey-gateway adds its analytics script to this app's
+// HTML pages.
+func (a *AppConfig) CountsVisits() bool {
+	return a.AnalyticsEnabled() && !a.IsAPI() && !a.Internal
+}
 
 // AppHost is the address an app is served at, and the one place the rule
 // lives — the control plane and every runtime provider ask here, so they

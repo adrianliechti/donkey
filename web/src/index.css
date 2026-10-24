@@ -56,6 +56,13 @@
      never looks like a selection (blue) or a failure (red). */
   --color-warning: light-dark(oklch(66.6% 0.179 58.318), oklch(82.8% 0.189 84.429)); /* amber-600 / 400 */
 
+  /* Analytics chart — two steps of the accent's blue: visitors the strong
+     one, pageviews the context behind it. Validated as a pair per mode
+     (lightness band, chroma, CVD and normal-vision separation); the dark
+     pair is stepped separately rather than flipped. */
+  --color-chart-visitors: light-dark(#2563eb, #4d93f7);
+  --color-chart-views: light-dark(#60a5fa, #2856d6);
+
   --font-sans: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
   --font-mono: 'JetBrains Mono Variable', ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas,
     monospace;

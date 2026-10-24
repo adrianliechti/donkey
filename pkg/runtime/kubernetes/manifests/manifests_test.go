@@ -150,6 +150,24 @@ func TestRoutesDoNotCarryAppMembership(t *testing.T) {
 	}
 }
 
+// Web analytics is on unless the app says no, so the route carries only the
+// no — and keeps it through the ConfigMap the gateway reads.
+func TestRoutesCarryTheAnalyticsOptOut(t *testing.T) {
+	in := testInput(t)
+	if route := routeSettings(in, in.Domain, "/"); route.Analytics != "" {
+		t.Fatalf("an app that said nothing keeps the default, got %q", route.Analytics)
+	}
+	off := false
+	in.App.Analytics = &off
+	read, err := ReadRoute(appRoute(in))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if read.Analytics != config.AnalyticsOff {
+		t.Fatalf("analytics: false should reach the gateway, got %q", read.Analytics)
+	}
+}
+
 func TestAppObjectsGolden(t *testing.T) {
 	objs, err := AppObjects(testInput(t))
 	if err != nil {

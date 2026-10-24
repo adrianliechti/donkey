@@ -5,12 +5,13 @@
 // (`ensureQueryData`) before a view renders. Writes stay plain api.* calls;
 // they just invalidate the keys they touch.
 import {
+  keepPreviousData,
   queryOptions,
   useQuery,
   useQueryClient,
   type UseQueryResult,
 } from '@tanstack/react-query'
-import { api, type ResourceRange, type TrafficRange, type TrafficSource } from './api'
+import { api, type AnalyticsFilter, type ResourceRange, type TrafficRange, type TrafficSource } from './api'
 import { errText } from './ui'
 
 export const fleetQuery = queryOptions({
@@ -86,6 +87,29 @@ export const resourcesQuery = (space: string, app: string, range: ResourceRange 
     queryKey: ['resources', space, app, range],
     queryFn: () => api.resources(space, app, range),
     refetchInterval: 30_000,
+  })
+
+// A new range or filter keeps the previous report on screen (dimmed by the
+// panel) until the new one arrives, so the dashboard never blanks out.
+export const analyticsQuery = (space: string, app: string, range: TrafficRange, filters: AnalyticsFilter[]) =>
+  queryOptions({
+    queryKey: ['analytics', space, app, range, filters],
+    queryFn: () => api.analytics(space, app, range, filters),
+    refetchInterval: 60_000,
+    placeholderData: keepPreviousData,
+  })
+
+export const analyticsLiveQuery = (space: string, app: string) =>
+  queryOptions({
+    queryKey: ['analytics-live', space, app],
+    queryFn: () => api.analyticsLive(space, app),
+    refetchInterval: 15_000,
+  })
+
+export const networkQuery = (space: string, app: string) =>
+  queryOptions({
+    queryKey: ['network', space, app],
+    queryFn: () => api.network(space, app),
   })
 
 // Doctor probes everything (build engine, registry, gateway, assistant) and
@@ -198,6 +222,19 @@ export function useTraffic(space: string, app = '', source: TrafficSource = 'edg
 
 export function useResources(space: string, app: string, range: ResourceRange = '4h') {
   return present(useQuery(resourcesQuery(space, app, range)))
+}
+
+export function useAnalytics(space: string, app: string, range: TrafficRange, filters: AnalyticsFilter[]) {
+  const q = useQuery(analyticsQuery(space, app, range, filters))
+  return { ...present(q), stale: q.isPlaceholderData }
+}
+
+export function useAnalyticsLive(space: string, app: string, enabled = true) {
+  return present(useQuery({ ...analyticsLiveQuery(space, app), enabled }))
+}
+
+export function useNetwork(space: string, app: string, enabled = true) {
+  return present(useQuery({ ...networkQuery(space, app), enabled }))
 }
 
 export function useDoctor() {

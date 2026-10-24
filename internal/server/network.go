@@ -36,6 +36,9 @@ type NetworkResponse struct {
 	Routes      []RouteEntry `json:"routes,omitempty"`
 	AllowPublic bool         `json:"allowPublic"`
 	CORS        string       `json:"cors"`
+	// Analytics is false when the app opted out of web analytics. It only
+	// counts for web apps with an address; see config.AppConfig.CountsVisits.
+	Analytics bool `json:"analytics"`
 }
 
 func (s *Server) networkResponse(r *http.Request, space, app string) (*NetworkResponse, error) {
@@ -62,6 +65,7 @@ func (s *Server) networkResponse(r *http.Request, space, app string) (*NetworkRe
 		Port:        int(st.Port),
 		AllowPublic: settings.AllowPublic,
 		CORS:        st.CORS,
+		Analytics:   net.Analytics != config.AnalyticsOff,
 	}
 	if net.Mode != "" {
 		resp.Mode = net.Mode
@@ -128,6 +132,8 @@ type PutNetworkRequest struct {
 	Mode     string `json:"mode"`
 	Exposure string `json:"exposure"`
 	CORS     string `json:"cors"`
+	// Analytics turns web analytics on or off; omitted keeps what the app has.
+	Analytics *bool `json:"analytics"`
 	// Host is where the app should answer instead of its default
 	// address — see config.AppHost: a plain name sits under the space, "@"
 	// is the space's own address, anything with a dot is an exact hostname,
@@ -181,6 +187,16 @@ func (s *Server) handlePutNetwork(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	console := s.readConsoleChoices(ctx, space, app)
+	analytics := req.Analytics
+	if analytics == nil {
+		net, err := s.rt.Network(ctx, space, app)
+		if err != nil {
+			writeErr(w, http.StatusBadGateway, err)
+			return
+		}
+		on := net.Analytics != config.AnalyticsOff
+		analytics = &on
+	}
 
 	// A synthetic app config carries the choice through the same validation
 	// and rendering a donkey.yaml would.
@@ -196,6 +212,9 @@ func (s *Server) handlePutNetwork(w http.ResponseWriter, r *http.Request) {
 	}
 	cfg.Host = strings.TrimSpace(req.Host)
 	cfg.CORS = req.CORS
+	if !*analytics {
+		cfg.Analytics = analytics
+	}
 	cfg.ApplyDefaults()
 	if err := cfg.Validate(); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
@@ -217,6 +236,7 @@ func (s *Server) handlePutNetwork(w http.ResponseWriter, r *http.Request) {
 	console.Mode = req.Mode
 	console.Host = cfg.Host
 	console.CORS = cfg.CORS
+	console.Analytics = config.RouteAnalytics(cfg)
 	if err := s.writeConsoleChoices(ctx, space, app, console); err != nil {
 		writeErr(w, http.StatusBadGateway, err)
 		return

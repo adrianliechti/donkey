@@ -1,8 +1,8 @@
 import { useState } from 'react'
 import {
-  Activity,
   BadgeCheck,
   Box,
+  ChartColumn,
   ExternalLink,
   FileText,
   GitCommitHorizontal,
@@ -19,6 +19,7 @@ import {
 } from 'lucide-react'
 import { api, type EndpointState, type EndpointStatus } from './api'
 import { AddonsCard } from './AddonsCard'
+import { AnalyticsPanel } from './AnalyticsPanel'
 import { DangerZone } from './DangerZone'
 import { DiagnosisSection } from './DiagnoseCard'
 import { EnvEditor } from './EnvEditor'
@@ -27,7 +28,6 @@ import { LogsPanel } from './LogsPanel'
 import { NetworkCard } from './NetworkCard'
 import { SourcePanel } from './SourcePanel'
 import { StoredRelease } from './StoredRelease'
-import { TrafficPanel } from './TrafficPanel'
 import { DrawerBody } from './dialog'
 import { useAppBuild, useAppBuilds, useAppStatus, useFleet } from './queries'
 import { SignalChips } from './ReleaseView'
@@ -59,12 +59,17 @@ const TABS: { id: AppTab; label: string; icon: React.ReactNode }[] = [
   { id: 'overview', label: 'Overview', icon: <FileText className="size-4" aria-hidden /> },
   { id: 'release', label: 'Deployment', icon: <Rocket className="size-4" aria-hidden /> },
   { id: 'source', label: 'Source', icon: <GitCommitHorizontal className="size-4" aria-hidden /> },
-  { id: 'traffic', label: 'Telemetry', icon: <Activity className="size-4" aria-hidden /> },
+  // One view of how the app is used: its audience, requests and resources.
+  // The id stays 'traffic' so links to #/app/…/traffic keep working.
+  { id: 'traffic', label: 'Analytics', icon: <ChartColumn className="size-4" aria-hidden /> },
   { id: 'logs', label: 'Logs', icon: <ScrollText className="size-4" aria-hidden /> },
   { id: 'files', label: 'Files', icon: <HardDrive className="size-4" aria-hidden /> },
   { id: 'variables', label: 'Variables', icon: <KeyRound className="size-4" aria-hidden /> },
   { id: 'settings', label: 'Settings', icon: <SlidersHorizontal className="size-4" aria-hidden /> },
 ]
+
+// Viewers read how an app is doing, never how it is configured.
+const VIEWER_TABS: AppTab[] = ['overview', 'traffic']
 
 export function AppDetail({
   space,
@@ -87,7 +92,7 @@ export function AppDetail({
   // The tab also comes from the URL, so it can name one that is not offered:
   // .../files for an app with no disk. Fall back rather than leave the panel
   // blank with nothing selected.
-  const shown: AppTab = !canManage && tab !== 'overview' && tab !== 'traffic' ? 'overview' : tab === 'files' && !status?.hasStorage ? 'overview' : tab
+  const shown: AppTab = !canManage && !VIEWER_TABS.includes(tab) ? 'overview' : tab === 'files' && !status?.hasStorage ? 'overview' : tab
 
   return (
     <>
@@ -158,7 +163,7 @@ export function AppDetail({
             className="mt-3 flex gap-1 overflow-x-auto overflow-y-hidden overscroll-x-contain px-5 shadow-[inset_0_-1px_0_var(--color-line)] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
             role="tablist"
           >
-            {TABS.filter((t) => (canManage || t.id === 'overview' || t.id === 'traffic') && (t.id !== 'files' || status.hasStorage)).map((t) => (
+            {TABS.filter((t) => (canManage || VIEWER_TABS.includes(t.id)) && (t.id !== 'files' || status.hasStorage)).map((t) => (
               <button
                 key={t.id}
                 role="tab"
@@ -214,7 +219,9 @@ export function AppDetail({
                 <LogsPanel space={space} app={app} />
               </>
             )}
-            {shown === 'traffic' && <TrafficPanel space={space} app={app} />}
+            {shown === 'traffic' && (
+              <AnalyticsPanel space={space} app={app} canManage={canManage} onOpenSettings={() => onTab('settings')} />
+            )}
             {shown === 'files' && <FilesPanel space={space} app={app} />}
             {shown === 'variables' && <EnvEditor space={space} app={app} onSaved={reload} />}
             {shown === 'settings' && (

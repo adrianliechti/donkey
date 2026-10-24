@@ -379,6 +379,9 @@ type NetworkState struct {
 	Protected  bool
 	Mode       string
 	CORS       string
+	// Analytics is config.AnalyticsOff when the app opted out of web
+	// analytics.
+	Analytics string
 	// Access is legacy membership read only during startup migration.
 	Access *config.AccessConfig
 	Routes []PathRouteState

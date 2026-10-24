@@ -1,9 +1,9 @@
 import { useState } from 'react'
-import { Activity, Cpu, Info, MemoryStick } from 'lucide-react'
-import type { ResourcePoint, ResourceRange, TrafficPoint, TrafficRange, TrafficSource, TrafficTotals } from './api'
+import { Activity, Cpu, MemoryStick } from 'lucide-react'
+import type { ResourcePoint, ResourceRange, TrafficPoint, TrafficRange, TrafficTotals } from './api'
 import { useResources, useTraffic } from './queries'
 import { Drawer, DrawerBody, PaneHeader } from './dialog'
-import { ago, Button, Callout, ErrorNote, Eyebrow, Section, SectionHeader, Select, Spinner, StatGrid } from './ui'
+import { ago, ErrorNote, Eyebrow, Section, SectionHeader, Select, Spinner, StatGrid } from './ui'
 
 const integer = new Intl.NumberFormat()
 const compactInteger = new Intl.NumberFormat(undefined, {
@@ -66,10 +66,27 @@ export function SpaceTelemetry({ space }: { space: string }) {
   )
 }
 
-export function TrafficPanel({ space, app }: { space: string; app: string }) {
-  const [source, setSource] = useState<TrafficSource>('edge')
-  const [range, setRange] = useState<TrafficRange>('30d')
-  const { data, error } = useTraffic(space, app, source, range)
+/**
+ * Requests as donkey-gateway saw them: volume, errors and latency. In an
+ * app's Analytics tab the range belongs to the tab: given with onRange, this
+ * section shows the tab's picker; given alone, the audience above shows it.
+ * The space drawer keeps a picker of its own.
+ */
+export function TrafficPanel({
+  space,
+  app,
+  range: shared,
+  onRange,
+}: {
+  space: string
+  app: string
+  range?: TrafficRange
+  onRange?: (range: TrafficRange) => void
+}) {
+  const [own, setOwn] = useState<TrafficRange>('30d')
+  const range = shared ?? own
+  const setRange = onRange ?? setOwn
+  const { data, error } = useTraffic(space, app, 'edge', range)
   const errors = data ? data.totals.clientErrors + data.totals.serverErrors : 0
 
   return (
@@ -77,12 +94,11 @@ export function TrafficPanel({ space, app }: { space: string; app: string }) {
       <Section className="space-y-5">
         <SectionHeader
           title="Traffic"
+          description={app ? 'Every request through the gateway — pages, assets and API calls.' : undefined}
           actions={
-            <>
-              <Select variant="quiet" ariaLabel="Telemetry source" value={source} onChange={setSource}
-                options={[{ value: 'edge', label: 'Gateway' }, { value: 'app', label: 'In-app OTEL' }]} />
-              <Select variant="quiet" ariaLabel="Telemetry time range" value={range} onChange={setRange} options={rangeOptions} />
-            </>
+            shared && !onRange ? undefined : (
+              <Select variant="quiet" ariaLabel="Time range" value={range} onChange={setRange} options={rangeOptions} />
+            )
           }
         />
         <ErrorNote message={error} />
@@ -110,30 +126,6 @@ export function TrafficPanel({ space, app }: { space: string; app: string }) {
                 },
               ]}
             />
-
-            <div className="space-y-2">
-              <Eyebrow>Audience</Eyebrow>
-              {source === 'app' ? (
-                <Callout
-                  icon={Info}
-                  action={<Button kind="quiet" size="sm" onClick={() => setSource('edge')}>Show gateway data</Button>}
-                >
-                  Views and signed-in visitors are measured at the gateway, not by app metrics.
-                </Callout>
-              ) : (
-                <StatGrid
-                  columns="grid-cols-3"
-                  stats={[
-                    { label: 'Views', value: integer.format(data.totals.views) },
-                    { label: 'Signed-in visitors', value: integer.format(data.totals.uniqueVisitors) },
-                    {
-                      label: 'Identified views',
-                      value: data.totals.views === 0 ? '—' : `${data.totals.visitorCoveragePercent.toFixed(1)}%`,
-                    },
-                  ]}
-                />
-              )}
-            </div>
 
             <div className="space-y-2">
               <div className="flex items-center justify-between gap-3">

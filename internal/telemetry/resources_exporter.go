@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	collectormetricspb "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
+	metricsv1 "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 	metricspb "go.opentelemetry.io/proto/otlp/metrics/v1"
 	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
@@ -49,7 +49,7 @@ func (e *ResourceExporter) Export(ctx context.Context, observations []ResourceOb
 	if e == nil || e.endpoint == "" {
 		return errors.New("telemetry OTLP endpoint is not configured")
 	}
-	request := &collectormetricspb.ExportMetricsServiceRequest{
+	request := &metricsv1.ExportMetricsServiceRequest{
 		ResourceMetrics: make([]*metricspb.ResourceMetrics, 0, len(observations)),
 	}
 	var invalid []error
@@ -91,7 +91,7 @@ func (e *ResourceExporter) Export(ctx context.Context, observations []ResourceOb
 		invalid = append(invalid, fmt.Errorf("reading telemetry OTLP response: %w", err))
 		return errors.Join(invalid...)
 	}
-	result := new(collectormetricspb.ExportMetricsServiceResponse)
+	result := new(metricsv1.ExportMetricsServiceResponse)
 	if err := proto.Unmarshal(body, result); err != nil {
 		invalid = append(invalid, fmt.Errorf("decoding telemetry OTLP response: %w", err))
 		return errors.Join(invalid...)

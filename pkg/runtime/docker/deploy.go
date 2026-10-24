@@ -267,7 +267,8 @@ func (r *Runtime) applyRoutes(ctx context.Context, space string, app *config.App
 			return err
 		}
 	} else {
-		route := Route{Space: space, App: app.Name, Host: host, Path: "/", Backend: backend, Login: login, Mode: app.GatewayMode(), CORS: app.CORS}
+		route := Route{Space: space, App: app.Name, Host: host, Path: "/", Backend: backend, Login: login, Mode: app.GatewayMode(), CORS: app.CORS,
+			Analytics: config.RouteAnalytics(app)}
 		if err := r.state.setRoute(space, app.Name, route); err != nil {
 			return err
 		}
@@ -287,6 +288,7 @@ func (r *Runtime) applyRoutes(ctx context.Context, space string, app *config.App
 			Login:       login,
 			Mode:        app.GatewayMode(),
 			CORS:        app.CORS,
+			Analytics:   config.RouteAnalytics(app),
 		}
 		if len(hosts) > 0 && hosts[0][target.App] != "" {
 			route.Host = hosts[0][target.App]
@@ -700,6 +702,7 @@ func (r *Runtime) Network(ctx context.Context, space, app string) (*rt.NetworkSt
 		st.Protected = route.Login
 		st.Mode = route.Mode
 		st.CORS = route.CORS
+		st.Analytics = route.Analytics
 		st.Access = route.Access
 	}
 	names, err := r.state.listRoutes(space)
@@ -762,14 +765,15 @@ func (r *Runtime) ApplyNetwork(ctx context.Context, cfg *config.AppConfig) (stri
 			return "", rt.UserError{Err: fmt.Errorf("%s already answers on %s — two apps cannot share one address", owner, host)}
 		}
 		route := Route{
-			Space:   space,
-			App:     app,
-			Host:    host,
-			Path:    "/",
-			Backend: fmt.Sprintf("http://%s:%d", ctrName(space, app), port),
-			Login:   login,
-			Mode:    cfg.GatewayMode(),
-			CORS:    cfg.CORS,
+			Space:     space,
+			App:       app,
+			Host:      host,
+			Path:      "/",
+			Backend:   fmt.Sprintf("http://%s:%d", ctrName(space, app), port),
+			Login:     login,
+			Mode:      cfg.GatewayMode(),
+			CORS:      cfg.CORS,
+			Analytics: config.RouteAnalytics(cfg),
 		}
 		if err := r.state.setRoute(space, app, route); err != nil {
 			return "", err
@@ -791,6 +795,7 @@ func (r *Runtime) ApplyNetwork(ctx context.Context, cfg *config.AppConfig) (stri
 		route.Login = login
 		route.Mode = cfg.GatewayMode()
 		route.CORS = cfg.CORS
+		route.Analytics = config.RouteAnalytics(cfg)
 		route.Access = nil
 		if err := r.state.setRoute(space, name, *route); err != nil {
 			return "", err

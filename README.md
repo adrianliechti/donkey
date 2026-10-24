@@ -170,7 +170,7 @@ five ideas:
   `donkey-server` binary: a single-replica OTLP/HTTP metrics receiver with a
   private query API backed by an embedded DuckDB file on its own 2 Gi PVC.
   It keeps 30 days of hourly HTTP histograms, hourly view/visitor
-  rollups, and the versioned build records the console's Deployment tab
+  rollups, [web analytics](#web-analytics) events, and the versioned build records the console's Deployment tab
   renders (a bounded history per app). Only this process opens the file; `Recreate` upgrades preserve
   DuckDB's single-writer ownership. The server and the orchestrator can query
   it, while the gateway and apps can only ingest with scope-specific
@@ -233,9 +233,11 @@ and [README_DOCKER.md](README_DOCKER.md#labels).
 
 ## Traffic telemetry
 
-Every app and space has a Traffic view in the console with **last 48 hours**,
-**last 7 days**, and **last 30 days** ranges. The 48-hour series uses hourly
-buckets; week and month series use daily buckets. The default
+Every app's **Analytics** tab shows its traffic below the
+[audience](#web-analytics), and every space card opens the same traffic for
+the whole space, with **last 48 hours**, **last 7 days**, and **last 30 days**
+ranges. The 48-hour series uses hourly
+buckets; week and month series use daily buckets. The console's
 source is **Gateway**: donkey-gateway records one stable OpenTelemetry
 `http.server.request.duration` histogram after an allowed request has been
 forwarded. The histogram count supplies request volume; status attributes split
@@ -244,12 +246,11 @@ explicit buckets supply average, p50 and p95 latency. Logical identity is kept
 as the bounded `donkey.space.name` and `donkey.app.name` attributes. This follows
 the [stable OTel HTTP metric semantic conventions](https://opentelemetry.io/docs/specs/semconv/http/http-metrics/).
 
-A **view** is a successful top-level HTML document load at the gateway. It does
-not pretend to see client-side SPA route transitions. Unique visitors are
-distinct signed-in subjects: the gateway HMAC-pseudonymizes them separately per
-app and per space before export. DuckDB never receives the subject, email, IP,
-user agent, path or query string, and anonymous visitors receive no tracking
-cookie. The report shows identification coverage alongside the unique count.
+The traffic API also reports gateway **views**: successful top-level HTML
+document loads, which don't include client-side SPA route transitions, with
+unique signed-in visitors HMAC-pseudonymized per app and per space. The
+console shows the [web analytics](#web-analytics) audience instead, which does
+see route transitions and anonymous visitors.
 
 Apps also receive standard exporter defaults:
 
@@ -264,9 +265,9 @@ OTEL_METRICS_EXPORTER=otlp
 Explicit app environment values win over these defaults. The injected variables
 configure an OpenTelemetry SDK; they do not magically instrument application
 code. Use the language's HTTP auto-instrumentation or SDK and emit the stable
-HTTP server duration histogram. The console exposes this as **In-app OTEL** and
-keeps it separate from Gateway data, because adding both would count the same
-request twice. Each app's HMAC token is valid only for its own
+HTTP server duration histogram. It is kept separate from the gateway's data,
+because adding both would count the same request twice, and is read through
+the traffic API with `?source=app`; the console shows the gateway's. Each app's HMAC token is valid only for its own
 [`service.namespace` / `service.name` resource](https://opentelemetry.io/docs/specs/semconv/resource/service/),
 so it cannot write another app's series or the trusted edge series.
 
@@ -291,6 +292,66 @@ gateway logs.
 - **Services** (postgres & co.) belong to the space, not to one app; apps
   hold *connections* — a copy of the service's binding Secret, wired into
   their `envFrom`. The whole model has [its own section](#services).
+
+## Web analytics
+
+Every web app gets an **Analytics** tab in the console — visitors, visits,
+page views, bounce rate and visit duration against the previous period, a
+time series, and breakdowns by page, entry and exit page, channel, referrer,
+UTM campaign, country, language, browser, OS and device, plus custom events
+and their properties. Every row is a filter, and a live count shows who is on
+the app right now. Ranges are the same as Traffic: 48 hours, 7 and 30 days.
+
+Nothing has to be built in. donkey-gateway adds one tag to the `<head>` of an
+app's HTML pages on their way out:
+
+```html
+<script defer src="/_donkey/s.js"></script>
+```
+
+The script is served by the gateway on the app's own address, and so are its
+events (`POST /_donkey/e.json`): same origin, no third party, no CORS. It counts
+the page load, client-side route changes (History API and `#/` hash routers),
+how long each page stayed visible, and clicks on links to other sites. Apps add
+their own events in code or in markup:
+
+```js
+window.donkey?.track('signup', { plan: 'pro' })
+```
+
+```html
+<button data-donkey-event="signup" data-donkey-event-plan="pro">Sign up</button>
+```
+
+The gateway adds the script only where it is safe to: a `GET` navigation
+(`Sec-Fetch-Dest: document`) answered `200 text/html`, on a web-mode route of
+an app that has not opted out, when the response's Content-Security-Policy
+allows same-origin scripts and requests, and no `Cache-Control: no-transform`
+says otherwise. For those requests it asks the app for gzip only, inserts the
+tag right after `<head>` (else before `<body>`), and compresses the page again
+while it streams, so pages that flush early still do. The ETag becomes weak,
+because the bytes changed. A page that already loads `/_donkey/s.js` is left
+alone, and a page whose CSP keeps the script out (nonces, `'strict-dynamic'`)
+can add the tag itself. API-mode and internal apps never get it. To switch it
+off, set `analytics: false` in donkey.yaml or use the toggle in the app's
+Settings tab, which holds until donkey.yaml says otherwise.
+
+**What is stored.** The gateway turns each event into report dimensions before
+anything leaves it. The browser, OS and device come from the user agent and
+the country from the browser's time zone (no GeoIP database). The referrer
+keeps only its host, dropping its path, and the URL keeps its path, dropping
+the query string except the `utm_*` and `ref` values. Requests from bots,
+headless browsers and other sites are dropped. Nothing is written to the
+visitor's browser: no cookie and no storage. A **visitor** is an HMAC made
+with the telemetry key. For anonymous visitors it is a per-app hash of IP
+address and user agent that changes every UTC day, so one person returning on
+another day counts again and cannot be followed across days or apps. For
+signed-in visitors it is a per-app hash of the subject. A **visit** ends after
+30 minutes without activity, and a **bounce** is a visit with one page view
+and no custom event. DuckDB keeps the raw events for the telemetry retention
+period (30 days). Visits are worked out when the report is read, so any filter
+can select them. Removing the space removes its analytics. To exclude your own
+browser, run `localStorage.setItem('donkey:ignore', '1')`.
 
 ## What donkey works out for you
 
@@ -396,6 +457,7 @@ port: 8000                    # the port your code listens on
 public: true                  # requires allowPublic: true in space settings
 mode: api                     # web (default) | api with OAuth
 cors: allowAll                # allow browser calls from every origin
+analytics: false              # no web analytics script (default: on for web apps)
 internal: true                # no address at all; siblings reach it by name
 routes:                       # …or answer on another app's address
   - app: dashboard
@@ -476,7 +538,8 @@ either mode no address of its own. Shared-address routes still require login
 unless the app explicitly sets `public: true`.
 `cors: allowAll` makes the
 gateway answer browser preflights and adds `Access-Control-Allow-Origin: *` to
-responses. Space admins, developers and viewers can pass the sign-in; platform
+responses. `analytics: false` keeps the gateway's
+[web analytics](#web-analytics) script out of the app's pages. Space admins, developers and viewers can pass the sign-in; platform
 admins can open every space's apps. `internal: true` drops the address — the app has no
 hostname, no certificate and nothing on the internet, and its siblings call it
 as `http://<name>`. `routes:` puts it on *another* app's address under a path

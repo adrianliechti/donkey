@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	collectormetricspb "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
+	metricsv1 "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 	metricspb "go.opentelemetry.io/proto/otlp/metrics/v1"
 	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
@@ -206,7 +206,7 @@ CREATE INDEX IF NOT EXISTS view_visitors_app_time
 CREATE INDEX IF NOT EXISTS view_visitors_space_time
   ON view_visitors (space, hour);
 `, httpRollups, streamState)
-	if _, err := s.db.ExecContext(ctx, schema); err != nil {
+	if _, err := s.db.ExecContext(ctx, schema+webEventsSchema); err != nil {
 		return fmt.Errorf("creating telemetry schema: %w", err)
 	}
 	// Early telemetry databases did not retain stream scope. Add it in place,
@@ -277,6 +277,7 @@ func (s *Store) PurgeSpace(ctx context.Context, space string) error {
 		"DELETE FROM view_rollups WHERE space = ?",
 		"DELETE FROM view_visitors WHERE space = ?",
 		"DELETE FROM build_records WHERE space = ?",
+		"DELETE FROM web_events WHERE space = ?",
 	} {
 		if _, err := tx.ExecContext(ctx, q, space); err != nil {
 			return err
@@ -306,6 +307,9 @@ func (s *Store) Cleanup(ctx context.Context, now time.Time) error {
 	}
 	// One-minute resource rollups exist only for the short, movement-oriented
 	// charts. Long-term hourly rollups above retain the configured 30 days.
+	if _, err := tx.ExecContext(ctx, "DELETE FROM web_events WHERE ts < ?", now.UTC().AddDate(0, 0, -s.retentionDays).UnixMilli()); err != nil {
+		return err
+	}
 	recentCutoff := now.UTC().Add(-48 * time.Hour).Truncate(time.Minute).Unix()
 	if _, err := tx.ExecContext(ctx, "DELETE FROM resource_recent_rollups WHERE minute < ?", recentCutoff); err != nil {
 		return err
@@ -317,7 +321,7 @@ func (s *Store) Cleanup(ctx context.Context, now time.Time) error {
 // deliberately ignores unrelated instruments. This endpoint is an OTLP
 // boundary for donkey's traffic analytics, not a general-purpose metrics
 // warehouse.
-func (s *Store) IngestMetrics(ctx context.Context, req *collectormetricspb.ExportMetricsServiceRequest, trustedGateway bool) (accepted, rejected int64, err error) {
+func (s *Store) IngestMetrics(ctx context.Context, req *metricsv1.ExportMetricsServiceRequest, trustedGateway bool) (accepted, rejected int64, err error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, 0, err

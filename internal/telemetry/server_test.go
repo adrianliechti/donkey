@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	collectormetricspb "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
+	metricsv1 "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 	metricspb "go.opentelemetry.io/proto/otlp/metrics/v1"
 	codepb "google.golang.org/genproto/googleapis/rpc/code"
@@ -85,7 +85,7 @@ func TestRuntimeCredentialIngestsResourcesButNotTraffic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body, err := proto.Marshal(&collectormetricspb.ExportMetricsServiceRequest{
+	body, err := proto.Marshal(&metricsv1.ExportMetricsServiceRequest{
 		ResourceMetrics: []*metricspb.ResourceMetrics{rm},
 	})
 	if err != nil {
