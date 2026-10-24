@@ -193,6 +193,8 @@ export function DeployView({
   const buffers = useRef(new Map<string, Uint8Array>())
   const fleet = useFleet()
   const queryClient = useQueryClient()
+  const deploySpaces = fleet.data?.spaces.filter((space) =>
+    fleet.data?.platformAdmin || fleet.data?.roles[space] === 'admin' || fleet.data?.roles[space] === 'developer') ?? []
 
   async function accept(makeUpload: () => Promise<Upload>) {
     setError('')
@@ -276,6 +278,10 @@ export function DeployView({
     }
   }
 
+  if (fleet.data && !fleet.data.platformAdmin && (space ? !deploySpaces.includes(space) : deploySpaces.length === 0)) {
+    return <p className="text-sm text-muted">Deploying requires a developer or space admin role.</p>
+  }
+
   return (
     <div className="flex flex-col gap-5">
       {phase.step === 'pick' && (
@@ -338,7 +344,7 @@ export function DeployView({
         <ProjectReview
           key={phase.plan.id}
           plan={phase.plan}
-          spaces={fleet.data?.spaces ?? []}
+          spaces={deploySpaces}
           space={space || undefined}
           busy={busy}
           error={error}

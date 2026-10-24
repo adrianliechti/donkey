@@ -136,16 +136,17 @@ export interface ResourceReport {
   series: ResourcePoint[]
 }
 
-/** Who may open a login-protected app; empty lists mean "everyone signed in". */
+/** Users and groups assigned a space or platform role. */
 export interface AccessConfig {
   users?: string[]
   groups?: string[]
-  roles?: string[]
 }
 
 export interface SpaceConfig {
   admins: AccessConfig
   developers: AccessConfig
+  viewers: AccessConfig
+  allowPublic: boolean
   domains: string[]
   offerings?: Record<string, SpaceOffering>
 }
@@ -177,7 +178,8 @@ export interface PlatformConfig {
 
 export interface SpaceList {
   spaces: string[]
-  roles: Record<string, 'admin' | 'developer'>
+  roles: Record<string, 'admin' | 'developer' | 'viewer'>
+  allowPublic: Record<string, boolean>
   domains: Record<string, string[]>
   platformAdmin: boolean
   domain: string
@@ -203,7 +205,7 @@ export interface NetworkInfo {
   host?: string
   port?: number
   routes?: RouteEntry[]
-  access?: AccessConfig | null
+  allowPublic: boolean
 }
 
 /** The parameter values a service was created with (version, disk size…). */
@@ -722,17 +724,6 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify(options),
     }),
-  setAccess: (space: string, app: string, access: AccessConfig) =>
-    request<{ ok: boolean; access: AccessConfig | null }>(appPath(space, app, '/access'), {
-      method: 'PUT',
-      body: JSON.stringify({
-        users: access.users ?? [],
-        groups: access.groups ?? [],
-        roles: access.roles ?? [],
-      }),
-    }),
-  // Every space, with or without apps — one that holds only services still
-  // needs its card.
   platformConfig: () => request<PlatformConfig>('/v1/platform/settings'),
   setPlatformConfig: (settings: PlatformConfig) =>
     request<PlatformConfig>('/v1/platform/settings', {

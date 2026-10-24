@@ -43,5 +43,5 @@ func managementMember(members AccessConfig, id *identity.Identity) bool {
 			return true
 		}
 	}
-	return anyOverlap(members.Groups, id.Groups) || anyOverlap(members.Roles, id.Roles)
+	return anyOverlap(members.Groups, id.Groups)
 }

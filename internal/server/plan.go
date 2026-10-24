@@ -698,6 +698,9 @@ func (s *Server) renderPlan(ctx context.Context, id string, sp *storedPlan) *Pla
 			Detail: strings.Join(sp.skipped, ", "),
 		})
 	}
+	if settingsErr == nil && app.Public && !settings.AllowPublic {
+		p.Findings = append(p.Findings, Finding{Level: LevelBlock, Code: "space-policy", Title: "Public access is disabled for this space; choose login protection or ask a space admin to allow public apps"})
+	}
 	// The plan is only worth showing if the deploy would accept it.
 	if err := app.Validate(); err != nil {
 		p.Findings = append(p.Findings, Finding{

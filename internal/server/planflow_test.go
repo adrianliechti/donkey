@@ -58,7 +58,7 @@ func (r planRuntime) PlatformConfig(context.Context) (config.PlatformConfig, err
 
 func (planRuntime) ValidateSpace(string) error { return nil }
 func (planRuntime) SpaceConfig(context.Context, string) (config.SpaceConfig, error) {
-	return config.SpaceConfig{}, nil
+	return config.SpaceConfig{AllowPublic: true}, nil
 }
 func (planRuntime) CheckSpaceFree(context.Context, string) error   { return nil }
 func (r planRuntime) ListSpaces(context.Context) ([]string, error) { return r.spaces, nil }

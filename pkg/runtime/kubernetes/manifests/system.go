@@ -542,8 +542,8 @@ func systemService(in SystemInput, name string, port, targetPort int32) *corev1.
 	}
 }
 
-// adminsJSON is the console's access rules as the gateway and server read
-// them; empty rules stay an empty string (everyone the IdP admits).
+// adminsJSON seeds platform administrators; an empty value leaves bootstrap
+// to the first verified sign-in.
 func adminsJSON(in SystemInput) string {
 	if in.PlatformAdmins.Empty() {
 		return ""

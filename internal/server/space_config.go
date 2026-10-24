@@ -77,7 +77,7 @@ func (s *Server) authorizeSpace(ctx context.Context, space string, admin bool) e
 	if err != nil {
 		return err
 	}
-	if role == "" || (admin && role != config.SpaceAdmin) {
+	if (role != config.SpaceAdmin && role != config.SpaceDeveloper) || (admin && role != config.SpaceAdmin) {
 		return errSpaceForbidden
 	}
 	return nil
@@ -109,6 +109,18 @@ func (s *Server) authorizeRoute(w http.ResponseWriter, r *http.Request) bool {
 		if _, err := s.space(r); err != nil {
 			writeErr(w, http.StatusBadRequest, err)
 			return false
+		}
+		if viewerRoute(r.Pattern) {
+			role, err := s.spaceRole(r.Context(), space)
+			if err != nil {
+				writeAccessError(w, err)
+				return false
+			}
+			if role == "" {
+				writeAccessError(w, errSpaceForbidden)
+				return false
+			}
+			return true
 		}
 		admin := r.Pattern == "DELETE /v1/spaces/{space}" ||
 			r.Pattern == "GET /v1/spaces/{space}/settings" ||
@@ -177,6 +189,12 @@ func (s *Server) handlePutSpaceConfig(w http.ResponseWriter, r *http.Request) {
 	if err := s.rt.SetSpaceConfig(r.Context(), r.PathValue("space"), access); err != nil {
 		writeAccessError(w, err)
 		return
+	}
+	if !access.AllowPublic {
+		if err := runtime.ReconcileAccess(r.Context(), s.rt, r.PathValue("space")); err != nil {
+			writeAccessError(w, err)
+			return
+		}
 	}
 	writeJSON(w, http.StatusOK, access)
 }

@@ -248,9 +248,9 @@ Missing records for existing spaces get empty membership and unrestricted domain
 at server startup, preserving existing app routes. Saved memberships and domains
 survive upgrades and deployments.
 
-Routing configuration uses `route.yaml` in the ConfigMap's `data`. App visitor
-access rules use a separate `access.yaml` entry, so changing a route does not
-overwrite membership maintained through the console. Labels describe identity
+Routing configuration uses `route.yaml` in the ConfigMap's `data`. App access
+comes from `admins`, `developers` and `viewers` in the space ConfigMap;
+`allowPublic` controls whether apps may opt out of login. Labels describe identity
 and ownership; routing settings are no longer stored in annotations.
 
 A Secret also named `donkey` holds installation credentials and session keys.
@@ -275,8 +275,8 @@ exist only when their feature is configured.
 | Resource | Namespace per space | Shared workload namespace | Content |
 |---|---|---|---|
 | Space ConfigMap | `<space>-space` | `<space>-space` | `config.yaml`: `admins`, `developers`, `domains` |
-| App route ConfigMap | `<app>-route` | `<space>-<app>-route` | `route.yaml`, optional `access.yaml` |
-| Shared-address route ConfigMap | `<app>-route-<target>-<path-slug>` | `<space>-<app>-route-<target>-<path-slug>` | `route.yaml`, optional `access.yaml` |
+| App route ConfigMap | `<app>-route` | `<space>-<app>-route` | `route.yaml` |
+| Shared-address route ConfigMap | `<app>-route-<target>-<path-slug>` | `<space>-<app>-route-<target>-<path-slug>` | `route.yaml` |
 | App environment Secret | `<app>-env` | `<space>-<app>-env` | Environment variable names and values |
 | App telemetry Secret | `<app>-telemetry` | `<space>-<app>-telemetry` | OpenTelemetry environment variables |
 | App registry Secret | `<app>-registry` | `<space>-<app>-registry` | `.dockerconfigjson` |
@@ -338,8 +338,10 @@ Existing Secrets referenced in installation settings keep their operator-chosen
 names. `kube-root-ca.crt` is created by Kubernetes.
 
 Upgrades migrate previous ConfigMap/Secret names and JSON settings to the YAML
-entries above. Credentials, CA keys, platform admins, space roles, domains and
-app visitor access are preserved. Route readers accept old annotations during
+entries above. Credentials, CA keys, platform admins, space roles and domains
+are preserved. App users/groups migrate to space Viewers. Public routes become
+protected unless their space enables `allowPublic`.
+Route readers accept old annotations during
 the rollout; the installer removes those annotations after the new gateway is
 ready. Old credential Secrets remain while any Pod still references them;
 subsequent installs retry cleanup.

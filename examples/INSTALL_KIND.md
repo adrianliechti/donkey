@@ -178,9 +178,9 @@ console included (and signing out anywhere signs you out everywhere).
 
 Group-based access works out of the box: donkey requests the `groups` scope
 whenever the provider advertises it, and Pocket ID's user groups then match
-`access.groups` in an app's `donkey.yaml` — or `admins.groups` in
-`server.yaml`, which narrows who may administer (`access.roles` is for
-Entra/Keycloak-style role claims, which Pocket ID doesn't have).
+the users/groups assigned to space admins, developers or viewers in Space
+settings. Platform admin groups can be seeded through `platform.admins.groups`
+in `server.yaml`.
 
 ## 5. Release donkey
 

@@ -61,7 +61,7 @@ Kubernetes ConfigMaps or Secrets. State paths below are relative to
 | Platform admins | `platform/config.json` |
 | Space admins, developers, domains | `spaces/<space>/config.json` |
 | App environment | `env/<space>/<app>.json` |
-| Gateway routes and app visitor access | `routes/<space>/<app>.json`; shared-address routes as `routes/<space>/<app>.on.<target>.<slug>.json` |
+| Gateway routes (membership comes from space settings) | `routes/<space>/<app>.json`; shared-address routes as `routes/<space>/<app>.on.<target>.<slug>.json` |
 | Service credentials | `bindings/<space>/<service>.json` for the space's own binding, `bindings/<space>/<app>.<service>.json` for an app's copy (older `shared.<service>.json` files are moved at startup) |
 | App metadata | `meta/<space>/<app>.json` |
 | Saved deployment configuration | `deploy/<space>/<app>.json` |

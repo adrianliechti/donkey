@@ -15,8 +15,9 @@ const (
 	AuthRequestPrefix = "X-Auth-Request-"
 )
 
-// HeaderNames follow either prefix. Name and Roles are donkey's additions.
-var HeaderNames = []string{"User", "Email", "Preferred-Username", "Name", "Groups", "Roles", "Access-Token"}
+// Strip identity header names even when donkey never sets them: apps may
+// trust them, so accepting client-supplied values would allow impersonation.
+var identityHeaderNames = []string{"User", "Email", "Preferred-Username", "Name", "Groups", "Roles", "Access-Token"}
 
 // SetHeader sets one identity value under both prefixes. Control characters
 // are dropped: a display name with a line break must not fail the request.
@@ -50,7 +51,7 @@ func StripHeaders(h http.Header) {
 	for name := range h {
 		canonical := http.CanonicalHeaderKey(name)
 		if strings.HasPrefix(canonical, AuthRequestPrefix) ||
-			strings.HasPrefix(canonical, ForwardedPrefix) && slices.Contains(HeaderNames, strings.TrimPrefix(canonical, ForwardedPrefix)) {
+			strings.HasPrefix(canonical, ForwardedPrefix) && slices.Contains(identityHeaderNames, strings.TrimPrefix(canonical, ForwardedPrefix)) {
 			delete(h, name)
 		}
 	}

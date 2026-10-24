@@ -154,7 +154,7 @@ export function PlanReview({
 
         <div className="space-y-1.5">
           <Eyebrow>Who can reach it</Eyebrow>
-          <ChoiceCards label="Who can reach it" value={edit.exposure} onChange={(v) => set('exposure', v)} options={exposureOptions(edit.mode)} columns="sm:grid-cols-3" />
+          <ChoiceCards label="Who can reach it" value={edit.exposure} onChange={(v) => set('exposure', v)} options={exposureOptions(edit.mode).filter((option) => option.value !== 'public' || fleet?.allowPublic[edit.space])} columns="sm:grid-cols-3" />
         </div>
 
         {edit.exposure !== 'internal' && (

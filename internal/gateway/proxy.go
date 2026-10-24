@@ -77,7 +77,7 @@ func (s *Server) serveApp(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"error":"sign-in required"}`, http.StatusUnauthorized)
 			return
 		}
-		if !rt.Access.Allows(sess.Email, sess.Groups, sess.Roles) {
+		if !rt.allows(sess.Subject, sess.Email, sess.Groups) {
 			who := sess.Email
 			if who == "" {
 				who = sess.Subject
@@ -106,8 +106,8 @@ func wantsHTML(r *http.Request) bool {
 }
 
 // An app behind a login learns its visitor from X-Forwarded-User (Entra's
-// object ID, else the sub), -Email, -Preferred-Username, -Name, -Groups,
-// -Roles and -Access-Token, each also as X-Auth-Request-* (identity.SetHeader;
+// object ID, else the sub), -Email, -Preferred-Username, -Name, -Groups
+// and -Access-Token, each also as X-Auth-Request-* (identity.SetHeader;
 // X-Auth-Request-User stays the sub); public routes learn nothing, even
 // when the domain-wide session cookie arrives with the request. Incoming
 // identity headers are dropped on every route — identity must be
@@ -234,7 +234,6 @@ func (s *Server) proxy(rt route, sess *session, fromToken bool, idpToken string)
 				identity.SetHeader(pr.Out.Header, "Preferred-Username", sess.PreferredUsername)
 				identity.SetHeader(pr.Out.Header, "Name", sess.Name)
 				identity.SetHeader(pr.Out.Header, "Groups", strings.Join(sess.Groups, ","))
-				identity.SetHeader(pr.Out.Header, "Roles", strings.Join(sess.Roles, ","))
 				identity.SetHeader(pr.Out.Header, "Access-Token", idpToken)
 				// The API route gets a verifiable credential, not bare
 				// headers: the server checks the seal, so an in-cluster

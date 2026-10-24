@@ -208,6 +208,10 @@ func main() {
 		fmt.Fprintln(os.Stderr, "migrating space settings:", err)
 		os.Exit(1)
 	}
+	if err := runtime.ReconcileAccess(ctx, rt, ""); err != nil {
+		fmt.Fprintln(os.Stderr, "reconciling space access:", err)
+		os.Exit(1)
+	}
 	srv, err := server.New(cfg, rt)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "startup error:", err)

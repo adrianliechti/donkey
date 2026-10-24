@@ -43,8 +43,8 @@ five ideas:
    `<app>.<space>.<domain>`. Two teams can both have a `web`.
 4. **Private by default.** Deployed apps sit behind an OIDC login run by
    donkey's own gateway (**donkey-gateway**, against your provider, e.g.
-   Entra ID) — and `access:` in donkey.yaml (or the console) narrows an app
-   further to named users, groups or roles. `public: true` opts an app out.
+   Entra ID). Space membership controls who can open its apps. `public: true`
+   opts an app out only when a space admin enables **Allow public apps**.
    No issuer configured — no login, and the install says so.
 5. **Services belong to the space.** A database is the project's, not one
    container's: postgres, S3-style storage, and the platform's AI are
@@ -70,7 +70,7 @@ five ideas:
                            │       · ACME / CA / cert-manager        │        any IdP
                            │       · routing by hostname and path    │
      <app>.<space>.<domain>│       · OIDC login                      │
-                           │       · access (users/groups/roles) ──▶ app
+                           │       · space users/groups ──▶ app
                            ├─────────────────────────────────────────┤
                            │ donkey-<space>                          │
                            │  app "web"      Deployment · Service    │
@@ -155,10 +155,10 @@ five ideas:
   hostname and path (from the route ConfigMaps it watches), runs the OIDC
   code flow itself where a route demands a login, seals what it learned
   into an AES-GCM cookie (stateless — replicas just scale), checks the
-  app's access rules (users, groups, roles from the ID token's claims) and
+  space's membership (users and groups from the sign-in) and
   forwards identity headers under oauth2-proxy's proxy-mode names —
-  `X-Forwarded-User`, `-Email`, `-Preferred-Username`, `-Name`, `-Groups`
-  and `-Roles`, each also as `X-Auth-Request-*` for apps written against
+  `X-Forwarded-User`, `-Email`, `-Preferred-Username`, `-Name` and `-Groups`,
+  each also as `X-Auth-Request-*` for apps written against
   those — only to routes behind a login. `X-Forwarded-User` is Entra's
   tenant-wide object ID (`oid`) where the ID token carries one, else the
   `sub`; `X-Auth-Request-User` stays the `sub`. Public routes never learn
@@ -365,14 +365,10 @@ name: shop                    # the app; becomes <name>.<space>.<domain>
 space: acme                   # default: the repository's folder name
 port: 8000                    # the port your code listens on
 
-public: true                  # skip the login gateway (machine clients)
+public: true                  # requires allowPublic: true in space settings
 mode: api                     # web (default) | api with OAuth
 cors: allowAll                # allow browser calls from every origin
 internal: true                # no address at all; siblings reach it by name
-access:                       # narrow the login to named people (any match)
-  users: [ada@example.com]
-  groups: [staff]
-  roles: [developer]          # Entra app roles / Keycloak realm roles
 routes:                       # …or answer on another app's address
   - app: dashboard
     path: /api
@@ -445,14 +441,15 @@ provides OAuth discovery, PKCE and resource-bound access tokens. Clients open
 the existing identity-provider login and return with a token the gateway
 consumes before proxying. Compatibility client registration is automatic and
 stateless, so an administrator does not have to create client IDs. API mode
-does not invent an OAuth scope; `access:` remains the authorization policy.
-`public: true` exposes either a web app or API without login, while
-`internal: true` gives either mode no address of its own and no login.
+does not invent an OAuth scope; space membership controls authorization.
+`public: true` exposes either a web app or API without login only when its space
+has `allowPublic: true`. Public access is off by default. `internal: true` gives
+either mode no address of its own. Shared-address routes still require login
+unless the app explicitly sets `public: true`.
 `cors: allowAll` makes the
 gateway answer browser preflights and adds `Access-Control-Allow-Origin: *` to
-responses. `access:` narrows it — only
-the named users, groups or roles (any match, from the ID token's claims) get
-past the sign-in. `internal: true` drops the address — the app has no
+responses. Space admins, developers and viewers can pass the sign-in; platform
+admins can open every space's apps. `internal: true` drops the address — the app has no
 hostname, no certificate and nothing on the internet, and its siblings call it
 as `http://<name>`. `routes:` puts it on *another* app's address under a path
 prefix. All of it can also be changed in the console's Settings tab without a
@@ -1102,12 +1099,35 @@ affected pods).
 
 Space permissions are always enforced. Platform admins create spaces and can
 manage every space. Space admins manage their space, its membership, domains and offerings;
-developers manage its apps and services, including data and credentials. Assign
-users by email (or `sub:<subject>` when email is unavailable), groups, or
-identity-provider roles. Matching any entry grants that role; empty membership
-lists grant no access. App visitor `access` rules remain separate.
+developers manage its apps and services, including data and credentials. Viewers
+can open apps and see their health and aggregate metrics in the console. They
+cannot see logs, build history, files, variables, service data or management
+settings, and cannot make changes. Assign users by email (or `sub:<subject>`
+when email is unavailable) or groups. Matching any entry grants that role;
+empty membership lists grant no access.
 
-Every space stores `admins`, `developers`, `domains`, and optional `offerings`. A new space starts
+Every space stores `admins`, `developers`, `viewers`, `allowPublic`, `domains`,
+and optional `offerings`. **Space settings → General → Allow public apps**
+controls `allowPublic`, which defaults to `false`. Turning it off switches
+existing public apps and shared-address routes to login protection. New
+deployments and network changes requesting `public: true` are rejected. Startup
+also enforces this policy. Re-enabling the option does not automatically reopen
+apps that were switched to login protection.
+
+A space membership example:
+
+```yaml
+admins:
+  users: [owner@example.com]
+developers:
+  groups: [engineering]
+viewers:
+  users: [reader@example.com]
+  groups: [staff]
+allowPublic: false
+```
+
+A new space starts
 with `<space>.<configured-domain>` in `domains`. Apps can use that suffix or
 any subdomain under it. Add more suffixes or clear the list to allow any domain.
 App creation shows a hostname field with a fixed suffix or domain selector;
@@ -1137,10 +1157,17 @@ for retries, resumption and removal, and existing app connections keep working
 when an offering is removed. New services and new app connections use the
 current space catalog. See [the provider contract](pkg/addons/v1/README.md#availability-and-space-configuration).
 
-Existing spaces migrate automatically at server startup: missing settings
-records are created with no space members and unrestricted domains, preserving
-existing app routes. Platform admins retain access and can assign space roles.
-Saved roles and domains survive subsequent upgrades. Updates use last save wins.
+At startup, existing per-app users and groups move into the space's Viewer list.
+Duplicates are merged across apps, and entries already assigned any space role
+are skipped. Emails match without case; group names and `sub:<subject>` IDs
+match exactly. This grants access to all protected apps in that space. Old
+per-app lists are removed only after membership is saved. Apps without
+an explicit list are now limited to space members and platform admins. Existing
+spaces also default to `allowPublic: false`, so public routes become protected.
+Saved space admins, developers, viewers and domains survive subsequent upgrades.
+Updates use last save wins. Remove obsolete `access:` sections from donkey.yaml;
+new deployments reject them as unknown fields. Manage users and groups in space
+settings instead.
 
 Space, app and service names follow one rule: lowercase letters, digits and
 hyphens, starting and ending with a letter or digit, up to 40 characters (a
@@ -1296,9 +1323,9 @@ so plan around it.
 key in `donkey` seals the browser cookies (12 h) and the CLI
 tokens (30 days), all derived from an OIDC sign-in. Individual logins expire
 on their own and revive with a fresh sign-in; kicking one specific person out
-happens by removing every matching entry from platform admins and space roles,
-and from the affected apps' `access` rules. Management permissions are read on
-every API request; app visitor rules are checked by the gateway. Changes to IdP
+happens by removing every matching entry from platform admins and space roles.
+Management permissions are read on every API request; the gateway reloads space
+membership and public-access policy every 10 seconds and checks each app request. Changes to IdP
 claims take effect when the user signs in again. The big
 lever is rotating the session key itself: delete the `session-key` entry from
 the Secret and re-run the install — a new key is generated, every cookie and

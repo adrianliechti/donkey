@@ -132,7 +132,7 @@ export function AppsList() {
               space={space}
               apps={spaceApps}
               allApps={fullBySpace.get(space) ?? spaceApps}
-              role={data?.roles[space] ?? 'developer'}
+              role={data?.roles[space] ?? 'viewer'}
               onChanged={reload}
             />
           ))}
@@ -215,7 +215,7 @@ function NewSpaceDialog({
   const [name, setName] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
-  const [settings, setSettings] = useState<SpaceConfig>({ admins: {}, developers: {}, domains: [] })
+  const [settings, setSettings] = useState<SpaceConfig>({ admins: {}, developers: {}, viewers: {}, allowPublic: false, domains: [] })
   const [customDomains, setCustomDomains] = useState(false)
   const defaults = name.trim() && domain ? [`${name.trim()}.${domain}`] : []
   const effective = { ...settings, domains: customDomains ? settings.domains : defaults }

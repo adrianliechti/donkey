@@ -137,26 +137,16 @@ func TestPublicAndInternalAPIModeRendering(t *testing.T) {
 	}
 }
 
-// Access rules ride on the route for the gateway to enforce — and only on
-// routes that demand a login.
-func TestAccessYAML(t *testing.T) {
+// New routes carry no membership; the gateway reads space permissions.
+func TestRoutesDoNotCarryAppMembership(t *testing.T) {
 	in := testInput(t)
-	in.App.Access = &config.AccessConfig{Users: []string{"ada@example.com"}, Groups: []string{"staff"}}
-	out, err := Render(mustObjects(t, in))
-	if err != nil {
-		t.Fatal(err)
+	route := routeSettings(in, in.Domain, "/")
+	if route.Access != nil {
+		t.Fatal("app membership must be managed on the space")
 	}
-	if !strings.Contains(out, "access.yaml:") || !strings.Contains(out, "- ada@example.com") || !strings.Contains(out, "- staff") {
-		t.Errorf("access rules should ride on the route, got:\n%s", out)
-	}
-
-	in.App.Access = nil
-	out, err = Render(mustObjects(t, in))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(out, RouteAccessKey) {
-		t.Error("no rules, no access.yaml")
+	in.App.Internal, in.App.Mode = true, config.AppModeAPI
+	if !protected(in) {
+		t.Fatal("an internal API's shared route requires login unless explicitly public")
 	}
 }
 

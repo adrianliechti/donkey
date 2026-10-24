@@ -569,11 +569,10 @@ type deployDecisions struct {
 type consoleChoices struct {
 	// Mode is web or api. Exposure is public, protected or internal. Empty
 	// values mean the donkeyfile (or the default) decides.
-	Mode     string               `json:"mode,omitempty"`
-	Exposure string               `json:"exposure,omitempty"`
-	Host     string               `json:"host,omitempty"`
-	Access   *config.AccessConfig `json:"access,omitempty"`
-	CORS     string               `json:"cors,omitempty"`
+	Mode     string `json:"mode,omitempty"`
+	Exposure string `json:"exposure,omitempty"`
+	Host     string `json:"host,omitempty"`
+	CORS     string `json:"cors,omitempty"`
 }
 
 func (s *Server) readConsoleChoices(ctx context.Context, space, app string) consoleChoices {
@@ -586,13 +585,13 @@ func (s *Server) readConsoleChoices(ctx context.Context, space, app string) cons
 }
 
 // adoptConsoleChoices fills what donkey.yaml leaves open from the console's
-// settings. The file wins where it speaks: mode, exposure, host, access or
+// settings. The file wins where it speaks: mode, exposure, host or
 // a CORS policy. Adoption that would invalidate the config is
 // dropped, and only ever the adopted values.
 func (s *Server) adoptConsoleChoices(ctx context.Context, space string, app *config.AppConfig) []string {
 	c := s.readConsoleChoices(ctx, space, app.Name)
 	var lines []string
-	adoptedMode, adoptedExposure, adoptedHost, adoptedAccess, adoptedCORS := false, false, false, false, false
+	adoptedMode, adoptedExposure, adoptedHost, adoptedCORS := false, false, false, false
 	if app.Mode == "" && c.Mode == config.AppModeAPI {
 		app.Mode = c.Mode
 		adoptedMode = true
@@ -618,12 +617,6 @@ func (s *Server) adoptConsoleChoices(ctx context.Context, space string, app *con
 		adoptedHost = true
 		lines = append(lines, fmt.Sprintf("Keeping the console's address: %s", c.Host))
 	}
-	if app.Access == nil && !c.Access.Empty() {
-		app.Access = c.Access
-		adoptedAccess = true
-		lines = append(lines, fmt.Sprintf("Keeping the console's access rules (%d users, %d groups, %d roles)",
-			len(c.Access.Users), len(c.Access.Groups), len(c.Access.Roles)))
-	}
 	if app.Validate() != nil {
 		if adoptedMode {
 			app.Mode = ""
@@ -633,9 +626,6 @@ func (s *Server) adoptConsoleChoices(ctx context.Context, space string, app *con
 		}
 		if adoptedHost {
 			app.Host = ""
-		}
-		if adoptedAccess {
-			app.Access = nil
 		}
 		if adoptedCORS {
 			app.CORS = ""

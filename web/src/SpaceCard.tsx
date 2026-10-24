@@ -73,7 +73,7 @@ export function SpaceCard({
    *  count from this, or it under-reports what a delete destroys. Defaults to
    *  `apps` when the caller isn't filtering. */
   allApps?: AppSummary[]
-  role: 'admin' | 'developer'
+  role: 'admin' | 'developer' | 'viewer'
   onChanged: () => void
 }) {
   const everyApp = allApps ?? apps
@@ -85,8 +85,8 @@ export function SpaceCard({
   const [error, setError] = useState('')
   const [typedSpace, setTypedSpace] = useState('')
 
-  const { data: services, error: servicesError } = useSpaceServices(space)
-  const { data: catalog } = useCatalog(space)
+  const { data: services, error: servicesError } = useSpaceServices(space, role !== 'viewer')
+  const { data: catalog } = useCatalog(space, role !== 'viewer')
   const invalidate = useInvalidateServices()
   const addingTitle = catalog?.find((s) => s.type === addingType)?.title || addingType
 
@@ -113,7 +113,7 @@ export function SpaceCard({
         <Toolbar>
           <SpaceTelemetry space={space} />
           <span className="mx-1 h-4 w-px bg-line" aria-hidden />
-          <AddMenu space={space} onAddService={(type) => setAddingType(type)} />
+          {role !== 'viewer' && <AddMenu space={space} onAddService={(type) => setAddingType(type)} />}
           {role === 'admin' && <SpaceMenu
             space={space}
             onSettings={() => setEditingSettings(true)}
@@ -126,15 +126,15 @@ export function SpaceCard({
         </Toolbar>
       </div>
 
-      <SpaceServices space={space} services={services} onChanged={() => invalidate(space)} />
+      {role !== 'viewer' && <SpaceServices space={space} services={services} onChanged={() => invalidate(space)} />}
       {editingSettings && <SpaceSettings space={space} onClose={() => setEditingSettings(false)} onSaved={onChanged} />}
 
       {apps.length === 0 && (
         <p className="text-sm text-muted">
-          No apps yet — add one with{' '}
+          {role === 'viewer' ? 'No apps yet.' : <>No apps yet — add one with{' '}
           <span className="font-medium text-ink-soft">+ → Application</span> above, or deploy with{' '}
           <code className="rounded bg-surface px-1.5 py-0.5 font-mono text-xs">space: {space}</code> in
-          donkey.yaml.
+          donkey.yaml.</>}
         </p>
       )}
 

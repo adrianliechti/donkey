@@ -88,7 +88,7 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
       },
     ]
     return [...apps, ...spaces, ...actions.filter((action) =>
-      action.key === 'action:system' ? data?.platformAdmin : (data?.platformAdmin || spaces.length > 0))]
+      action.key === 'action:system' ? data?.platformAdmin : (data?.platformAdmin || Object.values(data?.roles ?? {}).some((role) => role !== 'viewer')))]
   }, [data, navigate, onClose])
 
   const q = query.trim().toLowerCase()

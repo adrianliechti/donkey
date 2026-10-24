@@ -32,8 +32,7 @@ const (
 	// AnnotationCORS lets the edge answer preflight requests and make all
 	// responses browser-readable from any origin.
 	AnnotationCORS = "donkey.local/cors"
-	// AnnotationAccess carries the app's access rules (AccessConfig as JSON)
-	// for the gateway to enforce. No secrets — emails and group names only.
+	// AnnotationAccess is legacy app membership, read only during migration.
 	AnnotationAccess = "donkey.local/access"
 
 	// LoginRequired is AnnotationLogin's one meaningful value.
@@ -54,7 +53,7 @@ const (
 // has no login boundary; if it also claims a shared-address route, that route
 // keeps the same machine-facing behavior.
 func protected(in Input) bool {
-	return !in.App.Public && !(in.App.Internal && in.App.IsAPI())
+	return !in.App.Public
 }
 
 // backendURL is where the gateway forwards this app's traffic: the app's
@@ -125,17 +124,14 @@ func routeSettings(in Input, host, path string) config.GatewayRoute {
 	if in.App.IsAPI() {
 		route.Mode = config.AppModeAPI
 	}
-	if route.Login && !in.App.Access.Empty() {
-		route.Access = in.App.Access
-	}
 	if in.App.AllowsAllOrigins() {
 		route.CORS = CORSAllowAll
 	}
 	return route
 }
 
-// RouteData keeps access in its own key so a console membership edit survives
-// a deployment that does not specify access rules in donkey.yaml.
+// RouteData writes routing fields. The separate legacy access key is retained
+// only while old app membership is being moved to the space.
 func RouteData(route config.GatewayRoute) map[string]string {
 	data := map[string]string{}
 	if route.Access != nil {

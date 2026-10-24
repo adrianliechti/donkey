@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/adrianliechti/donkey/internal/config"
+	"github.com/adrianliechti/donkey/internal/identity"
 	rt "github.com/adrianliechti/donkey/pkg/runtime"
 )
 
@@ -31,6 +33,17 @@ func (r *endpointStatusRuntime) EndpointStatus(_ context.Context, _, _, host str
 	return r.endpoint
 }
 
+func statusRequest(path, app string) *http.Request {
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	req.SetPathValue("space", "acme")
+	req.SetPathValue("app", app)
+	ctx := context.WithValue(req.Context(), identityContextKey{}, &identity.Identity{Email: "admin@example.com"})
+	ctx = context.WithValue(ctx, platformContextKey{}, config.PlatformConfig{
+		Admins: config.AccessConfig{Users: []string{"admin@example.com"}},
+	})
+	return req.WithContext(ctx)
+}
+
 func TestStatusIncludesEndpointReadinessForExposedApp(t *testing.T) {
 	expires := time.Date(2027, time.January, 2, 3, 4, 5, 0, time.FixedZone("test", 2*60*60))
 	provider := &endpointStatusRuntime{
@@ -50,9 +63,7 @@ func TestStatusIncludesEndpointReadinessForExposedApp(t *testing.T) {
 		},
 	}
 	s := &Server{cfg: &Config{Domain: "example.com"}, rt: provider}
-	req := httptest.NewRequest(http.MethodGet, "/v1/spaces/acme/apps/shop/status", nil)
-	req.SetPathValue("space", "acme")
-	req.SetPathValue("app", "shop")
+	req := statusRequest("/v1/spaces/acme/apps/shop/status", "shop")
 	rec := httptest.NewRecorder()
 
 	s.handleStatus(rec, req)
@@ -80,9 +91,7 @@ func TestStatusSkipsEndpointChecksForInternalApp(t *testing.T) {
 		Found: true, UpToDate: true, WantReplica: 1, ReadyReplica: 1,
 	}}
 	s := &Server{cfg: &Config{Domain: "example.com"}, rt: provider}
-	req := httptest.NewRequest(http.MethodGet, "/v1/spaces/acme/apps/worker/status", nil)
-	req.SetPathValue("space", "acme")
-	req.SetPathValue("app", "worker")
+	req := statusRequest("/v1/spaces/acme/apps/worker/status", "worker")
 	rec := httptest.NewRecorder()
 
 	s.handleStatus(rec, req)

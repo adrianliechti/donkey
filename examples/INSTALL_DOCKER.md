@@ -109,8 +109,11 @@ auth:
   issuer: https://id.dihei.ai     # exactly the issuer from step 3
   clientId: <pocket-id-client-id>
   # clientSecret comes from the environment
-  # admins:                       # narrow who may administer; empty means
-  #   users: [you@example.com]    # everyone the IdP admits
+
+# Optional: seed platform administrators. Otherwise the first sign-in is admin.
+# platform:
+#   admins:
+#     users: [you@example.com]
 
 ai:
   baseUrl: https://api.openai.com/v1

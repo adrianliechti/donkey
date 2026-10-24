@@ -175,7 +175,7 @@ function SpacePage({ space }: { space: string }) {
         <SpaceCard
           space={space}
           apps={apps}
-          role={data.roles[space] ?? 'developer'}
+          role={data.roles[space] ?? 'viewer'}
           onChanged={reload}
         />
       )}

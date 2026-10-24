@@ -27,7 +27,7 @@ import { NetworkCard } from './NetworkCard'
 import { StoredRelease } from './StoredRelease'
 import { TrafficPanel } from './TrafficPanel'
 import { DrawerBody } from './dialog'
-import { useAppBuild, useAppBuilds, useAppStatus } from './queries'
+import { useAppBuild, useAppBuilds, useAppStatus, useFleet } from './queries'
 import { SignalChips } from './ReleaseView'
 import {
   ago,
@@ -79,10 +79,12 @@ export function AppDetail({
   onBack: () => void
 }) {
   const { data: status, error, reload } = useAppStatus(space, app)
+  const { data: fleet } = useFleet()
+  const canManage = fleet?.roles[space] === 'admin' || fleet?.roles[space] === 'developer'
   // The tab also comes from the URL, so it can name one that is not offered:
   // .../files for an app with no disk. Fall back rather than leave the panel
   // blank with nothing selected.
-  const shown: AppTab = tab === 'files' && !status?.hasStorage ? 'overview' : tab
+  const shown: AppTab = !canManage && tab !== 'overview' && tab !== 'traffic' ? 'overview' : tab === 'files' && !status?.hasStorage ? 'overview' : tab
 
   return (
     <>
@@ -107,7 +109,7 @@ export function AppDetail({
                 )}
                 {/* The one way to the diagnosis, the same on every tab: it
                     lives on Logs, next to the evidence it reads. */}
-                {!status.healthy && (
+                {canManage && !status.healthy && (
                   <button
                     type="button"
                     onClick={() => onTab('logs')}
@@ -135,8 +137,8 @@ export function AppDetail({
                 <ExternalLink className="size-4" aria-hidden />
               </a>
             )}
-            {status?.found && <RestartButton space={space} app={app} onRestarted={reload} />}
-            {status?.found && <IconButton icon={UploadCloud} label="Deploy a new version" onClick={onDeploy} />}
+            {canManage && status?.found && <RestartButton space={space} app={app} onRestarted={reload} />}
+            {canManage && status?.found && <IconButton icon={UploadCloud} label="Deploy a new version" onClick={onDeploy} />}
             <span className="mx-0.5 h-4 w-px bg-line" aria-hidden />
             <IconButton icon={X} label="Close the app panel (Esc)" onClick={onBack} />
           </Toolbar>
@@ -153,7 +155,7 @@ export function AppDetail({
             className="mt-3 flex gap-1 overflow-x-auto overflow-y-hidden overscroll-x-contain px-5 shadow-[inset_0_-1px_0_var(--color-line)] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
             role="tablist"
           >
-            {TABS.filter((t) => t.id !== 'files' || status.hasStorage).map((t) => (
+            {TABS.filter((t) => (canManage || t.id === 'overview' || t.id === 'traffic') && (t.id !== 'files' || status.hasStorage)).map((t) => (
               <button
                 key={t.id}
                 role="tab"
@@ -184,9 +186,9 @@ export function AppDetail({
             <p className="mt-2 text-sm text-muted">
               Nothing with this name is deployed in the space <span className="font-mono">{space}</span>.
             </p>
-            <p className="mt-1 text-sm">
+            {canManage && <p className="mt-1 text-sm">
               Deploy it from its project folder: <code className="font-mono text-xs">donkey deploy</code>
-            </p>
+            </p>}
           </Card>
         )}
 
@@ -194,10 +196,11 @@ export function AppDetail({
           <>
             {shown === 'overview' && (
               <>
-                <AboutApp space={space} app={app} onOpenBuild={() => onTab('release')} />
-                <InstancesCard pods={status.pods} />
-                {status.endpoint && <EndpointCard endpoint={status.endpoint} />}
-                <AddonsCard space={space} app={app} />
+                {canManage && <AboutApp space={space} app={app} onOpenBuild={() => onTab('release')} />}
+                {canManage && <InstancesCard pods={status.pods} />}
+                {!canManage && <Section><SectionHeader title="App overview" description="Open the app using the link above, or view its health and usage in Telemetry." /></Section>}
+                {canManage && status.endpoint && <EndpointCard endpoint={status.endpoint} />}
+                {canManage && <AddonsCard space={space} app={app} />}
               </>
             )}
             {shown === 'release' && <StoredRelease space={space} app={app} />}

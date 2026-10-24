@@ -22,11 +22,11 @@ func TestStripHeadersDropsEveryIdentityName(t *testing.T) {
 func TestSetHeaderWritesBothFamiliesSafely(t *testing.T) {
 	h := http.Header{}
 	SetHeader(h, "Name", "Ada\r\nX-Injected: 1\tLovelace")
-	SetHeader(h, "Roles", "")
+	SetHeader(h, "Groups", "")
 	if h.Get("X-Forwarded-Name") != "AdaX-Injected: 1Lovelace" || h.Get("X-Auth-Request-Name") != h.Get("X-Forwarded-Name") {
 		t.Fatalf("name = %v", h)
 	}
-	if _, ok := h["X-Forwarded-Roles"]; ok {
+	if _, ok := h["X-Forwarded-Groups"]; ok {
 		t.Error("an empty value must not become a header")
 	}
 	SetHeader(h, "User", "sub")

@@ -71,12 +71,14 @@ type spaceListResponse struct {
 	Domains       map[string][]string `json:"domains"`
 	PlatformAdmin bool                `json:"platformAdmin"`
 	Domain        string              `json:"domain"`
+	AllowPublic   map[string]bool     `json:"allowPublic"`
 }
 
 func (s *Server) spaceList(ctx context.Context, settings map[string]config.SpaceConfig) spaceListResponse {
 	names := []string{}
 	roles := map[string]string{}
 	domains := map[string][]string{}
+	public := map[string]bool{}
 	for space, policy := range settings {
 		role := policy.Role(requestIdentity(ctx))
 		if s.platformAdmin(ctx) {
@@ -86,12 +88,13 @@ func (s *Server) spaceList(ctx context.Context, settings map[string]config.Space
 			names = append(names, space)
 			roles[space] = role
 			domains[space] = append([]string{}, policy.Domains...)
+			public[space] = policy.AllowPublic
 		}
 	}
 	sort.Strings(names)
 	return spaceListResponse{
 		Spaces: names, Roles: roles, Domains: domains,
-		PlatformAdmin: s.platformAdmin(ctx), Domain: s.cfg.Domain,
+		PlatformAdmin: s.platformAdmin(ctx), Domain: s.cfg.Domain, AllowPublic: public,
 	}
 }
 
@@ -256,7 +259,7 @@ func (s *Server) listAppEntries(ctx context.Context) ([]AppListEntry, error) {
 			}
 			roles[ref.Space] = role
 		}
-		if role != config.SpaceAdmin && role != config.SpaceDeveloper {
+		if role != config.SpaceAdmin && role != config.SpaceDeveloper && role != config.SpaceViewer {
 			continue
 		}
 		var st *runtime.AppStatus
@@ -272,10 +275,12 @@ func (s *Server) listAppEntries(ctx context.Context) ([]AppListEntry, error) {
 				apps = append(apps, AppListEntry{Name: ref.App, Space: ref.Space, Ready: "status unavailable"})
 				continue
 			}
-			hasStorage = s.rt.HasData(ctx, ref.Space, ref.App)
-			if bindings, err := s.rt.ListServices(ctx, ref.Space, ref.App); err == nil {
-				for _, b := range bindings {
-					addonNames = append(addonNames, b.Name)
+			if role != config.SpaceViewer {
+				hasStorage = s.rt.HasData(ctx, ref.Space, ref.App)
+				if bindings, err := s.rt.ListServices(ctx, ref.Space, ref.App); err == nil {
+					for _, b := range bindings {
+						addonNames = append(addonNames, b.Name)
+					}
 				}
 			}
 		}
@@ -299,6 +304,9 @@ func (s *Server) listAppEntries(ctx context.Context) ([]AppListEntry, error) {
 		}
 		if st.PublicHost != "" {
 			entry.URL = s.cfg.Scheme() + "://" + st.PublicHost
+		}
+		if role == config.SpaceViewer {
+			entry.Image, entry.Addons, entry.HasStorage = "", nil, false
 		}
 		apps = append(apps, entry)
 	}

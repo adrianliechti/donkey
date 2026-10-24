@@ -1,15 +1,14 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Globe, Lock, Network, type LucideIcon } from 'lucide-react'
-import { api, type AccessConfig, type AppMode, type Exposure, type NetworkInfo } from './api'
+import { api, type AppMode, type Exposure, type NetworkInfo } from './api'
 import { HostEditor } from './HostEditor'
-import { MembershipEditor } from './MembershipEditor'
 import { APP_MODES, Button, ChoiceCards, Eyebrow, ErrorNote, errText, loginHint, Section, SectionHeader, Spinner, SuccessNote, ToggleRow } from './ui'
 
 /**
  * How the app is reached, changed on the spot — no deploy.
  *
  * The donkeyfile stays the source of truth where it speaks: a choice made
- * here holds until donkey.yaml itself sets mode/public/internal/host/access/cors,
+ * here holds until donkey.yaml itself sets mode/public/internal/host/cors,
  * which always wins on the next deploy.
  */
 export function NetworkCard({
@@ -84,7 +83,7 @@ export function NetworkCard({
       value: 'protected',
       icon: Lock,
       label: 'Behind the login',
-      hint: `${loginHint(mode)} Narrow it further below.`,
+      hint: `${loginHint(mode)} Access is managed in space settings.`,
     },
     {
       value: 'public',
@@ -117,7 +116,7 @@ export function NetworkCard({
             </div>
             <div className="space-y-1.5">
               <Eyebrow>Who can reach it</Eyebrow>
-              <ChoiceCards label="Exposure" value={exposure} onChange={setExposure} options={options} columns="sm:grid-cols-3" />
+              <ChoiceCards label="Exposure" value={exposure} onChange={setExposure} options={options.filter((option) => option.value !== 'public' || net.allowPublic)} columns={net.allowPublic ? 'sm:grid-cols-3' : 'sm:grid-cols-2'} />
             </div>
 
             {exposure !== 'internal' && (
@@ -160,76 +159,8 @@ export function NetworkCard({
         )}
       </Section>
 
-      {net && exposure === 'protected' && (
-        <AccessCard space={space} app={app} initial={net.access ?? null} />
-      )}
+      {net && exposure === 'protected' && <p className="text-sm text-muted">Access is managed in space settings. Space admins, developers and viewers can open this app.</p>}
+      {net && !net.allowPublic && <p className="text-sm text-muted">Public access is disabled for this space.</p>}
     </>
-  )
-}
-
-/**
- * Who may open the app, once they are signed in. An empty list means
- * everyone the identity provider knows — donkey's default promise. The same
- * member list as a space's access, without roles.
- */
-function AccessCard({ space, app, initial }: { space: string; app: string; initial: AccessConfig | null }) {
-  const [access, setAccess] = useState<AccessConfig>(initial ?? {})
-  const [dirty, setDirty] = useState(false)
-  const [busy, setBusy] = useState(false)
-  const [note, setNote] = useState('')
-  const [error, setError] = useState('')
-
-  useEffect(() => {
-    setAccess(initial ?? {})
-    setDirty(false)
-  }, [initial])
-
-  const count = (access.users?.length ?? 0) + (access.groups?.length ?? 0) + (access.roles?.length ?? 0)
-
-  async function save() {
-    setBusy(true)
-    setError('')
-    setNote('')
-    try {
-      await api.setAccess(space, app, { users: access.users ?? [], groups: access.groups ?? [], roles: access.roles ?? [] })
-      setDirty(false)
-      setNote(
-        count === 0
-          ? 'Saved — every signed-in user may open the app again.'
-          : 'Saved — the gateway enforces the new list within seconds.',
-      )
-    } catch (err) {
-      setError(errText(err, 'Saving did not work.'))
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  return (
-    <Section className="space-y-3">
-      <SectionHeader
-        title="Access"
-        description={
-          count > 0
-            ? 'Only the people below may open the app. Users match by email, groups and roles by the claims of the sign-in.'
-            : 'Everyone the identity provider signs in may open the app. Add users, groups or roles to narrow it.'
-        }
-      />
-      <MembershipEditor
-        admins={access}
-        emptyText="Everyone who signs in."
-        onChange={(next) => {
-          setAccess(next)
-          setDirty(true)
-        }}
-      />
-      <ErrorNote message={error} />
-      <div className="flex items-center justify-end gap-3">
-        <SuccessNote message={note} />
-        <Button onClick={save} disabled={!dirty || busy}>
-          {busy ? 'Saving…' : 'Save access'}
-        </Button>
-      </div>
-    </Section>
   )
 }

@@ -32,19 +32,21 @@ only; no donkey component authorizes on them. The server's `auth`
   and storage failures never grant access or trigger another bootstrap.
 - Platform admins manage all spaces. Space admins manage membership, domains,
   and the space; developers manage apps and services, including credentials,
-  data, and tunnels. Empty space membership grants nobody a role. Permissions
+  data, and tunnels. Viewers can open apps and read status and aggregate metrics,
+  but cannot read logs, build history, files, variables or service data.
+  Empty space membership grants nobody a role. Permissions
   are read on every API request, including the resolved targets of uploads and
-  saved plans. IdP group/role changes still require refreshed identity claims.
+  saved plans. IdP group changes require refreshed identity claims.
 - Platform settings live in the control-plane `donkey` ConfigMap’s
   `platform.yaml` entry, alongside `route.yaml` and `buildkitd.toml`. Each space
   has `<space>-space`, with YAML in `config.yaml`. Docker
-  uses equivalent files in its persistent state volume. Existing spaces
-  migrate with empty membership and unrestricted domains. Only platform admins
-  retain access until space roles are assigned. Subsequent saves use last save
-  wins; no revision is exposed.
+  uses equivalent files in its persistent state volume. Existing app users and
+  groups migrate to space Viewers; saved space settings are preserved.
+  Subsequent saves use last save wins; no revision is exposed.
 - Space `domains` constrains published app hostnames, including shared-address
-  routes. An empty list allows any domain; app visitor access remains governed
-  by the app's independent `access` rules.
+  routes. An empty list allows any domain; protected app access is governed by
+  space membership. Public access requires the space's `allowPublic` opt-in,
+  which defaults to off. Disabling it protects existing public routes.
 
 ## Boundaries that hold
 

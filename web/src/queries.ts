@@ -153,12 +153,12 @@ export function useAppServices(space: string, app: string) {
   return present(useQuery(appServicesQuery(space, app)))
 }
 
-export function useSpaceServices(space: string) {
-  return present(useQuery(spaceServicesQuery(space)))
+export function useSpaceServices(space: string, enabled = true) {
+  return present(useQuery({ ...spaceServicesQuery(space), enabled }))
 }
 
-export function useCatalog(space?: string) {
-  return present(useQuery(space ? spaceCatalogQuery(space) : catalogQuery))
+export function useCatalog(space?: string, enabled = true) {
+  return present(useQuery({ ...(space ? spaceCatalogQuery(space) : catalogQuery), enabled }))
 }
 
 // One service change shows up in three places — the space strip, the app's

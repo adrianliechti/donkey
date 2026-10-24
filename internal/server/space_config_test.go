@@ -20,11 +20,11 @@ import (
 
 type spaceTestRuntime struct {
 	planRuntime
-	settings                                 map[string]config.SpaceConfig
-	readErr                                  error
-	ref                                      []runtime.AppRef
-	network                                  runtime.NetworkState
-	restarts, creates, writes, networkWrites int
+	settings                                              map[string]config.SpaceConfig
+	readErr                                               error
+	ref                                                   []runtime.AppRef
+	network                                               runtime.NetworkState
+	restarts, creates, writes, networkWrites, routeWrites int
 }
 
 func (r *spaceTestRuntime) SpaceConfig(_ context.Context, space string) (config.SpaceConfig, error) {
@@ -68,6 +68,21 @@ func (r *spaceTestRuntime) Network(context.Context, string, string) (*runtime.Ne
 func (r *spaceTestRuntime) ApplyNetwork(context.Context, *config.AppConfig) (string, error) {
 	r.networkWrites++
 	return "", nil
+}
+
+func (r *spaceTestRuntime) ReconcileAppRoutes(_ context.Context, _, _ string, protect bool) error {
+	r.routeWrites++
+	r.network.Access = nil
+	if protect {
+		r.network.Protected = true
+	}
+	for i := range r.network.Routes {
+		r.network.Routes[i].Access = nil
+		if protect {
+			r.network.Routes[i].Protected = true
+		}
+	}
+	return nil
 }
 
 func spaceTestServer() (*Server, *spaceTestRuntime) {
@@ -164,6 +179,9 @@ func TestNewSpaceDomainsDefaultAndCanBeCleared(t *testing.T) {
 		}
 		if got := r.settings["new"].Domains; len(got) != tc.count {
 			t.Fatalf("domains = %v", got)
+		}
+		if r.settings["new"].AllowPublic {
+			t.Fatal("new spaces must default to public access disabled")
 		}
 		if tc.body == `{"name":"new"}` && r.settings["new"].Domains[0] != "new.example.com" {
 			t.Fatal("wrong default suffix")

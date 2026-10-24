@@ -321,7 +321,7 @@ func (s *Server) handleOAuthAuthorize(w http.ResponseWriter, r *http.Request) {
 		s.beginLogin(w, r, 0, r.URL.RequestURI())
 		return
 	}
-	if !rt.Access.Allows(sess.Email, sess.Groups, sess.Roles) {
+	if !rt.allows(sess.Subject, sess.Email, sess.Groups) {
 		fail("access_denied", "your identity is not allowed to use this API")
 		return
 	}
@@ -451,7 +451,7 @@ func (s *Server) handleOAuthAuthorizeConsent(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	resource, rt, ok := s.validOAuthResource(r, consent.Resource)
-	if !ok || !rt.Access.Allows(sess.Email, sess.Groups, sess.Roles) {
+	if !ok || !rt.allows(sess.Subject, sess.Email, sess.Groups) {
 		redirectOAuthError(w, r, consent.RedirectURI, consent.State, "access_denied", "access to this API is no longer available", s.authorizationIssuer())
 		return
 	}
@@ -521,7 +521,7 @@ func (s *Server) exchangeOAuthAuthorizationCode(w http.ResponseWriter, r *http.R
 		oauthError(w, http.StatusBadRequest, "invalid_grant", "the authorization code was not issued to this client")
 		return
 	}
-	resource, _, resourceOK := s.validOAuthResource(r, r.Form.Get("resource"))
+	resource, rt, resourceOK := s.validOAuthResource(r, r.Form.Get("resource"))
 	if r.Form.Get("client_id") != code.ClientID || r.Form.Get("redirect_uri") != code.RedirectURI || !resourceOK || resource != code.Resource {
 		oauthError(w, http.StatusBadRequest, "invalid_grant", "the authorization code does not match this request")
 		return
@@ -535,6 +535,10 @@ func (s *Server) exchangeOAuthAuthorizationCode(w http.ResponseWriter, r *http.R
 	}
 	if code.Identity.Expires <= time.Now().Unix() {
 		oauthError(w, http.StatusBadRequest, "invalid_grant", "the signed-in session has expired")
+		return
+	}
+	if !rt.allows(code.Identity.Subject, code.Identity.Email, code.Identity.Groups) {
+		oauthError(w, http.StatusForbidden, "access_denied", "this identity is no longer allowed to use the API")
 		return
 	}
 	response, err := s.issueOAuthTokens(code.Identity, code.ClientID, code.Resource,
@@ -568,7 +572,7 @@ func (s *Server) exchangeOAuthRefreshToken(w http.ResponseWriter, r *http.Reques
 		oauthError(w, http.StatusBadRequest, "invalid_target", "the refresh token belongs to another resource")
 		return
 	}
-	if !rt.Access.Allows(refresh.Email, refresh.Groups, refresh.Roles) {
+	if !rt.allows(refresh.Subject, refresh.Email, refresh.Groups) {
 		oauthError(w, http.StatusForbidden, "access_denied", "this identity is no longer allowed to use the API")
 		return
 	}
@@ -673,7 +677,7 @@ func (s *Server) serveOAuthApp(w http.ResponseWriter, r *http.Request, rt route)
 		return
 	}
 	sess := &token.Identity
-	if !rt.Access.Allows(sess.Email, sess.Groups, sess.Roles) {
+	if !rt.allows(sess.Subject, sess.Email, sess.Groups) {
 		w.Header().Set("WWW-Authenticate", challenge)
 		oauthError(w, http.StatusForbidden, "access_denied", "this identity is not allowed to use the API")
 		return

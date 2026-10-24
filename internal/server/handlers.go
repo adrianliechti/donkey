@@ -104,10 +104,23 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
+	role, err := s.spaceRole(r.Context(), space)
+	if err != nil {
+		writeAccessError(w, err)
+		return
+	}
+	if role == "" {
+		writeAccessError(w, errSpaceForbidden)
+		return
+	}
 	st, err := s.rt.Status(r.Context(), space, app)
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err)
 		return
+	}
+	hasStorage := false
+	if role != config.SpaceViewer {
+		hasStorage = s.rt.HasData(r.Context(), space, app)
 	}
 	resp := StatusResponse{
 		Found:    st.Found,
@@ -119,14 +132,14 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		// The claim is the disk: it outlives the pods, so this is true even
 		// while the app is stopped or crash-looping — which is exactly when
 		// someone needs to look at what is on it.
-		HasStorage: s.rt.HasData(r.Context(), space, app),
+		HasStorage: hasStorage,
 	}
 	if !st.StartedAt.IsZero() {
 		resp.StartedAt = st.StartedAt.UTC().Format(time.RFC3339)
 	}
 	if st.PublicHost != "" {
 		resp.URL = s.cfg.Scheme() + "://" + st.PublicHost
-		if provider, ok := s.rt.(runtime.EndpointStatusProvider); ok {
+		if provider, ok := s.rt.(runtime.EndpointStatusProvider); ok && role != config.SpaceViewer {
 			resp.Endpoint = endpointStatusResponse(st.PublicHost, provider.EndpointStatus(
 				r.Context(), space, app, st.PublicHost,
 			))
@@ -136,6 +149,10 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		resp.Exposure = exposureOf(st)
 		resp.Mode = modeOfStatus(st)
 		resp.Port = int(st.Port)
+	}
+	if role == config.SpaceViewer {
+		resp.Image, resp.Pods, resp.Endpoint = "", nil, nil
+		resp.Port, resp.HasStorage = 0, false
 	}
 	writeJSON(w, http.StatusOK, resp)
 }

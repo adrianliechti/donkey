@@ -126,6 +126,7 @@ func (s *suite) deployProject(t *testing.T, dir, space string, expected []string
 	// These dedicated test spaces may be replaced on reruns. Keep them live
 	// afterwards when asked, so the console and apps remain inspectable.
 	s.rawTry(http.MethodDelete, "/v1/spaces/"+space)
+	s.raw(t, http.MethodPost, "/v1/spaces", map[string]any{"name": space, "allowPublic": true, "viewers": map[string]any{"users": []string{"demo@example.com"}}}, nil)
 	if os.Getenv("DONKEY_E2E_KEEP") != "true" {
 		t.Cleanup(func() { s.rawTry(http.MethodDelete, "/v1/spaces/"+space) })
 	}

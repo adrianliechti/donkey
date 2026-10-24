@@ -259,7 +259,7 @@ func (r *Runtime) applyRoutes(ctx context.Context, space string, app *config.App
 		}
 	}
 	backend := fmt.Sprintf("http://%s:%d", ctrName(space, app.Name), port)
-	login := !app.Public && !(app.Internal && app.IsAPI())
+	login := !app.Public
 
 	host := r.appHost(space, app)
 	if host == "" {
@@ -268,9 +268,6 @@ func (r *Runtime) applyRoutes(ctx context.Context, space string, app *config.App
 		}
 	} else {
 		route := Route{Space: space, App: app.Name, Host: host, Path: "/", Backend: backend, Login: login, Mode: app.GatewayMode(), CORS: app.CORS}
-		if login && !app.Access.Empty() {
-			route.Access = app.Access
-		}
 		if err := r.state.setRoute(space, app.Name, route); err != nil {
 			return err
 		}
@@ -293,9 +290,6 @@ func (r *Runtime) applyRoutes(ctx context.Context, space string, app *config.App
 		}
 		if len(hosts) > 0 && hosts[0][target.App] != "" {
 			route.Host = hosts[0][target.App]
-		}
-		if login && !app.Access.Empty() {
-			route.Access = app.Access
 		}
 		if err := r.state.setRoute(space, name, route); err != nil {
 			return err
@@ -721,7 +715,7 @@ func (r *Runtime) Network(ctx context.Context, space, app string) (*rt.NetworkSt
 			continue
 		}
 		st.Routes = append(st.Routes, rt.PathRouteState{
-			Name: name, Host: route.Host, Path: route.Path, Protected: route.Login, Mode: route.Mode, CORS: route.CORS, StripPrefix: route.StripPrefix,
+			Name: name, Host: route.Host, Path: route.Path, Protected: route.Login, Mode: route.Mode, CORS: route.CORS, Access: route.Access, StripPrefix: route.StripPrefix,
 		})
 	}
 	return st, nil
@@ -754,7 +748,7 @@ func (r *Runtime) ApplyNetwork(ctx context.Context, cfg *config.AppConfig) (stri
 	if spec != nil {
 		port = spec.Port
 	}
-	login := !cfg.Public && !(cfg.Internal && cfg.IsAPI())
+	login := !cfg.Public
 
 	if host := r.appHost(space, cfg); host == "" {
 		if err := r.state.removeRoute(space, app); err != nil {
@@ -777,9 +771,6 @@ func (r *Runtime) ApplyNetwork(ctx context.Context, cfg *config.AppConfig) (stri
 			Mode:    cfg.GatewayMode(),
 			CORS:    cfg.CORS,
 		}
-		if login && !cfg.Access.Empty() {
-			route.Access = cfg.Access
-		}
 		if err := r.state.setRoute(space, app, route); err != nil {
 			return "", err
 		}
@@ -800,11 +791,7 @@ func (r *Runtime) ApplyNetwork(ctx context.Context, cfg *config.AppConfig) (stri
 		route.Login = login
 		route.Mode = cfg.GatewayMode()
 		route.CORS = cfg.CORS
-		if !login {
-			route.Access = nil
-		} else if route.Access == nil {
-			route.Access = cfg.Access
-		}
+		route.Access = nil
 		if err := r.state.setRoute(space, name, *route); err != nil {
 			return "", err
 		}
@@ -820,13 +807,16 @@ func (r *Runtime) ApplyNetwork(ctx context.Context, cfg *config.AppConfig) (stri
 	return "", nil
 }
 
-func (r *Runtime) SetAccess(ctx context.Context, space, app string, access *config.AccessConfig) error {
+func (r *Runtime) ReconcileAppRoutes(ctx context.Context, space, app string, protect bool) error {
 	update := func(name string) error {
 		route, err := r.state.route(space, name)
-		if err != nil || route == nil || !route.Login {
+		if err != nil || route == nil {
 			return err
 		}
-		route.Access = access
+		route.Access = nil
+		if protect {
+			route.Login = true
+		}
 		return r.state.setRoute(space, name, *route)
 	}
 	if err := update(app); err != nil {

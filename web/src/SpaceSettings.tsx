@@ -6,7 +6,7 @@ import { api, type SpaceConfig } from './api'
 import { Modal, ModalBody, ModalFooter, ModalHeader, ModalNotice } from './dialog'
 import { MembershipEditor } from './MembershipEditor'
 import { OfferingSettings } from './OfferingSettings'
-import { Button, Field, IconButton, Input, List, ListRow, SectionHeader, Spinner, errText, useMediaQuery } from './ui'
+import { Button, Field, IconButton, Input, List, ListRow, SectionHeader, Spinner, ToggleRow, errText, useMediaQuery } from './ui'
 
 const sections = [
   { label: 'General', icon: Settings },
@@ -97,13 +97,16 @@ export function SpaceForm({ settings, onChange, name, disabled = false }: {
                 spellCheck={false}
               />
             </Field>}
+            <ToggleRow label="Allow public apps"
+              description="Off by default. Turning this off switches existing public apps to login protection and prevents public deployments."
+              checked={settings.allowPublic ?? false} onChange={(allowPublic) => onChange({ ...settings, allowPublic })} />
             <DomainSettings domains={settings.domains ?? []} placeholder={name?.domainPlaceholder} onChange={(domains) => onChange({ ...settings, domains })} />
           </TabPanel>
           <TabPanel unmount={false} className="space-y-3 focus:outline-none">
             <SectionHeader title="Members"
               description={name ? 'Add people or teams now, or later in space settings.' : 'Give people and teams a role in this space.'} />
-            <MembershipEditor admins={settings.admins} developers={settings.developers}
-              onChange={(admins, developers) => onChange({ ...settings, admins, developers })} />
+            <MembershipEditor admins={settings.admins} developers={settings.developers} viewers={settings.viewers ?? {}}
+              onChange={(admins, developers, viewers) => onChange({ ...settings, admins, developers, viewers })} />
           </TabPanel>
           <TabPanel unmount={false} className="focus:outline-none">
             <OfferingSettings offerings={settings.offerings} onChange={(offerings) => onChange({ ...settings, offerings })} />

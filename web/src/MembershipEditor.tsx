@@ -1,17 +1,18 @@
 import { useState } from 'react'
-import { KeyRound, Plus, UserRound, Users, X } from 'lucide-react'
+import { Plus, UserRound, Users, X } from 'lucide-react'
 import type { AccessConfig } from './api'
 import { IconButton, Input, List, ListRow, Select } from './ui'
 
-type Kind = 'users' | 'groups' | 'roles'
-type Role = 'admin' | 'developer'
+type Kind = 'users' | 'groups'
+type Role = 'admin' | 'developer' | 'viewer'
 type Member = { kind: Kind; value: string; role: Role }
-const kinds = ['users', 'groups', 'roles'] as const
-const labels = { users: 'User', groups: 'Group', roles: 'IdP role' }
-const placeholders = { users: 'name@example.com', groups: 'engineering', roles: 'role from your identity provider' }
+const kinds = ['users', 'groups'] as const
+const labels = { users: 'User', groups: 'Group' }
+const placeholders = { users: 'name@example.com', groups: 'engineering' }
 // Without developers the list has one role, so no role column.
-const icons = { users: UserRound, groups: Users, roles: KeyRound }
+const icons = { users: UserRound, groups: Users }
 const roleOptions: { value: Role; label: string }[] = [
+  { value: 'viewer', label: 'Viewer' },
   { value: 'developer', label: 'Developer' },
   { value: 'admin', label: 'Space admin' },
 ]
@@ -22,29 +23,32 @@ const roleOptions: { value: Role; label: string }[] = [
  * pick the role, add. Roles are quiet dropdowns, so the list reads as names
  * first; removing is the row's hover action.
  */
-export function MembershipEditor({ admins, developers, onChange, emptyText = 'No members yet. Platform admins always have access.' }: {
+export function MembershipEditor({ admins, developers, viewers, onChange, emptyText = 'No members yet. Platform admins always have access.' }: {
   admins: AccessConfig
   developers?: AccessConfig
-  onChange: (admins: AccessConfig, developers: AccessConfig) => void
+  viewers?: AccessConfig
+  onChange: (admins: AccessConfig, developers: AccessConfig, viewers: AccessConfig) => void
   /** What an empty list means where the editor is used. */
   emptyText?: string
 }) {
   const [kind, setKind] = useState<Kind>('users')
   const [value, setValue] = useState('')
-  const [role, setRole] = useState<Role>(developers ? 'developer' : 'admin')
+  const [role, setRole] = useState<Role>(developers ? 'viewer' : 'admin')
   const members: Member[] = kinds.flatMap((kind) => [
     ...(admins[kind] ?? []).map((value) => ({ kind, value, role: 'admin' as const })),
     ...(developers?.[kind] ?? []).map((value) => ({ kind, value, role: 'developer' as const })),
+    ...(viewers?.[kind] ?? []).map((value) => ({ kind, value, role: 'viewer' as const })),
   ])
 
   function update(next: Member[]) {
     const admins: AccessConfig = {}
     const developers: AccessConfig = {}
+    const viewers: AccessConfig = {}
     for (const member of next) {
-      const target = member.role === 'admin' ? admins : developers
+      const target = member.role === 'admin' ? admins : member.role === 'developer' ? developers : viewers
       target[member.kind] = [...(target[member.kind] ?? []), member.value]
     }
-    onChange(admins, developers)
+    onChange(admins, developers, viewers)
   }
 
   function add() {
@@ -93,7 +97,7 @@ export function MembershipEditor({ admins, developers, onChange, emptyText = 'No
           )}
         </ListRow>
       </List>
-      {developers && <p className="text-xs leading-relaxed text-muted">Space admins manage members and settings. Developers manage apps and services.</p>}
+      {developers && <p className="text-xs leading-relaxed text-muted">Space admins manage members and settings. Developers manage apps and services. Viewers open apps and see health and metrics; logs, build history and settings stay private.</p>}
     </div>
   )
 }
