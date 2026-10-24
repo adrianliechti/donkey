@@ -20,7 +20,6 @@ import (
 
 	"github.com/adrianliechti/donkey/internal/addons"
 	"github.com/adrianliechti/donkey/internal/config"
-	"github.com/adrianliechti/donkey/internal/telemetry"
 	rt "github.com/adrianliechti/donkey/pkg/runtime"
 )
 
@@ -37,11 +36,18 @@ type runSpec struct {
 	Host        string   `json:"host,omitempty"`
 	Mode        string   `json:"mode,omitempty"`
 	CORS        string   `json:"cors,omitempty"`
+	// Stack is what the app is written in (detect.Stack), shown as a label.
+	Stack string `json:"stack,omitempty"`
+	// Env is donkey.yaml's env, with the binding references the deploy wired
+	// in. Like a Deployment's literal env on Kubernetes it belongs to the
+	// deploy — the next one replaces it, so a dropped key goes — and it wins
+	// over the stored `donkey env` values, which persist.
+	Env map[string]string `json:"env,omitempty"`
 }
 
 func (r *Runtime) runRecord(space, app string) (*runSpec, error) {
 	var spec runSpec
-	found, err := r.state.readJSON(&spec, "deploy", space, app+".json")
+	found, err := r.state.readRecord(&spec, "deploy", space, app)
 	if err != nil || !found {
 		return nil, err
 	}
@@ -49,7 +55,7 @@ func (r *Runtime) runRecord(space, app string) (*runSpec, error) {
 }
 
 func (r *Runtime) setRunRecord(space, app string, spec runSpec) error {
-	return r.state.writeJSON(spec, "deploy", space, app+".json")
+	return r.state.writeRecord(spec, "deploy", space, app)
 }
 
 // Deploy takes a built image live as a container. The same choreography as
@@ -130,21 +136,6 @@ func (r *Runtime) Deploy(ctx context.Context, spec rt.DeploySpec, out rt.Progres
 		}
 	}
 
-	// donkey.yaml's own env lands in the stored env (its keys win), so the
-	// running container and later restarts agree on what the app sees.
-	if len(app.Env) > 0 {
-		env, err := r.state.env(space, app.Name)
-		if err != nil {
-			return err
-		}
-		for k, v := range app.Env {
-			env[k] = v
-		}
-		if err := r.state.setEnv(space, app.Name, env); err != nil {
-			return err
-		}
-	}
-
 	// What this deploy settled, for no-build deploys and the console.
 	if err := r.SetAppMeta(ctx, space, app.Name, rt.MetaDecisions, optional(spec.Decisions)); err != nil {
 		return err
@@ -157,7 +148,8 @@ func (r *Runtime) Deploy(ctx context.Context, spec rt.DeploySpec, out rt.Progres
 	}
 
 	run := runSpec{Image: r.pullRef(spec.ImageRef), Port: app.Port, Command: app.Command,
-		Healthcheck: app.Healthcheck.Path, Host: r.appHost(space, app), Mode: app.GatewayMode(), CORS: app.CORS}
+		Healthcheck: app.Healthcheck.Path, Host: r.appHost(space, app), Mode: app.GatewayMode(), CORS: app.CORS,
+		Stack: spec.Stack, Env: app.Env}
 	if app.HasStorage() {
 		run.Paths = app.Storage.Paths
 	}
@@ -240,7 +232,7 @@ func (r *Runtime) appHost(space string, app *config.AppConfig) string {
 // it no longer claims.
 func (r *Runtime) applyRoutes(ctx context.Context, space string, app *config.AppConfig, port int, hosts ...map[string]string) error {
 	var settings config.SpaceConfig
-	if _, err := r.state.readJSON(&settings, "spaces", space, "config.json"); err != nil {
+	if _, err := r.state.readRecord(&settings, "spaces", space, "config"); err != nil {
 		return err
 	}
 	if err := settings.Validate(); err != nil {
@@ -259,7 +251,7 @@ func (r *Runtime) applyRoutes(ctx context.Context, space string, app *config.App
 		}
 	}
 	backend := fmt.Sprintf("http://%s:%d", ctrName(space, app.Name), port)
-	login := !app.Public && !(app.Internal && app.IsAPI())
+	login := !app.Public
 
 	host := r.appHost(space, app)
 	if host == "" {
@@ -267,10 +259,8 @@ func (r *Runtime) applyRoutes(ctx context.Context, space string, app *config.App
 			return err
 		}
 	} else {
-		route := Route{Space: space, App: app.Name, Host: host, Path: "/", Backend: backend, Login: login, Mode: app.GatewayMode(), CORS: app.CORS}
-		if login && !app.Access.Empty() {
-			route.Access = app.Access
-		}
+		route := Route{Space: space, App: app.Name, Host: host, Path: "/", Backend: backend, Login: login, Mode: app.GatewayMode(), CORS: app.CORS,
+			Analytics: config.RouteAnalytics(app)}
 		if err := r.state.setRoute(space, app.Name, route); err != nil {
 			return err
 		}
@@ -290,12 +280,10 @@ func (r *Runtime) applyRoutes(ctx context.Context, space string, app *config.App
 			Login:       login,
 			Mode:        app.GatewayMode(),
 			CORS:        app.CORS,
+			Analytics:   config.RouteAnalytics(app),
 		}
 		if len(hosts) > 0 && hosts[0][target.App] != "" {
 			route.Host = hosts[0][target.App]
-		}
-		if login && !app.Access.Empty() {
-			route.Access = app.Access
 		}
 		if err := r.state.setRoute(space, name, route); err != nil {
 			return err
@@ -412,9 +400,11 @@ func (r *Runtime) imagePullOptions(ref string) (image.PullOptions, error) {
 	return opts, nil
 }
 
-// appEnv composes the container's environment: stored env, the addon
-// bindings the app holds, and donkey's own PORT.
-func (r *Runtime) appEnv(space, app string, port int) (map[string]string, error) {
+// appEnv composes the container's environment in the order a Kubernetes pod
+// gets it: the stored env (`donkey env`), the addon bindings the app holds,
+// the telemetry defaults and donkey's own PORT — and donkey.yaml's env from
+// the run record over all of them.
+func (r *Runtime) appEnv(space, app string, spec runSpec) (map[string]string, error) {
 	env, err := r.state.env(space, app)
 	if err != nil {
 		return nil, err
@@ -435,25 +425,11 @@ func (r *Runtime) appEnv(space, app string, port int) (map[string]string, error)
 			env[k] = v
 		}
 	}
-	if len(r.opts.TelemetryKey) > 0 {
-		defaults := map[string]string{
-			"OTEL_SERVICE_NAME":             app,
-			"OTEL_RESOURCE_ATTRIBUTES":      "service.namespace=" + space,
-			"OTEL_EXPORTER_OTLP_ENDPOINT":   "http://" + r.opts.TelemetryContainer + ":4318",
-			"OTEL_EXPORTER_OTLP_PROTOCOL":   "http/protobuf",
-			"OTEL_EXPORTER_OTLP_HEADERS":    "x-donkey-telemetry-token=" + telemetry.AppToken(r.opts.TelemetryKey, space, app),
-			"OTEL_METRICS_EXPORTER":         "otlp",
-			"OTEL_TRACES_EXPORTER":          "none",
-			"OTEL_LOGS_EXPORTER":            "none",
-			"OTEL_SEMCONV_STABILITY_OPT_IN": "http",
-		}
-		for key, value := range defaults {
-			if _, configured := env[key]; !configured {
-				env[key] = value
-			}
-		}
+
+	env["PORT"] = strconv.Itoa(spec.Port)
+	for k, v := range spec.Env {
+		env[k] = v
 	}
-	env["PORT"] = strconv.Itoa(port)
 	return env, nil
 }
 
@@ -528,7 +504,7 @@ func (r *Runtime) initVolumeDirs(ctx context.Context, vol string, subs []string,
 
 // runApp (re)creates the app's container from its run record.
 func (r *Runtime) runApp(ctx context.Context, space, app string, spec runSpec) error {
-	env, err := r.appEnv(space, app, spec.Port)
+	env, err := r.appEnv(space, app, spec)
 	if err != nil {
 		return err
 	}
@@ -542,6 +518,9 @@ func (r *Runtime) runApp(ctx context.Context, space, app string, spec runSpec) e
 	labels[labelHost] = spec.Host
 	labels[labelMode] = spec.Mode
 	labels[labelCORS] = spec.CORS
+	if spec.Stack != "" {
+		labels[labelStack] = spec.Stack
+	}
 
 	volumes, err := r.appMounts(ctx, space, app, spec)
 	if err != nil {
@@ -691,7 +670,7 @@ func (r *Runtime) Destroy(ctx context.Context, space, app string, keepData bool)
 	if err := r.state.cleanupApp(space, app, keepData); err != nil {
 		return err
 	}
-	return r.state.remove("deploy", space, app+".json")
+	return r.state.remove("deploy", space, app)
 }
 
 // --- Network --------------------------------------------------------------
@@ -706,6 +685,7 @@ func (r *Runtime) Network(ctx context.Context, space, app string) (*rt.NetworkSt
 		st.Protected = route.Login
 		st.Mode = route.Mode
 		st.CORS = route.CORS
+		st.Analytics = route.Analytics
 		st.Access = route.Access
 	}
 	names, err := r.state.listRoutes(space)
@@ -721,7 +701,7 @@ func (r *Runtime) Network(ctx context.Context, space, app string) (*rt.NetworkSt
 			continue
 		}
 		st.Routes = append(st.Routes, rt.PathRouteState{
-			Name: name, Host: route.Host, Path: route.Path, Protected: route.Login, Mode: route.Mode, CORS: route.CORS, StripPrefix: route.StripPrefix,
+			Name: name, Host: route.Host, Path: route.Path, Protected: route.Login, Mode: route.Mode, CORS: route.CORS, Access: route.Access, StripPrefix: route.StripPrefix,
 		})
 	}
 	return st, nil
@@ -754,7 +734,7 @@ func (r *Runtime) ApplyNetwork(ctx context.Context, cfg *config.AppConfig) (stri
 	if spec != nil {
 		port = spec.Port
 	}
-	login := !cfg.Public && !(cfg.Internal && cfg.IsAPI())
+	login := !cfg.Public
 
 	if host := r.appHost(space, cfg); host == "" {
 		if err := r.state.removeRoute(space, app); err != nil {
@@ -768,17 +748,15 @@ func (r *Runtime) ApplyNetwork(ctx context.Context, cfg *config.AppConfig) (stri
 			return "", rt.UserError{Err: fmt.Errorf("%s already answers on %s — two apps cannot share one address", owner, host)}
 		}
 		route := Route{
-			Space:   space,
-			App:     app,
-			Host:    host,
-			Path:    "/",
-			Backend: fmt.Sprintf("http://%s:%d", ctrName(space, app), port),
-			Login:   login,
-			Mode:    cfg.GatewayMode(),
-			CORS:    cfg.CORS,
-		}
-		if login && !cfg.Access.Empty() {
-			route.Access = cfg.Access
+			Space:     space,
+			App:       app,
+			Host:      host,
+			Path:      "/",
+			Backend:   fmt.Sprintf("http://%s:%d", ctrName(space, app), port),
+			Login:     login,
+			Mode:      cfg.GatewayMode(),
+			CORS:      cfg.CORS,
+			Analytics: config.RouteAnalytics(cfg),
 		}
 		if err := r.state.setRoute(space, app, route); err != nil {
 			return "", err
@@ -800,11 +778,8 @@ func (r *Runtime) ApplyNetwork(ctx context.Context, cfg *config.AppConfig) (stri
 		route.Login = login
 		route.Mode = cfg.GatewayMode()
 		route.CORS = cfg.CORS
-		if !login {
-			route.Access = nil
-		} else if route.Access == nil {
-			route.Access = cfg.Access
-		}
+		route.Analytics = config.RouteAnalytics(cfg)
+		route.Access = nil
 		if err := r.state.setRoute(space, name, *route); err != nil {
 			return "", err
 		}
@@ -820,13 +795,16 @@ func (r *Runtime) ApplyNetwork(ctx context.Context, cfg *config.AppConfig) (stri
 	return "", nil
 }
 
-func (r *Runtime) SetAccess(ctx context.Context, space, app string, access *config.AccessConfig) error {
+func (r *Runtime) ReconcileAppRoutes(ctx context.Context, space, app string, protect bool) error {
 	update := func(name string) error {
 		route, err := r.state.route(space, name)
-		if err != nil || route == nil || !route.Login {
+		if err != nil || route == nil {
 			return err
 		}
-		route.Access = access
+		route.Access = nil
+		if protect {
+			route.Login = true
+		}
 		return r.state.setRoute(space, name, *route)
 	}
 	if err := update(app); err != nil {

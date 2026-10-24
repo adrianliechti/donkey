@@ -177,9 +177,10 @@ tasks:
       - go vet ./...
 
   fmt:
-    desc: Format the Go sources
+    desc: Format the Go sources and the admin console (oxfmt, through Vite+)
     cmds:
       - gofmt -w cmd internal pkg e2e
+      - cd web && npm run fmt
 
   lint:
     desc: Lint the admin console
@@ -188,9 +189,10 @@ tasks:
       - npm run lint
 
   check:
-    desc: Everything CI would run — format check, vet, tests, console typecheck and lint
+    desc: Everything CI would run — format checks, vet, tests, console typecheck and lint
     cmds:
       - test -z "$(gofmt -l cmd internal pkg e2e)" || { echo "gofmt needed — run 'task fmt'"; gofmt -l cmd internal pkg e2e; exit 1; }
+      - cd web && npm run fmt:check
       - task: vet
       # The e2e suite is behind a build tag — vet it too, or it rots.
       - go vet -tags e2e ./e2e

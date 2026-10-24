@@ -12,6 +12,9 @@ import (
 )
 
 func (r *Runtime) EnsureSpaceConfigs(ctx context.Context) error {
+	if err := r.state.migrateLegacyRoles(); err != nil {
+		return err
+	}
 	spaces, err := r.ListSpaces(ctx)
 	if err != nil {
 		return err
@@ -21,7 +24,7 @@ func (r *Runtime) EnsureSpaceConfigs(ctx context.Context) error {
 			return err
 		}
 		// Only missing records are created; configured spaces are never reset.
-		if err := r.state.storeJSON(config.SpaceConfig{Domains: []string{}}, false, "spaces", space, "config.json"); err != nil {
+		if err := r.state.storeRecord(config.SpaceConfig{Domains: []string{}}, false, "spaces", space, "config"); err != nil {
 			return err
 		}
 		if err := r.state.migrateSharedBindings(space); err != nil {
@@ -46,7 +49,7 @@ func (r *Runtime) SpaceConfig(ctx context.Context, space string) (config.SpaceCo
 	if !sameIdentity(nw.Labels, resourceLabels(space, roleSpace)) {
 		return access, fmt.Errorf("the network is not this installation's space")
 	}
-	if _, err := r.state.readJSON(&access, "spaces", space, "config.json"); err != nil {
+	if _, err := r.state.readRecord(&access, "spaces", space, "config"); err != nil {
 		return access, err
 	}
 	if err := access.Validate(); err != nil {
@@ -66,5 +69,5 @@ func (r *Runtime) SetSpaceConfig(ctx context.Context, space string, access confi
 	if err != nil {
 		return err
 	}
-	return r.state.writeJSON(access, "spaces", space, "config.json")
+	return r.state.writeRecord(access, "spaces", space, "config")
 }

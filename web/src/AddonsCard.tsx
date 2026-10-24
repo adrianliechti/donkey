@@ -4,7 +4,19 @@ import { api, type AddAddonRequest, type SpaceAddonEntry } from './api'
 import { AddServiceDialog } from './AddonForm'
 import { useAppServices, useInvalidateServices, useSpaceServices } from './queries'
 import { serviceUI } from './serviceProtocol'
-import { Chip, ErrorNote, errText, IconButton, List, ListRow, Section, SectionHeader, Spinner, StateChip, SuccessNote } from './ui'
+import {
+  Chip,
+  ErrorNote,
+  IconButton,
+  List,
+  ListRow,
+  Section,
+  SectionHeader,
+  Spinner,
+  StateChip,
+  SuccessNote,
+} from './ui'
+import { errText } from './format'
 
 /**
  * The services this app can use: every service of the space in one list,
@@ -127,8 +139,15 @@ export function AddonsCard({ space, app }: { space: string; app: string }) {
                   {unready && <StateChip state={entry.state!} />}
                   {!on && !unready && <span className="text-xs text-muted">not connected</span>}
                   {keys.length > 0 && (
-                    <span className="flex flex-wrap gap-1" title={on ? 'Variables the app receives' : 'Variables the app would receive'}>
-                      {keys.map((k) => <Chip key={k} dashed={!on}>{k}</Chip>)}
+                    <span
+                      className="flex flex-wrap gap-1"
+                      title={on ? 'Variables the app receives' : 'Variables the app would receive'}
+                    >
+                      {keys.map((k) => (
+                        <Chip key={k} dashed={!on}>
+                          {k}
+                        </Chip>
+                      ))}
                     </span>
                   )}
                 </div>

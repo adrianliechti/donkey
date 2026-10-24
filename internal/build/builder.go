@@ -68,7 +68,7 @@ func SameRegistry(registryURL, imageRef string) bool {
 }
 
 // ImageTag composes the tag for a deploy:
-// <registry>/<app>:<gitsha12>-<timestamp>, or timestamp-only when no sha is
+// <registry>/<space>/<app>:<gitsha12>-<timestamp>, or timestamp-only when no sha is
 // known (the CLI reads it from the local .git and sends it along — uploaded
 // build contexts deliberately exclude .git). The timestamp gives every deploy
 // its own image, so redeploying identical code still rolls the Deployment.
@@ -77,8 +77,11 @@ func SameRegistry(registryURL, imageRef string) bool {
 // overwrite it, which costs nothing on an ordinary registry. Registries that
 // refuse to overwrite a tag (ECR tag immutability, GHCR immutable tags, a
 // Harbor rule) reject that push instead — `immutable` adds a short random
-// suffix so no tag is ever written twice.
-func ImageTag(registryURL, appName, sha string, now time.Time, immutable bool) string {
+// suffix so no tag is ever written twice. The space is part of the
+// repository: apps of the same name in two spaces are different apps, and
+// never share one. (Images built before carry no space; they keep their
+// names, and a rollback to one names it in full.)
+func ImageTag(registryURL, space, app, sha string, now time.Time, immutable bool) string {
 	parts := []string{now.UTC().Format("20060102150405")}
 	if sha != "" {
 		parts = append([]string{sha}, parts...)
@@ -86,7 +89,7 @@ func ImageTag(registryURL, appName, sha string, now time.Time, immutable bool) s
 	if immutable {
 		parts = append(parts, uniqueSuffix())
 	}
-	return fmt.Sprintf("%s/%s:%s", strings.TrimSuffix(registryURL, "/"), appName, strings.Join(parts, "-"))
+	return fmt.Sprintf("%s/%s/%s:%s", strings.TrimSuffix(registryURL, "/"), space, app, strings.Join(parts, "-"))
 }
 
 // uniqueSuffix is deliberately short: four hex characters make a same-second

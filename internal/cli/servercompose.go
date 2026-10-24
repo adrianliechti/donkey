@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -37,6 +38,9 @@ type composeService struct {
 	DependsOn     map[string]composeDependency `json:"depends_on,omitempty"`
 	Networks      any                          `json:"networks,omitempty"`
 	Labels        map[string]string            `json:"labels,omitempty"`
+	// StopGracePeriod is how long Compose waits after SIGTERM before it kills
+	// the container — the orchestrator's drain window.
+	StopGracePeriod string `json:"stop_grace_period,omitempty"`
 }
 
 type composeHealthcheck struct {
@@ -273,6 +277,15 @@ func dockerComposeFiles(settings *config.InstallFile, bundledRegistry bool) (map
 		serverEnv["DONKEY_REGISTRY_CONFIG_DIR"] = dockerRegistryAuthPath
 		serverVolumes = append(serverVolumes, dir+":"+dockerRegistryAuthPath+":ro")
 	}
+	// The orchestrator builds and deploys with the server's configuration and
+	// mounts, minus the OIDC client (see dockerOrchestratorEnv). The mounts are
+	// a copy, so one added for builds alone stays off the API.
+	orchestratorEnv := dockerOrchestratorEnv(serverEnv)
+	orchestratorVolumes := slices.Clone(serverVolumes)
+	serverEnv["DONKEY_ORCHESTRATOR_URL"] = "http://" + dockerOrchestratorName + ":" + dockerOrchestratorPort
+	// The source history is written where deploys run, and served from there
+	// too: a folder of the state volume both processes already mount.
+	orchestratorEnv["DONKEY_DATA_DIR"] = dockerDataDir
 
 	gatewayEnv := map[string]string{
 		"DONKEY_RUNTIME":                 "docker",
@@ -350,14 +363,24 @@ func dockerComposeFiles(settings *config.InstallFile, bundledRegistry bool) (map
 			Environment: aiEnv, Volumes: []string{"data:" + dockerDataDir + ":ro"},
 			Restart: "unless-stopped", Networks: []string{"donkey"},
 		},
-		"server": {
-			Image: settings.Image, ContainerName: dockerServerName, Environment: serverEnv,
-			Volumes: serverVolumes, Ports: []string{"127.0.0.1:8088:8088"}, Restart: "unless-stopped",
+		"orchestrator": {
+			Image: settings.Image, ContainerName: dockerOrchestratorName, Command: []string{"orchestrator"},
+			Environment: orchestratorEnv, Volumes: orchestratorVolumes, Restart: "unless-stopped",
+			StopGracePeriod: fmt.Sprintf("%ds", int(dockerOrchestratorStopTimeout.Seconds())),
 			DependsOn: map[string]composeDependency{
 				"packages":  {Condition: "service_healthy"},
 				"telemetry": {Condition: "service_healthy"},
 				"buildkit":  {Condition: "service_started"},
-				"ai":        {Condition: "service_started"},
+			},
+			Networks: []string{"donkey"},
+		},
+		"server": {
+			Image: settings.Image, ContainerName: dockerServerName, Environment: serverEnv,
+			Volumes: serverVolumes, Ports: []string{"127.0.0.1:8088:8088"}, Restart: "unless-stopped",
+			DependsOn: map[string]composeDependency{
+				"orchestrator": {Condition: "service_started"},
+				"telemetry":    {Condition: "service_healthy"},
+				"ai":           {Condition: "service_started"},
 			},
 			Networks: []string{"donkey"},
 		},
@@ -382,9 +405,9 @@ func dockerComposeFiles(settings *config.InstallFile, bundledRegistry bool) (map
 		buildkit := services["buildkit"]
 		buildkit.DependsOn = map[string]composeDependency{"registry": {Condition: "service_started"}}
 		services["buildkit"] = buildkit
-		server := services["server"]
-		server.DependsOn["registry"] = composeDependency{Condition: "service_started"}
-		services["server"] = server
+		orchestrator := services["orchestrator"]
+		orchestrator.DependsOn["registry"] = composeDependency{Condition: "service_started"}
+		services["orchestrator"] = orchestrator
 	}
 	// Label every service with the role the direct installer and the
 	// bundle's own preflight expect for its container name. Deriving the
@@ -569,6 +592,22 @@ export DONKEY_REGISTRY_PASSWORD DONKEY_PACKAGES_PASSWORD DONKEY_OIDC_CLIENT_SECR
 export OPENAI_API_KEY EXA_API_KEY DONKEY_SESSION_KEY DONKEY_TELEMETRY_KEY
 export DONKEY_BUILD_ENV DONKEY_BUILDER_INSTRUCTIONS HTTP_PROXY HTTPS_PROXY
 
+`)
+	// Compose may recreate the build engine before the orchestrator, and a
+	// build cut off there is lost however the orchestrator is stopped. So a
+	// running one finishes the deploys it accepted first; it exits as soon as
+	// none are running.
+	fmt.Fprintf(&b, `deploy_owner=%s
+if ! docker container inspect "$deploy_owner" >/dev/null 2>&1; then
+  deploy_owner=%s
+fi
+if [ "$(docker container inspect --format '{{.State.Running}}' "$deploy_owner" 2>/dev/null)" = true ]; then
+  echo "Letting $deploy_owner finish the deploys already under way (up to %d minutes)..."
+  docker stop --time %d "$deploy_owner" >/dev/null
+fi
+`, dockerOrchestratorName, dockerServerName, int(config.DeployDrainTimeout.Minutes()),
+		int(dockerOrchestratorStopTimeout.Seconds()))
+	b.WriteString(`
 docker compose -f "$bundle_dir/compose.yaml" up -d
 `)
 	serverHost := settings.ServerHost
@@ -604,7 +643,10 @@ apps to them. App images use %s.
 3. Run ./up.sh.
 
 The server API is also bound to 127.0.0.1:8088; public traffic enters on ports
-80 and 443. The package proxy has a stable address because BuildKit RUN steps
+80 and 443. Builds and deploys run in donkey-orchestrator, which only the server
+calls. Re-running up.sh first lets it finish the deploys already under way, so
+an upgrade can wait up to %d minutes there; it is immediate when nothing is
+building. The package proxy has a stable address because BuildKit RUN steps
 cannot use Docker's loopback DNS. If %s conflicts with another Docker network,
 set DONKEY_NETWORK_SUBNET and DONKEY_PACKAGES_IP together before running up.sh.
 
@@ -613,5 +655,5 @@ before starting Compose. DONKEY_BUILD_ENV is the JSON form of build.env;
 builder instructions and credentialed proxies use DONKEY_BUILDER_INSTRUCTIONS,
 HTTP_PROXY and HTTPS_PROXY. Leave those entries empty when the corresponding
 settings are not configured. Open https://%s after the services are running.
-`, registry, composeNetworkSubnet, serverHost)
+`, registry, int(config.DeployDrainTimeout.Minutes()), composeNetworkSubnet, serverHost)
 }

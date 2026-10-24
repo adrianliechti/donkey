@@ -21,7 +21,9 @@ import (
 // AppRelease is one deploy as the release screen rendered it live. Records
 // are versioned in the telemetry store — one per build, success or failure,
 // newest-first with bounded retention — so the console can show history, not
-// just the latest attempt.
+// just the latest attempt. The files a build used or wrote (its recipe,
+// repairs and settings) are not copied in: they are the build's commit in
+// the source history, and Update.Recipe says where the recipe sits.
 type AppRelease struct {
 	StartedAt  string       `json:"startedAt"`
 	FinishedAt string       `json:"finishedAt"`
@@ -29,18 +31,19 @@ type AppRelease struct {
 	Update     DeployUpdate `json:"update"`
 	Lines      []string     `json:"lines"`
 	BuildLog   string       `json:"buildLog,omitempty"`
-	// Dockerfile is the exact file the image was built from — the durable
-	// recipe, whether the app brought it or donkey's assistant wrote it.
-	Dockerfile   string            `json:"dockerfile,omitempty"`
-	Dockerignore *string           `json:"dockerignore,omitempty"`
-	Changes      []ai.SourceChange `json:"changes,omitempty"`
-	Result       DeployResult      `json:"result"`
+	Result     DeployResult `json:"result"`
 	// Decisions is what this deploy settled (storage, health route), kept
 	// with the image it was verified against: a `--no-build` rollback to
 	// this record's tag adopts these, not whatever a newer analysis found.
 	Decisions json.RawMessage `json:"decisions,omitempty"`
 	// Truncated is retained for reading older records that omitted output.
 	Truncated bool `json:"truncated,omitempty"`
+
+	// source is what the deploy leaves for the source history, and settings
+	// the configuration it ran with (see buildSettings); both go to the git
+	// volume, never into the record.
+	source   *sourceCapture
+	settings *config.AppConfig
 }
 
 // releaseRecorder observes the same structured events and text sent to the
@@ -54,6 +57,12 @@ type releaseRecorder struct {
 
 	analysis *ai.Analysis
 	build    PlanBuild
+}
+
+func (r *releaseRecorder) sourceCaptured(capture *sourceCapture) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.release.source = capture
 }
 
 func newReleaseRecorder(started time.Time, plan *Plan) *releaseRecorder {
@@ -82,9 +91,9 @@ func releasePlanCopy(in *Plan) *Plan {
 	if json.Unmarshal(b, &out) != nil {
 		return nil
 	}
-	// A saved release cannot be deployed again, and app source/config should
-	// not be copied into a Kubernetes annotation merely to re-render a view
-	// that does not use it.
+	// A saved release cannot be deployed again, and the app's donkey.yaml is
+	// in the source history — the record does not need a copy to re-render a
+	// view that does not use it.
 	out.ID = ""
 	out.ExpiresAt = ""
 	out.Config = ""
@@ -131,16 +140,8 @@ func (r *releaseRecorder) update(update DeployUpdate) {
 	if update.BaseImages != nil {
 		r.release.Update.BaseImages = append([]string{}, update.BaseImages...)
 	}
-	if update.Dockerfile != "" {
-		r.release.Dockerfile = update.Dockerfile
-	}
-	if update.Dockerignore != nil {
-		value := *update.Dockerignore
-		r.release.Dockerignore = &value
-	}
-	for _, change := range update.Changes {
-		change.Diff = ai.Redact(change.Diff)
-		r.release.Changes = append(r.release.Changes, change)
+	if update.Recipe != "" {
+		r.release.Update.Recipe = update.Recipe
 	}
 }
 
@@ -179,6 +180,9 @@ func (r *releaseRecorder) finish(s *Server, ctx context.Context, app *config.App
 	normalizeReleasePlan(release.Plan)
 	if release.Result.OK && app != nil {
 		release.Decisions = json.RawMessage(decisionsJSON(app))
+	}
+	if app != nil {
+		release.settings = cloneReleaseApp(app)
 	}
 	return release
 }
@@ -281,14 +285,15 @@ func (s *Server) persistRelease(ctx context.Context, space, app string, release 
 		return
 	}
 	scrubRelease(&release, s.knownSecrets(ctx, space, app))
-	raw, err := marshalRelease(release)
-	if err != nil {
+	// The source history tags the commit with this build's number; a record
+	// that could not be stored still leaves the commits, just untagged.
+	var sequence int64
+	if raw, err := marshalRelease(release); err != nil {
 		log.Printf("store release app=%s space=%s: %v", app, space, err)
-		return
-	}
-	if _, err := s.telemetry.RecordBuild(ctx, space, app, release.Result.ImageRef, release.Result.OK, raw); err != nil {
+	} else if sequence, err = s.telemetry.RecordBuild(ctx, space, app, release.Result.ImageRef, release.Result.OK, raw); err != nil {
 		log.Printf("store release app=%s space=%s: %v", app, space, err)
 	}
+	s.recordSource(ctx, space, app, release, sequence)
 }
 
 func marshalRelease(release AppRelease) ([]byte, error) {
@@ -315,14 +320,6 @@ func scrubRelease(release *AppRelease, known []string) {
 	release.BuildLog = scrub(release.BuildLog)
 	release.Result.Error = scrub(release.Result.Error)
 	release.Result.Diagnosis = scrub(release.Result.Diagnosis)
-	release.Dockerfile = scrub(release.Dockerfile)
-	if release.Dockerignore != nil {
-		value := scrub(*release.Dockerignore)
-		release.Dockerignore = &value
-	}
-	for i := range release.Changes {
-		release.Changes[i].Diff = scrub(release.Changes[i].Diff)
-	}
 	for i := range release.Result.Proposals {
 		proposal := &release.Result.Proposals[i]
 		proposal.Explanation = scrub(proposal.Explanation)

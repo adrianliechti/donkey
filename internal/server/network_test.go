@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/adrianliechti/donkey/internal/config"
@@ -13,6 +14,25 @@ type networkRuntime struct {
 	runtime.Provider
 	status  runtime.AppStatus
 	network runtime.NetworkState
+}
+
+func (networkRuntime) ValidateSpace(space string) error { return config.ValidateSpaceName(space) }
+
+func TestNetworkRejectsInternalExposureWithExistingRoutes(t *testing.T) {
+	s := &Server{cfg: &Config{}, rt: networkRuntime{
+		status:  runtime.AppStatus{Found: true, Port: 8000},
+		network: runtime.NetworkState{Routes: []runtime.PathRouteState{{Host: "web.team.example.com", Path: "/api"}}},
+	}}
+	for _, analytics := range []string{"", `,"analytics":false`} {
+		req := httptest.NewRequest("PUT", "/", strings.NewReader(`{"exposure":"internal"`+analytics+`}`))
+		req.SetPathValue("space", "team")
+		req.SetPathValue("app", "api")
+		rec := httptest.NewRecorder()
+		s.handlePutNetwork(rec, req)
+		if rec.Code != 400 || !strings.Contains(rec.Body.String(), "cannot have gateway routes") {
+			t.Fatalf("exposed internal app: %d %s", rec.Code, rec.Body)
+		}
+	}
 }
 
 func (networkRuntime) SpaceConfig(context.Context, string) (config.SpaceConfig, error) {

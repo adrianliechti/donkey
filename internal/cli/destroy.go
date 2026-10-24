@@ -12,7 +12,7 @@ func destroyCommand() *cli.Command {
 		Name:  "destroy",
 		Usage: "remove this app and everything donkey created for it from the cluster",
 		Flags: []cli.Flag{
-			&cli.BoolFlag{Name: "keep-data", Usage: "keep the app's disk and credentials (the space and its services are never touched)"},
+			&cli.BoolFlag{Name: "keep-data", Usage: "keep the app's disk, credentials, and build and source history for a redeploy (the space and its services are never touched)"},
 			&cli.BoolFlag{Name: "force", Usage: "don't ask for confirmation (for scripts)"},
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
@@ -26,9 +26,9 @@ func destroyCommand() *cli.Command {
 			}
 			u := s.UI
 			keepData := cmd.Bool("keep-data")
-			warning := fmt.Sprintf("Remove %s from the cluster, INCLUDING all stored data?", app.Name)
+			warning := fmt.Sprintf("Remove %s from the cluster, INCLUDING all stored data and its build and source history?", app.Name)
 			if keepData {
-				warning = fmt.Sprintf("Remove %s from the cluster (stored data is kept)?", app.Name)
+				warning = fmt.Sprintf("Remove %s from the cluster (stored data and history are kept)?", app.Name)
 			}
 			// Deleting data needs an explicit yes (or --force) — the blanket
 			// --yes flag only ever answers a prompt with its default, and the

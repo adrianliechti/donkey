@@ -16,7 +16,6 @@ import (
 
 	"github.com/adrianliechti/donkey/internal/config"
 	"github.com/adrianliechti/donkey/internal/identity"
-	"github.com/felixge/httpsnoop"
 )
 
 const (
@@ -321,7 +320,7 @@ func (s *Server) handleOAuthAuthorize(w http.ResponseWriter, r *http.Request) {
 		s.beginLogin(w, r, 0, r.URL.RequestURI())
 		return
 	}
-	if !rt.Access.Allows(sess.Email, sess.Groups, sess.Roles) {
+	if !rt.allows(sess.Subject, sess.Email, sess.Groups) {
 		fail("access_denied", "your identity is not allowed to use this API")
 		return
 	}
@@ -451,7 +450,7 @@ func (s *Server) handleOAuthAuthorizeConsent(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	resource, rt, ok := s.validOAuthResource(r, consent.Resource)
-	if !ok || !rt.Access.Allows(sess.Email, sess.Groups, sess.Roles) {
+	if !ok || !rt.allows(sess.Subject, sess.Email, sess.Groups) {
 		redirectOAuthError(w, r, consent.RedirectURI, consent.State, "access_denied", "access to this API is no longer available", s.authorizationIssuer())
 		return
 	}
@@ -521,7 +520,7 @@ func (s *Server) exchangeOAuthAuthorizationCode(w http.ResponseWriter, r *http.R
 		oauthError(w, http.StatusBadRequest, "invalid_grant", "the authorization code was not issued to this client")
 		return
 	}
-	resource, _, resourceOK := s.validOAuthResource(r, r.Form.Get("resource"))
+	resource, rt, resourceOK := s.validOAuthResource(r, r.Form.Get("resource"))
 	if r.Form.Get("client_id") != code.ClientID || r.Form.Get("redirect_uri") != code.RedirectURI || !resourceOK || resource != code.Resource {
 		oauthError(w, http.StatusBadRequest, "invalid_grant", "the authorization code does not match this request")
 		return
@@ -535,6 +534,10 @@ func (s *Server) exchangeOAuthAuthorizationCode(w http.ResponseWriter, r *http.R
 	}
 	if code.Identity.Expires <= time.Now().Unix() {
 		oauthError(w, http.StatusBadRequest, "invalid_grant", "the signed-in session has expired")
+		return
+	}
+	if !rt.allows(code.Identity.Subject, code.Identity.Email, code.Identity.Groups) {
+		oauthError(w, http.StatusForbidden, "access_denied", "this identity is no longer allowed to use the API")
 		return
 	}
 	response, err := s.issueOAuthTokens(code.Identity, code.ClientID, code.Resource,
@@ -568,7 +571,7 @@ func (s *Server) exchangeOAuthRefreshToken(w http.ResponseWriter, r *http.Reques
 		oauthError(w, http.StatusBadRequest, "invalid_target", "the refresh token belongs to another resource")
 		return
 	}
-	if !rt.Access.Allows(refresh.Email, refresh.Groups, refresh.Roles) {
+	if !rt.allows(refresh.Subject, refresh.Email, refresh.Groups) {
 		oauthError(w, http.StatusForbidden, "access_denied", "this identity is no longer allowed to use the API")
 		return
 	}
@@ -646,7 +649,7 @@ func (s *Server) handleOAuthPreflight(w http.ResponseWriter, r *http.Request) {
 	serveCORSPreflight(w, r)
 }
 
-func (s *Server) serveOAuthApp(w http.ResponseWriter, r *http.Request, rt route) {
+func (s *Server) serveOAuthApp(w http.ResponseWriter, r *http.Request, rt route) (sess *session) {
 	resource := oauthResourceURL(requestAuthority(r), r.URL.EscapedPath())
 	metadata := "https://" + requestAuthority(r) + "/.well-known/oauth-protected-resource"
 	if r.URL.EscapedPath() != "" && r.URL.EscapedPath() != "/" {
@@ -659,24 +662,24 @@ func (s *Server) serveOAuthApp(w http.ResponseWriter, r *http.Request, rt route)
 	}
 	if !s.cfg.authConfigured() {
 		oauthError(w, http.StatusServiceUnavailable, "temporarily_unavailable", "the installation has no complete identity provider configuration")
-		return
+		return nil
 	}
 	raw, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 	if !ok || raw == "" {
 		w.Header().Set("WWW-Authenticate", challenge)
 		oauthError(w, http.StatusUnauthorized, "invalid_token", "a bearer access token is required")
-		return
+		return nil
 	}
 	var token oauthAccessToken
 	if identity.Unseal(s.cfg.SessionKey, purposeOAuthToken, raw, &token) != nil || token.Subject == "" || time.Now().Unix() >= token.Expires || token.Resource != resource {
 		deny(http.StatusUnauthorized, "invalid_token", "the bearer token is invalid, expired or belongs to another resource")
-		return
+		return nil
 	}
-	sess := &token.Identity
-	if !rt.Access.Allows(sess.Email, sess.Groups, sess.Roles) {
+	sess = &token.Identity
+	if !rt.allows(sess.Subject, sess.Email, sess.Groups) {
 		w.Header().Set("WWW-Authenticate", challenge)
 		oauthError(w, http.StatusForbidden, "access_denied", "this identity is not allowed to use the API")
-		return
+		return sess
 	}
 	if routeAllowsAllOrigins(rt) {
 		clearCORSHeaders(w.Header())
@@ -684,8 +687,6 @@ func (s *Server) serveOAuthApp(w http.ResponseWriter, r *http.Request, rt route)
 	// An OAuth client presents this grant for as long as its refresh token
 	// lasts, well past the access token in hand.
 	idpToken := s.idpToken(w, r, rt, sess, true, time.Now().Add(oauthRefreshTokenTTL))
-	metrics := httpsnoop.CaptureMetrics(s.proxy(rt, sess, true, idpToken), w, r)
-	if s.telemetry != nil {
-		s.telemetry.Record(r, rt, sess, metrics.Code, metrics.Duration, w.Header().Get("Content-Type"))
-	}
+	s.proxy(rt, sess, true, idpToken).ServeHTTP(w, r)
+	return sess
 }

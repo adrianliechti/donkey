@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -8,6 +9,7 @@ import (
 	"net/url"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/adrianliechti/donkey/internal/addons"
 	"github.com/adrianliechti/donkey/internal/config"
@@ -111,11 +113,30 @@ func (s *Server) handleServiceHTTPRequest(w http.ResponseWriter, r *http.Request
 	if truncated {
 		body = body[:httpTestBodyLimit]
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	answer := map[string]any{
 		"status": response.StatusCode, "statusText": http.StatusText(response.StatusCode),
 		"headers": response.Header, "body": string(body), "truncated": truncated,
-		"durationMs": time.Since(started).Milliseconds(),
-	})
+		"durationMs": time.Since(started).Milliseconds(), "size": len(body),
+		"url": target.String(),
+	}
+	// JSON strings are UTF-8: an image or an archive would arrive with every
+	// invalid byte replaced. Such a body travels as base64 instead, so the
+	// console can show or save it as it was sent.
+	if !textBody(body, truncated) {
+		answer["body"], answer["encoding"] = base64.StdEncoding.EncodeToString(body), "base64"
+	}
+	writeJSON(w, http.StatusOK, answer)
+}
+
+// textBody reports whether a response body is UTF-8 text. A body cut at the
+// size limit may end inside a character; that alone does not make it binary.
+func textBody(body []byte, truncated bool) bool {
+	if truncated {
+		for i := 0; i < utf8.UTFMax && len(body) > 0 && !utf8.Valid(body); i++ {
+			body = body[:len(body)-1]
+		}
+	}
+	return utf8.Valid(body)
 }
 
 // proxyBase is a configured proxy service's binding URL — the shared proxy's

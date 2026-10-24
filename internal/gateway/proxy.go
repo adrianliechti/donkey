@@ -11,6 +11,7 @@ import (
 
 	"github.com/felixge/httpsnoop"
 
+	"github.com/adrianliechti/donkey/internal/analytics"
 	"github.com/adrianliechti/donkey/internal/identity"
 )
 
@@ -42,16 +43,33 @@ func (s *Server) serveApp(w http.ResponseWriter, r *http.Request) {
 			"If this app was just deployed, give it a moment and reload.")
 		return
 	}
+	if strings.HasPrefix(r.URL.Path, analytics.Prefix) && s.serveAnalytics(w, r) {
+		return
+	}
+	r = s.observeTraffic(r, rt)
+	var sess *session
+	metrics := httpsnoop.CaptureMetrics(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sess = s.serveRoute(w, r, rt)
+	}), w, r)
+	for _, observation := range trafficObservations(r) {
+		if observation.finish != nil {
+			observation.finish(sess, metrics.Code, metrics.Duration, w.Header().Get("Content-Type"))
+		}
+	}
+}
+
+// Capture the whole matched route, including authentication and preflight
+// responses. A verified identity is returned even when access is denied.
+func (s *Server) serveRoute(w http.ResponseWriter, r *http.Request, rt route) *session {
 	if routeAllowsAllOrigins(rt) {
 		setCORSHeaders(w.Header())
 		if r.Method == http.MethodOptions && r.Header.Get("Access-Control-Request-Method") != "" {
 			serveCORSPreflight(w, r)
-			return
+			return nil
 		}
 	}
 	if routeUsesOAuth(rt) {
-		s.serveOAuthApp(w, r, rt)
-		return
+		return s.serveOAuthApp(w, r, rt)
 	}
 	// Who this is, decided once: the session cookie (a browser) or a sealed
 	// CLI token as Bearer. Public routes resolve it too, but only for the
@@ -64,26 +82,26 @@ func (s *Server) serveApp(w http.ResponseWriter, r *http.Request) {
 		if !s.cfg.authConfigured() {
 			s.errorPage(w, http.StatusServiceUnavailable, "This app requires a sign-in, but none is configured.",
 				"The installation has no (complete) OIDC setup — `donkey server install` with auth.issuer, clientId and clientSecret fixes this.")
-			return
+			return sess
 		}
 		if sess == nil {
 			// Browsers get the login round trip; API calls get a plain 401 —
 			// a redirect chain into an IdP is useless to a fetch() or a CLI.
 			if wantsHTML(r) {
 				s.startLogin(w, r)
-				return
+				return nil
 			}
 			w.Header().Set("WWW-Authenticate", `Bearer realm="donkey"`)
 			http.Error(w, `{"error":"sign-in required"}`, http.StatusUnauthorized)
-			return
+			return nil
 		}
-		if !rt.Access.Allows(sess.Email, sess.Groups, sess.Roles) {
+		if !rt.allows(sess.Subject, sess.Email, sess.Groups) {
 			who := sess.Email
 			if who == "" {
 				who = sess.Subject
 			}
 			s.deniedPage(w, who)
-			return
+			return sess
 		}
 	}
 	// The proxy copies response headers with Add. Remove the provisional CORS
@@ -93,10 +111,8 @@ func (s *Server) serveApp(w http.ResponseWriter, r *http.Request) {
 		clearCORSHeaders(w.Header())
 	}
 	idpToken := s.idpToken(w, r, rt, sess, fromToken, time.Time{})
-	metrics := httpsnoop.CaptureMetrics(s.proxy(rt, sess, fromToken, idpToken), w, r)
-	if s.telemetry != nil {
-		s.telemetry.Record(r, rt, sess, metrics.Code, metrics.Duration, w.Header().Get("Content-Type"))
-	}
+	s.proxy(rt, sess, fromToken, idpToken).ServeHTTP(w, r)
+	return sess
 }
 
 // wantsHTML says whether the request came from a navigating browser.
@@ -106,8 +122,8 @@ func wantsHTML(r *http.Request) bool {
 }
 
 // An app behind a login learns its visitor from X-Forwarded-User (Entra's
-// object ID, else the sub), -Email, -Preferred-Username, -Name, -Groups,
-// -Roles and -Access-Token, each also as X-Auth-Request-* (identity.SetHeader;
+// object ID, else the sub), -Email, -Preferred-Username, -Name, -Groups
+// and -Access-Token, each also as X-Auth-Request-* (identity.SetHeader;
 // X-Auth-Request-User stays the sub); public routes learn nothing, even
 // when the domain-wide session cookie arrives with the request. Incoming
 // identity headers are dropped on every route — identity must be
@@ -179,10 +195,16 @@ func (s *Server) idpToken(w http.ResponseWriter, r *http.Request, rt route, sess
 
 // proxy forwards to the app. A ReverseProxy is built per request, so the
 // identity serveApp established rides in the closure — nothing is verified
-// twice. idpToken is the visitor's IdP access token, if the route gets one.
+// twice. idpToken is the visitor's IdP access token, if the route gets one;
+// Telemetry plugins attach their observation hooks to the request context.
 func (s *Server) proxy(rt route, sess *session, fromToken bool, idpToken string) *httputil.ReverseProxy {
 	return &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
+			for _, observation := range trafficObservations(pr.In) {
+				if observation.rewrite != nil {
+					observation.rewrite(pr)
+				}
+			}
 			if fromToken {
 				// The token authenticated to the gateway; the app gets the
 				// identity headers, never the credential itself.
@@ -234,7 +256,6 @@ func (s *Server) proxy(rt route, sess *session, fromToken bool, idpToken string)
 				identity.SetHeader(pr.Out.Header, "Preferred-Username", sess.PreferredUsername)
 				identity.SetHeader(pr.Out.Header, "Name", sess.Name)
 				identity.SetHeader(pr.Out.Header, "Groups", strings.Join(sess.Groups, ","))
-				identity.SetHeader(pr.Out.Header, "Roles", strings.Join(sess.Roles, ","))
 				identity.SetHeader(pr.Out.Header, "Access-Token", idpToken)
 				// The API route gets a verifiable credential, not bare
 				// headers: the server checks the seal, so an in-cluster
@@ -259,6 +280,11 @@ func (s *Server) proxy(rt route, sess *session, fromToken bool, idpToken string)
 			}
 		},
 		ModifyResponse: func(res *http.Response) error {
+			for _, observation := range trafficObservations(res.Request) {
+				if observation.response != nil {
+					observation.response(res)
+				}
+			}
 			if routeAllowsAllOrigins(rt) {
 				setCORSHeaders(res.Header)
 			}

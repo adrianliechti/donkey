@@ -12,8 +12,11 @@ import (
 	"sync"
 	"time"
 
+	"sigs.k8s.io/yaml"
+
 	"github.com/adrianliechti/donkey/internal/config"
 	"github.com/adrianliechti/donkey/pkg/runtime"
+	"github.com/adrianliechti/donkey/pkg/runtime/docker"
 )
 
 type Config struct {
@@ -49,7 +52,10 @@ func Run(ctx context.Context, cfg *Config, provider runtime.Provider) error {
 	}
 	var dynamic *reloadHandler
 	if cfg.File != "" {
-		dynamic = &reloadHandler{read: func() ([]byte, error) { return os.ReadFile(cfg.File) }, access: provider.ServiceProxyAccess, spaceAccess: provider.ServiceProxySpaceAccess, testKey: cfg.TestKey, interval: 30 * time.Second}
+		// On Docker the file is a state record the server rewrites: read as
+		// services.yaml first, then a services.json left by older versions —
+		// the path installations configured.
+		dynamic = &reloadHandler{read: func() ([]byte, error) { return docker.ReadRecordFile(cfg.File) }, access: provider.ServiceProxyAccess, spaceAccess: provider.ServiceProxySpaceAccess, testKey: cfg.TestKey, interval: 30 * time.Second}
 		handler = dynamic
 	}
 	srv := &http.Server{Addr: cfg.Listen, ReadHeaderTimeout: 10 * time.Second, Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -106,8 +112,9 @@ func (h *reloadHandler) load() (http.Handler, error) {
 		h.until = time.Now().Add(h.interval)
 		data, err := h.read()
 		if err == nil && (h.current == nil || string(data) != h.raw) {
+			// YAML, or JSON as Kubernetes mounts it — YAML reads both.
 			var services config.ProxyServices
-			err = json.Unmarshal(data, &services)
+			err = yaml.Unmarshal(data, &services)
 			if err == nil {
 				var fresh http.Handler
 				fresh, err = handlerWithTests(services, h.access, h.spaceAccess, h.testKey)

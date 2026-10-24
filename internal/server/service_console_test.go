@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -192,5 +193,78 @@ func TestServiceConsoleToURLWithoutPath(t *testing.T) {
 	s.routes().ServeHTTP(rec, req)
 	if rec.Code != 200 || requested != "/search" {
 		t.Fatalf("console: %d %s, upstream saw %q", rec.Code, rec.Body, requested)
+	}
+}
+
+// A provider refusing the service's key is the service's problem, not the
+// admin's session: the console must not take it for a 401 and sign them out.
+func TestServiceConsoleReportsRefusedCredentialAsBadGateway(t *testing.T) {
+	for _, test := range []struct{ protocol, key, path, body, want string }{
+		{"openai", "OPENAI_BASE_URL", "ai/models", `{"error":{"message":"Incorrect API key provided","type":"invalid_request_error"}}`, "Incorrect API key provided"},
+		{"exa", "EXA_BASE_URL", "exa/search", `{"error":"connect the exa service and use its binding key"}`, "connect the exa service"},
+		{"exa", "EXA_BASE_URL", "exa/contents", `not json`, "refused the service's credential"},
+	} {
+		t.Run(test.path, func(t *testing.T) {
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("WWW-Authenticate", "Bearer")
+				w.WriteHeader(http.StatusUnauthorized)
+				fmt.Fprint(w, test.body)
+			}))
+			defer upstream.Close()
+			s := planServer(consoleRuntime{connection: runtime.ServiceConnection{Type: "vendor", Protocol: test.protocol, Binding: map[string]string{
+				test.key: upstream.URL + "/v1",
+			}}}, &ai.Analysis{})
+			method := "POST"
+			if test.path == "ai/models" {
+				method = "GET"
+			}
+			req := httptest.NewRequest(method, "/v1/spaces/default/services/vendor/"+test.path, strings.NewReader(`{}`))
+			asAdmin(t, req)
+			rec := httptest.NewRecorder()
+			s.routes().ServeHTTP(rec, req)
+			if rec.Code != http.StatusBadGateway || !strings.Contains(rec.Body.String(), test.want) || rec.Header().Get("WWW-Authenticate") != "" {
+				t.Fatalf("console: %d %s %v", rec.Code, rec.Body, rec.Header())
+			}
+		})
+	}
+}
+
+// The chat streams: each event reaches the console as the provider sends it,
+// not when the answer is complete.
+func TestOpenAIConsoleStreamsEventsAsTheyArrive(t *testing.T) {
+	release := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if !strings.Contains(string(body), `"stream_options"`) {
+			t.Errorf("request body changed on the way: %s", body)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"Hel\"}}]}\n\n")
+		w.(http.Flusher).Flush()
+		<-release
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer upstream.Close()
+	defer close(release)
+	s := planServer(consoleRuntime{connection: runtime.ServiceConnection{Type: "model-vendor", Protocol: "openai", Binding: map[string]string{
+		"OPENAI_BASE_URL": upstream.URL + "/v1",
+	}}}, &ai.Analysis{})
+	console := httptest.NewServer(s.routes())
+	defer console.Close()
+	req, _ := http.NewRequest("POST", console.URL+"/v1/spaces/default/services/vendor/ai/chat/completions",
+		strings.NewReader(`{"model":"m","stream":true,"stream_options":{"include_usage":true},"messages":[]}`))
+	asAdmin(t, req)
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.Header.Get("Content-Type") != "text/event-stream" {
+		t.Fatalf("content type %q", res.Header.Get("Content-Type"))
+	}
+	first := make([]byte, 64)
+	n, err := res.Body.Read(first)
+	if err != nil || !strings.Contains(string(first[:n]), "Hel") {
+		t.Fatalf("first event did not arrive on its own: %q %v", first[:n], err)
 	}
 }

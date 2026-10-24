@@ -25,7 +25,7 @@ func mcpTestServer(t *testing.T, backend *url.URL) *Server {
 			OIDCIssuer: "https://identity.example", OIDCClientID: "donkey", OIDCClientSecret: "secret",
 		},
 		routes: map[string][]route{
-			"tools.example": {{Space: "acme", App: "tools", Host: "tools.example", Path: "/", Backend: backend, Login: true, Mode: config.AppModeAPI, CORS: config.CORSAllowAll}},
+			"tools.example": {{Space: "acme", App: "tools", Policy: &config.SpaceConfig{Viewers: config.AccessConfig{Users: []string{"ada@example.com"}}}, Host: "tools.example", Path: "/", Backend: backend, Login: true, Mode: config.AppModeAPI, CORS: config.CORSAllowAll}},
 		},
 		oauthCodes: map[string]oauthAuthorizationCode{},
 	}
@@ -216,6 +216,32 @@ func TestMCPRegistrationRejectsUnsafeRedirect(t *testing.T) {
 	}
 }
 
+func TestOAuthCodeExchangeRejectsRevokedMembership(t *testing.T) {
+	target, _ := url.Parse("http://app.internal:8000")
+	s := mcpTestServer(t, target)
+	h := s.handler()
+	redirect := "http://127.0.0.1:31337/callback"
+	clientID := registerMCPClient(t, h, redirect)
+	verifier := strings.Repeat("v", 64)
+	hash := sha256.Sum256([]byte(verifier))
+	expires := time.Now().Add(time.Minute).Unix()
+	s.oauthCodes["pending"] = oauthAuthorizationCode{
+		ClientID: clientID, RedirectURI: redirect, Resource: "https://tools.example/mcp",
+		Challenge: base64.RawURLEncoding.EncodeToString(hash[:]), Expires: expires,
+		Identity: session{Subject: "user-1", Email: "ada@example.com", Expires: expires},
+	}
+	// Membership is removed after consent but before the client exchanges its code.
+	s.routes["tools.example"][0].Policy = &config.SpaceConfig{}
+	form := url.Values{
+		"grant_type": {"authorization_code"}, "code": {"pending"}, "client_id": {clientID},
+		"redirect_uri": {redirect}, "code_verifier": {verifier}, "resource": {"https://tools.example/mcp"},
+	}
+	rec := mcpRequest(t, h, http.MethodPost, "https://auth.example/oauth2/token", "auth.example", form.Encode(), "application/x-www-form-urlencoded")
+	if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "access_denied") {
+		t.Fatalf("revoked membership accepted: status %d", rec.Code)
+	}
+}
+
 func TestMCPAuthorizationCodeFlowAndTokenIsolation(t *testing.T) {
 	var backendAuthorization, backendUser string
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -322,5 +348,18 @@ func TestMCPAuthorizationCodeFlowAndTokenIsolation(t *testing.T) {
 	h.ServeHTTP(wrongResponse, wrongResource)
 	if wrongResponse.Code != http.StatusUnauthorized {
 		t.Fatalf("resource-bound token accepted on another path: %d", wrongResponse.Code)
+	}
+
+	s.routes["tools.example"][0].Policy = &config.SpaceConfig{}
+	request.Header.Set("Authorization", "Bearer "+rotated.AccessToken)
+	revokedRequest := httptest.NewRecorder()
+	h.ServeHTTP(revokedRequest, request)
+	if revokedRequest.Code != http.StatusForbidden {
+		t.Fatalf("existing token survived membership revocation: %d", revokedRequest.Code)
+	}
+	refreshForm.Set("refresh_token", rotated.RefreshToken)
+	revokedRefresh := mcpRequest(t, h, http.MethodPost, "https://auth.example/oauth2/token", "auth.example", refreshForm.Encode(), "application/x-www-form-urlencoded")
+	if revokedRefresh.Code != http.StatusForbidden {
+		t.Fatalf("refresh survived membership revocation: %d", revokedRefresh.Code)
 	}
 }

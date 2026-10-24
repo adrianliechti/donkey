@@ -1,6 +1,8 @@
 package manifests
 
 import (
+	"slices"
+
 	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -66,6 +68,68 @@ func serverAccessObjects(in SystemInput) []runtime.Object {
 		)
 	}
 	return objs
+}
+
+// orchestratorAccessObjects is what donkey-orchestrator is allowed to do,
+// under a ServiceAccount of its own: what a deploy needs, and none of what
+// only the API does.
+//
+// With a namespace per space a deploy into a new space creates its
+// namespace, which no Role can express — the same reason donkey-server binds
+// cluster-admin in that arrangement, so the orchestrator does too. With one
+// workload namespace it gets namespaced Roles like the server's, minus the
+// file browser's pods/exec and the Metrics API reads of resource telemetry.
+func orchestratorAccessObjects(in SystemInput) []runtime.Object {
+	if !in.Shared() {
+		return []runtime.Object{&rbacv1.ClusterRoleBinding{
+			TypeMeta: metav1.TypeMeta{APIVersion: "rbac.authorization.k8s.io/v1", Kind: "ClusterRoleBinding"},
+			ObjectMeta: metav1.ObjectMeta{
+				Name:   clusterScopedName(OrchestratorName, in.Namespace),
+				Labels: SystemLabels(OrchestratorName),
+			},
+			RoleRef:  rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "ClusterRole", Name: "cluster-admin"},
+			Subjects: []rbacv1.Subject{{Kind: "ServiceAccount", Name: OrchestratorName, Namespace: in.Namespace}},
+		}}
+	}
+	var objs []runtime.Object
+	for _, ns := range []string{in.Namespace, in.WorkloadNamespace} {
+		rules := orchestratorRoleRules()
+		if ns == in.Namespace {
+			// A deploy applies the app's exact-host Certificate and DNS record,
+			// which live beside the gateway.
+			rules = append(rules, serverManagedEdgeRoleRules()...)
+		}
+		objs = append(objs,
+			&rbacv1.Role{
+				TypeMeta:   metav1.TypeMeta{APIVersion: "rbac.authorization.k8s.io/v1", Kind: "Role"},
+				ObjectMeta: metav1.ObjectMeta{Name: OrchestratorName, Namespace: ns, Labels: SystemLabels(OrchestratorName)},
+				Rules:      rules,
+			},
+			&rbacv1.RoleBinding{
+				TypeMeta:   metav1.TypeMeta{APIVersion: "rbac.authorization.k8s.io/v1", Kind: "RoleBinding"},
+				ObjectMeta: metav1.ObjectMeta{Name: OrchestratorName, Namespace: ns, Labels: SystemLabels(OrchestratorName)},
+				RoleRef:    rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "Role", Name: OrchestratorName},
+				Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: OrchestratorName, Namespace: in.Namespace}},
+			},
+		)
+	}
+	return objs
+}
+
+// orchestratorRoleRules is serverRoleRules without what only the API does:
+// pods/exec is the file browser's way onto an app's disk, and the Metrics
+// API feeds resource telemetry, which the server samples. Deploys remove a
+// file-browser helper before they roll (plain pod deletion), and they never
+// exec into one.
+func orchestratorRoleRules() []rbacv1.PolicyRule {
+	var rules []rbacv1.PolicyRule
+	for _, rule := range serverRoleRules() {
+		if slices.Contains(rule.Resources, "pods/exec") || slices.Contains(rule.APIGroups, "metrics.k8s.io") {
+			continue
+		}
+		rules = append(rules, rule)
+	}
+	return rules
 }
 
 // serverManagedEdgeRoleRules is the small additional surface needed to apply

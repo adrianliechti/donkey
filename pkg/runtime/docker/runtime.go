@@ -43,6 +43,7 @@ const (
 	labelHost         = "local.donkey.host"
 	labelMode         = "local.donkey.mode"
 	labelCORS         = "local.donkey.cors"
+	labelStack        = "local.donkey.stack"
 
 	dockerInstallation = "donkey"
 
@@ -62,6 +63,7 @@ const (
 // is a re-install that refuses its own resources.
 const (
 	RoleServer           = "server"
+	RoleOrchestrator     = "orchestrator"
 	RoleGateway          = "gateway"
 	RoleAI               = "ai"
 	RoleProxy            = "proxy"
@@ -116,11 +118,13 @@ type Options struct {
 	// TelemetryContainer accepts app-scoped OTLP metrics on every space
 	// network.
 	TelemetryContainer string
-	// ServerContainer/GatewayContainer name donkey's own containers, so the
-	// provider can attach them to every space network (the server must
-	// reach apps for tunnels and probes, the gateway to proxy).
-	ServerContainer  string
-	GatewayContainer string
+	// ServerContainer/OrchestratorContainer/GatewayContainer name donkey's
+	// own containers, so the provider can attach them to every space network
+	// (the server must reach apps for tunnels, the orchestrator to probe a
+	// deploy's readiness, the gateway to proxy).
+	ServerContainer       string
+	OrchestratorContainer string
+	GatewayContainer      string
 	// TelemetryKey derives app-scoped ingestion tokens.
 	TelemetryKey []byte
 }
@@ -147,6 +151,9 @@ func New(opts Options) (*Runtime, error) {
 	if opts.ServerContainer == "" {
 		opts.ServerContainer = "donkey-server"
 	}
+	if opts.OrchestratorContainer == "" {
+		opts.OrchestratorContainer = "donkey-orchestrator"
+	}
 	if opts.GatewayContainer == "" {
 		opts.GatewayContainer = "donkey-gateway"
 	}
@@ -169,6 +176,19 @@ func New(opts Options) (*Runtime, error) {
 // Client exposes the underlying Docker client for Docker-specific callers
 // (the installer).
 func (r *Runtime) Client() *client.Client { return r.cli }
+
+// ownContainers are donkey's own containers that join every space network.
+// A name left unset is one this provider has no container for.
+func (r *Runtime) ownContainers() []string {
+	var names []string
+	for _, name := range []string{r.opts.ServerContainer, r.opts.OrchestratorContainer, r.opts.GatewayContainer,
+		r.opts.AIContainer, r.opts.TelemetryContainer, r.opts.ProxyContainer} {
+		if name != "" {
+			names = append(names, name)
+		}
+	}
+	return names
+}
 
 // --- Naming ---------------------------------------------------------------
 
@@ -299,6 +319,20 @@ func (r *Runtime) pullRef(imageRef string) string {
 	return imageRef
 }
 
+// pushRef is pullRef backwards: the image as donkey named it when it built
+// it, which is how build records and rollbacks know it. Containers carry the
+// pull spelling, so what Status reports is translated back.
+func (r *Runtime) pushRef(imageRef string) string {
+	push := r.opts.Registry.Host()
+	if r.opts.PullRegistry == "" || push == "" {
+		return imageRef
+	}
+	if strings.HasPrefix(imageRef, r.opts.PullRegistry+"/") {
+		return push + strings.TrimPrefix(imageRef, r.opts.PullRegistry)
+	}
+	return imageRef
+}
+
 // --- Spaces ---------------------------------------------------------------
 
 func (r *Runtime) ValidateSpace(space string) error {
@@ -326,13 +360,13 @@ func (r *Runtime) CheckSpaceFree(ctx context.Context, space string) error {
 }
 
 // ensureSpace creates the space's network and attaches donkey's own
-// containers to it: the gateway to proxy, the server to probe and tunnel.
+// containers to it: the gateway to proxy, the server to tunnel, the
+// orchestrator to probe the apps it deploys.
 func (r *Runtime) ensureSpace(ctx context.Context, space string) error {
 	if err := r.CheckSpaceFree(ctx, space); err != nil {
 		return err
 	}
-	own, err := ownedSystemContainers(ctx, r.cli,
-		r.opts.ServerContainer, r.opts.GatewayContainer, r.opts.AIContainer, r.opts.TelemetryContainer, r.opts.ProxyContainer)
+	own, err := ownedSystemContainers(ctx, r.cli, r.ownContainers()...)
 	if err != nil {
 		return err
 	}
@@ -343,7 +377,7 @@ func (r *Runtime) ensureSpace(ctx context.Context, space string) error {
 			Labels: resourceLabels(space, roleSpace),
 		})
 		if err == nil {
-			err = r.state.writeJSON(config.DefaultSpaceConfig(space, r.opts.Domain), "spaces", space, "config.json")
+			err = r.state.writeRecord(config.DefaultSpaceConfig(space, r.opts.Domain), "spaces", space, "config")
 		}
 		if err == nil {
 			nw, err = r.cli.NetworkInspect(ctx, name, network.InspectOptions{})
@@ -407,8 +441,7 @@ func (r *Runtime) DeleteSpace(ctx context.Context, space string) error {
 	if err := r.deprovisionSpacePlugins(ctx, space); err != nil {
 		return err
 	}
-	own, err := ownedSystemContainers(ctx, r.cli,
-		r.opts.ServerContainer, r.opts.GatewayContainer, r.opts.AIContainer, r.opts.TelemetryContainer, r.opts.ProxyContainer)
+	own, err := ownedSystemContainers(ctx, r.cli, r.ownContainers()...)
 	if err != nil {
 		return err
 	}
@@ -443,7 +476,7 @@ func (r *Runtime) DeleteSpace(ctx context.Context, space string) error {
 	if err := r.state.cleanupSpace(space); err != nil {
 		return err
 	}
-	if err := r.state.remove("proxy", "networks", space+".json"); err != nil {
+	if err := r.state.remove("proxy", "networks", space); err != nil {
 		return err
 	}
 	// donkey's own containers were attached to the network (to proxy and to
@@ -544,6 +577,8 @@ func (r *Runtime) Status(ctx context.Context, space, app string) (*rt.AppStatus,
 	if st.Image == "" {
 		st.Image = info.Config.Image
 	}
+	st.Image = r.pushRef(st.Image)
+	st.Stack = info.Config.Labels[labelStack]
 	if p, err := strconv.Atoi(info.Config.Labels[labelPort]); err == nil {
 		st.Port = int32(p)
 	}
@@ -771,7 +806,7 @@ func (r *Runtime) ServiceConnection(ctx context.Context, space, name string) (rt
 
 func (r *Runtime) serviceMetadata(space, name string, binding map[string]string) (addons.Metadata, error) {
 	var metadata addons.Metadata
-	_, err := r.state.readJSON(&metadata, "service-metadata", space, name+".json")
+	_, err := r.state.readRecord(&metadata, "service-metadata", space, name)
 	return metadata.Resolve(binding), err
 }
 
@@ -898,7 +933,7 @@ func (r *Runtime) EnsureService(ctx context.Context, space string, spec rt.Servi
 		}
 	}
 	if !isPlugin || spec.External {
-		if err := r.state.writeJSON(addons.MetadataFor(desc, params), "service-metadata", space, spec.Name+".json"); err != nil {
+		if err := r.state.writeRecord(addons.MetadataFor(desc, params), "service-metadata", space, spec.Name); err != nil {
 			return nil, nil, err
 		}
 	}
@@ -998,24 +1033,45 @@ func (r *Runtime) AttachService(ctx context.Context, space, app, name string, bi
 	return r.Restart(ctx, space, app)
 }
 
+// DetachService drops the app's copy of a binding and every env reference to
+// it — the stored ones, and donkey.yaml's in the run record as Kubernetes
+// strips them from the Deployment — so the restart does not trip over them.
 func (r *Runtime) DetachService(ctx context.Context, space, app, name string) error {
 	env, err := r.state.env(space, app)
 	if err != nil {
 		return err
 	}
-	for key, value := range env {
-		if service, _, ref := config.ParseEnvRef(value); ref && service == name {
-			delete(env, key)
+	if dropReferences(env, name) {
+		if err := r.state.setEnv(space, app, env); err != nil {
+			return err
 		}
 	}
-	if err := r.state.setEnv(space, app, env); err != nil {
+	spec, err := r.runRecord(space, app)
+	if err != nil {
 		return err
+	}
+	if spec != nil && dropReferences(spec.Env, name) {
+		if err := r.setRunRecord(space, app, *spec); err != nil {
+			return err
+		}
 	}
 	if err := r.state.removeBinding(space, app, name); err != nil {
 		return err
 	}
 	_, err = r.Restart(ctx, space, app)
 	return err
+}
+
+// dropReferences deletes the env entries that reference one service.
+func dropReferences(env map[string]string, service string) bool {
+	dropped := false
+	for key, value := range env {
+		if name, _, ref := config.ParseEnvRef(value); ref && name == service {
+			delete(env, key)
+			dropped = true
+		}
+	}
+	return dropped
 }
 
 func (r *Runtime) RemoveService(ctx context.Context, space, name string, keepData, force bool) ([]string, error) {
@@ -1055,10 +1111,10 @@ func (r *Runtime) RemoveService(ctx context.Context, space, name string, keepDat
 		if err := r.removeOwnedVolume(ctx, volName(space, name), addonLabels(space, name, roleStorage)); err != nil {
 			return nil, err
 		}
-		if err := r.state.remove("provisioning", space, name+".json"); err != nil {
+		if err := r.state.remove("provisioning", space, name); err != nil {
 			return nil, err
 		}
-		if err := r.state.remove("service-metadata", space, name+".json"); err != nil {
+		if err := r.state.remove("service-metadata", space, name); err != nil {
 			return nil, err
 		}
 	}
@@ -1163,7 +1219,7 @@ func (r *Runtime) SetProxyServices(services config.ProxyServices) error {
 	if err := services.Validate(); err != nil {
 		return err
 	}
-	return r.state.writeJSON(services, "proxy", "services.json")
+	return r.state.writeRecord(services, "proxy", "services")
 }
 
 // --- Health ---------------------------------------------------------------
@@ -1348,7 +1404,7 @@ func ownedSystemContainers(ctx context.Context, cli *client.Client, names ...str
 // failure it prevents is silent and total: every app in a space stops
 // answering, with nothing in its own logs to say why.
 func (r *Runtime) ReconcileOwnNetworks(ctx context.Context, every time.Duration) {
-	own := []string{r.opts.ServerContainer, r.opts.GatewayContainer, r.opts.AIContainer, r.opts.TelemetryContainer, r.opts.ProxyContainer}
+	own := r.ownContainers()
 	for {
 		if err := AttachOwnContainers(ctx, r.cli, own...); err != nil && ctx.Err() == nil {
 			log.Printf("couldn't attach donkey's containers to the space networks: %v", err)

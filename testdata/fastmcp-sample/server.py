@@ -17,6 +17,12 @@ def add(a: int, b: int) -> int:
     return a + b
 
 
+@mcp.tool
+def divide(a: float, b: float) -> float:
+    """Divide two numbers. A zero divisor demonstrates an MCP tool error."""
+    return a / b
+
+
 @mcp.custom_route("/health", methods=["GET"])
 async def health(_request: Request) -> JSONResponse:
     return JSONResponse({"ok": True})
@@ -29,5 +35,5 @@ if __name__ == "__main__":
         port=int(os.environ.get("PORT", "8000")),
         path="/mcp",
         stateless_http=True,
-        json_response=True,
+        json_response=False,
     )

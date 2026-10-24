@@ -72,9 +72,9 @@ func projectFixture(t *testing.T) (*Server, *ai.Project, []byte) {
 func callProject(t *testing.T, s *Server, body []byte) *ProjectPlan {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, "/v1/projects/plans?name=repo", bytes.NewReader(body))
-	asAdmin(t, req)
+	asForwarded(t, req)
 	rec := httptest.NewRecorder()
-	s.routes().ServeHTTP(rec, req)
+	s.orchestratorRoutes().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("project: %d %s", rec.Code, rec.Body.String())
 	}
@@ -173,9 +173,9 @@ func TestProjectRecheckRewiresNamesAndSpace(t *testing.T) {
 	edits[0].Space, edits[1].Space = "team", "team"
 	raw, _ := json.Marshal(edits)
 	req := httptest.NewRequest(http.MethodPut, "/v1/projects/plans/"+p.ID, bytes.NewReader(raw))
-	asAdmin(t, req)
+	asForwarded(t, req)
 	rec := httptest.NewRecorder()
-	s.routes().ServeHTTP(rec, req)
+	s.orchestratorRoutes().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatal(rec.Body.String())
 	}
@@ -220,13 +220,28 @@ func TestProjectRejectsInvalidConnections(t *testing.T) {
 	}
 }
 
+func TestProjectRejectsBrowserConnectionToInternalApp(t *testing.T) {
+	s, _, body := projectFixture(t)
+	p := callProject(t, s, body)
+	stored, _ := s.plans.get(p.ID)
+	// A console exposure edit must not let generated routes bypass validation.
+	stored.project.apps[1].app.Internal = true
+	plan, apps, _ := s.resolveProject(context.Background(), p.ID, stored.project)
+	if plan.Ready || !Blocking(plan.Findings) {
+		t.Fatalf("internal backend received a browser route: %+v", plan)
+	}
+	if len(apps[1].app.Routes) != 0 {
+		t.Fatalf("planner added a route to an internal backend: %+v", apps[1].app.Routes)
+	}
+}
+
 func TestProjectDeploymentRejectsChangedUpload(t *testing.T) {
 	s, _, body := projectFixture(t)
 	p := callProject(t, s, body)
 	req := httptest.NewRequest(http.MethodPost, "/v1/projects/deploys?plan="+p.ID, bytes.NewReader(appUpload(t, nil)))
-	asAdmin(t, req)
+	asForwarded(t, req)
 	rec := httptest.NewRecorder()
-	s.routes().ServeHTTP(rec, req)
+	s.orchestratorRoutes().ServeHTTP(rec, req)
 	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "changed since review") {
 		t.Fatalf("%d %s", rec.Code, rec.Body.String())
 	}
@@ -236,9 +251,9 @@ func TestProjectDryRunUsesEachReviewedApp(t *testing.T) {
 	s, _, body := projectFixture(t)
 	p := callProject(t, s, body)
 	req := httptest.NewRequest(http.MethodPost, "/v1/projects/deploys?plan="+p.ID+"&dryRun=true", bytes.NewReader(body))
-	asAdmin(t, req)
+	asForwarded(t, req)
 	rec := httptest.NewRecorder()
-	s.routes().ServeHTTP(rec, req)
+	s.orchestratorRoutes().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatal(rec.Body.String())
 	}

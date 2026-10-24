@@ -1,10 +1,8 @@
 name: backend
 space: demo
 port: 8000
-# No address of its own — but two paths of the dashboard's address reach it,
-# so the whole demo lives at one hostname. The gateway does the forwarding;
-# there is no proxy code anywhere.
-internal: true
+# The browser uses two paths on the dashboard's address. This backend is
+# externally reachable, including at its own hostname, so it is not internal.
 routes:
   - app: dashboard
     path: /api

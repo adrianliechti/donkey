@@ -1,12 +1,11 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   Box,
   Check,
-  CheckCircle2,
+  ChevronRight,
   Circle,
   CircleAlert,
   Database,
-  ExternalLink,
   Loader2,
   Rocket,
   Terminal,
@@ -16,18 +15,7 @@ import {
 import type { DeployResult, DeployStage, DeployUpdate, Plan, PlanSignal } from './api'
 import { DiffView } from './DiffView'
 import { FindingsList } from './FindingsList'
-import {
-  Button,
-  Callout,
-  Chip,
-  CodeCard,
-  Disclosure,
-  Eyebrow,
-  List,
-  ListRow,
-  Section,
-  SectionHeader,
-} from './ui'
+import { Button, Callout, Chip, CodeCard, Disclosure, Eyebrow, List, ListRow, Section, SectionHeader } from './ui'
 
 // A release reads top to bottom like the Overview tab: a status callout,
 // then plain titled sections — build, services, problems, repairs — and the
@@ -41,7 +29,6 @@ const stages: { id: DeployStage; label: string; detail: string }[] = [
 ]
 
 function statusText(stage: DeployStage | undefined, result?: DeployResult): string {
-  if (result?.ok) return 'Deployment complete'
   if (result && !result.ok) return 'Deployment failed'
   if (stage === 'building') return 'Building the image'
   if (stage === 'releasing') return 'Releasing and checking health'
@@ -55,26 +42,29 @@ function StateIcon({ state }: { state: 'complete' | 'current' | 'failed' | 'wait
   return <Circle className="size-4 shrink-0 text-line-strong" aria-hidden />
 }
 
-// Status: where the release stands and the steps it went through.
+// Status: where the release stands and the steps it went through. A
+// release that went through needs no banner — the steps all show done, and
+// the app's address is one click away in its header.
 function ReleaseState({ update, result }: { update: DeployUpdate; result?: DeployResult }) {
-  const current = Math.max(0, stages.findIndex((stage) => stage.id === (update.stage ?? 'detecting')))
+  const current = Math.max(
+    0,
+    stages.findIndex((stage) => stage.id === (update.stage ?? 'detecting')),
+  )
   const failed = Boolean(result && !result.ok)
 
   return (
     <div className="space-y-3">
-      <Callout
-        tone={failed ? 'danger' : result?.ok ? 'success' : 'info'}
-        icon={failed ? CircleAlert : result?.ok ? CheckCircle2 : Rocket}
-        title={<span aria-live="polite">{statusText(update.stage, result)}</span>}
-      >
-        {result?.ok && result.url ? (
-          <a href={result.url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 font-mono text-xs text-accent-strong hover:underline">
-            {result.url} <ExternalLink className="size-3" aria-hidden />
-          </a>
-        ) : failed ? (
-          <span className="whitespace-pre-wrap break-words">{result?.error || 'The release did not complete.'}</span>
-        ) : undefined}
-      </Callout>
+      {!result?.ok && (
+        <Callout
+          tone={failed ? 'danger' : 'info'}
+          icon={failed ? CircleAlert : Rocket}
+          title={<span aria-live="polite">{statusText(update.stage, result)}</span>}
+        >
+          {failed ? (
+            <span className="whitespace-pre-wrap break-words">{result?.error || 'The release did not complete.'}</span>
+          ) : undefined}
+        </Callout>
+      )}
       <List>
         {stages.map((stage, index) => {
           let state: 'complete' | 'current' | 'failed' | 'waiting' = 'waiting'
@@ -151,7 +141,9 @@ function DetectionDetails({ plan, update, result }: { plan: Plan; update: Deploy
         <Fact label="Base image">
           {images.length > 0 ? (
             images.map((image) => (
-              <span key={image} className="block break-all font-mono text-xs">{image}</span>
+              <span key={image} className="block break-all font-mono text-xs">
+                {image}
+              </span>
             ))
           ) : (
             <span className="text-xs text-muted">
@@ -216,7 +208,9 @@ function ServicesNeeded({ plan }: { plan: Plan }) {
                 <Database className={`size-4 shrink-0 ${on ? 'text-ink-soft' : 'text-muted/60'}`} aria-hidden />
                 <div className="min-w-0 flex-1">
                   <span className={`font-mono text-sm ${on ? 'text-ink' : 'text-muted'}`}>{service.name}</span>
-                  {service.type !== service.name && <span className="ml-2 font-mono text-[11px] text-muted">{service.type}</span>}
+                  {service.type !== service.name && (
+                    <span className="ml-2 font-mono text-[11px] text-muted">{service.type}</span>
+                  )}
                   {service.reason && <p className="truncate text-xs text-muted">{service.reason}</p>}
                 </div>
                 <span className={`shrink-0 text-xs ${on ? 'text-success' : 'text-muted'}`}>{state}</span>
@@ -228,7 +222,8 @@ function ServicesNeeded({ plan }: { plan: Plan }) {
       {storage.length > 0 && (
         <p className="text-xs text-muted">
           <Box className="mr-1.5 inline size-3.5 align-[-3px]" aria-hidden />
-          One {plan.app.storageSize || '1Gi'} disk keeps <span className="font-mono text-ink-soft">{storage.join(', ')}</span>.
+          One {plan.app.storageSize || '1Gi'} disk keeps{' '}
+          <span className="font-mono text-ink-soft">{storage.join(', ')}</span>.
         </p>
       )}
     </Section>
@@ -265,7 +260,9 @@ function Problems({ plan, result }: { plan: Plan; result?: DeployResult }) {
                       donkey env set {proposal.key}={proposal.value}
                     </code>
                   )}
-                  {proposal.type === 'edit_file' && <span className="block font-mono text-xs text-ink">{proposal.path}</span>}
+                  {proposal.type === 'edit_file' && (
+                    <span className="block font-mono text-xs text-ink">{proposal.path}</span>
+                  )}
                   <p className="text-xs leading-relaxed text-muted">{proposal.explanation}</p>
                   {proposal.diff && <DiffView diff={proposal.diff} />}
                 </div>
@@ -291,6 +288,12 @@ function ReleaseLog({
 }) {
   const pane = useRef<HTMLDivElement>(null)
   const pinned = useRef(true)
+  // Beside a live release the log is a pane of its own, build output and
+  // all. In the stored build's page it is part of the document — no box
+  // that scrolls inside the page — so the build output, which can run to
+  // thousands of lines, waits to be asked for.
+  const [showBuild, setShowBuild] = useState(sticky)
+  const buildLines = buildLog ? buildLog.trimEnd().split('\n').length : 0
 
   useEffect(() => {
     if (pane.current && pinned.current) pane.current.scrollTop = pane.current.scrollHeight
@@ -300,7 +303,7 @@ function ReleaseLog({
     <CodeCard
       icon={Terminal}
       title="Deployment log"
-      className={sticky ? 'min-h-[34rem] lg:sticky lg:top-20 lg:h-[calc(100vh-7rem)] lg:max-h-[52rem]' : 'max-h-[min(44rem,70vh)]'}
+      className={sticky ? 'min-h-[34rem] lg:sticky lg:top-20 lg:h-[calc(100vh-7rem)] lg:max-h-[52rem]' : ''}
       meta={
         <>
           <span className={`size-1.5 rounded-full ${running ? 'animate-pulse bg-accent' : 'bg-muted'}`} aria-hidden />
@@ -336,8 +339,16 @@ function ReleaseLog({
         </div>
         {buildLog && (
           <div className={`${lines.length > 0 ? 'mt-4 border-t border-line/70 pt-3' : ''}`}>
-            <p className="mb-2 text-[10px] uppercase tracking-wider text-muted">Build output</p>
-            <pre className="whitespace-pre-wrap break-words text-ink-soft">{buildLog}</pre>
+            <button
+              type="button"
+              onClick={() => setShowBuild(!showBuild)}
+              aria-expanded={showBuild}
+              className="mb-2 flex items-center gap-1 rounded text-[10px] tracking-wider text-muted uppercase transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-accent-strong"
+            >
+              <ChevronRight className={`size-3 transition-transform ${showBuild ? 'rotate-90' : ''}`} aria-hidden />
+              Build output · {buildLines} {buildLines === 1 ? 'line' : 'lines'}
+            </button>
+            {showBuild && <pre className="whitespace-pre-wrap break-words text-ink-soft">{buildLog}</pre>}
           </div>
         )}
       </div>
@@ -371,12 +382,20 @@ export function ReleaseView({
     <div className="flex flex-wrap items-center justify-end gap-2">
       {result.ok ? (
         <>
-          {onDeployAnother && <Button kind="quiet" onClick={onDeployAnother}>Deploy another</Button>}
+          {onDeployAnother && (
+            <Button kind="quiet" onClick={onDeployAnother}>
+              Deploy another
+            </Button>
+          )}
           {onOpen && <Button onClick={onOpen}>Open the app page</Button>}
         </>
       ) : (
         <>
-          {onDeployAnother && <Button kind="quiet" onClick={onDeployAnother}>Pick something else</Button>}
+          {onDeployAnother && (
+            <Button kind="quiet" onClick={onDeployAnother}>
+              Pick something else
+            </Button>
+          )}
           {onBackToReview && <Button onClick={onBackToReview}>Back to review</Button>}
         </>
       )}

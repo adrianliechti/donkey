@@ -25,7 +25,6 @@ type Identity struct {
 	PreferredUsername string   `json:"preferred_username,omitempty"`
 	ObjectID          string   `json:"oid,omitempty"`
 	Groups            []string `json:"groups,omitempty"`
-	Roles             []string `json:"roles,omitempty"`
 	// Expires (Unix seconds); a token never outlives it.
 	Expires int64 `json:"exp"`
 	// RefreshToken is the IdP's, kept when the installation names a token

@@ -13,7 +13,8 @@ const (
 	// HTTPServerRequestDuration is the stable OpenTelemetry HTTP server
 	// duration metric. Counts come from the histogram's count, so one
 	// instrument supplies request volume and latency without a second stream.
-	HTTPServerRequestDuration = "http.server.request.duration"
+	HTTPServerRequestDuration  = "http.server.request.duration"
+	MCPServerOperationDuration = "mcp.server.operation.duration"
 
 	// Runtime resource snapshots use only OpenTelemetry's container metrics.
 	ContainerCPUUsage         = "container.cpu.usage"
@@ -88,56 +89,61 @@ const httpDurationBucketCount = 15
 // Edge and in-app telemetry are deliberately queried separately: adding them
 // would count the same public request twice.
 type TrafficReport struct {
-	Space       string         `json:"space"`
-	App         string         `json:"app,omitempty"`
-	Source      string         `json:"source"`
-	Range       TrafficRange   `json:"range"`
-	Granularity string         `json:"granularity"`
-	From        time.Time      `json:"from"`
-	To          time.Time      `json:"to"`
-	Totals      TrafficTotals  `json:"totals"`
-	Series      []TrafficPoint `json:"series"`
-	Definitions Definitions    `json:"definitions"`
+	Space       string            `json:"space"`
+	App         string            `json:"app,omitempty"`
+	Source      string            `json:"source"`
+	Range       TrafficRange      `json:"range"`
+	Granularity string            `json:"granularity"`
+	From        time.Time         `json:"from"`
+	To          time.Time         `json:"to"`
+	Totals      TrafficTotals     `json:"totals"`
+	Series      []TrafficPoint    `json:"series"`
+	Definitions Definitions       `json:"definitions"`
+	Endpoints   []TrafficEndpoint `json:"endpoints"`
+	MCP         MCPReport         `json:"mcp"`
 }
 
 // Definitions keeps dashboard words honest. In particular, a document load
 // observed at the gateway is not every SPA route transition, and public
 // anonymous visitors are intentionally not assigned a tracking cookie.
 type Definitions struct {
-	Success        string `json:"success"`
-	View           string `json:"view"`
-	UniqueVisitors string `json:"uniqueVisitors"`
+	Success              string `json:"success"`
+	View                 string `json:"view"`
+	UniqueVisitors       string `json:"uniqueVisitors"`
+	AuthenticatedCallers string `json:"authenticatedCallers"`
 }
 
 type TrafficTotals struct {
-	Requests          int64   `json:"requests"`
-	Successful        int64   `json:"successful"`
-	ClientErrors      int64   `json:"clientErrors"`
-	ServerErrors      int64   `json:"serverErrors"`
-	OtherResponses    int64   `json:"otherResponses,omitempty"`
-	AverageLatencyMS  float64 `json:"averageLatencyMs"`
-	P50LatencyMS      float64 `json:"p50LatencyMs"`
-	P95LatencyMS      float64 `json:"p95LatencyMs"`
-	Views             int64   `json:"views"`
-	UniqueVisitors    int64   `json:"uniqueVisitors"`
-	IdentifiedViews   int64   `json:"identifiedViews"`
-	VisitorCoveragePC float64 `json:"visitorCoveragePercent"`
+	AuthenticatedCallers int64   `json:"authenticatedCallers"`
+	Requests             int64   `json:"requests"`
+	Successful           int64   `json:"successful"`
+	ClientErrors         int64   `json:"clientErrors"`
+	ServerErrors         int64   `json:"serverErrors"`
+	OtherResponses       int64   `json:"otherResponses,omitempty"`
+	AverageLatencyMS     float64 `json:"averageLatencyMs"`
+	P50LatencyMS         float64 `json:"p50LatencyMs"`
+	P95LatencyMS         float64 `json:"p95LatencyMs"`
+	Views                int64   `json:"views"`
+	UniqueVisitors       int64   `json:"uniqueVisitors"`
+	IdentifiedViews      int64   `json:"identifiedViews"`
+	VisitorCoveragePC    float64 `json:"visitorCoveragePercent"`
 }
 
 type TrafficPoint struct {
-	Bucket            string  `json:"bucket"`
-	Requests          int64   `json:"requests"`
-	Successful        int64   `json:"successful"`
-	ClientErrors      int64   `json:"clientErrors"`
-	ServerErrors      int64   `json:"serverErrors"`
-	OtherResponses    int64   `json:"otherResponses,omitempty"`
-	AverageLatencyMS  float64 `json:"averageLatencyMs"`
-	P50LatencyMS      float64 `json:"p50LatencyMs"`
-	P95LatencyMS      float64 `json:"p95LatencyMs"`
-	Views             int64   `json:"views"`
-	UniqueVisitors    int64   `json:"uniqueVisitors"`
-	IdentifiedViews   int64   `json:"identifiedViews"`
-	VisitorCoveragePC float64 `json:"visitorCoveragePercent"`
+	AuthenticatedCallers int64   `json:"authenticatedCallers"`
+	Bucket               string  `json:"bucket"`
+	Requests             int64   `json:"requests"`
+	Successful           int64   `json:"successful"`
+	ClientErrors         int64   `json:"clientErrors"`
+	ServerErrors         int64   `json:"serverErrors"`
+	OtherResponses       int64   `json:"otherResponses,omitempty"`
+	AverageLatencyMS     float64 `json:"averageLatencyMs"`
+	P50LatencyMS         float64 `json:"p50LatencyMs"`
+	P95LatencyMS         float64 `json:"p95LatencyMs"`
+	Views                int64   `json:"views"`
+	UniqueVisitors       int64   `json:"uniqueVisitors"`
+	IdentifiedViews      int64   `json:"identifiedViews"`
+	VisitorCoveragePC    float64 `json:"visitorCoveragePercent"`
 }
 
 // ResourceObservation is one container snapshot exported by donkey-server as
@@ -246,6 +252,10 @@ func (a *trafficAggregate) finish() {
 }
 
 func histogramQuantileMS(buckets [httpDurationBucketCount]uint64, quantile float64) float64 {
+	return durationQuantileMS(buckets, HTTPDurationBounds, quantile)
+}
+
+func durationQuantileMS(buckets [httpDurationBucketCount]uint64, bounds []float64, quantile float64) float64 {
 	var total uint64
 	for _, n := range buckets {
 		total += n
@@ -265,10 +275,10 @@ func histogramQuantileMS(buckets [httpDurationBucketCount]uint64, quantile float
 		}
 		// The final bucket is +Inf. Returning the last finite boundary is a
 		// useful, explicitly bounded approximation rather than JSON infinity.
-		if i >= len(HTTPDurationBounds) {
-			return HTTPDurationBounds[len(HTTPDurationBounds)-1] * 1000
+		if i >= len(bounds) {
+			return bounds[len(bounds)-1] * 1000
 		}
-		return HTTPDurationBounds[i] * 1000
+		return bounds[i] * 1000
 	}
 	return 0
 }

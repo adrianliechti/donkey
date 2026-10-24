@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	collectormetricspb "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
+	metricsv1 "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 	metricspb "go.opentelemetry.io/proto/otlp/metrics/v1"
 	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
@@ -148,7 +148,7 @@ func TestPurgeSpaceRemovesEveryTelemetryTableAndKeepsOtherSpaces(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, _, err := store.IngestResourceMetrics(ctx, &collectormetricspb.ExportMetricsServiceRequest{
+		if _, _, err := store.IngestResourceMetrics(ctx, &metricsv1.ExportMetricsServiceRequest{
 			ResourceMetrics: []*metricspb.ResourceMetrics{resources},
 		}); err != nil {
 			t.Fatal(err)
@@ -221,7 +221,7 @@ type histogramPoint struct {
 	bucket int
 }
 
-func exportRequest(at time.Time, points []histogramPoint) *collectormetricspb.ExportMetricsServiceRequest {
+func exportRequest(at time.Time, points []histogramPoint) *metricsv1.ExportMetricsServiceRequest {
 	dataPoints := make([]*metricspb.HistogramDataPoint, 0, len(points))
 	for _, point := range points {
 		counts := make([]uint64, len(HTTPDurationBounds)+1)
@@ -242,7 +242,7 @@ func exportRequest(at time.Time, points []histogramPoint) *collectormetricspb.Ex
 			ExplicitBounds:    append([]float64(nil), HTTPDurationBounds...),
 		})
 	}
-	return &collectormetricspb.ExportMetricsServiceRequest{
+	return &metricsv1.ExportMetricsServiceRequest{
 		ResourceMetrics: []*metricspb.ResourceMetrics{{
 			Resource: &resourcepb.Resource{Attributes: []*commonpb.KeyValue{
 				stringAttribute("service.name", "donkey-gateway"),

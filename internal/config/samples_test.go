@@ -14,7 +14,8 @@ func TestSampleConfigsLoad(t *testing.T) {
 	}
 	nested, _ := filepath.Glob("../../testdata/*/*/donkey.yaml")
 	deep, _ := filepath.Glob("../../testdata/*/*/*/donkey.yaml")
-	for _, m := range append(append(matches, nested...), deep...) {
+	demo, _ := filepath.Glob("../../examples/demo/*/donkey.yaml")
+	for _, m := range append(append(append(matches, nested...), deep...), demo...) {
 		dir := filepath.Dir(m)
 		app, err := LoadApp(dir)
 		if err != nil {

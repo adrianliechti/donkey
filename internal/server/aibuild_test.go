@@ -94,7 +94,7 @@ func TestRepairLoopIncludesBuildAndRolloutEvidence(t *testing.T) {
 		}
 		return &build.Result{ImageRef: req.ImageRef}, nil
 	})
-	release := func(result *build.Result) error {
+	release := func(result *build.Result, _ string) error {
 		rollouts++
 		if rollouts == 1 {
 			return &runtime.RolloutError{App: "app", Reason: "wrong port", Evidence: runtime.Evidence{Logs: "token=runtime-secret-value"}}
@@ -139,7 +139,7 @@ func TestRepairDoesNotRewriteForPlatformErrors(t *testing.T) {
 	}}
 	platformErr := errors.New("runtime API unavailable")
 	builder := repairBuilder(func(req build.Request) (*build.Result, error) { return &build.Result{ImageRef: req.ImageRef}, nil })
-	res, err := s.buildGenerated(context.Background(), newLineStreamer(httptest.NewRecorder(), nil), builder, dir, &config.AppConfig{Name: "app", Port: 8080}, build.Request{ContextDir: dir, ImageRef: "registry/app:initial"}, func(*build.Result) error { return platformErr })
+	res, err := s.buildGenerated(context.Background(), newLineStreamer(httptest.NewRecorder(), nil), builder, dir, &config.AppConfig{Name: "app", Port: 8080}, build.Request{ContextDir: dir, ImageRef: "registry/app:initial"}, func(*build.Result, string) error { return platformErr })
 	if err != platformErr || res.Attempts != 1 {
 		t.Fatalf("misclassified platform error: %+v %v", res, err)
 	}

@@ -8,22 +8,21 @@ import (
 func TestSpaceRoles(t *testing.T) {
 	settings := SpaceConfig{
 		Admins:     AccessConfig{Users: []string{"Ada@example.com"}, Groups: []string{"owners"}},
-		Developers: AccessConfig{Groups: []string{"engineering"}, Roles: []string{"deployer"}},
+		Developers: AccessConfig{Groups: []string{"engineering"}},
 	}
 	for _, tc := range []struct {
-		name, email   string
-		groups, roles []string
-		want          string
+		name, email string
+		groups      []string
+		want        string
 	}{
 		{name: "user", email: "ada@EXAMPLE.com", want: SpaceAdmin},
 		{name: "admin takes precedence", groups: []string{"owners", "engineering"}, want: SpaceAdmin},
 		{name: "developer group", groups: []string{"engineering"}, want: SpaceDeveloper},
-		{name: "provider role", roles: []string{"deployer"}, want: SpaceDeveloper},
 		{name: "unassigned", email: "other@example.com"},
 		{name: "group case matters", groups: []string{"Engineering"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := settings.Role(&identity.Identity{Email: tc.email, Groups: tc.groups, Roles: tc.roles}); got != tc.want {
+			if got := settings.Role(&identity.Identity{Email: tc.email, Groups: tc.groups}); got != tc.want {
 				t.Fatalf("role = %q, want %q", got, tc.want)
 			}
 		})

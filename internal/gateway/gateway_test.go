@@ -141,25 +141,23 @@ func TestIdentityFromBearer(t *testing.T) {
 }
 
 func TestAllowedAccess(t *testing.T) {
-	sess := &session{Email: "Ada@Example.com", Groups: []string{"staff"}, Roles: []string{"developer"}}
-	cases := []struct {
-		name   string
-		access *config.AccessConfig
-		want   bool
+	policy := config.SpaceConfig{Viewers: config.AccessConfig{Users: []string{"ada@example.com", "sub:service"}, Groups: []string{"staff"}}}
+	rt := route{Space: "team", App: "web", Policy: &policy}
+	for _, tc := range []struct {
+		subject, email string
+		groups         []string
+		want           bool
 	}{
-		{"no rules lets any signed-in user pass", nil, true},
-		{"empty rules too", &config.AccessConfig{}, true},
-		{"email matches case-insensitively", &config.AccessConfig{Users: []string{"ada@example.com"}}, true},
-		{"group match", &config.AccessConfig{Groups: []string{"staff"}}, true},
-		{"role match", &config.AccessConfig{Roles: []string{"developer"}}, true},
-		{"any list may match", &config.AccessConfig{Users: []string{"bob@example.com"}, Roles: []string{"developer"}}, true},
-		{"no match denies", &config.AccessConfig{Users: []string{"bob@example.com"}, Groups: []string{"board"}, Roles: []string{"admin"}}, false},
-		{"groups compare exactly", &config.AccessConfig{Groups: []string{"Staff"}}, false},
-	}
-	for _, c := range cases {
-		if got := c.access.Allows(sess.Email, sess.Groups, sess.Roles); got != c.want {
-			t.Errorf("%s: got %v", c.name, got)
+		{email: "ADA@example.com", want: true}, {groups: []string{"staff"}, want: true},
+		{subject: "service", want: true}, {email: "other@example.com"}, {groups: []string{"Staff"}}, {},
+	} {
+		if got := rt.allows(tc.subject, tc.email, tc.groups); got != tc.want {
+			t.Errorf("%+v: allowed=%v", tc, got)
 		}
+	}
+	rt.Policy = nil
+	if rt.allows("service", "ada@example.com", []string{"staff"}) {
+		t.Fatal("missing space policy granted access")
 	}
 }
 
@@ -266,7 +264,7 @@ func TestRouteFromConfigMap(t *testing.T) {
 				"donkey.local/login":     "required",
 				manifests.AnnotationMode: config.AppModeAPI,
 				manifests.AnnotationCORS: config.CORSAllowAll,
-				"donkey.local/access":    `{"users":["ada@example.com"],"roles":["developer"]}`,
+				"donkey.local/access":    `{"users":["ada@example.com"]}`,
 			},
 		},
 	}
@@ -279,9 +277,6 @@ func TestRouteFromConfigMap(t *testing.T) {
 	}
 	if rt.Space != "acme" || rt.App != "shop" {
 		t.Errorf("route telemetry scope = %q/%q", rt.Space, rt.App)
-	}
-	if rt.Access == nil || len(rt.Access.Users) != 1 || len(rt.Access.Roles) != 1 {
-		t.Errorf("access rules should be parsed: %+v", rt.Access)
 	}
 
 	// No backend annotation → not the gateway's route (an unrelated
@@ -649,7 +644,8 @@ func TestTelemetryRecordAfterShutdownDoesNotPanic(t *testing.T) {
 	r.Header.Set("Accept", "text/html")
 	// Past the queue size, so both the enqueue and the backpressure paths run.
 	for range viewQueueSize + 8 {
-		tel.Record(r, route{Space: "acme", App: "shop", Path: "/"}, nil, http.StatusOK, time.Millisecond, "text/html; charset=utf-8")
+		tel.RecordHTTP(r, route{Space: "acme", App: "shop", Path: "/"}, nil, http.StatusOK, time.Millisecond)
+		tel.RecordView(r, route{Space: "acme", App: "shop", Path: "/"}, nil, http.StatusOK, "text/html; charset=utf-8")
 	}
 }
 
@@ -736,7 +732,7 @@ func TestLoginScopesWithoutAuthScopeAreUnchanged(t *testing.T) {
 // so cookies and tokens issued before still open, and new ones read the same.
 func TestSealedFormatsKeepTheirKeys(t *testing.T) {
 	flat := map[string]any{"client_id": "c", "sub": "u1", "email": "u1@example.com", "name": "U", "preferred_username": "u",
-		"oid": "o", "groups": []string{"g"}, "roles": []string{"r"}, "resource": "https://api.example.com", "exp": 123, "rt": "refresh", "grant": "gr"}
+		"oid": "o", "groups": []string{"g"}, "resource": "https://api.example.com", "exp": 123, "rt": "refresh", "grant": "gr"}
 	sealed, err := identity.Seal(testKey, purposeOAuthRefresh, flat)
 	if err != nil {
 		t.Fatal(err)

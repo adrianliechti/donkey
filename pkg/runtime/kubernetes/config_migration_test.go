@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	rt "github.com/adrianliechti/donkey/pkg/runtime"
 	"github.com/adrianliechti/donkey/pkg/runtime/kubernetes/manifests"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -88,6 +89,20 @@ func TestConfigMigrationPreservesSettingsAndCredentials(t *testing.T) {
 			}
 			if err := r.EnsureSpaceConfigs(ctx); err != nil {
 				t.Fatal(err)
+			}
+			for range 2 {
+				if err := rt.ReconcileAccess(ctx, r, ""); err != nil {
+					t.Fatal(err)
+				}
+			}
+			settings.Viewers.Users = []string{"visitor@example.com"}
+			migrated, err := r.SpaceConfig(ctx, "team")
+			if err != nil || !reflect.DeepEqual(migrated, settings) {
+				t.Fatalf("access migration lost settings or duplicated users: %+v, %v", migrated, err)
+			}
+			network, err := r.Network(ctx, "team", "api")
+			if err != nil || network.Access != nil || !network.Protected {
+				t.Fatalf("legacy route access was not migrated: %+v, %v", network, err)
 			}
 			// A live consumer keeps the old Secret until it drains.
 			pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "old-consumer", Namespace: ns}, Spec: *dep.Spec.Template.Spec.DeepCopy()}

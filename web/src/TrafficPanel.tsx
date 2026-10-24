@@ -1,15 +1,12 @@
 import { useState } from 'react'
-import { Activity, Cpu, Info, MemoryStick } from 'lucide-react'
-import type { ResourcePoint, ResourceRange, TrafficPoint, TrafficRange, TrafficSource, TrafficTotals } from './api'
+import { Cpu, MemoryStick } from 'lucide-react'
+import type { ResourcePoint, ResourceRange, TrafficPoint, TrafficRange, TrafficTotals } from './api'
 import { useResources, useTraffic } from './queries'
 import { Drawer, DrawerBody, PaneHeader } from './dialog'
-import { ago, Button, Callout, ErrorNote, Eyebrow, Section, SectionHeader, Select, Spinner, StatGrid } from './ui'
+import { ErrorNote, Eyebrow, Section, SectionHeader, Select, Spinner, StatGrid } from './ui'
+import { ago } from './format'
 
 const integer = new Intl.NumberFormat()
-const compactInteger = new Intl.NumberFormat(undefined, {
-  notation: 'compact',
-  maximumFractionDigits: 1,
-})
 const rangeOptions: { value: TrafficRange; label: string }[] = [
   { value: '48h', label: 'last 48 hours' },
   { value: '7d', label: 'last 7 days' },
@@ -24,52 +21,39 @@ const resourceRangeOptions: { value: ResourceRange; label: string }[] = [
 ]
 
 /**
- * Space cards only need a quiet signal that telemetry exists. The full
- * dashboard opens on demand, keeping the fleet about apps and services.
+ * A whole space's traffic, opened from its ⋯ menu in the breadcrumb. The
+ * report is only asked for while the drawer is open.
  */
-export function SpaceTelemetry({ space }: { space: string }) {
-  const [open, setOpen] = useState(false)
-  const { data, error } = useTraffic(space)
-  const errors = (data?.totals.clientErrors ?? 0) + (data?.totals.serverErrors ?? 0)
-  const title = error
-    ? `Telemetry unavailable: ${error}`
-    : data
-      ? `Telemetry — ${integer.format(data.totals.requests)} requests, ${integer.format(errors)} errors in the last 30 days`
-      : 'Open space telemetry'
-
+export function SpaceTrafficDrawer({ space, open, onClose }: { space: string; open: boolean; onClose: () => void }) {
   return (
-    <>
-      <button
-        type="button"
-        title={title}
-        aria-label={title}
-        onClick={() => setOpen(true)}
-        className={`inline-flex h-8 items-center gap-1.5 rounded-md px-2 font-mono text-[11px] transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-strong ${
-          error
-            ? 'text-danger hover:bg-danger/10'
-            : 'text-muted hover:bg-line/60 hover:text-ink'
-        }`}
-      >
-        <Activity className="size-3.5" aria-hidden />
-        {data && <span>{compactInteger.format(data.totals.requests)}</span>}
-        {errors > 0 && <span className="size-1.5 rounded-full bg-danger" aria-hidden />}
-      </button>
-
-      <Drawer open={open} onClose={() => setOpen(false)} label={`${space} — telemetry`} width="max-w-4xl">
-        <PaneHeader prominent eyebrow="Space telemetry" title={space}
-          onClose={() => setOpen(false)} closeLabel="Close space telemetry" />
-        <DrawerBody>
-          <TrafficPanel space={space} app="" />
-        </DrawerBody>
-      </Drawer>
-    </>
+    <Drawer open={open} onClose={onClose} label={`${space} — traffic`} width="max-w-4xl">
+      <PaneHeader prominent eyebrow="Space traffic" title={space} onClose={onClose} closeLabel="Close space traffic" />
+      <DrawerBody>{open && <TrafficPanel space={space} app="" />}</DrawerBody>
+    </Drawer>
   )
 }
 
-export function TrafficPanel({ space, app }: { space: string; app: string }) {
-  const [source, setSource] = useState<TrafficSource>('edge')
-  const [range, setRange] = useState<TrafficRange>('30d')
-  const { data, error } = useTraffic(space, app, source, range)
+/**
+ * Requests as donkey-gateway saw them: volume, errors and latency. In an
+ * app's Analytics tab the range belongs to the tab: given with onRange, this
+ * section shows the tab's picker; given alone, the audience above shows it.
+ * The space drawer keeps a picker of its own.
+ */
+export function TrafficPanel({
+  space,
+  app,
+  range: shared,
+  onRange,
+}: {
+  space: string
+  app: string
+  range?: TrafficRange
+  onRange?: (range: TrafficRange) => void
+}) {
+  const [own, setOwn] = useState<TrafficRange>('30d')
+  const range = shared ?? own
+  const setRange = onRange ?? setOwn
+  const { data, error } = useTraffic(space, app, 'edge', range)
   const errors = data ? data.totals.clientErrors + data.totals.serverErrors : 0
 
   return (
@@ -77,11 +61,18 @@ export function TrafficPanel({ space, app }: { space: string; app: string }) {
       <Section className="space-y-5">
         <SectionHeader
           title="Traffic"
+          description="HTTP traffic through the gateway, including sign-in and access responses."
           actions={
             <>
-              <Select variant="quiet" ariaLabel="Telemetry source" value={source} onChange={setSource}
-                options={[{ value: 'edge', label: 'Gateway' }, { value: 'app', label: 'In-app OTEL' }]} />
-              <Select variant="quiet" ariaLabel="Telemetry time range" value={range} onChange={setRange} options={rangeOptions} />
+              {(!shared || onRange) && (
+                <Select
+                  variant="quiet"
+                  ariaLabel="Time range"
+                  value={range}
+                  onChange={setRange}
+                  options={rangeOptions}
+                />
+              )}
             </>
           }
         />
@@ -111,36 +102,23 @@ export function TrafficPanel({ space, app }: { space: string; app: string }) {
               ]}
             />
 
-            <div className="space-y-2">
-              <Eyebrow>Audience</Eyebrow>
-              {source === 'app' ? (
-                <Callout
-                  icon={Info}
-                  action={<Button kind="quiet" size="sm" onClick={() => setSource('edge')}>Show gateway data</Button>}
-                >
-                  Views and signed-in visitors are measured at the gateway, not by app metrics.
-                </Callout>
-              ) : (
-                <StatGrid
-                  columns="grid-cols-3"
-                  stats={[
-                    { label: 'Views', value: integer.format(data.totals.views) },
-                    { label: 'Signed-in visitors', value: integer.format(data.totals.uniqueVisitors) },
-                    {
-                      label: 'Identified views',
-                      value: data.totals.views === 0 ? '—' : `${data.totals.visitorCoveragePercent.toFixed(1)}%`,
-                    },
-                  ]}
-                />
-              )}
-            </div>
+            <p className="text-xs text-muted" title={data.definitions.authenticatedCallers}>
+              <span className="font-mono text-ink">{integer.format(data.totals.authenticatedCallers ?? 0)}</span>{' '}
+              distinct authenticated callers · anonymous callers excluded
+            </p>
 
             <div className="space-y-2">
               <div className="flex items-center justify-between gap-3">
                 <Eyebrow>Requests by {data.granularity}</Eyebrow>
                 <span className="flex items-center gap-3 text-[11px] text-muted">
-                  <span className="flex items-center gap-1"><i className="inline-block size-2 rounded-sm bg-accent" />requests</span>
-                  <span className="flex items-center gap-1"><i className="inline-block size-2 rounded-sm bg-danger" />4xx / 5xx</span>
+                  <span className="flex items-center gap-1">
+                    <i className="inline-block size-2 rounded-sm bg-accent" />
+                    requests
+                  </span>
+                  <span className="flex items-center gap-1">
+                    <i className="inline-block size-2 rounded-sm bg-danger" />
+                    4xx / 5xx
+                  </span>
                 </span>
               </div>
               {data.totals.requests > 0 ? (
@@ -155,9 +133,100 @@ export function TrafficPanel({ space, app }: { space: string; app: string }) {
                 <p className="py-8 text-center text-sm text-muted">No HTTP telemetry in this range.</p>
               )}
             </div>
+            {!!data.endpoints?.length && (
+              <div className="space-y-2">
+                <Eyebrow>Top HTTP routes</Eyebrow>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs">
+                    <thead className="text-muted">
+                      <tr>
+                        {!app && <th className="py-2 pr-3 font-normal">App</th>}
+                        <th className="py-2 pr-3 font-normal">Route</th>
+                        <th className="py-2 px-3 text-right font-normal">Requests</th>
+                        <th className="py-2 px-3 text-right font-normal">4xx / 5xx</th>
+                        <th className="py-2 pl-3 text-right font-normal">P95</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {data.endpoints.map((row) => (
+                        <tr key={`${row.app}:${row.method}:${row.route}`} className="border-t border-line/50">
+                          {!app && <td className="py-2 pr-3">{row.app}</td>}
+                          <td className="py-2 pr-3 font-mono">
+                            {row.method} {row.route || 'Unknown route'}
+                          </td>
+                          <td className="py-2 px-3 text-right font-mono">{integer.format(row.requests)}</td>
+                          <td className="py-2 px-3 text-right font-mono">
+                            {integer.format(row.clientErrors)} / {integer.format(row.serverErrors)}
+                          </td>
+                          <td className="py-2 pl-3 text-right font-mono">{latency(row.p95LatencyMs)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
           </>
         )}
       </Section>
+
+      {!!data?.mcp?.totals.operations && (
+        <Section className="space-y-4">
+          <SectionHeader
+            title="MCP operations"
+            description="MCP requests observed by the gateway, including tool calls, prompts and resources."
+          />
+          <StatGrid
+            stats={[
+              { label: 'Operations', value: integer.format(data.mcp.totals.operations) },
+              {
+                label: 'Operation errors',
+                value: integer.format(data.mcp.totals.errors),
+                note: 'Tool, server and transport failures',
+              },
+              {
+                label: 'Caller errors',
+                value: integer.format(data.mcp.totals.callerErrors),
+                note: 'Invalid requests or missing resources',
+              },
+              {
+                label: 'P95 latency',
+                value: latency(data.mcp.totals.p95LatencyMs),
+                note: `gateway observed · avg ${latency(data.mcp.totals.averageLatencyMs)}`,
+              },
+            ]}
+          />
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs">
+              <thead className="text-muted">
+                <tr>
+                  {!app && <th className="py-2 pr-3 font-normal">App</th>}
+                  <th className="py-2 pr-3 font-normal">Operation</th>
+                  <th className="py-2 px-3 text-right font-normal">Count</th>
+                  <th className="py-2 px-3 text-right font-normal">Errors</th>
+                  <th className="py-2 px-3 text-right font-normal">Caller errors</th>
+                  <th className="py-2 pl-3 text-right font-normal">P95</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.mcp.operations.map((row) => (
+                  <tr key={`${row.app}:${row.method}:${row.target}`} className="border-t border-line/50">
+                    {!app && <td className="py-2 pr-3">{row.app}</td>}
+                    <td className="py-2 pr-3 font-mono">
+                      {row.method}
+                      {row.target && ` ${row.target}`}
+                    </td>
+                    <td className="py-2 px-3 text-right font-mono">{integer.format(row.operations)}</td>
+                    <td className="py-2 px-3 text-right font-mono">{integer.format(row.errors)}</td>
+                    <td className="py-2 px-3 text-right font-mono">{integer.format(row.callerErrors)}</td>
+                    <td className="py-2 pl-3 text-right font-mono">{latency(row.p95LatencyMs)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Section>
+      )}
 
       {app && <ResourceUsage space={space} app={app} />}
     </>
@@ -179,14 +248,22 @@ function ResourceUsage({ space, app }: { space: string; app: string }) {
             {current && !current.fresh && (
               <span className="text-xs text-danger">Last sample {ago(current.sampledAt)} ago</span>
             )}
-            <Select variant="quiet" ariaLabel="Runtime resource time range" value={range} onChange={setRange} options={resourceRangeOptions} />
+            <Select
+              variant="quiet"
+              ariaLabel="Runtime resource time range"
+              value={range}
+              onChange={setRange}
+              options={resourceRangeOptions}
+            />
           </>
         }
       />
       {error && <ErrorNote message={`Runtime usage is unavailable: ${error}`} />}
       {!data && !error && <Spinner label="Reading runtime usage…" />}
       {data && !data.available && (
-        <p className="text-sm text-muted">No container CPU or memory samples yet. Usage appears after the next runtime sample.</p>
+        <p className="text-sm text-muted">
+          No container CPU or memory samples yet. Usage appears after the next runtime sample.
+        </p>
       )}
       {data?.available && (
         <>
@@ -224,7 +301,6 @@ function ResourceUsage({ space, app }: { space: string; app: string }) {
   )
 }
 
-
 function ResourceBars({
   icon,
   label,
@@ -246,7 +322,10 @@ function ResourceBars({
   return (
     <div className="min-w-0">
       <div className="flex items-center justify-between gap-2 text-xs text-muted">
-        <span className="flex items-center gap-1.5">{icon}{label} history</span>
+        <span className="flex items-center gap-1.5">
+          {icon}
+          {label} history
+        </span>
         <span className="font-mono text-ink-soft">{measured.length ? format(latest) : '—'}</span>
       </div>
       <div
@@ -285,13 +364,14 @@ function formatBytes(bytes: number) {
   return `${value.toFixed(value >= 10 || power === 0 ? 0 : 1)} ${units[power]}`
 }
 
-
-
-
 function DailyBars({ points }: { points: TrafficPoint[] }) {
   const max = Math.max(1, ...points.map((point) => point.requests))
   return (
-    <div className="flex h-32 items-end gap-[3px]" role="img" aria-label="Requests over the selected time range; error portions are red">
+    <div
+      className="flex h-32 items-end gap-[3px]"
+      role="img"
+      aria-label="Requests over the selected time range; error portions are red"
+    >
       {points.map((point) => {
         const errors = point.clientErrors + point.serverErrors
         const height = point.requests === 0 ? 1 : Math.max(4, (point.requests / max) * 100)
@@ -315,10 +395,16 @@ function bucketLabel(bucket: string | undefined, granularity: 'hour' | 'day') {
   if (!bucket) return ''
   if (granularity === 'day') {
     const day = new Date(bucket)
-    return Number.isNaN(day.getTime()) ? bucket : new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(day)
+    return Number.isNaN(day.getTime())
+      ? bucket
+      : new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(day)
   }
   return new Intl.DateTimeFormat(undefined, {
-    month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', timeZoneName: 'short',
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    timeZoneName: 'short',
   }).format(new Date(bucket))
 }
 

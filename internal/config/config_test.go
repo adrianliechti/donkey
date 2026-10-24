@@ -247,35 +247,18 @@ func TestAppValidate(t *testing.T) {
 		{"bad mode", func(c *AppConfig) { c.Mode = "grpc" }, true},
 		{"api public", func(c *AppConfig) { c.Mode, c.Public = AppModeAPI, true }, false},
 		{"api internal", func(c *AppConfig) { c.Mode, c.Internal = AppModeAPI, true }, false},
+		{"internal with routes", func(c *AppConfig) {
+			c.Internal = true
+			c.Routes = []RouteConfig{{App: "web", Path: "/api"}}
+		}, true},
+		{"public internal with routes", func(c *AppConfig) {
+			c.Internal, c.Public = true, true
+			c.Routes = []RouteConfig{{App: "web", Path: "/api"}}
+		}, true},
+		{"public internal", func(c *AppConfig) { c.Internal, c.Public = true, true }, true},
+		{"shared routes", func(c *AppConfig) { c.Routes = []RouteConfig{{App: "web", Path: "/api"}} }, false},
 		{"allow all origins", func(c *AppConfig) { c.CORS = CORSAllowAll }, false},
 		{"bad cors policy", func(c *AppConfig) { c.CORS = "sometimes" }, true},
-		// Access refines the login gateway — it cannot exist where there is
-		// no login (public) or no address to guard (internal, no routes).
-		{"access", func(c *AppConfig) { c.Access = &AccessConfig{Users: []string{"ada@example.com"}} }, false},
-		{"access roles", func(c *AppConfig) { c.Access = &AccessConfig{Roles: []string{"developer"}} }, false},
-		{"access on public app", func(c *AppConfig) {
-			c.Public = true
-			c.Access = &AccessConfig{Groups: []string{"staff"}}
-		}, true},
-		{"access on internal app", func(c *AppConfig) {
-			c.Internal = true
-			c.Access = &AccessConfig{Groups: []string{"staff"}}
-		}, true},
-		{"access on internal app with routes", func(c *AppConfig) {
-			c.Internal = true
-			c.Routes = []RouteConfig{{App: "web", Path: "/api"}}
-			c.Access = &AccessConfig{Groups: []string{"staff"}}
-		}, false},
-		{"access on internal API with routes", func(c *AppConfig) {
-			c.Internal = true
-			c.Mode = AppModeAPI
-			c.Routes = []RouteConfig{{App: "web", Path: "/api"}}
-			c.Access = &AccessConfig{Groups: []string{"staff"}}
-		}, true},
-		{"access entry with spaces", func(c *AppConfig) {
-			c.Access = &AccessConfig{Users: []string{"ada lovelace"}}
-		}, true},
-		{"empty access is fine", func(c *AppConfig) { c.Access = &AccessConfig{} }, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -283,6 +266,30 @@ func TestAppValidate(t *testing.T) {
 			tc.mutate(&c)
 			if err := c.Validate(); (err != nil) != tc.wantErr {
 				t.Fatalf("Validate() err=%v, wantErr=%v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestLoadAppRejectsMembership(t *testing.T) {
+	for _, field := range []string{
+		"access: {users: [reader@example.com]}",
+		"access: {groups: [readers]}",
+		"access: {roles: [reader]}",
+		"access: {}",
+		"access: null",
+		"users: [reader@example.com]",
+		"groups: [readers]",
+		"roles: [reader]",
+	} {
+		t.Run(field, func(t *testing.T) {
+			dir := t.TempDir()
+			data := "name: web\nport: 8000\n" + field + "\n"
+			if err := os.WriteFile(filepath.Join(dir, AppFileName), []byte(data), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := LoadApp(dir); err == nil || !strings.Contains(err.Error(), "unknown field") {
+				t.Fatalf("obsolete membership was not rejected: %v", err)
 			}
 		})
 	}

@@ -20,11 +20,11 @@ import (
 
 type spaceTestRuntime struct {
 	planRuntime
-	settings                                 map[string]config.SpaceConfig
-	readErr                                  error
-	ref                                      []runtime.AppRef
-	network                                  runtime.NetworkState
-	restarts, creates, writes, networkWrites int
+	settings                                              map[string]config.SpaceConfig
+	readErr                                               error
+	ref                                                   []runtime.AppRef
+	network                                               runtime.NetworkState
+	restarts, creates, writes, networkWrites, routeWrites int
 }
 
 func (r *spaceTestRuntime) SpaceConfig(_ context.Context, space string) (config.SpaceConfig, error) {
@@ -70,6 +70,21 @@ func (r *spaceTestRuntime) ApplyNetwork(context.Context, *config.AppConfig) (str
 	return "", nil
 }
 
+func (r *spaceTestRuntime) ReconcileAppRoutes(_ context.Context, _, _ string, protect bool) error {
+	r.routeWrites++
+	r.network.Access = nil
+	if protect {
+		r.network.Protected = true
+	}
+	for i := range r.network.Routes {
+		r.network.Routes[i].Access = nil
+		if protect {
+			r.network.Routes[i].Protected = true
+		}
+	}
+	return nil
+}
+
 func spaceTestServer() (*Server, *spaceTestRuntime) {
 	r := &spaceTestRuntime{settings: map[string]config.SpaceConfig{
 		"team":  {Admins: config.AccessConfig{Users: []string{"owner@example.com"}}, Developers: config.AccessConfig{Groups: []string{"team-dev"}}, Domains: []string{"team.example.com"}},
@@ -80,8 +95,15 @@ func spaceTestServer() (*Server, *spaceTestRuntime) {
 	return s, r
 }
 
+// callAs drives the whole path a request takes: donkey-server's routes and,
+// for what they forward, donkey-orchestrator's. The same Server plays both,
+// as the one binary does in production, so authorization is checked on each
+// hop exactly as it would be there.
 func callAs(t *testing.T, s *Server, email, method, path string, body []byte) *httptest.ResponseRecorder {
 	t.Helper()
+	orchestrator := httptest.NewServer(s.orchestratorRoutes())
+	defer orchestrator.Close()
+	s.cfg.OrchestratorURL = orchestrator.URL
 	req := httptest.NewRequest(method, "https://donkey.example.com"+path, bytes.NewReader(body))
 	token, err := identity.SealToken(testSessionKey, identity.Identity{Subject: email, Email: email,
 		Groups: []string{"team-dev"}, Expires: time.Now().Add(time.Hour).Unix()})
@@ -164,6 +186,9 @@ func TestNewSpaceDomainsDefaultAndCanBeCleared(t *testing.T) {
 		}
 		if got := r.settings["new"].Domains; len(got) != tc.count {
 			t.Fatalf("domains = %v", got)
+		}
+		if r.settings["new"].AllowPublic {
+			t.Fatal("new spaces must default to public access disabled")
 		}
 		if tc.body == `{"name":"new"}` && r.settings["new"].Domains[0] != "new.example.com" {
 			t.Fatal("wrong default suffix")

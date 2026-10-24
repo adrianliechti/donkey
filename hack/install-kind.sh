@@ -38,11 +38,13 @@ say "installing the control plane (real install command, demo settings)"
   --oidc-client-secret "donkey-demo-secret" \
   --openai-base-url "${AI_BASE}" \
   --openai-api-key "${AI_KEY}" \
+  --exa-base-url "${EXA_BASE}" \
+  --exa-api-key "${EXA_KEY}" \
   ${AI_MODEL:+--ai-model "${AI_MODEL}"}
 
 # The install applies the same :dev tag every time. Restart every service
 # using that image so a re-run consistently runs the newly built code.
-donkey_deployments=(donkey-server donkey-gateway donkey-ai donkey-proxy donkey-telemetry donkey-packages)
+donkey_deployments=(donkey-orchestrator donkey-server donkey-gateway donkey-ai donkey-proxy donkey-telemetry donkey-packages)
 kubectl --context "${CTX}" -n donkey-system rollout restart deployment "${donkey_deployments[@]}" >/dev/null
 for deployment in "${donkey_deployments[@]}"; do
   kubectl --context "${CTX}" -n donkey-system rollout status deployment "${deployment}" --timeout=180s >/dev/null

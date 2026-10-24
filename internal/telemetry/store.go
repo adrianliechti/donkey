@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	collectormetricspb "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
+	metricsv1 "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 	metricspb "go.opentelemetry.io/proto/otlp/metrics/v1"
 	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
@@ -206,7 +206,7 @@ CREATE INDEX IF NOT EXISTS view_visitors_app_time
 CREATE INDEX IF NOT EXISTS view_visitors_space_time
   ON view_visitors (space, hour);
 `, httpRollups, streamState)
-	if _, err := s.db.ExecContext(ctx, schema); err != nil {
+	if _, err := s.db.ExecContext(ctx, schema+webEventsSchema+fmt.Sprintf(operationsSchema, bucketColumns(true))+callersSchema); err != nil {
 		return fmt.Errorf("creating telemetry schema: %w", err)
 	}
 	// Early telemetry databases did not retain stream scope. Add it in place,
@@ -270,6 +270,8 @@ func (s *Store) PurgeSpace(ctx context.Context, space string) error {
 	defer tx.Rollback()
 	for _, q := range []string{
 		"DELETE FROM http_rollups WHERE space = ?",
+		"DELETE FROM operation_rollups WHERE space = ?",
+		"DELETE FROM caller_observations WHERE space = ?",
 		"DELETE FROM metric_stream_state WHERE space = ?",
 		"DELETE FROM resource_rollups WHERE space = ?",
 		"DELETE FROM resource_recent_rollups WHERE space = ?",
@@ -277,6 +279,7 @@ func (s *Store) PurgeSpace(ctx context.Context, space string) error {
 		"DELETE FROM view_rollups WHERE space = ?",
 		"DELETE FROM view_visitors WHERE space = ?",
 		"DELETE FROM build_records WHERE space = ?",
+		"DELETE FROM web_events WHERE space = ?",
 	} {
 		if _, err := tx.ExecContext(ctx, q, space); err != nil {
 			return err
@@ -294,6 +297,8 @@ func (s *Store) Cleanup(ctx context.Context, now time.Time) error {
 	defer tx.Rollback()
 	for _, q := range []string{
 		"DELETE FROM http_rollups WHERE hour < ?",
+		"DELETE FROM operation_rollups WHERE hour < ?",
+		"DELETE FROM caller_observations WHERE hour < ?",
 		"DELETE FROM view_rollups WHERE hour < ?",
 		"DELETE FROM view_visitors WHERE hour < ?",
 		"DELETE FROM metric_stream_state WHERE last_seen < ?",
@@ -306,6 +311,9 @@ func (s *Store) Cleanup(ctx context.Context, now time.Time) error {
 	}
 	// One-minute resource rollups exist only for the short, movement-oriented
 	// charts. Long-term hourly rollups above retain the configured 30 days.
+	if _, err := tx.ExecContext(ctx, "DELETE FROM web_events WHERE ts < ?", now.UTC().AddDate(0, 0, -s.retentionDays).UnixMilli()); err != nil {
+		return err
+	}
 	recentCutoff := now.UTC().Add(-48 * time.Hour).Truncate(time.Minute).Unix()
 	if _, err := tx.ExecContext(ctx, "DELETE FROM resource_recent_rollups WHERE minute < ?", recentCutoff); err != nil {
 		return err
@@ -313,11 +321,11 @@ func (s *Store) Cleanup(ctx context.Context, now time.Time) error {
 	return tx.Commit()
 }
 
-// IngestMetrics retains the stable HTTP server duration histogram and
-// deliberately ignores unrelated instruments. This endpoint is an OTLP
+// IngestMetrics retains HTTP server and MCP server operation histograms and
+// deliberately rejects unrelated instruments. This endpoint is an OTLP
 // boundary for donkey's traffic analytics, not a general-purpose metrics
 // warehouse.
-func (s *Store) IngestMetrics(ctx context.Context, req *collectormetricspb.ExportMetricsServiceRequest, trustedGateway bool) (accepted, rejected int64, err error) {
+func (s *Store) IngestMetrics(ctx context.Context, req *metricsv1.ExportMetricsServiceRequest, trustedGateway bool) (accepted, rejected int64, err error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, 0, err
@@ -344,7 +352,7 @@ func (s *Store) IngestMetrics(ctx context.Context, req *collectormetricspb.Expor
 					continue
 				}
 				legacy := metric.Name == "http.server.duration"
-				if metric.Name != HTTPServerRequestDuration && !legacy {
+				if metric.Name != HTTPServerRequestDuration && metric.Name != MCPServerOperationDuration && !legacy {
 					rejected += int64(metricDataPointCount(metric))
 					continue
 				}
@@ -358,7 +366,13 @@ func (s *Store) IngestMetrics(ctx context.Context, req *collectormetricspb.Expor
 						rejected++
 						continue
 					}
-					ok, pointErr := s.ingestHTTPPoint(ctx, tx, resources, metric, histogram, point, trustedGateway, legacy, now)
+					var ok bool
+					var pointErr error
+					if metric.Name == MCPServerOperationDuration {
+						ok, pointErr = s.ingestMCPPoint(ctx, tx, resources, metric, histogram, point, trustedGateway, now)
+					} else {
+						ok, pointErr = s.ingestHTTPPoint(ctx, tx, resources, metric, histogram, point, trustedGateway, legacy, now)
+					}
 					if pointErr != nil {
 						return accepted, rejected, pointErr
 					}
@@ -468,6 +482,9 @@ func (s *Store) ingestHTTPPoint(
 	if err := upsertHTTPRollup(ctx, tx, hour, source, space, app, method, status, deltaCount, deltaSum, deltaBuckets); err != nil {
 		return false, err
 	}
+	if err := upsertOperation(ctx, tx, hour, "http", source, space, app, method, boundedDimension(attrs["http.route"]), strconv.Itoa(status), "", deltaCount, deltaSum, deltaBuckets); err != nil {
+		return false, err
+	}
 	return true, nil
 }
 
@@ -506,6 +523,10 @@ func metricUnitSecondsFactor(unit string, legacy bool) float64 {
 }
 
 func canonicalBuckets(bounds []float64, counts []uint64, factor float64) ([httpDurationBucketCount]uint64, bool) {
+	return histogramBuckets(bounds, counts, factor, HTTPDurationBounds)
+}
+
+func histogramBuckets(bounds []float64, counts []uint64, factor float64, targetBounds []float64) ([httpDurationBucketCount]uint64, bool) {
 	var out [httpDurationBucketCount]uint64
 	if len(bounds) == 0 && len(counts) == 0 {
 		return out, true
@@ -523,11 +544,11 @@ func canonicalBuckets(bounds []float64, counts []uint64, factor float64) ([httpD
 			}
 			previous = upper
 		}
-		target := len(HTTPDurationBounds)
+		target := len(targetBounds)
 		if !math.IsInf(upper, 1) {
-			target = sort.SearchFloat64s(HTTPDurationBounds, upper)
-			if target >= len(HTTPDurationBounds) {
-				target = len(HTTPDurationBounds)
+			target = sort.SearchFloat64s(targetBounds, upper)
+			if target >= len(targetBounds) {
+				target = len(targetBounds)
 			}
 		}
 		if math.MaxUint64-out[target] < count {
@@ -998,6 +1019,11 @@ func (s *Store) Traffic(ctx context.Context, space, app, source string, selected
 		total.UniqueVisitors = int64(len(all))
 	}
 
+	if source == SourceEdge {
+		if err := s.callerCounts(ctx, space, app, window, total, series); err != nil {
+			return TrafficReport{}, err
+		}
+	}
 	total.finish()
 	report := TrafficReport{
 		Space: space, App: app, Source: source, Range: window.selected, Granularity: window.granularity,
@@ -1005,9 +1031,10 @@ func (s *Store) Traffic(ctx context.Context, space, app, source string, selected
 		Totals: total.TrafficTotals,
 		Series: make([]TrafficPoint, 0, len(window.buckets)),
 		Definitions: Definitions{
-			Success:        "HTTP status 200–399; 4xx and 5xx are shown separately",
-			View:           "a successful top-level HTML document request observed at donkey-gateway",
-			UniqueVisitors: "distinct signed-in users, HMAC-pseudonymized per app and per space; anonymous visitors receive no tracking cookie",
+			Success:              "HTTP status 200–399; 4xx and 5xx are shown separately",
+			View:                 "a successful top-level HTML document request observed at donkey-gateway",
+			UniqueVisitors:       "distinct signed-in users, HMAC-pseudonymized per app and per space; anonymous visitors receive no tracking cookie",
+			AuthenticatedCallers: "distinct verified gateway identities across all HTTP requests, including API calls; app-scoped HMACs; space totals deduplicate across apps; anonymous callers are excluded",
 		},
 	}
 	for _, bucket := range window.buckets {
@@ -1015,13 +1042,17 @@ func (s *Store) Traffic(ctx context.Context, space, app, source string, selected
 		agg.finish()
 		report.Series = append(report.Series, pointFromAggregate(bucket, agg.TrafficTotals))
 	}
+	if err := s.operationBreakdowns(ctx, &report, window); err != nil {
+		return TrafficReport{}, err
+	}
 	return report, nil
 }
 
 func pointFromAggregate(bucket string, totals TrafficTotals) TrafficPoint {
 	return TrafficPoint{
-		Bucket:   bucket,
-		Requests: totals.Requests, Successful: totals.Successful,
+		Bucket:               bucket,
+		AuthenticatedCallers: totals.AuthenticatedCallers,
+		Requests:             totals.Requests, Successful: totals.Successful,
 		ClientErrors: totals.ClientErrors, ServerErrors: totals.ServerErrors, OtherResponses: totals.OtherResponses,
 		AverageLatencyMS: totals.AverageLatencyMS, P50LatencyMS: totals.P50LatencyMS, P95LatencyMS: totals.P95LatencyMS,
 		Views: totals.Views, UniqueVisitors: totals.UniqueVisitors, IdentifiedViews: totals.IdentifiedViews,

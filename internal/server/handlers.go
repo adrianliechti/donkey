@@ -68,6 +68,8 @@ type StatusResponse struct {
 	Exposure string `json:"exposure,omitempty"`
 	// Port the app listens on (donkey.yaml's `port`).
 	Port int `json:"port,omitempty"`
+	// Stack is what the app is written in (detect.Stack), for its icon.
+	Stack string `json:"stack,omitempty"`
 	// Endpoint is the asynchronously prepared edge behind URL. It is omitted
 	// for internal apps and runtimes without endpoint diagnostics.
 	Endpoint *EndpointStatusResponse `json:"endpoint,omitempty"`
@@ -104,10 +106,23 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
+	role, err := s.spaceRole(r.Context(), space)
+	if err != nil {
+		writeAccessError(w, err)
+		return
+	}
+	if role == "" {
+		writeAccessError(w, errSpaceForbidden)
+		return
+	}
 	st, err := s.rt.Status(r.Context(), space, app)
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err)
 		return
+	}
+	hasStorage := false
+	if role != config.SpaceViewer {
+		hasStorage = s.rt.HasData(r.Context(), space, app)
 	}
 	resp := StatusResponse{
 		Found:    st.Found,
@@ -116,17 +131,18 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		Image:    st.Image,
 		Pods:     st.Instances,
 		Restarts: st.Restarts,
+		Stack:    st.Stack,
 		// The claim is the disk: it outlives the pods, so this is true even
 		// while the app is stopped or crash-looping — which is exactly when
 		// someone needs to look at what is on it.
-		HasStorage: s.rt.HasData(r.Context(), space, app),
+		HasStorage: hasStorage,
 	}
 	if !st.StartedAt.IsZero() {
 		resp.StartedAt = st.StartedAt.UTC().Format(time.RFC3339)
 	}
 	if st.PublicHost != "" {
 		resp.URL = s.cfg.Scheme() + "://" + st.PublicHost
-		if provider, ok := s.rt.(runtime.EndpointStatusProvider); ok {
+		if provider, ok := s.rt.(runtime.EndpointStatusProvider); ok && role != config.SpaceViewer {
 			resp.Endpoint = endpointStatusResponse(st.PublicHost, provider.EndpointStatus(
 				r.Context(), space, app, st.PublicHost,
 			))
@@ -136,6 +152,10 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		resp.Exposure = exposureOf(st)
 		resp.Mode = modeOfStatus(st)
 		resp.Port = int(st.Port)
+	}
+	if role == config.SpaceViewer {
+		resp.Image, resp.Pods, resp.Endpoint = "", nil, nil
+		resp.Port, resp.HasStorage = 0, false
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -927,6 +947,20 @@ func (s *Server) handleDestroy(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadGateway, err)
 		return
 	}
+	// The app's build and source history go with it, so a later app by the
+	// same name starts with its own. Keeping the data is the redeploy case:
+	// the same app comes back to its disk and its history alike. The runtime
+	// goes first, so retrying after a telemetry hiccup finishes the job.
+	if !keepData {
+		if err := s.telemetry.PurgeBuilds(r.Context(), space, app); err != nil {
+			writeErr(w, http.StatusBadGateway, fmt.Errorf("the app is removed, but its build history is not: %w — removing it again finishes the job", err))
+			return
+		}
+		if err := s.history.RemoveApp(space, app); err != nil {
+			writeErr(w, http.StatusBadGateway, fmt.Errorf("the app is removed, but its source history is not: %w — removing it again finishes the job", err))
+			return
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -956,12 +990,11 @@ func (s *Server) builderChecks(context.Context) []DoctorCheck {
 	}}
 }
 
-func (s *Server) handleDoctor(w http.ResponseWriter, r *http.Request) {
-	// Longer than the other probes want, because the builder checks pull
-	// image manifests through whatever mirrors and proxies stand in the way —
-	// which is exactly the setup that is slow when it is misconfigured.
-	ctx, cancel := context.WithCancel(r.Context())
-	defer cancel()
+// buildChecks are the probes only donkey-orchestrator can make: it is the one
+// process the build engine admits, and the one that pushes with the
+// registry credentials. donkey-server's doctor asks for them (see
+// orchestratorChecks) rather than reaching BuildKit itself.
+func (s *Server) buildChecks(ctx context.Context) []DoctorCheck {
 	var checks []DoctorCheck
 
 	bk := DoctorCheck{Name: "Build engine (in-cluster BuildKit)"}
@@ -986,7 +1019,27 @@ func (s *Server) handleDoctor(w http.ResponseWriter, r *http.Request) {
 	}
 	checks = append(checks, reg)
 
-	checks = append(checks, s.builderChecks(ctx)...)
+	return append(checks, s.builderChecks(ctx)...)
+}
+
+// handleBuildChecks: GET /v1/doctor on donkey-orchestrator.
+func (s *Server) handleBuildChecks(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+	writeJSON(w, http.StatusOK, map[string]any{"checks": s.buildChecks(ctx)})
+}
+
+func (s *Server) handleDoctor(w http.ResponseWriter, r *http.Request) {
+	// Longer than the other probes want, because the builder checks pull
+	// image manifests through whatever mirrors and proxies stand in the way —
+	// which is exactly the setup that is slow when it is misconfigured.
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+	var checks []DoctorCheck
+
+	// The orchestrator first: when it is down, nothing builds, and its own
+	// probes (build engine, registry) can only be answered by it.
+	checks = append(checks, s.orchestratorChecks(r.WithContext(ctx))...)
 
 	// The runtime probes its own dependencies — gateway, certificates,
 	// whatever this runtime needs to serve apps.

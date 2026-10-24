@@ -10,20 +10,18 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
-	"github.com/adrianliechti/donkey/internal/config"
 	rt "github.com/adrianliechti/donkey/pkg/runtime"
 	"github.com/adrianliechti/donkey/pkg/runtime/kubernetes/manifests"
 )
 
-// ListManagedRoutes returns every route ConfigMap registered for this
-// installation, cluster-wide — the donkey-gateway's routing table is built
-// from them.
+// ListGatewayConfigMaps returns the installation's routes and access policies
+// together so the gateway rebuilds them from the same snapshot.
 //
 // The installation label is the ownership boundary. Do not select on
 // app.kubernetes.io/managed-by here: a route may be managed by Helm or GitOps
 // even though donkey-gateway serves it. A route.yaml data entry identifies a
 // route; legacy backend annotations remain readable during upgrades.
-func (c *Client) ListManagedRoutes(ctx context.Context) ([]corev1.ConfigMap, error) {
+func (c *Client) ListGatewayConfigMaps(ctx context.Context) ([]corev1.ConfigMap, error) {
 	var out []corev1.ConfigMap
 	for _, ns := range c.sweep() {
 		list, err := c.Clientset.CoreV1().ConfigMaps(ns).List(ctx, metav1.ListOptions{
@@ -37,9 +35,24 @@ func (c *Client) ListManagedRoutes(ctx context.Context) ([]corev1.ConfigMap, err
 			// gateway's TLS, login and access rules. Keep this check even though
 			// the API-side selector already narrows the list: fake clients and
 			// unusual API implementations need not enforce selectors perfectly.
-			if manifests.IsRoute(&cm) && c.ours(cm.Labels) {
+			if c.ours(cm.Labels) {
 				out = append(out, cm)
 			}
+		}
+	}
+	return out, nil
+}
+
+// ListManagedRoutes returns only routing entries from the gateway snapshot.
+func (c *Client) ListManagedRoutes(ctx context.Context) ([]corev1.ConfigMap, error) {
+	cms, err := c.ListGatewayConfigMaps(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := []corev1.ConfigMap{}
+	for _, cm := range cms {
+		if manifests.IsRoute(&cm) {
+			out = append(out, cm)
 		}
 	}
 	return out, nil
@@ -50,7 +63,7 @@ func routeState(cm *corev1.ConfigMap) (rt.PathRouteState, error) {
 	route, err := manifests.ReadRoute(cm)
 	return rt.PathRouteState{
 		Name: cm.Name, Host: route.Host, Path: route.Path,
-		StripPrefix: route.StripPrefix, Protected: route.Login, Mode: route.Mode, CORS: route.CORS,
+		StripPrefix: route.StripPrefix, Protected: route.Login, Mode: route.Mode, CORS: route.CORS, Access: route.Access,
 	}, err
 }
 
@@ -91,6 +104,7 @@ func (c *Client) AppNetwork(ctx context.Context, namespace, objectName, space, a
 		}
 		st.RouteFound = route.Backend != ""
 		st.Host, st.Protected, st.Mode, st.CORS, st.Access = route.Host, route.Login, route.Mode, route.CORS, route.Access
+		st.Analytics = route.Analytics
 	}
 
 	routes, err := c.Clientset.CoreV1().ConfigMaps(namespace).List(ctx, metav1.ListOptions{
@@ -145,41 +159,27 @@ func (c *Client) SetAnnotations(ctx context.Context, kind, namespace, name strin
 	return err
 }
 
-// SetRouteAccess patches a separate config key; ordinary route deploys do not
-// overwrite access settings maintained in the console.
-func (c *Client) SetRouteAccess(ctx context.Context, namespace, name string, identity map[string]string, access *config.AccessConfig) error {
-	cms := c.Clientset.CoreV1().ConfigMaps(namespace)
-	cm, err := cms.Get(ctx, name, metav1.GetOptions{})
+func (c *Client) reconcileRouteAccess(ctx context.Context, cm *corev1.ConfigMap, protect bool) error {
+	route, err := manifests.ReadRoute(cm)
 	if err != nil {
 		return err
 	}
-	if err := c.requireOwnedObject("ConfigMap", namespace, name, cm.Labels, identity); err != nil {
-		return err
+	route.Access = nil
+	if protect {
+		route.Login = true
 	}
-	var value *string
-	if access != nil {
-		raw, err := config.EncodeYAML(access)
-		if err != nil {
-			return err
-		}
-		encoded := string(raw)
-		value = &encoded
+	data := manifests.RouteData(route)
+	patchData := map[string]any{manifests.RouteConfigKey: data[manifests.RouteConfigKey], manifests.RouteAccessKey: nil}
+	annotations := map[string]any{manifests.AnnotationAccess: nil}
+	if protect && cm.Annotations[manifests.AnnotationBackend] != "" {
+		annotations[manifests.AnnotationLogin] = manifests.LoginRequired
 	}
-	metadata := map[string]any{"uid": cm.UID}
-	if cm.Annotations[manifests.AnnotationBackend] != "" {
-		// Keep an older gateway's reader consistent during the rolling upgrade.
-		var legacy *string
-		if access != nil {
-			raw, _ := json.Marshal(access)
-			encoded := string(raw)
-			legacy = &encoded
-		}
-		metadata["annotations"] = map[string]*string{manifests.AnnotationAccess: legacy}
-	}
-	patch, err := json.Marshal(map[string]any{"metadata": metadata, "data": map[string]*string{manifests.RouteAccessKey: value}})
+	patch, err := json.Marshal(map[string]any{
+		"metadata": map[string]any{"uid": cm.UID, "resourceVersion": cm.ResourceVersion, "annotations": annotations}, "data": patchData,
+	})
 	if err != nil {
 		return err
 	}
-	_, err = cms.Patch(ctx, name, types.MergePatchType, patch, metav1.PatchOptions{FieldManager: "donkey-route-access"})
+	_, err = c.Clientset.CoreV1().ConfigMaps(cm.Namespace).Patch(ctx, cm.Name, types.MergePatchType, patch, metav1.PatchOptions{FieldManager: "donkey-space-access"})
 	return err
 }

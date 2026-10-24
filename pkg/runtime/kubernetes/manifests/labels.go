@@ -16,6 +16,9 @@ const (
 	AnnotationManaged = "donkey.local/managed"
 	// AnnotationImage records the deployed image on the Deployment.
 	AnnotationImage = "donkey.local/image"
+	// AnnotationStack records what the app is written in (detect.Stack), so
+	// lists can show it without reading the app's history.
+	AnnotationStack = "donkey.local/stack"
 	// AnnotationDecisions records deploy-time analysis decisions on the
 	// Deployment (JSON), so no-build deploys can keep them. It is read back
 	// through the provider's meta API, so it is spelled by that API.

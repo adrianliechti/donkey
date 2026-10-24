@@ -6,7 +6,7 @@ Deploy your apps to Kubernetes without the hard parts.
 $ donkey deploy
 · Packing up shop (space acme) and sending it to the server…
 ✓ shop will be built with automatic detection (python)
-✓ Image ready: registry.example.com/donkey/shop:4f2a9c1b03de-20260724143022
+✓ Image ready: registry.example.com/donkey/acme/shop:4f2a9c1b03de-20260724143022
 · Keeping /app/uploads on a disk — views.py saves uploaded files there
 · Checking the app's health at /healthz
 ✓ shop is running.
@@ -18,11 +18,12 @@ $ donkey deploy
 Donkey is a small PaaS for teams that already run Kubernetes. It follows
 five ideas:
 
-1. **The cluster does the work.** A control plane (`donkey-server`) runs in
-   your cluster and owns everything heavy: recognizing apps, building
-   images, pushing to your registry, applying Kubernetes objects, watching
-   rollouts. The `donkey` CLI is a thin client that signs in through your
-   browser — no Docker, no kubectl, no build tools on laptops.
+1. **The cluster does the work.** A control plane (`donkey-server`, with
+   `donkey-orchestrator` behind it) runs in your cluster and owns everything
+   heavy: recognizing apps, building images, pushing to your registry,
+   applying Kubernetes objects, watching rollouts. The `donkey` CLI is a thin
+   client that signs in through your browser — no Docker, no kubectl, no build
+   tools on laptops.
 2. **Two readers, one answer.** Every look at an app combines a **scanner**
    that establishes what the files prove — which lockfile decides the
    package manager, which version files pin the toolchain, whether the
@@ -43,8 +44,8 @@ five ideas:
    `<app>.<space>.<domain>`. Two teams can both have a `web`.
 4. **Private by default.** Deployed apps sit behind an OIDC login run by
    donkey's own gateway (**donkey-gateway**, against your provider, e.g.
-   Entra ID) — and `access:` in donkey.yaml (or the console) narrows an app
-   further to named users, groups or roles. `public: true` opts an app out.
+   Entra ID). Space membership controls who can open its apps. `public: true`
+   opts an app out only when a space admin enables **Allow public apps**.
    No issuer configured — no login, and the install says so.
 5. **Services belong to the space.** A database is the project's, not one
    container's: postgres, S3-style storage, and the platform's AI are
@@ -59,8 +60,11 @@ five ideas:
  developer machine                     Kubernetes cluster
 ┌───────────────┐          ┌─────────────────────────────────────────┐
 │  donkey CLI   │─sign-in─▶│ donkey-system                           │
-│  (thin client)│   HTTP   │  ├─ donkey-server   REST API, detection,│
-└───────────────┘          │  │      manifests, AI, rollout watching │
+│  (thin client)│   HTTP   │  ├─ donkey-server   REST API, console,  │
+└───────────────┘          │  │      sign-in checks (stateless)      │
+                           │  ├─ donkey-orchestrator  plans, builds, │
+                           │  │      deploys, rollout watching       │
+                           │  │      data volume: source history     │
                            │  ├─ donkey-buildkitd  image builds      │──▶ registry
                            │  ├─ donkey-packages  build package proxy│─▶ package registries
                            │  ├─ donkey-ai      openai addon endpoint│──▶ model API
@@ -70,7 +74,7 @@ five ideas:
                            │       · ACME / CA / cert-manager        │        any IdP
                            │       · routing by hostname and path    │
      <app>.<space>.<domain>│       · OIDC login                      │
-                           │       · access (users/groups/roles) ──▶ app
+                           │       · space users/groups ──▶ app
                            ├─────────────────────────────────────────┤
                            │ donkey-<space>                          │
                            │  app "web"      Deployment · Service    │
@@ -87,8 +91,12 @@ five ideas:
   exception: `donkey server install` uses your kubeconfig to bootstrap the
   control plane.
 - **donkey-server** — stateless API pod; all state lives in Kubernetes
-  objects. Deploys arrive as tar.gz uploads and stream progress back as
-  NDJSON. Configured entirely via env from the install settings. It also
+  objects. Deploys arrive here as tar.gz uploads; the server checks the
+  sign-in, hands the upload to donkey-orchestrator, and relays its NDJSON
+  progress stream back unchanged. Nothing long-running happens in this pod, so
+  it rolls like any stateless service: the new pod is ready before the old one
+  stops, and stopping takes seconds. Configured entirely via env from the
+  install settings. It also
   serves the **admin console** (React/Tailwind, embedded in the binary) on
   the domain itself: open `https://<domain>` in a browser, sign in at your
   IdP (the gateway runs the login, like for any app — one sign-in covers
@@ -116,6 +124,25 @@ five ideas:
   progress and result.
   Views are linkable (`#/app/<space>/<name>`) and follow your light/dark
   preference.
+- **donkey-orchestrator** — the same binary started as `orchestrator`, and
+  where the heavy work runs: plans (the assistant's reading of an upload, kept
+  in its memory between review and deploy), builds and their repair loop
+  against BuildKit, pushes, applies, rollout waits, and the release records it
+  writes to donkey-telemetry. Changes that must not interleave with a deploy
+  run here too, because they share its per-app and per-service locks: an
+  app's network settings, and adding, removing, connecting and
+  disconnecting services. It owns the control plane's data volume, which
+  holds every app's [source history](#source-history): deploys write it,
+  and the Source tab's reads and app and space removal are served here too,
+  so one process owns the repositories. It runs as one replica with a
+  `Recreate` rollout, since those locks and plans are process memory. Stopping it drains: new
+  deploys are refused and the ones under way get up to 10 minutes to finish,
+  with the pod's termination grace period sized to match. It takes requests
+  from donkey-server alone — its NetworkPolicy admits only that pod, every
+  call carries a credential derived from the session key, and it verifies the
+  caller's sealed token again and authorizes the space exactly as the server
+  would. A deploy still survives a dropped connection: it runs on in the
+  orchestrator, and the CLI and console follow the app's status instead.
 - **donkey-ai** — the openai addon's endpoint (same image, `ai`
   entrypoint). Apps reach it through their service bindings, so it
   runs apart from the admin API: it holds the platform's AI credential and
@@ -129,9 +156,9 @@ five ideas:
   entrypoint). It reads configured targets and space bindings,
   forwards HTTP/HTTPS through an optional outbound proxy, and uses its system
   CA store. Apps connect over internal HTTP; they need no enterprise CA bundle.
-- **donkey-buildkitd** — a plain BuildKit deployment; the server drives it
-  over gRPC with a Dockerfile (the app's own, or one donkey's assistant
-  wrote), and pushes straight to the registry. It is also
+- **donkey-buildkitd** — a plain BuildKit deployment; the orchestrator
+  drives it over gRPC with a Dockerfile (the app's own, or one donkey's
+  assistant wrote), and pushes straight to the registry. It is also
   where a freshly built image is run to check it starts. Registry mirrors for
   restricted networks are configured here (`build.registryMirrors`).
 - **donkey-packages** — an always-on, read-only endpoint used only by
@@ -143,10 +170,11 @@ five ideas:
   `donkey-server` binary: a single-replica OTLP/HTTP metrics receiver with a
   private query API backed by an embedded DuckDB file on its own 2 Gi PVC.
   It keeps 30 days of hourly HTTP histograms, hourly view/visitor
-  rollups, and the versioned build records the console's Deployment tab
+  rollups, [web analytics](#web-analytics) events, and the versioned build records the console's Deployment tab
   renders (a bounded history per app). Only this process opens the file; `Recreate` upgrades preserve
-  DuckDB's single-writer ownership. The server can query it, while the gateway
-  and apps can only ingest with scope-specific credentials.
+  DuckDB's single-writer ownership. The server and the orchestrator can query
+  it, while the gateway and apps can only ingest with scope-specific
+  credentials.
 - **donkey-gateway** — donkey's own edge (same binary as the server,
   started with `gateway`): traffic enters the cluster here, on ports 80 and
   443. By default it terminates TLS and issues the certificates itself — one per
@@ -155,10 +183,10 @@ five ideas:
   hostname and path (from the route ConfigMaps it watches), runs the OIDC
   code flow itself where a route demands a login, seals what it learned
   into an AES-GCM cookie (stateless — replicas just scale), checks the
-  app's access rules (users, groups, roles from the ID token's claims) and
+  space's membership (users and groups from the sign-in) and
   forwards identity headers under oauth2-proxy's proxy-mode names —
-  `X-Forwarded-User`, `-Email`, `-Preferred-Username`, `-Name`, `-Groups`
-  and `-Roles`, each also as `X-Auth-Request-*` for apps written against
+  `X-Forwarded-User`, `-Email`, `-Preferred-Username`, `-Name` and `-Groups`,
+  each also as `X-Auth-Request-*` for apps written against
   those — only to routes behind a login. `X-Forwarded-User` is Entra's
   tenant-wide object ID (`oid`) where the ID token carries one, else the
   `sub`; `X-Auth-Request-User` stays the `sub`. Public routes never learn
@@ -205,42 +233,98 @@ and [README_DOCKER.md](README_DOCKER.md#labels).
 
 ## Traffic telemetry
 
-Every app and space has a Traffic view in the console with **last 48 hours**,
-**last 7 days**, and **last 30 days** ranges. The 48-hour series uses hourly
-buckets; week and month series use daily buckets. The default
-source is **Gateway**: donkey-gateway records one stable OpenTelemetry
-`http.server.request.duration` histogram after an allowed request has been
-forwarded. The histogram count supplies request volume; status attributes split
+Every app's **Analytics** tab shows its traffic below the
+[audience](#web-analytics), and every space card opens the same traffic for
+the whole space, with **last 48 hours**, **last 7 days**, and **last 30 days**
+ranges. The 48-hour series uses hourly
+buckets; week and month series use daily buckets. The console's
+traffic source is the **gateway**: donkey-gateway records one stable OpenTelemetry
+`http.server.request.duration` histogram for every matched app request,
+including authentication failures, access denials, login redirects and CORS
+preflights. Unmatched hosts/paths and the gateway's own OAuth and browser
+analytics endpoints are excluded. The histogram count supplies request volume; status attributes split
 HTTP 200–399 successes, 4xx client errors and 5xx server errors; its standard
 explicit buckets supply average, p50 and p95 latency. Logical identity is kept
 as the bounded `donkey.space.name` and `donkey.app.name` attributes. This follows
 the [stable OTel HTTP metric semantic conventions](https://opentelemetry.io/docs/specs/semconv/http/http-metrics/).
 
-A **view** is a successful top-level HTML document load at the gateway. It does
-not pretend to see client-side SPA route transitions. Unique visitors are
-distinct signed-in subjects: the gateway HMAC-pseudonymizes them separately per
-app and per space before export. DuckDB never receives the subject, email, IP,
-user agent, path or query string, and anonymous visitors receive no tracking
-cookie. The report shows identification coverage alongside the unique count.
+The traffic API also reports gateway **views**: successful top-level HTML
+document loads, which don't include client-side SPA route transitions, with
+unique signed-in visitors HMAC-pseudonymized per app and per space. The
+console shows the [web analytics](#web-analytics) audience instead, which does
+see route transitions and anonymous visitors.
 
-Apps also receive standard exporter defaults:
+Gateway analytics use built-in protocol plugins with shared request/response hooks:
 
-```text
-OTEL_SERVICE_NAME=<app>
-OTEL_RESOURCE_ATTRIBUTES=service.namespace=<space>
-OTEL_EXPORTER_OTLP_ENDPOINT=http://donkey-telemetry…:4318
-OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
-OTEL_METRICS_EXPORTER=otlp
-```
+- **HTTP** measures all routed websites and APIs, including authentication
+  failures and CORS preflights, and reports verified callers.
+- **Web** injects the browser analytics script into eligible HTML responses.
+  Its page views and SPA navigation remain distinct from HTTP requests.
+- **MCP** observes Streamable HTTP JSON-RPC requests and JSON/SSE responses,
+  extracting operation metadata without application instrumentation.
 
-Explicit app environment values win over these defaults. The injected variables
-configure an OpenTelemetry SDK; they do not magically instrument application
-code. Use the language's HTTP auto-instrumentation or SDK and emit the stable
-HTTP server duration histogram. The console exposes this as **In-app OTEL** and
-keeps it separate from Gateway data, because adding both would count the same
-request twice. Each app's HMAC token is valid only for its own
-[`service.namespace` / `service.name` resource](https://opentelemetry.io/docs/specs/semconv/resource/service/),
-so it cannot write another app's series or the trusted edge series.
+All plugins use the gateway's authenticated OpenTelemetry exporter. Apps need
+no SDK, exporter, analytics cookie or telemetry credentials. New deployments no
+longer receive automatic `OTEL_*` environment variables. Explicit user-supplied
+OTel configuration still works with the user's own observability backend.
+
+The console shows gateway data only. For compatibility, the query API retains
+`?source=app` and the receiver still accepts previously issued app credentials.
+Legacy application series remain separate and are never added to gateway HTTP
+or MCP totals. Existing app exporters can be removed when their apps redeploy.
+
+**HTTP routes.** The traffic report includes up to 25 configured gateway route
+prefixes ranked by request count, with method, app, 4xx/5xx counts and latency.
+The gateway cannot infer an application's matched route templates; raw URLs,
+query strings and resource URIs are not used as metric labels. Historical HTTP
+totals survive upgrades; route breakdowns start with their first observed export.
+
+**Authenticated callers.** The gateway separately reports distinct verified
+identities across all matched HTTP requests, including API calls and verified
+identities denied access. It exports app-scoped `user.hash` HMACs and a separate
+space-scoped hash over the verified subject, using the telemetry key. The store
+keeps one observation per caller, app and hour; retries are idempotent, and
+space totals deduplicate a caller across apps. These identifiers are never
+metric labels. Anonymous callers are excluded, no analytics cookie is issued,
+and an application's own API key is not interpreted as a gateway identity.
+Counts use the same time range as traffic and appear in the gateway report's
+`totals.authenticatedCallers` and each series point.
+
+**MCP operations.** The gateway MCP plugin emits the
+[`mcp.server.operation.duration` histogram](https://github.com/open-telemetry/semantic-conventions-genai/blob/9ffc7e00c639be7712e544e3e54331e885dccf84/docs/gen-ai/mcp.md#metric-mcpserveroperationduration)
+using that Development convention snapshot. It observes inbound requests and
+matched results, including JSON-RPC errors and tool results with `isError: true`.
+Notifications, progress updates and server-initiated requests are not counted as
+completed client operations. Unknown request methods are grouped as `_OTHER`.
+Latency is measured at the gateway, including the upstream hop; it is not an
+application's internal execution time. HTTP requests and MCP operations are
+separate counts: an HTTP 200 can carry a failed tool result.
+
+The histogram uses seconds with boundaries
+`[0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 30, 60, 120, 300]`.
+Reports include method, tool/prompt name, operation and caller error counts,
+and average/p50/p95 latency. JSON-RPC codes `-32700`, `-32600`, `-32601`,
+`-32602` and `-32002` are caller errors. Other JSON-RPC errors, tool errors and
+observed HTTP transport failures are operation errors.
+
+Observation never reads ahead or delays a stream to finish parsing. Each JSON
+body or SSE event has a 1 MiB observation limit; oversized, encoded or malformed
+messages continue through unchanged but may have no MCP measurement. Only
+metadata is exported: arguments, results, resource URIs and request/session IDs
+are never stored in telemetry or used as metric labels. Hashed request/session
+and SSE event IDs support in-memory correlation and replay deduplication, capped
+at 4096 request entries and 4096 event entries for 10 minutes per gateway.
+Resumption on another gateway or after state expires cannot recover the missing
+observation. A disconnected stream without a matched result is not guessed to
+be successful or failed. This plugin covers Streamable HTTP, not stdio or the
+legacy HTTP+SSE transport. HTTP traffic remains visible in every case.
+
+The [FastMCP sample](testdata/fastmcp-sample) exercises successful calls and tool
+errors with no telemetry code or SDK. The analytics console shows MCP operations
+as soon as the gateway observes them. Add further protocol plugins at the
+internal `telemetryPlugin` interface; the shared hooks own proxy integration,
+while plugins own protocol interpretation. All data follows normal telemetry
+retention and space deletion.
 
 No Collector is required: the purpose-built service already accepts standard
 OTLP/HTTP and owns retention/query semantics. A Collector remains useful when an
@@ -263,6 +347,66 @@ gateway logs.
 - **Services** (postgres & co.) belong to the space, not to one app; apps
   hold *connections* — a copy of the service's binding Secret, wired into
   their `envFrom`. The whole model has [its own section](#services).
+
+## Web analytics
+
+Every web app gets an **Analytics** tab in the console — visitors, visits,
+page views, bounce rate and visit duration against the previous period, a
+time series, and breakdowns by page, entry and exit page, channel, referrer,
+UTM campaign, country, language, browser, OS and device, plus custom events
+and their properties. Every row is a filter, and a live count shows who is on
+the app right now. Ranges are the same as Traffic: 48 hours, 7 and 30 days.
+
+Nothing has to be built in. donkey-gateway adds one tag to the `<head>` of an
+app's HTML pages on their way out:
+
+```html
+<script defer src="/_donkey/s.js"></script>
+```
+
+The script is served by the gateway on the app's own address, and so are its
+events (`POST /_donkey/e.json`): same origin, no third party, no CORS. It counts
+the page load, client-side route changes (History API and `#/` hash routers),
+how long each page stayed visible, and clicks on links to other sites. Apps add
+their own events in code or in markup:
+
+```js
+window.donkey?.track('signup', { plan: 'pro' })
+```
+
+```html
+<button data-donkey-event="signup" data-donkey-event-plan="pro">Sign up</button>
+```
+
+The gateway adds the script only where it is safe to: a `GET` navigation
+(`Sec-Fetch-Dest: document`) answered `200 text/html`, on a web-mode route of
+an app that has not opted out, when the response's Content-Security-Policy
+allows same-origin scripts and requests, and no `Cache-Control: no-transform`
+says otherwise. For those requests it asks the app for gzip only, inserts the
+tag right after `<head>` (else before `<body>`), and compresses the page again
+while it streams, so pages that flush early still do. The ETag becomes weak,
+because the bytes changed. A page that already loads `/_donkey/s.js` is left
+alone, and a page whose CSP keeps the script out (nonces, `'strict-dynamic'`)
+can add the tag itself. API-mode and internal apps never get it. To switch it
+off, set `analytics: false` in donkey.yaml or use the toggle in the app's
+Settings tab, which holds until donkey.yaml says otherwise.
+
+**What is stored.** The gateway turns each event into report dimensions before
+anything leaves it. The browser, OS and device come from the user agent and
+the country from the browser's time zone (no GeoIP database). The referrer
+keeps only its host, dropping its path, and the URL keeps its path, dropping
+the query string except the `utm_*` and `ref` values. Requests from bots,
+headless browsers and other sites are dropped. Nothing is written to the
+visitor's browser: no cookie and no storage. A **visitor** is an HMAC made
+with the telemetry key. For anonymous visitors it is a per-app hash of IP
+address and user agent that changes every UTC day, so one person returning on
+another day counts again and cannot be followed across days or apps. For
+signed-in visitors it is a per-app hash of the subject. A **visit** ends after
+30 minutes without activity, and a **bounce** is a visit with one page view
+and no custom event. DuckDB keeps the raw events for the telemetry retention
+period (30 days). Visits are worked out when the report is read, so any filter
+can select them. Removing the space removes its analytics. To exclude your own
+browser, run `localStorage.setItem('donkey:ignore', '1')`.
 
 ## What donkey works out for you
 
@@ -343,7 +487,7 @@ $ donkey deploy
 Looking at your app…
 ✓ wiki will be built with automatic detection (node)
 Building the image…
-✓ Image ready: registry.example.com/donkey/wiki:4f2a9c1b03de-20260725143022
+✓ Image ready: registry.example.com/donkey/acme/wiki:4f2a9c1b03de-20260725143022
 · Keeping /app/data on a disk — server.js opens data/wiki.db with better-sqlite3
 · Keeping /app/uploads on a disk — routes/upload.js writes attachments there
 · One 1Gi disk holds those folders. Put a `storage:` block in donkey.yaml to
@@ -365,14 +509,11 @@ name: shop                    # the app; becomes <name>.<space>.<domain>
 space: acme                   # default: the repository's folder name
 port: 8000                    # the port your code listens on
 
-public: true                  # skip the login gateway (machine clients)
+public: true                  # requires allowPublic: true in space settings
 mode: api                     # web (default) | api with OAuth
 cors: allowAll                # allow browser calls from every origin
+analytics: false              # no web analytics script (default: on for web apps)
 internal: true                # no address at all; siblings reach it by name
-access:                       # narrow the login to named people (any match)
-  users: [ada@example.com]
-  groups: [staff]
-  roles: [developer]          # Entra app roles / Keycloak realm roles
 routes:                       # …or answer on another app's address
   - app: dashboard
     path: /api
@@ -445,24 +586,27 @@ provides OAuth discovery, PKCE and resource-bound access tokens. Clients open
 the existing identity-provider login and return with a token the gateway
 consumes before proxying. Compatibility client registration is automatic and
 stateless, so an administrator does not have to create client IDs. API mode
-does not invent an OAuth scope; `access:` remains the authorization policy.
-`public: true` exposes either a web app or API without login, while
-`internal: true` gives either mode no address of its own and no login.
+does not invent an OAuth scope; space membership controls authorization.
+`public: true` exposes either a web app or API without login only when its space
+has `allowPublic: true`. Public access is off by default. `internal: true` gives
+either mode no gateway exposure and cannot be combined with `routes:`, `host:`
+or `public: true`. Shared-address routes require a non-internal app and still
+require login unless the app explicitly sets `public: true`.
 `cors: allowAll` makes the
 gateway answer browser preflights and adds `Access-Control-Allow-Origin: *` to
-responses. `access:` narrows it — only
-the named users, groups or roles (any match, from the ID token's claims) get
-past the sign-in. `internal: true` drops the address — the app has no
+responses. `analytics: false` keeps the gateway's
+[web analytics](#web-analytics) script out of the app's pages. Space admins, developers and viewers can pass the sign-in; platform
+admins can open every space's apps. `internal: true` drops the address — the app has no
 hostname, no certificate and nothing on the internet, and its siblings call it
 as `http://<name>`. `routes:` puts it on *another* app's address under a path
 prefix. All of it can also be changed in the console's Settings tab without a
 deploy — a console choice holds until donkey.yaml itself settles the matter,
 which always wins.
 
-Those combine, and the demo uses the combination: its backend is `internal`
-(no address of its own), claims `/api` and `/mcp` on the dashboard's address,
-and is `public` so those two paths stay open for machine clients while the
-dashboard around them still asks for a login. Protection attaches per route,
+The demo backend claims `/api` and `/mcp` on the dashboard's address and is
+`public`, so those paths and its own hostname stay open for machine clients
+while the dashboard still asks for a login. It is externally reachable and
+therefore cannot be `internal`. Protection attaches per route,
 not per hostname, which is what makes that possible. The gateway does the
 forwarding, so there is no proxy to write.
 
@@ -509,10 +653,17 @@ New `type: s3` entries default to the service name `s3`.
 The managed server image remains `rustfs/rustfs`, configured through
 `addonImages.rustfs` (`DONKEY_RUSTFS_IMAGE` on the server).
 
+PostgreSQL and MySQL console scripts run on one connection per Run. Put the
+whole transaction, including `BEGIN` and `COMMIT` or `ROLLBACK`, in that run;
+connections are not retained between runs. Execution stops at the first error
+and closes the connection, rolling back any unfinished transaction. Statements
+outside an explicit transaction retain the database's normal commit behavior.
+
 Services of protocol `trino` come from an add-on plugin (`TRINO_URL`,
 optional `TRINO_CATALOG` and `TRINO_SCHEMA`) and open in the console's Trino
 viewer. It browses catalogs, schemas and tables, previews up to 200 rows,
-and runs SQL with up to 500 result rows. It does not count entire tables.
+and runs one SQL statement at a time with up to 500 result rows. It does not
+count entire tables.
 SQL runs with the user's permissions; table previews are read-only.
 Trino uses the same database API as PostgreSQL and MySQL: catalogs appear
 under `databases`, with schema selection on tables and queries. Unknown
@@ -666,7 +817,7 @@ Apps continue to use their workload IP without a credential.
 ```yaml
 ai:
   baseUrl: https://api.openai.com/v1
-  model: gpt-5.6-sol
+  model: gpt-6-sol
 exa:
   baseUrl: https://api.exa.ai
 ```
@@ -753,7 +904,7 @@ applies anything, and `donkey doctor` keeps checking them after):
 
 | Requirement | Why | Notes |
 |---|---|---|
-| **Kubernetes cluster** with a default StorageClass | donkey-telemetry always claims its 2 Gi DuckDB volume; apps with `storage.paths` and provisioned services claim their own | any conformant cluster; nothing donkey-specific. Donkey brings its own edge, normally as a `LoadBalancer` Service; on clusters where nothing assigns those an address (kind), set `gateway.serviceType: NodePort` or `ClusterIP`. cert-manager is required only for `tls.mode: cert-manager`; external-dns with `--source=crd` only when `gateway.externalDNS` is set |
+| **Kubernetes cluster** with a default StorageClass | donkey-telemetry always claims its 2 Gi DuckDB volume and donkey-orchestrator its 5 Gi `donkey-data` volume for the [source history](#source-history) (unless `data` names a claim of your own); apps with `storage.paths` and provisioned services claim their own | any conformant cluster; nothing donkey-specific. Donkey brings its own edge, normally as a `LoadBalancer` Service; on clusters where nothing assigns those an address (kind), set `gateway.serviceType: NodePort` or `ClusterIP`. cert-manager is required only for `tls.mode: cert-manager`; external-dns with `--source=crd` only when `gateway.externalDNS` is set |
 | **Container registry** the cluster can pull from | donkey pushes every build there | `registry.url` + credentials; `registry.caSecret` when its certificate comes from a private CA |
 | **DNS** pointing public hostnames to the gateway address | apps are served at `<app>.<space>.<domain>`, the API and login callback at `<domain>` | configure a wildcard plus apex yourself, or let `gateway.externalDNS` publish exact records |
 | **OIDC provider** (Pocket ID, Entra ID, Keycloak, …) | the one way in: console, CLI and protected apps all sign in against it | required — `auth.issuer` (+ client id/secret); `platform.admins` optionally seeds the platform admins |
@@ -766,9 +917,10 @@ registry container, an OIDC provider) and
 [examples/INSTALL_DOCKER.md](examples/INSTALL_DOCKER.md) (no Kubernetes at
 all — `runtime: docker` runs apps straight on the Docker engine).
 
-RBAC: by default donkey-server binds `cluster-admin`, because it creates and
-deletes namespaces and no Role can express that. Giving it a workload
-namespace instead drops it to two namespaced Roles — see [README_KUBERNETES.md](README_KUBERNETES.md#namespaces-and-restricted-clusters).
+RBAC: by default donkey-server and donkey-orchestrator each bind
+`cluster-admin` under a ServiceAccount of their own, because they create and
+delete namespaces and no Role can express that. Giving them a workload
+namespace instead drops each to two namespaced Roles — see [README_KUBERNETES.md](README_KUBERNETES.md#namespaces-and-restricted-clusters).
 
 ### Installation modes (Kubernetes)
 
@@ -869,6 +1021,56 @@ donkey-telemetry (bounded history per app), which is what the console's
 Deployment tab renders and lets you browse. A `--no-build --tag` rollback
 adopts the decisions recorded with that image, not whatever a newer analysis
 found.
+
+### Source history
+
+Every deploy's files are kept as git — one bare repository per app, in the
+`source/` folder of the control plane's data volume — and the console's
+**Source** tab reads it: who deployed what, line by line, and what donkey's
+build changed on top.
+
+- **Your uploads are `main`.** A deploy whose files differ from the last
+  one becomes a commit by the person who deployed (name and email from the
+  sign-in), compared with the previous upload. The CLI adds the git
+  revision it deployed from. Redeploying unchanged files adds nothing.
+- **The platform's changes are `platform`.** When the build changed its
+  copy — wrote `.donkey/Dockerfile`, repaired a file — that becomes a commit
+  by *Donkey Platform* merging the upload it built, compared with that
+  upload: its diff is exactly the platform's change, and your next upload is
+  still compared with your own previous one.
+- **Builds are tags.** `build-<n>` names the commit build *n* used. The
+  console marks the commit the app runs as *live*, and failed builds in red.
+- Any version can be browsed file by file — syntax highlighted, with the
+  changes that version made to each file — and downloaded as a `.zip`.
+
+The repositories are written with go-git (no `git` binary in the image), one
+pack per commit, and are plain git: a copy of the volume opens in any client
+(`git log --graph --all` on `<space>/<app>.git`). Files over 8 MiB, and
+anything beyond 128 MiB per upload, are left out and named in the commit
+message. Removing an app deletes its source history and build records with
+it, so a later app by the same name starts with its own; `donkey destroy
+--keep-data` (the console's *Keep its data*) keeps them, like the disk, for
+the same app's redeploy. Deleting the space deletes all of it.
+
+The data volume is general-purpose; the source history is its first tenant.
+Every installation has one — the `donkey-data` claim (5 Gi) on Kubernetes, a
+folder of the `donkey-data` state volume on Docker:
+
+```yaml
+data:
+  existingClaim: donkey-data-nfs  # a claim you manage — or storageClass/size for donkey's
+```
+
+donkey-orchestrator alone mounts it: deploys write the history there, and
+donkey-server forwards the Source tab's reads and app and space removal to
+it, so one process owns the repositories. As one replica replaced (never
+surged) on upgrades, the orchestrator needs the volume on one node at a
+time, so any storage class works; while it drains before a restart, the
+Source tab answers "try again in a moment" like a deploy would. A claim's
+class is fixed once created; to move later, create the new claim yourself
+and name it in `data.existingClaim`. The API behind the tab is
+`GET /v1/spaces/{space}/apps/{app}/commits`, plus `/commits/{id}` and its
+`/diff?path=`, `/tree`, `/file?path=` and `/archive`.
 
 ### Restricted networks
 
@@ -1061,8 +1263,9 @@ The same-host rule also authenticates BuildKit mirrors. A separately hosted
 authenticated mirror can provide build credentials through an existing
 Docker-config Secret (`registry.dockerConfigSecret`) on Kubernetes or an
 absolute host directory (`registry.dockerConfigDir`) on Docker. Donkey mounts
-the source into `donkey-server`, selects credentials by requested host and
-rereads the files for every build, so rotation does not require a restart.
+the source into `donkey-orchestrator`, which runs the builds, selects
+credentials by requested host and rereads the files for every build, so
+rotation does not require a restart.
 The push registry itself still uses `registry.username` plus its password; the
 Docker config is for separately hosted mirrors. The registry URL remains an
 image prefix: builds are pushed as
@@ -1071,8 +1274,8 @@ image prefix: builds are pushed as
 enterprise folder.
 
 Mirror hosts inherit `registry.caSecret`, including the separate Bearer-token
-request made by donkey-server on BuildKit's behalf, so an in-house Artifactory
-behind a private CA needs nothing further. The referenced Secret must be in the
+request made by donkey-orchestrator on BuildKit's behalf, so an in-house
+Artifactory behind a private CA needs nothing further. The referenced Secret must be in the
 control-plane namespace and contain the trust bundle under exactly `ca.crt`;
 the installer checks it before applying changes. There is no builder image for
 `donkey doctor` to resolve — a generated Dockerfile names its own bases, and
@@ -1102,12 +1305,35 @@ affected pods).
 
 Space permissions are always enforced. Platform admins create spaces and can
 manage every space. Space admins manage their space, its membership, domains and offerings;
-developers manage its apps and services, including data and credentials. Assign
-users by email (or `sub:<subject>` when email is unavailable), groups, or
-identity-provider roles. Matching any entry grants that role; empty membership
-lists grant no access. App visitor `access` rules remain separate.
+developers manage its apps and services, including data and credentials. Viewers
+can open apps and see their health and aggregate metrics in the console. They
+cannot see logs, build history, files, variables, service data or management
+settings, and cannot make changes. Assign users by email (or `sub:<subject>`
+when email is unavailable) or groups. Matching any entry grants that role;
+empty membership lists grant no access.
 
-Every space stores `admins`, `developers`, `domains`, and optional `offerings`. A new space starts
+Every space stores `admins`, `developers`, `viewers`, `allowPublic`, `domains`,
+and optional `offerings`. **Space settings → General → Allow public apps**
+controls `allowPublic`, which defaults to `false`. Turning it off switches
+existing public apps and shared-address routes to login protection. New
+deployments and network changes requesting `public: true` are rejected. Startup
+also enforces this policy. Re-enabling the option does not automatically reopen
+apps that were switched to login protection.
+
+A space membership example:
+
+```yaml
+admins:
+  users: [owner@example.com]
+developers:
+  groups: [engineering]
+viewers:
+  users: [reader@example.com]
+  groups: [staff]
+allowPublic: false
+```
+
+A new space starts
 with `<space>.<configured-domain>` in `domains`. Apps can use that suffix or
 any subdomain under it. Add more suffixes or clear the list to allow any domain.
 App creation shows a hostname field with a fixed suffix or domain selector;
@@ -1137,10 +1363,17 @@ for retries, resumption and removal, and existing app connections keep working
 when an offering is removed. New services and new app connections use the
 current space catalog. See [the provider contract](pkg/addons/v1/README.md#availability-and-space-configuration).
 
-Existing spaces migrate automatically at server startup: missing settings
-records are created with no space members and unrestricted domains, preserving
-existing app routes. Platform admins retain access and can assign space roles.
-Saved roles and domains survive subsequent upgrades. Updates use last save wins.
+At startup, existing per-app users and groups move into the space's Viewer list.
+Duplicates are merged across apps, and entries already assigned any space role
+are skipped. Emails match without case; group names and `sub:<subject>` IDs
+match exactly. This grants access to all protected apps in that space. Old
+per-app lists are removed only after membership is saved. Apps without
+an explicit list are now limited to space members and platform admins. Existing
+spaces also default to `allowPublic: false`, so public routes become protected.
+Saved space admins, developers, viewers and domains survive subsequent upgrades.
+Updates use last save wins. Remove obsolete `access:` sections from donkey.yaml;
+new deployments reject them as unknown fields. Manage users and groups in space
+settings instead.
 
 Space, app and service names follow one rule: lowercase letters, digits and
 hyphens, starting and ending with a letter or digit, up to 40 characters (a
@@ -1276,7 +1509,7 @@ existing token for automation.)
 | `donkey files ls/get/put/rm/mv` | what's on the app's disk — seed it, fetch something out, clear it |
 | `donkey addon add/attach/remove/list` | the space's services (see [Services](#services)); `remove NAME` disconnects the app, `remove NAME --space` deletes the service itself |
 | `donkey addon tunnel NAME` | reach a service from your machine — a private line while the command runs; services never get a public address |
-| `donkey destroy` | remove everything donkey created for the app (`--keep-data` spares disks and secrets — a kept database keeps its credentials; deleting data always asks — `--force` for scripts) |
+| `donkey destroy` | remove everything donkey created for the app, its build and source history included (`--keep-data` spares disks, secrets and history — a kept database keeps its credentials; deleting data always asks — `--force` for scripts) |
 
 Image tags are `<git-sha>-<timestamp>` (the CLI reads the sha locally and
 sends it along; uploads never include `.git`), so every deploy is traceable
@@ -1296,9 +1529,9 @@ so plan around it.
 key in `donkey` seals the browser cookies (12 h) and the CLI
 tokens (30 days), all derived from an OIDC sign-in. Individual logins expire
 on their own and revive with a fresh sign-in; kicking one specific person out
-happens by removing every matching entry from platform admins and space roles,
-and from the affected apps' `access` rules. Management permissions are read on
-every API request; app visitor rules are checked by the gateway. Changes to IdP
+happens by removing every matching entry from platform admins and space roles.
+Management permissions are read on every API request; the gateway reloads space
+membership and public-access policy every 10 seconds and checks each app request. Changes to IdP
 claims take effect when the user signs in again. The big
 lever is rotating the session key itself: delete the `session-key` entry from
 the Secret and re-run the install — a new key is generated, every cookie and
@@ -1306,13 +1539,69 @@ every CLI token everywhere is invalid the moment the pods roll, and everyone
 signs in again through the browser. **There is no overlap window.**
 
 Running app workloads are not rolled: their pods, disks and routes stay as
-they are while donkey-server restarts. A re-install reconciles each app's
-Certificate and optional DNS record from its existing route, so changing the
+they are while donkey-server and donkey-orchestrator restart. A re-install
+reconciles each app's Certificate and optional DNS record from its existing
+route, so changing the
 certificate source or DNS publication applies immediately; unchanged objects
 are idempotent server-side applies. A re-install also keeps every secret it
 isn't given again
 (registry password, OIDC client secret, AI key), so the same settings file is
 enough — rotating one thing must never blank the rest.
+
+**Upgrading the control plane.** An upgrade replaces the API and console in
+seconds and leaves running builds alone. donkey-server holds nothing that
+outlives a request, so it rolls with a surge pod and a short shutdown; a
+deploy stream it was relaying is cut, the deploy itself carries on, and the
+CLI and console switch to following the app's status. donkey-orchestrator is
+the one that waits: it finishes the deploys it already accepted (up to 10
+minutes) before its replacement starts. Meanwhile the console works and plans
+and deploys answer *try again in a moment*. Plans reviewed before the restart
+expire with it and cost a re-upload, never a build. `donkey server install`
+returns once the orchestrator is back, and says so while it waits.
+
+**First upgrade from the single-process server on `main`.** Use the new CLI
+and server image together, keeping the same install settings, installation
+name, namespaces and volumes. Existing app data, credentials, platform admins,
+space admins/developers and domains are retained. The orchestrator migrates
+saved access settings before accepting mutations; restarting it safely retries
+an interrupted migration. Source history starts with the next deployment;
+previous uploads cannot be recovered from running images.
+
+Before upgrading:
+
+- Back up the existing settings and persistent volumes. For a rollback, retain
+  the old image and the pre-upgrade settings: the migration removes per-app
+  access lists after copying them to space Viewers, so simply restoring the old
+  image does not restore its authorization behavior.
+- On Kubernetes, stop submitting deployments and let active builds finish
+  before installing. The old server owns those builds, and replacing BuildKit
+  during the first upgrade can interrupt them. Docker's installer and generated
+  `up.sh` drain the old server before replacing its build dependencies.
+- Stop the old gateway and wait for it to exit before installing this version.
+  It cannot enforce space membership once migration removes the per-app lists.
+  This is a short maintenance window for app traffic; workloads keep running.
+  On Docker, run `docker stop donkey-gateway`. On Kubernetes, scale
+  `deployment/donkey-gateway` to zero in the system namespace and wait until its
+  pods are gone. The new install restores the gateway at its normal replica
+  count. Keep it stopped if an upgrade fails, then retry the install.
+- Kubernetes now needs a data claim for the orchestrator: provide a default
+  StorageClass, or set `data.storageClass` or `data.existingClaim`. The data
+  volume is no longer optional — remove `data.disabled` from donkey-install.yaml
+  if you set it.
+- Review space membership. Per-app users/groups become Viewers of **all** apps
+  in their space. Previously unrestricted protected apps now require space
+  membership. Public apps become protected until an admin enables
+  `allowPublic` and makes those apps public again.
+- Remove obsolete `access:` sections from app configuration before redeploying.
+  IdP `roles:` memberships are no longer supported. The upgrade removes these
+  grants and logs a warning identifying each affected record; it preserves
+  users/groups and never converts role names into groups. Assign users/groups
+  explicitly to restore access. Keep at least one platform admin listed as a
+  user or group before upgrading; removing the last admin grant does not reopen
+  first-user registration.
+
+The metadata cutover below concerns older releases; `main` already uses the
+current ownership schema and does not require deleting and recreating apps.
 
 **Metadata v2 is a clean cutover.** It deliberately does not claim resources
 from versions that used the old ownership labels or selectors. Kubernetes
@@ -1350,6 +1639,11 @@ The `donkey-telemetry-data` PVC is cluster-only too; its database file is
 affect apps, but it erases the current 30-day traffic history and the
 retained build records; include it in volume snapshots when that history
 matters.
+
+The data volume (`donkey-data`, or the claim named in
+`data.existingClaim`) holds every app's git history. Losing it does not
+affect apps either, but the history it held is gone; snapshot it with the
+same care, or point it at storage that is already backed up.
 
 **PVC data is the one thing that cannot be reconstructed.** Everything above
 is a copy of something you have; a volume is not. donkey never snapshots,
@@ -1410,10 +1704,10 @@ Both places that commit to a configuration prove the endpoint answers first.
 `donkey server install` reaches it before changing anything and stops with the
 installation untouched — an install is a one-shot command with a person
 watching, which makes it the cheapest place to find out the endpoint is wrong.
-`donkey-server` does the same at startup and refuses to come up: under
-Kubernetes the pod then stays unready and out of rotation with the reason in
-its logs, which beats a control plane that looks healthy and fails on its
-first deploy.
+`donkey-server` and `donkey-orchestrator` do the same at startup and refuse
+to come up: under Kubernetes the pod then stays unready and out of rotation
+with the reason in its logs, which beats a control plane that looks healthy
+and fails on its first deploy.
 
 ## Embedding the CLI
 
@@ -1451,7 +1745,7 @@ web/                  admin console (Vite + React + TS + Tailwind, lucide icons;
 internal/
   cli/                one file per command; session/config wiring
   apiclient/          CLI↔server transport: tar upload, NDJSON stream, typed calls
-  server/             REST handlers, deploy pipeline, env-based config
+  server/             REST handlers, deploy pipeline (served by the orchestrator role), env-based config
   detect/             build strategy decision (donkey.yaml > Dockerfile > the installation's builder > AI)
   build/              BuildKit gRPC builder (dockerfile.v0), startup verification, registry auth, tags
   k8s/                client-go wrapper: server-side apply, rollout wait, logs, env secrets
@@ -1643,8 +1937,10 @@ company with an internal PKI uses. Tear down with `devkube --cluster donkey dele
   The refresh token stays sealed inside donkey. Rotating the session key
   retires donkey's copies, but the IdP's refresh tokens stay valid until
   revoked there (in Entra: revoke the user's sessions).
-- donkey-server currently binds cluster-admin; scoping it down is on the
-  list.
+- donkey-server and donkey-orchestrator currently bind cluster-admin (with a
+  namespace per space); scoping them down is on the list. The orchestrator is
+  the one that runs builds, and the only pod the privileged build engine
+  admits; it accepts requests from donkey-server alone.
 - The demo IdP approves everyone by design; it never leaves `hack/demo/`.
 - Space and app names from the API are validated server-side, and the space
   that would map onto `donkey-system` is reserved — no space name can reach
@@ -1675,6 +1971,12 @@ company with an internal PKI uses. Tear down with `devkube --cluster donkey dele
   are what makes a diagnosis readable, and blanking them would buy nothing.
   Your own logs stay unredacted; only the copy sent to the endpoint is
   scrubbed.
+- The source history keeps every upload as it arrived. Key material never
+  gets there (uploads exclude it), but a credential written into an
+  ordinary source file is committed with it and stays in the history after
+  the file changes — rotate it rather than delete it. The history is
+  readable by the space's members, like the builds and files they deploy,
+  and is removed with the app (unless its data is kept) and with the space.
 - The assistant is required, so its endpoint is part of donkey's trust
   boundary: source summaries of every deployed app go there, and redacted
   failure logs when something breaks. Point it at a model you control (the

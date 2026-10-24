@@ -7,6 +7,23 @@ export type Exposure = 'public' | 'protected' | 'internal'
 export type AppMode = 'web' | 'api'
 export type CorsPolicy = '' | 'allowAll'
 
+/** A deploy donkey-orchestrator is working on, or finished lately — an app
+ * deployed for the first time exists nowhere else until it runs. */
+export interface ActiveDeploy {
+  space: string
+  app: string
+  stage: BoardStage
+  /** The latest progress line of the deploy's log. */
+  line?: string
+  by?: string
+  via: 'console' | 'cli'
+  startedAt: string
+  finishedAt?: string
+  error?: string
+}
+
+export type BoardStage = 'queued' | DeployStage | 'done' | 'failed'
+
 export interface AppSummary {
   name: string
   space: string
@@ -20,6 +37,8 @@ export interface AppSummary {
   mode?: AppMode
   hasStorage?: boolean
   addons?: string[]
+  /** What the app is written in, read off its build recipe ("python", "go"…). */
+  stack?: string
 }
 
 export interface AppStatus {
@@ -72,6 +91,7 @@ export type TrafficRange = '48h' | '7d' | '30d'
 export type ResourceRange = '1h' | '4h' | '48h' | '7d' | '30d'
 
 export interface TrafficTotals {
+  authenticatedCallers: number
   requests: number
   successful: number
   clientErrors: number
@@ -100,11 +120,120 @@ export interface TrafficReport {
   to: string
   totals: TrafficTotals
   series: TrafficPoint[]
+  endpoints: TrafficEndpoint[]
+  mcp: {
+    source: TrafficSource
+    totals: OperationTotals
+    operations: MCPOperation[]
+  }
   definitions: {
     success: string
     view: string
     uniqueVisitors: string
+    authenticatedCallers: string
   }
+}
+
+export interface TrafficEndpoint extends TrafficTotals {
+  app: string
+  method: string
+  route: string
+}
+
+export interface OperationTotals {
+  operations: number
+  errors: number
+  callerErrors: number
+  averageLatencyMs: number
+  p50LatencyMs: number
+  p95LatencyMs: number
+}
+
+export interface MCPOperation extends OperationTotals {
+  app: string
+  method: string
+  target: string
+}
+
+/**
+ * Web analytics come from the script donkey-gateway adds to an app's HTML
+ * pages: page views, visits and custom events, cookieless. A dimension is
+ * both a breakdown and a filter.
+ */
+export type AnalyticsDimension =
+  | 'path'
+  | 'entry'
+  | 'exit'
+  | 'referrer'
+  | 'channel'
+  | 'utm_source'
+  | 'utm_medium'
+  | 'utm_campaign'
+  | 'browser'
+  | 'os'
+  | 'device'
+  | 'country'
+  | 'language'
+  | 'event'
+
+export interface AnalyticsFilter {
+  dimension: AnalyticsDimension
+  value: string
+}
+
+export interface AnalyticsTotals {
+  visitors: number
+  visits: number
+  pageviews: number
+  events: number
+  /** Pageviews per visit, one decimal. */
+  viewsPerVisit: number
+  /** Percent of visits with one page and nothing else; lower is better. */
+  bounceRate: number
+  visitDurationSeconds: number
+}
+
+export interface AnalyticsPoint {
+  bucket: string
+  visitors: number
+  visits: number
+  pageviews: number
+}
+
+/** `count` is pageviews for `path`, events for `event`, visits otherwise. */
+export interface AnalyticsRow {
+  value: string
+  visitors: number
+  count: number
+}
+
+export interface AnalyticsEventProperty {
+  key: string
+  values: { value: string; count: number }[]
+}
+
+export interface AnalyticsReport {
+  space: string
+  app: string
+  range: TrafficRange
+  granularity: 'hour' | 'day'
+  from: string
+  to: string
+  filters: AnalyticsFilter[]
+  totals: AnalyticsTotals
+  /** The same-length window just before `from`; absent when not retained. */
+  previous?: AnalyticsTotals
+  series: AnalyticsPoint[]
+  breakdowns: Partial<Record<AnalyticsDimension, AnalyticsRow[]>>
+  /** Only with an `event` filter. */
+  eventProperties?: AnalyticsEventProperty[]
+  definitions: { visitor: string; visit: string; bounce: string; duration: string }
+}
+
+export interface AnalyticsLive {
+  visitors: number
+  windowMinutes: number
+  pages: AnalyticsRow[]
 }
 
 export interface ResourceCurrent {
@@ -136,16 +265,17 @@ export interface ResourceReport {
   series: ResourcePoint[]
 }
 
-/** Who may open a login-protected app; empty lists mean "everyone signed in". */
+/** Users and groups assigned a space or platform role. */
 export interface AccessConfig {
   users?: string[]
   groups?: string[]
-  roles?: string[]
 }
 
 export interface SpaceConfig {
   admins: AccessConfig
   developers: AccessConfig
+  viewers: AccessConfig
+  allowPublic: boolean
   domains: string[]
   offerings?: Record<string, SpaceOffering>
 }
@@ -169,6 +299,11 @@ export interface ServiceHTTPResponse {
   body: string
   truncated: boolean
   durationMs: number
+  /** Bytes received, and the target actually requested. */
+  size?: number
+  url?: string
+  /** A body that is not text arrives base64-encoded. */
+  encoding?: 'base64'
 }
 
 export interface PlatformConfig {
@@ -177,7 +312,8 @@ export interface PlatformConfig {
 
 export interface SpaceList {
   spaces: string[]
-  roles: Record<string, 'admin' | 'developer'>
+  roles: Record<string, 'admin' | 'developer' | 'viewer'>
+  allowPublic: Record<string, boolean>
   domains: Record<string, string[]>
   platformAdmin: boolean
   domain: string
@@ -195,6 +331,9 @@ export interface NetworkInfo {
   exposure: Exposure
   /** Allow browser code on any origin to call the app through the gateway. */
   cors: CorsPolicy
+  /** The gateway adds its analytics script to the app's HTML pages. On
+   * unless the app opted out; only web apps with an address get it. */
+  analytics: boolean
   url?: string
   /** The generated <app>.<space>.<domain> address — the input placeholder. */
   defaultHost: string
@@ -203,7 +342,7 @@ export interface NetworkInfo {
   host?: string
   port?: number
   routes?: RouteEntry[]
-  access?: AccessConfig | null
+  allowPublic: boolean
 }
 
 /** The parameter values a service was created with (version, disk size…). */
@@ -481,6 +620,7 @@ export interface NetworkOptions {
   exposure: Exposure
   host: string
   cors: CorsPolicy
+  analytics: boolean
 }
 
 // editFrom is the plan as an answer sheet: the server already decided every
@@ -514,8 +654,8 @@ export interface DeployUpdate {
   result?: DeployResult
   stage?: DeployStage
   baseImages?: string[]
-  dockerfile?: string
-  dockerignore?: string
+  /** Where the recipe this build used sits in its commit. */
+  recipe?: string
   changes?: SourceChange[]
 }
 
@@ -536,9 +676,6 @@ export interface AppRelease {
   update: DeployUpdate
   lines: string[]
   buildLog?: string
-  dockerfile?: string
-  dockerignore?: string
-  changes?: SourceChange[]
   result: DeployResult
   truncated?: boolean
 }
@@ -549,6 +686,61 @@ export interface BuildSummary {
   created: string
   image?: string
   ok: boolean
+}
+
+// The source history: every deploy's upload as a commit by the person who
+// deployed, and what donkey's build changed on top as a platform commit.
+export type SourceKind = 'upload' | 'platform'
+
+export interface SourceStats {
+  files: number
+  additions: number
+  deletions: number
+}
+
+export interface SourceCommit {
+  id: string
+  parents: string[]
+  kind: SourceKind
+  author: { name: string; email?: string }
+  date: string
+  message: string
+  /** The builds that used exactly this commit, newest first. `ok` is absent
+   *  once the build's record aged out of the build history. */
+  builds?: { sequence: number; ok?: boolean }[]
+  stats: SourceStats
+  /** What the app runs right now. */
+  live?: boolean
+}
+
+/** One file a commit touched. (SourceChange is a build's repair diff.) */
+export interface CommitChange {
+  path: string
+  status: 'added' | 'modified' | 'deleted'
+  additions: number
+  deletions: number
+  binary?: boolean
+  tooLarge?: boolean
+}
+
+export interface SourceCommitDetail extends SourceCommit {
+  changes: CommitChange[]
+}
+
+export interface SourceFileDiff extends CommitChange {
+  diff?: string
+}
+
+export interface SourceEntry {
+  path: string
+  size: number
+  executable?: boolean
+}
+
+export interface SourceFile {
+  text: string
+  binary: boolean
+  size: number
 }
 
 export interface DoctorCheck {
@@ -562,53 +754,14 @@ export interface DoctorReport {
   domain: string
 }
 
-export interface RedisKey {
-  id: string
-  name: string
-}
-
-export interface RedisValue {
-  type: string
-  ttl: number
-  size: number
-  value: unknown
-  editable: boolean
-  truncated: boolean
-}
-
 /** A database, or a Trino catalog; unavailable sizes are null. */
 export interface DbDatabase {
   name: string
   size: number | null
 }
 
-/** One table of a browsed database; rows is the planner's estimate. */
-export interface DbTable {
-  schema: string
-  name: string
-  rows: number | null
-}
-
 /** A grid cell travels as text; null stays null. */
 export type DbCell = string | null
-
-export interface DbRowsPage {
-  columns: string[]
-  /** The primary key columns — empty means the grid stays read-only. */
-  key: string[]
-  rows: DbCell[][]
-  /** Null when the backend does not count the entire table. */
-  total: number | null
-  limit: number
-  offset: number
-  hasMore: boolean
-}
-
-/** What a row edit sends: the path names the table, this names the row. */
-export interface DbRowChange {
-  key?: Record<string, string>
-  values?: Record<string, string>
-}
 
 export interface DbQueryResult {
   columns: string[]
@@ -651,7 +804,9 @@ function unauthorized(): ApiError {
   return new ApiError(401, 'The session expired — signing in again.')
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+// request, fetchOK and servicePath are exported for the service consoles,
+// which keep their own calls beside them (see consoles.ts).
+export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers)
   // FormData needs the browser's multipart content type and boundary.
   if (typeof init?.body === 'string' && !headers.has('Content-Type')) {
@@ -666,11 +821,33 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>
 }
 
+// Downloads ride the session cookie like every other call; fetch keeps the
+// error handling uniform and hands back a blob.
+export async function fetchOK(path: string): Promise<Response> {
+  const res = await fetch(path)
+  if (res.status === 401) throw unauthorized()
+  if (!res.ok) throw new ApiError(res.status, await errorMessage(res))
+  return res
+}
+
+const downloadBlob = async (path: string): Promise<Blob> => (await fetchOK(path)).blob()
+
+// saveBlob hands a fetched download to the browser under a name. Downloads go
+// through fetch because they carry the session; a plain <a href> could not.
+export function saveBlob(blob: Blob, name: string) {
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = name
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
 // Apps live in a space, so every app path carries it.
 const appPath = (space: string, app: string, suffix = '') =>
   `/v1/spaces/${encodeURIComponent(space)}/apps/${encodeURIComponent(app)}${suffix}`
 
-const servicePath = (space: string, service: string, suffix = '') =>
+export const servicePath = (space: string, service: string, suffix = '') =>
   `/v1/spaces/${encodeURIComponent(space)}/services/${encodeURIComponent(service)}${suffix}`
 
 export const api = {
@@ -680,31 +857,65 @@ export const api = {
   doctor: () => request<DoctorReport>('/v1/doctor'),
   apps: () => request<{ apps: AppSummary[] }>('/v1/apps'),
   fleet: () => request<SpaceList & { apps: AppSummary[] }>('/v1/fleet'),
+  deploys: async () => (await request<{ deploys: ActiveDeploy[] | null }>('/v1/deploys')).deploys ?? [],
   status: async (space: string, app: string): Promise<AppStatus> => {
     const st = await request<AppStatus>(appPath(space, app, '/status'))
     return { ...st, pods: st.pods ?? [] }
   },
-  builds: (space: string, app: string) =>
-    request<{ builds: BuildSummary[] }>(appPath(space, app, '/builds')),
+  builds: (space: string, app: string) => request<{ builds: BuildSummary[] }>(appPath(space, app, '/builds')),
   build: (space: string, app: string, sequence: number) =>
     request<AppRelease>(appPath(space, app, `/builds/${sequence}`)),
-  traffic: (
-    space: string,
-    app: string,
-    source: TrafficSource = 'edge',
-    range: TrafficRange = '30d',
-  ) => {
+
+  commits: (space: string, app: string) => request<{ commits: SourceCommit[] }>(appPath(space, app, '/commits')),
+  commit: (space: string, app: string, id: string) =>
+    request<SourceCommitDetail>(appPath(space, app, `/commits/${id}`)),
+  commitDiff: (space: string, app: string, id: string, path: string) =>
+    request<SourceFileDiff>(appPath(space, app, `/commits/${id}/diff?path=${encodeURIComponent(path)}`)),
+  commitTree: (space: string, app: string, id: string) =>
+    request<{ files: SourceEntry[] }>(appPath(space, app, `/commits/${id}/tree`)),
+  // Files come back as plain text; the server flags binary ones so the
+  // console offers a download instead of printing bytes.
+  commitFile: async (space: string, app: string, id: string, path: string): Promise<SourceFile> => {
+    const res = await fetchOK(appPath(space, app, `/commits/${id}/file?path=${encodeURIComponent(path)}`))
+    const binary = res.headers.get('X-Donkey-Binary') === 'true'
+    const blob = await res.blob()
+    return { text: binary ? '' : await blob.text(), binary, size: blob.size }
+  },
+  downloadCommitFile: (space: string, app: string, id: string, path: string) =>
+    downloadBlob(appPath(space, app, `/commits/${id}/file?path=${encodeURIComponent(path)}&download=true`)),
+  downloadArchive: (space: string, app: string, id: string) =>
+    downloadBlob(appPath(space, app, `/commits/${id}/archive`)),
+  traffic: (space: string, app: string, source: TrafficSource = 'edge', range: TrafficRange = '30d') => {
     const query = `?source=${source}&range=${range}`
     return request<TrafficReport>(
-      app
-        ? `${appPath(space, app, '/traffic')}${query}`
-        : `/v1/spaces/${encodeURIComponent(space)}/traffic${query}`,
+      app ? `${appPath(space, app, '/traffic')}${query}` : `/v1/spaces/${encodeURIComponent(space)}/traffic${query}`,
     )
   },
   resources: (space: string, app: string, range: ResourceRange = '4h') =>
     request<ResourceReport>(`${appPath(space, app, '/resources')}?range=${range}`),
-  env: (space: string, app: string) =>
-    request<{ env: Record<string, string> }>(appPath(space, app, '/env')),
+  // Filters repeat as filter=<dimension>:<value>; the server splits at the
+  // first colon, so a value may carry colons of its own.
+  analytics: async (
+    space: string,
+    app: string,
+    range: TrafficRange = '7d',
+    filters: AnalyticsFilter[] = [],
+  ): Promise<AnalyticsReport> => {
+    const query = new URLSearchParams({ range })
+    for (const f of filters) query.append('filter', `${f.dimension}:${f.value}`)
+    const report = await request<AnalyticsReport>(`${appPath(space, app, '/analytics')}?${query}`)
+    return {
+      ...report,
+      filters: report.filters ?? [],
+      series: report.series ?? [],
+      breakdowns: report.breakdowns ?? {},
+    }
+  },
+  analyticsLive: async (space: string, app: string): Promise<AnalyticsLive> => {
+    const live = await request<AnalyticsLive>(appPath(space, app, '/analytics/live'))
+    return { ...live, pages: live.pages ?? [] }
+  },
+  env: (space: string, app: string) => request<{ env: Record<string, string> }>(appPath(space, app, '/env')),
   setEnv: (space: string, app: string, env: Record<string, string>, restart: boolean) =>
     request<{ restarted: boolean; count: number }>(appPath(space, app, '/env'), {
       method: 'PUT',
@@ -722,21 +933,11 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify(options),
     }),
-  setAccess: (space: string, app: string, access: AccessConfig) =>
-    request<{ ok: boolean; access: AccessConfig | null }>(appPath(space, app, '/access'), {
-      method: 'PUT',
-      body: JSON.stringify({
-        users: access.users ?? [],
-        groups: access.groups ?? [],
-        roles: access.roles ?? [],
-      }),
-    }),
-  // Every space, with or without apps — one that holds only services still
-  // needs its card.
   platformConfig: () => request<PlatformConfig>('/v1/platform/settings'),
   setPlatformConfig: (settings: PlatformConfig) =>
     request<PlatformConfig>('/v1/platform/settings', {
-      method: 'PUT', body: JSON.stringify(settings),
+      method: 'PUT',
+      body: JSON.stringify(settings),
     }),
   spaces: () => request<SpaceList>('/v1/spaces'),
   createSpace: (name: string, settings: SpaceConfig) =>
@@ -744,31 +945,22 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ name, ...settings }),
     }),
-  spaceConfig: (space: string) =>
-    request<SpaceConfig>(`/v1/spaces/${encodeURIComponent(space)}/settings`),
+  spaceConfig: (space: string) => request<SpaceConfig>(`/v1/spaces/${encodeURIComponent(space)}/settings`),
   setSpaceConfig: (space: string, settings: SpaceConfig) =>
     request<SpaceConfig>(`/v1/spaces/${encodeURIComponent(space)}/settings`, {
-      method: 'PUT', body: JSON.stringify(settings),
+      method: 'PUT',
+      body: JSON.stringify(settings),
     }),
   // Removes the entire space boundary, including apps, services, and data.
   deleteSpace: (space: string) =>
     request<{ ok: boolean }>(`/v1/spaces/${encodeURIComponent(space)}`, { method: 'DELETE' }),
-  addonTypes: (space?: string) => request<{ types: AddonType[] }>(space
-    ? `/v1/spaces/${encodeURIComponent(space)}/catalog` : '/v1/catalog'),
+  addonTypes: (space?: string) =>
+    request<{ types: AddonType[] }>(space ? `/v1/spaces/${encodeURIComponent(space)}/catalog` : '/v1/catalog'),
   // The binding with values: same authorization as the app env API.
   serviceBinding: (space: string, service: string) =>
     request<{ binding: Record<string, string>; host: string; port: number; type?: string; protocol?: string }>(
       servicePath(space, service, '/binding'),
     ),
-  serviceAIBase: (space: string, service: string) => servicePath(space, service, '/ai'),
-  testServiceHTTP: (space: string, service: string, input: ServiceHTTPRequest, signal?: AbortSignal) =>
-    request<ServiceHTTPResponse>(servicePath(space, service, '/http/request'), {
-      method: 'POST', body: JSON.stringify(input), signal,
-    }),
-  serviceExa: (space: string, service: string, operation: 'search' | 'contents', body: Record<string, unknown>) =>
-    request<{ results?: { title?: string; url: string; text?: string }[] }>(servicePath(space, service, `/exa/${operation}`), {
-      method: 'POST', body: JSON.stringify(body),
-    }),
   // Services belong to the space; apps hold connections to them.
   spaceAddons: (space: string) =>
     request<{ addons: SpaceAddonEntry[] }>(`/v1/spaces/${encodeURIComponent(space)}/services`),
@@ -786,8 +978,7 @@ export const api = {
       `/v1/spaces/${encodeURIComponent(space)}/services/${encodeURIComponent(addon)}?keepData=${keepData}&orphan=${orphan}`,
       { method: 'DELETE' },
     ),
-  addons: (space: string, app: string) =>
-    request<{ addons: AddonEntry[] }>(appPath(space, app, '/services')),
+  addons: (space: string, app: string) => request<{ addons: AddonEntry[] }>(appPath(space, app, '/services')),
   // Connects the app; with a type it creates the space service first when
   // missing (which can take a minute — the request stays open throughout).
   addAddon: (space: string, app: string, req: AddAddonRequest) =>
@@ -800,143 +991,17 @@ export const api = {
     request<{ ok: boolean }>(appPath(space, app, `/services/${encodeURIComponent(addon)}`), {
       method: 'DELETE',
     }),
-  redisKeys: (space: string, service: string, pattern: string, cursor = '0') =>
-    request<{ keys: RedisKey[]; cursor: string; db: number }>(servicePath(space, service, `/keys?${new URLSearchParams({ pattern, cursor })}`)),
-  redisValue: (space: string, service: string, id: string) =>
-    request<RedisValue>(servicePath(space, service, `/keys/value?${new URLSearchParams({ id })}`)),
-  redisCreate: (space: string, service: string, name: string, value: string, ttl?: number) =>
-    request<{ ok: boolean }>(servicePath(space, service, '/keys'), { method: 'POST', body: JSON.stringify({ name, value, ttl }) }),
-  redisSave: (space: string, service: string, id: string, value: string, previous: string, ttl?: number) =>
-    request<{ ok: boolean }>(servicePath(space, service, `/keys/value?${new URLSearchParams({ id })}`), { method: 'PUT', body: JSON.stringify({ value, previous, ttl }) }),
-  redisDelete: (space: string, service: string, id: string) =>
-    request<{ ok: boolean }>(servicePath(space, service, `/keys/value?${new URLSearchParams({ id })}`), { method: 'DELETE' }),
-  // The database browser — talks to a space service's postgres through the
-  // server; values travel as strings (or null), which is what a grid edits.
-  // Containment lives in the path (service → database → table → rows);
-  // postgres details like the schema ride the query, defaulting to public.
-  dbDatabases: (space: string, service: string, signal?: AbortSignal) =>
-    request<{ databases: DbDatabase[]; default: string; protocol: string }>(
-      servicePath(space, service, '/databases'), { signal },
-    ),
-  dbSchemas: (space: string, service: string, db: string, signal?: AbortSignal) =>
-    request<{ schemas: string[]; default: string }>(servicePath(space, service, `/databases/${encodeURIComponent(db)}/schemas`), { signal }),
-  dbCreateDatabase: (space: string, service: string, name: string) =>
-    request<{ ok: boolean; name: string }>(servicePath(space, service, '/databases'), {
-      method: 'POST',
-      body: JSON.stringify({ name }),
-    }),
-  dbDropDatabase: (space: string, service: string, db: string) =>
-    request<{ ok: boolean }>(servicePath(space, service, `/databases/${encodeURIComponent(db)}`), {
-      method: 'DELETE',
-    }),
-  dbTables: (space: string, service: string, db: string, schema?: string, signal?: AbortSignal) =>
-    request<{ tables: DbTable[] }>(
-      servicePath(space, service, `/databases/${encodeURIComponent(db)}/tables${schema === undefined ? '' : `?${new URLSearchParams({ schema })}`}`), { signal },
-    ),
-  dbDropTable: (space: string, service: string, db: string, schema: string, table: string) =>
-    request<{ ok: boolean }>(
-      servicePath(
-        space,
-        service,
-        `/databases/${encodeURIComponent(db)}/tables/${encodeURIComponent(table)}?schema=${encodeURIComponent(schema)}`,
-      ),
-      { method: 'DELETE' },
-    ),
-  dbRows: (
-    space: string,
-    service: string,
-    db: string,
-    schema: string,
-    table: string,
-    limit: number,
-    offset: number,
-    order?: { column: string; desc: boolean },
-    signal?: AbortSignal,
-  ) =>
-    request<DbRowsPage>(
-      servicePath(
-        space,
-        service,
-        `/databases/${encodeURIComponent(db)}/tables/${encodeURIComponent(table)}/rows?schema=${encodeURIComponent(schema)}&limit=${limit}&offset=${offset}` +
-          (order
-            ? `&order=${encodeURIComponent(order.column)}&dir=${order.desc ? 'desc' : 'asc'}`
-            : ''),
-      ), { signal },
-    ),
-  dbInsertRow: (
-    space: string,
-    service: string,
-    db: string,
-    schema: string,
-    table: string,
-    body: DbRowChange,
-  ) =>
-    request<{ ok: boolean }>(
-      servicePath(
-        space,
-        service,
-        `/databases/${encodeURIComponent(db)}/tables/${encodeURIComponent(table)}/rows?schema=${encodeURIComponent(schema)}`,
-      ),
-      { method: 'POST', body: JSON.stringify(body) },
-    ),
-  dbUpdateRow: (
-    space: string,
-    service: string,
-    db: string,
-    schema: string,
-    table: string,
-    body: DbRowChange,
-  ) =>
-    request<{ ok: boolean; affected: number }>(
-      servicePath(
-        space,
-        service,
-        `/databases/${encodeURIComponent(db)}/tables/${encodeURIComponent(table)}/rows?schema=${encodeURIComponent(schema)}`,
-      ),
-      { method: 'PUT', body: JSON.stringify(body) },
-    ),
-  dbDeleteRow: (
-    space: string,
-    service: string,
-    db: string,
-    schema: string,
-    table: string,
-    body: DbRowChange,
-  ) =>
-    request<{ ok: boolean; affected: number }>(
-      servicePath(
-        space,
-        service,
-        `/databases/${encodeURIComponent(db)}/tables/${encodeURIComponent(table)}/rows?schema=${encodeURIComponent(schema)}`,
-      ),
-      { method: 'DELETE', body: JSON.stringify(body) },
-    ),
-  dbQuery: (space: string, service: string, db: string, sql: string, signal?: AbortSignal, schema?: string) =>
-    request<DbQueryResult>(
-      servicePath(space, service, db ? `/databases/${encodeURIComponent(db)}/query` : '/query'),
-      {
-        method: 'POST',
-        body: JSON.stringify({ sql, schema }),
-        signal,
-      },
-    ),
-
   // diagnose asks the assistant to read the app's current evidence — this
   // can take a while (a model call with real logs behind it).
-  diagnose: (space: string, app: string) =>
-    request<Diagnosis>(appPath(space, app, '/diagnose'), { method: 'POST' }),
+  diagnose: (space: string, app: string) => request<Diagnosis>(appPath(space, app, '/diagnose'), { method: 'POST' }),
 
   // The app's disk. Paths are relative to it, with no leading slash.
   files: (space: string, app: string, path: string) =>
     request<FileListing>(appPath(space, app, `/files?path=${encodeURIComponent(path)}`)),
   // The download rides the session cookie like every other call; fetch keeps
   // the error handling uniform and hands back a blob.
-  downloadFile: async (space: string, app: string, path: string): Promise<Blob> => {
-    const res = await fetch(appPath(space, app, `/files/download?path=${encodeURIComponent(path)}`))
-    if (res.status === 401) throw unauthorized()
-    if (!res.ok) throw new ApiError(res.status, await errorMessage(res))
-    return res.blob()
-  },
+  downloadFile: (space: string, app: string, path: string) =>
+    downloadBlob(appPath(space, app, `/files/download?path=${encodeURIComponent(path)}`)),
   uploadFile: (space: string, app: string, path: string, file: File) => {
     const body = new FormData()
     body.append('file', file)
@@ -951,29 +1016,19 @@ export const api = {
     }),
   moveFile: (space: string, app: string, from: string, to: string) =>
     request<{ ok: boolean }>(
-      appPath(
-        space,
-        app,
-        `/files/move?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,
-      ),
+      appPath(space, app, `/files/move?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`),
       { method: 'POST' },
     ),
   makeFolder: (space: string, app: string, path: string) =>
-    request<{ ok: boolean }>(
-      appPath(space, app, `/files/folder?path=${encodeURIComponent(path)}`),
-      {
-        method: 'POST',
-      },
-    ),
+    request<{ ok: boolean }>(appPath(space, app, `/files/folder?path=${encodeURIComponent(path)}`), {
+      method: 'POST',
+    }),
 
   // plan uploads the project and asks the server to read it: how it would be
   // built, which port it listens on and why, what it needs, what will break.
   // Nothing is built and nothing on the cluster changes. It takes as long as
   // the assistant takes to read real code — tens of seconds is normal.
-  plan: async (
-    blob: Blob,
-    opts: { space?: string; name?: string; path?: string },
-  ): Promise<Plan> => {
+  plan: async (blob: Blob, opts: { space?: string; name?: string; path?: string }): Promise<Plan> => {
     const params = new URLSearchParams()
     if (opts.space) params.set('space', opts.space)
     if (opts.name) params.set('name', opts.name)
@@ -995,10 +1050,7 @@ export const api = {
       body: JSON.stringify(edit),
     }),
 
-  projectPlan: async (
-    blob: Blob,
-    opts: { space?: string; name?: string },
-  ): Promise<ProjectPlan> => {
+  projectPlan: async (blob: Blob, opts: { space?: string; name?: string }): Promise<ProjectPlan> => {
     const params = new URLSearchParams()
     if (opts.space) params.set('space', opts.space)
     if (opts.name) params.set('name', opts.name)

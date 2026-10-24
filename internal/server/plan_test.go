@@ -59,9 +59,9 @@ func TestPlanUpdateRejectsInvalidFields(t *testing.T) {
 			}
 			body, _ := json.Marshal(edit)
 			req := httptest.NewRequest(http.MethodPut, "/v1/plans/"+id, bytes.NewReader(body))
-			asAdmin(t, req)
+			asForwarded(t, req)
 			rec := httptest.NewRecorder()
-			s.routes().ServeHTTP(rec, req)
+			s.orchestratorRoutes().ServeHTTP(rec, req)
 			if rec.Code != http.StatusBadRequest || !reflect.DeepEqual(before, sp.app) {
 				t.Fatalf("invalid edit was silently accepted or applied: %d %s", rec.Code, rec.Body.String())
 			}
@@ -149,13 +149,11 @@ func TestPlanEditIsAuthoritative(t *testing.T) {
 	}
 }
 
-// An internal app can also be public — its claimed routes on another app's
-// address then skip the login. Exposure renders that pair as "internal", and
-// the CLI echoes the rendering back as its edit; the round-trip must not
-// flatten the pair. An exposure that actually differs stays authoritative.
-func TestPlanEditKeepsInternalPublicPair(t *testing.T) {
+// Shared routes retain their public/protected exposure through review. An
+// internal choice becomes invalid until the user removes those routes.
+func TestPlanEditSharedRouteExposure(t *testing.T) {
 	sp := planned()
-	sp.app.Internal, sp.app.Public = true, true
+	sp.app.Public = true
 	sp.app.Routes = []config.RouteConfig{{App: "web", Path: "/mcp"}}
 	sp.app.Name = "backend"
 
@@ -165,8 +163,8 @@ func TestPlanEditKeepsInternalPublicPair(t *testing.T) {
 		Services: []string{"postgres"},
 		Exposure: exposureOfConfig(sp.app), // the CLI's echo of what it was shown
 	})
-	if !sp.app.Internal || !sp.app.Public {
-		t.Errorf("the echoed exposure must not flatten internal+public, got internal=%v public=%v",
+	if sp.app.Internal || !sp.app.Public {
+		t.Errorf("the echoed exposure must retain public routes, got internal=%v public=%v",
 			sp.app.Internal, sp.app.Public)
 	}
 
@@ -179,6 +177,10 @@ func TestPlanEditKeepsInternalPublicPair(t *testing.T) {
 	if sp.app.Internal || sp.app.Public {
 		t.Errorf("a changed exposure should apply, got internal=%v public=%v",
 			sp.app.Internal, sp.app.Public)
+	}
+	applyPlanEdit(sp, PlanEdit{Name: "backend", Space: "acme", Port: 8000, Exposure: "internal"})
+	if !sp.app.Internal || sp.app.Public || sp.app.Validate() == nil {
+		t.Fatal("internal exposure must reject the existing shared routes")
 	}
 }
 
@@ -295,9 +297,9 @@ func TestExpiredPlanIsRefused(t *testing.T) {
 func TestDeployWithUnknownPlan(t *testing.T) {
 	s := &Server{cfg: &Config{Domain: "example.com", SessionKey: testSessionKey}, plans: newPlanStore(), rt: planRuntime{}}
 	req := httptest.NewRequest(http.MethodPost, "https://donkey.example.com/v1/deploys?plan=nope", nil)
-	asAdmin(t, req)
+	asForwarded(t, req)
 	rec := httptest.NewRecorder()
-	s.routes().ServeHTTP(rec, req)
+	s.orchestratorRoutes().ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusGone {
 		t.Fatalf("an unknown plan should be 410 Gone, got %d", rec.Code)

@@ -6,7 +6,6 @@ import (
 	"log"
 	"net/netip"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/adrianliechti/donkey/internal/addons"
@@ -27,7 +26,7 @@ func (r *Runtime) recordProxyNetwork(space string, ipam network.IPAM) error {
 			record.CIDRs = append(record.CIDRs, prefix.Masked().String())
 		}
 	}
-	return r.state.writeJSON(record, "proxy", "networks", space+".json")
+	return r.state.writeRecord(record, "proxy", "networks", space)
 }
 
 // The server publishes owned network ranges; the shared proxy reads this
@@ -60,18 +59,15 @@ func (r *Runtime) refreshProxyNetworks(ctx context.Context) error {
 		if err := r.recordProxyNetwork(space, nw.IPAM); err != nil {
 			return err
 		}
-		current[space+".json"] = true
+		current[space] = true
 	}
-	entries, err := os.ReadDir(r.state.path("proxy", "networks"))
-	if os.IsNotExist(err) {
-		return nil
-	}
+	names, err := r.state.records("proxy", "networks")
 	if err != nil {
 		return err
 	}
-	for _, entry := range entries {
-		if strings.HasSuffix(entry.Name(), ".json") && !current[entry.Name()] {
-			if err := r.state.remove("proxy", "networks", entry.Name()); err != nil {
+	for _, name := range names {
+		if !current[name] {
+			if err := r.state.remove("proxy", "networks", name); err != nil {
 				return err
 			}
 		}
@@ -85,18 +81,18 @@ func (r *Runtime) ServiceProxyAccess(ctx context.Context, sourceIP, offering str
 		return false, nil
 	}
 	ip = ip.Unmap()
+	// Not records(): no published ranges yet is unavailable, not forbidden.
 	entries, err := os.ReadDir(r.state.path("proxy", "networks"))
 	if err != nil {
 		return false, err
 	}
 	space := ""
-	for _, entry := range entries {
-		name, ok := strings.CutSuffix(entry.Name(), ".json")
-		if !ok || config.ValidateSpaceName(name) != nil {
+	for _, name := range recordNames(entries) {
+		if config.ValidateSpaceName(name) != nil {
 			continue
 		}
 		var record proxyNetwork
-		found, err := r.state.readJSON(&record, "proxy", "networks", entry.Name())
+		found, err := r.state.readRecord(&record, "proxy", "networks", name)
 		if err != nil {
 			return false, err
 		}

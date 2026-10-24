@@ -129,6 +129,7 @@ func (s *suite) deployBuilderSample(t *testing.T, dir, space, failureStage, mode
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 	defer cancel()
 	s.rawTry(http.MethodDelete, "/v1/spaces/"+space)
+	s.raw(t, http.MethodPost, "/v1/spaces", map[string]any{"name": space, "allowPublic": true, "viewers": map[string]any{"users": []string{"demo@example.com"}}}, nil)
 	if os.Getenv("DONKEY_E2E_KEEP") != "true" {
 		t.Cleanup(func() { s.rawTry(http.MethodDelete, "/v1/spaces/"+space) })
 	}
@@ -210,8 +211,8 @@ func (s *suite) deployBuilderSample(t *testing.T, dir, space, failureStage, mode
 		if err := decoder.Decode(&msg); err != nil {
 			t.Fatalf("deployment stream ended without a result: %v", err)
 		}
-		if msg.Update != nil && msg.Update.Dockerfile != "" {
-			recipe = msg.Update.Dockerfile
+		if msg.Update != nil && msg.Update.Recipe != "" {
+			recipe = msg.Update.Recipe
 		}
 		if msg.Line != "" && !strings.Contains(msg.Line, "\n") {
 			t.Log(msg.Line)
@@ -224,7 +225,7 @@ func (s *suite) deployBuilderSample(t *testing.T, dir, space, failureStage, mode
 				t.Fatalf("deploy failed: %s\n%s", msg.Result.Error, msg.Result.Diagnosis)
 			}
 			if recipe == "" {
-				t.Error("successful build did not expose its Dockerfile")
+				t.Error("successful build did not expose its build recipe path")
 			}
 			if failureStage != "" && (!failureObserved || !strings.Contains(msg.Result.ImageRef, "-repair-")) {
 				t.Errorf("expected recovery from a real %s failure, saw failure=%v, final image=%s", failureStage, failureObserved, msg.Result.ImageRef)

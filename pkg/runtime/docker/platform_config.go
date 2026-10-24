@@ -10,7 +10,7 @@ import (
 
 func (r *Runtime) PlatformConfig(context.Context) (config.PlatformConfig, error) {
 	var settings config.PlatformConfig
-	found, err := r.state.readJSON(&settings, "platform", "config.json")
+	found, err := r.state.readRecord(&settings, "platform", "config")
 	if err != nil {
 		return settings, fmt.Errorf("cannot read platform settings: %w", err)
 	}
@@ -30,7 +30,7 @@ func (r *Runtime) InitPlatformConfig(ctx context.Context, initial config.Platfor
 	if initial.Admins.Empty() {
 		return config.PlatformConfig{}, fmt.Errorf("platform settings must contain an admin")
 	}
-	if err := r.state.storeJSON(initial, false, "platform", "config.json"); err != nil {
+	if err := r.state.storeRecord(initial, false, "platform", "config"); err != nil {
 		return config.PlatformConfig{}, err
 	}
 	return r.PlatformConfig(ctx)
@@ -46,5 +46,5 @@ func (r *Runtime) SetPlatformConfig(ctx context.Context, settings config.Platfor
 	if _, err := r.PlatformConfig(ctx); err != nil {
 		return err
 	}
-	return r.state.writeJSON(settings, "platform", "config.json")
+	return r.state.writeRecord(settings, "platform", "config")
 }

@@ -8,12 +8,14 @@ import (
 	"github.com/adrianliechti/donkey/internal/identity"
 )
 
-// SpaceConfig grants management rights to signed-in identities. Empty lists
-// grant nobody a role; platform admins always retain access.
-// App visitor access is configured separately in AppConfig.Access.
+// SpaceConfig controls app access and management rights. Empty lists grant
+// nobody a role; platform admins always retain access.
 type SpaceConfig struct {
-	Admins     AccessConfig `json:"admins" yaml:"admins"`
-	Developers AccessConfig `json:"developers" yaml:"developers"`
+	Viewers AccessConfig `json:"viewers" yaml:"viewers"`
+	// AllowPublic permits apps to opt out of login. Off by default.
+	AllowPublic bool         `json:"allowPublic" yaml:"allowPublic"`
+	Admins      AccessConfig `json:"admins" yaml:"admins"`
+	Developers  AccessConfig `json:"developers" yaml:"developers"`
 	// Domains lists domain suffixes. Each suffix admits itself and its
 	// subdomains; an empty list allows any hostname.
 	Domains []string `json:"domains" yaml:"domains"`
@@ -75,6 +77,7 @@ func DefaultSpaceConfig(space, domain string) SpaceConfig {
 const (
 	SpaceAdmin     = "admin"
 	SpaceDeveloper = "developer"
+	SpaceViewer    = "viewer"
 )
 
 func (a SpaceConfig) Role(id *identity.Identity) string {
@@ -83,6 +86,9 @@ func (a SpaceConfig) Role(id *identity.Identity) string {
 	}
 	if managementMember(a.Developers, id) {
 		return SpaceDeveloper
+	}
+	if managementMember(a.Viewers, id) {
+		return SpaceViewer
 	}
 	return ""
 }
@@ -104,14 +110,14 @@ func (a SpaceConfig) Validate() error {
 			return fmt.Errorf("allowed domain %q must be a lowercase domain such as team.example.com, without a wildcard, scheme, port or path", domain)
 		}
 	}
-	for name, members := range map[string]*AccessConfig{"admins": &a.Admins, "developers": &a.Developers} {
+	for name, members := range map[string]*AccessConfig{"admins": &a.Admins, "developers": &a.Developers, "viewers": &a.Viewers} {
 		if err := members.Validate(); err != nil {
 			return fmt.Errorf("%s: %w", name, err)
 		}
-		if len(members.Users)+len(members.Groups)+len(members.Roles) > 256 {
+		if len(members.Users)+len(members.Groups) > 256 {
 			return fmt.Errorf("%s supports at most 256 entries", name)
 		}
-		for _, list := range [][]string{members.Users, members.Groups, members.Roles} {
+		for _, list := range [][]string{members.Users, members.Groups} {
 			for _, entry := range list {
 				if len(entry) > 256 {
 					return fmt.Errorf("%s entries must be at most 256 bytes", name)

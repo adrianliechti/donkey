@@ -105,6 +105,11 @@ func TestFleetCacheDoesNotDelaySpaceRevocation(t *testing.T) {
 
 func TestFleetCacheIsSharedAcrossUsersAndInvalidatedByWrites(t *testing.T) {
 	f := newKubernetesLoadFixture(t, false, true, 1, 1)
+	s := &Server{cfg: &Config{Domain: "example.com", SessionKey: testSessionKey}, rt: f.runtime}
+	orchestrator := httptest.NewServer(s.orchestratorRoutes())
+	defer orchestrator.Close()
+	s.cfg.OrchestratorURL = orchestrator.URL
+	f.handler = s.routes()
 	var fleet kubernetesFleetResponse
 	f.get(t, "/v1/fleet", &fleet)
 	f.takeReads(t)

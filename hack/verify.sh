@@ -103,7 +103,7 @@ docker)
   # it deploys after installing, and deploying re-attaches.
   say "donkey's own containers are on every space network"
   for net in $(docker network ls --filter label=local.donkey.managed=true --filter label=local.donkey.installation=donkey --filter label=local.donkey.role=space --format '{{.Name}}'); do
-    for own in donkey-gateway donkey-server; do
+    for own in donkey-gateway donkey-server donkey-orchestrator; do
       if ! docker network inspect "${net}" --format '{{range .Containers}}{{.Name}} {{end}}' | grep -qw "${own}"; then
         echo "FAIL: ${own} is not attached to ${net} — apps in that space cannot be reached" >&2
         exit 1
@@ -114,6 +114,9 @@ docker)
   # The install publishes the API on the host loopback; the gateway on 443.
   export DONKEY_E2E_SERVER="http://127.0.0.1:8088"
   export DONKEY_E2E_GATEWAY="127.0.0.1:443"
+  if docker inspect donkey-identity >/dev/null 2>&1; then
+    export DONKEY_E2E_IDP="${DONKEY_E2E_IDP:-127.0.0.1:5556}"
+  fi
   ;;
 
 *)

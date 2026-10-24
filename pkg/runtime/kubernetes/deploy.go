@@ -5,11 +5,11 @@ import (
 	"fmt"
 	"strings"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"
 
 	"github.com/adrianliechti/donkey/internal/addons"
 	"github.com/adrianliechti/donkey/internal/config"
-	"github.com/adrianliechti/donkey/internal/telemetry"
 	rt "github.com/adrianliechti/donkey/pkg/runtime"
 	"github.com/adrianliechti/donkey/pkg/runtime/kubernetes/manifests"
 )
@@ -307,15 +307,13 @@ func (r *Runtime) manifestInput(spec rt.DeploySpec, includeCreds bool) (manifest
 		ObjectName:      r.name(space, app.Name),
 		ImageRef:        spec.ImageRef,
 		Decisions:       spec.Decisions,
+		Stack:           spec.Stack,
 		RegistryHost:    r.opts.Registry.Host(),
 		Domain:          r.appHost(space, app),
 		TLS:             r.opts.TLS,
 		ExternalDNS:     r.opts.ExternalDNS,
 	}
-	if len(r.opts.TelemetryKey) > 0 {
-		in.TelemetryEndpoint = manifests.TelemetryOTLPEndpoint(r.opts.SystemNamespace)
-		in.TelemetryToken = telemetry.AppToken(r.opts.TelemetryKey, space, app.Name)
-	}
+
 	if includeCreds {
 		username, password, err := r.opts.Registry.Credentials()
 		if err != nil {
@@ -481,31 +479,32 @@ func (r *Runtime) Network(ctx context.Context, space, app string) (*rt.NetworkSt
 	return r.c.AppNetwork(ctx, r.ns(space), r.name(space, app), space, app)
 }
 
-// SetAccess narrows (or reopens) who may open a login-protected app. It is
-// an annotation change on the app's routes — the gateway picks it up within
-// seconds, no deploy, no restart.
-func (r *Runtime) SetAccess(ctx context.Context, space, app string, access *config.AccessConfig) error {
+// ReconcileAppRoutes changes only access fields, preserving addresses and backends.
+func (r *Runtime) ReconcileAppRoutes(ctx context.Context, space, app string, protect bool) error {
+	defer r.InvalidateAppSummaries()
 	ns, obj := r.ns(space), r.name(space, app)
 	net, err := r.c.AppNetwork(ctx, ns, obj, space, app)
 	if err != nil {
 		return err
 	}
-	if net.Protected {
+	if net.RouteFound {
 		cm, err := r.c.appRouteConfigMap(ctx, ns, obj, space, app)
 		if err != nil {
 			return err
 		}
-		if err := r.c.SetRouteAccess(ctx, ns, cm.Name,
-			manifests.Labels(space, app, manifests.RoleRoute), access); err != nil {
+		if err := r.c.reconcileRouteAccess(ctx, cm, protect); err != nil {
 			return err
 		}
 	}
 	for _, pr := range net.Routes {
-		if !pr.Protected {
-			continue
+		cm, err := r.c.Clientset.CoreV1().ConfigMaps(ns).Get(ctx, pr.Name, metav1.GetOptions{})
+		if err != nil {
+			return err
 		}
-		if err := r.c.SetRouteAccess(ctx, ns, pr.Name,
-			manifests.Labels(space, app, manifests.RolePathRoute), access); err != nil {
+		if err := r.c.requireOwnedObject("ConfigMap", ns, pr.Name, cm.Labels, manifests.Labels(space, app, manifests.RolePathRoute)); err != nil {
+			return err
+		}
+		if err := r.c.reconcileRouteAccess(ctx, cm, protect); err != nil {
 			return err
 		}
 	}

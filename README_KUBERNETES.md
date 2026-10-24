@@ -48,9 +48,9 @@ Donkey roles: `workload` (Deployment, Service, pods), `route` and `path-route`
 `registry-auth` (pull secret), `storage` (the data claim), `binding` (a
 service connection), `edge` (per-app certificate and DNS objects), `files`
 (the short-lived file-browser helper pod). Spaces are `space`, services
-`addon`; control-plane roles are `server`, `gateway`, `ai`, `proxy`, `telemetry`,
-`packages` and `buildkitd`, aligned with Docker while their standard `name`
-keeps the actual `donkey-*` workload name.
+`addon`; control-plane roles are `server`, `orchestrator`, `gateway`, `ai`,
+`proxy`, `telemetry`, `packages` and `buildkitd`, aligned with Docker while
+their standard `name` keeps the actual `donkey-*` workload name.
 
 ### Selectors
 
@@ -123,6 +123,57 @@ To check request counts without a running cluster:
 go test ./internal/server -run '^$' -bench '^Benchmark(Portal|ResourceSampling)KubernetesAPI$' -benchtime=1x
 ```
 
+## The API and the orchestrator
+
+The control plane runs as two Deployments of the same image. `donkey-server`
+is the API and console; `donkey-orchestrator` (started with `orchestrator`)
+reads uploads, builds, pushes, applies and waits for rollouts. Every plan and
+deploy arrives at the server, which checks the sign-in and forwards the
+request to `http://donkey-orchestrator.<system namespace>.svc` with the
+caller's token and a credential of its own. The orchestrator verifies both
+and authorizes the space again before it reads the upload. Changing an app's
+network or access settings, and adding, removing, connecting or
+disconnecting a service, are forwarded the same way: they take the same
+per-app and per-service locks as a deploy, and a lock only serializes what
+runs in one process.
+
+| | `donkey-server` | `donkey-orchestrator` |
+|---|---|---|
+| Replicas and rollout | 1, `RollingUpdate` with a surge pod and none unavailable | 1, `Recreate` |
+| Termination grace period | 30 seconds | 11 minutes: a 10-minute drain plus a minute to shut down |
+| Ingress (NetworkPolicy) | `donkey-gateway` | `donkey-server` |
+| ServiceAccount | `donkey-server` | `donkey-orchestrator` |
+| Ephemeral storage request | 256Mi | 3Gi (build contexts are unpacked here) |
+
+The orchestrator is the only pod `donkey-buildkitd` admits, and it reads and
+writes the telemetry query API next to the server. Its plans and locks are
+process memory, which is why it runs one replica and why `Recreate` starts
+its replacement only once it is gone. It mounts no volume of its own.
+
+Upgrades follow from that split. The server holds nothing that outlives a
+request, so its new pod is ready before the old one stops, and stopping
+takes seconds. A deploy stream it was relaying is cut, the deploy carries on,
+and the CLI and console follow the app's status instead. The orchestrator
+drains: its readiness fails, new deploys are refused, and the deploys under
+way get up to 10 minutes before the pod exits. Until its replacement is up,
+plans and deploys answer *try again in a moment*; everything else in the
+console keeps working. `donkey server install` waits for the orchestrator
+last and says what it is waiting for.
+
+The server could now run more than one replica without breaking anything:
+everything that serializes lives in the orchestrator, and resource samples
+sharing a timestamp are deduplicated by telemetry. It stays at one because a
+surge pod already makes its rollout seamless, and because the console's
+five-second fleet cache is per process. Another replica would show a change
+made through its sibling a few seconds late.
+
+The one-line record of every deploy (app, space, image, duration, outcome)
+is in the orchestrator's log now, not the server's:
+
+```sh
+kubectl -n donkey-system logs deploy/donkey-orchestrator
+```
+
 ## Namespaces and restricted clusters
 
 By default every space gets a namespace of its own (`donkey-<space>`), created
@@ -162,12 +213,14 @@ Setting `workload.namespace` changes three things:
   automatically — only a hostname you hardcoded needs changing.
 - **donkey needs nothing above a namespace.** No ClusterRole, no
   ClusterRoleBinding, no namespace permissions: namespaced Roles in the two
-  namespaces — the server's, spelled out in `serverRoleRules`, and the
-  gateway's read-only route access. This is the only arrangement that runs
-  with no cluster-scoped grant at all.
+  namespaces — the server's, spelled out in `serverRoleRules`; the
+  orchestrator's, the same without `pods/exec` (the file browser) and the
+  Metrics API (resource sampling); and the gateway's read-only route access.
+  This is the only arrangement that runs with no cluster-scoped grant at all.
 
-(Without a workload namespace, donkey-server binds `cluster-admin`, because
-it creates and deletes namespaces and no Role can express that.)
+(Without a workload namespace, donkey-server and donkey-orchestrator each
+bind `cluster-admin`, because they create and delete namespaces and no Role
+can express that.)
 
 Two limits to check before you commit to a name:
 
@@ -248,9 +301,9 @@ Missing records for existing spaces get empty membership and unrestricted domain
 at server startup, preserving existing app routes. Saved memberships and domains
 survive upgrades and deployments.
 
-Routing configuration uses `route.yaml` in the ConfigMap's `data`. App visitor
-access rules use a separate `access.yaml` entry, so changing a route does not
-overwrite membership maintained through the console. Labels describe identity
+Routing configuration uses `route.yaml` in the ConfigMap's `data`. App access
+comes from `admins`, `developers` and `viewers` in the space ConfigMap;
+`allowPublic` controls whether apps may opt out of login. Labels describe identity
 and ownership; routing settings are no longer stored in annotations.
 
 A Secret also named `donkey` holds installation credentials and session keys.
@@ -275,10 +328,9 @@ exist only when their feature is configured.
 | Resource | Namespace per space | Shared workload namespace | Content |
 |---|---|---|---|
 | Space ConfigMap | `<space>-space` | `<space>-space` | `config.yaml`: `admins`, `developers`, `domains` |
-| App route ConfigMap | `<app>-route` | `<space>-<app>-route` | `route.yaml`, optional `access.yaml` |
-| Shared-address route ConfigMap | `<app>-route-<target>-<path-slug>` | `<space>-<app>-route-<target>-<path-slug>` | `route.yaml`, optional `access.yaml` |
+| App route ConfigMap | `<app>-route` | `<space>-<app>-route` | `route.yaml` |
+| Shared-address route ConfigMap | `<app>-route-<target>-<path-slug>` | `<space>-<app>-route-<target>-<path-slug>` | `route.yaml` |
 | App environment Secret | `<app>-env` | `<space>-<app>-env` | Environment variable names and values |
-| App telemetry Secret | `<app>-telemetry` | `<space>-<app>-telemetry` | OpenTelemetry environment variables |
 | App registry Secret | `<app>-registry` | `<space>-<app>-registry` | `.dockerconfigjson` |
 | Service registry Secret | `<service>-registry` | `<space>-<service>-registry` | `.dockerconfigjson` |
 | Space service binding Secret | `<service>-binding` | `<space>-<service>-binding` | The service's own environment variables, such as `DATABASE_URL` |
@@ -309,13 +361,16 @@ Platform resources always live in `kubernetes.system.namespace`
 | Certificate | `<space>-<app>` | App certificate request; writes `<space>-<app>-tls` |
 | DNSEndpoint | `donkey-gateway-dns` | Platform DNS records |
 | DNSEndpoint | `<space>-<app>-dns` | App DNS records |
+| PersistentVolumeClaim | `donkey-data` | The control plane's data volume, mounted into donkey-orchestrator at `/var/lib/donkey`: the source history in `source/<space>/<app>.git`. Absent when `data.existingClaim` names your own claim or `data.disabled` is set |
 
 App TLS Secrets always include the space because all certificates share the
 platform namespace. The `team` / `my-api` certificate is `team-my-api-tls` in
 either placement. ACME and built-in CA modes do not create per-app TLS Secrets.
 Registry Secrets use `kubernetes.io/dockerconfigjson`; environment, telemetry
 and service credential Secrets use `Opaque`. Environment keys retain their
-standard names, such as `DATABASE_URL` and `OTEL_EXPORTER_OTLP_ENDPOINT`.
+standard names, such as `DATABASE_URL`. Gateway telemetry needs no application
+Secret or SDK configuration; older `<app>-telemetry` Secrets are no longer
+referenced by new deployments.
 
 For space `team` and app `my-api`, the Certificate is `team-my-api`, its Secret
 is `team-my-api-tls`, and the DNSEndpoint is `team-my-api-dns`. These names and
@@ -338,8 +393,10 @@ Existing Secrets referenced in installation settings keep their operator-chosen
 names. `kube-root-ca.crt` is created by Kubernetes.
 
 Upgrades migrate previous ConfigMap/Secret names and JSON settings to the YAML
-entries above. Credentials, CA keys, platform admins, space roles, domains and
-app visitor access are preserved. Route readers accept old annotations during
+entries above. Credentials, CA keys, platform admins, space roles and domains
+are preserved. App users/groups migrate to space Viewers. Public routes become
+protected unless their space enables `allowPublic`.
+Route readers accept old annotations during
 the rollout; the installer removes those annotations after the new gateway is
 ready. Old credential Secrets remain while any Pod still references them;
 subsequent installs retry cleanup.

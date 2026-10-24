@@ -28,6 +28,10 @@ esac
 # a model, or run an OpenAI-compatible proxy on host port 4242.
 AI_BASE="${OPENAI_BASE_URL:-http://host.docker.internal:4242/v1}"
 AI_KEY="${OPENAI_API_KEY:-local}"
+# Exa search goes through the same gateway, which serves Exa's API under
+# /v1/exa and needs no key of its own — "-" fills donkey's slot for one.
+EXA_BASE="${EXA_BASE_URL:-http://host.docker.internal:4242/v1/exa}"
+EXA_KEY="${EXA_API_KEY:--}"
 # Empty means "whatever the install defaults to". DONKEY_MODEL is the same
 # variable the live assistant tests read, so one export covers both.
 AI_MODEL="${DONKEY_MODEL:-}"

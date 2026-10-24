@@ -126,28 +126,27 @@ Default address: `<app>.<space>.<domain>`.
 | Setting | Effect |
 |---|---|
 | default | Login-protected web app. |
-| `public: true` | No login. |
+| `public: true` | No login; requires `allowPublic: true` in space settings (off by default). |
 | `internal: true` | No public address; siblings still reach it. |
 | `mode: api` | Protected API/MCP server: OAuth access tokens instead of browser login. |
-| `access` | Allow only listed `users`, `groups` or `roles` (any match). |
+| Space membership | Admins, developers and viewers may open protected apps; assign users and groups in space settings. |
 | `cors: allowAll` | Cross-origin browser calls, at the gateway. |
 | `host` | Full hostname, a label under the space's domain, or `@` for the space's apex. |
 | `routes` | Serve this app under a path on another app's hostname in the same space. |
 
 Invalid:
 
-- `public` with `access`
+- per-app `access` (use space membership instead)
 - `internal` with `host`
-- `internal` with `public` or `access`, unless it has `routes` (they apply there)
-- `internal` with `access` and `mode: api`
+- `internal` with `public` or `routes`
+- `public: true` when the space has not enabled `allowPublic`
 - a route path of `/`, or a route targeting the app itself
 
-Frontend and internal backend on one origin:
+Frontend and an externally reachable backend on one origin:
 
 ```yaml
 name: backend
 port: 8000
-internal: true
 routes:
   - app: frontend
     path: /api
@@ -163,7 +162,7 @@ Protected routes receive (read `X-Forwarded-*`; `X-Auth-Request-*` repeats
 them; client-sent copies are dropped):
 
 - `X-Forwarded-User`: stable user ID (Entra object ID, else the IdP subject)
-- `X-Forwarded-Email`, `-Preferred-Username`, `-Name`, `-Groups`, `-Roles`
+- `X-Forwarded-Email`, `-Preferred-Username`, `-Name`, `-Groups`
 - `X-Forwarded-Access-Token`: the visitor's IdP access token
 
 Public routes receive none, even for a signed-in visitor: an app that

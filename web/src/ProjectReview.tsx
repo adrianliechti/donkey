@@ -55,8 +55,7 @@ export function ProjectReview({
   const [edits, setEdits] = useState(() => plan.apps.map(planEdit))
   const [checking, setChecking] = useState(false)
   const reviewed = plan.apps.map(planEdit)
-  const changed =
-    edits.length !== reviewed.length || edits.some((edit, index) => !sameEdit(edit, reviewed[index]))
+  const changed = edits.length !== reviewed.length || edits.some((edit, index) => !sameEdit(edit, reviewed[index]))
   const change = (next: PlanEdit[]) => setEdits(next)
 
   async function check() {
@@ -77,7 +76,11 @@ export function ProjectReview({
         <Section className="space-y-4">
           <SectionHeader
             title={plan.apps.length === 1 ? 'One app will be deployed' : `${plan.apps.length} apps will be deployed`}
-            description={plan.apps.length > 1 ? 'Each runs separately in the same space.' : 'Review what donkey read from the project, then deploy.'}
+            description={
+              plan.apps.length > 1
+                ? 'Each runs separately in the same space.'
+                : 'Review what donkey read from the project, then deploy.'
+            }
           />
           {!space && (
             <Field label="Space for all apps">
@@ -139,7 +142,10 @@ export function ProjectReview({
       )}
       {plan.changes.length > 0 && (
         <Section className="space-y-3">
-          <SectionHeader title="Connection fixes" description="These changes are applied to the uploaded copy before building." />
+          <SectionHeader
+            title="Connection fixes"
+            description="These changes are applied to the uploaded copy before building."
+          />
           <div className="flex flex-col gap-2">
             {plan.changes.map((change) => (
               <Disclosure key={change.file} summary={<span className="font-mono">{change.file}</span>}>
@@ -159,8 +165,7 @@ export function ProjectReview({
         <ErrorNote message={error} />
         {changed && (
           <p className="text-xs text-muted">
-            Deploy will check these changes first. Check them now to preview updated connections and
-            deployment details.
+            Deploy will check these changes first. Check them now to preview updated connections and deployment details.
           </p>
         )}
         <div className="flex flex-wrap items-center justify-between gap-3">
@@ -171,10 +176,7 @@ export function ProjectReview({
             <Button kind="quiet" onClick={check} disabled={busy || checking}>
               {checking ? 'Checking…' : 'Check changes'}
             </Button>
-            <Button
-              onClick={() => onDeploy(edits)}
-              disabled={busy || checking || (!changed && !plan.ready)}
-            >
+            <Button onClick={() => onDeploy(edits)} disabled={busy || checking || (!changed && !plan.ready)}>
               {busy
                 ? 'Preparing…'
                 : plan.apps.length > 1

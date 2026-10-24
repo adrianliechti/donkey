@@ -56,4 +56,12 @@ func TestPullRefOnlyRewritesForBundledRegistry(t *testing.T) {
 	if got, want := bundled.pullRef("donkey-registry:5000/donkey/shop:build"), "127.0.0.1:5000/donkey/shop:build"; got != want {
 		t.Fatalf("bundled registry ref = %q, want %q", got, want)
 	}
+	// Status reports the image the way donkey named it, so build records
+	// and rollbacks recognise the running image.
+	if got, want := bundled.pushRef("127.0.0.1:5000/donkey/shop:build"), "donkey-registry:5000/donkey/shop:build"; got != want {
+		t.Fatalf("pushRef = %q, want %q", got, want)
+	}
+	if got := external.pushRef(imageRef); got != imageRef {
+		t.Fatalf("external registry ref was rewritten back: %q", got)
+	}
 }

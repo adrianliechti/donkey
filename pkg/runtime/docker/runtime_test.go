@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"testing"
 
@@ -183,9 +184,9 @@ func TestDeleteSpaceCascadesAllOwnedDockerResources(t *testing.T) {
 	runtime := &Runtime{
 		cli: cli,
 		opts: Options{
-			ServerContainer: "donkey-server", GatewayContainer: "donkey-gateway",
-			AIContainer: "donkey-ai", TelemetryContainer: "donkey-telemetry",
-			ProxyContainer: "donkey-proxy",
+			ServerContainer: "donkey-server", OrchestratorContainer: "donkey-orchestrator",
+			GatewayContainer: "donkey-gateway", AIContainer: "donkey-ai",
+			TelemetryContainer: "donkey-telemetry", ProxyContainer: "donkey-proxy",
 		},
 		state: state{dir: t.TempDir()},
 	}
@@ -198,7 +199,9 @@ func TestDeleteSpaceCascadesAllOwnedDockerResources(t *testing.T) {
 	if strings.Join(removedVolumes, ",") != "donkey.team.site.data,donkey.team.postgres.data" {
 		t.Errorf("removed volumes=%v", removedVolumes)
 	}
-	if disconnected != 5 || !networkRemoved {
+	// Every one of donkey's own containers leaves the network first, the
+	// orchestrator (which probes its deploys there) included.
+	if disconnected != 6 || !networkRemoved {
 		t.Errorf("disconnected=%d networkRemoved=%v", disconnected, networkRemoved)
 	}
 }
@@ -252,6 +255,82 @@ func TestDestroyAppRemovesEveryHelperAndItsVolume(t *testing.T) {
 	if got := strings.Join(removed, ","); got !=
 		"donkey.team.site,donkey.team.site.files,donkey.team.site.data.init,donkey.team.site.data" {
 		t.Errorf("removed=%s", got)
+	}
+}
+
+// --keep-data spares what Kubernetes spares: the env Secret and the binding
+// Secrets. Metadata, routes and the run record go with the Deployment and
+// route ConfigMaps either way.
+func TestDestroyKeepDataKeepsEnvAndBindings(t *testing.T) {
+	for _, keepData := range []bool{true, false} {
+		t.Run(map[bool]string{true: "keep data", false: "remove data"}[keepData], func(t *testing.T) {
+			cli, err := client.NewClientWithOpts(
+				client.WithHost("http://docker.test"), client.WithVersion("1.48"),
+				client.WithHTTPClient(&http.Client{Transport: dockerRoundTripFunc(func(*http.Request) (*http.Response, error) {
+					return dockerJSONResponse(http.StatusNotFound, map[string]string{"message": "not found"}), nil
+				})}),
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer cli.Close()
+			r := &Runtime{cli: cli, state: state{dir: t.TempDir()}}
+			// The env as an older version left it: a legacy JSON record.
+			if err := os.MkdirAll(r.state.path("env", "team"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(r.state.path("env", "team", "site.json"), []byte(`{"API_KEY":"set-by-donkey-env"}`), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			for owner, url := range map[string]string{"site": "postgres://site", sharedOwner: "postgres://space"} {
+				if err := r.state.setBinding("team", owner, "postgres", map[string]string{"DATABASE_URL": url}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := r.state.setMeta("team", "site", map[string]string{"key": "value"}); err != nil {
+				t.Fatal(err)
+			}
+			if err := r.setRunRecord("team", "site", runSpec{Image: "site:1", Port: 8080}); err != nil {
+				t.Fatal(err)
+			}
+			for _, name := range []string{"site", pathRouteName("site", "web", "/api")} {
+				if err := r.state.setRoute("team", name, Route{Space: "team", App: "site", Host: "web.team.example.com", Path: "/", Backend: "http://site:8080"}); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			if err := r.Destroy(context.Background(), "team", "site", keepData); err != nil {
+				t.Fatal(err)
+			}
+
+			env, err := r.state.env("team", "site")
+			if err != nil || (env["API_KEY"] == "set-by-donkey-env") != keepData {
+				t.Fatalf("env after destroy = %v, %v", env, err)
+			}
+			bindings, err := r.state.listBindings("team", "site")
+			if err != nil || (len(bindings) == 1) != keepData {
+				t.Fatalf("binding copies after destroy = %v, %v", bindings, err)
+			}
+			if !keepData {
+				for _, file := range []string{"env/team/site.json", "env/team/site.yaml", "bindings/team/site.postgres.yaml"} {
+					if _, err := os.Stat(r.state.path(file)); !os.IsNotExist(err) {
+						t.Errorf("%s survived the destroy", file)
+					}
+				}
+			}
+			if shared, err := r.state.binding("team", sharedOwner, "postgres"); err != nil || shared["DATABASE_URL"] != "postgres://space" {
+				t.Fatalf("the space's own binding was touched: %v, %v", shared, err)
+			}
+			if meta, err := r.state.meta("team", "site"); err != nil || len(meta) != 0 {
+				t.Fatalf("metadata survived: %v, %v", meta, err)
+			}
+			if run, err := r.runRecord("team", "site"); err != nil || run != nil {
+				t.Fatalf("run record survived: %+v, %v", run, err)
+			}
+			if routes, err := r.state.listRoutes("team"); err != nil || len(routes) != 0 {
+				t.Fatalf("routes survived: %v, %v", routes, err)
+			}
+		})
 	}
 }
 

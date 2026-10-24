@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	collectormetricspb "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
+	metricsv1 "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
 	metricspb "go.opentelemetry.io/proto/otlp/metrics/v1"
 	"google.golang.org/protobuf/proto"
 )
@@ -83,7 +83,7 @@ func TestResourceMetricsUseOnlyOfficialContainerConventions(t *testing.T) {
 }
 
 func TestResourceExporterDoesNotDropValidPodsBesideInvalidSample(t *testing.T) {
-	var exported collectormetricspb.ExportMetricsServiceRequest
+	var exported metricsv1.ExportMetricsServiceRequest
 	exporter := NewResourceExporter("http://telemetry.test", make([]byte, 32))
 	exporter.http = &http.Client{Transport: resourceRoundTripFunc(func(request *http.Request) (*http.Response, error) {
 		body, err := io.ReadAll(request.Body)
@@ -119,8 +119,8 @@ func TestResourceExporterDoesNotDropValidPodsBesideInvalidSample(t *testing.T) {
 func TestResourceExporterSurfacesOTLPPartialSuccess(t *testing.T) {
 	exporter := NewResourceExporter("http://telemetry.test", make([]byte, 32))
 	exporter.http = &http.Client{Transport: resourceRoundTripFunc(func(*http.Request) (*http.Response, error) {
-		body, err := proto.Marshal(&collectormetricspb.ExportMetricsServiceResponse{
-			PartialSuccess: &collectormetricspb.ExportMetricsPartialSuccess{
+		body, err := proto.Marshal(&metricsv1.ExportMetricsServiceResponse{
+			PartialSuccess: &metricsv1.ExportMetricsPartialSuccess{
 				RejectedDataPoints: 2,
 				ErrorMessage:       "invalid timestamps",
 			},
@@ -164,7 +164,7 @@ func TestStoreAggregatesContainerResourcesPerApp(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	req := &collectormetricspb.ExportMetricsServiceRequest{ResourceMetrics: []*metricspb.ResourceMetrics{first, second}}
+	req := &metricsv1.ExportMetricsServiceRequest{ResourceMetrics: []*metricspb.ResourceMetrics{first, second}}
 	accepted, rejected, err := store.IngestResourceMetrics(context.Background(), req)
 	if err != nil {
 		t.Fatal(err)
@@ -215,7 +215,7 @@ func TestStoreKeepsRecentResourceMovementByMinute(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		accepted, rejected, err := store.IngestResourceMetrics(context.Background(), &collectormetricspb.ExportMetricsServiceRequest{
+		accepted, rejected, err := store.IngestResourceMetrics(context.Background(), &metricsv1.ExportMetricsServiceRequest{
 			ResourceMetrics: []*metricspb.ResourceMetrics{metrics},
 		})
 		if err != nil {

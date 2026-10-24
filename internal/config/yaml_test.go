@@ -19,6 +19,7 @@ func TestStoredYAMLConfiguration(t *testing.T) {
 	for _, raw := range []string{
 		"domains: []\ndomains: [evil.example.com]\n",
 		"admins: {usres: [ada@example.com]}\n",
+		"viewers: {roles: [readers]}\n",
 		"domains: []\n---\ndomains: [evil.example.com]\n",
 		"domains: [unterminated\n",
 	} {

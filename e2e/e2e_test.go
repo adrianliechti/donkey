@@ -263,6 +263,7 @@ func TestEndToEnd(t *testing.T) {
 		_ = s.api.Destroy(ctx, space, packagesApp, false)
 		_ = s.api.RemoveSpaceAddon(ctx, space, "postgres", false, false)
 		s.rawTry(http.MethodDelete, "/v1/spaces/"+space)
+		s.raw(t, http.MethodPost, "/v1/spaces", map[string]any{"name": space, "allowPublic": true, "viewers": map[string]any{"users": []string{"demo@example.com"}}}, nil)
 	})
 
 	t.Run("package-proxy-build", func(t *testing.T) {

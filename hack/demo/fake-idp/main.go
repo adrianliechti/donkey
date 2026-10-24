@@ -70,7 +70,7 @@ func discovery(w http.ResponseWriter, r *http.Request) {
 		"subject_types_supported":               []string{"public"},
 		"id_token_signing_alg_values_supported": []string{"RS256"},
 		"scopes_supported":                      []string{"openid", "email", "profile", "groups"},
-		"claims_supported":                      []string{"sub", "email", "name", "groups", "roles"},
+		"claims_supported":                      []string{"sub", "email", "name", "groups"},
 		"grant_types_supported":                 []string{"authorization_code"},
 		"token_endpoint_auth_methods_supported": []string{"client_secret_basic", "client_secret_post"},
 	})
@@ -158,11 +158,8 @@ func token(w http.ResponseWriter, r *http.Request) {
 		"sub":   "demo-user",
 		"email": "demo@example.com",
 		"name":  "Demo User",
-		// Groups and roles make the console's access rules demoable: allow
-		// "staff" or "developer" and the demo user gets in; allow "board"
-		// and they don't.
+		// Assign "staff" to a space role to give the demo user access.
 		"groups":         []string{"everyone", "staff"},
-		"roles":          []string{"developer"},
 		"iat":            now.Unix(),
 		"exp":            now.Add(12 * time.Hour).Unix(),
 		"email_verified": true,

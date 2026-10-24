@@ -205,12 +205,6 @@ func (s *Server) handleCallback(w http.ResponseWriter, r *http.Request) {
 		// scope); its sub is pairwise per app registration.
 		ObjectID string   `json:"oid"`
 		Groups   []string `json:"groups"`
-		// Roles is where Entra puts app roles; Keycloak nests its realm
-		// roles one level deeper — both count.
-		Roles       []string `json:"roles"`
-		RealmAccess struct {
-			Roles []string `json:"roles"`
-		} `json:"realm_access"`
 	}
 	if err := idToken.Claims(&claims); err != nil {
 		s.errorPage(w, http.StatusBadGateway, "The ID token couldn't be read.", err.Error())
@@ -220,12 +214,6 @@ func (s *Server) handleCallback(w http.ResponseWriter, r *http.Request) {
 	if name == "" {
 		name = claims.PreferredUsername
 	}
-	roles := claims.Roles
-	for _, r := range claims.RealmAccess.Roles {
-		if !slices.Contains(roles, r) {
-			roles = append(roles, r)
-		}
-	}
 	sess := &session{
 		Subject: idToken.Subject,
 		Email:   claims.Email,
@@ -234,7 +222,6 @@ func (s *Server) handleCallback(w http.ResponseWriter, r *http.Request) {
 		PreferredUsername: claims.PreferredUsername,
 		ObjectID:          claims.ObjectID,
 		Groups:            claims.Groups,
-		Roles:             roles,
 		Expires:           time.Now().Add(sessionTTL).Unix(),
 	}
 	if s.upstream.Enabled() {

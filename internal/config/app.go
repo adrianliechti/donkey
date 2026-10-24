@@ -29,6 +29,10 @@ type AppConfig struct {
 	// cross-origin access; allowAll answers preflights and emits
 	// Access-Control-Allow-Origin: *.
 	CORS string `json:"cors,omitempty"`
+	// Analytics: false keeps donkey-gateway from adding its web analytics
+	// script to the app's HTML pages. Omitted means on — for web apps with an
+	// address; API-mode and internal apps never get it.
+	Analytics *bool `json:"analytics,omitempty"`
 	// Internal keeps the app off the gateway entirely — no hostname, no
 	// certificate, no login. What a backend behind a frontend wants.
 	Internal bool        `json:"internal,omitempty"`
@@ -44,11 +48,8 @@ type AppConfig struct {
 	Storage     *StorageConfig    `json:"storage,omitempty"`
 	// Host is the address this app answers on. See AppHost for the three
 	// shapes it takes; omitted keeps the default, <app>.<space>.<domain>.
-	Host string `json:"host,omitempty"`
-	// Access narrows the login gateway from "anyone your IdP knows" to the
-	// people and groups named here. Omitted means every signed-in user.
-	Access    *AccessConfig `json:"access,omitempty"`
-	Resources *Resources    `json:"resources,omitempty"`
+	Host      string     `json:"host,omitempty"`
+	Resources *Resources `json:"resources,omitempty"`
 }
 
 // RootHost claims the space's own address, borrowing the zone-file
@@ -76,6 +77,17 @@ func (a *AppConfig) GatewayMode() string {
 }
 
 func (a *AppConfig) AllowsAllOrigins() bool { return a.CORS == CORSAllowAll }
+
+// AnalyticsEnabled says the app has not opted out of web analytics. Whether
+// the gateway actually counts anything also depends on the app being a web
+// app with an address of its own.
+func (a *AppConfig) AnalyticsEnabled() bool { return a.Analytics == nil || *a.Analytics }
+
+// CountsVisits says donkey-gateway adds its analytics script to this app's
+// HTML pages.
+func (a *AppConfig) CountsVisits() bool {
+	return a.AnalyticsEnabled() && !a.IsAPI() && !a.Internal
+}
 
 // AppHost is the address an app is served at, and the one place the rule
 // lives — the control plane and every runtime provider ask here, so they
@@ -117,83 +129,6 @@ func validateHost(host string) error {
 		}
 	case !nameRE.MatchString(host):
 		return fmt.Errorf("host %q must be a plain name (lowercase letters, digits and dashes) to sit under the space, %q for the space's own address, or a full hostname like %q", host, RootHost, "app.example.com")
-	}
-	return nil
-}
-
-// AccessConfig refines the login gateway, so it means nothing on a `public`
-// app. Enforced against the ID token's claims; a visitor passes by matching
-// ANY list.
-type AccessConfig struct {
-	// Users are exact email addresses (the IdP's `email` claim).
-	Users []string `json:"users,omitempty" yaml:"users,omitempty"`
-	// Groups match against the IdP's `groups` claim.
-	Groups []string `json:"groups,omitempty" yaml:"groups,omitempty"`
-	// Roles match against the IdP's `roles` claim (Entra app roles) or
-	// Keycloak's realm roles.
-	Roles []string `json:"roles,omitempty" yaml:"roles,omitempty"`
-}
-
-// Empty reports whether the access config restricts nobody — the same as not
-// having one.
-func (a *AccessConfig) Empty() bool {
-	return a == nil || (len(a.Users) == 0 && len(a.Groups) == 0 && len(a.Roles) == 0)
-}
-
-// Allows: empty rules admit every signed-in identity. Emails compare
-// case-insensitively (IdPs disagree on casing), groups and roles exactly.
-func (a *AccessConfig) Allows(email string, groups, roles []string) bool {
-	if a.Empty() {
-		return true
-	}
-	for _, u := range a.Users {
-		if email != "" && strings.EqualFold(u, email) {
-			return true
-		}
-	}
-	return anyOverlap(a.Groups, groups) || anyOverlap(a.Roles, roles)
-}
-
-func anyOverlap(wanted, have []string) bool {
-	if len(wanted) == 0 || len(have) == 0 {
-		return false
-	}
-	mine := make(map[string]bool, len(have))
-	for _, v := range have {
-		mine[v] = true
-	}
-	for _, v := range wanted {
-		if mine[v] {
-			return true
-		}
-	}
-	return false
-}
-
-// accessEntryRE keeps user and group entries to things that can appear in a
-// JWT claim comparison: no whitespace, no quotes, printable ASCII.
-var accessEntryRE = regexp.MustCompile(`^[\x21-\x7e]+$`)
-
-// Validate is exported because the console submits access rules on their
-// own, outside a whole donkey.yaml.
-func (a *AccessConfig) Validate() error {
-	if a == nil {
-		return nil
-	}
-	for _, u := range a.Users {
-		if !accessEntryRE.MatchString(u) {
-			return fmt.Errorf("access.users entry %q must be a plain email address without spaces", u)
-		}
-	}
-	for _, g := range a.Groups {
-		if !accessEntryRE.MatchString(g) {
-			return fmt.Errorf("access.groups entry %q must be a plain group name without spaces", g)
-		}
-	}
-	for _, r := range a.Roles {
-		if !accessEntryRE.MatchString(r) {
-			return fmt.Errorf("access.roles entry %q must be a plain role name without spaces", r)
-		}
 	}
 	return nil
 }
@@ -439,11 +374,11 @@ func (c *AppConfig) Validate() error {
 	if c.Port < 1 || c.Port > 65535 {
 		return fmt.Errorf("port must be between 1 and 65535 (the port your app listens on)")
 	}
-	// `internal` says "no address of my own"; `public` says "no login on the
-	// addresses I do have". Together they are only contradictory when the app
-	// has no routes either — then there is nothing for `public` to open up.
-	if c.Internal && c.Public && len(c.Routes) == 0 {
-		return fmt.Errorf("an internal app has no address, so `public: true` has nothing to open — drop it, or give the app a `routes:` entry on another app's address")
+	if c.Internal && len(c.Routes) > 0 {
+		return fmt.Errorf("an internal app cannot have gateway routes — remove `routes`, or set `internal: false` to expose the app")
+	}
+	if c.Internal && c.Public {
+		return fmt.Errorf("an internal app has no address, so `public: true` has nothing to open — drop one of the two")
 	}
 	if c.Mode != "" && c.Mode != AppModeWeb && c.Mode != AppModeAPI {
 		return fmt.Errorf("mode must be web or api")
@@ -453,17 +388,6 @@ func (c *AppConfig) Validate() error {
 	}
 	if c.Internal && c.Host != "" {
 		return fmt.Errorf("an internal app has no address, so `host` has no effect — drop one of the two")
-	}
-	if !c.Access.Empty() {
-		if c.Public || (c.Internal && c.IsAPI()) {
-			return fmt.Errorf("`access` needs a login-protected route, which this exposure turns off")
-		}
-		if c.Internal && len(c.Routes) == 0 {
-			return fmt.Errorf("an internal app has no address, so `access` has nobody to let in — drop it, or give the app a `routes:` entry")
-		}
-	}
-	if err := c.Access.Validate(); err != nil {
-		return err
 	}
 	seenRoutes := map[string]bool{}
 	for _, r := range c.Routes {

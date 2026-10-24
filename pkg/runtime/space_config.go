@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/adrianliechti/donkey/internal/config"
 )
@@ -21,6 +22,9 @@ func CheckAppDomain(ctx context.Context, provider spaceConfigReader, app *config
 	}
 	if err != nil {
 		return err
+	}
+	if app.Public && !policy.AllowPublic {
+		return UserError{Err: fmt.Errorf("public access is disabled for space %q; use login protection or ask a space admin to allow public apps", space)}
 	}
 	if err := policy.CheckAppHost(app, space, domain); err != nil {
 		return UserError{Err: err}

@@ -50,6 +50,17 @@ func trinoCall(t *testing.T, s *Server, method, suffix, body string) *httptest.R
 	return rec
 }
 
+func TestTrinoRejectsBatchBeforeRunningAnyStatement(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("Trino executed part of an unsupported batch")
+	}))
+	defer upstream.Close()
+	rec := trinoCall(t, trinoTestServer(upstream.URL), "POST", "/query", `{"statements":["START TRANSACTION", "COMMIT"]}`)
+	if rec.Code != 400 || !strings.Contains(rec.Body.String(), "one statement per run") {
+		t.Fatalf("unsupported batch: %d %s", rec.Code, rec.Body)
+	}
+}
+
 func TestTrinoConsoleForwardsCurrentUserTokenOverHTTPAndHTTPS(t *testing.T) {
 	for _, tls := range []bool{false, true} {
 		t.Run(fmt.Sprintf("tls=%t", tls), func(t *testing.T) {
@@ -158,9 +169,11 @@ func TestTrinoConsoleQuotesNamesAndSetsQueryContext(t *testing.T) {
 		{"GET", `/databases/hive%22prod/schemas`, "", `SHOW SCHEMAS FROM "hive""prod"`, `hive"prod`, ""},
 		{"GET", `/databases/hive/tables?schema=odd%22schema`, "", `SHOW TABLES FROM "hive"."odd""schema"`, "hive", `odd"schema`},
 		{"GET", `/databases/hive/tables/odd%22table/rows?schema=analytics&limit=200`, "", `SELECT * FROM "hive"."analytics"."odd""table" OFFSET 0 LIMIT 201`, "hive", "analytics"},
+		{"GET", `/databases/hive/tables/odd%22table?schema=odd%22schema`, "", `SHOW COLUMNS FROM "hive"."odd""schema"."odd""table"`, "hive", `odd"schema`},
 		{"GET", `/databases/hive/tables/events/rows?schema=analytics&limit=2&offset=4&order=odd%22column&dir=desc`, "", `SELECT * FROM "hive"."analytics"."events" ORDER BY "odd""column" DESC OFFSET 4 LIMIT 3`, "hive", "analytics"},
 		{"POST", "/databases/iceberg/query", `{"sql":"SELECT * FROM events","schema":"reports"}`, `SELECT * FROM events`, "iceberg", "reports"},
 		{"POST", "/query", `{"sql":"SHOW CATALOGS","schema":""}`, `SHOW CATALOGS`, "hive", ""},
+		{"POST", "/query", `{"statements":["SHOW CATALOGS"],"schema":""}`, `SHOW CATALOGS`, "hive", ""},
 	} {
 		expectedSQL, expectedCatalog, expectedSchema = tc.sql, tc.catalog, tc.schema
 		rec := trinoCall(t, s, tc.method, tc.path, tc.body)
@@ -200,6 +213,31 @@ func TestTrinoUsesTheSharedDatabasePageContract(t *testing.T) {
 	}
 	if result.Total != nil || len(result.Rows) != 2 || result.Key == nil || len(result.Key) != 0 || result.Limit != 2 || result.Offset != 4 || !result.HasMore {
 		t.Fatalf("shared page contract: %+v", result)
+	}
+}
+
+func TestTrinoDescribesATableInTheSharedStructureContract(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"columns":[{"name":"Column"},{"name":"Type"},{"name":"Extra"},{"name":"Comment"}],
+			"data":[["id","bigint","",""],["day","date","partition key","when it happened"]]}`)
+	}))
+	defer upstream.Close()
+	rec := trinoCall(t, trinoTestServer(upstream.URL), "GET", "/databases/hive/tables/events?schema=analytics", "")
+	if rec.Code != 200 {
+		t.Fatalf("structure: %d %s", rec.Code, rec.Body)
+	}
+	var result struct {
+		Columns []tableColumn `json:"columns"`
+		Indexes []tableIndex  `json:"indexes"`
+		Kind    string        `json:"kind"`
+		Rows    *int64        `json:"rows"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	want := []tableColumn{{Name: "id", Type: "bigint"}, {Name: "day", Type: "date", Extra: "partition key", Comment: "when it happened"}}
+	if !reflect.DeepEqual(result.Columns, want) || result.Indexes == nil || len(result.Indexes) != 0 || result.Kind != "table" || result.Rows != nil {
+		t.Fatalf("structure contract: %+v", result)
 	}
 }
 

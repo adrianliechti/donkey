@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -219,7 +220,7 @@ func TestKubernetesRenderOmitsEverySecretValue(t *testing.T) {
 			Issuer: "https://id.example.com", ClientID: "donkey", ClientSecret: "oidc-secret-must-not-render",
 		},
 		AI: config.InstallAI{
-			BaseURL: "https://api.openai.com/v1", Model: "gpt-5.6-sol", APIKey: "openai-key-must-not-render",
+			BaseURL: "https://api.openai.com/v1", Model: "gpt-6-sol", APIKey: "openai-key-must-not-render",
 		},
 		Exa: config.InstallExa{BaseURL: "https://search.example.com/exa", APIKey: "exa-key-must-not-render"},
 		Build: config.InstallBuild{
@@ -317,7 +318,7 @@ func TestDockerRenderMatchesRuntimeTopologyWithoutSecrets(t *testing.T) {
 			Issuer: "https://id.example.com", ClientID: "donkey", ClientSecret: "docker-oidc-secret-must-not-render",
 		},
 		AI: config.InstallAI{
-			BaseURL: "https://api.openai.com/v1", Model: "gpt-5.6-sol", APIKey: "docker-openai-key-must-not-render",
+			BaseURL: "https://api.openai.com/v1", Model: "gpt-6-sol", APIKey: "docker-openai-key-must-not-render",
 		},
 		Exa: config.InstallExa{BaseURL: "http://host.docker.internal:4242/exa", APIKey: "docker-exa-key-must-not-render"},
 		Build: config.InstallBuild{
@@ -386,6 +387,43 @@ func TestDockerRenderMatchesRuntimeTopologyWithoutSecrets(t *testing.T) {
 	if got := typed.Services["server"].Environment["DONKEY_REGISTRY_MIRRORS"]; got != `{"docker.io":"https://mirror.example.com/dockerhub"}` {
 		t.Errorf("server mirror map = %q", got)
 	}
+	// Builds run in the orchestrator: it gets the server's build path, the
+	// Docker socket and the state volume, drains before Compose kills it,
+	// and is the address the server forwards to.
+	orchestrator := typed.Services["orchestrator"]
+	if orchestrator.ContainerName != dockerOrchestratorName || !reflect.DeepEqual(orchestrator.Command, []string{"orchestrator"}) {
+		t.Fatalf("orchestrator service = %+v", orchestrator)
+	}
+	if got := typed.Services["server"].Environment["DONKEY_ORCHESTRATOR_URL"]; got != "http://donkey-orchestrator:8087" {
+		t.Errorf("server forwards to %q", got)
+	}
+	for key, want := range map[string]string{
+		"DONKEY_LISTEN":           ":8087",
+		"DONKEY_BUILDKIT_ADDR":    "tcp://donkey-buildkitd:1234",
+		"DONKEY_SESSION_KEY":      "${DONKEY_SESSION_KEY:-}",
+		"OPENAI_API_KEY":          "${OPENAI_API_KEY:-}",
+		"DONKEY_REGISTRY_MIRRORS": `{"docker.io":"https://mirror.example.com/dockerhub"}`,
+		"DONKEY_PACKAGES_URL":     "http://${DONKEY_PACKAGES_IP:-172.31.250.10}:8090",
+	} {
+		if got := orchestrator.Environment[key]; got != want {
+			t.Errorf("orchestrator %s = %q, want %q", key, got, want)
+		}
+	}
+	for _, key := range []string{"DONKEY_OIDC_CLIENT_SECRET", "DONKEY_OIDC_CLIENT_ID", "DONKEY_ORCHESTRATOR_URL"} {
+		if _, found := orchestrator.Environment[key]; found {
+			t.Errorf("the orchestrator should not get %s", key)
+		}
+	}
+	if !slices.Contains(orchestrator.Volumes, "/var/run/docker.sock:/var/run/docker.sock") ||
+		!slices.Contains(orchestrator.Volumes, "data:"+dockerDataDir) || len(orchestrator.Ports) != 0 {
+		t.Errorf("orchestrator volumes=%v ports=%v", orchestrator.Volumes, orchestrator.Ports)
+	}
+	if orchestrator.StopGracePeriod != "660s" {
+		t.Errorf("orchestrator stop_grace_period = %q, want the drain window", orchestrator.StopGracePeriod)
+	}
+	if _, waits := orchestrator.DependsOn["buildkit"]; !waits {
+		t.Error("the orchestrator should start after the build engine")
+	}
 	if got := string(files["buildkitd.toml"].Data); !strings.Contains(got, `mirrors = ["mirror.example.com/dockerhub"]`) {
 		t.Errorf("BuildKit mirror config is missing from Docker bundle:\n%s", got)
 	}
@@ -415,6 +453,12 @@ func TestDockerRenderMatchesRuntimeTopologyWithoutSecrets(t *testing.T) {
 	}
 	if strings.Index(up, "require_owned container donkey-server server") > strings.Index(up, "existing donkey-server DONKEY_SESSION_KEY") {
 		t.Error("Compose must validate ownership before reading an existing container's secrets")
+	}
+	drain := strings.Index(up, `docker stop --time 660 "$deploy_owner"`)
+	if !strings.Contains(up, "require_owned container donkey-orchestrator orchestrator") ||
+		!strings.Contains(up, "deploy_owner=donkey-server") ||
+		drain < 0 || drain > strings.Index(up, "docker compose -f") {
+		t.Error("up.sh must let a verified orchestrator drain before Compose recreates the build engine")
 	}
 	check := exec.Command("sh", "-n")
 	check.Stdin = strings.NewReader(up)

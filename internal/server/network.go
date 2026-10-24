@@ -28,14 +28,17 @@ type NetworkResponse struct {
 	// DefaultHost is the generated <app>.<space>.<domain> address. Host is the
 	// configured donkey.yaml shape when it differs: a name, "@", or a full
 	// hostname.
-	DefaultHost string               `json:"defaultHost"`
-	FQDN        string               `json:"fqdn"`
-	Domains     []string             `json:"domains"`
-	Host        string               `json:"host,omitempty"`
-	Port        int                  `json:"port,omitempty"`
-	Routes      []RouteEntry         `json:"routes,omitempty"`
-	Access      *config.AccessConfig `json:"access,omitempty"`
-	CORS        string               `json:"cors"`
+	DefaultHost string       `json:"defaultHost"`
+	FQDN        string       `json:"fqdn"`
+	Domains     []string     `json:"domains"`
+	Host        string       `json:"host,omitempty"`
+	Port        int          `json:"port,omitempty"`
+	Routes      []RouteEntry `json:"routes,omitempty"`
+	AllowPublic bool         `json:"allowPublic"`
+	CORS        string       `json:"cors"`
+	// Analytics is false when the app opted out of web analytics. It only
+	// counts for web apps with an address; see config.AppConfig.CountsVisits.
+	Analytics bool `json:"analytics"`
 }
 
 func (s *Server) networkResponse(r *http.Request, space, app string) (*NetworkResponse, error) {
@@ -60,8 +63,9 @@ func (s *Server) networkResponse(r *http.Request, space, app string) (*NetworkRe
 		DefaultHost: config.AppHost(&config.AppConfig{Name: app}, space, s.cfg.Domain),
 		Mode:        modeOfStatus(st),
 		Port:        int(st.Port),
-		Access:      net.Access,
+		AllowPublic: settings.AllowPublic,
 		CORS:        st.CORS,
+		Analytics:   net.Analytics != config.AnalyticsOff,
 	}
 	if net.Mode != "" {
 		resp.Mode = net.Mode
@@ -128,6 +132,8 @@ type PutNetworkRequest struct {
 	Mode     string `json:"mode"`
 	Exposure string `json:"exposure"`
 	CORS     string `json:"cors"`
+	// Analytics turns web analytics on or off; omitted keeps what the app has.
+	Analytics *bool `json:"analytics"`
 	// Host is where the app should answer instead of its default
 	// address — see config.AppHost: a plain name sits under the space, "@"
 	// is the space's own address, anything with a dot is an exact hostname,
@@ -166,9 +172,6 @@ func (s *Server) handlePutNetwork(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	unlock := s.lockApp(space, app)
-	defer unlock()
-
 	ctx := r.Context()
 	st, err := s.rt.Status(ctx, space, app)
 	if err != nil {
@@ -188,7 +191,16 @@ func (s *Server) handlePutNetwork(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadGateway, err)
 		return
 	}
+	if req.Exposure == "internal" && len(net.Routes) > 0 {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("an internal app cannot have gateway routes — remove its shared routes before changing exposure"))
+		return
+	}
 	console := s.readConsoleChoices(ctx, space, app)
+	analytics := req.Analytics
+	if analytics == nil {
+		on := net.Analytics != config.AnalyticsOff
+		analytics = &on
+	}
 
 	// A synthetic app config carries the choice through the same validation
 	// and rendering a donkey.yaml would.
@@ -204,13 +216,8 @@ func (s *Server) handlePutNetwork(w http.ResponseWriter, r *http.Request) {
 	}
 	cfg.Host = strings.TrimSpace(req.Host)
 	cfg.CORS = req.CORS
-	if req.Exposure == "protected" {
-		// Access rules ride along unchanged; runtime state is the truth,
-		// with the console's memory as fallback (e.g. internal → protected).
-		cfg.Access = net.Access
-		if cfg.Access == nil {
-			cfg.Access = console.Access
-		}
+	if !*analytics {
+		cfg.Analytics = analytics
 	}
 	cfg.ApplyDefaults()
 	if err := cfg.Validate(); err != nil {
@@ -233,6 +240,7 @@ func (s *Server) handlePutNetwork(w http.ResponseWriter, r *http.Request) {
 	console.Mode = req.Mode
 	console.Host = cfg.Host
 	console.CORS = cfg.CORS
+	console.Analytics = config.RouteAnalytics(cfg)
 	if err := s.writeConsoleChoices(ctx, space, app, console); err != nil {
 		writeErr(w, http.StatusBadGateway, err)
 		return
@@ -246,84 +254,11 @@ func (s *Server) handlePutNetwork(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"network": resp, "note": note})
 }
 
-type PutAccessRequest struct {
-	Users  []string `json:"users"`
-	Groups []string `json:"groups"`
-	Roles  []string `json:"roles"`
-}
-
-// handlePutAccess narrows (or reopens) who may open a login-protected app.
-// The gateway picks it up within seconds — no deploy, no restart.
-func (s *Server) handlePutAccess(w http.ResponseWriter, r *http.Request) {
-	space, app, err := s.spaceApp(r)
-	if err != nil {
-		writeErr(w, http.StatusBadRequest, err)
-		return
-	}
-	var req PutAccessRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeErr(w, http.StatusBadRequest, err)
-		return
-	}
-	access := &config.AccessConfig{Users: cleanList(req.Users), Groups: cleanList(req.Groups), Roles: cleanList(req.Roles)}
-	if err := access.Validate(); err != nil {
-		writeErr(w, http.StatusBadRequest, err)
-		return
-	}
-	if access.Empty() {
-		access = nil
-	}
-
-	unlock := s.lockApp(space, app)
-	defer unlock()
-
-	ctx := r.Context()
-	net, err := s.rt.Network(ctx, space, app)
-	if err != nil {
-		writeErr(w, http.StatusBadGateway, err)
-		return
-	}
-	protectedSomewhere := net.Protected
-	for _, pr := range net.Routes {
-		protectedSomewhere = protectedSomewhere || pr.Protected
-	}
-	if !protectedSomewhere {
-		writeErr(w, http.StatusConflict, fmt.Errorf("access rules need the login in front of the app — switch it to login-protected first"))
-		return
-	}
-
-	if err := s.rt.SetAccess(ctx, space, app, access); err != nil {
-		writeErr(w, http.StatusBadGateway, err)
-		return
-	}
-
-	console := s.readConsoleChoices(ctx, space, app)
-	console.Access = access
-	if err := s.writeConsoleChoices(ctx, space, app, console); err != nil {
-		writeErr(w, http.StatusBadGateway, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "access": access})
-}
-
-func cleanList(in []string) []string {
-	var out []string
-	for _, v := range in {
-		v = strings.TrimSpace(v)
-		if v != "" && !slices.Contains(out, v) {
-			out = append(out, v)
-		}
-	}
-	return out
-}
-
 // writeConsoleChoices stores the console's network choices with the deployed
 // app — as app metadata the deploy pipeline never rewrites, so they survive
 // deploys untouched.
 func (s *Server) writeConsoleChoices(ctx context.Context, space, app string, c consoleChoices) error {
 	var value *string
-	// Access is a pointer field of a comparable struct, so a non-nil one
-	// already makes c differ from the zero value.
 	if c != (consoleChoices{}) {
 		b, err := json.Marshal(c)
 		if err != nil {

@@ -62,7 +62,7 @@ func TestServiceMetadataAndAIProxyCredentials(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := r.state.writeJSON(addons.Metadata{Type: "external-model", Protocol: "custom"}, "service-metadata", "team", "vendor.json"); err != nil {
+	if err := r.state.writeRecord(addons.Metadata{Type: "external-model", Protocol: "custom"}, "service-metadata", "team", "vendor"); err != nil {
 		t.Fatal(err)
 	}
 	connection, err := r.ServiceConnection(ctx, "team", "vendor")
@@ -73,11 +73,11 @@ func TestServiceMetadataAndAIProxyCredentials(t *testing.T) {
 	if err != nil || !reflect.DeepEqual(tokens, []string{"platform-token"}) {
 		t.Fatalf("wrong proxy tokens: %v", err)
 	}
-	for _, folder := range []string{"env", "bindings", "provisioning"} {
-		if err := r.state.writeJSON(map[string]string{"secret": "private"}, folder, "team", "private.json"); err != nil {
+	for _, folder := range []string{"env", "bindings", "provisioning", "deploy"} {
+		if err := r.state.writeRecord(map[string]string{"secret": "private"}, folder, "team", "private"); err != nil {
 			t.Fatal(err)
 		}
-		info, err := os.Stat(r.state.path(folder, "team", "private.json"))
+		info, err := os.Stat(r.state.path(folder, "team", "private.yaml"))
 		if err != nil || info.Mode().Perm() != 0o600 {
 			t.Fatalf("%s credentials are not private: %v", folder, err)
 		}
@@ -151,7 +151,7 @@ func TestServiceProxyUsesSpaceNetworkIdentity(t *testing.T) {
 			t.Errorf("%s/%s access = %v, %v", tc.ip, tc.id, got, err)
 		}
 	}
-	if err := r.state.writeJSON(addons.Metadata{Type: "erp", Protocol: "http"}, "service-metadata", "team", "allowed.json"); err != nil {
+	if err := r.state.writeRecord(addons.Metadata{Type: "erp", Protocol: "http"}, "service-metadata", "team", "allowed"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := r.RemoveService(context.Background(), "team", "allowed", true, false); err == nil {
@@ -163,7 +163,7 @@ func TestServiceProxyUsesSpaceNetworkIdentity(t *testing.T) {
 	if got, err := r.ServiceProxyAccess(context.Background(), "10.20.0.2", "erp"); err != nil || got {
 		t.Fatalf("removed grant remained authorized: %v %v", got, err)
 	}
-	if err := r.state.writeJSON(proxyNetwork{Updated: time.Now().Add(-time.Minute), CIDRs: []string{"10.20.0.0/24"}}, "proxy", "networks", "team.json"); err != nil {
+	if err := r.state.writeRecord(proxyNetwork{Updated: time.Now().Add(-time.Minute), CIDRs: []string{"10.20.0.0/24"}}, "proxy", "networks", "team"); err != nil {
 		t.Fatal(err)
 	}
 	if got, err := r.ServiceProxyAccess(context.Background(), "10.20.0.2", "erp"); err == nil || got {
@@ -183,7 +183,7 @@ func TestExaProxyCredentials(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := r.state.writeJSON(addons.Metadata{Type: "external-model", Protocol: "custom"}, "service-metadata", "team", "vendor.json"); err != nil {
+	if err := r.state.writeRecord(addons.Metadata{Type: "external-model", Protocol: "custom"}, "service-metadata", "team", "vendor"); err != nil {
 		t.Fatal(err)
 	}
 	connection, err := r.ServiceConnection(ctx, "team", "vendor")
@@ -194,11 +194,11 @@ func TestExaProxyCredentials(t *testing.T) {
 	if err != nil || !reflect.DeepEqual(tokens, []string{"platform-token"}) {
 		t.Fatalf("wrong proxy tokens: %v", err)
 	}
-	for _, folder := range []string{"env", "bindings", "provisioning"} {
-		if err := r.state.writeJSON(map[string]string{"secret": "private"}, folder, "team", "private.json"); err != nil {
+	for _, folder := range []string{"env", "bindings", "provisioning", "deploy"} {
+		if err := r.state.writeRecord(map[string]string{"secret": "private"}, folder, "team", "private"); err != nil {
 			t.Fatal(err)
 		}
-		info, err := os.Stat(r.state.path(folder, "team", "private.json"))
+		info, err := os.Stat(r.state.path(folder, "team", "private.yaml"))
 		if err != nil || info.Mode().Perm() != 0o600 {
 			t.Fatalf("%s credentials are not private: %v", folder, err)
 		}

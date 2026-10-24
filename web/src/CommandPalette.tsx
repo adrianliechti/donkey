@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import {
   Dialog,
   DialogBackdrop,
@@ -10,9 +10,11 @@ import {
 } from '@headlessui/react'
 import { useNavigate } from '@tanstack/react-router'
 import { Activity, Boxes, Search, UploadCloud } from 'lucide-react'
+import { useDeploy } from './deploy'
 import { useFleet } from './queries'
 import { backdropClass } from './dialog'
-import { StatusDot, healthOf } from './ui'
+import { AppIcon } from './AppIcon'
+import { healthOf } from './vocabulary'
 
 // One search box for the whole console: ⌘K anywhere, type a few letters, hit
 // Enter. It jumps to an app, a space, or one of the standing actions (deploy,
@@ -30,14 +32,17 @@ type Item = {
 
 export function CommandPalette({ open, onClose }: { open: boolean; onClose: () => void }) {
   const navigate = useNavigate()
+  const openDeploy = useDeploy()
   const { data } = useFleet()
   const [query, setQuery] = useState('')
 
   // Selecting an item closes the palette through its own onClose, which does
   // not clear the query — so start every open from a clean, unfiltered list.
-  useEffect(() => {
+  const [wasOpen, setWasOpen] = useState(open)
+  if (open !== wasOpen) {
+    setWasOpen(open)
     if (open) setQuery('')
-  }, [open])
+  }
 
   const items = useMemo<Item[]>(() => {
     const go = (fn: () => void) => () => {
@@ -51,7 +56,7 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
         key: `app:${space}/${app.name}`,
         label: app.name,
         hint: space,
-        icon: <StatusDot health={health} />,
+        icon: <AppIcon health={health} stack={app.stack} />,
         terms: `${app.name} ${space}`.toLowerCase(),
         run: go(() =>
           navigate({
@@ -76,7 +81,7 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
         hint: 'action',
         icon: <UploadCloud className="size-4 text-muted" aria-hidden />,
         terms: 'deploy new app upload',
-        run: go(() => navigate({ to: '/deploy' })),
+        run: go(() => openDeploy()),
       },
       {
         key: 'action:system',
@@ -87,9 +92,16 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
         run: go(() => navigate({ to: '/system' })),
       },
     ]
-    return [...apps, ...spaces, ...actions.filter((action) =>
-      action.key === 'action:system' ? data?.platformAdmin : (data?.platformAdmin || spaces.length > 0))]
-  }, [data, navigate, onClose])
+    return [
+      ...apps,
+      ...spaces,
+      ...actions.filter((action) =>
+        action.key === 'action:system'
+          ? data?.platformAdmin
+          : data?.platformAdmin || Object.values(data?.roles ?? {}).some((role) => role !== 'viewer'),
+      ),
+    ]
+  }, [data, navigate, onClose, openDeploy])
 
   const q = query.trim().toLowerCase()
   const results = q ? items.filter((i) => i.terms.includes(q)) : items
@@ -109,10 +121,7 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
           transition
           className="w-full max-w-xl overflow-hidden rounded-xl border border-line bg-card shadow-2xl transition duration-(--duration-base) ease-emphasized data-closed:scale-[.98] data-closed:opacity-0 data-leave:duration-(--duration-fast) data-leave:ease-exit"
         >
-          <Combobox<Item | null>
-            immediate
-            onChange={(item) => item?.run()}
-          >
+          <Combobox<Item | null> immediate onChange={(item) => item?.run()}>
             <div className="flex h-14 items-center gap-2 border-b border-line px-5">
               <Search className="size-4 shrink-0 text-muted" aria-hidden />
               <ComboboxInput
@@ -135,7 +144,7 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
                   <ComboboxOption
                     key={item.key}
                     value={item}
-                    className="flex h-9 cursor-default items-center gap-2.5 px-5 text-sm text-ink-soft data-focus:bg-accent-soft data-focus:text-ink"
+                    className="flex h-9 items-center gap-2.5 px-5 text-sm text-ink-soft data-focus:bg-accent-soft data-focus:text-ink"
                   >
                     <span className="flex size-4 shrink-0 items-center justify-center">{item.icon}</span>
                     <span className="truncate font-mono text-ink">{item.label}</span>

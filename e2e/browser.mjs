@@ -36,6 +36,8 @@ try {
   }
   const removed = await context.request.delete(`${consoleURL}/v1/spaces/${space}`)
   assert.ok(removed.ok() || removed.status() === 404, `test space cleanup: ${removed.status()}`)
+  const created = await context.request.post(`${consoleURL}/v1/spaces`, { data: { name: space, allowPublic: true } })
+  assert.ok(created.ok(), `test space creation: ${created.status()}`)
   await page.goto(`${consoleURL}/#/deploy/${space}`)
   const reading = page.waitForResponse(r => r.url().includes('/v1/projects/plans?') && r.request().method() === 'POST', { timeout: 360000 })
   await page.locator('input[type=file]').setInputFiles({ name: 'demo.zip', mimeType: 'application/zip', buffer: Buffer.from(zipSync(files)) })

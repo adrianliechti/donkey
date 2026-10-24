@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	collectormetricspb "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
+	metricsv1 "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
 	codepb "google.golang.org/genproto/googleapis/rpc/code"
 	statuspb "google.golang.org/genproto/googleapis/rpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -133,6 +133,8 @@ func (s *Service) ingestHandler() http.Handler {
 	mux.HandleFunc("GET /readyz", s.health)
 	mux.HandleFunc("POST /v1/metrics", s.handleMetrics)
 	mux.HandleFunc("POST /v1/donkey/views", s.handleViews)
+	mux.HandleFunc("POST /v1/donkey/callers", s.handleCallers)
+	mux.HandleFunc("POST /v1/donkey/web", s.handleWebEvents)
 	return mux
 }
 
@@ -142,9 +144,12 @@ func (s *Service) apiHandler() http.Handler {
 	mux.HandleFunc("GET /readyz", s.health)
 	mux.HandleFunc("GET /v1/traffic", s.requireQueryToken(s.handleTraffic))
 	mux.HandleFunc("GET /v1/resources", s.requireQueryToken(s.handleResources))
+	mux.HandleFunc("GET /v1/analytics", s.requireQueryToken(s.handleAnalytics))
+	mux.HandleFunc("GET /v1/analytics/live", s.requireQueryToken(s.handleAnalyticsLive))
 	mux.HandleFunc("PUT /v1/builds", s.requireQueryToken(s.handlePutBuild))
 	mux.HandleFunc("GET /v1/builds", s.requireQueryToken(s.handleBuilds))
 	mux.HandleFunc("GET /v1/builds/record", s.requireQueryToken(s.handleBuildRecord))
+	mux.HandleFunc("DELETE /v1/builds", s.requireQueryToken(s.handleDeleteBuilds))
 	mux.HandleFunc("DELETE /v1/spaces/{space}", s.requireQueryToken(s.handleDeleteSpace))
 	return mux
 }
@@ -224,7 +229,7 @@ func (s *Service) health(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Service) handleMetrics(w http.ResponseWriter, r *http.Request) {
-	req := new(collectormetricspb.ExportMetricsServiceRequest)
+	req := new(metricsv1.ExportMetricsServiceRequest)
 	mediaType, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if mediaType == "" {
 		mediaType = "application/x-protobuf"
@@ -261,7 +266,7 @@ func (s *Service) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		partialMessage = "only valid OpenTelemetry container CPU usage and memory working-set metrics are retained"
 	case metricPrincipalGateway, metricPrincipalApp:
 		_, rejected, err = s.store.IngestMetrics(r.Context(), req, principal == metricPrincipalGateway)
-		partialMessage = "only valid OpenTelemetry HTTP server duration histograms for the authenticated app scope are retained"
+		partialMessage = "only valid OpenTelemetry HTTP server and MCP server operation duration histograms for the authenticated app scope are retained"
 	default:
 		writeOTLPError(w, mediaType, http.StatusUnauthorized, codepb.Code_UNAUTHENTICATED, "invalid telemetry scope token")
 		return
@@ -273,9 +278,9 @@ func (s *Service) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		writeOTLPError(w, mediaType, http.StatusServiceUnavailable, codepb.Code_UNAVAILABLE, "storing metrics failed")
 		return
 	}
-	response := &collectormetricspb.ExportMetricsServiceResponse{}
+	response := &metricsv1.ExportMetricsServiceResponse{}
 	if rejected > 0 {
-		response.PartialSuccess = &collectormetricspb.ExportMetricsPartialSuccess{
+		response.PartialSuccess = &metricsv1.ExportMetricsPartialSuccess{
 			RejectedDataPoints: rejected,
 			ErrorMessage:       partialMessage,
 		}
@@ -362,6 +367,58 @@ func (s *Service) handleViews(w http.ResponseWriter, r *http.Request) {
 	writeServiceJSON(w, http.StatusOK, map[string]int{"accepted": accepted, "rejected": rejected})
 }
 
+// handleWebEvents takes the gateway's web analytics batches. Only the gateway
+// writes them: it is the one that saw the request, and the visitor hash is
+// its HMAC over what the request carried.
+func (s *Service) handleWebEvents(w http.ResponseWriter, r *http.Request) {
+	if !tokenMatches(r.Header.Get(TelemetryTokenHeader), GatewayToken(s.cfg.Key)) {
+		http.Error(w, "gateway token required", http.StatusUnauthorized)
+		return
+	}
+	var batch WebBatch
+	decoder := json.NewDecoder(io.LimitReader(r.Body, 8<<20))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&batch); err != nil {
+		http.Error(w, "invalid web event batch", http.StatusBadRequest)
+		return
+	}
+	accepted, rejected, err := s.store.InsertWebEvents(r.Context(), batch, time.Now())
+	if err != nil {
+		http.Error(w, "storing web events failed", http.StatusInternalServerError)
+		return
+	}
+	writeServiceJSON(w, http.StatusOK, map[string]int{"accepted": accepted, "rejected": rejected})
+}
+
+func (s *Service) handleAnalytics(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query()
+	selected, err := ParseTrafficRange(query.Get("range"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	filters, err := ParseAnalyticsFilters(query["filter"])
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	report, err := s.store.Analytics(r.Context(), query.Get("space"), query.Get("app"), selected, filters, time.Now())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	writeServiceJSON(w, http.StatusOK, report)
+}
+
+func (s *Service) handleAnalyticsLive(w http.ResponseWriter, r *http.Request) {
+	live, err := s.store.AnalyticsLive(r.Context(), r.URL.Query().Get("space"), r.URL.Query().Get("app"), time.Now())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	writeServiceJSON(w, http.StatusOK, live)
+}
+
 func (s *Service) requireQueryToken(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		token, _ := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
@@ -401,6 +458,14 @@ func (s *Service) handleResources(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeServiceJSON(w, http.StatusOK, report)
+}
+
+func (s *Service) handleDeleteBuilds(w http.ResponseWriter, r *http.Request) {
+	if err := s.store.PurgeBuilds(r.Context(), r.URL.Query().Get("space"), r.URL.Query().Get("app")); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	writeServiceJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 func (s *Service) handleDeleteSpace(w http.ResponseWriter, r *http.Request) {

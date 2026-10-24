@@ -32,19 +32,21 @@ only; no donkey component authorizes on them. The server's `auth`
   and storage failures never grant access or trigger another bootstrap.
 - Platform admins manage all spaces. Space admins manage membership, domains,
   and the space; developers manage apps and services, including credentials,
-  data, and tunnels. Empty space membership grants nobody a role. Permissions
+  data, and tunnels. Viewers can open apps and read status and aggregate metrics,
+  but cannot read logs, build history, files, variables or service data.
+  Empty space membership grants nobody a role. Permissions
   are read on every API request, including the resolved targets of uploads and
-  saved plans. IdP group/role changes still require refreshed identity claims.
+  saved plans. IdP group changes require refreshed identity claims.
 - Platform settings live in the control-plane `donkey` ConfigMap’s
   `platform.yaml` entry, alongside `route.yaml` and `buildkitd.toml`. Each space
   has `<space>-space`, with YAML in `config.yaml`. Docker
-  uses equivalent files in its persistent state volume. Existing spaces
-  migrate with empty membership and unrestricted domains. Only platform admins
-  retain access until space roles are assigned. Subsequent saves use last save
-  wins; no revision is exposed.
+  uses equivalent files in its persistent state volume. Existing app users and
+  groups migrate to space Viewers; saved space settings are preserved.
+  Subsequent saves use last save wins; no revision is exposed.
 - Space `domains` constrains published app hostnames, including shared-address
-  routes. An empty list allows any domain; app visitor access remains governed
-  by the app's independent `access` rules.
+  routes. An empty list allows any domain; protected app access is governed by
+  space membership. Public access requires the space's `allowPublic` opt-in,
+  which defaults to off. Disabling it protects existing public routes.
 
 ## Boundaries that hold
 
@@ -55,11 +57,17 @@ into `/v1/*`; a bare identity header yields 401. The sealed token is minted for
 exactly one backend — routes carry `donkey.local/token: forward`, set only on
 the console/API route, and the gateway strips inbound `X-Access-Token` on every
 route. On Kubernetes, `serverNetworkPolicy` additionally admits only the
-gateway to `donkey-server`'s port. The openai addon's endpoint runs as its own
-workload, **donkey-ai** (`ai` entrypoint) — holding the upstream AI credential
-and read-only access to binding Secrets, and nothing else (no session key, no
-registry login, no write verb, no Docker socket) — so the one process tenants
-can reach is not the one that can write to the cluster.
+gateway to `donkey-server`'s port. Builds and deploys run behind it in
+**donkey-orchestrator**, which `orchestratorNetworkPolicy` opens to
+donkey-server alone; every call there also carries a credential derived from
+the session key (`orchestratorToken`), and the orchestrator verifies the
+caller's sealed token itself before it authorizes the space, so reaching its
+port (as app containers can on Docker) grants nothing. The openai addon's
+endpoint runs as its own workload, **donkey-ai** (`ai` entrypoint) — holding
+the upstream AI credential and read-only access to binding Secrets, and
+nothing else (no session key, no registry login, no write verb, no Docker
+socket) — so the one process tenants can reach is not the one that can write
+to the cluster.
 
 **Telemetry ingestion.** donkey-telemetry accepts OTLP over scope-specific
 tokens: an app token is bound to its own `service.namespace`/`service.name`, the
@@ -163,10 +171,11 @@ trade-offs, marked so.
 
 ### High
 
-**`donkey-server` runs as `cluster-admin`.** In the namespace-per-space
-arrangement the server binds the `cluster-admin` ClusterRole
-(`manifests/rbac.go`, `serverAccessObjects`) — it creates and deletes
-namespaces, which no Role expresses. The pod is otherwise correctly hardened
+**`donkey-server` and `donkey-orchestrator` run as `cluster-admin`.** In the
+namespace-per-space arrangement each binds the `cluster-admin` ClusterRole
+under its own ServiceAccount (`manifests/rbac.go`, `serverAccessObjects`,
+`orchestratorAccessObjects`) — they create and delete namespaces, which no
+Role expresses. The pod is otherwise correctly hardened
 (`systemSecurityContext`), but combined with the fact that tenant apps can
 reach it, the blast radius of any server-side flaw is the whole cluster. The
 confined two-namespace mode (`kubernetes.workload.namespace`) already runs on
@@ -177,7 +186,7 @@ the object universe in `apply.go`.*
 **Privileged BuildKit with an unauthenticated TCP listener.**
 `buildkitPodSpec` runs `--privileged` with `--addr tcp://0.0.0.0:1234` and no
 mTLS — anything that reaches the port runs code on a node as root. Its only
-control is `buildkitNetworkPolicy` (admits donkey-server alone), which depends
+control is `buildkitNetworkPolicy` (admits donkey-orchestrator alone), which depends
 on the CNI actually enforcing NetworkPolicy; kind's default CNI does not, and
 nothing in `internal/doctor` checks that it does. The buildkitd pod is also the
 one workload that omits `AutomountServiceAccountToken: false` without needing
@@ -190,8 +199,8 @@ non-root user.** `replaceContainer` (`pkg/runtime/docker/deploy.go`) builds a
 bare `container.HostConfig{Mounts: mounts}` — no `CapDrop`, no `SecurityOpt`, no
 `User` — while the Kubernetes path sets all of it. Docker's default caps include
 `CAP_NET_RAW`, so a compromised app can put a raw socket on the space bridge and
-ARP-poison it; that bridge also carries donkey-server and donkey-gateway
-(needed for probing and routing), sibling postgres traffic (`sslmode=disable`,
+ARP-poison it; that bridge also carries donkey-server, donkey-orchestrator
+and donkey-gateway (needed for tunnels, probing and routing), sibling postgres traffic (`sslmode=disable`,
 below), and identity headers stamped for signed-in admins. Docker's default
 seccomp still applies, so seccomp parity holds; the gap is capabilities and
 privilege escalation. *Fix: `CapDrop: ["ALL"]`, `SecurityOpt:

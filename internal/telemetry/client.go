@@ -87,12 +87,61 @@ func (c *Client) Resources(ctx context.Context, space, app string, selected Reso
 	return report, nil
 }
 
-func (c *Client) PurgeSpace(ctx context.Context, space string) error {
+// Analytics reads one app's web analytics report.
+func (c *Client) Analytics(ctx context.Context, space, app string, selected TrafficRange, filters []AnalyticsFilter) (AnalyticsReport, error) {
+	query := url.Values{"space": {space}, "app": {app}, "range": {string(selected)}}
+	for _, filter := range filters {
+		query.Add("filter", string(filter.Dimension)+":"+filter.Value)
+	}
+	var report AnalyticsReport
+	return report, c.getJSON(ctx, "/v1/analytics?"+query.Encode(), &report)
+}
+
+// AnalyticsLive reads who is on one app right now.
+func (c *Client) AnalyticsLive(ctx context.Context, space, app string) (AnalyticsLive, error) {
+	var live AnalyticsLive
+	return live, c.getJSON(ctx, "/v1/analytics/live?"+url.Values{"space": {space}, "app": {app}}.Encode(), &live)
+}
+
+func (c *Client) getJSON(ctx context.Context, path string, target any) error {
 	if c == nil || c.baseURL == "" {
 		return errors.New("telemetry service is not configured")
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodDelete,
-		c.baseURL+"/v1/spaces/"+url.PathEscape(space), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	response, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		// The service's 400 names the bad range or filter; pass it on.
+		message, _ := io.ReadAll(io.LimitReader(response.Body, 512))
+		if text := strings.TrimSpace(string(message)); text != "" && response.StatusCode == http.StatusBadRequest {
+			return fmt.Errorf("telemetry service: %s", text)
+		}
+		return fmt.Errorf("telemetry service returned %s", response.Status)
+	}
+	return json.NewDecoder(response.Body).Decode(target)
+}
+
+func (c *Client) PurgeSpace(ctx context.Context, space string) error {
+	return c.delete(ctx, "/v1/spaces/"+url.PathEscape(space))
+}
+
+// PurgeBuilds removes an app's build history.
+func (c *Client) PurgeBuilds(ctx context.Context, space, app string) error {
+	return c.delete(ctx, "/v1/builds?"+url.Values{"space": {space}, "app": {app}}.Encode())
+}
+
+func (c *Client) delete(ctx context.Context, path string) error {
+	if c == nil || c.baseURL == "" {
+		return errors.New("telemetry service is not configured")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, c.baseURL+path, nil)
 	if err != nil {
 		return err
 	}

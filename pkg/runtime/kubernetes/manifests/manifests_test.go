@@ -137,26 +137,34 @@ func TestPublicAndInternalAPIModeRendering(t *testing.T) {
 	}
 }
 
-// Access rules ride on the route for the gateway to enforce — and only on
-// routes that demand a login.
-func TestAccessYAML(t *testing.T) {
+// New routes carry no membership; the gateway reads space permissions.
+func TestRoutesDoNotCarryAppMembership(t *testing.T) {
 	in := testInput(t)
-	in.App.Access = &config.AccessConfig{Users: []string{"ada@example.com"}, Groups: []string{"staff"}}
-	out, err := Render(mustObjects(t, in))
-	if err != nil {
-		t.Fatal(err)
+	route := routeSettings(in, in.Domain, "/")
+	if route.Access != nil {
+		t.Fatal("app membership must be managed on the space")
 	}
-	if !strings.Contains(out, "access.yaml:") || !strings.Contains(out, "- ada@example.com") || !strings.Contains(out, "- staff") {
-		t.Errorf("access rules should ride on the route, got:\n%s", out)
+	in.App.Mode = config.AppModeAPI
+	if !protected(in) {
+		t.Fatal("an API route requires login unless explicitly public")
 	}
+}
 
-	in.App.Access = nil
-	out, err = Render(mustObjects(t, in))
+// Web analytics is on unless the app says no, so the route carries only the
+// no — and keeps it through the ConfigMap the gateway reads.
+func TestRoutesCarryTheAnalyticsOptOut(t *testing.T) {
+	in := testInput(t)
+	if route := routeSettings(in, in.Domain, "/"); route.Analytics != "" {
+		t.Fatalf("an app that said nothing keeps the default, got %q", route.Analytics)
+	}
+	off := false
+	in.App.Analytics = &off
+	read, err := ReadRoute(appRoute(in))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(out, RouteAccessKey) {
-		t.Error("no rules, no access.yaml")
+	if read.Analytics != config.AnalyticsOff {
+		t.Fatalf("analytics: false should reach the gateway, got %q", read.Analytics)
 	}
 }
 
@@ -187,10 +195,8 @@ func TestAppObjectsGolden(t *testing.T) {
 	}
 }
 
-func TestAppTelemetryDefaultsAreScopedAndOverridable(t *testing.T) {
+func TestAppTelemetryNeedsNoSDKConfiguration(t *testing.T) {
 	in := testInput(t)
-	in.TelemetryEndpoint = "http://donkey-telemetry.donkey-system.svc:4318"
-	in.TelemetryToken = "scoped-token"
 	objects, err := AppObjects(in)
 	if err != nil {
 		t.Fatal(err)
@@ -199,21 +205,8 @@ func TestAppTelemetryDefaultsAreScopedAndOverridable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{
-		"name: shop-telemetry",
-		"OTEL_SERVICE_NAME: shop",
-		"OTEL_RESOURCE_ATTRIBUTES: service.namespace=acme",
-		"OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf",
-		"OTEL_METRICS_EXPORTER: otlp",
-	} {
-		if !strings.Contains(rendered, want) {
-			t.Errorf("telemetry defaults should contain %q", want)
-		}
-	}
-	_, envFrom := appEnvironment(in)
-	if len(envFrom) < 2 || envFrom[0].SecretRef == nil || envFrom[0].SecretRef.Name != TelemetrySecretName(in.Name()) ||
-		envFrom[1].SecretRef == nil || envFrom[1].SecretRef.Name != EnvSecretName(in.Name()) {
-		t.Fatalf("telemetry must load before the user env Secret so user values win: %+v", envFrom)
+	if strings.Contains(rendered, "OTEL_") || strings.Contains(rendered, "shop-telemetry") {
+		t.Fatal("gateway telemetry must not inject an application SDK or credentials")
 	}
 }
 

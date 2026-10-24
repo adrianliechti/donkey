@@ -34,7 +34,7 @@ type Provider interface {
 	// EnsureSpaceConfigs migrates existing spaces without changing saved roles or domains.
 	EnsureSpaceConfigs(ctx context.Context) error
 	CreateSpace(ctx context.Context, space string) error
-	// SpaceConfig keeps management permissions on the space. Empty rules grant
+	// SpaceConfig keeps membership and public-access policy on the space. Empty rules grant
 	// nobody a role. Saving replaces the policy; the last save wins.
 	SpaceConfig(ctx context.Context, space string) (config.SpaceConfig, error)
 	SetSpaceConfig(ctx context.Context, space string, access config.SpaceConfig) error
@@ -88,8 +88,9 @@ type Provider interface {
 	// shared-address routes keep serving and follow the app's exposure. A
 	// non-empty note is worth showing ("the certificate is still being issued").
 	ApplyNetwork(ctx context.Context, cfg *config.AppConfig) (note string, err error)
-	// SetAccess takes effect within seconds; no deploy, no restart.
-	SetAccess(ctx context.Context, space, app string, access *config.AccessConfig) error
+	// ReconcileAppRoutes removes legacy app access lists and, when protect is
+	// true, requires login on every route, including shared addresses.
+	ReconcileAppRoutes(ctx context.Context, space, app string, protect bool) error
 
 	// --- Services (addons) ------------------------------------------------
 
@@ -285,6 +286,8 @@ type AppStatus struct {
 	Mode string
 	// CORS is the gateway's cross-origin policy; empty disables it.
 	CORS string
+	// Stack is what the app is written in, as its last deploy recorded it.
+	Stack string
 	// Port the app listens on (donkey.yaml's `port`).
 	Port int32
 	// Restarts sums restarts across instances — what separates "quietly
@@ -320,6 +323,9 @@ type DeploySpec struct {
 	// Decisions records what this deploy settled (storage, health route), so
 	// a no-build deploy keeps the same shape.
 	Decisions string
+	// Stack is what the app is written in, read off its recipe (see
+	// detect.Stack); "" when no base image says.
+	Stack string
 	// NoWait skips waiting for the app to become healthy.
 	NoWait bool
 }
@@ -366,6 +372,8 @@ type PathRouteState struct {
 	Protected bool
 	Mode      string
 	CORS      string
+	// Access is read only to migrate legacy app membership.
+	Access *config.AccessConfig
 }
 
 // NetworkState is how an app is reached, read from actual state.
@@ -376,7 +384,10 @@ type NetworkState struct {
 	Protected  bool
 	Mode       string
 	CORS       string
-	// Access are the rules the gateway enforces on the app's own route.
+	// Analytics is config.AnalyticsOff when the app opted out of web
+	// analytics.
+	Analytics string
+	// Access is legacy membership read only during startup migration.
 	Access *config.AccessConfig
 	Routes []PathRouteState
 }

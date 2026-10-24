@@ -52,6 +52,10 @@ type Config struct {
 	// forwarded there. The address only, no path: what the console asks for
 	// is what gets proxied.
 	AIURL string
+	// OrchestratorURL is donkey-orchestrator's address. donkey-server
+	// forwards plans, deploys and the changes serialized with them there —
+	// see orchestrator.go. The address only, no path.
+	OrchestratorURL string
 	// TelemetryURL is the private query listener of the traffic telemetry
 	// service. App exporters use a different port and credential.
 	TelemetryURL          string
@@ -102,6 +106,9 @@ type Config struct {
 	// seed, the first verified sign-in becomes the first platform admin.
 	PlatformAdmins *config.AccessConfig
 	AIModel        string
+	// DataDir is donkey-server's own volume. The source history lives in its
+	// source/ folder, one git repository per app; empty turns it off.
+	DataDir string
 }
 
 func FromEnv() (*Config, error) {
@@ -128,8 +135,10 @@ func FromEnv() (*Config, error) {
 		// internet, so it is on only when the installation asked for it.
 		RestrictEgress:        os.Getenv("DONKEY_RESTRICT_EGRESS") == "true",
 		AIURL:                 os.Getenv("DONKEY_AI_URL"),
+		OrchestratorURL:       envOr("DONKEY_ORCHESTRATOR_URL", "http://donkey-orchestrator:8087"),
 		TelemetryURL:          envOr("DONKEY_TELEMETRY_URL", "http://donkey-telemetry:9090"),
 		TelemetryOTLPEndpoint: envOr("DONKEY_TELEMETRY_OTLP_ENDPOINT", "http://donkey-telemetry:4318"),
+		DataDir:               os.Getenv("DONKEY_DATA_DIR"),
 		OIDCIssuer:            os.Getenv("DONKEY_OIDC_ISSUER"),
 		OIDCClientID:          os.Getenv("DONKEY_OIDC_CLIENT_ID"),
 		OIDCClientSecret:      os.Getenv("DONKEY_OIDC_CLIENT_SECRET"),

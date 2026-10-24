@@ -58,7 +58,7 @@ func (r planRuntime) PlatformConfig(context.Context) (config.PlatformConfig, err
 
 func (planRuntime) ValidateSpace(string) error { return nil }
 func (planRuntime) SpaceConfig(context.Context, string) (config.SpaceConfig, error) {
-	return config.SpaceConfig{}, nil
+	return config.SpaceConfig{AllowPublic: true}, nil
 }
 func (planRuntime) CheckSpaceFree(context.Context, string) error   { return nil }
 func (r planRuntime) ListSpaces(context.Context) ([]string, error) { return r.spaces, nil }
@@ -120,9 +120,9 @@ func appUpload(t *testing.T, extra map[string]string) []byte {
 func callPlan(t *testing.T, s *Server, body []byte, query string) *Plan {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, "https://donkey.example.com/v1/plans?"+query, bytes.NewReader(body))
-	asAdmin(t, req)
+	asForwarded(t, req)
 	rec := httptest.NewRecorder()
-	s.routes().ServeHTTP(rec, req)
+	s.orchestratorRoutes().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("plan: want 200, got %d — %s", rec.Code, rec.Body.String())
 	}
@@ -137,9 +137,9 @@ func callUpdate(t *testing.T, s *Server, id string, edit PlanEdit) *Plan {
 	t.Helper()
 	body, _ := json.Marshal(edit)
 	req := httptest.NewRequest(http.MethodPut, "https://donkey.example.com/v1/plans/"+id, bytes.NewReader(body))
-	asAdmin(t, req)
+	asForwarded(t, req)
 	rec := httptest.NewRecorder()
-	s.routes().ServeHTTP(rec, req)
+	s.orchestratorRoutes().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("update: want 200, got %d — %s", rec.Code, rec.Body.String())
 	}

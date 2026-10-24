@@ -473,6 +473,10 @@ func (s *Server) resolveProject(ctx context.Context, id string, state *projectSt
 					block(app.Name + " needs an address for its browser connections.")
 					continue
 				}
+				if to.app.Internal {
+					block(target + " is internal and cannot receive browser connections. Use a server connection or change its exposure.")
+					continue
+				}
 				if c.Env == "" && c.File == "" {
 					// A same-origin caller may already be connected by donkey.yaml.
 					// Require a declared route covering the path the caller uses.

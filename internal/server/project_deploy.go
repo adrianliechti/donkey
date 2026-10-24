@@ -120,17 +120,43 @@ func (s *Server) handleProjectDeploy(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// The reviewed fixes are donkey's, accepted by the person deploying: the
+	// source history keeps the upload as sent, and the fixes show up as the
+	// platform's change beside whatever the build itself does.
+	var pristine string
+	if len(patches) > 0 && r.URL.Query().Get("dryRun") != "true" {
+		if pristine, err = os.MkdirTemp("", "donkey-project-upload-*"); err == nil {
+			defer os.RemoveAll(pristine)
+			err = os.CopyFS(pristine, os.DirFS(dir))
+		}
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err)
+			return
+		}
+	}
 	if err := applyProjectPatches(dir, patches); err != nil {
 		writeErr(w, http.StatusConflict, err)
 		return
 	}
 	out := newLineStreamer(w, nil)
 	ctx := context.WithoutCancel(r.Context())
+	dryRun := r.URL.Query().Get("dryRun") == "true"
+	// Every app of the project is on the deploy board from the start,
+	// queued until its turn comes.
+	if !dryRun {
+		for _, app := range apps {
+			ticket := s.board.start(app.app.Space, app.app.Name, deployer(r), "console", time.Now())
+			defer ticket.finish(false, "the deploy stopped before it finished")
+			out.watch(app.app.Name, ticket)
+		}
+	}
 	// Hold the whole project, including deferred waits for cyclic peers.
 	// Stable ordering lets overlapping project uploads wait without deadlock.
+	spaceMu := s.spaceLock(apps[0].app.Space)
+	spaceMu.RLock()
+	defer spaceMu.RUnlock()
 	unlock := s.lockProject(apps)
 	defer unlock()
-	dryRun := r.URL.Query().Get("dryRun") == "true"
 	hosts := map[string]string{}
 	connected := map[string]bool{}
 	for _, c := range connections {
@@ -154,6 +180,7 @@ func (s *Server) handleProjectDeploy(w http.ResponseWriter, r *http.Request) {
 			s.persistRelease(ctx, res.Space, res.App, recorder.finish(s, ctx, configs[res.App]))
 		}
 		out.Update(DeployUpdate{App: res.App, Result: &res})
+		out.ticket(res.App).finish(res.OK, res.Error)
 	}
 	for _, index := range order {
 		sp := apps[index]
@@ -161,8 +188,8 @@ func (s *Server) handleProjectDeploy(w http.ResponseWriter, r *http.Request) {
 		out.Line("Deploying %s (%s)…", sp.app.Name, sp.root)
 		recorder := newReleaseRecorder(time.Now(), plan.Apps[index])
 		records[sp.app.Name], configs[sp.app.Name] = recorder, sp.app
-		out.release = recorder
-		res := s.deployApp(ctx, out, filepath.Join(dir, sp.root), sp.app, deployOpts{Root: dir, Analysis: sp.analysis, NoWait: cyclic, Hosts: hosts, Reviewed: true, DryRun: dryRun, NoVerify: connected[sp.root]})
+		out.release, out.current = recorder, sp.app.Name
+		res := s.deployApp(ctx, out, filepath.Join(dir, sp.root), sp.app, deployOpts{Root: dir, Pristine: pristine, Analysis: sp.analysis, NoWait: cyclic, Hosts: hosts, Reviewed: true, DryRun: dryRun, NoVerify: connected[sp.root]})
 		out.release = nil
 		if !cyclic || dryRun {
 			finish(res)

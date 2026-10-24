@@ -6,8 +6,9 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"strings"
+	"time"
 
-	collectormetricspb "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
+	metricsv1 "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
 
 	"github.com/adrianliechti/donkey/internal/config"
 )
@@ -24,6 +25,7 @@ const (
 	runtimeTokenPurpose = "donkey/telemetry/runtime/v1"
 	appVisitorPurpose   = "donkey/telemetry/app-visitor/v1"
 	spaceVisitorPurpose = "donkey/telemetry/space-visitor/v1"
+	webVisitorPurpose   = "donkey/telemetry/web-visitor/v1"
 )
 
 func GatewayToken(key []byte) string { return scopedToken(key, gatewayTokenPurpose) }
@@ -53,6 +55,18 @@ func VisitorHashes(key []byte, space, app, subject string) (appHash, spaceHash s
 		scopedToken(key, spaceVisitorPurpose, space, subject)
 }
 
+// WebVisitor is the web analytics visitor: for a signed-in visitor a per-app
+// hash of the subject, stable across days; for anyone else a per-app hash of
+// the address and browser that changes with the UTC day, so it cannot follow
+// a person from one day to the next or from one app to another. Nothing is
+// stored on the visitor's device either way.
+func WebVisitor(key []byte, space, app, subject, address, userAgent string, day time.Time) string {
+	if subject != "" {
+		return scopedToken(key, webVisitorPurpose, space, app, "subject", subject)
+	}
+	return scopedToken(key, webVisitorPurpose, space, app, "anonymous", day.UTC().Format(time.DateOnly), address, userAgent)
+}
+
 func scopedToken(key []byte, values ...string) string {
 	h := hmac.New(sha256.New, key)
 	for _, value := range values {
@@ -79,7 +93,7 @@ const (
 	metricPrincipalRuntime
 )
 
-func metricPrincipal(req *collectormetricspb.ExportMetricsServiceRequest, token string, key []byte) (metricPrincipalKind, bool) {
+func metricPrincipal(req *metricsv1.ExportMetricsServiceRequest, token string, key []byte) (metricPrincipalKind, bool) {
 	if tokenMatches(token, GatewayToken(key)) {
 		return metricPrincipalGateway, true
 	}

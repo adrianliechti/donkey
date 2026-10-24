@@ -71,12 +71,14 @@ type spaceListResponse struct {
 	Domains       map[string][]string `json:"domains"`
 	PlatformAdmin bool                `json:"platformAdmin"`
 	Domain        string              `json:"domain"`
+	AllowPublic   map[string]bool     `json:"allowPublic"`
 }
 
 func (s *Server) spaceList(ctx context.Context, settings map[string]config.SpaceConfig) spaceListResponse {
 	names := []string{}
 	roles := map[string]string{}
 	domains := map[string][]string{}
+	public := map[string]bool{}
 	for space, policy := range settings {
 		role := policy.Role(requestIdentity(ctx))
 		if s.platformAdmin(ctx) {
@@ -86,12 +88,13 @@ func (s *Server) spaceList(ctx context.Context, settings map[string]config.Space
 			names = append(names, space)
 			roles[space] = role
 			domains[space] = append([]string{}, policy.Domains...)
+			public[space] = policy.AllowPublic
 		}
 	}
 	sort.Strings(names)
 	return spaceListResponse{
 		Spaces: names, Roles: roles, Domains: domains,
-		PlatformAdmin: s.platformAdmin(ctx), Domain: s.cfg.Domain,
+		PlatformAdmin: s.platformAdmin(ctx), Domain: s.cfg.Domain, AllowPublic: public,
 	}
 }
 
@@ -143,6 +146,9 @@ func (s *Server) handleCreateSpace(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
+	mu := s.spaceLock(req.Name)
+	mu.Lock()
+	defer mu.Unlock()
 	if _, err := s.rt.SpaceConfig(r.Context(), req.Name); err == nil {
 		writeErr(w, http.StatusConflict, fmt.Errorf("the space already exists"))
 		return
@@ -166,7 +172,8 @@ func (s *Server) handleCreateSpace(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleDeleteSpace removes the whole lifecycle boundary: routes, apps,
-// bindings, managed services, disks, runtime space, and retained telemetry.
+// bindings, managed services, disks, runtime space, retained telemetry and
+// source history.
 func (s *Server) handleDeleteSpace(w http.ResponseWriter, r *http.Request) {
 	space, err := s.space(r)
 	if err != nil {
@@ -184,6 +191,12 @@ func (s *Server) handleDeleteSpace(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadGateway, err)
 		return
 	}
+	// The space's source history goes with it, so a new space by the same
+	// name starts with none of the old one's code.
+	if err := s.history.RemoveSpace(space); err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -198,10 +211,11 @@ type AppListEntry struct {
 	Restarts int32  `json:"restarts,omitempty"`
 	// StartedAt is when the newest pod came up (RFC 3339; empty when none).
 	StartedAt string `json:"startedAt,omitempty"`
-	// Mode, exposure, disk and attached services —
-	// what the console's canvas cards show without a per-app request.
+	// Mode, exposure, stack, disk and attached services — what the
+	// console's cards show without a per-app request.
 	Exposure   string   `json:"exposure,omitempty"`
 	Mode       string   `json:"mode,omitempty"`
+	Stack      string   `json:"stack,omitempty"`
 	HasStorage bool     `json:"hasStorage,omitempty"`
 	Addons     []string `json:"addons,omitempty"`
 }
@@ -256,7 +270,7 @@ func (s *Server) listAppEntries(ctx context.Context) ([]AppListEntry, error) {
 			}
 			roles[ref.Space] = role
 		}
-		if role != config.SpaceAdmin && role != config.SpaceDeveloper {
+		if role != config.SpaceAdmin && role != config.SpaceDeveloper && role != config.SpaceViewer {
 			continue
 		}
 		var st *runtime.AppStatus
@@ -272,10 +286,12 @@ func (s *Server) listAppEntries(ctx context.Context) ([]AppListEntry, error) {
 				apps = append(apps, AppListEntry{Name: ref.App, Space: ref.Space, Ready: "status unavailable"})
 				continue
 			}
-			hasStorage = s.rt.HasData(ctx, ref.Space, ref.App)
-			if bindings, err := s.rt.ListServices(ctx, ref.Space, ref.App); err == nil {
-				for _, b := range bindings {
-					addonNames = append(addonNames, b.Name)
+			if role != config.SpaceViewer {
+				hasStorage = s.rt.HasData(ctx, ref.Space, ref.App)
+				if bindings, err := s.rt.ListServices(ctx, ref.Space, ref.App); err == nil {
+					for _, b := range bindings {
+						addonNames = append(addonNames, b.Name)
+					}
 				}
 			}
 		}
@@ -291,6 +307,7 @@ func (s *Server) listAppEntries(ctx context.Context) ([]AppListEntry, error) {
 			Restarts:   st.Restarts,
 			Exposure:   exposureOf(st),
 			Mode:       modeOfStatus(st),
+			Stack:      st.Stack,
 			HasStorage: hasStorage,
 			Addons:     addonNames,
 		}
@@ -299,6 +316,9 @@ func (s *Server) listAppEntries(ctx context.Context) ([]AppListEntry, error) {
 		}
 		if st.PublicHost != "" {
 			entry.URL = s.cfg.Scheme() + "://" + st.PublicHost
+		}
+		if role == config.SpaceViewer {
+			entry.Image, entry.Addons, entry.HasStorage = "", nil, false
 		}
 		apps = append(apps, entry)
 	}

@@ -178,9 +178,13 @@ type route struct {
 	// Mode describes the route's traffic. A login-protected web route uses a
 	// browser session; a login-protected API uses OAuth. Public routes proxy
 	// directly in either mode.
-	Mode   string
-	CORS   string
-	Access *config.AccessConfig
+	Mode string
+	CORS string
+	// Analytics is config.AnalyticsOff when the app opted out of web
+	// analytics; see countsVisits.
+	Analytics string
+	Policy    *config.SpaceConfig
+	Platform  config.PlatformConfig
 	// Token forwards a short-lived sealed credential (X-Access-Token) to the
 	// backend. Only donkey's own API route carries it: an app given one
 	// could replay its visitors' credentials against the API.
@@ -271,13 +275,18 @@ func New(cfg *Config) (*Server, error) {
 type k8sRoutes struct{ client *k8s.Client }
 
 func (k k8sRoutes) list(ctx context.Context) ([]route, error) {
-	cms, err := k.client.ListManagedRoutes(ctx)
+	cms, err := k.client.ListGatewayConfigMaps(ctx)
+	if err != nil {
+		return nil, err
+	}
+	policies, platform, err := gatewayPolicies(cms)
 	if err != nil {
 		return nil, err
 	}
 	var out []route
 	for _, cm := range cms {
 		if r, ok := routeFromConfigMap(cm); ok {
+			applyPolicy(&r, policies, platform)
 			out = append(out, r)
 		}
 	}
@@ -292,16 +301,22 @@ func (f fileRoutes) list(ctx context.Context) ([]route, error) {
 	if err != nil {
 		return nil, err
 	}
+	policies, platform, err := docker.ReadGatewayPolicies(f.dir)
+	if err != nil {
+		return nil, err
+	}
 	var out []route
 	for _, rec := range records {
 		target, err := url.Parse(rec.Backend)
 		if err != nil || target.Scheme != "http" || target.Host == "" || rec.Host == "" {
 			continue
 		}
-		r := route{Space: rec.Space, App: rec.App, Host: rec.Host, Path: rec.Path, Backend: target, Login: rec.Login, Mode: rec.Mode, CORS: rec.CORS, Access: rec.Access, Token: rec.Token, StripPrefix: rec.StripPrefix}
+
+		r := route{Space: rec.Space, App: rec.App, Host: rec.Host, Path: rec.Path, Backend: target, Login: rec.Login, Mode: rec.Mode, CORS: rec.CORS, Analytics: rec.Analytics, Token: rec.Token, StripPrefix: rec.StripPrefix}
 		if r.Path == "" {
 			r.Path = "/"
 		}
+		applyPolicy(&r, policies, platform)
 		out = append(out, r)
 	}
 	return out, nil
@@ -427,6 +442,23 @@ func (s *Server) refreshRoutes(ctx context.Context) error {
 		s.mu.Unlock()
 		list, err := s.source.list(ctx)
 		if err != nil {
+			// Cached membership is not authority after a failed policy read.
+			// Keep the console reachable, but fail closed for app traffic.
+			s.mu.Lock()
+			for host, routes := range s.routes {
+				var system []route
+				for _, r := range routes {
+					if r.Space == "" && r.App == "" {
+						system = append(system, r)
+					}
+				}
+				if len(system) == 0 {
+					delete(s.routes, host)
+				} else {
+					s.routes[host] = system
+				}
+			}
+			s.mu.Unlock()
 			return nil, err
 		}
 		table := map[string][]route{}
@@ -474,8 +506,8 @@ func routeFromConfigMap(cm corev1.ConfigMap) (route, bool) {
 	}
 	return route{
 		Space: space, App: app, Host: settings.Host, Path: settings.Path, Backend: target,
-		Login: settings.Login, Mode: settings.Mode, CORS: settings.CORS, Token: systemRoute,
-		StripPrefix: settings.StripPrefix, Access: settings.Access,
+		Login: settings.Login, Mode: settings.Mode, CORS: settings.CORS, Analytics: settings.Analytics, Token: systemRoute,
+		StripPrefix: settings.StripPrefix,
 	}, true
 }
 
