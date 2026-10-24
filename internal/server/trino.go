@@ -3,7 +3,6 @@ package server
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,7 +12,6 @@ import (
 	"time"
 
 	"github.com/adrianliechti/donkey/internal/addons"
-	"github.com/adrianliechti/donkey/internal/identity"
 	"github.com/adrianliechti/donkey/pkg/runtime"
 )
 
@@ -86,9 +84,10 @@ func (c *trinoClient) request(ctx context.Context, method string, target *url.UR
 		if err != nil {
 			return nil, fmt.Errorf("invalid Trino request")
 		}
-		// The header apps hand on from the gateway, so one endpoint serves
-		// both: it exchanges the user's token for Trino's.
-		req.Header.Set("X-Auth-Request-Access-Token", c.token)
+		// Present the user's IdP token to the add-on proxy. The add-on owns
+		// delegation to Trino. Send it on the configured HTTP or HTTPS URL,
+		// including result fetches, retries and cancellation requests.
+		req.Header.Set("Authorization", "Bearer "+c.token)
 		req.Header.Set("X-Trino-Source", "donkey-console")
 		req.Header.Set("Accept", "application/json")
 		if method == http.MethodPost {
@@ -213,23 +212,19 @@ func trinoIdent(value string) (string, error) {
 	return `"` + strings.ReplaceAll(value, `"`, `""`) + `"`, nil
 }
 
-// trinoToken is the caller's IdP access token for donkey's API — the endpoint
-// behind TRINO_URL exchanges it on-behalf-of for Trino's. Never donkey's own
-// sealed token: nothing outside donkey can read it, and anyone holding it
-// could replay it against this API.
-func (s *Server) trinoToken(ctx context.Context) (string, error) {
-	if !s.upstream.Enabled() {
-		return "", runtime.UserError{Err: fmt.Errorf("Trino needs the user's identity provider token, and this installation names no auth.scope")}
+// userToken is the caller's IdP access token for donkey's API — what Trino's
+// add-on exchanges on-behalf-of for its own, and what an HTTP tunnel presents
+// for the user. The gateway mints it into the sealed token it forwards; the
+// server never mints one. Never donkey's own sealed token: nothing outside
+// donkey can read it, and anyone holding it could replay it against this API.
+func (s *Server) userToken(ctx context.Context) (string, error) {
+	if s.cfg.OIDCScope == "" {
+		return "", runtime.UserError{Err: fmt.Errorf("this service needs the user's identity provider token, and this installation names no auth.scope")}
 	}
-	id := requestIdentity(ctx)
-	if id == nil || id.RefreshToken == "" {
-		return "", runtime.UserError{Err: fmt.Errorf("this sign-in carries no identity provider token for Trino — sign out and in again (or run `donkey login`)")}
+	if id := requestIdentity(ctx); id != nil && id.AccessToken != "" {
+		return id.AccessToken, nil
 	}
-	token, err := s.upstream.AccessToken(ctx, id.RefreshToken)
-	if errors.Is(err, identity.ErrUpstreamToken) {
-		return "", runtime.UserError{Err: fmt.Errorf("%w — sign out and in again (or run `donkey login`)", err)}
-	}
-	return token, err
+	return "", runtime.UserError{Err: fmt.Errorf("this request carries no identity provider token — go through donkey's address, or sign out and in again (`donkey login` for the CLI)")}
 }
 
 // Each database request brings the current caller's credential. The client

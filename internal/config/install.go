@@ -618,9 +618,10 @@ type InstallAuth struct {
 	// Scope is donkey's own API in the IdP (e.g.
 	// api://<donkey-client-id>/<scope>), asked for at login on top of
 	// openid/profile/email. Logins then keep the IdP's refresh token, and
-	// every app — and every console viewer, for the service it calls —
-	// receives the user's access token for this scope as
-	// X-Auth-Request-Access-Token, to exchange on-behalf-of downstream.
+	// login-protected apps receive the user's access token as
+	// X-Forwarded-Access-Token.
+	// The Trino console sends it as Authorization: Bearer to its add-on
+	// service, which handles on-behalf-of delegation downstream.
 	// Empty: none of that.
 	Scope string `json:"scope,omitempty"`
 }

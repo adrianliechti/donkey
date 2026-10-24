@@ -173,3 +173,24 @@ func TestExaConsoleUsesProviderBindingAndKeepsSessionPrivate(t *testing.T) {
 		})
 	}
 }
+
+// A binding URL without a path (an Exa endpoint attached at its root) still
+// yields an absolute request path upstream.
+func TestServiceConsoleToURLWithoutPath(t *testing.T) {
+	var requested string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requested = r.RequestURI
+		fmt.Fprint(w, `{"results":[]}`)
+	}))
+	defer upstream.Close()
+	s := planServer(consoleRuntime{connection: runtime.ServiceConnection{Type: "exa", Protocol: "exa", Binding: map[string]string{
+		"EXA_BASE_URL": upstream.URL, "EXA_API_KEY": "key",
+	}}}, &ai.Analysis{})
+	req := httptest.NewRequest("POST", "/v1/spaces/default/services/exa/exa/search", strings.NewReader(`{}`))
+	asAdmin(t, req)
+	rec := httptest.NewRecorder()
+	s.routes().ServeHTTP(rec, req)
+	if rec.Code != 200 || requested != "/search" {
+		t.Fatalf("console: %d %s, upstream saw %q", rec.Code, rec.Body, requested)
+	}
+}

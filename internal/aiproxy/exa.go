@@ -22,6 +22,11 @@ func ExaHandler(upstreamBase, upstreamKey string, valid Tokens) (http.Handler, e
 		return nil, err
 	}
 	upstream, _ := url.Parse(strings.TrimRight(upstreamBase, "/"))
+	// JoinPath on an empty path yields a relative one ("search"), which the
+	// proxy would send as is in the request line — the default base has none.
+	if upstream.Path == "" {
+		upstream.Path = "/"
+	}
 	tokens := newTokenCache(valid)
 
 	proxy := &httputil.ReverseProxy{

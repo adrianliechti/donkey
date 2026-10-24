@@ -9,16 +9,20 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/coreos/go-oidc/v3/oidc"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
@@ -398,8 +402,9 @@ func TestProtocolVersionUsesOpenTelemetryValues(t *testing.T) {
 }
 
 // The proxy's identity contract: forged inbound identity is dropped on every
-// route, and the sealed credential goes only to the route marked for it —
-// an app handed one could replay its visitors against the API.
+// route, only routes behind a login learn who the visitor is, and the sealed
+// credential goes only to the route marked for it — an app handed one could
+// replay its visitors against the API.
 func TestProxyIdentityAndToken(t *testing.T) {
 	var got http.Header
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -411,26 +416,59 @@ func TestProxyIdentityAndToken(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := testServer()
-	sess := &session{Subject: "u1", Email: "u1@example.com", Groups: []string{"dev"},
-		Expires: time.Now().Add(time.Hour).Unix()}
+	sess := &session{Subject: "u1", Email: "u1@example.com", PreferredUsername: "ada", Name: "Ada\r\nLovelace",
+		Groups: []string{"dev"}, Expires: time.Now().Add(time.Hour).Unix()}
 
+	// Names donkey sets, in both of oauth2-proxy's families, and names it
+	// never sets but an app may trust — however they are spelled.
+	forged := []string{"X-Auth-Request-User", "X-Auth-Request-Email", "X-Auth-Request-Groups", "X-Auth-Request-Roles",
+		"X-Auth-Request-Access-Token", "X-Auth-Request-Preferred-Username", "X-Auth-Request-Redirect", accessTokenHeader,
+		"X-Forwarded-User", "X-Forwarded-Email", "X-Forwarded-Groups", "X-Forwarded-Roles", "X-Forwarded-Preferred-Username",
+		"X-Forwarded-Name", "X-Forwarded-Access-Token"}
 	send := func(rt route, sess *session) {
 		req := httptest.NewRequest(http.MethodGet, "https://app.example.com/x", nil)
 		// A hostile client types identity — all of it must vanish.
-		req.Header.Set("X-Auth-Request-User", "forged")
-		req.Header.Set("X-Access-Token", "forged")
-		s.proxy(rt, sess, false).ServeHTTP(httptest.NewRecorder(), req)
+		for _, h := range forged {
+			req.Header.Set(h, "forged")
+		}
+		req.Header["x-auth-request-preferred-username"] = []string{"forged"}
+		s.proxy(rt, sess, false, "").ServeHTTP(httptest.NewRecorder(), req)
 	}
 
 	send(route{Backend: target}, sess)
-	if got.Get("X-Auth-Request-User") != "u1" {
-		t.Errorf("an app should see the real visitor, got %q", got.Get("X-Auth-Request-User"))
+	for _, name := range forged {
+		if got.Get(name) != "" {
+			t.Errorf("a public route must learn nothing about a signed-in visitor, got %s: %q", name, got.Get(name))
+		}
+	}
+	if got.Get("X-Forwarded-For") == "" || got.Get("X-Forwarded-Proto") != "https" {
+		t.Error("the proxy's own X-Forwarded headers are not identity and must stay")
+	}
+
+	send(route{Backend: target, Login: true}, sess)
+	for name, want := range map[string]string{
+		"User": "u1", "Email": "u1@example.com", "Preferred-Username": "ada", "Name": "AdaLovelace", "Groups": "dev",
+		"Roles": "", "Access-Token": "", "Redirect": "",
+	} {
+		// X-Forwarded-* first, X-Auth-Request-* as the fallback, alike.
+		if got.Get("X-Forwarded-"+name) != want || got.Get("X-Auth-Request-"+name) != want {
+			t.Errorf("%s: got %q and %q, want %q", name, got.Get("X-Forwarded-"+name), got.Get("X-Auth-Request-"+name), want)
+		}
+	}
+
+	// Entra's sub is pairwise per app: X-Forwarded-User is its object ID,
+	// while the fallback keeps the sub it always carried.
+	entra := *sess
+	entra.ObjectID = "6e1c0a4f-0000-4000-8000-0000000000aa"
+	send(route{Backend: target, Login: true}, &entra)
+	if got.Get("X-Forwarded-User") != entra.ObjectID || got.Get("X-Auth-Request-User") != "u1" {
+		t.Errorf("Entra user: got %q and %q", got.Get("X-Forwarded-User"), got.Get("X-Auth-Request-User"))
 	}
 	if got.Get("X-Access-Token") != "" {
 		t.Error("an app must never receive a credential — forged or minted")
 	}
 
-	send(route{Backend: target, Token: true}, sess)
+	send(route{Backend: target, Login: true, Token: true}, sess)
 	tok := got.Get("X-Access-Token")
 	if tok == "" || tok == "forged" {
 		t.Fatalf("the API route should carry a minted token, got %q", tok)
@@ -446,16 +484,17 @@ func TestProxyIdentityAndToken(t *testing.T) {
 		t.Errorf("a forwarded token must be short-lived, got %s", remaining)
 	}
 
-	send(route{Backend: target, Token: true}, nil)
+	send(route{Backend: target, Login: true, Token: true}, nil)
 	if got.Get("X-Access-Token") != "" || got.Get("X-Auth-Request-User") != "" {
 		t.Error("no session, no identity — nothing may reach the backend")
 	}
 }
 
-// With auth.scope configured every app gets the visitor's IdP access
-// token — never the refresh token behind it, never a forged one — and the API
-// route's sealed token carries the refresh token so the server can mint its
-// own for viewers.
+// With auth.scope configured every login-protected app gets the visitor's IdP
+// access token — never the refresh token behind it, never a forged one, never
+// on a public route the session cookie merely reaches — and the API
+// route's sealed token carries the access token, never the refresh token: the
+// server hands it on and never mints one itself.
 func TestProxyForwardsIdentityProviderToken(t *testing.T) {
 	var got http.Header
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -468,8 +507,8 @@ func TestProxyForwardsIdentityProviderToken(t *testing.T) {
 	}
 	s := testServer()
 	s.upstream = &identity.Upstream{Issuer: "https://id.invalid", ClientID: "donkey", ClientSecret: "secret", Scope: "api://donkey/default"}
-	s.upstream.Remember("rt-u1", "entra-u1", time.Now().Add(time.Hour))
-	sess := &session{Subject: "u1", Email: "u1@example.com", RefreshToken: "rt-u1",
+	s.upstream.Remember(identity.Grant("rt-u1"), "rt-u1", "entra-u1", time.Now().Add(time.Hour), time.Now().Add(time.Hour))
+	sess := &session{Subject: "u1", Email: "u1@example.com", RefreshToken: "rt-u1", Grant: identity.Grant("rt-u1"),
 		Expires: time.Now().Add(time.Hour).Unix()}
 
 	send := func(rt route, sess *session) {
@@ -478,12 +517,21 @@ func TestProxyForwardsIdentityProviderToken(t *testing.T) {
 		req.AddCookie(&http.Cookie{Name: sessionCookie, Value: "sealed-0"})
 		req.AddCookie(&http.Cookie{Name: sessionCookie + "_1", Value: "sealed-1"})
 		req.AddCookie(&http.Cookie{Name: "app", Value: "keep"})
-		s.proxy(rt, sess, false).ServeHTTP(httptest.NewRecorder(), req)
+		rec := httptest.NewRecorder()
+		s.proxy(rt, sess, false, s.idpToken(rec, req, rt, sess, false, time.Time{})).ServeHTTP(rec, req)
 	}
 
 	send(route{Backend: target}, sess)
-	if tok := got.Get(idpAccessTokenHeader); tok != "entra-u1" {
-		t.Fatalf("an app should receive the visitor's access token, got %q", tok)
+	if tok := got.Get(idpAccessTokenHeader); tok != "" {
+		t.Fatalf("a public route must not receive the visitor's access token, got %q", tok)
+	}
+	if got.Get("X-Auth-Request-User") != "" {
+		t.Errorf("a public route must not learn who the visitor is")
+	}
+
+	send(route{Backend: target, Login: true}, sess)
+	if tok := got.Get(idpAccessTokenHeader); tok != "entra-u1" || got.Get("X-Auth-Request-Access-Token") != tok {
+		t.Fatalf("a login-protected app should receive the visitor's access token, got %q", tok)
 	}
 	if h := fmt.Sprint(got); strings.Contains(h, "rt-u1") || strings.Contains(h, "sealed-") {
 		t.Errorf("the refresh token or a session chunk reached the app: %s", h)
@@ -492,21 +540,21 @@ func TestProxyForwardsIdentityProviderToken(t *testing.T) {
 		t.Errorf("the app's own cookies must survive, got %q", got.Get("Cookie"))
 	}
 
-	send(route{Backend: target, Token: true}, sess)
+	send(route{Backend: target, Login: true, Token: true}, sess)
 	id, err := identity.VerifyToken(testKey, got.Get("X-Access-Token"))
-	if err != nil || id.RefreshToken != "rt-u1" {
-		t.Fatalf("the API's sealed token should carry the refresh token, got %+v, %v", id, err)
+	if err != nil || id.AccessToken != "entra-u1" || id.RefreshToken != "" {
+		t.Fatalf("the API's sealed token should carry the access token alone, got %+v, %v", id, err)
 	}
 
 	for _, sess := range []*session{nil, {Subject: "u2", Expires: time.Now().Add(time.Hour).Unix()}} {
-		send(route{Backend: target}, sess)
+		send(route{Backend: target, Login: true}, sess)
 		if tok := got.Get(idpAccessTokenHeader); tok != "" {
 			t.Errorf("no refresh token, no access token — got %q", tok)
 		}
 	}
 
 	s.upstream = &identity.Upstream{}
-	send(route{Backend: target}, sess)
+	send(route{Backend: target, Login: true}, sess)
 	if tok := got.Get(idpAccessTokenHeader); tok != "" {
 		t.Errorf("without auth.scope nothing is forwarded, got %q", tok)
 	}
@@ -602,5 +650,116 @@ func TestTelemetryRecordAfterShutdownDoesNotPanic(t *testing.T) {
 	// Past the queue size, so both the enqueue and the backpressure paths run.
 	for range viewQueueSize + 8 {
 		tel.Record(r, route{Space: "acme", App: "shop", Path: "/"}, nil, http.StatusOK, time.Millisecond, "text/html; charset=utf-8")
+	}
+}
+
+// The browser keeps the newest refresh token: a rotation re-seals the session
+// cookie, a request still carrying the old one is served from the cache and
+// healed, and a token-authenticated request (no cookie) is left alone.
+func TestSessionTakesRotatedRefreshToken(t *testing.T) {
+	var calls atomic.Int32
+	var issuer *httptest.Server
+	issuer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path != "/token" {
+			_ = json.NewEncoder(w).Encode(map[string]any{"issuer": issuer.URL, "token_endpoint": issuer.URL + "/token"})
+			return
+		}
+		calls.Add(1)
+		_ = r.ParseForm()
+		if r.Form.Get("refresh_token") != "rt-0" {
+			w.WriteHeader(http.StatusBadRequest)
+			fmt.Fprint(w, `{"error":"invalid_grant"}`)
+			return
+		}
+		fmt.Fprint(w, `{"access_token":"access-1","refresh_token":"rt-1","expires_in":3600}`)
+	}))
+	defer issuer.Close()
+	s := testServer()
+	s.upstream = &identity.Upstream{Issuer: issuer.URL, ClientID: "donkey", ClientSecret: "secret", Scope: "api"}
+	rt := route{Login: true}
+	sess := &session{Subject: "u1", RefreshToken: "rt-0", Grant: identity.Grant("rt-0"), Expires: time.Now().Add(time.Hour).Unix()}
+
+	sessionAfter := func(rec *httptest.ResponseRecorder) *session {
+		req := httptest.NewRequest(http.MethodGet, "https://app.example.com/", nil)
+		for _, c := range rec.Result().Cookies() {
+			req.AddCookie(c)
+		}
+		return s.sessionFrom(req)
+	}
+	for range 2 {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "https://app.example.com/", nil)
+		if tok := s.idpToken(rec, req, rt, sess, false, time.Time{}); tok != "access-1" {
+			t.Fatalf("token = %q", tok)
+		}
+		got := sessionAfter(rec)
+		if got == nil || got.RefreshToken != "rt-1" || got.Grant != sess.Grant || got.Subject != "u1" {
+			t.Fatalf("the cookie should carry the rotated refresh token under the same grant, got %+v", got)
+		}
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("the stale cookie should be served from the cache, got %d refreshes", calls.Load())
+	}
+	rec := httptest.NewRecorder()
+	if tok := s.idpToken(rec, httptest.NewRequest(http.MethodGet, "https://app.example.com/", nil), rt, sess, true, time.Time{}); tok != "access-1" {
+		t.Fatalf("a CLI token's request should get the token too, got %q", tok)
+	}
+	if len(rec.Result().Cookies()) != 0 {
+		t.Error("a token-authenticated request must not be handed a session cookie")
+	}
+}
+
+// Installations without auth.scope sign in exactly as before — no
+// offline_access a strict IdP could refuse; with it, the refresh token and
+// the scope are asked for on top.
+func TestLoginScopesWithoutAuthScopeAreUnchanged(t *testing.T) {
+	provider := (&oidc.ProviderConfig{IssuerURL: "https://id.example.com", AuthURL: "https://id.example.com/authorize", TokenURL: "https://id.example.com/token"}).NewProvider(context.Background())
+	a := &authenticator{cfg: &Config{}, provider: provider, groupsScope: true}
+	for _, tc := range []struct {
+		upstream *identity.Upstream
+		want     []string
+	}{
+		{nil, []string{"openid", "profile", "email", "groups"}},
+		{&identity.Upstream{Issuer: "https://id.example.com", ClientID: "donkey", ClientSecret: "secret"}, []string{"openid", "profile", "email", "groups"}},
+		{&identity.Upstream{Issuer: "https://id.example.com", ClientID: "donkey", ClientSecret: "secret", Scope: "api://donkey/default"},
+			[]string{"openid", "profile", "email", "groups", "offline_access", "api://donkey/default"}},
+	} {
+		if got := a.oauthConfig("app.example.com", tc.upstream).Scopes; !slices.Equal(got, tc.want) {
+			t.Errorf("scopes = %v, want %v", got, tc.want)
+		}
+	}
+}
+
+// Sessions, CLI and OAuth tokens share identity.Identity, embedded where a
+// token adds fields: the JSON keys stay exactly what each sealed format had,
+// so cookies and tokens issued before still open, and new ones read the same.
+func TestSealedFormatsKeepTheirKeys(t *testing.T) {
+	flat := map[string]any{"client_id": "c", "sub": "u1", "email": "u1@example.com", "name": "U", "preferred_username": "u",
+		"oid": "o", "groups": []string{"g"}, "roles": []string{"r"}, "resource": "https://api.example.com", "exp": 123, "rt": "refresh", "grant": "gr"}
+	sealed, err := identity.Seal(testKey, purposeOAuthRefresh, flat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var refresh oauthRefreshToken
+	if err := identity.Unseal(testKey, purposeOAuthRefresh, sealed, &refresh); err != nil || refresh.ClientID != "c" || refresh.Subject != "u1" ||
+		refresh.ObjectID != "o" || refresh.RefreshToken != "refresh" || refresh.Grant != "gr" || refresh.Resource != "https://api.example.com" || refresh.Expires != 123 {
+		t.Fatalf("a flat token no longer opens: %+v %v", refresh, err)
+	}
+	sealed, err = identity.Seal(testKey, purposeOAuthToken, oauthAccessToken{Identity: identity.Identity{Subject: "u1", Expires: 1, RefreshToken: "rt"}, Resource: "r"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var keys map[string]any
+	if err := identity.Unseal(testKey, purposeOAuthToken, sealed, &keys); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"sub", "exp", "rt", "resource"} {
+		if _, ok := keys[key]; !ok {
+			t.Errorf("missing %q in %v", key, keys)
+		}
+	}
+	if _, ok := keys["Identity"]; ok {
+		t.Errorf("the embedded identity must flatten: %v", keys)
 	}
 }

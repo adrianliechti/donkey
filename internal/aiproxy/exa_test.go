@@ -123,3 +123,39 @@ func TestProxyTokenCacheRefreshRevokes(t *testing.T) {
 		t.Fatal("token survived refresh")
 	}
 }
+
+// A base without a path — Exa's default, or an OpenAI-compatible server at
+// its root — still yields absolute request paths upstream.
+func TestProxiesToBaseWithoutPath(t *testing.T) {
+	var requested string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requested = r.RequestURI
+		w.Write([]byte(`{}`))
+	}))
+	defer upstream.Close()
+	tokens := func(context.Context) ([]string, error) { return []string{"space-token"}, nil }
+	exa, err := ExaHandler(upstream.URL, "secret", tokens)
+	if err != nil {
+		t.Fatal(err)
+	}
+	openai, err := Handler(upstream.URL, "secret", tokens)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		handler            http.Handler
+		method, path, want string
+	}{
+		{exa, "POST", "/exa/search", "/search"},
+		{openai, "GET", "/v1/models", "/models"},
+	} {
+		requested = ""
+		req := httptest.NewRequest(c.method, c.path, strings.NewReader(`{}`))
+		req.Header.Set("Authorization", "Bearer space-token")
+		out := httptest.NewRecorder()
+		c.handler.ServeHTTP(out, req)
+		if out.Code != 200 || requested != c.want {
+			t.Errorf("%s %s: %d, upstream saw %q, want %q", c.method, c.path, out.Code, requested, c.want)
+		}
+	}
+}

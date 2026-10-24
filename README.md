@@ -156,12 +156,20 @@ five ideas:
   code flow itself where a route demands a login, seals what it learned
   into an AES-GCM cookie (stateless — replicas just scale), checks the
   app's access rules (users, groups, roles from the ID token's claims) and
-  forwards with `X-Auth-Request-*` identity headers. Those headers are
+  forwards identity headers under oauth2-proxy's proxy-mode names —
+  `X-Forwarded-User`, `-Email`, `-Preferred-Username`, `-Name`, `-Groups`
+  and `-Roles`, each also as `X-Auth-Request-*` for apps written against
+  those — only to routes behind a login. `X-Forwarded-User` is Entra's
+  tenant-wide object ID (`oid`) where the ID token carries one, else the
+  `sub`; `X-Auth-Request-User` stays the `sub`. Public routes never learn
+  who the visitor is, and inbound identity headers of both families are
+  dropped everywhere, including names donkey never sets but an app may
+  trust. Those headers are
   information for the app, never authorization: donkey's own API is handed a
   short-lived sealed token instead (`X-Access-Token`) and verifies it itself,
   so nothing in the cluster can reach it by typing a header. With
-  `auth.scope` set, apps also get the visitor's own IdP access token
-  (`X-Auth-Request-Access-Token`) — see below. TLS and auth live here
+  `auth.scope` set, apps behind a login also get the visitor's own IdP access
+  token (`X-Forwarded-Access-Token`) — see below. TLS and auth live here
   because the load-balancer Service sends HTTP and HTTPS straight to it.
   Certificates can come from ACME, donkey's built-in CA, or cert-manager
   Secrets.
@@ -512,12 +520,27 @@ sizes and row totals are `null`; row pages report `hasMore` without counting
 the entire table.
 
 The viewer authenticates as the user, not as donkey: it sends the user's IdP
-token for donkey's API (`auth.scope`) as `X-Auth-Request-Access-Token`
-on statement, result and cancellation requests — the header apps hand on
-too — and the endpoint behind `TRINO_URL` exchanges it on-behalf-of for
-Trino's own. Without `auth.scope`, the viewer says so instead of
+token for donkey's API (`auth.scope`) as `Authorization: Bearer <token>`
+to the add-on service at `TRINO_URL`, over HTTP or HTTPS, on statement,
+result, retry and cancellation requests. The add-on exchanges the token
+on-behalf-of for Trino's own. Without `auth.scope`, the viewer says so instead of
 connecting. donkey's own sealed token never leaves donkey, and no user token
 is stored in the service binding.
+
+For local development, `donkey addon tunnel <service>` serves Trino's client
+protocol on `http://127.0.0.1:8080` (`--port` to change) and prints
+`TRINO_URL`, `TRINO_CATALOG` and `TRINO_SCHEMA` for it. Point the app or any
+Trino client at it without credentials: each request goes through the
+gateway, which mints the signed-in user's (`donkey login`) IdP token, to
+donkey-server (`/v1/spaces/<space>/services/<service>/tunnel/v1/statement…`),
+which forwards it to `TRINO_URL` as `Authorization: Bearer`, exactly like the
+console. Only the statement API passes, a client's own `X-Trino-User` is
+dropped (the token decides who runs the query), results stay inline (a client's
+`X-Trino-Query-Data-Encoding` is dropped, so no spooled segment is fetched
+around the tunnel), and continuation links (`nextUri`, `partialCancelUri`)
+are rewritten to point back at the tunnel. The tunnel needs the same
+`auth.scope` as the console, and a `donkey login` made after it was
+configured.
 
 Every type describes what can be chosen for it (a version, a disk size…) as
 a JSON Schema, which the console renders as a form and the CLI takes as
@@ -691,11 +714,27 @@ To attach an independent endpoint, use
 **Getting at a service yourself.** Services rightly have no public address,
 so donkey provides the ways in: `donkey addon tunnel NAME` opens a private
 line from your machine (localhost listener, carried over the authenticated
-API, alive only while the command runs — the printed `DATABASE_URL` is
-psql-ready), and the console opens a browser per capability — tables, rows
-and a SQL view for anything with a `DATABASE_URL`; buckets, uploads and
-downloads for anything speaking S3; a streaming markdown chat for the AI,
-using the very token and proxy an app would.
+API, alive only while the command runs), and the console opens a browser per
+capability. The tunnel follows the service's protocol (`internal/addons`'
+tunnel table): it listens on the protocol's usual port, prints the binding
+rewritten for localhost plus a ready-to-run line (`psql "postgres://…"`),
+and either carries bytes to the service or carries requests through
+donkey-server, which adds what the service needs to know who is asking:
+
+| Protocol | Tunnel | Local port | donkey adds |
+| --- | --- | --- | --- |
+| postgres, mysql, redis, s3 | bytes | 5432, 3306, 6379, 9000 | — |
+| trino | requests, `/v1/statement` only | 8080 | the user's IdP token |
+| openai, exa | requests | 8081, 8082 | the space's key from the binding |
+| configured proxies (`http`) | requests | any free one | the console's grant; the client's own `Authorization` passes |
+
+A protocol without an entry gets a byte tunnel at the service's own port.
+Request tunnels go through `…/services/<service>/tunnel/<path>` and never hand
+on donkey's credentials. Endpoints attached from elsewhere (`addon attach`)
+get no tunnel: they are reached at their own address. The console's browsers
+cover tables, rows and a SQL view for anything with a `DATABASE_URL`;
+buckets, uploads and downloads for anything speaking S3; a streaming
+markdown chat for the AI, using the very token and proxy an app would.
 
 ## Requirements for a real deployment
 
@@ -1167,11 +1206,33 @@ into `donkey_session`, `donkey_session_1`, … once it outgrows one cookie), in
 mints the user's token for its own API as needed, cached until shortly
 before it expires:
 
-- every app receives the visitor's token as `X-Auth-Request-Access-Token`
-  (whenever a signed-in visitor's request passes the gateway, public routes
-  included; inbound copies are dropped);
-- console viewers (Trino's) send the user's token the same way to the
-  service they call.
+- apps behind a login receive the visitor's token as
+  `X-Forwarded-Access-Token`, and as `X-Auth-Request-Access-Token` (public
+  routes never do, even for a signed-in visitor; inbound copies are
+  dropped);
+- the Trino console and `donkey addon tunnel` send the user's token as
+  `Authorization: Bearer <token>` to its add-on service, which handles
+  delegation to Trino.
+
+Only the gateway talks to the token endpoint; donkey-server receives the
+access token inside the sealed `X-Access-Token` and never mints one. Nothing
+is stored server-side: when the IdP rotates a refresh token, the gateway
+re-seals the browser's session cookie with the new one (MCP clients pick it
+up on their next token refresh). In memory the gateway keeps each sign-in's
+access token until shortly before it expires and its newest refresh token,
+so concurrent requests share one refresh and a request still carrying an
+older cookie redeems the newest. An entry lasts as long as some credential
+can present it — a browser session's 12 hours, a CLI token's 30 days. After
+a gateway restart, credentials that were not re-sealed (a `donkey login`
+token, an idle MCP client) fall back to the refresh token they carry: fine
+for IdPs that keep earlier refresh tokens valid, while IdPs that accept each
+refresh token only once ask those users to sign in again. Token endpoint
+authentication supports both HTTP Basic and credentials in the form body.
+
+If apps receive user/email headers but no `X-Forwarded-Access-Token`, check
+that the running gateway has `DONKEY_OIDC_SCOPE` set and sign out and in again
+after changing it. Gateway logs report whether forwarding is enabled, a
+sign-in lacks a refresh token, or the IdP refused the refresh grant.
 
 The refresh token itself never leaves donkey. In Entra, donkey's app
 registration exposes an API (Application ID URI `api://<donkey-client-id>`,
@@ -1568,12 +1629,12 @@ company with an internal PKI uses. Tear down with `devkube --cluster donkey dele
   through the gateway, which seals the identity into a 30-day token
   (AES-GCM, the installation's session key). Sealed tokens cannot be revoked
   individually — rotating the session key revokes all of them at once.
-- The server trusts the `X-Auth-Request-*` identity headers on requests that
-  reached it — sound from outside (the only route to it passes the gateway,
-  which strips inbound copies), but an in-cluster caller who can reach the
-  Service directly can forge them. That caller sits inside the same trust
-  boundary as the cluster-admin ServiceAccount below.
-- With `auth.scope` set, every app a signed-in visitor opens receives
+- Apps behind a login get the visitor's identity as `X-Forwarded-*` (and
+  `X-Auth-Request-*`) headers — sound from outside (the gateway strips
+  inbound copies), but an in-cluster caller who reaches an app's Service
+  directly can forge them, so they are information, not authorization.
+  donkey's own API accepts only its sealed token.
+- With `auth.scope` set, every login-protected app a visitor opens receives
   that visitor's IdP access token for donkey's API (valid about an hour in
   Entra). Exchanging it for another API takes donkey's client secret, so
   only what holds that secret can turn it into more; donkey's own API

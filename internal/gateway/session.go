@@ -11,19 +11,10 @@ import (
 )
 
 // session lives sealed inside the cookie, so any replica can answer any
-// request.
-type session struct {
-	Subject string   `json:"sub"`
-	Email   string   `json:"email,omitempty"`
-	Name    string   `json:"name,omitempty"`
-	Groups  []string `json:"groups,omitempty"`
-	Roles   []string `json:"roles,omitempty"`
-	// Expires (Unix seconds). No silent refresh: the next navigation goes
-	// through the IdP again.
-	Expires int64 `json:"exp"`
-	// RefreshToken is the IdP's — see identity.Identity.
-	RefreshToken string `json:"rt,omitempty"`
-}
+// request. It is the identity a CLI or OAuth token carries too. Expires gets
+// no silent refresh: the next navigation goes through the IdP again. A
+// rotated IdP refresh token re-seals it.
+type session = identity.Identity
 
 // loginState rides in a short-lived cookie between the IdP redirect and the
 // callback.
@@ -181,9 +172,5 @@ func (s *Server) identityFrom(r *http.Request) (*session, bool) {
 	if err != nil {
 		return nil, false
 	}
-	return &session{
-		Subject: id.Subject, Email: id.Email, Name: id.Name,
-		Groups: id.Groups, Roles: id.Roles, Expires: id.Expires,
-		RefreshToken: id.RefreshToken,
-	}, true
+	return id, true
 }

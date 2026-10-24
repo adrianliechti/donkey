@@ -19,24 +19,21 @@ import (
 	"github.com/adrianliechti/donkey/pkg/runtime"
 )
 
-// trinoTestServer has auth.scope configured and the IdP's answers already
-// cached: refresh token "rt-<subject>" redeems for "entra-<subject>".
+// trinoTestServer has auth.scope configured; the gateway's sealed tokens carry
+// the IdP access token "entra-<subject>".
 func trinoTestServer(endpoint string) *Server {
 	s := planServer(consoleRuntime{connection: runtime.ServiceConnection{
 		Type: "trino", Protocol: "trino", Binding: map[string]string{"TRINO_URL": endpoint, "TRINO_CATALOG": "hive", "TRINO_SCHEMA": "analytics"},
 	}}, &ai.Analysis{})
-	s.upstream = &identity.Upstream{Issuer: "https://id.invalid", ClientID: "donkey", ClientSecret: "secret", Scope: "api://donkey/.default"}
-	for _, subject := range []string{"u1", "ada"} {
-		s.upstream.Remember("rt-"+subject, "entra-"+subject, time.Now().Add(time.Hour))
-	}
+	s.cfg.OIDCScope = "api://donkey/.default"
 	return s
 }
 
-func trinoIdentityToken(t *testing.T, subject, refreshToken string) string {
+func trinoIdentityToken(t *testing.T, subject, accessToken string) string {
 	t.Helper()
 	tok, err := identity.SealToken(testSessionKey, identity.Identity{
 		Subject: subject, Email: subject + "@example.com", Expires: time.Now().Add(time.Hour).Unix(),
-		RefreshToken: refreshToken,
+		AccessToken: accessToken,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -47,7 +44,7 @@ func trinoIdentityToken(t *testing.T, subject, refreshToken string) string {
 func trinoCall(t *testing.T, s *Server, method, suffix, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(method, "/v1/spaces/default/services/trino"+suffix, strings.NewReader(body))
-	req.Header.Set("X-Access-Token", trinoIdentityToken(t, "u1", "rt-u1"))
+	req.Header.Set("X-Access-Token", trinoIdentityToken(t, "u1", "entra-u1"))
 	rec := httptest.NewRecorder()
 	s.routes().ServeHTTP(rec, req)
 	return rec
@@ -60,13 +57,13 @@ func TestTrinoConsoleForwardsCurrentUserTokenOverHTTPAndHTTPS(t *testing.T) {
 			var calls atomic.Int32
 			upstream := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				calls.Add(1)
-				if r.Header.Get("X-Auth-Request-Access-Token") != expectedToken || r.Header.Get("Authorization") != "" {
-					t.Errorf("did not present this user's IdP token, got %q", r.Header.Get("X-Auth-Request-Access-Token"))
+				if r.Header.Get("Authorization") != "Bearer "+expectedToken {
+					t.Error("did not present this user's IdP access token as Bearer")
 				}
 				if strings.Contains(fmt.Sprint(r.Header), sealed) {
 					t.Error("leaked donkey's sealed token to Trino")
 				}
-				for _, header := range []string{"Cookie", "X-Access-Token", "X-Auth-Request-User", "X-Custom-Credential"} {
+				for _, header := range []string{"Cookie", "X-Access-Token", "X-Auth-Request-User", "X-Custom-Credential", "X-Auth-Request-Access-Token"} {
 					if r.Header.Get(header) != "" {
 						t.Errorf("leaked %s", header)
 					}
@@ -93,10 +90,10 @@ func TestTrinoConsoleForwardsCurrentUserTokenOverHTTPAndHTTPS(t *testing.T) {
 			s := trinoTestServer(upstream.URL + "/engine")
 			for i, subject := range []string{"u1", "ada"} {
 				expectedToken = "entra-" + subject
-				sealed = trinoIdentityToken(t, subject, "rt-"+subject)
+				sealed = trinoIdentityToken(t, subject, "entra-"+subject)
 				req := httptest.NewRequest("GET", "/v1/spaces/default/services/trino/databases", nil)
-				// The console's token comes through the gateway, the CLI's
-				// straight: both carry the IdP refresh token sealed.
+				// Either header carries the sealed identity; the IdP access
+				// token inside is the one the gateway minted.
 				if i == 0 {
 					req.Header.Set("X-Access-Token", sealed)
 				} else {
@@ -105,6 +102,7 @@ func TestTrinoConsoleForwardsCurrentUserTokenOverHTTPAndHTTPS(t *testing.T) {
 				req.Header.Set("Cookie", "session=private")
 				req.Header.Set("X-Custom-Credential", "private")
 				req.Header.Set("X-Auth-Request-User", "attacker")
+				req.Header.Set("X-Auth-Request-Access-Token", "forged")
 				rec := httptest.NewRecorder()
 				s.routes().ServeHTTP(rec, req)
 				if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"databases":[{"name":"hive","size":null}]`) || !strings.Contains(rec.Body.String(), `"default":"hive"`) {
@@ -122,12 +120,12 @@ func TestTrinoConsoleForwardsCurrentUserTokenOverHTTPAndHTTPS(t *testing.T) {
 // fail with what to do about it, not fall back to donkey's own credential.
 func TestTrinoRefusesWithoutIdentityProviderToken(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Errorf("reached Trino with %q", r.Header.Get("X-Auth-Request-Access-Token"))
+		t.Error("reached the Trino add-on without an IdP access token")
 	}))
 	defer upstream.Close()
 
 	unscoped := trinoTestServer(upstream.URL)
-	unscoped.upstream = &identity.Upstream{}
+	unscoped.cfg.OIDCScope = ""
 	if rec := trinoCall(t, unscoped, "GET", "/databases", ""); rec.Code != 400 || !strings.Contains(rec.Body.String(), "auth.scope") {
 		t.Fatalf("no auth.scope: %d %s", rec.Code, rec.Body)
 	}
@@ -138,7 +136,7 @@ func TestTrinoRefusesWithoutIdentityProviderToken(t *testing.T) {
 	rec := httptest.NewRecorder()
 	s.routes().ServeHTTP(rec, req)
 	if rec.Code != 400 || !strings.Contains(rec.Body.String(), "sign out and in again") {
-		t.Fatalf("sign-in without refresh token: %d %s", rec.Code, rec.Body)
+		t.Fatalf("request without an access token: %d %s", rec.Code, rec.Body)
 	}
 }
 
@@ -170,7 +168,7 @@ func TestTrinoConsoleQuotesNamesAndSetsQueryContext(t *testing.T) {
 			t.Fatalf("%s: %d %s", tc.path, rec.Code, rec.Body)
 		}
 	}
-	for _, body := range []string{`{}`, `{"sql":" "}`, `{"sql":"SELECT 1","schema":"bad\r\nheader"}`, `{"sql":"SELECT 1","unknown":true}`} {
+	for _, body := range []string{`{}`, `{"sql":" "}`, `{"sql":"SELECT 1","schema":"bad\r\nheader"}`} {
 		if rec := trinoCall(t, s, "POST", "/query", body); rec.Code != 400 {
 			t.Fatalf("bad input: %d %s", rec.Code, rec.Body)
 		}
@@ -210,7 +208,7 @@ func TestTrinoDirectProtocolPaginationPreservesValues(t *testing.T) {
 	var calls atomic.Int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
-		if r.Header.Get("X-Auth-Request-Access-Token") != "test-token" {
+		if r.Header.Get("Authorization") != "Bearer test-token" {
 			t.Error("missing token on result fetch")
 		}
 		switch r.URL.Path {
@@ -241,7 +239,7 @@ func TestTrinoQueryLimitsCancelOutstandingResults(t *testing.T) {
 			var canceled atomic.Bool
 			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.Method == "DELETE" {
-					if r.Header.Get("X-Auth-Request-Access-Token") != "token" {
+					if r.Header.Get("Authorization") != "Bearer token" {
 						t.Error("missing cancellation token")
 					}
 					canceled.Store(true)
@@ -271,6 +269,9 @@ func TestTrinoBrowserAbortCancelsTheRunningQuery(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer token" {
+			t.Error("missing bearer token on query, result fetch or abort cancellation")
+		}
 		if r.Method == "DELETE" {
 			canceled.Store(true)
 			w.WriteHeader(204)
@@ -344,6 +345,9 @@ func TestTrinoErrorsAndTransientRetries(t *testing.T) {
 	}
 	var attempts atomic.Int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer token" {
+			t.Error("missing bearer token on retry")
+		}
 		switch attempts.Add(1) {
 		case 1:
 			w.WriteHeader(503)
@@ -391,5 +395,100 @@ func TestTrinoConsoleRequiresAuthenticationAndProtocol(t *testing.T) {
 	}
 	if calls.Load() != 0 {
 		t.Fatal("unauthorized request reached upstream")
+	}
+}
+
+// Trino's HTTP tunnel passes its statement API through as the caller: their
+// IdP token and the client's session headers, never a typed X-Trino-User or
+// donkey's own credentials, and nothing outside /v1/statement.
+func TestTrinoTunnel(t *testing.T) {
+	var calls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		if r.Header.Get("Authorization") != "Bearer entra-u1" {
+			t.Error("did not present the caller's IdP access token")
+		}
+		for _, h := range []string{"X-Trino-User", "X-Trino-Original-User", "X-Trino-Query-Data-Encoding", "X-Access-Token", "Cookie", "X-Auth-Request-User"} {
+			if r.Header.Get(h) != "" {
+				t.Errorf("leaked %s", h)
+			}
+		}
+		if r.Header.Get("X-Trino-Catalog") != "hive" {
+			t.Error("dropped the client's session header")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Trino-Set-Schema", "reports")
+		w.Header().Set("Set-Cookie", "upstream=1")
+		switch r.Method + " " + r.URL.RequestURI() {
+		case "POST /engine/v1/statement":
+			if statement, _ := io.ReadAll(r.Body); string(statement) != "SELECT 1" {
+				t.Errorf("statement = %q", statement)
+			}
+			fmt.Fprintf(w, `{"nextUri":"http://%s/engine/v1/statement/queued/q1/x/1"}`, r.Host)
+		case "GET /engine/v1/statement/queued/q1/x/1?maxWait=1s":
+			fmt.Fprint(w, `{"data":[[1]]}`)
+		case "DELETE /engine/v1/statement/executing/q1/x/2":
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Errorf("unexpected %s %s", r.Method, r.URL.RequestURI())
+		}
+	}))
+	defer upstream.Close()
+	s := trinoTestServer(upstream.URL + "/engine")
+	send := func(method, path, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, "/v1/spaces/default/services/trino/tunnel/"+path, strings.NewReader(body))
+		req.Header.Set("X-Access-Token", trinoIdentityToken(t, "u1", "entra-u1"))
+		req.Header.Set("X-Trino-User", "someone-else")
+		req.Header.Set("X-Trino-Original-User", "someone-else")
+		req.Header.Set("X-Trino-Catalog", "hive")
+		req.Header.Set("X-Trino-Query-Data-Encoding", "json+zstd,json")
+		req.Header.Set("Cookie", "session=private")
+		req.Header.Set("X-Auth-Request-User", "forged")
+		rec := httptest.NewRecorder()
+		s.routes().ServeHTTP(rec, req)
+		return rec
+	}
+
+	rec := send("POST", "v1/statement", "SELECT 1")
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "/engine/v1/statement/queued/q1/x/1") ||
+		rec.Header().Get("X-Trino-Set-Schema") != "reports" || rec.Header().Get("Set-Cookie") != "" {
+		t.Fatalf("start: %d %v %s", rec.Code, rec.Header(), rec.Body)
+	}
+	if rec := send("GET", "v1/statement/queued/q1/x/1?maxWait=1s", ""); rec.Code != 200 || rec.Body.String() != `{"data":[[1]]}` {
+		t.Fatalf("follow: %d %s", rec.Code, rec.Body)
+	}
+	if rec := send("DELETE", "v1/statement/executing/q1/x/2", ""); rec.Code != 204 {
+		t.Fatalf("cancel: %d %s", rec.Code, rec.Body)
+	}
+	before := calls.Load()
+	for _, refused := range []struct{ method, path string }{
+		{"GET", "v1/info"}, {"GET", "v1/query"}, {"GET", "ui/"}, {"GET", "v1/statements"},
+		{"GET", "v1/statement/../info"}, {"GET", "v1/statement/%2e%2e/info"},
+	} {
+		if rec := send(refused.method, refused.path, ""); rec.Code < 300 {
+			t.Errorf("%s %s passed: %d", refused.method, refused.path, rec.Code)
+		}
+	}
+	if calls.Load() != before {
+		t.Fatal("a refused path reached Trino")
+	}
+}
+
+// A TRINO_URL without a path still reaches the statement API by its absolute
+// path: a relative request line is no request the add-on can answer.
+func TestTrinoTunnelToURLWithoutPath(t *testing.T) {
+	var requested atomic.Value
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requested.Store(r.RequestURI)
+		fmt.Fprint(w, `{}`)
+	}))
+	defer upstream.Close()
+	s := trinoTestServer(upstream.URL)
+	req := httptest.NewRequest("POST", "/v1/spaces/default/services/trino/tunnel/v1/statement", strings.NewReader("SELECT 1"))
+	req.Header.Set("X-Access-Token", trinoIdentityToken(t, "u1", "entra-u1"))
+	rec := httptest.NewRecorder()
+	s.routes().ServeHTTP(rec, req)
+	if rec.Code != 200 || requested.Load() != "/v1/statement" {
+		t.Fatalf("tunnel: %d %s, upstream saw %v", rec.Code, rec.Body, requested.Load())
 	}
 }

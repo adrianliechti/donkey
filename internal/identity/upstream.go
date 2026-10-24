@@ -4,18 +4,17 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
-	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
+	"golang.org/x/oauth2"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -27,10 +26,16 @@ var ErrUpstreamToken = errors.New("no identity provider token for this sign-in")
 
 // Upstream turns the IdP refresh token a login left inside donkey's sealed
 // credentials into the user's access token for donkey's own API (Scope) —
-// what apps and viewers hand on as X-Auth-Request-Access-Token, and what
-// services behind them exchange on-behalf-of for their own APIs. The refresh
-// token never leaves donkey; access tokens are cached per sign-in until
-// shortly before they expire, so a busy visitor costs one token call an hour.
+// what login-protected apps receive as X-Forwarded-Access-Token and the
+// Trino console sends as Authorization: Bearer to its add-on. Services
+// exchange it on-behalf-of for their own APIs.
+//
+// Only the gateway mints, so one process serializes every refresh. The
+// credentials themselves are the durable store: when the IdP rotates a
+// refresh token, the gateway re-seals the browser's session with the new
+// one. This cache holds the access token until shortly before it expires and
+// the newest refresh token per sign-in, so requests that still carry an
+// older one (in flight during a rotation, or a CLI token) redeem the newest.
 type Upstream struct {
 	Issuer       string
 	ClientID     string
@@ -39,16 +44,21 @@ type Upstream struct {
 	// Empty turns the whole mechanism off.
 	Scope string
 
-	group    singleflight.Group
-	mu       sync.Mutex
-	endpoint string
-	cache    map[string]upstreamToken
+	group  singleflight.Group
+	mu     sync.Mutex
+	config *oauth2.Config
+	cache  map[string]upstreamToken // by Grant
 }
 
 type upstreamToken struct {
 	value  string
 	err    error
 	expiry time.Time
+	// refreshToken is the newest the IdP handed out for this sign-in.
+	refreshToken string
+	// retainUntil is the latest expiry of a credential seen carrying this
+	// sign-in: past it, nothing can present the grant any more.
+	retainUntil time.Time
 }
 
 const (
@@ -62,6 +72,14 @@ const (
 )
 
 var upstreamHTTP = &http.Client{Timeout: upstreamTimeout}
+
+// Grant names a sign-in's IdP grant for as long as it lasts: derived from
+// the login's refresh token and sealed beside it, so every later generation
+// of that token still finds the same cache entry.
+func Grant(refreshToken string) string {
+	digest := sha256.Sum256([]byte(refreshToken))
+	return base64.RawURLEncoding.EncodeToString(digest[:])
+}
 
 // Enabled reports whether logins should ask for, and keep, a refresh token.
 func (u *Upstream) Enabled() bool {
@@ -79,58 +97,77 @@ func (u *Upstream) LoginScopes() []string {
 }
 
 // Remember seeds the cache with the access token the login itself returned.
-func (u *Upstream) Remember(refreshToken, accessToken string, expiry time.Time) {
+func (u *Upstream) Remember(grant, refreshToken, accessToken string, expiry, until time.Time) {
 	if !u.Enabled() || refreshToken == "" || accessToken == "" {
 		return
 	}
-	if expiry.IsZero() {
-		expiry = time.Now().Add(5 * time.Minute)
-	}
-	u.store(upstreamKey(refreshToken), upstreamToken{value: accessToken, expiry: cacheUntil(expiry)})
+	u.store(grant, upstreamToken{value: accessToken, expiry: cacheUntil(expiry), refreshToken: refreshToken}, until)
 }
 
 // AccessToken returns a current access token for Scope on behalf of whoever
-// refreshToken belongs to. Concurrent callers for one sign-in share a single
-// refresh.
-func (u *Upstream) AccessToken(ctx context.Context, refreshToken string) (string, error) {
+// signed in, and the refresh token to keep from now on — a new one once the
+// IdP rotated it. refreshToken is what the caller's credential carries; the
+// cache's is newer whenever it has one. Concurrent callers for one sign-in
+// share a single refresh, and the entry stays at least until `until`.
+func (u *Upstream) AccessToken(ctx context.Context, grant, refreshToken string, until time.Time) (string, string, error) {
 	if !u.Enabled() || refreshToken == "" {
-		return "", ErrUpstreamToken
+		return "", refreshToken, ErrUpstreamToken
 	}
-	key := upstreamKey(refreshToken)
-	if tok, ok := u.cached(key); ok {
-		return tok.value, tok.err
+	if grant == "" {
+		grant = Grant(refreshToken)
 	}
-	v, _, _ := u.group.Do(key, func() (any, error) {
-		if tok, ok := u.cached(key); ok {
+	if tok, ok := u.cached(grant, until); ok {
+		return tok.value, tok.refreshToken, tok.err
+	}
+	v, _, _ := u.group.Do(grant, func() (any, error) {
+		if tok, ok := u.cached(grant, until); ok {
 			return tok, nil
 		}
 		// The first caller's cancellation must not fail everyone waiting.
 		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), upstreamTimeout)
 		defer cancel()
-		value, expiry, err := u.refresh(rctx, refreshToken)
-		tok := upstreamToken{value: value, err: err, expiry: cacheUntil(expiry)}
+		tok, err := u.refresh(rctx, u.Latest(grant, refreshToken))
 		if err != nil {
+			tok.err = err
 			tok.expiry = time.Now().Add(upstreamFailureTTL)
 			log.Printf("no %s token for this sign-in (retrying in %s): %v", u.Scope, upstreamFailureTTL, err)
 		}
-		u.store(key, tok)
+		u.store(grant, tok, until)
 		return tok, nil
 	})
 	tok := v.(upstreamToken)
-	return tok.value, tok.err
+	return tok.value, tok.refreshToken, tok.err
 }
 
-func (u *Upstream) cached(key string) (upstreamToken, bool) {
+// Latest is the newest refresh token known for the sign-in: the cache's, or
+// refreshToken when a restart emptied it and the credential is all there is.
+func (u *Upstream) Latest(grant, refreshToken string) string {
+	if u == nil {
+		return refreshToken
+	}
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	tok, ok := u.cache[key]
+	if latest := u.cache[grant].refreshToken; latest != "" {
+		return latest
+	}
+	return refreshToken
+}
+
+func (u *Upstream) cached(grant string, until time.Time) (upstreamToken, bool) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	tok, ok := u.cache[grant]
 	if !ok || !time.Now().Before(tok.expiry) {
 		return upstreamToken{}, false
+	}
+	if until.After(tok.retainUntil) {
+		tok.retainUntil = until
+		u.cache[grant] = tok
 	}
 	return tok, true
 }
 
-func (u *Upstream) store(key string, tok upstreamToken) {
+func (u *Upstream) store(grant string, tok upstreamToken, until time.Time) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	if u.cache == nil {
@@ -138,17 +175,32 @@ func (u *Upstream) store(key string, tok upstreamToken) {
 	}
 	now := time.Now()
 	for k, old := range u.cache {
-		if !now.Before(old.expiry) {
+		if !now.Before(old.retainUntil) {
 			delete(u.cache, k)
 		}
 	}
-	u.cache[key] = tok
+	tok.retainUntil = latestOf(u.cache[grant].retainUntil, until, tok.expiry)
+	u.cache[grant] = tok
+}
+
+func latestOf(times ...time.Time) time.Time {
+	var out time.Time
+	for _, t := range times {
+		if t.After(out) {
+			out = t
+		}
+	}
+	return out
 }
 
 // cacheUntil retires a token upstreamSkew early, or halfway through its life
-// when that is shorter — a one-minute token must still be cached.
+// when that is shorter — a one-minute token must still be cached. A token
+// without an expiry counts as a five-minute one.
 func cacheUntil(expiry time.Time) time.Time {
 	now := time.Now()
+	if expiry.IsZero() {
+		expiry = now.Add(5 * time.Minute)
+	}
 	until := expiry.Add(-upstreamSkew)
 	if half := now.Add(expiry.Sub(now) / 2); until.Before(half) {
 		return half
@@ -156,83 +208,60 @@ func cacheUntil(expiry time.Time) time.Time {
 	return until
 }
 
-// upstreamKey: the cache holds no refresh tokens, only their digests.
-func upstreamKey(refreshToken string) string {
-	digest := sha256.Sum256([]byte(refreshToken))
-	return base64.RawURLEncoding.EncodeToString(digest[:])
-}
-
-func (u *Upstream) tokenEndpoint(ctx context.Context) (string, error) {
+func (u *Upstream) oauthConfig(ctx context.Context) (*oauth2.Config, error) {
 	u.mu.Lock()
-	endpoint := u.endpoint
+	config := u.config
 	u.mu.Unlock()
-	if endpoint != "" {
-		return endpoint, nil
+	if config != nil {
+		return config, nil
 	}
 	provider, err := oidc.NewProvider(ctx, u.Issuer)
 	if err != nil {
-		return "", fmt.Errorf("the identity provider %s doesn't answer: %w", u.Issuer, err)
+		return nil, fmt.Errorf("the identity provider %s doesn't answer: %w", u.Issuer, err)
 	}
-	endpoint = provider.Endpoint().TokenURL
-	if endpoint == "" {
-		return "", fmt.Errorf("the identity provider %s names no token endpoint", u.Issuer)
+	if provider.Endpoint().TokenURL == "" {
+		return nil, fmt.Errorf("the identity provider %s names no token endpoint", u.Issuer)
 	}
 	u.mu.Lock()
-	u.endpoint = endpoint
-	u.mu.Unlock()
-	return endpoint, nil
+	defer u.mu.Unlock()
+	if u.config == nil {
+		endpoint := provider.Endpoint()
+		var metadata struct {
+			Methods []string `json:"token_endpoint_auth_methods_supported"`
+		}
+		if err := provider.Claims(&metadata); err != nil {
+			return nil, fmt.Errorf("cannot read identity provider token authentication methods")
+		}
+		switch {
+		case slices.Contains(metadata.Methods, "client_secret_basic") && !slices.Contains(metadata.Methods, "client_secret_post"):
+			endpoint.AuthStyle = oauth2.AuthStyleInHeader
+		case slices.Contains(metadata.Methods, "client_secret_post") && !slices.Contains(metadata.Methods, "client_secret_basic"):
+			endpoint.AuthStyle = oauth2.AuthStyleInParams
+		}
+		u.config = &oauth2.Config{ClientID: u.ClientID, ClientSecret: u.ClientSecret, Endpoint: endpoint}
+	}
+	return u.config, nil
 }
 
-// refresh redeems the refresh token for Scope with donkey's client
-// credentials. Entra's rotated refresh token in the answer is dropped: the
-// one sealed into the session stays valid until it expires, and the session
-// is not ours to rewrite here.
-func (u *Upstream) refresh(ctx context.Context, refreshToken string) (string, time.Time, error) {
-	endpoint, err := u.tokenEndpoint(ctx)
+// TokenSource uses the same Basic/form authentication negotiation as login,
+// retains replacement refresh tokens, and preserves the previous one when
+// providers omit it. Omitting scope preserves the login grant's API scopes.
+func (u *Upstream) refresh(ctx context.Context, refreshToken string) (upstreamToken, error) {
+	out := upstreamToken{refreshToken: refreshToken}
+	config, err := u.oauthConfig(ctx)
 	if err != nil {
-		return "", time.Time{}, err
+		return out, err
 	}
-	form := url.Values{
-		"grant_type":    {"refresh_token"},
-		"refresh_token": {refreshToken},
-		"client_id":     {u.ClientID},
-		"client_secret": {u.ClientSecret},
-		"scope":         {u.Scope},
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(form.Encode()))
+	ctx = context.WithValue(ctx, oauth2.HTTPClient, upstreamHTTP)
+	token, err := config.TokenSource(ctx, &oauth2.Token{RefreshToken: refreshToken}).Token()
 	if err != nil {
-		return "", time.Time{}, err
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("Accept", "application/json")
-	res, err := upstreamHTTP.Do(req)
-	if err != nil {
-		return "", time.Time{}, fmt.Errorf("the identity provider's token endpoint didn't answer: %w", err)
-	}
-	defer res.Body.Close()
-	var body struct {
-		AccessToken string `json:"access_token"`
-		// json.Number takes both: Entra's v1 endpoint quotes it.
-		ExpiresIn   json.Number `json:"expires_in"`
-		Error       string      `json:"error"`
-		Description string      `json:"error_description"`
-	}
-	if err := json.NewDecoder(io.LimitReader(res.Body, 1<<20)).Decode(&body); err != nil {
-		return "", time.Time{}, fmt.Errorf("the identity provider's token endpoint answered %s without a token", res.Status)
-	}
-	if body.Error != "" || body.AccessToken == "" {
-		code := body.Error
-		if code == "" {
-			code = res.Status
+		var response *oauth2.RetrieveError
+		if errors.As(err, &response) {
+			description, _, _ := strings.Cut(response.ErrorDescription, "\r\n")
+			return out, fmt.Errorf("%w: the identity provider refused a token for %s (%s: %s)", ErrUpstreamToken, u.Scope, response.ErrorCode, description)
 		}
-		// The description's first line is the readable part; Entra appends
-		// trace and correlation ids after it.
-		description, _, _ := strings.Cut(body.Description, "\r\n")
-		return "", time.Time{}, fmt.Errorf("%w: the identity provider refused a token for %s (%s: %s)", ErrUpstreamToken, u.Scope, code, description)
+		return out, fmt.Errorf("the identity provider's token endpoint did not return a token")
 	}
-	lifetime := 5 * time.Minute
-	if seconds, err := body.ExpiresIn.Int64(); err == nil && seconds > 0 {
-		lifetime = time.Duration(seconds) * time.Second
-	}
-	return body.AccessToken, time.Now().Add(lifetime), nil
+	out.value, out.refreshToken, out.expiry = token.AccessToken, token.RefreshToken, cacheUntil(token.Expiry)
+	return out, nil
 }

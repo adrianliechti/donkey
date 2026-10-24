@@ -72,8 +72,8 @@ type Config struct {
 	OIDCClientID     string
 	OIDCClientSecret string
 	// OIDCScope is donkey's own API (e.g. api://<donkey-client-id>/<scope>).
-	// When set, logins keep the IdP's refresh token and every app gets the
-	// visitor's access token for it as X-Auth-Request-Access-Token.
+	// When set, logins keep the IdP's refresh token and login-protected apps
+	// get the visitor's access token for it as X-Forwarded-Access-Token.
 	OIDCScope string
 
 	// Domain centralizes logins: every hostname under it shares one callback
@@ -217,9 +217,10 @@ type Server struct {
 
 	telemetry *edgeTelemetry
 
-	// upstream mints the IdP access tokens apps receive; nil or unconfigured
-	// forwards none.
-	upstream *identity.Upstream
+	// upstream mints the IdP access tokens login-protected apps and the
+	// console receive — here only; nil or unconfigured forwards none.
+	upstream             *identity.Upstream
+	upstreamMissingToken sync.Once
 
 	// OAuth authorization codes are short-lived and one-use. The gateway is
 	// deployed as one replica, so keeping them here avoids a client database
@@ -357,6 +358,11 @@ func (s *Server) Run(ctx context.Context) error {
 	servers := []*http.Server{httpsSrv, httpSrv}
 	go func() {
 		log.Printf("donkey-gateway serving https on %s (tls %s; issuer %s)", s.cfg.TLSListen, s.cfg.TLSMode, s.cfg.OIDCIssuer)
+		if s.upstream.Enabled() {
+			log.Printf("IdP access-token forwarding enabled for auth.scope %s; existing sign-ins need to sign out and in again", s.cfg.OIDCScope)
+		} else if s.cfg.OIDCScope != "" {
+			log.Print("auth.scope is set, but the OIDC client credentials are incomplete: no X-Forwarded-Access-Token is forwarded")
+		}
 		if err := httpsSrv.ListenAndServeTLS("", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errs <- err
 			return

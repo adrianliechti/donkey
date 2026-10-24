@@ -65,12 +65,17 @@ export function SqlView({ contextLabel, execute, initial = '', onChanged }: {
   )
 }
 
+export function CellText({ value }: { value: DbCell }) {
+  if (value === null) return <span className="italic text-muted">null</span>
+  return <>{value}</>
+}
+
 /** The index identifies a column: SELECT may return repeated column names. */
 export function SqlResultGrid({ columns, rows }: { columns: string[]; rows: DbCell[][] }) {
   const [sorting, setSorting] = useState<SortingState>([])
   const defs: ColumnDef<DbCell[]>[] = columns.map((name, i) => ({
     id: String(i), accessorFn: (row) => row[i] ?? '', header: name,
-    cell: ({ row }) => row.original[i] === null ? <span className="italic text-muted">null</span> : row.original[i],
+    cell: ({ row }) => <CellText value={row.original[i]} />,
   }))
   const table = useReactTable({ data: rows, columns: defs, state: { sorting }, onSortingChange: setSorting,
     getCoreRowModel: getCoreRowModel(), getSortedRowModel: getSortedRowModel() })

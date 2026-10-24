@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -18,6 +20,8 @@ import (
 	"github.com/adrianliechti/donkey/internal/ai"
 	"github.com/adrianliechti/donkey/internal/build"
 	"github.com/adrianliechti/donkey/internal/config"
+	"github.com/adrianliechti/donkey/internal/identity"
+	"github.com/adrianliechti/donkey/internal/serviceproxy"
 	"github.com/adrianliechti/donkey/pkg/runtime"
 )
 
@@ -720,7 +724,99 @@ func (s *Server) handleServiceBinding(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadGateway, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"binding": connection.Binding, "host": host, "port": port, "type": connection.Type, "protocol": connection.Protocol})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"binding": connection.Binding, "host": host, "port": port, "type": connection.Type, "protocol": connection.Protocol,
+		"tunnel": addons.TunnelFor(connection.Type, connection.Protocol),
+	})
+}
+
+// tunnelStrippedHeaders are donkey's own, like every identity header
+// (identity.StripHeaders): an HTTP tunnel never hands them on.
+var tunnelStrippedHeaders = []string{"Authorization", "Cookie", "Forwarded", "X-Access-Token",
+	addons.TunnelAuthorizationHeader, serviceproxy.TestRequestHeader}
+
+// handleServiceHTTPTunnel carries an HTTP tunnel (`donkey addon tunnel`) to
+// the service's URL, shaped by its protocol's addons.Tunnel: what the service
+// needs to know who is asking (the caller's IdP token, the space's key, a
+// proxy grant), only the paths it allows, and none of donkey's credentials or
+// the client headers it must not see. The local client's own Authorization
+// passes where donkey adds none.
+func (s *Server) handleServiceHTTPTunnel(w http.ResponseWriter, r *http.Request) {
+	connection, err := s.serviceConnection(r.Context(), r, addons.HTTPTunnelProtocols()...)
+	if err != nil {
+		writeErr(w, statusFor(err), err)
+		return
+	}
+	name := r.PathValue("service")
+	tunnel := addons.TunnelFor(connection.Type, connection.Protocol)
+	path := "/" + r.PathValue("path")
+	if !tunnel.Allows(path) {
+		writeErr(w, http.StatusNotFound, fmt.Errorf("the %s tunnel does not carry %s", connection.Protocol, path))
+		return
+	}
+	added := http.Header{}
+	if auth := r.Header.Get(addons.TunnelAuthorizationHeader); auth != "" {
+		added.Set("Authorization", auth)
+	}
+	if tunnel.UserToken {
+		token, err := s.userToken(r.Context())
+		if err != nil {
+			writeErr(w, statusFor(err), err)
+			return
+		}
+		added.Set("Authorization", "Bearer "+token)
+	}
+	header, value, ok := tunnel.CredentialHeader(connection.Binding)
+	if !ok {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("%s was attached from elsewhere — reach it at its own address, no tunnel needed", name))
+		return
+	}
+	if header != "" {
+		added.Set(header, value)
+	}
+	base, err := url.Parse(connection.Binding[tunnel.URLKey])
+	if tunnel.ProxyGrant {
+		base, err = s.proxyBase(connection)
+	}
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	// JoinPath on an empty path yields a relative one ("v1/statement"),
+	// which the proxy would send as is in the request line.
+	if base.Path == "" {
+		base.Path = "/"
+	}
+	target := base.JoinPath(path)
+	target.RawQuery = r.URL.RawQuery
+	if tunnel.ProxyGrant {
+		space, _ := s.space(r)
+		grant, err := serviceproxy.SealTestRequest(s.cfg.TelemetryKey, space, connection.Type, &http.Request{Method: r.Method, URL: target})
+		if err != nil {
+			writeErr(w, http.StatusServiceUnavailable, err)
+			return
+		}
+		added.Set(serviceproxy.TestRequestHeader, grant)
+	}
+	proxy := &httputil.ReverseProxy{
+		Rewrite: func(pr *httputil.ProxyRequest) {
+			pr.Out.URL, pr.Out.Host = target, ""
+			identity.StripHeaders(pr.Out.Header)
+			for _, h := range append(tunnelStrippedHeaders, tunnel.DropHeaders...) {
+				pr.Out.Header.Del(h)
+			}
+			for h, values := range added {
+				pr.Out.Header[h] = values
+			}
+		},
+		ModifyResponse: func(res *http.Response) error {
+			res.Header.Del("Set-Cookie")
+			return nil
+		},
+		// Streams (OpenAI's server-sent events) arrive as they are written.
+		FlushInterval: -1,
+	}
+	proxy.ServeHTTP(w, r)
 }
 
 var tunnelUpgrader = websocket.Upgrader{

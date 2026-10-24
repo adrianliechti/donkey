@@ -11,6 +11,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httputil"
 	"net/url"
 	"os"
 	"strings"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
+	"github.com/adrianliechti/donkey/internal/addons"
 	"github.com/adrianliechti/donkey/internal/server"
 )
 
@@ -421,6 +423,9 @@ type AddonBindingInfo struct {
 	Binding  map[string]string `json:"binding"`
 	Host     string            `json:"host"`
 	Port     int               `json:"port"`
+	// Tunnel is how `addon tunnel` reaches it; servers without one leave it
+	// zero, which is a byte tunnel at the service's own port.
+	Tunnel addons.Tunnel `json:"tunnel"`
 }
 
 func (c *Client) AddonBinding(ctx context.Context, space, addon string) (AddonBindingInfo, error) {
@@ -455,6 +460,31 @@ func (c *Client) DialAddonTunnel(ctx context.Context, space, addon string) (*web
 		return nil, fmt.Errorf("couldn't open the tunnel: %w", err)
 	}
 	return conn, nil
+}
+
+// TunnelProxy carries an HTTP tunnel to a space service through
+// donkey-server, which adds what the service's protocol needs: a local
+// client's /v1/statement… lands on the service's own /v1/statement….
+func (c *Client) TunnelProxy(space, service string) (*httputil.ReverseProxy, error) {
+	base, err := url.Parse(c.BaseURL + "/v1/spaces/" + url.PathEscape(space) + "/services/" + url.PathEscape(service) + "/tunnel")
+	if err != nil {
+		return nil, err
+	}
+	return &httputil.ReverseProxy{
+		Rewrite: func(pr *httputil.ProxyRequest) {
+			pr.SetURL(base)
+			// Authorization is donkey's on this hop; the client's own rides
+			// beside it, for services that take it. The transport negotiates
+			// compression itself.
+			if auth := pr.In.Header.Get("Authorization"); auth != "" {
+				pr.Out.Header.Set(addons.TunnelAuthorizationHeader, auth)
+			}
+			pr.Out.Header.Set("Authorization", "Bearer "+c.Token)
+			pr.Out.Header.Del("Cookie")
+			pr.Out.Header.Del("Accept-Encoding")
+		},
+		Transport: c.http.Transport,
+	}, nil
 }
 
 // RemoveSpaceAddon removes a service from the space, detaching every app

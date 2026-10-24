@@ -13,18 +13,31 @@ import (
 	"time"
 )
 
+// Identity is what the IdP said about a visitor, in every sealed form donkey
+// keeps it: the gateway's session cookie, the CLI's token, OAuth clients'
+// tokens and the short-lived hop to donkey's API all carry this one shape.
 type Identity struct {
-	Subject string   `json:"sub"`
-	Email   string   `json:"email,omitempty"`
-	Name    string   `json:"name,omitempty"`
-	Groups  []string `json:"groups,omitempty"`
-	Roles   []string `json:"roles,omitempty"`
+	Subject string `json:"sub"`
+	Email   string `json:"email,omitempty"`
+	Name    string `json:"name,omitempty"`
+	// PreferredUsername is the ID token's preferred_username claim, ObjectID
+	// Entra's oid: the tenant-wide user ID, where sub is pairwise per app.
+	PreferredUsername string   `json:"preferred_username,omitempty"`
+	ObjectID          string   `json:"oid,omitempty"`
+	Groups            []string `json:"groups,omitempty"`
+	Roles             []string `json:"roles,omitempty"`
 	// Expires (Unix seconds); a token never outlives it.
 	Expires int64 `json:"exp"`
 	// RefreshToken is the IdP's, kept when the installation names a token
-	// scope so donkey can mint access tokens for it (see Upstream). Sealed
-	// like the rest: it never reaches an app, or the CLI's disk, in the clear.
+	// scope so the gateway can mint access tokens for it (see Upstream), and
+	// Grant names that sign-in across rotations. Sealed like the rest: it
+	// never reaches an app, or the CLI's disk, in the clear.
 	RefreshToken string `json:"rt,omitempty"`
+	Grant        string `json:"grant,omitempty"`
+	// AccessToken is the IdP's access token for auth.scope, minted by the
+	// gateway into the short-lived token it forwards to donkey's API — the
+	// server hands it on (Trino) and never mints one itself.
+	AccessToken string `json:"at,omitempty"`
 }
 
 // Long on purpose (no daily browser round trip), bounded because sealed

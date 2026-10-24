@@ -8,7 +8,7 @@ import {
 } from '@tanstack/react-table'
 import { Check, ChevronLeft, ChevronRight, Plus, RefreshCw, Terminal, Trash2, X } from 'lucide-react'
 import { api, type DbCell, type DbDatabase, type DbRowsPage, type DbTable } from './api'
-import { SqlView } from './SqlView'
+import { CellText, SqlView } from './SqlView'
 import { DataGrid } from './DataGrid'
 import { Modal, ModalBody, ModalHeader, ModalNotice, SplitPane } from './dialog'
 import { Button, ErrorNote, Eyebrow, Field, IconButton, Input, Select, Spinner, errText } from './ui'
@@ -23,11 +23,6 @@ function fmtBytes(n: number): string {
   if (n < 1024 * 1024) return `${Math.round(n / 1024)} KB`
   if (n < 1024 * 1024 * 1024) return `${Math.round(n / 1024 / 1024)} MB`
   return `${(n / 1024 / 1024 / 1024).toFixed(1)} GB`
-}
-
-function CellText({ value }: { value: DbCell }) {
-  if (value === null) return <span className="italic text-muted">null</span>
-  return <>{value}</>
 }
 
 /**
