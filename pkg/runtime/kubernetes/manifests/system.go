@@ -113,6 +113,9 @@ type SystemInput struct {
 
 	BuildkitImage string
 
+	// Data is donkey-server's own volume (source history, for now).
+	Data config.InstallData
+
 	// NamespacePrefix maps a space onto its own namespace; ignored when
 	// WorkloadNamespace names one namespace for the whole installation.
 	NamespacePrefix string
@@ -210,6 +213,10 @@ func SystemObjects(in SystemInput) []runtime.Object {
 	// One replica owns the embedded DuckDB file and exposes OTLP/HTTP plus a
 	// separate control-plane query port.
 	objs = append(objs, telemetryObjects(in)...)
+	// The server's data claim exists before the server that mounts it.
+	if claim := serverDataClaim(in); claim != nil {
+		objs = append(objs, claim)
+	}
 	objs = append(objs,
 		buildkitDeployment(in),
 		systemService(in, buildkitName, buildkitPort, buildkitPort),
@@ -468,11 +475,14 @@ func serverDeployment(in SystemInput) *appsv1.Deployment {
 			},
 		})
 	}
+	var strategy appsv1.DeploymentStrategy
+	withDataVolume(in, &spec, &strategy)
 	return &appsv1.Deployment{
 		TypeMeta:   metav1.TypeMeta{APIVersion: "apps/v1", Kind: "Deployment"},
 		ObjectMeta: metav1.ObjectMeta{Name: ServerName, Namespace: in.Namespace, Labels: labels},
 		Spec: appsv1.DeploymentSpec{
 			Replicas: &replicas,
+			Strategy: strategy,
 			Selector: &metav1.LabelSelector{MatchLabels: SystemSelector(ServerName)},
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: in.hashedTemplateMeta(ServerName, in.ServerImage, in.serverConfigHash()),

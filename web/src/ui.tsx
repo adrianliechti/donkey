@@ -816,6 +816,30 @@ export function Skeleton({ className = '' }: { className?: string }) {
   return <div className={`animate-pulse rounded-md bg-line/60 ${className}`} aria-hidden />
 }
 
+// saveBlob hands a fetched download to the browser under a name. Downloads go
+// through fetch because they carry the session; a plain <a href> could not.
+export function saveBlob(blob: Blob, name: string) {
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = name
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
+// humanSize turns a byte count into "512 B", "1.4 MB" — files, objects, disks.
+export function humanSize(n: number): string {
+  if (n < 1024) return `${n} B`
+  const units = ['KB', 'MB', 'GB', 'TB']
+  let size = n / 1024
+  let i = 0
+  while (size >= 1024 && i < units.length - 1) {
+    size /= 1024
+    i++
+  }
+  return `${size.toFixed(1)} ${units[i]}`
+}
+
 // ago turns an RFC 3339 timestamp into "3m", "2h", "5d" — fleet-triage units.
 export function ago(iso: string): string {
   const secs = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 1000))

@@ -279,6 +279,10 @@ type deployOpts struct {
 	// Analysis is the assistant's reading of this app, when a reviewed plan
 	// already has one. Nil means this deploy asks for itself.
 	Analysis *ai.Analysis
+	// Pristine is a copy of Root from before reviewed source fixes were
+	// applied to it, when there were any: the source history records the
+	// person's upload as they sent it and the fixes as the platform's.
+	Pristine string
 }
 
 func (s *Server) deploy(ctx context.Context, out *lineStreamer, dir string, app *config.AppConfig, opts deployOpts) DeployResult {
@@ -416,6 +420,18 @@ func (s *Server) deployApp(ctx context.Context, out *lineStreamer, dir string, a
 	}
 	if err := os.CopyFS(workspace, os.DirFS(buildDir)); err != nil {
 		return fail(fmt.Errorf("preparing the build workspace: %w", err))
+	}
+	// The source history keeps both versions: the upload as it arrived and,
+	// when the build changed its copy, what was actually built. The copy is
+	// gone once this returns, so the difference is taken on the way out.
+	if release := out.release; release != nil && s.history != nil && !opts.BuildOnly {
+		uploaded := buildDir
+		if opts.Pristine != "" {
+			if rel, err := filepath.Rel(opts.Root, buildDir); err == nil {
+				uploaded = filepath.Join(opts.Pristine, rel)
+			}
+		}
+		defer func() { release.sourceCaptured(captureSource(uploaded, workspace, appRel, opts.SHA)) }()
 	}
 	buildDir, dir = workspace, filepath.Join(workspace, appRel)
 

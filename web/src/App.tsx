@@ -33,7 +33,7 @@ const healthRank: Record<Health, number> = { bad: 0, unknown: 1, ok: 2 }
 // The routes live in the hash (#/app/acme/shop/logs) so refresh keeps your
 // place, an unhealthy app can be linked to a teammate, and bookmarks from
 // the previous console keep working.
-const APP_TABS: AppTab[] = ['overview', 'release', 'traffic', 'logs', 'files', 'variables', 'settings']
+const APP_TABS: AppTab[] = ['overview', 'release', 'source', 'traffic', 'logs', 'files', 'variables', 'settings']
 const pageTitle = (page: string) => page + ' · Donkey'
 
 // One cache for the whole console. Short staleness keeps panels honest
@@ -215,7 +215,9 @@ function AppOverlay({ space, name, tab }: { space: string; name: string; tab: Ap
   const drawer = useRouteDrawer()
 
   return (
-    <Drawer {...drawer} onClose={drawer.close} label={`${name} — app details`}>
+    // Reading code wants the room a file tree and a source pane need side by
+    // side; every other tab keeps the panel's usual width.
+    <Drawer {...drawer} onClose={drawer.close} label={`${name} — app details`} width={tab === 'source' ? 'max-w-5xl' : undefined}>
       <AppDetail
         // A different app resets the panel; a different tab must not.
         key={`${space}/${name}`}

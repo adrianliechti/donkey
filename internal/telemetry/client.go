@@ -88,11 +88,19 @@ func (c *Client) Resources(ctx context.Context, space, app string, selected Reso
 }
 
 func (c *Client) PurgeSpace(ctx context.Context, space string) error {
+	return c.delete(ctx, "/v1/spaces/"+url.PathEscape(space))
+}
+
+// PurgeBuilds removes an app's build history.
+func (c *Client) PurgeBuilds(ctx context.Context, space, app string) error {
+	return c.delete(ctx, "/v1/builds?"+url.Values{"space": {space}, "app": {app}}.Encode())
+}
+
+func (c *Client) delete(ctx context.Context, path string) error {
 	if c == nil || c.baseURL == "" {
 		return errors.New("telemetry service is not configured")
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodDelete,
-		c.baseURL+"/v1/spaces/"+url.PathEscape(space), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, c.baseURL+path, nil)
 	if err != nil {
 		return err
 	}

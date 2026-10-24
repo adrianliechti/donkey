@@ -63,6 +63,24 @@ func TestBuildRecordsVersionRetainAndPurge(t *testing.T) {
 		t.Fatalf("unknown image should be ErrNoBuild, got %v", err)
 	}
 
+	// Removing an app deletes its history and nobody else's; its next build
+	// starts over at 1.
+	if err := store.PurgeBuilds(ctx, "acme", "web"); err != nil {
+		t.Fatal(err)
+	}
+	if builds, err := store.Builds(ctx, "acme", "web"); err != nil || len(builds) != 0 {
+		t.Fatalf("purged app still has %d records (%v)", len(builds), err)
+	}
+	if builds, err := store.Builds(ctx, "acme", "other"); err != nil || len(builds) != 1 {
+		t.Fatalf("a sibling's history must survive: %d records (%v)", len(builds), err)
+	}
+	if sequence, err := store.InsertBuild(ctx, "acme", "web", "registry/web:new", true, `{}`, now); err != nil || sequence != 1 {
+		t.Fatalf("a new app by the same name starts at 1, got %d (%v)", sequence, err)
+	}
+	if err := store.PurgeBuilds(ctx, "acme", "../x"); err == nil {
+		t.Fatal("an invalid scope must be refused")
+	}
+
 	// Deleting the space deletes its history and nobody else's.
 	if err := store.PurgeSpace(ctx, "acme"); err != nil {
 		t.Fatal(err)

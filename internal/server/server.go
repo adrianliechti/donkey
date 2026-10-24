@@ -6,12 +6,14 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/adrianliechti/donkey/internal/ai"
+	"github.com/adrianliechti/donkey/internal/history"
 	"github.com/adrianliechti/donkey/internal/identity"
 	"github.com/adrianliechti/donkey/internal/telemetry"
 	"github.com/adrianliechti/donkey/pkg/runtime"
@@ -26,6 +28,9 @@ type Server struct {
 	plans     *planStore
 	telemetry *telemetry.Client
 	resources *telemetry.ResourceExporter
+	// history is every app's source as git, or nil when the installation
+	// gives the server no volume for it.
+	history *history.Store
 
 	// deploying lets a terminating pod finish in-flight deploys.
 	deploying sync.WaitGroup
@@ -48,10 +53,19 @@ func New(cfg *Config, rt runtime.Provider) (*Server, error) {
 	if err := ai.Reachable(context.Background(), cfg.AIModel); err != nil {
 		return nil, err
 	}
+	// A configured volume that cannot be written is a broken installation,
+	// not a reason to deploy without the history it promised.
+	var source *history.Store
+	if cfg.DataDir != "" {
+		if source, err = history.New(filepath.Join(cfg.DataDir, "source")); err != nil {
+			return nil, err
+		}
+	}
 	return &Server{
 		cfg: cfg, rt: rt, assistant: assistant, plans: newPlanStore(),
 		telemetry: telemetry.NewClient(cfg.TelemetryURL, cfg.TelemetryKey),
 		resources: telemetry.NewResourceExporter(cfg.TelemetryOTLPEndpoint, cfg.TelemetryKey),
+		history:   source,
 	}, nil
 }
 
@@ -100,6 +114,12 @@ func (s *Server) routes() http.Handler {
 	mux.Handle("GET /v1/spaces/{space}/apps/{app}/status", s.auth(s.handleStatus))
 	mux.Handle("GET /v1/spaces/{space}/apps/{app}/builds", s.auth(s.handleBuilds))
 	mux.Handle("GET /v1/spaces/{space}/apps/{app}/builds/{sequence}", s.auth(s.handleBuild))
+	mux.Handle("GET /v1/spaces/{space}/apps/{app}/commits", s.auth(s.handleCommits))
+	mux.Handle("GET /v1/spaces/{space}/apps/{app}/commits/{commit}", s.auth(s.handleCommit))
+	mux.Handle("GET /v1/spaces/{space}/apps/{app}/commits/{commit}/diff", s.auth(s.handleCommitDiff))
+	mux.Handle("GET /v1/spaces/{space}/apps/{app}/commits/{commit}/tree", s.auth(s.handleCommitTree))
+	mux.Handle("GET /v1/spaces/{space}/apps/{app}/commits/{commit}/file", s.auth(s.handleCommitFile))
+	mux.Handle("GET /v1/spaces/{space}/apps/{app}/commits/{commit}/archive", s.auth(s.handleCommitArchive))
 	mux.Handle("GET /v1/spaces/{space}/apps/{app}/logs", s.auth(s.handleLogs))
 	mux.Handle("GET /v1/spaces/{space}/apps/{app}/env", s.auth(s.handleGetEnv))
 	mux.Handle("PUT /v1/spaces/{space}/apps/{app}/env", s.auth(s.handlePutEnv))

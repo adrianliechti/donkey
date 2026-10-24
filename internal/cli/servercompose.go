@@ -273,6 +273,9 @@ func dockerComposeFiles(settings *config.InstallFile, bundledRegistry bool) (map
 		serverEnv["DONKEY_REGISTRY_CONFIG_DIR"] = dockerRegistryAuthPath
 		serverVolumes = append(serverVolumes, dir+":"+dockerRegistryAuthPath+":ro")
 	}
+	if settings.Data.Enabled() {
+		serverEnv["DONKEY_DATA_DIR"] = dockerDataDir
+	}
 
 	gatewayEnv := map[string]string{
 		"DONKEY_RUNTIME":                 "docker",

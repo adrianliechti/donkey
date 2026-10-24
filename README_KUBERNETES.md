@@ -309,6 +309,7 @@ Platform resources always live in `kubernetes.system.namespace`
 | Certificate | `<space>-<app>` | App certificate request; writes `<space>-<app>-tls` |
 | DNSEndpoint | `donkey-gateway-dns` | Platform DNS records |
 | DNSEndpoint | `<space>-<app>-dns` | App DNS records |
+| PersistentVolumeClaim | `donkey-data` | donkey-server's data volume, mounted at `/var/lib/donkey`: the source history in `source/<space>/<app>.git`. Absent when `data.existingClaim` names your own claim or `data.disabled` is set |
 
 App TLS Secrets always include the space because all certificates share the
 platform namespace. The `team` / `my-api` certificate is `team-my-api-tls` in

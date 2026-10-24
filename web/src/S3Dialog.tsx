@@ -12,7 +12,7 @@ import {
 } from 'lucide-react'
 import { ApiError } from './api'
 import { Modal, ModalBody, ModalHeader, ModalNotice, SplitPane } from './dialog'
-import { Button, IconButton, Input, Spinner, errText } from './ui'
+import { Button, humanSize, IconButton, Input, saveBlob, Spinner, errText } from './ui'
 
 interface Bucket {
   name: string
@@ -56,18 +56,6 @@ async function s3Fetch(path: string, init?: RequestInit): Promise<Response> {
 
 async function s3Json<T>(path: string, init?: RequestInit): Promise<T> {
   return (await s3Fetch(path, init)).json() as Promise<T>
-}
-
-function humanSize(n: number): string {
-  if (n < 1024) return `${n} B`
-  const units = ['KB', 'MB', 'GB', 'TB']
-  let size = n / 1024
-  let i = 0
-  while (size >= 1024 && i < units.length - 1) {
-    size /= 1024
-    i++
-  }
-  return `${size.toFixed(1)} ${units[i]}`
 }
 
 // The last path segment is what a person recognizes; the full key is what
@@ -231,14 +219,7 @@ export function S3Dialog({
           `/buckets/${encodeURIComponent(bucket)}/objects/download?key=${encodeURIComponent(key)}`,
         ),
       )
-      // The download carries the token, so it goes through fetch and comes
-      // back as a blob — a plain <a href> could not authenticate.
-      const url = URL.createObjectURL(await res.blob())
-      const a = document.createElement('a')
-      a.href = url
-      a.download = lastSegment(key)
-      a.click()
-      URL.revokeObjectURL(url)
+      saveBlob(await res.blob(), lastSegment(key))
     })
   }
 
