@@ -23,12 +23,25 @@ export function Sheet({ tabs, fill = false, children }: { tabs?: ReactNode; fill
   const stuck = useScrolledPast(24)
   return (
     <div className={`dotgrid flex flex-col p-6 ${fill ? 'h-[calc(100dvh-52px)] min-h-[36rem]' : 'flex-1'}`}>
-      <div className="flex min-h-0 flex-1 flex-col rounded-xl border border-line bg-card shadow-sm">
+      <div
+        className={`flex min-h-0 flex-1 flex-col rounded-xl border border-line bg-card shadow-sm ${
+          // A filled sheet never scrolls with the page, so nothing in it
+          // sticks — it may clip to its corners, which a flush workbench needs.
+          fill ? 'overflow-hidden' : ''
+        }`}
+      >
         {tabs && (
+          // A filled sheet does not scroll, so its tab row has nothing to
+          // stick against — and must not: the clipped sheet would become what
+          // it sticks to.
           <header
-            className={`sticky top-13 z-20 border-b border-line bg-card/95 backdrop-blur ${
-              stuck ? '' : 'rounded-t-[calc(var(--radius-xl)-1px)]'
-            }`}
+            className={
+              fill
+                ? 'shrink-0 border-b border-line'
+                : `sticky top-13 z-20 border-b border-line bg-card/95 backdrop-blur ${
+                    stuck ? '' : 'rounded-t-[calc(var(--radius-xl)-1px)]'
+                  }`
+            }
           >
             {tabs}
           </header>

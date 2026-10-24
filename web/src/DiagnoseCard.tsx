@@ -17,20 +17,22 @@ export function DiagnosisSection({ space, app, image }: { space: string; app: st
       <SectionHeader
         title="Diagnosis"
         actions={
-          <IconButton icon={RefreshCw} label={fetching ? 'Reading the evidence…' : 'Check again'} onClick={reload}
-            disabled={fetching} className={fetching ? '[&>svg]:animate-spin' : ''} />
+          <IconButton
+            icon={RefreshCw}
+            label={fetching ? 'Reading the evidence…' : 'Check again'}
+            onClick={reload}
+            disabled={fetching}
+            className={fetching ? '[&>svg]:animate-spin' : ''}
+          />
         }
       />
-      <Callout
-        tone="danger"
-        icon={reading ? Loader2 : CircleAlert}
-        title="This app isn't fully up."
-      >
+      <Callout tone="danger" icon={reading ? Loader2 : CircleAlert} title="This app isn't fully up.">
         {reading
           ? 'Reading the logs and cluster events…'
-          : result?.diagnosis || (result?.assistantError
-            ? `The assistant couldn't be reached (${result.assistantError}). The raw evidence is below.`
-            : undefined)}
+          : result?.diagnosis ||
+            (result?.assistantError
+              ? `The assistant couldn't be reached (${result.assistantError}). The raw evidence is below.`
+              : undefined)}
       </Callout>
       <ErrorNote message={error} />
       {proposals.length > 0 && (

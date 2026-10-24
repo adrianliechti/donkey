@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useRef, useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import {
   Check,
   ChevronRight,
@@ -13,7 +14,8 @@ import {
   Upload,
   X,
 } from 'lucide-react'
-import { api, type FileListing, saveBlob } from './api'
+import { api, saveBlob } from './api'
+import { filesQuery } from './queries'
 import { Button, ErrorNote, IconButton, Input, List, ListRow, SectionHeader, Spinner } from './ui'
 import { errText, humanSize } from './format'
 
@@ -21,11 +23,12 @@ import { errText, humanSize } from './format'
 // cannot rebuild, so seeding it and getting things out of it belong here.
 export function FilesPanel({ space, app }: { space: string; app: string }) {
   const [path, setPath] = useState('')
-  const [listing, setListing] = useState<FileListing | null>(null)
-  const [error, setError] = useState('')
+  const files = useQuery(filesQuery(space, app, path))
+  const listing = files.data ?? null
+  // What the last action ran into; the listing's own trouble is files.error.
+  const [actionError, setActionError] = useState('')
   const [busy, setBusy] = useState('')
   const [dragOver, setDragOver] = useState(false)
-  const [noDisk, setNoDisk] = useState(false)
   // Renaming, deleting and new folders all happen inline: a browser prompt()
   // reads as somebody else's dialog in the middle of donkey's own page.
   const [renaming, setRenaming] = useState<{ name: string; value: string } | null>(null)
@@ -33,35 +36,19 @@ export function FilesPanel({ space, app }: { space: string; app: string }) {
   const [newFolder, setNewFolder] = useState<string | null>(null)
   const fileInput = useRef<HTMLInputElement>(null)
 
-  const load = useCallback(async () => {
-    try {
-      setListing(await api.files(space, app, path))
-      setError('')
-      setNoDisk(false)
-    } catch (err) {
-      const message = errText(err, 'Loading the disk did not work.')
-      // An app without storage is the common case, not a failure.
-      if (/no disk|no storage|not have a disk/i.test(message)) {
-        setNoDisk(true)
-        setError('')
-        return
-      }
-      setError(message)
-    }
-  }, [space, app, path])
-
-  useEffect(() => {
-    load()
-  }, [load])
+  const loadError = files.error ? errText(files.error, 'Loading the disk did not work.') : ''
+  // An app without storage is the common case, not a failure.
+  const noDisk = /no disk|no storage|not have a disk/i.test(loadError)
+  const error = actionError || loadError
 
   async function run(label: string, fn: () => Promise<unknown>) {
     setBusy(label)
-    setError('')
+    setActionError('')
     try {
       await fn()
-      await load()
+      await files.refetch()
     } catch (err) {
-      setError(errText(err, 'That did not work.'))
+      setActionError(errText(err, 'That did not work.'))
     } finally {
       setBusy('')
     }
@@ -94,9 +81,13 @@ export function FilesPanel({ space, app }: { space: string; app: string }) {
         title="Files"
         actions={
           <>
-            <IconButton icon={Upload} label="Upload files (or drop them on the list)" onClick={() => fileInput.current?.click()} />
+            <IconButton
+              icon={Upload}
+              label="Upload files (or drop them on the list)"
+              onClick={() => fileInput.current?.click()}
+            />
             <IconButton icon={FolderPlus} label="New folder" onClick={() => setNewFolder('')} />
-            <IconButton icon={RefreshCw} label="Refresh files" onClick={load} />
+            <IconButton icon={RefreshCw} label="Refresh files" onClick={() => void files.refetch()} />
           </>
         }
       />
@@ -153,19 +144,33 @@ export function FilesPanel({ space, app }: { space: string; app: string }) {
         {listing && (
           <List>
             {newFolder !== null && (
-              <ListRow className="bg-surface/40" actions={
-                <>
-                  <IconButton icon={Check} size="sm" label="Create folder" disabled={newFolder.trim() === ''} onClick={() => {
-                    const name = newFolder.trim()
-                    if (!name) return
-                    setNewFolder(null)
-                    run('Creating…', () => api.makeFolder(space, app, path ? `${path}/${name}` : name))
-                  }} />
-                  <IconButton icon={X} size="sm" label="Cancel" onClick={() => setNewFolder(null)} />
-                </>
-              }>
+              <ListRow
+                className="bg-surface/40"
+                actions={
+                  <>
+                    <IconButton
+                      icon={Check}
+                      size="sm"
+                      label="Create folder"
+                      disabled={newFolder.trim() === ''}
+                      onClick={() => {
+                        const name = newFolder.trim()
+                        if (!name) return
+                        setNewFolder(null)
+                        run('Creating…', () => api.makeFolder(space, app, path ? `${path}/${name}` : name))
+                      }}
+                    />
+                    <IconButton icon={X} size="sm" label="Cancel" onClick={() => setNewFolder(null)} />
+                  </>
+                }
+              >
                 <FolderPlus className="size-4 shrink-0 text-muted" aria-hidden />
-                <Input bare autoFocus value={newFolder} placeholder="Folder name" aria-label="Name of the new folder"
+                <Input
+                  bare
+                  autoFocus
+                  value={newFolder}
+                  placeholder="Folder name"
+                  aria-label="Name of the new folder"
                   onChange={(e) => setNewFolder(e.target.value)}
                   onKeyDown={(e) => {
                     cancelOnEscape(() => setNewFolder(null))(e)
@@ -175,14 +180,19 @@ export function FilesPanel({ space, app }: { space: string; app: string }) {
                       run('Creating…', () => api.makeFolder(space, app, path ? `${path}/${name}` : name))
                     }
                   }}
-                  className="flex-1" />
+                  className="flex-1"
+                />
               </ListRow>
             )}
             {/* The top level shows donkey's own folder names, so say which
                 app path each one is mounted at. */}
             {(listing.folders ?? []).map((f) => (
               <ListRow key={f.name}>
-                <button type="button" onClick={() => setPath(f.name)} className="flex min-w-0 flex-1 items-center gap-3 text-left">
+                <button
+                  type="button"
+                  onClick={() => setPath(f.name)}
+                  className="flex min-w-0 flex-1 items-center gap-3 text-left"
+                >
                   <Folder className="size-4 shrink-0 text-accent" aria-hidden />
                   <span className="font-mono text-sm">{f.name}</span>
                   <span className="truncate text-xs text-muted">mounted at {f.path}</span>
@@ -200,55 +210,100 @@ export function FilesPanel({ space, app }: { space: string; app: string }) {
                   }
                 }
                 return (
-                  <ListRow key={e.name} className="bg-surface/40" actions={
-                    <>
-                      <IconButton icon={Check} size="sm" label="Rename" onClick={commit} />
-                      <IconButton icon={X} size="sm" label="Cancel" onClick={() => setRenaming(null)} />
-                    </>
-                  }>
+                  <ListRow
+                    key={e.name}
+                    className="bg-surface/40"
+                    actions={
+                      <>
+                        <IconButton icon={Check} size="sm" label="Rename" onClick={commit} />
+                        <IconButton icon={X} size="sm" label="Cancel" onClick={() => setRenaming(null)} />
+                      </>
+                    }
+                  >
                     <Pencil className="size-4 shrink-0 text-muted" aria-hidden />
-                    <Input bare autoFocus value={renaming.value} aria-label={`New name for ${e.name}`}
+                    <Input
+                      bare
+                      autoFocus
+                      value={renaming.value}
+                      aria-label={`New name for ${e.name}`}
                       onChange={(ev) => setRenaming({ name: e.name, value: ev.target.value })}
                       onKeyDown={(ev) => {
                         cancelOnEscape(() => setRenaming(null))(ev)
                         if (ev.key === 'Enter') commit()
                       }}
-                      className="flex-1" />
+                      className="flex-1"
+                    />
                   </ListRow>
                 )
               }
               if (deleting === e.name) {
                 return (
-                  <ListRow key={e.name} className="bg-danger/10" actions={
-                    <>
-                      <Button kind="danger" size="sm" onClick={() => {
-                        setDeleting('')
-                        run('Removing…', () => api.removeFile(space, app, full))
-                      }}>Delete</Button>
-                      <IconButton icon={X} size="sm" label="Keep it" onClick={() => setDeleting('')} />
-                    </>
-                  }>
+                  <ListRow
+                    key={e.name}
+                    className="bg-danger/10"
+                    actions={
+                      <>
+                        <Button
+                          kind="danger"
+                          size="sm"
+                          onClick={() => {
+                            setDeleting('')
+                            run('Removing…', () => api.removeFile(space, app, full))
+                          }}
+                        >
+                          Delete
+                        </Button>
+                        <IconButton icon={X} size="sm" label="Keep it" onClick={() => setDeleting('')} />
+                      </>
+                    }
+                  >
                     <Trash2 className="size-4 shrink-0 text-danger" aria-hidden />
                     <span className="min-w-0 flex-1 truncate text-sm text-danger">
-                      Delete <span className="font-mono">{e.name}</span>{e.isDir ? ' and everything in it' : ''}? A redeploy does not bring it back.
+                      Delete <span className="font-mono">{e.name}</span>
+                      {e.isDir ? ' and everything in it' : ''}? A redeploy does not bring it back.
                     </span>
                   </ListRow>
                 )
               }
               return (
-                <ListRow key={e.name} actions={
-                  <>
-                    {!e.isDir && (
-                      <IconButton icon={Download} size="sm" label={`Download ${e.name}`} onClick={() =>
-                        run(`Downloading ${e.name}…`, async () => saveBlob(await api.downloadFile(space, app, full), e.name))
-                      } />
-                    )}
-                    <IconButton icon={Pencil} size="sm" label={`Rename ${e.name}`} onClick={() => setRenaming({ name: e.name, value: e.name })} />
-                    <IconButton icon={Trash2} size="sm" kind="danger" label={`Delete ${e.name}`} onClick={() => setDeleting(e.name)} />
-                  </>
-                }>
+                <ListRow
+                  key={e.name}
+                  actions={
+                    <>
+                      {!e.isDir && (
+                        <IconButton
+                          icon={Download}
+                          size="sm"
+                          label={`Download ${e.name}`}
+                          onClick={() =>
+                            run(`Downloading ${e.name}…`, async () =>
+                              saveBlob(await api.downloadFile(space, app, full), e.name),
+                            )
+                          }
+                        />
+                      )}
+                      <IconButton
+                        icon={Pencil}
+                        size="sm"
+                        label={`Rename ${e.name}`}
+                        onClick={() => setRenaming({ name: e.name, value: e.name })}
+                      />
+                      <IconButton
+                        icon={Trash2}
+                        size="sm"
+                        kind="danger"
+                        label={`Delete ${e.name}`}
+                        onClick={() => setDeleting(e.name)}
+                      />
+                    </>
+                  }
+                >
                   {e.isDir ? (
-                    <button type="button" onClick={() => setPath(full)} className="flex min-w-0 flex-1 items-center gap-3 text-left hover:underline">
+                    <button
+                      type="button"
+                      onClick={() => setPath(full)}
+                      className="flex min-w-0 flex-1 items-center gap-3 text-left hover:underline"
+                    >
                       <Folder className="size-4 shrink-0 text-accent" aria-hidden />
                       <span className="truncate font-mono text-sm">{e.name}</span>
                     </button>
@@ -266,7 +321,9 @@ export function FilesPanel({ space, app }: { space: string; app: string }) {
               )
             })}
             {empty && newFolder === null && (
-              <ListRow><span className="text-sm text-muted">Nothing here yet — drop a file onto this list to upload it.</span></ListRow>
+              <ListRow>
+                <span className="text-sm text-muted">Nothing here yet — drop a file onto this list to upload it.</span>
+              </ListRow>
             )}
           </List>
         )}

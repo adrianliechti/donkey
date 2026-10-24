@@ -22,13 +22,19 @@ test('browser file uploads preserve binary content through multipart encoding', 
         assert.equal(file.type, 'application/pdf')
         const uploaded = Buffer.from(await file.arrayBuffer())
         assert.deepEqual(uploaded, original)
-        assert.equal(createHash('sha256').update(uploaded).digest('hex'),
-          createHash('sha256').update(original).digest('hex'))
+        assert.equal(
+          createHash('sha256').update(uploaded).digest('hex'),
+          createHash('sha256').update(original).digest('hex'),
+        )
         return Response.json({ ok: true, path: 'app-data/736333792.pdf', size: file.size })
       })
 
-      const result = await api.uploadFile('team', 'api', 'app-data/736333792.pdf',
-        new File([original], '736333792.pdf', { type: 'application/pdf' }))
+      const result = await api.uploadFile(
+        'team',
+        'api',
+        'app-data/736333792.pdf',
+        new File([original], '736333792.pdf', { type: 'application/pdf' }),
+      )
       assert.equal(result.size, original.length)
     })
   }
@@ -47,8 +53,7 @@ test('file paths survive query encoding without trimming or decoding twice', asy
         assert.equal(form.get('file').name, 'original.pdf')
         return Response.json({ ok: true })
       })
-      await api.uploadFile('team', 'api', path,
-        new File(['%PDF-1.6'], 'original.pdf', { type: 'application/pdf' }))
+      await api.uploadFile('team', 'api', path, new File(['%PDF-1.6'], 'original.pdf', { type: 'application/pdf' }))
     })
   }
 })
@@ -65,8 +70,9 @@ test('project archive upload paths preserve their explicit content type and byte
     assert.equal(url.searchParams.get('name'), 'api')
     paths.push(url.pathname)
     if (url.pathname.endsWith('/deploys')) {
-      return new Response(JSON.stringify({ result: { ok: true } }) + '\n',
-        { headers: { 'Content-Type': 'application/x-ndjson' } })
+      return new Response(JSON.stringify({ result: { ok: true } }) + '\n', {
+        headers: { 'Content-Type': 'application/x-ndjson' },
+      })
     }
     return Response.json({ ok: true })
   })

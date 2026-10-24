@@ -1,7 +1,6 @@
 import type { ComponentType } from 'react'
 import {
   Bot,
-  Boxes,
   Cable,
   FolderTree,
   KeyRound,
@@ -9,7 +8,6 @@ import {
   Search,
   Send,
   SlidersHorizontal,
-  SquareTerminal,
   Table2,
   type LucideIcon,
 } from 'lucide-react'
@@ -42,20 +40,11 @@ export const consoleModules: Record<ConsoleKind, () => Promise<{ Console: Compon
 // The console's own tabs, known before its chunk is: the tab row never waits.
 // The first one is where the page opens.
 export const consoleTabs: Record<ConsoleKind, ConsoleTab[]> = {
-  database: [
-    { id: 'data', label: 'Data', icon: Table2 },
-    { id: 'query', label: 'Query', icon: SquareTerminal },
-  ],
-  trino: [
-    { id: 'data', label: 'Catalogs', icon: ListTree },
-    { id: 'query', label: 'Query', icon: SquareTerminal },
-  ],
+  database: [{ id: 'data', label: 'Data', icon: Table2 }],
+  trino: [{ id: 'data', label: 'Catalogs', icon: ListTree }],
   redis: [{ id: 'keys', label: 'Keys', icon: KeyRound }],
   s3: [{ id: 'files', label: 'Files', icon: FolderTree }],
-  openai: [
-    { id: 'chat', label: 'Chat', icon: Bot },
-    { id: 'models', label: 'Models', icon: Boxes },
-  ],
+  openai: [{ id: 'chat', label: 'Chat', icon: Bot }],
   http: [{ id: 'requests', label: 'Requests', icon: Send }],
   exa: [{ id: 'search', label: 'Search', icon: Search }],
 }

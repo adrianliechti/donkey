@@ -302,13 +302,33 @@ const keysPath = (space: string, service: string, suffix: string, params: Record
 const expiry = (ttl: number) => (ttl < 0 ? null : Date.now() + ttl * 1000)
 
 export const redisApi = {
-  keys: async (space: string, service: string, db: string | undefined, pattern: string, type: string, cursor: string, signal?: AbortSignal) => {
-    const page = await request<RedisKeyPage>(keysPath(space, service, '', { db, pattern, type: type || undefined, cursor }), { signal })
+  keys: async (
+    space: string,
+    service: string,
+    db: string | undefined,
+    pattern: string,
+    type: string,
+    cursor: string,
+    signal?: AbortSignal,
+  ) => {
+    const page = await request<RedisKeyPage>(
+      keysPath(space, service, '', { db, pattern, type: type || undefined, cursor }),
+      { signal },
+    )
     return { ...page, keys: page.keys.map((k) => ({ ...k, expiresAt: expiry(k.ttl) })) }
   },
   databases: (space: string, service: string) => request<RedisDatabases>(keysPath(space, service, '/databases', {})),
-  value: async (space: string, service: string, db: string | undefined, id: string, at: string, signal?: AbortSignal) => {
-    const page = await request<RedisValuePage>(keysPath(space, service, '/value', { db, id, at: at || undefined }), { signal })
+  value: async (
+    space: string,
+    service: string,
+    db: string | undefined,
+    id: string,
+    at: string,
+    signal?: AbortSignal,
+  ) => {
+    const page = await request<RedisValuePage>(keysPath(space, service, '/value', { db, id, at: at || undefined }), {
+      signal,
+    })
     return { ...page, expiresAt: expiry(page.ttl) }
   },
   create: (space: string, service: string, db: string | undefined, key: RedisNewKey) =>
@@ -322,10 +342,13 @@ export const redisApi = {
       body: JSON.stringify({ value, previous }),
     }),
   change: (space: string, service: string, db: string | undefined, id: string, change: RedisChange) =>
-    request<{ ok: boolean; exists: boolean; id?: string; name?: string }>(keysPath(space, service, '/value', { db, id }), {
-      method: 'PATCH',
-      body: JSON.stringify(change),
-    }),
+    request<{ ok: boolean; exists: boolean; id?: string; name?: string }>(
+      keysPath(space, service, '/value', { db, id }),
+      {
+        method: 'PATCH',
+        body: JSON.stringify(change),
+      },
+    ),
   remove: (space: string, service: string, db: string | undefined, id: string) =>
     request<{ ok: boolean }>(keysPath(space, service, '/value', { db, id }), { method: 'DELETE' }),
 }
@@ -375,7 +398,13 @@ export function useRedisValue(space: string, service: string, db: string | undef
 
 // The listed keys of a database, edited in place: deleting or renaming one
 // key must not rescan every page the sidebar has loaded.
-function patchKeys(qc: QueryClient, space: string, service: string, db: string | undefined, fn: (keys: RedisKeyEntry[]) => RedisKeyEntry[]) {
+function patchKeys(
+  qc: QueryClient,
+  space: string,
+  service: string,
+  db: string | undefined,
+  fn: (keys: RedisKeyEntry[]) => RedisKeyEntry[],
+) {
   qc.setQueriesData<InfiniteData<RedisKeyPage>>({ queryKey: [...root(space, service), 'keys', dbKey(db)] }, (data) =>
     data ? { ...data, pages: data.pages.map((page) => ({ ...page, keys: fn(page.keys) })) } : data,
   )
@@ -396,7 +425,8 @@ export function useRedisWrites(space: string, service: string, db: string | unde
   }
 
   const change = useMutation({
-    mutationFn: ({ id, change }: { id: string; change: RedisChange }) => redisApi.change(space, service, db, id, change),
+    mutationFn: ({ id, change }: { id: string; change: RedisChange }) =>
+      redisApi.change(space, service, db, id, change),
     onSuccess: (result, { id, change }) => {
       if (change.op === 'rename' && result.id && result.name !== undefined) {
         const renamed = { id: result.id, name: result.name }

@@ -117,7 +117,6 @@ function save<T>(key: string, value: T, { maxBytes = 256 * 1024, shrink }: BoxOp
 }
 
 /** Drops a list's last (oldest) entry; lists are kept newest first. */
-export const dropOldest = <T>(list: T[]): T[] | undefined => (list.length > 0 ? list.slice(0, -1) : undefined)
 
 /** An id for a stored entry. */
 export function newId(): string {
@@ -130,7 +129,8 @@ export function newId(): string {
 
 // The parse helpers: a stored list keeps only the entries that still have
 // the shape the console expects.
-export const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
+export const isRecord = (v: unknown): v is Record<string, unknown> =>
+  typeof v === 'object' && v !== null && !Array.isArray(v)
 export const str = (v: unknown, fallback = ''): string => (typeof v === 'string' ? v : fallback)
 export const num = (v: unknown): number | undefined => (typeof v === 'number' && Number.isFinite(v) ? v : undefined)
 export function listOf<T>(raw: unknown, item: (v: Record<string, unknown>) => T | undefined): T[] {

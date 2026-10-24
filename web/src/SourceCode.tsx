@@ -9,13 +9,38 @@ import { useColorScheme } from './hooks'
 // anything else (Go, Java, …) reads as plain text, which beats guessing.
 
 const byExtension: Record<string, HighlightLanguage> = {
-  js: 'js', mjs: 'js', cjs: 'js', jsx: 'jsx',
-  ts: 'ts', mts: 'ts', cts: 'ts', tsx: 'tsx',
-  py: 'python', json: 'json', yaml: 'yaml', yml: 'yaml', toml: 'toml',
-  css: 'css', scss: 'css', html: 'html', htm: 'html', vue: 'vue', svelte: 'svelte', ejs: 'ejs',
-  md: 'markdown', markdown: 'markdown', mmd: 'mermaid',
-  sh: 'shell', bash: 'shell', zsh: 'shell', sql: 'sql',
-  diff: 'diff', patch: 'diff', dockerfile: 'dockerfile', env: 'env', conf: 'nginx',
+  js: 'js',
+  mjs: 'js',
+  cjs: 'js',
+  jsx: 'jsx',
+  ts: 'ts',
+  mts: 'ts',
+  cts: 'ts',
+  tsx: 'tsx',
+  py: 'python',
+  json: 'json',
+  yaml: 'yaml',
+  yml: 'yaml',
+  toml: 'toml',
+  css: 'css',
+  scss: 'css',
+  html: 'html',
+  htm: 'html',
+  vue: 'vue',
+  svelte: 'svelte',
+  ejs: 'ejs',
+  md: 'markdown',
+  markdown: 'markdown',
+  mmd: 'mermaid',
+  sh: 'shell',
+  bash: 'shell',
+  zsh: 'shell',
+  sql: 'sql',
+  diff: 'diff',
+  patch: 'diff',
+  dockerfile: 'dockerfile',
+  env: 'env',
+  conf: 'nginx',
 }
 
 function languageOf(path: string): HighlightLanguage {
@@ -51,7 +76,15 @@ function highlightedLines(path: string, text: string): string[] {
   return lines
 }
 
-export function SourceCode({ path, text, className = 'rounded-md' }: { path: string; text: string; className?: string }) {
+export function SourceCode({
+  path,
+  text,
+  className = 'rounded-md',
+}: {
+  path: string
+  text: string
+  className?: string
+}) {
   const scheme = useColorScheme()
   const css = useMemo(() => themeCss(scheme === 'dark' ? githubDarkTheme : githubLightTheme), [scheme])
   const lines = useMemo(() => highlightedLines(path, text), [path, text])

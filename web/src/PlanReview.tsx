@@ -82,21 +82,13 @@ function Choice({
 
 // The project owns the edits and review actions; each app only edits its
 // fields. Its blocks are the drawer's plain sections, like a release.
-export function PlanReview({
-  plan,
-  edit,
-  onEdit,
-}: {
-  plan: Plan
-  edit: PlanEdit
-  onEdit: (edit: PlanEdit) => void
-}) {
+export function PlanReview({ plan, edit, onEdit }: { plan: Plan; edit: PlanEdit; onEdit: (edit: PlanEdit) => void }) {
   const { data: fleet } = useFleet()
-  const domains = fleet?.domains[edit.space] ?? (edit.space === plan.app.space
-    ? (plan.app.domains ?? []) : (fleet?.domain ? [`${edit.space}.${fleet.domain}`] : []))
+  const domains =
+    fleet?.domains[edit.space] ??
+    (edit.space === plan.app.space ? (plan.app.domains ?? []) : fleet?.domain ? [`${edit.space}.${fleet.domain}`] : [])
   const previewURL = edit.exposure !== 'internal' && edit.host.trim() ? `https://${edit.host.trim()}` : ''
-  const set = <K extends keyof PlanEdit>(key: K, value: PlanEdit[K]) =>
-    onEdit({ ...edit, [key]: value })
+  const set = <K extends keyof PlanEdit>(key: K, value: PlanEdit[K]) => onEdit({ ...edit, [key]: value })
 
   const toggle = (key: 'storage' | 'services', value: string, on: boolean) =>
     onEdit({
@@ -142,9 +134,11 @@ export function PlanReview({
           </Field>
           <Field
             label="Port"
-            hint={plan.app.portReason && plan.app.portSource === 'code'
-              ? `${PORT_SOURCE[plan.app.portSource]} — ${plan.app.portReason}`
-              : PORT_SOURCE[plan.app.portSource]}
+            hint={
+              plan.app.portReason && plan.app.portSource === 'code'
+                ? `${PORT_SOURCE[plan.app.portSource]} — ${plan.app.portReason}`
+                : PORT_SOURCE[plan.app.portSource]
+            }
           >
             <Input
               value={edit.port || ''}
@@ -158,17 +152,35 @@ export function PlanReview({
           label="Health check path"
           hint="A path that answers OK when the app is fine. Empty just checks that the port answers."
         >
-          <Input value={edit.healthcheck} onChange={(e) => set('healthcheck', e.target.value)} placeholder="/healthz" spellCheck={false} />
+          <Input
+            value={edit.healthcheck}
+            onChange={(e) => set('healthcheck', e.target.value)}
+            placeholder="/healthz"
+            spellCheck={false}
+          />
         </Field>
 
         <div className="space-y-1.5">
           <Eyebrow>Kind of app</Eyebrow>
-          <ChoiceCards label="Kind of app" value={edit.mode} onChange={(mode) => onEdit({ ...edit, mode })} options={APP_MODES} />
+          <ChoiceCards
+            label="Kind of app"
+            value={edit.mode}
+            onChange={(mode) => onEdit({ ...edit, mode })}
+            options={APP_MODES}
+          />
         </div>
 
         <div className="space-y-1.5">
           <Eyebrow>Who can reach it</Eyebrow>
-          <ChoiceCards label="Who can reach it" value={edit.exposure} onChange={(v) => set('exposure', v)} options={exposureOptions(edit.mode).filter((option) => option.value !== 'public' || fleet?.allowPublic[edit.space])} columns="sm:grid-cols-3" />
+          <ChoiceCards
+            label="Who can reach it"
+            value={edit.exposure}
+            onChange={(v) => set('exposure', v)}
+            options={exposureOptions(edit.mode).filter(
+              (option) => option.value !== 'public' || fleet?.allowPublic[edit.space],
+            )}
+            columns="sm:grid-cols-3"
+          />
         </div>
 
         {edit.exposure !== 'internal' && (
@@ -195,9 +207,11 @@ export function PlanReview({
         <Section className="space-y-3">
           <SectionHeader
             title="Data that must survive a restart"
-            description={edit.storage.length > 0
-              ? `They share one ${plan.app.storageSize || '1Gi'} disk (a folder each), and the app then runs as a single copy.`
-              : 'Nothing is kept: everything the app writes disappears when it restarts.'}
+            description={
+              edit.storage.length > 0
+                ? `They share one ${plan.app.storageSize || '1Gi'} disk (a folder each), and the app then runs as a single copy.`
+                : 'Nothing is kept: everything the app writes disappears when it restarts.'
+            }
           />
           <List>
             {plan.volumes.map((v) => (
@@ -265,7 +279,8 @@ export function PlanReview({
             <pre className="whitespace-pre">{plan.config}</pre>
           </CodeCard>
           <p className="mt-2 text-xs text-muted">
-            Save this as <span className="font-mono">donkey.yaml</span> in the app folder to keep these settings for future uploads.
+            Save this as <span className="font-mono">donkey.yaml</span> in the app folder to keep these settings for
+            future uploads.
           </p>
         </Disclosure>
       </Section>

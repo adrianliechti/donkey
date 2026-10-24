@@ -47,7 +47,15 @@ test('the statement at the cursor is the one it is in, or the one it just left',
 
 test('CSV quotes what needs quoting and leaves null empty', () => {
   assert.equal(
-    toCsv(['id', 'note'], [['1', 'plain'], ['2', 'a, "quoted"\nline'], ['3', null], ['4', ' padded']]),
+    toCsv(
+      ['id', 'note'],
+      [
+        ['1', 'plain'],
+        ['2', 'a, "quoted"\nline'],
+        ['3', null],
+        ['4', ' padded'],
+      ],
+    ),
     'id,note\r\n1,plain\r\n2,"a, ""quoted""\nline"\r\n3,\r\n4," padded"\r\n',
   )
 })
@@ -57,7 +65,15 @@ test('value shapes', () => {
   assert.equal(jsonOf('{not json}'), undefined)
   assert.equal(jsonOf('42'), undefined)
   assert.equal(jsonOf(null), undefined)
-  for (const type of ['integer', 'bigint', 'numeric(10,2)', 'double precision', 'int(11) unsigned', 'decimal(20,6)', 'real']) {
+  for (const type of [
+    'integer',
+    'bigint',
+    'numeric(10,2)',
+    'double precision',
+    'int(11) unsigned',
+    'decimal(20,6)',
+    'real',
+  ]) {
     assert.ok(isNumericType(type), type)
   }
   for (const type of ['text', 'interval', 'point', 'timestamp with time zone', 'json', undefined]) {
@@ -68,10 +84,21 @@ test('value shapes', () => {
 })
 
 test('only plain reads leave the cached tables alone', () => {
-  for (const sql of ['select 1', '  -- why\nSELECT * from t', 'show tables', 'explain select 1', '/* c */ values (1)']) {
+  for (const sql of [
+    'select 1',
+    '  -- why\nSELECT * from t',
+    'show tables',
+    'explain select 1',
+    '/* c */ values (1)',
+  ]) {
     assert.ok(onlyReads(sql), sql)
   }
-  for (const sql of ['update t set a = 1', 'select * into copy from t', 'with d as (delete from t returning *) select * from d', 'create table x ()']) {
+  for (const sql of [
+    'update t set a = 1',
+    'select * into copy from t',
+    'with d as (delete from t returning *) select * from d',
+    'create table x ()',
+  ]) {
     assert.ok(!onlyReads(sql), sql)
   }
 })

@@ -17,9 +17,20 @@ export function PlatformSettings({ onClose }: { onClose: () => void }) {
 
   useEffect(() => {
     let active = true
-    api.platformConfig().then((value) => { if (active) { setSettings(value); setSaved(JSON.stringify(value)) } })
-      .catch((err) => { if (active) setError(errText(err, 'Loading platform settings failed.')) })
-    return () => { active = false }
+    api
+      .platformConfig()
+      .then((value) => {
+        if (active) {
+          setSettings(value)
+          setSaved(JSON.stringify(value))
+        }
+      })
+      .catch((err) => {
+        if (active) setError(errText(err, 'Loading platform settings failed.'))
+      })
+    return () => {
+      active = false
+    }
   }, [])
 
   async function save() {
@@ -43,15 +54,21 @@ export function PlatformSettings({ onClose }: { onClose: () => void }) {
       <ModalNotice message={error} />
       <ModalBody>
         {!settings && !error && <Spinner label="Loading platform settings…" />}
-        {settings && <fieldset disabled={busy} className="space-y-3">
-          <p className="text-sm text-ink-soft">Platform admins manage all spaces and can add other admins.</p>
-          <MembershipEditor admins={settings.admins} onChange={(admins) => setSettings({ admins })} />
-          <p className="text-xs text-muted">Keep yourself as an admin when saving.</p>
-        </fieldset>}
+        {settings && (
+          <fieldset disabled={busy} className="space-y-3">
+            <p className="text-sm text-ink-soft">Platform admins manage all spaces and can add other admins.</p>
+            <MembershipEditor admins={settings.admins} onChange={(admins) => setSettings({ admins })} />
+            <p className="text-xs text-muted">Keep yourself as an admin when saving.</p>
+          </fieldset>
+        )}
       </ModalBody>
       <ModalFooter>
-        <Button kind="quiet" onClick={onClose} disabled={busy}>Cancel</Button>
-        <Button onClick={save} disabled={!dirty || busy}>{busy ? 'Saving…' : 'Save settings'}</Button>
+        <Button kind="quiet" onClick={onClose} disabled={busy}>
+          Cancel
+        </Button>
+        <Button onClick={save} disabled={!dirty || busy}>
+          {busy ? 'Saving…' : 'Save settings'}
+        </Button>
       </ModalFooter>
     </Modal>
   )

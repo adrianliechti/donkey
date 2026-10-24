@@ -29,6 +29,7 @@ import {
   useRedisWrites,
 } from './redisApi'
 import { Button, Callout, ErrorNote, IconButton, Input, Select, TextArea, Toolbar } from './ui'
+import { BarSearch } from './Workbench'
 import { errText, humanSize } from './format'
 
 type ViewProps = {
@@ -73,8 +74,8 @@ export function RedisValueView(props: ViewProps) {
   return (
     <div className="p-4">
       <Callout title={`A ${type} key`}>
-        The console shows strings, hashes, lists, sets, sorted sets and streams. This one can still be renamed, given
-        an expiry or deleted.
+        The console shows strings, hashes, lists, sets, sorted sets and streams. This one can still be renamed, given an
+        expiry or deleted.
       </Callout>
     </div>
   )
@@ -381,7 +382,13 @@ function ElementRow({
                   />
                 )}
                 {remove && (
-                  <IconButton icon={Trash2} size="sm" kind="danger" label={`Delete ${label}`} onClick={() => setMode('confirm')} />
+                  <IconButton
+                    icon={Trash2}
+                    size="sm"
+                    kind="danger"
+                    label={`Delete ${label}`}
+                    onClick={() => setMode('confirm')}
+                  />
                 )}
               </>
             )}
@@ -438,7 +445,17 @@ function Table({ head, children }: { head: { label: string; className?: string }
   )
 }
 
-function MoreRows({ hasMore, loadingMore, onMore, left }: { hasMore: boolean; loadingMore: boolean; onMore: () => void; left: number }) {
+function MoreRows({
+  hasMore,
+  loadingMore,
+  onMore,
+  left,
+}: {
+  hasMore: boolean
+  loadingMore: boolean
+  onMore: () => void
+  left: number
+}) {
   if (!hasMore) return null
   return (
     <div className="flex justify-center p-3">
@@ -528,7 +545,13 @@ function AddRow({
         )}
         <Toolbar>
           {actions.map((a) => (
-            <Button key={a.label} size="sm" kind={actions.length > 1 ? 'quiet' : 'primary'} disabled={busy} onClick={() => void run(a)}>
+            <Button
+              key={a.label}
+              size="sm"
+              kind={actions.length > 1 ? 'quiet' : 'primary'}
+              disabled={busy}
+              onClick={() => void run(a)}
+            >
               {a.label}
             </Button>
           ))}
@@ -550,13 +573,12 @@ function useChange(space: string, service: string, db: string | undefined, id: s
 // its own. This narrows the screenful.
 function FilterInput({ value, onChange, noun }: { value: string; onChange: (v: string) => void; noun: string }) {
   return (
-    <Input
-      size="sm"
+    <BarSearch
       value={value}
-      onChange={(e) => onChange(e.target.value)}
+      onChange={onChange}
       placeholder={`Filter ${noun}`}
-      aria-label={`Filter the loaded ${noun}`}
-      className="w-40"
+      label={`Filter the loaded ${noun}`}
+      className="w-32"
     />
   )
 }
@@ -653,7 +675,10 @@ function ListView({ space, service, db, id, pages, hasMore, loadingMore, onMore 
               <ElementRow
                 key={item.index}
                 label={`item ${item.index}`}
-                cells={[{ text: <span className="font-mono text-xs text-muted">{item.index}</span> }, { blob: item.value }]}
+                cells={[
+                  { text: <span className="font-mono text-xs text-muted">{item.index}</span> },
+                  { blob: item.value },
+                ]}
                 edit={
                   previous !== null && value !== null
                     ? {
@@ -733,10 +758,7 @@ function ZsetView({ space, service, db, id, pages, hasMore, loadingMore, onMore 
       </ViewBar>
       {adding && (
         <AddRow
-          fields={[
-            { label: 'Member' },
-            { label: 'Score', placeholder: 'Score, e.g. 1.5', className: 'w-36' },
-          ]}
+          fields={[{ label: 'Member' }, { label: 'Score', placeholder: 'Score, e.g. 1.5', className: 'w-36' }]}
           actions={[{ label: 'Add', run: ([member, score]) => change({ op: 'zadd', member, score, create: true }) }]}
           onClose={() => setAdding(false)}
         />
@@ -749,7 +771,10 @@ function ZsetView({ space, service, db, id, pages, hasMore, loadingMore, onMore 
               <ElementRow
                 key={JSON.stringify(item.member)}
                 label={`member ${blobShown(item.member).text}`}
-                cells={[{ blob: item.member }, { text: <span className="font-mono text-xs text-ink">{item.score}</span>, className: 'w-40' }]}
+                cells={[
+                  { blob: item.member },
+                  { text: <span className="font-mono text-xs text-ink">{item.score}</span>, className: 'w-40' },
+                ]}
                 edit={
                   member !== null
                     ? { cell: 1, initial: item.score, save: (score) => change({ op: 'zadd', member, score }) }
@@ -829,7 +854,13 @@ function StreamEntry({ entry, onDelete }: { entry: RedisStreamItem; onDelete: ()
               <IconButton icon={X} size="sm" label="Keep it" disabled={busy} onClick={() => setConfirm(false)} />
             </>
           ) : (
-            <IconButton icon={Trash2} size="sm" kind="danger" label={`Delete entry ${entry.id}`} onClick={() => setConfirm(true)} />
+            <IconButton
+              icon={Trash2}
+              size="sm"
+              kind="danger"
+              label={`Delete entry ${entry.id}`}
+              onClick={() => setConfirm(true)}
+            />
           )}
         </div>
       </div>
@@ -854,7 +885,13 @@ function StreamEntry({ entry, onDelete }: { entry: RedisStreamItem; onDelete: ()
   )
 }
 
-function AddEntry({ onAdd, onClose }: { onAdd: (fields: [string, string][]) => Promise<unknown>; onClose: () => void }) {
+function AddEntry({
+  onAdd,
+  onClose,
+}: {
+  onAdd: (fields: [string, string][]) => Promise<unknown>
+  onClose: () => void
+}) {
   const [rows, setRows] = useState<string[][]>([['', '']])
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')

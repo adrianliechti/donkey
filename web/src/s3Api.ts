@@ -73,16 +73,51 @@ const extension = (key: string) => (/\.([^./]+)$/.exec(key)?.[1] ?? '').toLowerC
 // What a file is, from its name — the listing carries no content type (S3
 // returns none), so this is the Finder's "kind", not the stored type.
 const kinds: { label: string; icon: LucideIcon; ext: string[] }[] = [
-  { label: 'Image', icon: FileImage, ext: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'avif', 'svg', 'ico', 'bmp', 'heic', 'tif', 'tiff'] },
+  {
+    label: 'Image',
+    icon: FileImage,
+    ext: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'avif', 'svg', 'ico', 'bmp', 'heic', 'tif', 'tiff'],
+  },
   { label: 'Markdown', icon: FileText, ext: ['md', 'markdown', 'mdx'] },
   { label: 'JSON', icon: FileBraces, ext: ['json', 'jsonl', 'ndjson', 'geojson', 'map'] },
   { label: 'Text', icon: FileText, ext: ['txt', 'log', 'text', 'rst'] },
-  { label: 'Table', icon: FileSpreadsheet, ext: ['csv', 'tsv', 'xlsx', 'xls', 'ods', 'parquet', 'avro', 'orc', 'arrow', 'feather'] },
+  {
+    label: 'Table',
+    icon: FileSpreadsheet,
+    ext: ['csv', 'tsv', 'xlsx', 'xls', 'ods', 'parquet', 'avro', 'orc', 'arrow', 'feather'],
+  },
   { label: 'Config', icon: FileCode, ext: ['yaml', 'yml', 'toml', 'ini', 'env', 'conf', 'cfg', 'xml', 'properties'] },
   {
     label: 'Code',
     icon: FileCode,
-    ext: ['js', 'mjs', 'cjs', 'ts', 'tsx', 'jsx', 'py', 'go', 'rb', 'rs', 'java', 'kt', 'c', 'h', 'cc', 'cpp', 'cs', 'php', 'sh', 'sql', 'css', 'scss', 'html', 'htm', 'vue', 'svelte'],
+    ext: [
+      'js',
+      'mjs',
+      'cjs',
+      'ts',
+      'tsx',
+      'jsx',
+      'py',
+      'go',
+      'rb',
+      'rs',
+      'java',
+      'kt',
+      'c',
+      'h',
+      'cc',
+      'cpp',
+      'cs',
+      'php',
+      'sh',
+      'sql',
+      'css',
+      'scss',
+      'html',
+      'htm',
+      'vue',
+      'svelte',
+    ],
   },
   { label: 'Archive', icon: FileArchive, ext: ['zip', 'tar', 'gz', 'tgz', 'bz2', 'xz', '7z', 'zst', 'rar'] },
   { label: 'PDF', icon: FileText, ext: ['pdf'] },
@@ -115,7 +150,12 @@ const bucketPath = (space: string, service: string, bucket: string, suffix = '')
 
 /** Where an object downloads from — for a fetch, or an <img> on the same origin. */
 export const s3DownloadUrl = (space: string, service: string, bucket: string, key: string, version = '') =>
-  bucketPath(space, service, bucket, `/objects/download?${new URLSearchParams({ key, ...(version ? { v: version } : {}) })}`)
+  bucketPath(
+    space,
+    service,
+    bucket,
+    `/objects/download?${new URLSearchParams({ key, ...(version ? { v: version } : {}) })}`,
+  )
 
 export const s3Api = {
   buckets: async (space: string, service: string) =>
@@ -139,8 +179,15 @@ export const s3Api = {
     if (token) query.set('token', token)
     if (opts.recursive) query.set('recursive', 'true')
     if (opts.max) query.set('max', String(opts.max))
-    const page = await request<S3Listing>(bucketPath(space, service, bucket, `/objects?${query}`), { signal: opts.signal })
-    return { prefixes: page.prefixes ?? [], objects: page.objects ?? [], truncated: page.truncated, next: page.next ?? '' }
+    const page = await request<S3Listing>(bucketPath(space, service, bucket, `/objects?${query}`), {
+      signal: opts.signal,
+    })
+    return {
+      prefixes: page.prefixes ?? [],
+      objects: page.objects ?? [],
+      truncated: page.truncated,
+      next: page.next ?? '',
+    }
   },
   info: (space: string, service: string, bucket: string, key: string, signal?: AbortSignal) =>
     request<S3Info>(bucketPath(space, service, bucket, `/objects/info?${new URLSearchParams({ key })}`), { signal }),
@@ -321,14 +368,27 @@ export function useUploads(space: string, service: string, onUploaded: (bucket: 
       if (controller.signal.aborted) continue
       running.current++
       patch(item.id, { state: 'uploading' })
-      uploadObject(space, service, item.bucket, item.key, file, (loaded) => patch(item.id, { loaded }), controller.signal)
+      uploadObject(
+        space,
+        service,
+        item.bucket,
+        item.key,
+        file,
+        (loaded) => patch(item.id, { loaded }),
+        controller.signal,
+      )
         .then(
           () => {
             patch(item.id, { state: 'done', loaded: item.size })
             scheduleRefresh(item.bucket)
           },
           (err) =>
-            patch(item.id, controller.signal.aborted ? { state: 'cancelled' } : { state: 'failed', error: errText(err, 'The upload did not work.') }),
+            patch(
+              item.id,
+              controller.signal.aborted
+                ? { state: 'cancelled' }
+                : { state: 'failed', error: errText(err, 'The upload did not work.') },
+            ),
         )
         .finally(() => {
           controllers.current.delete(item.id)
@@ -340,7 +400,14 @@ export function useUploads(space: string, service: string, onUploaded: (bucket: 
 
   const add = (bucket: string, prefix: string, sources: UploadSource[]) => {
     const added = sources.map(({ file, path }) => {
-      const item: UploadItem = { id: nextId.current++, bucket, key: prefix + path, size: file.size, loaded: 0, state: 'queued' }
+      const item: UploadItem = {
+        id: nextId.current++,
+        bucket,
+        key: prefix + path,
+        size: file.size,
+        loaded: 0,
+        state: 'queued',
+      }
       const controller = new AbortController()
       controllers.current.set(item.id, controller)
       queue.current.push({ item, file, controller })
@@ -426,7 +493,10 @@ export async function downloadSelection(
       const page = await s3Api.list(space, service, bucket, folder, token, { recursive: true, max: 1000 })
       // Folder markers hold nothing a zip needs; the paths make the folders.
       objects.push(...page.objects.filter((o) => !o.key.endsWith('/')))
-      if (objects.length > zipMaxObjects) throw new Error(`That is more than ${zipMaxObjects} objects — too many to zip in the browser; use the CLI or a tunnel.`)
+      if (objects.length > zipMaxObjects)
+        throw new Error(
+          `That is more than ${zipMaxObjects} objects — too many to zip in the browser; use the CLI or a tunnel.`,
+        )
       token = page.next
     } while (token)
   }
@@ -439,7 +509,8 @@ export async function downloadSelection(
     onStatus(`Fetching ${i + 1} of ${objects.length}…`)
     const data = new Uint8Array(await (await s3Api.download(space, service, bucket, o.key)).arrayBuffer())
     total += data.length
-    if (total > zipMaxBytes) throw new Error('That is more than 512 MB — too much to zip in the browser; use the CLI or a tunnel.')
+    if (total > zipMaxBytes)
+      throw new Error('That is more than 512 MB — too much to zip in the browser; use the CLI or a tunnel.')
     // Stored, not deflated: most of what sits in buckets is compressed already.
     files[o.key.slice(prefix.length)] = [data, { level: 0 }]
   }

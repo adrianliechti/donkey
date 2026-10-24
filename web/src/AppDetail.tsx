@@ -94,7 +94,12 @@ export function AppDetail({
   // .../files for an app with no disk. Fall back rather than leave the panel
   // blank with nothing selected.
   const asked: AppTab = tab === 'variables' ? 'settings' : tab
-  const shown: AppTab = !canManage && !VIEWER_TABS.includes(asked) ? 'overview' : asked === 'files' && !status?.hasStorage ? 'overview' : asked
+  const shown: AppTab =
+    !canManage && !VIEWER_TABS.includes(asked)
+      ? 'overview'
+      : asked === 'files' && !status?.hasStorage
+        ? 'overview'
+        : asked
   // The log pane and the file browser are workbenches: the page stands
   // still and they scroll inside (see Sheet). Everything else is a document.
   const fill = shown === 'logs' || (shown === 'source' && !!search.files)
@@ -117,7 +122,9 @@ export function AppDetail({
               className="-mb-px -ml-3 flex min-w-0 gap-1 self-stretch overflow-x-auto overflow-y-hidden pt-1 scrollbar-none"
               role="tablist"
             >
-              {TABS.filter((t) => (canManage || VIEWER_TABS.includes(t.id)) && (t.id !== 'files' || status.hasStorage)).map((t) => (
+              {TABS.filter(
+                (t) => (canManage || VIEWER_TABS.includes(t.id)) && (t.id !== 'files' || status.hasStorage),
+              ).map((t) => (
                 <button
                   key={t.id}
                   role="tab"
@@ -132,7 +139,9 @@ export function AppDetail({
                   {t.icon}
                   <TabLabel>{t.label}</TabLabel>
                   {/* An app in trouble: the way to its diagnosis is Logs. */}
-                  {t.id === 'logs' && !status.healthy && <span className="size-1.5 rounded-full bg-danger" aria-label="unhealthy" />}
+                  {t.id === 'logs' && !status.healthy && (
+                    <span className="size-1.5 rounded-full bg-danger" aria-label="unhealthy" />
+                  )}
                 </button>
               ))}
             </nav>
@@ -165,9 +174,11 @@ export function AppDetail({
             <p className="mt-2 text-sm text-muted">
               Nothing with this name is deployed in the space <span className="font-mono">{space}</span>.
             </p>
-            {canManage && <p className="mt-1 text-sm">
-              Deploy it from its project folder: <code className="font-mono text-xs">donkey deploy</code>
-            </p>}
+            {canManage && (
+              <p className="mt-1 text-sm">
+                Deploy it from its project folder: <code className="font-mono text-xs">donkey deploy</code>
+              </p>
+            )}
           </Card>
         )}
         {/* A new version on its way to a running app. */}
@@ -183,7 +194,14 @@ export function AppDetail({
               <>
                 {canManage && <AboutApp space={space} app={app} onOpenBuild={() => onTab('release')} />}
                 {canManage && <InstancesCard pods={status.pods} startedAt={status.startedAt} />}
-                {!canManage && <Section><SectionHeader title="App overview" description="Open the app using the link above, or see how it is used in Analytics." /></Section>}
+                {!canManage && (
+                  <Section>
+                    <SectionHeader
+                      title="App overview"
+                      description="Open the app using the link above, or see how it is used in Analytics."
+                    />
+                  </Section>
+                )}
                 {canManage && status.endpoint && <EndpointCard endpoint={status.endpoint} />}
                 {canManage && <AddonsCard space={space} app={app} />}
               </>
@@ -260,13 +278,7 @@ const endpointStyle: Record<EndpointState, { chip: string; icon: string }> = {
   unmanaged: { chip: 'bg-raised text-muted', icon: 'text-muted' },
 }
 
-function EndpointStateChip({
-  state,
-  renewing = false,
-}: {
-  state: EndpointState
-  renewing?: boolean
-}) {
+function EndpointStateChip({ state, renewing = false }: { state: EndpointState; renewing?: boolean }) {
   return (
     <span className={`rounded px-1.5 py-0.5 font-mono text-[11px] leading-4 ${endpointStyle[state].chip}`}>
       {renewing && state === 'ready' ? 'ready · renewing' : state}
@@ -304,9 +316,7 @@ function EndpointCard({ endpoint }: { endpoint: EndpointStatus }) {
                   : ''}
               </span>
             </div>
-            {certificate.message && (
-              <p className="mt-1 text-xs leading-relaxed text-ink-soft">{certificate.message}</p>
-            )}
+            {certificate.message && <p className="mt-1 text-xs leading-relaxed text-ink-soft">{certificate.message}</p>}
             {(certificate.expiresAt || certificate.renewalTime) && (
               <p className="mt-1 text-xs text-muted">
                 {certificate.expiresAt && `expires ${readableDate(certificate.expiresAt)}`}
@@ -354,8 +364,7 @@ function InstancesCard({ pods, startedAt }: { pods: string[]; startedAt?: string
       />
       {pods.length === 0 ? (
         <p className="text-sm text-muted">
-          No instances running — the app may be starting, or its rollout is stuck. The logs usually
-          say why.
+          No instances running — the app may be starting, or its rollout is stuck. The logs usually say why.
         </p>
       ) : (
         <List>

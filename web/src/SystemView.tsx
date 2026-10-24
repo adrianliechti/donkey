@@ -24,9 +24,7 @@ export function SystemView() {
                 <CheckIcon ok={check.ok} />
                 <div className="min-w-0">
                   <div className="text-sm font-medium">{check.name}</div>
-                  {check.detail && (
-                    <div className="text-xs text-muted break-words">{check.detail}</div>
-                  )}
+                  {check.detail && <div className="text-xs text-muted break-words">{check.detail}</div>}
                 </div>
               </div>
             ))}
@@ -37,8 +35,8 @@ export function SystemView() {
               {'<app>'}.{'<space>'}.{report.domain}
             </p>
             <p className="mt-1 text-xs text-muted">
-              Every exposed app gets an exact hostname at the shared gateway. When external-dns is
-              configured, donkey publishes a matching DNSEndpoint for each one.
+              Every exposed app gets an exact hostname at the shared gateway. When external-dns is configured, donkey
+              publishes a matching DNSEndpoint for each one.
             </p>
           </Card>
         </>

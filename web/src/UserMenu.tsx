@@ -10,7 +10,13 @@ import { LogOut, Settings, UserRound } from 'lucide-react'
  * people use least. Dismissal, Escape and keyboard navigation come from
  * Headless UI.
  */
-export function UserMenu({ onSignOut, onPlatformSettings }: { onSignOut: () => void; onPlatformSettings?: () => void }) {
+export function UserMenu({
+  onSignOut,
+  onPlatformSettings,
+}: {
+  onSignOut: () => void
+  onPlatformSettings?: () => void
+}) {
   return (
     <Menu>
       <MenuButton
@@ -24,12 +30,17 @@ export function UserMenu({ onSignOut, onPlatformSettings }: { onSignOut: () => v
         anchor="bottom end"
         className="z-50 mt-1 w-52 overflow-hidden rounded-lg border border-line bg-card py-1 shadow-xl focus:outline-none"
       >
-        {onPlatformSettings && <MenuItem>
-          <button type="button" onClick={onPlatformSettings}
-            className="flex min-h-9 w-full items-center gap-2 px-3 text-left text-sm text-ink-soft data-focus:bg-accent-soft data-focus:text-ink">
-            <Settings className="size-4" aria-hidden /> Platform settings
-          </button>
-        </MenuItem>}
+        {onPlatformSettings && (
+          <MenuItem>
+            <button
+              type="button"
+              onClick={onPlatformSettings}
+              className="flex min-h-9 w-full items-center gap-2 px-3 text-left text-sm text-ink-soft data-focus:bg-accent-soft data-focus:text-ink"
+            >
+              <Settings className="size-4" aria-hidden /> Platform settings
+            </button>
+          </MenuItem>
+        )}
         <MenuItem>
           <button
             type="button"

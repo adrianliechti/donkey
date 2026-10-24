@@ -116,9 +116,7 @@ function HeaderFrame({
       {(actions || onClose) && (
         <Toolbar className="-mr-2">
           {actions}
-          {onClose && (
-            <IconButton icon={X} label={`${closeLabel} (Esc)`} onClick={onClose} disabled={closeDisabled} />
-          )}
+          {onClose && <IconButton icon={X} label={`${closeLabel} (Esc)`} onClick={onClose} disabled={closeDisabled} />}
         </Toolbar>
       )}
     </header>
@@ -223,7 +221,7 @@ export function Drawer({
         <div className="fixed inset-0 flex justify-end">
           <DialogPanel
             transition
-              className={`flex h-full w-full ${width} flex-col overflow-hidden border-l border-line bg-card shadow-[-24px_0_60px_rgba(0,0,0,.5)] transition-transform duration-(--duration-panel) ease-emphasized will-change-transform data-closed:translate-x-full data-leave:duration-(--duration-panel-exit) data-leave:ease-exit`}
+            className={`flex h-full w-full ${width} flex-col overflow-hidden border-l border-line bg-card shadow-[-24px_0_60px_rgba(0,0,0,.5)] transition-transform duration-(--duration-panel) ease-emphasized will-change-transform data-closed:translate-x-full data-leave:duration-(--duration-panel-exit) data-leave:ease-exit`}
           >
             {children}
           </DialogPanel>

@@ -1,15 +1,13 @@
 import { useRef, useState, type KeyboardEvent } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { ExternalLink, FileText, Link2, RefreshCw, Search, SearchX, SlidersHorizontal, Trash2 } from 'lucide-react'
+import { ExternalLink, FileText, Link2, RefreshCw, Search, SearchX, SlidersHorizontal } from 'lucide-react'
 import type { ConsoleProps } from './consoles'
 import {
   categories,
   contentsQuery,
   defaultCount,
-  describe,
   hostOf,
   optionsFrom,
-  recentBox,
   resultCounts,
   safeLink,
   searchKeys,
@@ -19,17 +17,16 @@ import {
   type SearchOptions,
 } from './exaApi'
 import { Markdown, MarkdownStyle } from './AiMarkdown'
-import { useBox } from './httpStore'
-import { ConfirmIconButton, CopyAs, Keys, Pane, PaneEmpty, PaneHeader, Segmented, SideHeader, SideItem } from './HttpWorkbench'
+import { CopyAs, Keys, Pane, PaneEmpty, PaneHeader, Picker, Segmented } from './Workbench'
 import { useServiceSearch } from './serviceSearch'
 import { Button, CopyButton, ErrorNote, Field, IconButton, Input, LinkButton, Select, Spinner } from './ui'
-import { ago, errText } from './format'
+import { errText } from './format'
 
-// The Search tab of an Exa-compatible service: a query and its options on
-// top, the results on the left, the opened page on the right, recent
-// searches in the sidebar. The search and the open result are the console's
-// place (?q=…&open=…), so a search can be linked and back walks through
-// them — without paying for it twice (see searchQuery).
+// The Search tab of an Exa-compatible service: a quick tester — a query and
+// its options on top, the results on the left, the opened page on the
+// right. The search and the open result are the console's place
+// (?q=…&open=…), so a search can be linked and back walks through them —
+// without paying for it twice (see searchQuery).
 
 export function Console({ space, service }: ConsoleProps) {
   const [search, move] = useServiceSearch()
@@ -37,7 +34,9 @@ export function Console({ space, service }: ConsoleProps) {
   const openURL = search.open ?? ''
   const results = useQuery(searchQuery(space, service, options))
   const [form, setForm] = useState(options)
-  const [filters, setFilters] = useState(Boolean(options.cat || options.inc || options.exc || options.from || options.to || options.n))
+  const [filters, setFilters] = useState(
+    Boolean(options.cat || options.inc || options.exc || options.from || options.to || options.n),
+  )
   // The form follows the place: back and forward, and a recent search.
   const placeKey = searchKeys.map((k) => options[k]).join('\u0000')
   const [shownKey, setShownKey] = useState(placeKey)
@@ -57,7 +56,9 @@ export function Console({ space, service }: ConsoleProps) {
       return
     }
     // The tab's other keys (none today) stay; the open page does not.
-    const rest = Object.fromEntries(Object.entries(search).filter(([k]) => !(searchKeys as readonly string[]).includes(k) && k !== 'open'))
+    const rest = Object.fromEntries(
+      Object.entries(search).filter(([k]) => !(searchKeys as readonly string[]).includes(k) && k !== 'open'),
+    )
     move({ ...rest, ...next })
   }
   const openResult = (url: string) => {
@@ -75,35 +76,32 @@ export function Console({ space, service }: ConsoleProps) {
   const picked = found.find((r) => r.url === openURL)
 
   return (
-    <div className="flex min-h-0 flex-1 gap-4" onKeyDown={onKeyDown}>
+    <div className="flex min-h-0 flex-1 divide-line md:divide-x" onKeyDown={onKeyDown}>
       <MarkdownStyle />
-      <RecentSearches space={space} service={service} current={options} onOpen={go} />
-      <div className="flex min-w-0 flex-1 flex-col gap-3">
+      <div className="flex min-w-0 flex-1 flex-col">
         <form
-          className="flex shrink-0 flex-col gap-3"
+          className="flex shrink-0 flex-col border-b border-line"
           onSubmit={(e) => {
             e.preventDefault()
             go(form, true)
           }}
         >
-          <div className="flex items-center gap-2">
-            <div className="flex h-8 min-w-0 flex-1 items-center gap-2 rounded-md border border-line bg-surface px-3 focus-within:outline-2 focus-within:outline-accent-strong">
-              <Search className="size-4 shrink-0 text-muted" aria-hidden />
-              <input
-                aria-label="Search the web"
-                value={form.q}
-                onChange={(e) => setForm({ ...form, q: e.target.value })}
-                placeholder="What are you looking for?"
-                autoFocus={!options.q}
-                className="h-full min-w-0 flex-1 bg-transparent text-sm text-ink outline-none placeholder:text-muted/60"
-              />
-            </div>
-            <Select
-              ariaLabel="Search type"
+          <div className="flex min-h-13 items-center gap-2 pr-2.5 pl-4">
+            <Search className="size-4 shrink-0 text-muted" aria-hidden />
+            <input
+              aria-label="Search the web"
+              value={form.q}
+              onChange={(e) => setForm({ ...form, q: e.target.value })}
+              placeholder="What are you looking for?"
+              autoFocus={!options.q}
+              className="h-10 min-w-0 flex-1 bg-transparent text-base text-ink outline-none placeholder:text-muted"
+            />
+            <Picker
+              plain
+              label="Search type"
               value={form.type}
               onChange={(type) => setForm({ ...form, type })}
               options={searchTypes}
-              className="w-32"
             />
             <IconButton
               icon={SlidersHorizontal}
@@ -118,7 +116,7 @@ export function Console({ space, service }: ConsoleProps) {
           {filters && <Filters form={form} onChange={setForm} />}
         </form>
 
-        <div className="grid min-h-0 flex-1 grid-rows-2 gap-3 lg:grid-cols-[minmax(16rem,2fr)_minmax(0,3fr)] lg:grid-rows-1 2xl:grid-cols-[minmax(20rem,28rem)_minmax(0,1fr)]">
+        <div className="grid min-h-0 flex-1 grid-rows-2 divide-y divide-line lg:divide-x lg:divide-y-0 lg:grid-cols-[minmax(16rem,2fr)_minmax(0,3fr)] lg:grid-rows-1 2xl:grid-cols-[minmax(20rem,28rem)_minmax(0,1fr)]">
           <Pane label="Results">
             <PaneHeader
               actions={
@@ -166,7 +164,7 @@ function Filters({ form, onChange }: { form: SearchOptions; onChange: (o: Search
   const set = (patch: Partial<SearchOptions>) => onChange({ ...form, ...patch })
   const any = form.cat || form.inc || form.exc || form.from || form.to || form.n
   return (
-    <div className="grid grid-cols-2 items-end gap-3 rounded-lg border border-line p-3 md:grid-cols-3 xl:grid-cols-6">
+    <div className="grid grid-cols-2 items-end gap-3 border-t border-line px-4 py-3 md:grid-cols-3 xl:grid-cols-6">
       <Field label="Results">
         <Select
           ariaLabel="Number of results"
@@ -179,20 +177,39 @@ function Filters({ form, onChange }: { form: SearchOptions; onChange: (o: Search
         <Select ariaLabel="Kind of page" value={form.cat} onChange={(cat) => set({ cat })} options={categories} />
       </Field>
       <Field label="Only from">
-        <Input value={form.inc} onChange={(e) => set({ inc: e.target.value })} placeholder="example.com" spellCheck={false} />
+        <Input
+          value={form.inc}
+          onChange={(e) => set({ inc: e.target.value })}
+          placeholder="example.com"
+          spellCheck={false}
+        />
       </Field>
       <Field label="Never from">
-        <Input value={form.exc} onChange={(e) => set({ exc: e.target.value })} placeholder="example.org" spellCheck={false} />
+        <Input
+          value={form.exc}
+          onChange={(e) => set({ exc: e.target.value })}
+          placeholder="example.org"
+          spellCheck={false}
+        />
       </Field>
       <Field label="Published after">
-        <Input type="date" value={form.from} max={form.to || undefined} onChange={(e) => set({ from: e.target.value })} />
+        <Input
+          type="date"
+          value={form.from}
+          max={form.to || undefined}
+          onChange={(e) => set({ from: e.target.value })}
+        />
       </Field>
       <Field label="Published before">
         <Input type="date" value={form.to} min={form.from || undefined} onChange={(e) => set({ to: e.target.value })} />
       </Field>
       {any && (
         <div className="col-span-full -mt-1 flex justify-end">
-          <Button kind="quiet" size="sm" onClick={() => onChange({ ...form, cat: '', inc: '', exc: '', from: '', to: '', n: '' })}>
+          <Button
+            kind="quiet"
+            size="sm"
+            onClick={() => onChange({ ...form, cat: '', inc: '', exc: '', from: '', to: '', n: '' })}
+          >
             Clear the filters
           </Button>
         </div>
@@ -279,7 +296,9 @@ function Results({
                 {r.author && <> · {r.author}</>}
               </span>
               {(r.highlights[0] || r.summary) && (
-                <span className="mt-1 line-clamp-3 text-xs leading-relaxed text-ink-soft">{r.highlights[0] || r.summary}</span>
+                <span className="mt-1 line-clamp-3 text-xs leading-relaxed text-ink-soft">
+                  {r.highlights[0] || r.summary}
+                </span>
               )}
             </button>
           </li>
@@ -353,7 +372,9 @@ function Reader({ space, service, url, result }: { space: string; service: strin
               <p className="font-mono text-xs break-all text-muted">{url}</p>
             )}
             {(author || published) && (
-              <p className="text-xs text-muted">{[author, published && `published ${published}`].filter(Boolean).join(' · ')}</p>
+              <p className="text-xs text-muted">
+                {[author, published && `published ${published}`].filter(Boolean).join(' · ')}
+              </p>
             )}
           </header>
           {result && result.highlights.length > 0 && (
@@ -370,60 +391,14 @@ function Reader({ space, service, url, result }: { space: string; service: strin
           {page.isSuccess && !text && <p className="text-sm text-muted">Exa has no text for this page.</p>}
           {text &&
             (plain ? (
-              <pre className="font-sans text-sm leading-relaxed break-words whitespace-pre-wrap text-ink-soft">{text}</pre>
+              <pre className="font-sans text-sm leading-relaxed break-words whitespace-pre-wrap text-ink-soft">
+                {text}
+              </pre>
             ) : (
               <Markdown text={text} className="text-sm leading-relaxed text-ink-soft" />
             ))}
         </article>
       </div>
-    </Pane>
-  )
-}
-
-function RecentSearches({
-  space,
-  service,
-  current,
-  onOpen,
-}: {
-  space: string
-  service: string
-  current: SearchOptions
-  onOpen: (o: SearchOptions) => void
-}) {
-  const recent = useBox(recentBox(space, service))
-  return (
-    <Pane label="Recent searches" className="hidden w-64 shrink-0 md:flex">
-      <SideHeader
-        title="Recent"
-        count={recent.length}
-        actions={
-          recent.length > 0 && (
-            <ConfirmIconButton icon={Trash2} label="Forget the recent searches" onConfirm={() => recentBox(space, service).set([])} />
-          )
-        }
-      />
-      <ul className="min-h-0 flex-1 overflow-y-auto pb-1">
-        {recent.length === 0 && (
-          <li className="px-3 pb-2 text-xs leading-relaxed text-muted">Searches you make show up here, in this browser.</li>
-        )}
-        {recent.map((r) => (
-          <SideItem
-            key={r.id}
-            selected={searchKeys.every((k) => r.options[k] === current[k])}
-            onOpen={() => onOpen(r.options)}
-            title={r.options.q}
-            meta={
-              <>
-                {describe(r.options)}
-                {r.count !== undefined && <> · {r.count} found</>} · {ago(new Date(r.at).toISOString())} ago
-              </>
-            }
-            onDelete={() => recentBox(space, service).set((list) => list.filter((x) => x.id !== r.id))}
-            deleteLabel="Forget this search"
-          />
-        ))}
-      </ul>
     </Pane>
   )
 }

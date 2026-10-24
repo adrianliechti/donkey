@@ -2,16 +2,7 @@ import { useState } from 'react'
 import { useNavigate, useParams } from '@tanstack/react-router'
 import { useQueryClient } from '@tanstack/react-query'
 import { Menu, MenuButton, MenuItem, MenuItems } from '@headlessui/react'
-import {
-  Activity,
-  EllipsisVertical,
-  Info,
-  PlusSquare,
-  Rocket,
-  Settings,
-  Trash2,
-  TriangleAlert,
-} from 'lucide-react'
+import { Activity, EllipsisVertical, Info, PlusSquare, Rocket, Settings, Trash2, TriangleAlert } from 'lucide-react'
 import type { AppSummary, SpaceAddonEntry } from './api'
 import { AddServiceDialog } from './AddonForm'
 import { useDeploy } from './deploy'
@@ -184,7 +175,11 @@ function DeleteSpaceDialog({ space, apps, onClose }: { space: string; apps: AppS
           <div className="flex gap-3">
             <dt className="w-16 shrink-0 text-muted">Apps</dt>
             <dd className="min-w-0 font-mono text-ink">
-              {apps.length > 0 ? apps.map((app) => app.name).join(', ') : <span className="font-sans text-muted">none</span>}
+              {apps.length > 0 ? (
+                apps.map((app) => app.name).join(', ')
+              ) : (
+                <span className="font-sans text-muted">none</span>
+              )}
             </dd>
           </div>
           <div className="flex gap-3">
@@ -192,7 +187,9 @@ function DeleteSpaceDialog({ space, apps, onClose }: { space: string; apps: AppS
             <dd className="min-w-0 font-mono text-ink">
               {services === null ? (
                 <span className={`font-sans ${servicesError ? 'text-danger' : 'text-muted'}`}>
-                  {servicesError ? 'The inventory could not be loaded. The server still removes every owned service.' : 'Loading…'}
+                  {servicesError
+                    ? 'The inventory could not be loaded. The server still removes every owned service.'
+                    : 'Loading…'}
                 </span>
               ) : services.length > 0 ? (
                 services.map((s) => s.name).join(', ')
@@ -277,8 +274,8 @@ export function RemoveServiceDialog({
           {service.attachedTo.length > 0 ? (
             <p>
               <span className="font-mono text-ink">{service.attachedTo.join(', ')}</span>{' '}
-              {service.attachedTo.length === 1 ? 'is' : 'are'} connected — {service.attachedTo.length === 1 ? 'it' : 'they'} will
-              restart without its variables.
+              {service.attachedTo.length === 1 ? 'is' : 'are'} connected —{' '}
+              {service.attachedTo.length === 1 ? 'it' : 'they'} will restart without its variables.
             </p>
           ) : (
             <p>No app is connected to it.</p>
@@ -312,7 +309,9 @@ export function RemoveServiceDialog({
           />
         )}
         {orphan ? (
-          <Callout icon={Info}>The backing service and its data stay with the operator. Donkey forgets this instance.</Callout>
+          <Callout icon={Info}>
+            The backing service and its data stay with the operator. Donkey forgets this instance.
+          </Callout>
         ) : isProxy ? (
           <Callout icon={Info}>Removing this service revokes this space's access to the API.</Callout>
         ) : !keepData ? (

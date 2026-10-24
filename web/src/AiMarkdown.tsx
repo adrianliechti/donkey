@@ -76,6 +76,13 @@ export function MarkdownStyle() {
 export function Markdown({ text, className = '' }: { text: string; className?: string }) {
   // Parsing is the cost; a long conversation re-renders on every token of
   // the newest answer, and the older ones need not be parsed again.
-  const rendered = useMemo(() => <Render highlighter={highlighter} components={components}>{text}</Render>, [text])
+  const rendered = useMemo(
+    () => (
+      <Render highlighter={highlighter} components={components}>
+        {text}
+      </Render>
+    ),
+    [text],
+  )
   return <div className={`ai-md ${className}`}>{rendered}</div>
 }

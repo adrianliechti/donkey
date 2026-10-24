@@ -139,8 +139,15 @@ export function AddonsCard({ space, app }: { space: string; app: string }) {
                   {unready && <StateChip state={entry.state!} />}
                   {!on && !unready && <span className="text-xs text-muted">not connected</span>}
                   {keys.length > 0 && (
-                    <span className="flex flex-wrap gap-1" title={on ? 'Variables the app receives' : 'Variables the app would receive'}>
-                      {keys.map((k) => <Chip key={k} dashed={!on}>{k}</Chip>)}
+                    <span
+                      className="flex flex-wrap gap-1"
+                      title={on ? 'Variables the app receives' : 'Variables the app would receive'}
+                    >
+                      {keys.map((k) => (
+                        <Chip key={k} dashed={!on}>
+                          {k}
+                        </Chip>
+                      ))}
                     </span>
                   )}
                 </div>

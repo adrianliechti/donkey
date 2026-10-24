@@ -1,6 +1,6 @@
 import { queryOptions } from '@tanstack/react-query'
 import { request, servicePath } from './api'
-import { box, dropOldest, isRecord, listOf, newId, num, str } from './httpStore'
+import { isRecord, listOf, num, str } from './httpStore'
 
 // Web search and page contents through an Exa-compatible service. The
 // server forwards the request body as it is to the service's /search and
@@ -52,7 +52,12 @@ export const defaultCount = 10
 const domains = (text: string) =>
   text
     .split(/[\s,]+/)
-    .map((d) => d.trim().replace(/^https?:\/\//, '').replace(/\/.*$/, ''))
+    .map((d) =>
+      d
+        .trim()
+        .replace(/^https?:\/\//, '')
+        .replace(/\/.*$/, ''),
+    )
     .filter(Boolean)
 
 export function searchBody(o: SearchOptions): Record<string, unknown> {
@@ -122,7 +127,6 @@ export const searchQuery = (space: string, service: string, o: SearchOptions) =>
         resolvedType: str(answer.resolvedSearchType),
         cost: cost(answer.costDollars),
       }
-      rememberSearch(space, service, o, found.results.length)
       return found
     },
     enabled: o.q.trim() !== '',
@@ -149,53 +153,19 @@ export const contentsQuery = (space: string, service: string, url: string) =>
         const why = isRecord(failed?.error) ? str(failed.error.tag).replaceAll('_', ' ').toLowerCase() : ''
         throw new Error(why ? `Exa could not read this page: ${why}.` : 'Exa has no contents for this page.')
       }
-      return { url: page.url, title: page.title, author: page.author, publishedDate: page.publishedDate, text: page.text }
+      return {
+        url: page.url,
+        title: page.title,
+        author: page.author,
+        publishedDate: page.publishedDate,
+        text: page.text,
+      }
     },
     enabled: url !== '',
     staleTime: Infinity,
     gcTime: 30 * 60_000,
     retry: false,
   })
-
-// ─── Recent searches ───────────────────────────────────────────────────
-
-export type Recent = { id: string; options: SearchOptions; at: number; count?: number }
-
-const maxRecent = 30
-
-export const recentBox = (space: string, service: string) =>
-  box<Recent[]>(
-    `donkey:exa:recent:${space}/${service}`,
-    (raw) =>
-      listOf(raw, (r) => {
-        if (!isRecord(r.options)) return undefined
-        const options = optionsFrom(Object.fromEntries(Object.entries(r.options).map(([k, v]) => [k, str(v)])))
-        return options.q ? { id: str(r.id) || newId(), options, at: num(r.at) ?? 0, count: num(r.count) } : undefined
-      }),
-    { maxBytes: 64 * 1024, shrink: dropOldest },
-  )
-
-const sameSearch = (a: SearchOptions, b: SearchOptions) => searchKeys.every((k) => a[k] === b[k])
-
-function rememberSearch(space: string, service: string, options: SearchOptions, count: number) {
-  recentBox(space, service).set((list) =>
-    [{ id: newId(), options, at: Date.now(), count }, ...list.filter((r) => !sameSearch(r.options, options))].slice(0, maxRecent),
-  )
-}
-
-/** The options of a search beyond its words, said briefly. */
-export function describe(o: SearchOptions): string {
-  return [
-    searchTypes.find((t) => t.value === o.type)?.label ?? o.type,
-    o.cat && (categories.find((c) => c.value === o.cat)?.label ?? o.cat),
-    o.n && o.n !== String(defaultCount) && `${o.n} results`,
-    o.inc && `only ${domains(o.inc).join(', ')}`,
-    o.exc && `not ${domains(o.exc).join(', ')}`,
-    (o.from || o.to) && `${o.from || '…'} – ${o.to || '…'}`,
-  ]
-    .filter(Boolean)
-    .join(' · ')
-}
 
 /** A URL's host, for showing where a result is from. */
 export function hostOf(url: string): string {

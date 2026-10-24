@@ -4,17 +4,7 @@ import { Globe, Lock, Network, type LucideIcon } from 'lucide-react'
 import { api, type AppMode, type Exposure, type NetworkInfo } from './api'
 import { HostEditor } from './HostEditor'
 import { networkQuery } from './queries'
-import {
-  Button,
-  ChoiceCards,
-  ErrorNote,
-  Eyebrow,
-  Section,
-  SectionHeader,
-  Spinner,
-  SuccessNote,
-  ToggleRow,
-} from './ui'
+import { Button, ChoiceCards, ErrorNote, Eyebrow, Section, SectionHeader, Spinner, SuccessNote, ToggleRow } from './ui'
 import { APP_MODES, loginHint } from './vocabulary'
 import { errText } from './format'
 
@@ -25,15 +15,7 @@ import { errText } from './format'
  * here holds until donkey.yaml itself sets mode/public/internal/host/cors/analytics,
  * which always wins on the next deploy.
  */
-export function NetworkCard({
-  space,
-  app,
-  onChanged,
-}: {
-  space: string
-  app: string
-  onChanged: () => void
-}) {
+export function NetworkCard({ space, app, onChanged }: { space: string; app: string; onChanged: () => void }) {
   const [net, setNet] = useState<NetworkInfo | null>(null)
   const [mode, setMode] = useState<AppMode>('web')
   const [exposure, setExposure] = useState<Exposure>('protected')
@@ -137,12 +119,16 @@ export function NetworkCard({
           </div>
           <div className="space-y-1.5">
             <Eyebrow>Who can reach it</Eyebrow>
-            <ChoiceCards label="Exposure" value={exposure} onChange={setExposure} options={options.filter((option) => option.value !== 'public' || net.allowPublic)} columns={net.allowPublic ? 'sm:grid-cols-3' : 'sm:grid-cols-2'} />
+            <ChoiceCards
+              label="Exposure"
+              value={exposure}
+              onChange={setExposure}
+              options={options.filter((option) => option.value !== 'public' || net.allowPublic)}
+              columns={net.allowPublic ? 'sm:grid-cols-3' : 'sm:grid-cols-2'}
+            />
           </div>
 
-          {exposure !== 'internal' && (
-            <HostEditor value={host} domains={net.domains ?? []} onChange={setHost} />
-          )}
+          {exposure !== 'internal' && <HostEditor value={host} domains={net.domains ?? []} onChange={setHost} />}
 
           {(net.routes ?? []).length > 0 && (
             <div className="space-y-1.5">

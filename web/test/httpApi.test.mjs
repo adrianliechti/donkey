@@ -26,28 +26,54 @@ test('the URL bar and the parameters table say the same thing', () => {
   assert.equal(parsed.path, '/items')
   assert.deepEqual(
     parsed.params.map(({ key, value, on }) => [key, value, on]),
-    [['limit', '10', true], ['q', 'hello world', true], ['flag', '', true], ['a', 'b=c', true]],
+    [
+      ['limit', '10', true],
+      ['q', 'hello world', true],
+      ['flag', '', true],
+      ['a', 'b=c', true],
+    ],
   )
   assert.equal(http.composeURL(parsed.path, parsed.params), '/items?limit=10&q=hello%20world&flag&a=b=c')
   // Composed again, it parses into the same table.
   const again = http.parseURL(http.composeURL(parsed.path, parsed.params), '', parsed.params)
-  assert.deepEqual(again.params.map(({ key, value }) => [key, value]), parsed.params.map(({ key, value }) => [key, value]))
+  assert.deepEqual(
+    again.params.map(({ key, value }) => [key, value]),
+    parsed.params.map(({ key, value }) => [key, value]),
+  )
 })
 
 test('a query keeps its shape whatever the values hold', () => {
   const url = http.composeURL('/s', [row('q', 'a&b#c%d'), row('k=y', 'v'), row('plus', '1+1'), row('é', 'ü')])
   assert.equal(url, '/s?q=a%26b%23c%25d&k%3Dy=v&plus=1+1&%C3%A9=%C3%BC')
   const back = http.parseURL(url, '', [])
-  assert.deepEqual(back.params.map(({ key, value }) => [key, value]), [['q', 'a&b#c%d'], ['k=y', 'v'], ['plus', '1+1'], ['é', 'ü']])
+  assert.deepEqual(
+    back.params.map(({ key, value }) => [key, value]),
+    [
+      ['q', 'a&b#c%d'],
+      ['k=y', 'v'],
+      ['plus', '1+1'],
+      ['é', 'ü'],
+    ],
+  )
   // A malformed escape is kept as typed rather than dropped.
-  assert.deepEqual(http.parseURL('/s?q=100%', '', []).params.map((p) => p.value), ['100%'])
+  assert.deepEqual(
+    http.parseURL('/s?q=100%', '', []).params.map((p) => p.value),
+    ['100%'],
+  )
 })
 
 test('unticked parameters stay in the table and out of the URL', () => {
   const params = [row('a', '1'), row('off', 'x', false)]
   assert.equal(http.composeURL('/p', params), '/p?a=1')
   const typed = http.parseURL('/p?a=2&b=3', '', params)
-  assert.deepEqual(typed.params.map(({ key, value, on }) => [key, value, on]), [['a', '2', true], ['b', '3', true], ['off', 'x', false]])
+  assert.deepEqual(
+    typed.params.map(({ key, value, on }) => [key, value, on]),
+    [
+      ['a', '2', true],
+      ['b', '3', true],
+      ['off', 'x', false],
+    ],
+  )
   // Rows keep their ids by position, so the table's inputs are not remounted.
   assert.equal(typed.params[0].id, 'a')
 })
@@ -64,9 +90,14 @@ test('the body brings its Content-Type unless a header sets one', () => {
   assert.deepEqual(http.headersOf(json), { 'Content-Type': 'application/json' })
   const own = draft({ bodyKind: 'json', body: '{}', headers: [row('content-type', 'application/merge-patch+json')] })
   assert.deepEqual(http.headersOf(own), { 'content-type': 'application/merge-patch+json' })
-  const off = draft({ headers: [row('X-Off', '1', false), row('Accept', 'a'), row('accept', 'b'), row(' ', 'blank name')] })
+  const off = draft({
+    headers: [row('X-Off', '1', false), row('Accept', 'a'), row('accept', 'b'), row(' ', 'blank name')],
+  })
   assert.deepEqual(http.headersOf(off), { accept: 'b' })
-  const form = draft({ bodyKind: 'form', form: [row('name', 'Ada Lovelace'), row('tag', 'a&b'), row('skip', 'x', false)] })
+  const form = draft({
+    bodyKind: 'form',
+    form: [row('name', 'Ada Lovelace'), row('tag', 'a&b'), row('skip', 'x', false)],
+  })
   assert.equal(http.bodyOf(form), 'name=Ada+Lovelace&tag=a%26b')
   assert.equal(http.headersOf(form)['Content-Type'], 'application/x-www-form-urlencoded')
   assert.equal(http.bodyOf(draft({ bodyKind: 'none', body: 'ignored' })), '')
@@ -92,16 +123,4 @@ test('bodies are shown in the language they are written in', () => {
   assert.notEqual(http.jsonProblem('{"a":'), '')
   assert.equal(http.jsonProblem('  '), '')
   assert.deepEqual([...http.decodeBase64(btoa('\x89PNG'))], [0x89, 0x50, 0x4e, 0x47])
-})
-
-test('a stored request that no longer has the expected shape is mended or dropped', () => {
-  const saved = http.savedBox('t', 'parse')
-  assert.deepEqual(saved.get(), [])
-  const history = http.historyBox('t', 'parse')
-  http.remember('t', 'parse', { draft: draft({ bodyKind: 'text', body: 'x'.repeat(20_000) }), status: 200, durationMs: 3 })
-  const [kept] = history.get()
-  assert.equal(kept.status, 200)
-  assert.equal(kept.draft.body, '')
-  assert.equal(kept.bodyDropped, true)
-  assert.equal(http.sameDraft(draft({ params: [row('a', '1')] }), draft({ params: [{ ...row('a', '1'), id: 'other' }] })), true)
 })

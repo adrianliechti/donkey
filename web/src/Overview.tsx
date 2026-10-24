@@ -43,7 +43,12 @@ export function FleetOverview() {
   const [filter, setFilter] = useState('')
   const [creating, setCreating] = useState(false)
 
-  if (error) return <Page><ErrorNote message={error} /></Page>
+  if (error)
+    return (
+      <Page>
+        <ErrorNote message={error} />
+      </Page>
+    )
   if (!data) {
     return (
       <Page>
@@ -66,7 +71,8 @@ export function FleetOverview() {
   )
   const canDeploy = data.platformAdmin || Object.values(data.roles ?? {}).some((role) => role !== 'viewer')
   const shown = spaces.filter(
-    (space) => !needle || space.includes(needle) || apps.some((app) => spaceOf(app) === space && app.name.includes(needle)),
+    (space) =>
+      !needle || space.includes(needle) || apps.some((app) => spaceOf(app) === space && app.name.includes(needle)),
   )
 
   return (
@@ -223,8 +229,18 @@ export function SpaceOverview({ space }: { space: string }) {
   const role = data?.roles[space] ?? 'viewer'
   const { data: services } = useSpaceServices(space, !!data && role !== 'viewer')
 
-  if (error) return <Page><ErrorNote message={error} /></Page>
-  if (!data) return <Page><Skeleton className="h-32" /></Page>
+  if (error)
+    return (
+      <Page>
+        <ErrorNote message={error} />
+      </Page>
+    )
+  if (!data)
+    return (
+      <Page>
+        <Skeleton className="h-32" />
+      </Page>
+    )
   if (!(data.spaces ?? []).includes(space)) {
     return (
       <Page>
@@ -246,7 +262,9 @@ export function SpaceOverview({ space }: { space: string }) {
         <Summary
           items={[
             [`${apps.length} ${apps.length === 1 ? 'app' : 'apps'}`],
-            services && services.length > 0 ? [`${services.length} ${services.length === 1 ? 'service' : 'services'}`] : null,
+            services && services.length > 0
+              ? [`${services.length} ${services.length === 1 ? 'service' : 'services'}`]
+              : null,
             down > 0 ? [`${down} down`, 'text-danger'] : apps.length > 0 ? ['all running'] : null,
             deploying > 0 ? [`${deploying} deploying`, 'text-accent'] : null,
           ]}
@@ -263,8 +281,10 @@ export function SpaceOverview({ space }: { space: string }) {
           No apps in this space yet.
           {role !== 'viewer' && (
             <>
-              {' '}Deploy one with the button above, or with{' '}
-              <code className="rounded bg-surface px-1.5 py-0.5 font-mono text-xs">space: {space}</code> in its donkey.yaml.
+              {' '}
+              Deploy one with the button above, or with{' '}
+              <code className="rounded bg-surface px-1.5 py-0.5 font-mono text-xs">space: {space}</code> in its
+              donkey.yaml.
             </>
           )}
         </Empty>
@@ -316,7 +336,10 @@ function AppTile({ app, deploy }: { app: AppSummary; deploy?: ActiveDeploy }) {
           {app.url ? (
             <div className="truncate font-mono">{app.url.replace(/^https?:\/\//, '')}</div>
           ) : (
-            <div className="flex items-center gap-1 truncate font-mono" title="No address of its own — its siblings reach it by name">
+            <div
+              className="flex items-center gap-1 truncate font-mono"
+              title="No address of its own — its siblings reach it by name"
+            >
               <Network className="size-3 shrink-0" aria-hidden /> http://{app.name}
             </div>
           )}
@@ -328,7 +351,10 @@ function AppTile({ app, deploy }: { app: AppSummary; deploy?: ActiveDeploy }) {
         {((app.addons ?? []).length > 0 || app.hasStorage) && (
           <div className="mt-3 flex flex-wrap gap-1.5">
             {(app.addons ?? []).map((addon) => (
-              <span key={addon} className="inline-flex items-center gap-1 rounded bg-raised px-1.5 py-0.5 font-mono text-[10px] text-ink-soft">
+              <span
+                key={addon}
+                className="inline-flex items-center gap-1 rounded bg-raised px-1.5 py-0.5 font-mono text-[10px] text-ink-soft"
+              >
                 <Database className="size-3" aria-hidden /> {addon}
               </span>
             ))}
@@ -362,7 +388,9 @@ function DeployTile({ deploy }: { deploy: ActiveDeploy }) {
       to="/app/$space/$name/{-$tab}"
       params={{ space: deploy.space, name: deploy.app, tab: undefined }}
       className={`flex flex-col justify-between gap-3 rounded-lg border border-dashed p-4 transition-colors focus-visible:outline-2 focus-visible:outline-accent-strong ${
-        failed ? 'border-danger/50 bg-danger/[.03] hover:border-danger' : 'border-accent/50 bg-accent-soft/30 hover:border-accent'
+        failed
+          ? 'border-danger/50 bg-danger/[.03] hover:border-danger'
+          : 'border-accent/50 bg-accent-soft/30 hover:border-accent'
       }`}
     >
       <div className="flex items-center justify-between gap-2">
@@ -374,7 +402,9 @@ function DeployTile({ deploy }: { deploy: ActiveDeploy }) {
           )}
           <span className="truncate font-mono text-sm font-bold text-ink">{deploy.app}</span>
         </span>
-        <span className={`shrink-0 font-mono text-[10px] tracking-wide uppercase ${failed ? 'text-danger' : 'text-accent'}`}>
+        <span
+          className={`shrink-0 font-mono text-[10px] tracking-wide uppercase ${failed ? 'text-danger' : 'text-accent'}`}
+        >
           {failed ? 'failed' : 'first deploy'}
         </span>
       </div>
@@ -459,7 +489,12 @@ export function DeployPlaceholder({ deploy }: { deploy: ActiveDeploy }) {
           </h2>
         </div>
         {failed && (
-          <Button kind="quiet" size="sm" icon={Rocket} onClick={() => openDeploy({ space: deploy.space, name: deploy.app })}>
+          <Button
+            kind="quiet"
+            size="sm"
+            icon={Rocket}
+            onClick={() => openDeploy({ space: deploy.space, name: deploy.app })}
+          >
             Deploy again
           </Button>
         )}
@@ -514,7 +549,11 @@ function Summary({ items }: { items: ([string] | [string, string] | null)[] }) {
         .filter((item): item is [string] | [string, string] => item !== null)
         .map(([text, tone], i) => (
           <span key={text} className="flex items-center gap-2">
-            {i > 0 && <span className="text-line-strong" aria-hidden>·</span>}
+            {i > 0 && (
+              <span className="text-line-strong" aria-hidden>
+                ·
+              </span>
+            )}
             <span className={tone ?? ''}>{text}</span>
           </span>
         ))}
@@ -550,5 +589,9 @@ function BoardRow({ space, app, children }: { space: string; app: string; childr
 }
 
 function Empty({ children }: { children: React.ReactNode }) {
-  return <p className="rounded-lg border border-dashed border-line bg-card px-6 py-10 text-center text-sm text-muted">{children}</p>
+  return (
+    <p className="rounded-lg border border-dashed border-line bg-card px-6 py-10 text-center text-sm text-muted">
+      {children}
+    </p>
+  )
 }

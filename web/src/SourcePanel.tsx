@@ -57,7 +57,12 @@ export function SourcePanel({ space, app }: { space: string; app: string }) {
   }, [key])
 
   const go = (next: SourceSearch) =>
-    navigate({ to: '/app/$space/$name/{-$tab}', params: { space, name: app, tab: 'source' }, search: next, resetScroll: false })
+    navigate({
+      to: '/app/$space/$name/{-$tab}',
+      params: { space, name: app, tab: 'source' },
+      search: next,
+      resetScroll: false,
+    })
   const open = (id: string) => go({ commit: id })
   const browse = (id: string, path: string | null = null) => go({ commit: id, files: 1, path: path ?? undefined })
   const history = () => go({})
@@ -70,7 +75,15 @@ export function SourcePanel({ space, app }: { space: string; app: string }) {
       {search.commit && !search.files && (
         // Keyed: following a parent link opens a fresh view, not this one's
         // open diffs and errors.
-        <CommitView key={search.commit} space={space} app={app} id={search.commit} onHistory={history} onOpen={open} onBrowse={browse} />
+        <CommitView
+          key={search.commit}
+          space={space}
+          app={app}
+          id={search.commit}
+          onHistory={history}
+          onOpen={open}
+          onBrowse={browse}
+        />
       )}
       {search.commit && search.files && (
         <BrowseView
@@ -108,7 +121,9 @@ function HistoryView({
     return (
       <section className="space-y-3">
         <SectionHeader title="Source" />
-        <p className="text-sm text-muted">No source is recorded for this app yet — the next deploy starts its history.</p>
+        <p className="text-sm text-muted">
+          No source is recorded for this app yet — the next deploy starts its history.
+        </p>
       </section>
     )
   }
@@ -119,7 +134,9 @@ function HistoryView({
       <SectionHeader
         title="Source"
         description="Each deploy's files as a commit — yours against your previous upload, the platform's against the upload it built."
-        actions={<IconButton icon={FolderTree} label="Browse the files that run now" onClick={() => onBrowse(current.id)} />}
+        actions={
+          <IconButton icon={FolderTree} label="Browse the files that run now" onClick={() => onBrowse(current.id)} />
+        }
       />
       <List>
         {data.commits.map((c) => (
@@ -232,11 +249,29 @@ function CommitView({
 
   return (
     <section className="space-y-4">
-      <Trail steps={[{ label: 'History', onClick: onHistory }, { label: commit ? `${short(id)} · ${subject(commit.message)}` : short(id) }]}>
-        <Button kind="quiet" size="sm" icon={ChevronLeft} disabled={!newer} onClick={() => newer && onOpen(newer.id)} title="Newer commit (k)">
+      <Trail
+        steps={[
+          { label: 'History', onClick: onHistory },
+          { label: commit ? `${short(id)} · ${subject(commit.message)}` : short(id) },
+        ]}
+      >
+        <Button
+          kind="quiet"
+          size="sm"
+          icon={ChevronLeft}
+          disabled={!newer}
+          onClick={() => newer && onOpen(newer.id)}
+          title="Newer commit (k)"
+        >
           Newer
         </Button>
-        <Button kind="quiet" size="sm" disabled={!older} onClick={() => older && onOpen(older.id)} title="Older commit (j)">
+        <Button
+          kind="quiet"
+          size="sm"
+          disabled={!older}
+          onClick={() => older && onOpen(older.id)}
+          title="Older commit (j)"
+        >
           Older
           <ChevronRight className="size-3.5" aria-hidden />
         </Button>
@@ -293,7 +328,12 @@ function CommitView({
                 </>
               )}
             </span>
-            <ChangeStats files={commit.stats.files} additions={commit.stats.additions} deletions={commit.stats.deletions} long />
+            <ChangeStats
+              files={commit.stats.files}
+              additions={commit.stats.additions}
+              deletions={commit.stats.deletions}
+              long
+            />
           </div>
 
           {commit.changes.length === 0 ? (
@@ -347,7 +387,10 @@ function ChangeItem({
           aria-expanded={open}
           className="flex min-w-0 flex-1 items-center gap-2 rounded text-left focus-visible:outline-2 focus-visible:outline-accent-strong"
         >
-          <ChevronRight className={`size-3.5 shrink-0 text-muted transition-transform ${open ? 'rotate-90' : ''}`} aria-hidden />
+          <ChevronRight
+            className={`size-3.5 shrink-0 text-muted transition-transform ${open ? 'rotate-90' : ''}`}
+            aria-hidden
+          />
           <StatusMark status={change.status} />
           <span className="truncate font-mono text-xs text-ink">{change.path}</span>
         </button>
@@ -531,13 +574,14 @@ function FileTree({
 }) {
   const root = useMemo(() => buildTree(files), [files])
   const [expanded, setExpanded] = useState(() => new Set(ancestors(selected)))
-  // A file picked from elsewhere (a commit's change list) opens its folders.
-  useEffect(() => {
-    setExpanded((prev) => {
-      const missing = ancestors(selected).filter((p) => !prev.has(p))
-      return missing.length === 0 ? prev : new Set([...prev, ...missing])
-    })
-  }, [selected])
+  // A file picked from elsewhere (a commit's change list) opens its folders —
+  // settled while rendering, so the tree never shows a frame without them.
+  const [opened, setOpened] = useState(selected)
+  if (selected !== opened) {
+    setOpened(selected)
+    const missing = ancestors(selected).filter((p) => !expanded.has(p))
+    if (missing.length > 0) setExpanded(new Set([...expanded, ...missing]))
+  }
   const toggle = (p: string) =>
     setExpanded((prev) => {
       const next = new Set(prev)
@@ -873,7 +917,10 @@ function body(message: string): string {
 }
 
 function initials(name: string): string {
-  const words = name.replace(/[^\p{L}\p{N}\s]/gu, ' ').trim().split(/\s+/)
+  const words = name
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .trim()
+    .split(/\s+/)
   return ((words[0]?.[0] ?? '?') + (words.length > 1 ? words[words.length - 1][0] : '')).toUpperCase()
 }
 

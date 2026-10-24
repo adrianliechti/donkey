@@ -13,7 +13,7 @@ import {
   type Exchange,
   type HttpResult,
 } from './httpApi'
-import { Keys, Pane, PaneEmpty, PaneHeader, PaneTabs, Segmented } from './HttpWorkbench'
+import { Keys, Pane, PaneEmpty, PaneHeader, PaneTabs, Segmented } from './Workbench'
 import { useNow } from './hooks'
 import { SourceCode } from './SourceCode'
 import { Button, Callout, CopyButton, ErrorNote, IconButton, Spinner } from './ui'
@@ -106,7 +106,13 @@ export function ResponsePane({
           </div>
         )}
         {result && tab === 'body' && (
-          <BodyView result={result} contentType={contentType} language={language} raw={raw} method={exchange?.draft.method ?? ''} />
+          <BodyView
+            result={result}
+            contentType={contentType}
+            language={language}
+            raw={raw}
+            method={exchange?.draft.method ?? ''}
+          />
         )}
         {result && tab === 'headers' && <HeadersView result={result} exchange={exchange} base={base} />}
       </div>
@@ -165,8 +171,8 @@ function BodyView({
     <>
       {location && (
         <Callout tone="info" className="m-3 mb-0">
-          Redirects to <span className="font-mono break-all">{location}</span> — the console shows the redirect rather than
-          following it.
+          Redirects to <span className="font-mono break-all">{location}</span> — the console shows the redirect rather
+          than following it.
         </Callout>
       )}
       {result.truncated && (
@@ -232,7 +238,8 @@ function HeadersView({ result, exchange, base }: { result: HttpResult; exchange?
     <div className="space-y-4 p-3">
       {url && (
         <p className="font-mono text-xs break-all text-ink-soft">
-          <span className={`font-semibold ${methodTone(exchange?.draft.method ?? '')}`}>{exchange?.draft.method}</span> {url}
+          <span className={`font-semibold ${methodTone(exchange?.draft.method ?? '')}`}>{exchange?.draft.method}</span>{' '}
+          {url}
         </p>
       )}
       <HeaderList title="Received" rows={received} copy />
@@ -241,12 +248,27 @@ function HeadersView({ result, exchange, base }: { result: HttpResult; exchange?
   )
 }
 
-function HeaderList({ title, rows, note, copy = false }: { title: string; rows: string[][]; note?: string; copy?: boolean }) {
+function HeaderList({
+  title,
+  rows,
+  note,
+  copy = false,
+}: {
+  title: string
+  rows: string[][]
+  note?: string
+  copy?: boolean
+}) {
   return (
     <section className="space-y-1.5">
       <div className="flex items-center justify-between">
         <h3 className="font-mono text-[10px] font-semibold tracking-[0.14em] text-muted uppercase">{title}</h3>
-        {copy && rows.length > 0 && <CopyButton text={rows.map(([n, v]) => `${n}: ${v}`).join('\n')} label={`Copy the ${title.toLowerCase()} headers`} />}
+        {copy && rows.length > 0 && (
+          <CopyButton
+            text={rows.map(([n, v]) => `${n}: ${v}`).join('\n')}
+            label={`Copy the ${title.toLowerCase()} headers`}
+          />
+        )}
       </div>
       {rows.length === 0 ? (
         <p className="text-xs text-muted">None.</p>
