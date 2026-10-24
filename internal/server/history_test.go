@@ -15,6 +15,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/adrianliechti/donkey/internal/config"
 	"github.com/adrianliechti/donkey/internal/history"
 	"github.com/adrianliechti/donkey/internal/identity"
 	"github.com/adrianliechti/donkey/internal/telemetry"
@@ -146,6 +147,55 @@ type destroyRuntime struct {
 }
 
 func (destroyRuntime) Destroy(context.Context, string, string, bool) error { return nil }
+
+// The history is written in the orchestrator, where deploys run; the API has
+// no volume of its own and forwards every read and removal there, so one
+// process owns the repositories.
+func TestHistoryIsServedWhereItIsWritten(t *testing.T) {
+	orchestrator := historyServer(t, "registry/web:1")
+	rt := destroyRuntime{releaseRuntime{
+		planRuntime: planRuntime{platform: &config.PlatformConfig{Admins: config.AccessConfig{Users: []string{"u1@example.com"}}}},
+		status:      &runtime.AppStatus{Found: true, UpToDate: true, WantReplica: 1, ReadyReplica: 1, Image: "registry/web:1"},
+		meta:        map[string]string{},
+	}}
+	orchestrator.rt = rt
+	upload := t.TempDir()
+	writeFiles(t, upload, map[string]string{"main.py": "print('hi')\n"})
+	release := releaseFixture()
+	release.source = captureSource(upload, buildCopy(t, upload, func(string) {}), ".", "")
+	orchestrator.persistRelease(asPerson(context.Background()), "acme", "web", release)
+	orchestratorHTTP := httptest.NewServer(orchestrator.orchestratorRoutes())
+	defer orchestratorHTTP.Close()
+
+	api := apiServer(orchestratorHTTP.URL)
+	api.rt = rt
+	send := func(method, path string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, "https://donkey.example.com"+path, nil)
+		asAdmin(t, req)
+		rec := httptest.NewRecorder()
+		api.routes().ServeHTTP(rec, req)
+		return rec
+	}
+
+	rec := send(http.MethodGet, "/v1/spaces/acme/apps/web/commits")
+	var listed struct {
+		Enabled bool           `json:"enabled"`
+		Commits []SourceCommit `json:"commits"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &listed); err != nil || !listed.Enabled || len(listed.Commits) != 1 {
+		t.Fatalf("history through the API: %d %s", rec.Code, rec.Body.String())
+	}
+	rec = send(http.MethodGet, "/v1/spaces/acme/apps/web/commits/"+listed.Commits[0].ID+"/archive")
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Header().Get("Content-Disposition"), ".zip") {
+		t.Fatalf("archive through the API: %d %v", rec.Code, rec.Header())
+	}
+	if rec := send(http.MethodDelete, "/v1/spaces/acme/apps/web"); rec.Code != http.StatusOK {
+		t.Fatalf("remove through the API: %d %s", rec.Code, rec.Body.String())
+	}
+	if commits, err := orchestrator.history.Log("acme", "web", 10); err != nil || len(commits) != 0 {
+		t.Fatalf("removing the app through the API removes the orchestrator's history: %d commits, %v", len(commits), err)
+	}
+}
 
 func TestRemovingAnAppRemovesItsHistory(t *testing.T) {
 	for _, keepData := range []bool{false, true} {

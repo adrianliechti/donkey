@@ -28,8 +28,10 @@ browser ──443──▶ donkey-gateway (TLS by SNI, OIDC login, access rules)
 ```
 
 - `donkey-gateway` — the edge, publishing ports 80/443
-- `donkey-server` — the API (and runtime provider: it holds the Docker
-  socket), publishing the API on `127.0.0.1:8088` for direct token access
+- `donkey-server` — the API and console (and runtime provider: it holds the
+  Docker socket), publishing the API on `127.0.0.1:8088` for direct token access
+- `donkey-orchestrator` — reads, builds and deploys what the API hands it (it
+  holds the Docker socket too); reachable only on donkey's own networks
 - `donkey-buildkitd` — builds images
 - `donkey-packages` — the build-only npm, PyPI, Go, Maven and NuGet v3 package proxy
 - `donkey-registry` — receives them (loopback-published for the daemon's

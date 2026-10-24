@@ -59,9 +59,9 @@ func TestPlanUpdateRejectsInvalidFields(t *testing.T) {
 			}
 			body, _ := json.Marshal(edit)
 			req := httptest.NewRequest(http.MethodPut, "/v1/plans/"+id, bytes.NewReader(body))
-			asAdmin(t, req)
+			asForwarded(t, req)
 			rec := httptest.NewRecorder()
-			s.routes().ServeHTTP(rec, req)
+			s.orchestratorRoutes().ServeHTTP(rec, req)
 			if rec.Code != http.StatusBadRequest || !reflect.DeepEqual(before, sp.app) {
 				t.Fatalf("invalid edit was silently accepted or applied: %d %s", rec.Code, rec.Body.String())
 			}
@@ -295,9 +295,9 @@ func TestExpiredPlanIsRefused(t *testing.T) {
 func TestDeployWithUnknownPlan(t *testing.T) {
 	s := &Server{cfg: &Config{Domain: "example.com", SessionKey: testSessionKey}, plans: newPlanStore(), rt: planRuntime{}}
 	req := httptest.NewRequest(http.MethodPost, "https://donkey.example.com/v1/deploys?plan=nope", nil)
-	asAdmin(t, req)
+	asForwarded(t, req)
 	rec := httptest.NewRecorder()
-	s.routes().ServeHTTP(rec, req)
+	s.orchestratorRoutes().ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusGone {
 		t.Fatalf("an unknown plan should be 410 Gone, got %d", rec.Code)

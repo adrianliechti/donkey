@@ -24,16 +24,24 @@ import (
 	"github.com/adrianliechti/donkey/pkg/runtime/kubernetes/manifests"
 )
 
-// One binary, six roles: the control plane by default, the login gateway,
-// the OpenAI and Exa endpoint, the service proxy, the build-only package proxy, and traffic
-// telemetry service. Separate processes keep each role down to the credentials
-// and permissions it needs while the release ships one server artifact.
+// One binary, seven roles: the control plane's API and console by default,
+// the orchestrator that builds and deploys behind it, the login gateway, the
+// OpenAI and Exa endpoint, the service proxy, the build-only package proxy,
+// and traffic telemetry service. Separate processes keep each role down to the
+// credentials and permissions it needs while the release ships one server
+// artifact.
 func main() {
-	// SIGTERM starts a drain rather than killing in-flight work: a
-	// control-plane upgrade must not abandon somebody's half-finished build,
+	// SIGTERM starts a drain rather than killing in-flight work: an
+	// orchestrator upgrade must not abandon somebody's half-finished build,
 	// and the gateway finishes the responses it is already streaming.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
+
+	// The orchestrator is the control plane itself, started for the work that
+	// outlives a request: same configuration, same runtime, same pipeline.
+	// Only what it serves differs, plus the startup chores below that belong
+	// to the API alone.
+	orchestrator := len(os.Args) > 1 && os.Args[1] == "orchestrator"
 
 	if len(os.Args) > 1 && os.Args[1] == "gateway" {
 		cfg, err := gateway.FromEnv()
@@ -119,6 +127,10 @@ func main() {
 		fmt.Fprintln(os.Stderr, "configuration error:", err)
 		os.Exit(1)
 	}
+	if orchestrator && os.Getenv("DONKEY_LISTEN") == "" {
+		// The port donkey-server's DONKEY_ORCHESTRATOR_URL expects by default.
+		cfg.Listen = ":8087"
+	}
 	closeProxyServices, err := addons.RegisterProxyServices(cfg.ProxyServices)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "proxy configuration error:", err)
@@ -154,6 +166,11 @@ func main() {
 		if err := provider.SetProxyServices(cfg.ProxyServices); err != nil {
 			fmt.Fprintln(os.Stderr, "proxy configuration error:", err)
 			os.Exit(1)
+		}
+		if orchestrator {
+			// The API keeps the networks attached and writes the console
+			// route, for the orchestrator's container too.
+			break
 		}
 		// Any recreation of donkey's own containers drops the space networks
 		// they were on, and Docker's DNS only answers for networks the asking
@@ -204,9 +221,13 @@ func main() {
 			RestrictEgress:        cfg.RestrictEgress,
 		})
 	}
-	if err := rt.EnsureSpaceConfigs(ctx); err != nil {
-		fmt.Fprintln(os.Stderr, "migrating space settings:", err)
-		os.Exit(1)
+	// Migrating settings is a one-writer job, so the API does it. Every call
+	// reaches the orchestrator through the API, so it is done by then.
+	if !orchestrator {
+		if err := rt.EnsureSpaceConfigs(ctx); err != nil {
+			fmt.Fprintln(os.Stderr, "migrating space settings:", err)
+			os.Exit(1)
+		}
 	}
 	if err := runtime.ReconcileAccess(ctx, rt, ""); err != nil {
 		fmt.Fprintln(os.Stderr, "reconciling space access:", err)
@@ -217,7 +238,11 @@ func main() {
 		fmt.Fprintln(os.Stderr, "startup error:", err)
 		os.Exit(1)
 	}
-	if err := srv.Run(ctx); err != nil {
+	run := srv.Run
+	if orchestrator {
+		run = srv.RunOrchestrator
+	}
+	if err := run(ctx); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}

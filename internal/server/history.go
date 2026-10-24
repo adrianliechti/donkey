@@ -473,7 +473,7 @@ func (s *Server) historyRequest(w http.ResponseWriter, r *http.Request) (space, 
 		return "", "", false
 	}
 	if s.history == nil {
-		writeErr(w, http.StatusNotFound, errors.New("this installation keeps no source history — give donkey-server a data volume to turn it on"))
+		writeErr(w, http.StatusNotFound, errors.New("this installation keeps no source history — give the control plane a data volume to turn it on"))
 		return "", "", false
 	}
 	return space, app, true

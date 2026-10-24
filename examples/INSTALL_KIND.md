@@ -39,7 +39,7 @@ TLS and fight it over the same names. The kind port mappings hand the
 server's 80/443 straight to the gateway, and nothing else is needed.
 
 Sizing: builds run in the cluster (buildkit requests 4Gi of scratch space,
-donkey-server 3Gi), so give the server at least 4 CPUs, 8 GB RAM and 60 GB of
+donkey-orchestrator 3Gi), so give the server at least 4 CPUs, 8 GB RAM and 60 GB of
 disk.
 
 ## 0. DNS and firewall

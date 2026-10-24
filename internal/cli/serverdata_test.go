@@ -8,7 +8,7 @@ import (
 	"github.com/adrianliechti/donkey/internal/config"
 )
 
-func TestDockerBundleKeepsServerDataInTheStateVolume(t *testing.T) {
+func TestDockerBundleKeepsDataInTheStateVolume(t *testing.T) {
 	render := func(data config.InstallData) composeFile {
 		t.Helper()
 		settings := &config.InstallFile{
@@ -28,10 +28,15 @@ func TestDockerBundleKeepsServerDataInTheStateVolume(t *testing.T) {
 		}
 		return compose
 	}
-	if got := render(config.InstallData{}).Services["server"].Environment["DONKEY_DATA_DIR"]; got != dockerDataDir {
+	byDefault := render(config.InstallData{})
+	if got := byDefault.Services["orchestrator"].Environment["DONKEY_DATA_DIR"]; got != dockerDataDir {
 		t.Fatalf("DONKEY_DATA_DIR = %q, want the state volume %s", got, dockerDataDir)
 	}
-	if got := render(config.InstallData{Disabled: true}).Services["server"].Environment["DONKEY_DATA_DIR"]; got != "" {
+	// The orchestrator owns the history; the API forwards every read to it.
+	if got := byDefault.Services["server"].Environment["DONKEY_DATA_DIR"]; got != "" {
+		t.Fatalf("donkey-server should have no data dir, got %q", got)
+	}
+	if got := render(config.InstallData{Disabled: true}).Services["orchestrator"].Environment["DONKEY_DATA_DIR"]; got != "" {
 		t.Fatalf("a disabled data volume leaves the server without one, got %q", got)
 	}
 }

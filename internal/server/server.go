@@ -24,7 +24,8 @@ type Server struct {
 	rt        runtime.Provider
 	assistant ai.Assistant
 	// plans holds what donkey read about an upload between review and deploy,
-	// so the assistant answers once per app rather than once per screen.
+	// so the assistant answers once per app rather than once per screen. It
+	// lives in donkey-orchestrator, which serves every plan route.
 	plans     *planStore
 	telemetry *telemetry.Client
 	resources *telemetry.ResourceExporter
@@ -32,12 +33,14 @@ type Server struct {
 	// gives the server no volume for it.
 	history *history.Store
 
-	// deploying lets a terminating pod finish in-flight deploys.
+	// deploying lets a terminating orchestrator finish in-flight deploys.
 	deploying sync.WaitGroup
-	// draining flips on SIGTERM: readiness fails and new deploys are refused.
+	// draining flips on SIGTERM: readiness fails and, in the orchestrator,
+	// new deploys are refused.
 	draining atomic.Bool
 	// appLocks serializes deploys per app — two at once would interleave their
-	// applies and race their rollout waits.
+	// applies and race their rollout waits. Only donkey-orchestrator takes
+	// them: everything that locks an app is routed there (see orchestrated).
 	appLocks sync.Map
 }
 
@@ -79,13 +82,13 @@ func (s *Server) lockApp(space, app string) func() {
 
 func (s *Server) routes() http.Handler {
 	mux := http.NewServeMux()
-	// healthz answers while draining too — kubelet's liveness must not kill a
-	// pod that is deliberately finishing its deploys.
+	// healthz answers while stopping too — kubelet's liveness must not kill a
+	// pod that is deliberately finishing its requests.
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 	})
-	// readyz fails as soon as the pod is draining, so the gateway stops
-	// sending it new work while the old deploys run out.
+	// readyz fails as soon as the pod is stopping, so the Service sends new
+	// requests to its replacement.
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
 		if s.draining.Load() {
 			writeJSON(w, http.StatusServiceUnavailable, map[string]bool{"ok": false})
@@ -98,39 +101,31 @@ func (s *Server) routes() http.Handler {
 	mux.Handle("GET /v1/ping", s.auth(func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "version": Version})
 	}))
-	mux.Handle("POST /v1/deploys", s.auth(s.handleDeploy))
-	// A plan is a deploy read out loud before it happens: what the app is,
-	// how it will be built, what it needs and what will break. The console
-	// reviews one, `donkey init` prints one, and the deploy that follows
-	// carries its id so the assistant is asked once, not twice.
-	mux.Handle("POST /v1/plans", s.auth(s.handlePlan))
-	mux.Handle("PUT /v1/plans/{id}", s.auth(s.handlePlanUpdate))
-	mux.Handle("POST /v1/projects/plans", s.auth(s.handleProjectPlan))
-	mux.Handle("PUT /v1/projects/plans/{id}", s.auth(s.handleProjectUpdate))
-	mux.Handle("POST /v1/projects/deploys", s.auth(s.handleProjectDeploy))
+	// Plans, deploys and the changes that have to wait for a deploy run in
+	// donkey-orchestrator. They are authenticated here like every other call,
+	// so an anonymous upload never travels further, and handed over with the
+	// caller's token, which the orchestrator verifies again before it
+	// authorizes the space the upload actually names.
+	forward := s.orchestratorForwarder()
+	for _, route := range s.orchestrated() {
+		mux.Handle(route.pattern, s.auth(forward.ServeHTTP))
+	}
 	// Apps live in a space, so their address does too.
 	mux.Handle("GET /v1/apps", s.auth(s.handleListApps))
 	mux.Handle("GET /v1/fleet", s.auth(s.handleFleet))
 	mux.Handle("GET /v1/spaces/{space}/apps/{app}/status", s.auth(s.handleStatus))
 	mux.Handle("GET /v1/spaces/{space}/apps/{app}/builds", s.auth(s.handleBuilds))
 	mux.Handle("GET /v1/spaces/{space}/apps/{app}/builds/{sequence}", s.auth(s.handleBuild))
-	mux.Handle("GET /v1/spaces/{space}/apps/{app}/commits", s.auth(s.handleCommits))
-	mux.Handle("GET /v1/spaces/{space}/apps/{app}/commits/{commit}", s.auth(s.handleCommit))
-	mux.Handle("GET /v1/spaces/{space}/apps/{app}/commits/{commit}/diff", s.auth(s.handleCommitDiff))
-	mux.Handle("GET /v1/spaces/{space}/apps/{app}/commits/{commit}/tree", s.auth(s.handleCommitTree))
-	mux.Handle("GET /v1/spaces/{space}/apps/{app}/commits/{commit}/file", s.auth(s.handleCommitFile))
-	mux.Handle("GET /v1/spaces/{space}/apps/{app}/commits/{commit}/archive", s.auth(s.handleCommitArchive))
 	mux.Handle("GET /v1/spaces/{space}/apps/{app}/logs", s.auth(s.handleLogs))
 	mux.Handle("GET /v1/spaces/{space}/apps/{app}/env", s.auth(s.handleGetEnv))
 	mux.Handle("PUT /v1/spaces/{space}/apps/{app}/env", s.auth(s.handlePutEnv))
 	mux.Handle("POST /v1/spaces/{space}/apps/{app}/restart", s.auth(s.handleRestart))
 	// How the app is reached (exposure, domain), changeable without a deploy.
+	// Changing it takes the app's deploy lock, so the change is orchestrated.
 	mux.Handle("GET /v1/spaces/{space}/apps/{app}/network", s.auth(s.handleGetNetwork))
-	mux.Handle("PUT /v1/spaces/{space}/apps/{app}/network", s.auth(s.handlePutNetwork))
 	mux.Handle("POST /v1/spaces/{space}/apps/{app}/diagnose", s.auth(s.handleDiagnose))
 	mux.Handle("GET /v1/spaces", s.auth(s.handleListSpaces))
 	mux.Handle("POST /v1/spaces", s.auth(s.handleCreateSpace))
-	mux.Handle("DELETE /v1/spaces/{space}", s.auth(s.handleDeleteSpace))
 	mux.Handle("GET /v1/spaces/{space}/settings", s.auth(s.handleGetSpaceConfig))
 	mux.Handle("GET /v1/platform/settings", s.auth(s.handleGetPlatformConfig))
 	mux.Handle("PUT /v1/platform/settings", s.auth(s.handlePutPlatformConfig))
@@ -143,9 +138,8 @@ func (s *Server) routes() http.Handler {
 	// items with arbitrary names (object keys, row keys) ride in query/body.
 	mux.Handle("GET /v1/catalog", s.auth(s.handleCatalog))
 	mux.Handle("GET /v1/spaces/{space}/catalog", s.auth(s.handleCatalog))
+	// Creating and removing a service is orchestrated, like connecting one.
 	mux.Handle("GET /v1/spaces/{space}/services", s.auth(s.handleListSpaceServices))
-	mux.Handle("POST /v1/spaces/{space}/services", s.auth(s.handleAddSpaceService))
-	mux.Handle("DELETE /v1/spaces/{space}/services/{service}", s.auth(s.handleRemoveSpaceService))
 	mux.Handle("GET /v1/spaces/{space}/services/{service}/binding", s.auth(s.handleServiceBinding))
 	mux.Handle("POST /v1/spaces/{space}/services/{service}/http/request", s.auth(s.handleServiceHTTPRequest))
 	mux.Handle("GET /v1/spaces/{space}/services/{service}/tunnel", s.auth(s.handleServiceTunnel))
@@ -185,8 +179,6 @@ func (s *Server) routes() http.Handler {
 	mux.Handle("DELETE /v1/spaces/{space}/services/{service}/keys/value", s.auth(s.handleRedisDelete))
 	// The services an app is connected to.
 	mux.Handle("GET /v1/spaces/{space}/apps/{app}/services", s.auth(s.handleListAppServices))
-	mux.Handle("POST /v1/spaces/{space}/apps/{app}/services", s.auth(s.handleAddAppService))
-	mux.Handle("DELETE /v1/spaces/{space}/apps/{app}/services/{service}", s.auth(s.handleRemoveAppService))
 	// The app's disk: browse, upload, download, rename, remove.
 	mux.Handle("GET /v1/spaces/{space}/apps/{app}/files", s.auth(s.handleListFiles))
 	mux.Handle("GET /v1/spaces/{space}/apps/{app}/files/download", s.auth(s.handleReadFile))
@@ -195,7 +187,6 @@ func (s *Server) routes() http.Handler {
 	mux.Handle("DELETE /v1/spaces/{space}/apps/{app}/files", s.auth(s.handleDeleteFile))
 	mux.Handle("POST /v1/spaces/{space}/apps/{app}/files/move", s.auth(s.handleMoveFile))
 	mux.Handle("POST /v1/spaces/{space}/apps/{app}/files/folder", s.auth(s.handleMakeFolder))
-	mux.Handle("DELETE /v1/spaces/{space}/apps/{app}", s.auth(s.handleDestroy))
 	mux.Handle("GET /v1/doctor", s.auth(s.handleDoctor))
 	// The console's AI chat, forwarded to donkey-ai — see aiforward.go for
 	// why it lands on this origin and why nothing is verified here.
@@ -212,20 +203,22 @@ func (s *Server) routes() http.Handler {
 	return http.NewCrossOriginProtection().Handler(mux)
 }
 
-// drainTimeout bounds how long a terminating server waits for its deploys.
-// A build plus rollout can legitimately take minutes; the Deployment's
-// terminationGracePeriodSeconds is sized to match.
-const drainTimeout = 10 * time.Minute
+// shutdownGrace bounds how long a stopping donkey-server keeps answering the
+// requests it already has. Nothing here outlives a request any more: a
+// deploy stream cut short keeps building in donkey-orchestrator, and the CLI
+// and console both fall back to following the app's status. So an upgrade
+// replaces the API in seconds instead of waiting for somebody's build; the
+// Deployment's terminationGracePeriodSeconds is sized to match.
+const shutdownGrace = 15 * time.Second
 
-// Run serves until the process is asked to stop, then drains: new deploys are
-// refused and the running ones are given until drainTimeout to finish. Without
-// this, every control-plane upgrade would kill whatever was mid-build.
+// Run serves the API and console until the process is asked to stop, then
+// takes itself out of rotation and closes what is still open.
 func (s *Server) Run(ctx context.Context) error {
 	srv := &http.Server{
 		Addr:    s.cfg.Listen,
 		Handler: s.routes(),
-		// Deploy streams run for minutes, so no global write timeout — but
-		// headers must arrive promptly (slowloris protection).
+		// Deploy and log streams run for minutes, so no global write timeout
+		// — but headers must arrive promptly (slowloris protection).
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
@@ -246,23 +239,19 @@ func (s *Server) Run(ctx context.Context) error {
 	case <-ctx.Done():
 	}
 
+	// readyz fails from here on, so the rolling update's new pod takes the
+	// traffic while this one finishes the short requests it has.
 	s.draining.Store(true)
-	log.Printf("donkey-server draining: finishing deploys already under way (up to %s)", drainTimeout)
-
-	finished := make(chan struct{})
-	go func() {
-		s.deploying.Wait()
-		close(finished)
-	}()
-	shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), drainTimeout)
+	log.Printf("donkey-server stopping: closing open requests within %s (deploys carry on in donkey-orchestrator)", shutdownGrace)
+	shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), shutdownGrace)
 	defer cancel()
-	select {
-	case <-finished:
-		log.Print("donkey-server: all deploys finished")
-	case <-shutdownCtx.Done():
-		log.Print("donkey-server: gave up waiting for deploys still running")
+	err := srv.Shutdown(shutdownCtx)
+	if errors.Is(err, context.DeadlineExceeded) {
+		// Log follows and relayed deploy streams never end on their own;
+		// their clients reconnect to the replacement.
+		return srv.Close()
 	}
-	return srv.Shutdown(shutdownCtx)
+	return err
 }
 
 // auth is who may call the API: a sealed token, verified here, checked
@@ -274,11 +263,7 @@ func (s *Server) Run(ctx context.Context) error {
 // AI proxy), so presence must never be authorization.
 func (s *Server) auth(next http.HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		token := r.Header.Get("X-Access-Token")
-		if token == "" {
-			token, _ = strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-		}
-		if token != "" {
+		if token := callerToken(r); token != "" {
 			if id, err := identity.VerifyToken(s.cfg.SessionKey, token); err == nil {
 				settings, err := s.loadPlatformConfig(r.Context(), id)
 				if err != nil {
@@ -301,6 +286,16 @@ func (s *Server) auth(next http.HandlerFunc) http.Handler {
 		}
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "not signed in — run `donkey login`"})
 	})
+}
+
+// callerToken is the sealed token a request carries: the console's in
+// X-Access-Token, the CLI's as a Bearer. auth decides whether it is any good.
+func callerToken(r *http.Request) string {
+	if token := r.Header.Get("X-Access-Token"); token != "" {
+		return token
+	}
+	token, _ := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	return token
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

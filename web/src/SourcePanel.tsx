@@ -108,7 +108,7 @@ function HistoryView({
         <SectionHeader title="Source" />
         <Callout tone="neutral" icon={History} title="This installation keeps no source history">
           Every deploy can be kept as a commit: the upload by the person who deployed it, and what the build changed on
-          top. An administrator turns it on by giving donkey-server a data volume.
+          top. An administrator turns it on by giving the control plane a data volume.
         </Callout>
       </section>
     )

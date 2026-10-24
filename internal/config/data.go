@@ -5,13 +5,13 @@ import (
 	"regexp"
 )
 
-// InstallData is donkey-server's own data volume. Today it holds every app's
-// source history (one git repository per app, under source/); it is a
-// general volume so later server-side data has a place too. On by default;
-// production installations usually put it on shared storage (an NFS-backed
-// claim).
+// InstallData is the control plane's data volume, mounted into
+// donkey-orchestrator. Today it holds every app's source history (one git
+// repository per app, under source/); it is a general volume so later data
+// has a place too. On by default; production installations usually put it on
+// shared storage (an NFS-backed claim).
 type InstallData struct {
-	// Disabled gives donkey-server no data volume, and with it no source
+	// Disabled gives the control plane no data volume, and with it no source
 	// history.
 	Disabled bool `json:"disabled,omitempty"`
 
@@ -22,27 +22,14 @@ type InstallData struct {
 	// empty means the cluster's default class and DefaultDataSize.
 	StorageClass string `json:"storageClass,omitempty"`
 	Size         string `json:"size,omitempty"`
-	// AccessMode (Kubernetes) is the claim's: ReadWriteOnce (the default) or
-	// ReadWriteMany. Only a shared volume lets a new donkey-server start
-	// before the old one stops, so with ReadWriteOnce the server is replaced
-	// rather than rolled.
-	AccessMode string `json:"accessMode,omitempty"`
 }
 
-const (
-	DefaultDataSize = "5Gi"
-	ReadWriteOnce   = "ReadWriteOnce"
-	ReadWriteMany   = "ReadWriteMany"
-)
+const DefaultDataSize = "5Gi"
 
 var quantityRE = regexp.MustCompile(`^[0-9]+(\.[0-9]+)?(Ki|Mi|Gi|Ti|Pi|Ei|k|M|G|T|P|E)?$`)
 
-// Enabled reports whether donkey-server gets a data volume.
+// Enabled reports whether the control plane gets a data volume.
 func (d InstallData) Enabled() bool { return !d.Disabled }
-
-// Shared reports whether several donkey-server pods can mount the volume at
-// once, wherever they run.
-func (d InstallData) Shared() bool { return d.AccessMode == ReadWriteMany }
 
 // ClaimSize is the size of the claim donkey creates.
 func (d InstallData) ClaimSize() string {
@@ -54,13 +41,8 @@ func (d InstallData) ClaimSize() string {
 
 // Validate checks what can be wrong without consulting the runtime.
 func (d InstallData) Validate() error {
-	if d.Disabled && (d.ExistingClaim != "" || d.StorageClass != "" || d.Size != "" || d.AccessMode != "") {
-		return fmt.Errorf("data.disabled gives donkey-server no volume, so the other data settings would do nothing — remove them or the disabled flag")
-	}
-	switch d.AccessMode {
-	case "", ReadWriteOnce, ReadWriteMany:
-	default:
-		return fmt.Errorf("data.accessMode must be %s or %s, not %q", ReadWriteOnce, ReadWriteMany, d.AccessMode)
+	if d.Disabled && (d.ExistingClaim != "" || d.StorageClass != "" || d.Size != "") {
+		return fmt.Errorf("data.disabled gives the control plane no volume, so the other data settings would do nothing — remove them or the disabled flag")
 	}
 	if d.Size != "" && !quantityRE.MatchString(d.Size) {
 		return fmt.Errorf("data.size %q is not a storage size (like 5Gi)", d.Size)
@@ -79,10 +61,10 @@ func (d InstallData) Validate() error {
 
 // ValidateRuntime rejects settings that belong to the other runtime, so a
 // setting never quietly does nothing. On Docker the data lives in the
-// donkey-data volume the server already has; there is nothing to shape.
+// donkey-data volume the control plane already has; there is nothing to shape.
 func (d InstallData) ValidateRuntime(runtime string) error {
-	if runtime == "docker" && (d.ExistingClaim != "" || d.StorageClass != "" || d.Size != "" || d.AccessMode != "") {
-		return fmt.Errorf("data.existingClaim, storageClass, size and accessMode are for Kubernetes; the Docker runtime keeps the data in its donkey-data volume")
+	if runtime == "docker" && (d.ExistingClaim != "" || d.StorageClass != "" || d.Size != "") {
+		return fmt.Errorf("data.existingClaim, storageClass and size are for Kubernetes; the Docker runtime keeps the data in its donkey-data volume")
 	}
 	return nil
 }

@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/urfave/cli/v3"
 
@@ -396,6 +397,15 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 	}
 	if err := client.WaitForRollout(ctx, in.Namespace, manifests.AIAppName,
 		manifests.SystemLabels(manifests.AIAppName)); err != nil {
+		return err
+	}
+	// Last, because it is the one that may take a while: a replaced
+	// orchestrator first finishes the deploys it is running. The API and the
+	// console are already up, and a deploy sent meanwhile is told to retry.
+	u.Info("Waiting for donkey-orchestrator — it restarts once the deploys already under way have finished (up to %d minutes)…",
+		int(config.DeployDrainTimeout.Minutes()))
+	if err := client.WaitForRolloutWithin(ctx, in.Namespace, manifests.OrchestratorName,
+		manifests.SystemLabels(manifests.OrchestratorName), config.DeployDrainTimeout+5*time.Minute); err != nil {
 		return err
 	}
 	if err := client.DeleteLegacySystemConfig(ctx, in.Namespace); err != nil {

@@ -22,7 +22,7 @@ runtime has [its own page](README_KUBERNETES.md). A complete walkthrough is
 | app environment Secret `<app>-env` | `/var/lib/donkey/env/<space>/<app>.json` |
 | `<space>-space` ConfigMap / `config.yaml` | `/var/lib/donkey/spaces/<space>/config.json` |
 | `donkey` ConfigMap / `platform.yaml` | `/var/lib/donkey/platform/config.json` |
-| control plane in `donkey-system` | containers `donkey-server`, `donkey-gateway`, `donkey-ai`, `donkey-proxy`, `donkey-telemetry`, `donkey-packages`, `donkey-buildkitd` (and optionally `donkey-registry`) on the `donkey` network |
+| control plane in `donkey-system` | containers `donkey-server`, `donkey-orchestrator`, `donkey-gateway`, `donkey-ai`, `donkey-proxy`, `donkey-telemetry`, `donkey-packages`, `donkey-buildkitd` (and optionally `donkey-registry`) on the `donkey` network |
 | `donkey-proxy` Secret / `services.json` | `/var/lib/donkey/proxy/services.json`; rendered Compose mounts private `proxy-services.json` instead |
 
 The two runtimes share the rules, not the spelling. On both, identity is
@@ -94,11 +94,11 @@ spelled the way Docker tooling expects:
 
 App roles are `workload`, `addon`, `storage`, `space` (the network), `files`
 and `init`. Control-plane containers follow one naming rule: the container
-`donkey-<role>` carries that role (`server`, `gateway`, `ai`,
+`donkey-<role>` carries that role (`server`, `orchestrator`, `gateway`, `ai`,
 `telemetry`, `packages`, `buildkitd`, `registry`); the infrastructure network
 is `network`, and the volumes are `state-storage`, `buildkit-storage`,
 `telemetry-storage` and `registry-storage`. The state volume also holds
-donkey-server's data: every app's source history, in its `source/` folder.
+donkey-orchestrator's data: every app's source history, in its `source/` folder.
 
 Every list and delete donkey performs filters on `managed` +
 `installation` (+ the exact scope), and destructive operations verify the
@@ -119,15 +119,35 @@ docker volume ls --filter label=local.donkey.managed=true
 Spaces are separate Docker networks, so isolation is structural rather than
 policy-based: an app container joins only its own space's network and
 reaches exactly its siblings and the space's services. Donkey's own
-`donkey-server`, `donkey-gateway`, `donkey-ai` and `donkey-telemetry`
-containers attach to every space network (routing, tunnels, the AI endpoint
-and OTLP ingestion need to reach the apps); the build engine, package proxy
-and registry stay on the infrastructure network alone.
+`donkey-server`, `donkey-orchestrator`, `donkey-gateway`, `donkey-ai` and
+`donkey-telemetry` containers attach to every space network (routing,
+tunnels, deploy readiness probes, the AI endpoint and OTLP ingestion need to
+reach the apps); the build engine, package proxy and registry stay on the
+infrastructure network alone. Being on those networks puts the orchestrator
+within reach of app containers, so it takes nothing on trust: a request
+needs donkey-server's credential and a sign-in it verifies itself.
 
 The Kubernetes modes do not apply here: `kubernetes.isolateSpaces` needs no
 equivalent (the network boundary is the default and cannot be turned off),
 and there is **no equivalent of `kubernetes.restrictEgress`** — outbound
 traffic from app containers is unrestricted.
+
+## The API and the orchestrator
+
+`donkey-server` is the API and console; `donkey-orchestrator` (the same
+image, started with `orchestrator`) reads uploads, builds, pushes, starts the
+containers and waits for them. The server forwards plans, deploys and the
+changes serialized with them to `http://donkey-orchestrator:8087` and relays
+the answer. Both hold the Docker socket and the state volume; only the server
+publishes a port.
+
+A reinstall recreates every container, the build engine among them, so the
+installer first lets a running orchestrator finish the deploys it accepted:
+it stops the container with a 10-minute drain window (11 minutes before
+Docker kills it) and moves on as soon as nothing is building. The container
+keeps that stop timeout, so a later `docker stop donkey-orchestrator` drains
+the same way. The server itself stops in seconds. A deploy that loses its
+stream to that restart carries on, and the CLI follows the app's status.
 
 ## The Compose bundle
 
@@ -145,7 +165,9 @@ installation already holds (so a re-run without the file keeps the session
 key), and refuses to touch any container, network or volume whose identity
 labels are not this installation's — the same ownership check the direct
 installer makes. Re-running the bundle is the upgrade path: same names,
-fresh configuration, preserved volumes.
+fresh configuration, preserved volumes. Like the installer, `up.sh` first
+lets a running orchestrator drain, and Compose's `stop_grace_period` gives it
+the same window on `docker compose down`.
 
 The direct installer (`donkey server install` with `runtime: docker`) and
 the bundle create identically named and labelled resources, so either can

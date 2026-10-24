@@ -199,9 +199,9 @@ func TestProjectUpdateIsAtomic(t *testing.T) {
 	edits[0].Name, edits[1].Port = "changed", 0
 	raw, _ := json.Marshal(edits)
 	req := httptest.NewRequest(http.MethodPut, "/v1/projects/plans/"+p.ID, bytes.NewReader(raw))
-	asAdmin(t, req)
+	asForwarded(t, req)
 	rec := httptest.NewRecorder()
-	s.routes().ServeHTTP(rec, req)
+	s.orchestratorRoutes().ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest || !reflect.DeepEqual(before, stored.project.apps[0].app) {
 		t.Fatalf("an invalid sibling partially changed the project: %d %s", rec.Code, rec.Body.String())
 	}

@@ -39,9 +39,9 @@ func TestAppServiceRejectsTypeMismatchAndAppliesExternalURL(t *testing.T) {
 		s := planServer(rt, &ai.Analysis{})
 		body, _ := json.Marshal(AddonRequest{Type: c.typ, Name: "search", External: c.external, URL: "https://new-provider/exa"})
 		req := httptest.NewRequest(http.MethodPost, "/v1/spaces/default/apps/api/services", strings.NewReader(string(body)))
-		asAdmin(t, req)
+		asForwarded(t, req)
 		out := httptest.NewRecorder()
-		s.routes().ServeHTTP(out, req)
+		s.orchestratorRoutes().ServeHTTP(out, req)
 		if out.Code != c.status {
 			t.Fatalf("type=%s external=%t: %d %s", c.typ, c.external, out.Code, out.Body.String())
 		}

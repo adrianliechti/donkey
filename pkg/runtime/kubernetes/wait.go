@@ -20,10 +20,18 @@ const rolloutTimeout = 5 * time.Minute
 // WaitForRollout polls the Deployment until the new generation is fully
 // available, or fails with collected evidence.
 func (c *Client) WaitForRollout(ctx context.Context, namespace, name string, identity map[string]string) error {
-	deadline := time.Now().Add(rolloutTimeout)
+	return c.WaitForRolloutWithin(ctx, namespace, name, identity, rolloutTimeout)
+}
+
+// WaitForRolloutWithin is WaitForRollout with a deadline of the caller's.
+// donkey-orchestrator needs one: with Recreate its new pod only starts once
+// the old one has finished the deploys it was running.
+func (c *Client) WaitForRolloutWithin(ctx context.Context, namespace, name string, identity map[string]string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
 	for {
 		if time.Now().After(deadline) {
-			return c.rolloutFailure(ctx, namespace, name, identity, "it didn't finish starting within 5 minutes")
+			return c.rolloutFailure(ctx, namespace, name, identity,
+				fmt.Sprintf("it didn't finish starting within %d minutes", int(timeout.Round(time.Minute).Minutes())))
 		}
 		if ctx.Err() != nil {
 			return ctx.Err()
