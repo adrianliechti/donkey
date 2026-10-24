@@ -214,7 +214,7 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 	// proxy among them, and a build cut off there is lost however the
 	// orchestrator is stopped. So it finishes the deploys it accepted first;
 	// it exits as soon as none are running.
-	if err := drainDockerOrchestrator(ctx, cli, u); err != nil {
+	if err := drainDockerDeploys(ctx, cli, u); err != nil {
 		return err
 	}
 	if bundledRegistry {
@@ -837,11 +837,16 @@ type infraContainer struct {
 	StopTimeout time.Duration
 }
 
-// drainDockerOrchestrator stops a running donkey-orchestrator the way it
-// expects to be stopped: SIGTERM, then the time to finish the deploys it is
-// running. Ownership was checked before the install changed anything.
-func drainDockerOrchestrator(ctx context.Context, cli *dockerclient.Client, u *ui.UI) error {
-	info, err := cli.ContainerInspect(ctx, dockerOrchestratorName)
+// drainDockerDeploys also handles upgrades from the single-process server:
+// before the orchestrator existed, donkey-server owned the running builds.
+// Ownership was checked before the install changed anything.
+func drainDockerDeploys(ctx context.Context, cli *dockerclient.Client, u *ui.UI) error {
+	name := dockerOrchestratorName
+	info, err := cli.ContainerInspect(ctx, name)
+	if cerrdefs.IsNotFound(err) {
+		name = dockerServerName
+		info, err = cli.ContainerInspect(ctx, name)
+	}
 	if cerrdefs.IsNotFound(err) {
 		return nil
 	}
@@ -851,9 +856,9 @@ func drainDockerOrchestrator(ctx context.Context, cli *dockerclient.Client, u *u
 	if info.State == nil || !info.State.Running {
 		return nil
 	}
-	u.Info("Letting donkey-orchestrator finish the deploys already under way (up to %d minutes)…",
-		int(config.DeployDrainTimeout.Minutes()))
-	return stopInfraContainer(ctx, cli, dockerOrchestratorName, dockerOrchestratorStopTimeout)
+	u.Info("Letting %s finish the deploys already under way (up to %d minutes)…",
+		name, int(config.DeployDrainTimeout.Minutes()))
+	return stopInfraContainer(ctx, cli, name, dockerOrchestratorStopTimeout)
 }
 
 func stopInfraContainer(ctx context.Context, cli *dockerclient.Client, name string, timeout time.Duration) error {

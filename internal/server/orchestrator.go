@@ -61,6 +61,11 @@ func (s *Server) orchestrated() []orchestratedRoute {
 		// rollout (lockApp). A mutex only serializes what runs in its own
 		// process, so they run where the deploys run.
 		{"PUT /v1/spaces/{space}/apps/{app}/network", s.handlePutNetwork},
+		{"PUT /v1/spaces/{space}/apps/{app}/env", s.handlePutEnv},
+		{"POST /v1/spaces/{space}/apps/{app}/restart", s.handleRestart},
+		// Settings can rewrite routes; creation must wait for startup migration.
+		{"POST /v1/spaces", s.handleCreateSpace},
+		{"PUT /v1/spaces/{space}/settings", s.handlePutSpaceConfig},
 		// Services likewise: the runtime serializes creating and removing one
 		// per space and name (addons.InstanceLocks), the same lock a deploy's
 		// declared services take, and only inside the process that holds it.
@@ -141,7 +146,7 @@ func orchestratorTokenMatches(got, want string) bool {
 // the cluster. On Docker it sits on every space network, next to tenant code.
 func (s *Server) orchestratorAuth(next http.HandlerFunc) http.Handler {
 	want := orchestratorToken(s.cfg.SessionKey)
-	authorized := s.auth(next)
+	authorized := s.auth(s.serializeMutation(next))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !orchestratorTokenMatches(r.Header.Get(orchestratorTokenHeader), want) {
 			writeJSON(w, http.StatusUnauthorized, map[string]string{
@@ -151,6 +156,29 @@ func (s *Server) orchestratorAuth(next http.HandlerFunc) http.Handler {
 		}
 		authorized.ServeHTTP(w, r)
 	})
+}
+
+// serializeMutation keeps space-wide changes from racing a deploy, and app
+// changes from racing another change to the same app. Upload handlers take
+// these same locks once their target space and app are known.
+func (s *Server) serializeMutation(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if space := r.PathValue("space"); space != "" {
+			mu := s.spaceLock(space)
+			if r.Pattern == "DELETE /v1/spaces/{space}" || r.Pattern == "PUT /v1/spaces/{space}/settings" {
+				mu.Lock()
+				defer mu.Unlock()
+			} else {
+				mu.RLock()
+				defer mu.RUnlock()
+			}
+			if app := r.PathValue("app"); app != "" && r.Method != http.MethodGet && r.Method != http.MethodHead {
+				unlock := s.lockApp(space, app)
+				defer unlock()
+			}
+		}
+		next(w, r)
+	}
 }
 
 // orchestratorTransport keeps the hop to the orchestrator off any forward

@@ -1434,6 +1434,45 @@ and deploys answer *try again in a moment*. Plans reviewed before the restart
 expire with it and cost a re-upload, never a build. `donkey server install`
 returns once the orchestrator is back, and says so while it waits.
 
+**First upgrade from the single-process server on `main`.** Use the new CLI
+and server image together, keeping the same install settings, installation
+name, namespaces and volumes. Existing app data, credentials, platform admins,
+space admins/developers and domains are retained. The orchestrator migrates
+saved access settings before accepting mutations; restarting it safely retries
+an interrupted migration. Source history starts with the next deployment;
+previous uploads cannot be recovered from running images.
+
+Before upgrading:
+
+- Back up the existing settings and persistent volumes. For a rollback, retain
+  the old image and the pre-upgrade settings: the migration removes per-app
+  access lists after copying them to space Viewers, so simply restoring the old
+  image does not restore its authorization behavior.
+- On Kubernetes, stop submitting deployments and let active builds finish
+  before installing. The old server owns those builds, and replacing BuildKit
+  during the first upgrade can interrupt them. Docker's installer and generated
+  `up.sh` drain the old server before replacing its build dependencies.
+- Stop the old gateway and wait for it to exit before installing this version.
+  It cannot enforce space membership once migration removes the per-app lists.
+  This is a short maintenance window for app traffic; workloads keep running.
+  On Docker, run `docker stop donkey-gateway`. On Kubernetes, scale
+  `deployment/donkey-gateway` to zero in the system namespace and wait until its
+  pods are gone. The new install restores the gateway at its normal replica
+  count. Keep it stopped if an upgrade fails, then retry the install.
+- Kubernetes now needs a data claim for the orchestrator: provide a default
+  StorageClass, set `data.storageClass` or `data.existingClaim`, or use
+  `data.disabled: true` to run without source history.
+- Review space membership. Per-app users/groups become Viewers of **all** apps
+  in their space. Previously unrestricted protected apps now require space
+  membership. Public apps become protected until an admin enables
+  `allowPublic` and makes those apps public again.
+- Remove obsolete `access:` sections from app configuration before redeploying.
+  IdP `roles:` memberships are no longer supported; installations using them
+  must replace them with users/groups before this upgrade.
+
+The metadata cutover below concerns older releases; `main` already uses the
+current ownership schema and does not require deleting and recreating apps.
+
 **Metadata v2 is a clean cutover.** It deliberately does not claim resources
 from versions that used the old ownership labels or selectors. Kubernetes
 Deployment selectors are immutable, so adopting only their top-level labels

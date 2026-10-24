@@ -221,17 +221,17 @@ func main() {
 			RestrictEgress:        cfg.RestrictEgress,
 		})
 	}
-	// Migrating settings is a one-writer job, so the API does it. Every call
-	// reaches the orchestrator through the API, so it is done by then.
-	if !orchestrator {
+	// The single orchestrator migrates before accepting mutations. API pods
+	// may overlap during a rolling update, so they must never migrate state.
+	if orchestrator {
 		if err := rt.EnsureSpaceConfigs(ctx); err != nil {
 			fmt.Fprintln(os.Stderr, "migrating space settings:", err)
 			os.Exit(1)
 		}
-	}
-	if err := runtime.ReconcileAccess(ctx, rt, ""); err != nil {
-		fmt.Fprintln(os.Stderr, "reconciling space access:", err)
-		os.Exit(1)
+		if err := runtime.ReconcileAccess(ctx, rt, ""); err != nil {
+			fmt.Fprintln(os.Stderr, "reconciling space access:", err)
+			os.Exit(1)
+		}
 	}
 	srv, err := server.New(cfg, rt)
 	if err != nil {

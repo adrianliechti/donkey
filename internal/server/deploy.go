@@ -196,7 +196,8 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 	if planned != nil {
 		space = ""
 	}
-	if !s.requireSpace(w, r, cmp.Or(space, app.Space, config.DefaultSpace), false) {
+	space = cmp.Or(space, app.Space, config.DefaultSpace)
+	if !s.requireSpace(w, r, space, false) {
 		return
 	}
 
@@ -229,7 +230,14 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 		SHA:       r.URL.Query().Get("sha"),
 	}
 	deployCtx := context.WithoutCancel(r.Context())
-	res := s.deploy(deployCtx, out, dir, app, opts)
+	// Keep the release and source history in the same order as deployments,
+	// and finish saving them before deletion or settings changes can run.
+	spaceMu := s.spaceLock(space)
+	spaceMu.RLock()
+	defer spaceMu.RUnlock()
+	unlock := s.lockApp(space, app.Name)
+	defer unlock()
+	res := s.deployApp(deployCtx, out, dir, app, opts)
 	// The stream is the caller's record; this line is the server's. Without
 	// it nothing on the cluster remembers that a deploy ever happened.
 	outcome := "ok"
@@ -283,12 +291,6 @@ type deployOpts struct {
 	// applied to it, when there were any: the source history records the
 	// person's upload as they sent it and the fixes as the platform's.
 	Pristine string
-}
-
-func (s *Server) deploy(ctx context.Context, out *lineStreamer, dir string, app *config.AppConfig, opts deployOpts) DeployResult {
-	unlock := s.lockApp(cmp.Or(opts.Space, app.Space, config.DefaultSpace), app.Name)
-	defer unlock()
-	return s.deployApp(ctx, out, dir, app, opts)
 }
 
 // deployApp requires the caller to hold the app's lock through its health

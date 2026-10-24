@@ -599,13 +599,16 @@ export DONKEY_BUILD_ENV DONKEY_BUILDER_INSTRUCTIONS HTTP_PROXY HTTPS_PROXY
 	// build cut off there is lost however the orchestrator is stopped. So a
 	// running one finishes the deploys it accepted first; it exits as soon as
 	// none are running.
-	fmt.Fprintf(&b, `if [ "$(docker container inspect --format '{{.State.Running}}' %s 2>/dev/null)" = true ]; then
-  echo %s
-  docker stop --time %d %s >/dev/null
+	fmt.Fprintf(&b, `deploy_owner=%s
+if ! docker container inspect "$deploy_owner" >/dev/null 2>&1; then
+  deploy_owner=%s
 fi
-`, dockerOrchestratorName,
-		shellQuote(fmt.Sprintf("Letting %s finish the deploys already under way (up to %d minutes)...", dockerOrchestratorName, int(config.DeployDrainTimeout.Minutes()))),
-		int(dockerOrchestratorStopTimeout.Seconds()), dockerOrchestratorName)
+if [ "$(docker container inspect --format '{{.State.Running}}' "$deploy_owner" 2>/dev/null)" = true ]; then
+  echo "Letting $deploy_owner finish the deploys already under way (up to %d minutes)..."
+  docker stop --time %d "$deploy_owner" >/dev/null
+fi
+`, dockerOrchestratorName, dockerServerName, int(config.DeployDrainTimeout.Minutes()),
+		int(dockerOrchestratorStopTimeout.Seconds()))
 	b.WriteString(`
 docker compose -f "$bundle_dir/compose.yaml" up -d
 `)

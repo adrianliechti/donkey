@@ -2,14 +2,83 @@ package kubernetes
 
 import (
 	"context"
+	"reflect"
 	"testing"
 
 	"github.com/adrianliechti/donkey/internal/config"
+	rt "github.com/adrianliechti/donkey/pkg/runtime"
 	"github.com/adrianliechti/donkey/pkg/runtime/kubernetes/manifests"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
 )
+
+// These are the YAML keys and object names written by main, with no vnext
+// viewer or public-access fields. Test the current-format upgrade separately
+// from the older annotation/JSON migrations.
+func TestAccessMigrationFromMainYAML(t *testing.T) {
+	ctx := context.Background()
+	clientset := fake.NewClientset()
+	r := NewRuntime(&Client{Clientset: clientset}, Options{
+		SystemNamespace: "donkey-system", Placement: manifests.Placement{SharedNamespace: "workloads"},
+	})
+	space := manifests.SpaceMarker("team", "workloads")
+	space.Labels = r.c.expectedObjectIdentity(space.Labels)
+	space.Data = map[string]string{"config.yaml": "admins:\n  users: [owner@example.com]\ndevelopers:\n  groups: [builders]\ndomains: [team.example.com]\n"}
+	platform := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{
+		Name: manifests.SystemConfigMapName, Namespace: "donkey-system", Labels: r.c.expectedObjectIdentity(manifests.SystemLabels(manifests.ServerName)),
+	}, Data: map[string]string{"platform.yaml": "admins:\n  users: [root@example.com]\n"}}
+	route := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{
+		Name: "team-web-route", Namespace: "workloads", Labels: r.c.expectedObjectIdentity(manifests.Labels("team", "web", manifests.RoleRoute)),
+	}, Data: map[string]string{
+		"route.yaml":  "host: web.team.example.com\npath: /\nbackend: http://team-web.workloads.svc:80\n",
+		"access.yaml": "users: [reader@example.com]\ngroups: [builders, readers]\n",
+	}}
+	for _, cm := range []*corev1.ConfigMap{space, platform, route} {
+		if _, err := clientset.CoreV1().ConfigMaps(cm.Namespace).Create(ctx, cm, metav1.CreateOptions{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dep := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{
+		Name: "team-web", Namespace: "workloads", Labels: r.c.expectedObjectIdentity(manifests.Labels("team", "web", manifests.RoleWorkload)),
+	}, Spec: appsv1.DeploymentSpec{Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "app", Image: "registry/web:existing"}}}}}}
+	if _, err := clientset.AppsV1().Deployments("workloads").Create(ctx, dep, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := r.EnsureSpaceConfigs(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if err := rt.ReconcileAccess(ctx, r, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	policy, err := r.SpaceConfig(ctx, "team")
+	want := config.SpaceConfig{
+		Admins: config.AccessConfig{Users: []string{"owner@example.com"}}, Developers: config.AccessConfig{Groups: []string{"builders"}},
+		Viewers: config.AccessConfig{Users: []string{"reader@example.com"}, Groups: []string{"readers"}}, Domains: []string{"team.example.com"},
+	}
+	if err != nil || !reflect.DeepEqual(policy, want) {
+		t.Fatalf("main settings were not migrated: %+v, %v", policy, err)
+	}
+	saved, err := clientset.CoreV1().ConfigMaps("workloads").Get(ctx, route.Name, metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := manifests.ReadRoute(saved)
+	if err != nil || !got.Login || got.Access != nil || got.Backend != "http://team-web.workloads.svc:80" {
+		t.Fatalf("migrated route = %+v, %v", got, err)
+	}
+	admin, err := r.PlatformConfig(ctx)
+	if err != nil || !reflect.DeepEqual(admin.Admins.Users, []string{"root@example.com"}) {
+		t.Fatalf("platform admin changed: %+v, %v", admin, err)
+	}
+	unchanged, err := clientset.AppsV1().Deployments("workloads").Get(ctx, dep.Name, metav1.GetOptions{})
+	if err != nil || !reflect.DeepEqual(unchanged.Spec, dep.Spec) {
+		t.Fatalf("migration changed the running workload: %+v, %v", unchanged, err)
+	}
+}
 
 func TestReconcileAppRoutesProtectsOwnAndSharedAddresses(t *testing.T) {
 	ctx := context.Background()

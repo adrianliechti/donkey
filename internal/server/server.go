@@ -42,6 +42,9 @@ type Server struct {
 	// applies and race their rollout waits. Only donkey-orchestrator takes
 	// them: everything that locks an app is routed there (see orchestrated).
 	appLocks sync.Map
+	// Space settings and deletion wait for deployments and other mutations
+	// in that space. Different apps can still deploy concurrently.
+	spaceLocks sync.Map
 }
 
 func New(cfg *Config, rt runtime.Provider) (*Server, error) {
@@ -78,6 +81,11 @@ func (s *Server) lockApp(space, app string) func() {
 	mu := value.(*sync.Mutex)
 	mu.Lock()
 	return mu.Unlock
+}
+
+func (s *Server) spaceLock(space string) *sync.RWMutex {
+	value, _ := s.spaceLocks.LoadOrStore(space, &sync.RWMutex{})
+	return value.(*sync.RWMutex)
 }
 
 func (s *Server) routes() http.Handler {
@@ -118,18 +126,14 @@ func (s *Server) routes() http.Handler {
 	mux.Handle("GET /v1/spaces/{space}/apps/{app}/builds/{sequence}", s.auth(s.handleBuild))
 	mux.Handle("GET /v1/spaces/{space}/apps/{app}/logs", s.auth(s.handleLogs))
 	mux.Handle("GET /v1/spaces/{space}/apps/{app}/env", s.auth(s.handleGetEnv))
-	mux.Handle("PUT /v1/spaces/{space}/apps/{app}/env", s.auth(s.handlePutEnv))
-	mux.Handle("POST /v1/spaces/{space}/apps/{app}/restart", s.auth(s.handleRestart))
 	// How the app is reached (exposure, domain), changeable without a deploy.
 	// Changing it takes the app's deploy lock, so the change is orchestrated.
 	mux.Handle("GET /v1/spaces/{space}/apps/{app}/network", s.auth(s.handleGetNetwork))
 	mux.Handle("POST /v1/spaces/{space}/apps/{app}/diagnose", s.auth(s.handleDiagnose))
 	mux.Handle("GET /v1/spaces", s.auth(s.handleListSpaces))
-	mux.Handle("POST /v1/spaces", s.auth(s.handleCreateSpace))
 	mux.Handle("GET /v1/spaces/{space}/settings", s.auth(s.handleGetSpaceConfig))
 	mux.Handle("GET /v1/platform/settings", s.auth(s.handleGetPlatformConfig))
 	mux.Handle("PUT /v1/platform/settings", s.auth(s.handlePutPlatformConfig))
-	mux.Handle("PUT /v1/spaces/{space}/settings", s.auth(s.handlePutSpaceConfig))
 	mux.Handle("GET /v1/spaces/{space}/traffic", s.auth(s.handleTraffic))
 	mux.Handle("GET /v1/spaces/{space}/apps/{app}/traffic", s.auth(s.handleTraffic))
 	mux.Handle("GET /v1/spaces/{space}/apps/{app}/resources", s.auth(s.handleResources))

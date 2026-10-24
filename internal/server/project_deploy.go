@@ -142,6 +142,9 @@ func (s *Server) handleProjectDeploy(w http.ResponseWriter, r *http.Request) {
 	ctx := context.WithoutCancel(r.Context())
 	// Hold the whole project, including deferred waits for cyclic peers.
 	// Stable ordering lets overlapping project uploads wait without deadlock.
+	spaceMu := s.spaceLock(apps[0].app.Space)
+	spaceMu.RLock()
+	defer spaceMu.RUnlock()
 	unlock := s.lockProject(apps)
 	defer unlock()
 	dryRun := r.URL.Query().Get("dryRun") == "true"

@@ -166,9 +166,6 @@ func (s *Server) handlePutNetwork(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	unlock := s.lockApp(space, app)
-	defer unlock()
-
 	ctx := r.Context()
 	st, err := s.rt.Status(ctx, space, app)
 	if err != nil {

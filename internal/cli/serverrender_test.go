@@ -454,8 +454,9 @@ func TestDockerRenderMatchesRuntimeTopologyWithoutSecrets(t *testing.T) {
 	if strings.Index(up, "require_owned container donkey-server server") > strings.Index(up, "existing donkey-server DONKEY_SESSION_KEY") {
 		t.Error("Compose must validate ownership before reading an existing container's secrets")
 	}
-	drain := strings.Index(up, "docker stop --time 660 donkey-orchestrator")
+	drain := strings.Index(up, `docker stop --time 660 "$deploy_owner"`)
 	if !strings.Contains(up, "require_owned container donkey-orchestrator orchestrator") ||
+		!strings.Contains(up, "deploy_owner=donkey-server") ||
 		drain < 0 || drain > strings.Index(up, "docker compose -f") {
 		t.Error("up.sh must let a verified orchestrator drain before Compose recreates the build engine")
 	}
