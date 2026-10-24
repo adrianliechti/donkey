@@ -35,9 +35,10 @@ func TestFastMCPTelemetry(t *testing.T) {
 		t.Fatal("DONKEY_E2E_GATEWAY is required")
 	}
 	endpoint := "https://fastmcp-sample." + space + "." + s.domain + "/mcp"
-	token := s.authorizeMCP(t, endpoint)
+	token, browser := s.authorizeMCP(t, endpoint)
+	before := s.fastMCPTraffic(t, space, browser)
 	s.callFastMCP(t, endpoint, token)
-	s.waitFastMCPTelemetry(t, space)
+	s.waitFastMCPTelemetry(t, space, browser, before)
 }
 
 func TestBuilderFastMCPOAuth(t *testing.T) {
@@ -57,9 +58,9 @@ func TestBuilderFastMCPOAuth(t *testing.T) {
 	if plan.App.Mode != "api" || plan.App.Exposure != "protected" {
 		t.Fatalf("plan mode/exposure = %q/%q, want api/protected", plan.App.Mode, plan.App.Exposure)
 	}
-	token := s.authorizeMCP(t, base+"/mcp")
+	token, _ := s.authorizeMCP(t, base+"/mcp")
 	s.callFastMCP(t, base+"/mcp", token)
-	s.waitFastMCPTelemetry(t, "e2e-fastmcp")
+	s.waitFastMCPTelemetry(t, "e2e-fastmcp", nil, telemetry.TrafficReport{})
 
 	path := "/v1/spaces/e2e-fastmcp/apps/fastmcp-sample/network"
 	setNetwork := func(exposure string) *server.NetworkResponse {
@@ -94,7 +95,7 @@ func TestBuilderFastMCPOAuth(t *testing.T) {
 	s.callFastMCP(t, base+"/mcp", token)
 }
 
-func (s *suite) authorizeMCP(t *testing.T, resource string) string {
+func (s *suite) authorizeMCP(t *testing.T, resource string) (string, *http.Client) {
 	t.Helper()
 	client := s.mcpBrowserClient(t)
 
@@ -263,7 +264,7 @@ func (s *suite) authorizeMCP(t *testing.T, resource string) string {
 	if json.Unmarshal(refreshResponse.Body, &refreshed) != nil || refreshed.AccessToken == "" || refreshed.RefreshToken == "" || refreshed.RefreshToken == token.RefreshToken {
 		t.Fatalf("refresh exchange did not rotate tokens: %s", refreshResponse.Body)
 	}
-	return refreshed.AccessToken
+	return refreshed.AccessToken, client
 }
 
 type mcpResponse struct {
@@ -416,12 +417,33 @@ func (s *suite) callFastMCP(t *testing.T, endpoint, token string) {
 	t.Logf("FastMCP add(3, 4) and divide(1, 0) passed at %s", endpoint)
 }
 
-func (s *suite) waitFastMCPTelemetry(t *testing.T, space string) {
+func (s *suite) fastMCPTraffic(t *testing.T, space string, browser *http.Client) telemetry.TrafficReport {
+	t.Helper()
+	var report telemetry.TrafficReport
+	path := "/v1/spaces/" + space + "/apps/fastmcp-sample/traffic?range=48h&source=edge"
+	if browser == nil {
+		// A freshly built test space belongs to the suite's API identity.
+		s.raw(t, http.MethodGet, path, nil, &report)
+	} else {
+		// An existing sample belongs to the signed-in demo user. Reuse that
+		// user's console session instead of granting the test identity access.
+		response := doMCP(t, browser, http.MethodGet, "https://"+s.domain+path, "", nil)
+		if response.StatusCode != http.StatusOK {
+			t.Fatalf("traffic report: HTTP %d: %s", response.StatusCode, response.Body)
+		}
+		if err := json.Unmarshal(response.Body, &report); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return report
+}
+
+func (s *suite) waitFastMCPTelemetry(t *testing.T, space string, browser *http.Client, before telemetry.TrafficReport) {
 	t.Helper()
 	var report telemetry.TrafficReport
 	deadline := time.Now().Add(90 * time.Second)
 	for time.Now().Before(deadline) {
-		s.raw(t, http.MethodGet, "/v1/spaces/"+space+"/apps/fastmcp-sample/traffic?range=48h&source=edge", nil, &report)
+		report = s.fastMCPTraffic(t, space, browser)
 		var add, divide bool
 		for _, operation := range report.MCP.Operations {
 			if operation.Method == "tools/call" && operation.Target == "add" && operation.Operations > 0 && operation.Errors == 0 {
@@ -431,7 +453,10 @@ func (s *suite) waitFastMCPTelemetry(t *testing.T, space string) {
 				divide = true
 			}
 		}
-		if add && divide && report.Totals.AuthenticatedCallers > 0 && report.Totals.Requests > 0 {
+		if add && divide && report.Totals.AuthenticatedCallers > 0 &&
+			report.Totals.Requests >= before.Totals.Requests+4 &&
+			report.MCP.Totals.Operations >= before.MCP.Totals.Operations+4 &&
+			report.MCP.Totals.Errors > before.MCP.Totals.Errors {
 			t.Logf("FastMCP telemetry: %d HTTP requests, %d authenticated callers, %d MCP operations, %d operation errors",
 				report.Totals.Requests, report.Totals.AuthenticatedCallers, report.MCP.Totals.Operations, report.MCP.Totals.Errors)
 			return

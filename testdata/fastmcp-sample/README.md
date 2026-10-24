@@ -10,7 +10,7 @@ The MCP endpoint is `/mcp`. Tools are `add(a, b)` and `divide(a, b)`;
 
 Deploy from this folder with `donkey --space samples deploy`, then connect an
 MCP client to `https://fastmcp-sample.samples.<domain>/mcp` and authorize it.
-Open the app's Traffic tab to see gateway HTTP requests, authenticated callers,
+Open the app's Analytics tab to see gateway HTTP requests, authenticated callers,
 and application-reported MCP operations, errors and latency.
 
 Donkey's gateway measures HTTP traffic and verified callers automatically.
