@@ -16,7 +16,6 @@ import (
 
 	"github.com/adrianliechti/donkey/internal/config"
 	"github.com/adrianliechti/donkey/internal/identity"
-	"github.com/felixge/httpsnoop"
 )
 
 const (
@@ -650,7 +649,7 @@ func (s *Server) handleOAuthPreflight(w http.ResponseWriter, r *http.Request) {
 	serveCORSPreflight(w, r)
 }
 
-func (s *Server) serveOAuthApp(w http.ResponseWriter, r *http.Request, rt route) {
+func (s *Server) serveOAuthApp(w http.ResponseWriter, r *http.Request, rt route) (sess *session) {
 	resource := oauthResourceURL(requestAuthority(r), r.URL.EscapedPath())
 	metadata := "https://" + requestAuthority(r) + "/.well-known/oauth-protected-resource"
 	if r.URL.EscapedPath() != "" && r.URL.EscapedPath() != "/" {
@@ -663,24 +662,24 @@ func (s *Server) serveOAuthApp(w http.ResponseWriter, r *http.Request, rt route)
 	}
 	if !s.cfg.authConfigured() {
 		oauthError(w, http.StatusServiceUnavailable, "temporarily_unavailable", "the installation has no complete identity provider configuration")
-		return
+		return nil
 	}
 	raw, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 	if !ok || raw == "" {
 		w.Header().Set("WWW-Authenticate", challenge)
 		oauthError(w, http.StatusUnauthorized, "invalid_token", "a bearer access token is required")
-		return
+		return nil
 	}
 	var token oauthAccessToken
 	if identity.Unseal(s.cfg.SessionKey, purposeOAuthToken, raw, &token) != nil || token.Subject == "" || time.Now().Unix() >= token.Expires || token.Resource != resource {
 		deny(http.StatusUnauthorized, "invalid_token", "the bearer token is invalid, expired or belongs to another resource")
-		return
+		return nil
 	}
-	sess := &token.Identity
+	sess = &token.Identity
 	if !rt.allows(sess.Subject, sess.Email, sess.Groups) {
 		w.Header().Set("WWW-Authenticate", challenge)
 		oauthError(w, http.StatusForbidden, "access_denied", "this identity is not allowed to use the API")
-		return
+		return sess
 	}
 	if routeAllowsAllOrigins(rt) {
 		clearCORSHeaders(w.Header())
@@ -688,8 +687,6 @@ func (s *Server) serveOAuthApp(w http.ResponseWriter, r *http.Request, rt route)
 	// An OAuth client presents this grant for as long as its refresh token
 	// lasts, well past the access token in hand.
 	idpToken := s.idpToken(w, r, rt, sess, true, time.Now().Add(oauthRefreshTokenTTL))
-	metrics := httpsnoop.CaptureMetrics(s.proxy(rt, sess, true, idpToken, false), w, r)
-	if s.telemetry != nil {
-		s.telemetry.Record(r, rt, sess, metrics.Code, metrics.Duration, w.Header().Get("Content-Type"))
-	}
+	s.proxy(rt, sess, true, idpToken, false).ServeHTTP(w, r)
+	return sess
 }

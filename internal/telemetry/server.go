@@ -133,6 +133,7 @@ func (s *Service) ingestHandler() http.Handler {
 	mux.HandleFunc("GET /readyz", s.health)
 	mux.HandleFunc("POST /v1/metrics", s.handleMetrics)
 	mux.HandleFunc("POST /v1/donkey/views", s.handleViews)
+	mux.HandleFunc("POST /v1/donkey/callers", s.handleCallers)
 	mux.HandleFunc("POST /v1/donkey/web", s.handleWebEvents)
 	return mux
 }
@@ -265,7 +266,7 @@ func (s *Service) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		partialMessage = "only valid OpenTelemetry container CPU usage and memory working-set metrics are retained"
 	case metricPrincipalGateway, metricPrincipalApp:
 		_, rejected, err = s.store.IngestMetrics(r.Context(), req, principal == metricPrincipalGateway)
-		partialMessage = "only valid OpenTelemetry HTTP server duration histograms for the authenticated app scope are retained"
+		partialMessage = "only valid OpenTelemetry HTTP server and MCP server operation duration histograms for the authenticated app scope are retained"
 	default:
 		writeOTLPError(w, mediaType, http.StatusUnauthorized, codepb.Code_UNAUTHENTICATED, "invalid telemetry scope token")
 		return

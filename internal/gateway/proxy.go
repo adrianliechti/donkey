@@ -46,16 +46,25 @@ func (s *Server) serveApp(w http.ResponseWriter, r *http.Request) {
 	if strings.HasPrefix(r.URL.Path, analytics.Prefix) && s.serveAnalytics(w, r) {
 		return
 	}
+	var sess *session
+	metrics := httpsnoop.CaptureMetrics(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sess = s.serveRoute(w, r, rt)
+	}), w, r)
+	s.telemetry.Record(r, rt, sess, metrics.Code, metrics.Duration, w.Header().Get("Content-Type"))
+}
+
+// Capture the whole matched route, including authentication and preflight
+// responses. A verified identity is returned even when access is denied.
+func (s *Server) serveRoute(w http.ResponseWriter, r *http.Request, rt route) *session {
 	if routeAllowsAllOrigins(rt) {
 		setCORSHeaders(w.Header())
 		if r.Method == http.MethodOptions && r.Header.Get("Access-Control-Request-Method") != "" {
 			serveCORSPreflight(w, r)
-			return
+			return nil
 		}
 	}
 	if routeUsesOAuth(rt) {
-		s.serveOAuthApp(w, r, rt)
-		return
+		return s.serveOAuthApp(w, r, rt)
 	}
 	// Who this is, decided once: the session cookie (a browser) or a sealed
 	// CLI token as Bearer. Public routes resolve it too, but only for the
@@ -68,18 +77,18 @@ func (s *Server) serveApp(w http.ResponseWriter, r *http.Request) {
 		if !s.cfg.authConfigured() {
 			s.errorPage(w, http.StatusServiceUnavailable, "This app requires a sign-in, but none is configured.",
 				"The installation has no (complete) OIDC setup — `donkey server install` with auth.issuer, clientId and clientSecret fixes this.")
-			return
+			return sess
 		}
 		if sess == nil {
 			// Browsers get the login round trip; API calls get a plain 401 —
 			// a redirect chain into an IdP is useless to a fetch() or a CLI.
 			if wantsHTML(r) {
 				s.startLogin(w, r)
-				return
+				return nil
 			}
 			w.Header().Set("WWW-Authenticate", `Bearer realm="donkey"`)
 			http.Error(w, `{"error":"sign-in required"}`, http.StatusUnauthorized)
-			return
+			return nil
 		}
 		if !rt.allows(sess.Subject, sess.Email, sess.Groups) {
 			who := sess.Email
@@ -87,7 +96,7 @@ func (s *Server) serveApp(w http.ResponseWriter, r *http.Request) {
 				who = sess.Subject
 			}
 			s.deniedPage(w, who)
-			return
+			return sess
 		}
 	}
 	// The proxy copies response headers with Add. Remove the provisional CORS
@@ -98,10 +107,8 @@ func (s *Server) serveApp(w http.ResponseWriter, r *http.Request) {
 	}
 	idpToken := s.idpToken(w, r, rt, sess, fromToken, time.Time{})
 	inject := s.countsVisits(rt) && wantsDocument(r)
-	metrics := httpsnoop.CaptureMetrics(s.proxy(rt, sess, fromToken, idpToken, inject), w, r)
-	if s.telemetry != nil {
-		s.telemetry.Record(r, rt, sess, metrics.Code, metrics.Duration, w.Header().Get("Content-Type"))
-	}
+	s.proxy(rt, sess, fromToken, idpToken, inject).ServeHTTP(w, r)
+	return sess
 }
 
 // wantsHTML says whether the request came from a navigating browser.

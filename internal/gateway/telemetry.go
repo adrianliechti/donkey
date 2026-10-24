@@ -35,10 +35,11 @@ type edgeTelemetry struct {
 	provider *metric.MeterProvider
 	duration otelmetric.Float64Histogram
 	key      []byte
-	// views are the gateway's own document loads; web are the events the
-	// analytics script sends. Both are nil while telemetry is disabled.
-	views *batchExporter[telemetry.ViewEvent]
-	web   *batchExporter[telemetry.WebEvent]
+	// views are document loads, web are browser events, callers are verified
+	// identities across all requests. All are nil while telemetry is disabled.
+	views   *batchExporter[telemetry.ViewEvent]
+	web     *batchExporter[telemetry.WebEvent]
+	callers *batchExporter[telemetry.CallerEvent]
 }
 
 func newEdgeTelemetry(cfg *Config) (*edgeTelemetry, error) {
@@ -95,6 +96,9 @@ func newEdgeTelemetry(cfg *Config) (*edgeTelemetry, error) {
 	t.web = newBatchExporter(base+"/v1/donkey/web", token, client, func(events []telemetry.WebEvent) any {
 		return telemetry.WebBatch{Events: events}
 	})
+	t.callers = newBatchExporter(base+"/v1/donkey/callers", token, client, func(events []telemetry.CallerEvent) any {
+		return telemetry.CallerBatch{Events: events}
+	})
 	return t, nil
 }
 
@@ -124,6 +128,13 @@ func (t *edgeTelemetry) Record(r *http.Request, rt route, sess *session, status 
 		attrs = append(attrs, attribute.String("error.type", strconv.Itoa(status)))
 	}
 	t.duration.Record(context.WithoutCancel(r.Context()), elapsed.Seconds(), otelmetric.WithAttributes(attrs...))
+	if sess != nil && sess.Subject != "" && t.callers != nil {
+		appHash, spaceHash := telemetry.VisitorHashes(t.key, rt.Space, rt.App, sess.Subject)
+		t.callers.offer(telemetry.CallerEvent{
+			TimeUnixNano: uint64(time.Now().UnixNano()), Space: rt.Space, App: rt.App,
+			UserHash: appHash, SpaceUserHash: spaceHash,
+		})
+	}
 
 	if r.Method != http.MethodGet || status < 200 || status >= 300 || !wantsHTML(r) ||
 		!strings.HasPrefix(strings.ToLower(contentType), "text/html") {
@@ -185,7 +196,8 @@ func (t *edgeTelemetry) Shutdown(ctx context.Context) error {
 	}
 	t.views.close()
 	t.web.close()
-	for _, done := range []chan struct{}{t.views.done, t.web.done} {
+	t.callers.close()
+	for _, done := range []chan struct{}{t.views.done, t.web.done, t.callers.done} {
 		select {
 		case <-done:
 		case <-ctx.Done():

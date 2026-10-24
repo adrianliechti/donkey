@@ -91,6 +91,7 @@ export type TrafficRange = '48h' | '7d' | '30d'
 export type ResourceRange = '1h' | '4h' | '48h' | '7d' | '30d'
 
 export interface TrafficTotals {
+  authenticatedCallers: number
   requests: number
   successful: number
   clientErrors: number
@@ -119,11 +120,39 @@ export interface TrafficReport {
   to: string
   totals: TrafficTotals
   series: TrafficPoint[]
+  endpoints: TrafficEndpoint[]
+  mcp: {
+    source: 'app'
+    totals: OperationTotals
+    operations: MCPOperation[]
+  }
   definitions: {
     success: string
     view: string
     uniqueVisitors: string
+    authenticatedCallers: string
   }
+}
+
+export interface TrafficEndpoint extends TrafficTotals {
+  app: string
+  method: string
+  route: string
+}
+
+export interface OperationTotals {
+  operations: number
+  errors: number
+  callerErrors: number
+  averageLatencyMs: number
+  p50LatencyMs: number
+  p95LatencyMs: number
+}
+
+export interface MCPOperation extends OperationTotals {
+  app: string
+  method: string
+  target: string
 }
 
 /**

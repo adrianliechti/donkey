@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Cpu, MemoryStick } from 'lucide-react'
-import type { ResourcePoint, ResourceRange, TrafficPoint, TrafficRange, TrafficTotals } from './api'
+import type { ResourcePoint, ResourceRange, TrafficPoint, TrafficRange, TrafficSource, TrafficTotals } from './api'
 import { useResources, useTraffic } from './queries'
 import { Drawer, DrawerBody, PaneHeader } from './dialog'
 import { ErrorNote, Eyebrow, Section, SectionHeader, Select, Spinner, StatGrid } from './ui'
@@ -53,7 +53,8 @@ export function TrafficPanel({
   const [own, setOwn] = useState<TrafficRange>('30d')
   const range = shared ?? own
   const setRange = onRange ?? setOwn
-  const { data, error } = useTraffic(space, app, 'edge', range)
+  const [source, setSource] = useState<TrafficSource>('edge')
+  const { data, error } = useTraffic(space, app, source, range)
   const errors = data ? data.totals.clientErrors + data.totals.serverErrors : 0
 
   return (
@@ -61,11 +62,15 @@ export function TrafficPanel({
       <Section className="space-y-5">
         <SectionHeader
           title="Traffic"
-          description={app ? 'Every request through the gateway — pages, assets and API calls.' : undefined}
+          description={source === 'edge' ? 'HTTP traffic through the gateway, including sign-in and access responses.' : 'HTTP traffic reported by the application.'}
           actions={
-            shared && !onRange ? undefined : (
-              <Select variant="quiet" ariaLabel="Time range" value={range} onChange={setRange} options={rangeOptions} />
-            )
+            <>
+              <Select variant="quiet" ariaLabel="Traffic source" value={source} onChange={setSource} options={[
+                { value: 'edge', label: 'gateway' },
+                { value: 'app', label: 'application' },
+              ]} />
+              {(!shared || onRange) && <Select variant="quiet" ariaLabel="Time range" value={range} onChange={setRange} options={rangeOptions} />}
+            </>
           }
         />
         <ErrorNote message={error} />
@@ -94,6 +99,12 @@ export function TrafficPanel({
               ]}
             />
 
+            {source === 'edge' && (
+              <p className="text-xs text-muted" title={data.definitions.authenticatedCallers}>
+                <span className="font-mono text-ink">{integer.format(data.totals.authenticatedCallers ?? 0)}</span> distinct authenticated callers · anonymous callers excluded
+              </p>
+            )}
+
             <div className="space-y-2">
               <div className="flex items-center justify-between gap-3">
                 <Eyebrow>Requests by {data.granularity}</Eyebrow>
@@ -114,9 +125,68 @@ export function TrafficPanel({
                 <p className="py-8 text-center text-sm text-muted">No HTTP telemetry in this range.</p>
               )}
             </div>
+            {!!data.endpoints?.length && (
+              <div className="space-y-2">
+                <Eyebrow>Top HTTP routes</Eyebrow>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs">
+                    <thead className="text-muted"><tr>
+                      {!app && <th className="py-2 pr-3 font-normal">App</th>}
+                      <th className="py-2 pr-3 font-normal">Route</th>
+                      <th className="py-2 px-3 text-right font-normal">Requests</th>
+                      <th className="py-2 px-3 text-right font-normal">4xx / 5xx</th>
+                      <th className="py-2 pl-3 text-right font-normal">P95</th>
+                    </tr></thead>
+                    <tbody>{data.endpoints.map((row) => (
+                      <tr key={`${row.app}:${row.method}:${row.route}`} className="border-t border-line/50">
+                        {!app && <td className="py-2 pr-3">{row.app}</td>}
+                        <td className="py-2 pr-3 font-mono">{row.method} {row.route || 'Unknown route'}</td>
+                        <td className="py-2 px-3 text-right font-mono">{integer.format(row.requests)}</td>
+                        <td className="py-2 px-3 text-right font-mono">{integer.format(row.clientErrors)} / {integer.format(row.serverErrors)}</td>
+                        <td className="py-2 pl-3 text-right font-mono">{latency(row.p95LatencyMs)}</td>
+                      </tr>
+                    ))}</tbody>
+                  </table>
+                </div>
+              </div>
+            )}
           </>
         )}
       </Section>
+
+      {!!data?.mcp?.totals.operations && (
+        <Section className="space-y-4">
+          <SectionHeader title="MCP operations" description="Operations reported by MCP servers, including tool calls, prompts and resources." />
+          <StatGrid stats={[
+            { label: 'Operations', value: integer.format(data.mcp.totals.operations) },
+            { label: 'Operation errors', value: integer.format(data.mcp.totals.errors), note: 'Tool, server and transport failures' },
+            { label: 'Caller errors', value: integer.format(data.mcp.totals.callerErrors), note: 'Invalid requests or missing resources' },
+            { label: 'P95 latency', value: latency(data.mcp.totals.p95LatencyMs), note: `avg ${latency(data.mcp.totals.averageLatencyMs)}` },
+          ]} />
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs">
+              <thead className="text-muted"><tr>
+                {!app && <th className="py-2 pr-3 font-normal">App</th>}
+                <th className="py-2 pr-3 font-normal">Operation</th>
+                <th className="py-2 px-3 text-right font-normal">Count</th>
+                <th className="py-2 px-3 text-right font-normal">Errors</th>
+                <th className="py-2 px-3 text-right font-normal">Caller errors</th>
+                <th className="py-2 pl-3 text-right font-normal">P95</th>
+              </tr></thead>
+              <tbody>{data.mcp.operations.map((row) => (
+                <tr key={`${row.app}:${row.method}:${row.target}`} className="border-t border-line/50">
+                  {!app && <td className="py-2 pr-3">{row.app}</td>}
+                  <td className="py-2 pr-3 font-mono">{row.method}{row.target && ` ${row.target}`}</td>
+                  <td className="py-2 px-3 text-right font-mono">{integer.format(row.operations)}</td>
+                  <td className="py-2 px-3 text-right font-mono">{integer.format(row.errors)}</td>
+                  <td className="py-2 px-3 text-right font-mono">{integer.format(row.callerErrors)}</td>
+                  <td className="py-2 pl-3 text-right font-mono">{latency(row.p95LatencyMs)}</td>
+                </tr>
+              ))}</tbody>
+            </table>
+          </div>
+        </Section>
+      )}
 
       {app && <ResourceUsage space={space} app={app} />}
     </>
