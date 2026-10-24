@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/distribution/reference"
 	"sigs.k8s.io/yaml"
@@ -826,6 +827,13 @@ func (t InstallTLS) Validate() error {
 const DefaultBuildkitImage = "moby/buildkit:v0.31.2@sha256:2f5adac4ecd194d9f8c10b7b5d7bceb5186853db1b26e5abd3a657af0b7e26ec"
 
 const DefaultBusyboxImage = "busybox:1.37"
+
+// DeployDrainTimeout is how long a stopping donkey-orchestrator gives the
+// deploys it already accepted to finish. A build plus rollout can
+// legitimately take minutes. The Kubernetes termination grace period and the
+// Docker stop timeout are both sized from this one value, so the platform
+// never kills the process in the middle of its own drain.
+const DeployDrainTimeout = 10 * time.Minute
 
 const DefaultRegistryImage = "registry:3"
 

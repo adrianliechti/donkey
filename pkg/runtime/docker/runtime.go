@@ -62,6 +62,7 @@ const (
 // is a re-install that refuses its own resources.
 const (
 	RoleServer           = "server"
+	RoleOrchestrator     = "orchestrator"
 	RoleGateway          = "gateway"
 	RoleAI               = "ai"
 	RoleProxy            = "proxy"
@@ -116,11 +117,13 @@ type Options struct {
 	// TelemetryContainer accepts app-scoped OTLP metrics on every space
 	// network.
 	TelemetryContainer string
-	// ServerContainer/GatewayContainer name donkey's own containers, so the
-	// provider can attach them to every space network (the server must
-	// reach apps for tunnels and probes, the gateway to proxy).
-	ServerContainer  string
-	GatewayContainer string
+	// ServerContainer/OrchestratorContainer/GatewayContainer name donkey's
+	// own containers, so the provider can attach them to every space network
+	// (the server must reach apps for tunnels, the orchestrator to probe a
+	// deploy's readiness, the gateway to proxy).
+	ServerContainer       string
+	OrchestratorContainer string
+	GatewayContainer      string
 	// TelemetryKey derives app-scoped ingestion tokens.
 	TelemetryKey []byte
 }
@@ -147,6 +150,9 @@ func New(opts Options) (*Runtime, error) {
 	if opts.ServerContainer == "" {
 		opts.ServerContainer = "donkey-server"
 	}
+	if opts.OrchestratorContainer == "" {
+		opts.OrchestratorContainer = "donkey-orchestrator"
+	}
 	if opts.GatewayContainer == "" {
 		opts.GatewayContainer = "donkey-gateway"
 	}
@@ -169,6 +175,19 @@ func New(opts Options) (*Runtime, error) {
 // Client exposes the underlying Docker client for Docker-specific callers
 // (the installer).
 func (r *Runtime) Client() *client.Client { return r.cli }
+
+// ownContainers are donkey's own containers that join every space network.
+// A name left unset is one this provider has no container for.
+func (r *Runtime) ownContainers() []string {
+	var names []string
+	for _, name := range []string{r.opts.ServerContainer, r.opts.OrchestratorContainer, r.opts.GatewayContainer,
+		r.opts.AIContainer, r.opts.TelemetryContainer, r.opts.ProxyContainer} {
+		if name != "" {
+			names = append(names, name)
+		}
+	}
+	return names
+}
 
 // --- Naming ---------------------------------------------------------------
 
@@ -326,13 +345,13 @@ func (r *Runtime) CheckSpaceFree(ctx context.Context, space string) error {
 }
 
 // ensureSpace creates the space's network and attaches donkey's own
-// containers to it: the gateway to proxy, the server to probe and tunnel.
+// containers to it: the gateway to proxy, the server to tunnel, the
+// orchestrator to probe the apps it deploys.
 func (r *Runtime) ensureSpace(ctx context.Context, space string) error {
 	if err := r.CheckSpaceFree(ctx, space); err != nil {
 		return err
 	}
-	own, err := ownedSystemContainers(ctx, r.cli,
-		r.opts.ServerContainer, r.opts.GatewayContainer, r.opts.AIContainer, r.opts.TelemetryContainer, r.opts.ProxyContainer)
+	own, err := ownedSystemContainers(ctx, r.cli, r.ownContainers()...)
 	if err != nil {
 		return err
 	}
@@ -407,8 +426,7 @@ func (r *Runtime) DeleteSpace(ctx context.Context, space string) error {
 	if err := r.deprovisionSpacePlugins(ctx, space); err != nil {
 		return err
 	}
-	own, err := ownedSystemContainers(ctx, r.cli,
-		r.opts.ServerContainer, r.opts.GatewayContainer, r.opts.AIContainer, r.opts.TelemetryContainer, r.opts.ProxyContainer)
+	own, err := ownedSystemContainers(ctx, r.cli, r.ownContainers()...)
 	if err != nil {
 		return err
 	}
@@ -1348,7 +1366,7 @@ func ownedSystemContainers(ctx context.Context, cli *client.Client, names ...str
 // failure it prevents is silent and total: every app in a space stops
 // answering, with nothing in its own logs to say why.
 func (r *Runtime) ReconcileOwnNetworks(ctx context.Context, every time.Duration) {
-	own := []string{r.opts.ServerContainer, r.opts.GatewayContainer, r.opts.AIContainer, r.opts.TelemetryContainer, r.opts.ProxyContainer}
+	own := r.ownContainers()
 	for {
 		if err := AttachOwnContainers(ctx, r.cli, own...); err != nil && ctx.Err() == nil {
 			log.Printf("couldn't attach donkey's containers to the space networks: %v", err)

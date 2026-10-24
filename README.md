@@ -18,11 +18,12 @@ $ donkey deploy
 Donkey is a small PaaS for teams that already run Kubernetes. It follows
 five ideas:
 
-1. **The cluster does the work.** A control plane (`donkey-server`) runs in
-   your cluster and owns everything heavy: recognizing apps, building
-   images, pushing to your registry, applying Kubernetes objects, watching
-   rollouts. The `donkey` CLI is a thin client that signs in through your
-   browser — no Docker, no kubectl, no build tools on laptops.
+1. **The cluster does the work.** A control plane (`donkey-server`, with
+   `donkey-orchestrator` behind it) runs in your cluster and owns everything
+   heavy: recognizing apps, building images, pushing to your registry,
+   applying Kubernetes objects, watching rollouts. The `donkey` CLI is a thin
+   client that signs in through your browser — no Docker, no kubectl, no build
+   tools on laptops.
 2. **Two readers, one answer.** Every look at an app combines a **scanner**
    that establishes what the files prove — which lockfile decides the
    package manager, which version files pin the toolchain, whether the
@@ -59,8 +60,10 @@ five ideas:
  developer machine                     Kubernetes cluster
 ┌───────────────┐          ┌─────────────────────────────────────────┐
 │  donkey CLI   │─sign-in─▶│ donkey-system                           │
-│  (thin client)│   HTTP   │  ├─ donkey-server   REST API, detection,│
-└───────────────┘          │  │      manifests, AI, rollout watching │
+│  (thin client)│   HTTP   │  ├─ donkey-server   REST API, console,  │
+└───────────────┘          │  │      sign-in checks (stateless)      │
+                           │  ├─ donkey-orchestrator  plans, builds, │
+                           │  │      deploys, rollout watching       │
                            │  ├─ donkey-buildkitd  image builds      │──▶ registry
                            │  ├─ donkey-packages  build package proxy│─▶ package registries
                            │  ├─ donkey-ai      openai addon endpoint│──▶ model API
@@ -87,8 +90,12 @@ five ideas:
   exception: `donkey server install` uses your kubeconfig to bootstrap the
   control plane.
 - **donkey-server** — stateless API pod; all state lives in Kubernetes
-  objects. Deploys arrive as tar.gz uploads and stream progress back as
-  NDJSON. Configured entirely via env from the install settings. It also
+  objects. Deploys arrive here as tar.gz uploads; the server checks the
+  sign-in, hands the upload to donkey-orchestrator, and relays its NDJSON
+  progress stream back unchanged. Nothing long-running happens in this pod, so
+  it rolls like any stateless service: the new pod is ready before the old one
+  stops, and stopping takes seconds. Configured entirely via env from the
+  install settings. It also
   serves the **admin console** (React/Tailwind, embedded in the binary) on
   the domain itself: open `https://<domain>` in a browser, sign in at your
   IdP (the gateway runs the login, like for any app — one sign-in covers
@@ -116,6 +123,22 @@ five ideas:
   progress and result.
   Views are linkable (`#/app/<space>/<name>`) and follow your light/dark
   preference.
+- **donkey-orchestrator** — the same binary started as `orchestrator`, and
+  where the heavy work runs: plans (the assistant's reading of an upload, kept
+  in its memory between review and deploy), builds and their repair loop
+  against BuildKit, pushes, applies, rollout waits, and the release records it
+  writes to donkey-telemetry. Changes that must not interleave with a deploy
+  run here too, because they share its per-app and per-service locks: an
+  app's network and access settings, and adding, removing, connecting and
+  disconnecting services. It runs as one replica with a `Recreate` rollout,
+  since those locks and plans are process memory. Stopping it drains: new
+  deploys are refused and the ones under way get up to 10 minutes to finish,
+  with the pod's termination grace period sized to match. It takes requests
+  from donkey-server alone — its NetworkPolicy admits only that pod, every
+  call carries a credential derived from the session key, and it verifies the
+  caller's sealed token again and authorizes the space exactly as the server
+  would. A deploy still survives a dropped connection: it runs on in the
+  orchestrator, and the CLI and console follow the app's status instead.
 - **donkey-ai** — the openai addon's endpoint (same image, `ai`
   entrypoint). Apps reach it through their service bindings, so it
   runs apart from the admin API: it holds the platform's AI credential and
@@ -129,9 +152,9 @@ five ideas:
   entrypoint). It reads configured targets and space bindings,
   forwards HTTP/HTTPS through an optional outbound proxy, and uses its system
   CA store. Apps connect over internal HTTP; they need no enterprise CA bundle.
-- **donkey-buildkitd** — a plain BuildKit deployment; the server drives it
-  over gRPC with a Dockerfile (the app's own, or one donkey's assistant
-  wrote), and pushes straight to the registry. It is also
+- **donkey-buildkitd** — a plain BuildKit deployment; the orchestrator
+  drives it over gRPC with a Dockerfile (the app's own, or one donkey's
+  assistant wrote), and pushes straight to the registry. It is also
   where a freshly built image is run to check it starts. Registry mirrors for
   restricted networks are configured here (`build.registryMirrors`).
 - **donkey-packages** — an always-on, read-only endpoint used only by
@@ -145,8 +168,9 @@ five ideas:
   It keeps 30 days of hourly HTTP histograms, hourly view/visitor
   rollups, and the versioned build records the console's Deployment tab
   renders (a bounded history per app). Only this process opens the file; `Recreate` upgrades preserve
-  DuckDB's single-writer ownership. The server can query it, while the gateway
-  and apps can only ingest with scope-specific credentials.
+  DuckDB's single-writer ownership. The server and the orchestrator can query
+  it, while the gateway and apps can only ingest with scope-specific
+  credentials.
 - **donkey-gateway** — donkey's own edge (same binary as the server,
   started with `gateway`): traffic enters the cluster here, on ports 80 and
   443. By default it terminates TLS and issues the certificates itself — one per
@@ -766,9 +790,10 @@ registry container, an OIDC provider) and
 [examples/INSTALL_DOCKER.md](examples/INSTALL_DOCKER.md) (no Kubernetes at
 all — `runtime: docker` runs apps straight on the Docker engine).
 
-RBAC: by default donkey-server binds `cluster-admin`, because it creates and
-deletes namespaces and no Role can express that. Giving it a workload
-namespace instead drops it to two namespaced Roles — see [README_KUBERNETES.md](README_KUBERNETES.md#namespaces-and-restricted-clusters).
+RBAC: by default donkey-server and donkey-orchestrator each bind
+`cluster-admin` under a ServiceAccount of their own, because they create and
+delete namespaces and no Role can express that. Giving them a workload
+namespace instead drops each to two namespaced Roles — see [README_KUBERNETES.md](README_KUBERNETES.md#namespaces-and-restricted-clusters).
 
 ### Installation modes (Kubernetes)
 
@@ -1061,8 +1086,9 @@ The same-host rule also authenticates BuildKit mirrors. A separately hosted
 authenticated mirror can provide build credentials through an existing
 Docker-config Secret (`registry.dockerConfigSecret`) on Kubernetes or an
 absolute host directory (`registry.dockerConfigDir`) on Docker. Donkey mounts
-the source into `donkey-server`, selects credentials by requested host and
-rereads the files for every build, so rotation does not require a restart.
+the source into `donkey-orchestrator`, which runs the builds, selects
+credentials by requested host and rereads the files for every build, so
+rotation does not require a restart.
 The push registry itself still uses `registry.username` plus its password; the
 Docker config is for separately hosted mirrors. The registry URL remains an
 image prefix: builds are pushed as
@@ -1071,8 +1097,8 @@ image prefix: builds are pushed as
 enterprise folder.
 
 Mirror hosts inherit `registry.caSecret`, including the separate Bearer-token
-request made by donkey-server on BuildKit's behalf, so an in-house Artifactory
-behind a private CA needs nothing further. The referenced Secret must be in the
+request made by donkey-orchestrator on BuildKit's behalf, so an in-house
+Artifactory behind a private CA needs nothing further. The referenced Secret must be in the
 control-plane namespace and contain the trust bundle under exactly `ca.crt`;
 the installer checks it before applying changes. There is no builder image for
 `donkey doctor` to resolve — a generated Dockerfile names its own bases, and
@@ -1306,13 +1332,25 @@ every CLI token everywhere is invalid the moment the pods roll, and everyone
 signs in again through the browser. **There is no overlap window.**
 
 Running app workloads are not rolled: their pods, disks and routes stay as
-they are while donkey-server restarts. A re-install reconciles each app's
-Certificate and optional DNS record from its existing route, so changing the
+they are while donkey-server and donkey-orchestrator restart. A re-install
+reconciles each app's Certificate and optional DNS record from its existing
+route, so changing the
 certificate source or DNS publication applies immediately; unchanged objects
 are idempotent server-side applies. A re-install also keeps every secret it
 isn't given again
 (registry password, OIDC client secret, AI key), so the same settings file is
 enough — rotating one thing must never blank the rest.
+
+**Upgrading the control plane.** An upgrade replaces the API and console in
+seconds and leaves running builds alone. donkey-server holds nothing that
+outlives a request, so it rolls with a surge pod and a short shutdown; a
+deploy stream it was relaying is cut, the deploy itself carries on, and the
+CLI and console switch to following the app's status. donkey-orchestrator is
+the one that waits: it finishes the deploys it already accepted (up to 10
+minutes) before its replacement starts. Meanwhile the console works and plans
+and deploys answer *try again in a moment*. Plans reviewed before the restart
+expire with it and cost a re-upload, never a build. `donkey server install`
+returns once the orchestrator is back, and says so while it waits.
 
 **Metadata v2 is a clean cutover.** It deliberately does not claim resources
 from versions that used the old ownership labels or selectors. Kubernetes
@@ -1410,10 +1448,10 @@ Both places that commit to a configuration prove the endpoint answers first.
 `donkey server install` reaches it before changing anything and stops with the
 installation untouched — an install is a one-shot command with a person
 watching, which makes it the cheapest place to find out the endpoint is wrong.
-`donkey-server` does the same at startup and refuses to come up: under
-Kubernetes the pod then stays unready and out of rotation with the reason in
-its logs, which beats a control plane that looks healthy and fails on its
-first deploy.
+`donkey-server` and `donkey-orchestrator` do the same at startup and refuse
+to come up: under Kubernetes the pod then stays unready and out of rotation
+with the reason in its logs, which beats a control plane that looks healthy
+and fails on its first deploy.
 
 ## Embedding the CLI
 
@@ -1451,7 +1489,7 @@ web/                  admin console (Vite + React + TS + Tailwind, lucide icons;
 internal/
   cli/                one file per command; session/config wiring
   apiclient/          CLI↔server transport: tar upload, NDJSON stream, typed calls
-  server/             REST handlers, deploy pipeline, env-based config
+  server/             REST handlers, deploy pipeline (served by the orchestrator role), env-based config
   detect/             build strategy decision (donkey.yaml > Dockerfile > the installation's builder > AI)
   build/              BuildKit gRPC builder (dockerfile.v0), startup verification, registry auth, tags
   k8s/                client-go wrapper: server-side apply, rollout wait, logs, env secrets
@@ -1643,8 +1681,10 @@ company with an internal PKI uses. Tear down with `devkube --cluster donkey dele
   The refresh token stays sealed inside donkey. Rotating the session key
   retires donkey's copies, but the IdP's refresh tokens stay valid until
   revoked there (in Entra: revoke the user's sessions).
-- donkey-server currently binds cluster-admin; scoping it down is on the
-  list.
+- donkey-server and donkey-orchestrator currently bind cluster-admin (with a
+  namespace per space); scoping them down is on the list. The orchestrator is
+  the one that runs builds, and the only pod the privileged build engine
+  admits; it accepts requests from donkey-server alone.
 - The demo IdP approves everyone by design; it never leaves `hack/demo/`.
 - Space and app names from the API are validated server-side, and the space
   that would map onto `donkey-system` is reserved — no space name can reach

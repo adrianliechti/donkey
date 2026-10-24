@@ -95,9 +95,10 @@ func serverNetworkPolicy(in SystemInput) *networkPolicy {
 
 // buildkitNetworkPolicy is the one policy donkey cannot do without: the build
 // engine speaks unauthenticated gRPC and runs privileged, so anything that
-// can reach its port can run code on a node. Only donkey-server may.
+// can reach its port can run code on a node. Only donkey-orchestrator may —
+// it runs every build, and the API that faces browsers no longer needs to.
 func buildkitNetworkPolicy(in SystemInput) *networkPolicy {
 	return ingressPolicy(in, buildkitName, buildkitPort, []networkingv1.NetworkPolicyPeer{
-		systemPeer(in.Namespace, ServerName),
+		systemPeer(in.Namespace, OrchestratorName),
 	})
 }

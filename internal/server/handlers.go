@@ -956,12 +956,11 @@ func (s *Server) builderChecks(context.Context) []DoctorCheck {
 	}}
 }
 
-func (s *Server) handleDoctor(w http.ResponseWriter, r *http.Request) {
-	// Longer than the other probes want, because the builder checks pull
-	// image manifests through whatever mirrors and proxies stand in the way —
-	// which is exactly the setup that is slow when it is misconfigured.
-	ctx, cancel := context.WithCancel(r.Context())
-	defer cancel()
+// buildChecks are the probes only donkey-orchestrator can make: it is the one
+// process the build engine admits, and the one that pushes with the
+// registry credentials. donkey-server's doctor asks for them (see
+// orchestratorChecks) rather than reaching BuildKit itself.
+func (s *Server) buildChecks(ctx context.Context) []DoctorCheck {
 	var checks []DoctorCheck
 
 	bk := DoctorCheck{Name: "Build engine (in-cluster BuildKit)"}
@@ -986,7 +985,27 @@ func (s *Server) handleDoctor(w http.ResponseWriter, r *http.Request) {
 	}
 	checks = append(checks, reg)
 
-	checks = append(checks, s.builderChecks(ctx)...)
+	return append(checks, s.builderChecks(ctx)...)
+}
+
+// handleBuildChecks: GET /v1/doctor on donkey-orchestrator.
+func (s *Server) handleBuildChecks(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+	writeJSON(w, http.StatusOK, map[string]any{"checks": s.buildChecks(ctx)})
+}
+
+func (s *Server) handleDoctor(w http.ResponseWriter, r *http.Request) {
+	// Longer than the other probes want, because the builder checks pull
+	// image manifests through whatever mirrors and proxies stand in the way —
+	// which is exactly the setup that is slow when it is misconfigured.
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+	var checks []DoctorCheck
+
+	// The orchestrator first: when it is down, nothing builds, and its own
+	// probes (build engine, registry) can only be answered by it.
+	checks = append(checks, s.orchestratorChecks(r.WithContext(ctx))...)
 
 	// The runtime probes its own dependencies — gateway, certificates,
 	// whatever this runtime needs to serve apps.

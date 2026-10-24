@@ -192,7 +192,7 @@ func TestBuildConfigReachesBothPods(t *testing.T) {
 	// Credentialed values never appear in a Deployment: build variables are
 	// routinely "https://ci:token@jfrog.corp/...", and a Deployment is
 	// readable by anyone who can read the namespace.
-	for _, dep := range []*appsv1.Deployment{serverDeployment(in), buildkitDeployment(in)} {
+	for _, dep := range []*appsv1.Deployment{serverDeployment(in), orchestratorDeployment(in), buildkitDeployment(in)} {
 		for _, c := range dep.Spec.Template.Spec.Containers {
 			for _, e := range c.Env {
 				switch e.Name {

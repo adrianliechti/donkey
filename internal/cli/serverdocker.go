@@ -10,6 +10,7 @@ import (
 	"io"
 	"maps"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -30,9 +31,10 @@ import (
 )
 
 // The Docker installation: donkey straight on a Docker engine, no cluster.
-// The registry, build engine, package proxy, server, gateway and AI endpoint
-// share one infrastructure network. Only the server gets the Docker socket;
-// only the package proxy gets package credentials.
+// The registry, build engine, package proxy, server, orchestrator, gateway
+// and AI endpoint share one infrastructure network. Only the server and the
+// orchestrator get the Docker socket; only the package proxy gets package
+// credentials.
 const (
 	dockerNetwork    = "donkey"
 	dockerDataVolume = "donkey-data"
@@ -50,22 +52,47 @@ const (
 	dockerBuildkitName   = "donkey-buildkitd"
 	dockerBuildkitVolume = "donkey-buildkit"
 
-	dockerServerName      = "donkey-server"
-	dockerGatewayName     = "donkey-gateway"
-	dockerAIName          = "donkey-ai"
-	dockerProxyName       = "donkey-proxy"
-	dockerProxyConfigPath = "/etc/donkey/proxy/services.json"
-	dockerTelemetryName   = "donkey-telemetry"
-	dockerTelemetryVolume = "donkey-telemetry"
-	dockerPackagesName    = "donkey-packages"
-	dockerPackagesAuth    = "/etc/donkey/package-auth"
+	dockerServerName       = "donkey-server"
+	dockerOrchestratorName = "donkey-orchestrator"
+	dockerOrchestratorPort = "8087"
+	dockerGatewayName      = "donkey-gateway"
+	dockerAIName           = "donkey-ai"
+	dockerProxyName        = "donkey-proxy"
+	dockerProxyConfigPath  = "/etc/donkey/proxy/services.json"
+	dockerTelemetryName    = "donkey-telemetry"
+	dockerTelemetryVolume  = "donkey-telemetry"
+	dockerPackagesName     = "donkey-packages"
+	dockerPackagesAuth     = "/etc/donkey/package-auth"
 )
 
 // dockerNoProxy is what must never be sent to a forward proxy: donkey's own
 // containers, the Docker engine's socket and the loopback registry all live
 // on this machine, and no corporate proxy can route them.
 const dockerNoProxy = "localhost,127.0.0.1," +
-	dockerRegistryName + "," + dockerBuildkitName + "," + dockerServerName + "," + dockerGatewayName + "," + dockerAIName + "," + dockerTelemetryName + "," + dockerPackagesName
+	dockerRegistryName + "," + dockerBuildkitName + "," + dockerServerName + "," + dockerOrchestratorName + "," +
+	dockerGatewayName + "," + dockerAIName + "," + dockerTelemetryName + "," + dockerPackagesName
+
+// dockerOrchestratorStopTimeout lets a stopping donkey-orchestrator finish
+// the deploys it accepted (config.DeployDrainTimeout) before Docker kills it
+// — the same window Kubernetes gives it.
+const dockerOrchestratorStopTimeout = config.DeployDrainTimeout + time.Minute
+
+// dockerOrchestratorEnv is the server's configuration as donkey-orchestrator
+// reads it: the same control plane, so the same runtime, registry and build
+// settings, on its own port and without what only the API uses. The OIDC
+// client stays with the API; the orchestrator signs nobody in, it verifies
+// the token the API forwards.
+func dockerOrchestratorEnv(serverEnv map[string]string) map[string]string {
+	env := maps.Clone(serverEnv)
+	for _, key := range []string{
+		"DONKEY_SERVER_HOST", "DONKEY_AI_URL", "DONKEY_ORCHESTRATOR_URL", "DONKEY_TELEMETRY_OTLP_ENDPOINT",
+		"DONKEY_OIDC_ISSUER", "DONKEY_OIDC_SCOPE", "DONKEY_OIDC_CLIENT_ID", "DONKEY_OIDC_CLIENT_SECRET",
+	} {
+		delete(env, key)
+	}
+	env["DONKEY_LISTEN"] = ":" + dockerOrchestratorPort
+	return env
+}
 
 func registryMirrorsJSON(mirrors map[string]string) string {
 	raw, err := json.Marshal(mirrors)
@@ -183,6 +210,13 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 			return err
 		}
 	}
+	// Every container below is recreated, the build engine and the package
+	// proxy among them, and a build cut off there is lost however the
+	// orchestrator is stopped. So it finishes the deploys it accepted first;
+	// it exits as soon as none are running.
+	if err := drainDockerOrchestrator(ctx, cli, u); err != nil {
+		return err
+	}
 	if bundledRegistry {
 		// The registry: no host port beyond the loopback, no credentials — it
 		// only exists on donkey's networks and the host's own daemon.
@@ -269,8 +303,8 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 	// proxy's Docker name therefore resolves in donkey-server and not inside a
 	// RUN instruction. Its network IP is reachable from both and remains tied
 	// to this container for its lifetime; every supported reinstall replaces
-	// the package proxy and server together, so the recorded endpoint follows
-	// a recreated container too.
+	// the package proxy and the orchestrator together, so the recorded
+	// endpoint follows a recreated container too.
 	packagesIP, err := dockerContainerIP(ctx, cli, dockerPackagesName)
 	if err != nil {
 		return err
@@ -370,6 +404,8 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 	if registryPassword != "" {
 		serverEnv["DONKEY_REGISTRY_PASSWORD"] = registryPassword
 	}
+	orchestratorEnv := dockerOrchestratorEnv(serverEnv)
+	serverEnv["DONKEY_ORCHESTRATOR_URL"] = "http://" + dockerOrchestratorName + ":" + dockerOrchestratorPort
 	if err := replaceInfraContainer(ctx, cli, infraContainer{
 		Name:         dockerTelemetryName,
 		Image:        settings.Image,
@@ -389,6 +425,24 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 			Interval: 2 * time.Second, Timeout: 6 * time.Second, Retries: 3,
 		},
 		PullAlways: true,
+	}); err != nil {
+		return err
+	}
+	// The orchestrator builds and deploys, so it gets what deploying takes:
+	// the Docker socket, the state volume and the registry's trust and
+	// credentials. No port leaves the machine; only the server calls it. Its
+	// mounts are a copy, so one added for builds alone stays off the API.
+	orchestratorMounts := slices.Clone(serverMounts)
+	if err := replaceInfraContainer(ctx, cli, infraContainer{
+		Name:         dockerOrchestratorName,
+		Image:        settings.Image,
+		RegistryAuth: serverPullAuth,
+		Cmd:          []string{"orchestrator"},
+		Env:          orchestratorEnv,
+		Mounts:       orchestratorMounts,
+		Files:        serverFiles,
+		StopTimeout:  dockerOrchestratorStopTimeout,
+		PullAlways:   true,
 	}); err != nil {
 		return err
 	}
@@ -488,6 +542,9 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 	if err := waitDockerHealthy(ctx, cli, dockerTelemetryName, 90*time.Second); err != nil {
 		return err
 	}
+	if err := waitDockerRunning(ctx, cli, dockerOrchestratorName, 90*time.Second); err != nil {
+		return err
+	}
 	if err := waitDockerRunning(ctx, cli, dockerServerName, 90*time.Second); err != nil {
 		return err
 	}
@@ -503,7 +560,7 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 	// Recreating the shared containers dropped the space networks
 	// they were on. Re-attach them, or every app deployed before this install
 	// stays unreachable until it is redeployed.
-	if err := docker.AttachOwnContainers(ctx, cli, dockerServerName, dockerGatewayName, dockerAIName, dockerTelemetryName, dockerProxyName); err != nil {
+	if err := docker.AttachOwnContainers(ctx, cli, dockerServerName, dockerOrchestratorName, dockerGatewayName, dockerAIName, dockerTelemetryName, dockerProxyName); err != nil {
 		return err
 	}
 	u.Success("Control plane is running.")
@@ -675,6 +732,7 @@ func dockerInstallContainers(bundledRegistry bool) []dockerOwnedResource {
 		{name: dockerPackagesName, role: docker.RolePackages},
 		{name: dockerBuildkitName, role: docker.RoleBuildkit},
 		{name: dockerTelemetryName, role: docker.RoleTelemetry},
+		{name: dockerOrchestratorName, role: docker.RoleOrchestrator},
 		{name: dockerServerName, role: docker.RoleServer},
 		{name: dockerGatewayName, role: docker.RoleGateway},
 		{name: dockerAIName, role: docker.RoleAI},
@@ -762,6 +820,37 @@ type infraContainer struct {
 	Healthcheck  *container.HealthConfig
 	Privileged   bool
 	PullAlways   bool
+	// StopTimeout is how long a stopping container gets after SIGTERM before
+	// Docker kills it — both when this install replaces it and for any later
+	// `docker stop`. Zero keeps Docker's default and a forced replacement.
+	StopTimeout time.Duration
+}
+
+// drainDockerOrchestrator stops a running donkey-orchestrator the way it
+// expects to be stopped: SIGTERM, then the time to finish the deploys it is
+// running. Ownership was checked before the install changed anything.
+func drainDockerOrchestrator(ctx context.Context, cli *dockerclient.Client, u *ui.UI) error {
+	info, err := cli.ContainerInspect(ctx, dockerOrchestratorName)
+	if cerrdefs.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if info.State == nil || !info.State.Running {
+		return nil
+	}
+	u.Info("Letting donkey-orchestrator finish the deploys already under way (up to %d minutes)…",
+		int(config.DeployDrainTimeout.Minutes()))
+	return stopInfraContainer(ctx, cli, dockerOrchestratorName, dockerOrchestratorStopTimeout)
+}
+
+func stopInfraContainer(ctx context.Context, cli *dockerclient.Client, name string, timeout time.Duration) error {
+	seconds := int(timeout.Seconds())
+	if err := cli.ContainerStop(ctx, name, container.StopOptions{Timeout: &seconds}); err != nil && !cerrdefs.IsNotFound(err) {
+		return fmt.Errorf("stopping %s: %w", name, err)
+	}
+	return nil
 }
 
 // replaceInfraContainer recreates one of donkey's own containers — the
@@ -780,8 +869,14 @@ func replaceInfraContainer(ctx context.Context, cli *dockerclient.Client, spec i
 	case !cerrdefs.IsNotFound(err):
 		return err
 	}
+	running := err == nil && info.State != nil && info.State.Running
 	if err := pullInfraImage(ctx, cli, spec.Image, spec.RegistryAuth, spec.PullAlways); err != nil {
 		return err
+	}
+	if spec.StopTimeout > 0 && running {
+		if err := stopInfraContainer(ctx, cli, spec.Name, spec.StopTimeout); err != nil {
+			return err
+		}
 	}
 	if err := cli.ContainerRemove(ctx, spec.Name, container.RemoveOptions{Force: true}); err != nil && !cerrdefs.IsNotFound(err) {
 		return err
@@ -809,6 +904,10 @@ func replaceInfraContainer(ctx context.Context, cli *dockerclient.Client, spec i
 		ExposedPorts: exposed,
 		Healthcheck:  spec.Healthcheck,
 		Labels:       docker.SystemLabels(role),
+	}
+	if spec.StopTimeout > 0 {
+		seconds := int(spec.StopTimeout.Seconds())
+		cfg.StopTimeout = &seconds
 	}
 	hostCfg := &container.HostConfig{
 		Mounts:        spec.Mounts,

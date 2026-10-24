@@ -118,8 +118,8 @@ func TestRegistryCredentialsPullMirroredSystemImages(t *testing.T) {
 	if !strings.Contains(out, "name: "+SystemRegistrySecretName) || !strings.Contains(out, "imagePullSecrets") {
 		t.Fatalf("credentialed registry should render and reference a system pull secret:\n%s", out)
 	}
-	if n := strings.Count(out, "name: "+SystemRegistrySecretName); n != 8 {
-		t.Errorf("pull secret should be created once and referenced by seven system deployments, found %d mentions", n)
+	if n := strings.Count(out, "name: "+SystemRegistrySecretName); n != 9 {
+		t.Errorf("pull secret should be created once and referenced by eight system deployments, found %d mentions", n)
 	}
 
 	plain := componentNames(systemInput())
@@ -234,9 +234,12 @@ func TestInstallTouchesOnlyItsOwnObjects(t *testing.T) {
 	objs := SystemObjects(in)
 
 	ownCluster := map[string]bool{
-		"ClusterRoleBinding:" + ServerName:     true,
-		"ClusterRole:" + GatewayAppName:        true,
-		"ClusterRoleBinding:" + GatewayAppName: true,
+		"ClusterRoleBinding:" + ServerName: true,
+		// A deploy into a new space creates its namespace, so the
+		// orchestrator is bound like the server.
+		"ClusterRoleBinding:" + OrchestratorName: true,
+		"ClusterRole:" + GatewayAppName:          true,
+		"ClusterRoleBinding:" + GatewayAppName:   true,
 		// donkey-ai reads the binding Secrets to know which per-space tokens
 		// are valid; with a namespace per space those are spread across all
 		// of them, so this one is read-only and cluster-scoped.

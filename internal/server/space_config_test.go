@@ -80,8 +80,15 @@ func spaceTestServer() (*Server, *spaceTestRuntime) {
 	return s, r
 }
 
+// callAs drives the whole path a request takes: donkey-server's routes and,
+// for what they forward, donkey-orchestrator's. The same Server plays both,
+// as the one binary does in production, so authorization is checked on each
+// hop exactly as it would be there.
 func callAs(t *testing.T, s *Server, email, method, path string, body []byte) *httptest.ResponseRecorder {
 	t.Helper()
+	orchestrator := httptest.NewServer(s.orchestratorRoutes())
+	defer orchestrator.Close()
+	s.cfg.OrchestratorURL = orchestrator.URL
 	req := httptest.NewRequest(method, "https://donkey.example.com"+path, bytes.NewReader(body))
 	token, err := identity.SealToken(testSessionKey, identity.Identity{Subject: email, Email: email,
 		Groups: []string{"team-dev"}, Expires: time.Now().Add(time.Hour).Unix()})

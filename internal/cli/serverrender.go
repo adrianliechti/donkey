@@ -522,7 +522,7 @@ if [ -z "$telemetry_key" ]; then telemetry_key=$(openssl rand -hex 32); fi
 kubectl apply -f "$bundle_dir/manifests.yaml"
 kubectl -n "$namespace" rollout restart \
   deployment/donkey-packages deployment/donkey-telemetry deployment/donkey-buildkitd \
-  deployment/donkey-server deployment/donkey-gateway deployment/donkey-ai >/dev/null
+  deployment/donkey-orchestrator deployment/donkey-server deployment/donkey-gateway deployment/donkey-ai >/dev/null
 
 echo "Applied donkey control plane to namespace $namespace"
 `)

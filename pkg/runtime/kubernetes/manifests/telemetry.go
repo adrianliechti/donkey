@@ -163,7 +163,13 @@ func telemetryNetworkPolicy(in SystemInput) *networkPolicy {
 			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
 			Ingress: []networkingv1.NetworkPolicyIngressRule{
 				{From: metricPeers, Ports: []networkingv1.NetworkPolicyPort{{Protocol: &tcp, Port: &otlp}}},
-				{From: []networkingv1.NetworkPolicyPeer{systemPeer(in.Namespace, ServerName)}, Ports: []networkingv1.NetworkPolicyPort{{Protocol: &tcp, Port: &api}}},
+				// The query API: the server reads traffic and release history,
+				// the orchestrator records each release and reads the decisions a
+				// no-build deploy adopts.
+				{From: []networkingv1.NetworkPolicyPeer{
+					systemPeer(in.Namespace, ServerName),
+					systemPeer(in.Namespace, OrchestratorName),
+				}, Ports: []networkingv1.NetworkPolicyPort{{Protocol: &tcp, Port: &api}}},
 			},
 		},
 	}
