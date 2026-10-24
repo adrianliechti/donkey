@@ -97,7 +97,8 @@ and `init`. Control-plane containers follow one naming rule: the container
 `donkey-<role>` carries that role (`server`, `gateway`, `ai`,
 `telemetry`, `packages`, `buildkitd`, `registry`); the infrastructure network
 is `network`, and the volumes are `state-storage`, `buildkit-storage`,
-`telemetry-storage` and `registry-storage`.
+`telemetry-storage` and `registry-storage`. The state volume also holds
+donkey-server's data: every app's source history, in its `source/` folder.
 
 Every list and delete donkey performs filters on `managed` +
 `installation` (+ the exact scope), and destructive operations verify the

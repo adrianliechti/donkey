@@ -102,6 +102,9 @@ type Config struct {
 	// seed, the first verified sign-in becomes the first platform admin.
 	PlatformAdmins *config.AccessConfig
 	AIModel        string
+	// DataDir is donkey-server's own volume. The source history lives in its
+	// source/ folder, one git repository per app; empty turns it off.
+	DataDir string
 }
 
 func FromEnv() (*Config, error) {
@@ -130,6 +133,7 @@ func FromEnv() (*Config, error) {
 		AIURL:                 os.Getenv("DONKEY_AI_URL"),
 		TelemetryURL:          envOr("DONKEY_TELEMETRY_URL", "http://donkey-telemetry:9090"),
 		TelemetryOTLPEndpoint: envOr("DONKEY_TELEMETRY_OTLP_ENDPOINT", "http://donkey-telemetry:4318"),
+		DataDir:               os.Getenv("DONKEY_DATA_DIR"),
 		OIDCIssuer:            os.Getenv("DONKEY_OIDC_ISSUER"),
 		OIDCClientID:          os.Getenv("DONKEY_OIDC_CLIENT_ID"),
 		OIDCClientSecret:      os.Getenv("DONKEY_OIDC_CLIENT_SECRET"),

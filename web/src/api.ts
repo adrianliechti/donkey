@@ -551,6 +551,61 @@ export interface BuildSummary {
   ok: boolean
 }
 
+// The source history: every deploy's upload as a commit by the person who
+// deployed, and what donkey's build changed on top as a platform commit.
+export type SourceKind = 'upload' | 'platform'
+
+export interface SourceStats {
+  files: number
+  additions: number
+  deletions: number
+}
+
+export interface SourceCommit {
+  id: string
+  parents: string[]
+  kind: SourceKind
+  author: { name: string; email?: string }
+  date: string
+  message: string
+  /** The builds that used exactly this commit, newest first. `ok` is absent
+   *  once the build's record aged out of the build history. */
+  builds?: { sequence: number; ok?: boolean }[]
+  stats: SourceStats
+  /** What the app runs right now. */
+  live?: boolean
+}
+
+/** One file a commit touched. (SourceChange is a build's repair diff.) */
+export interface CommitChange {
+  path: string
+  status: 'added' | 'modified' | 'deleted'
+  additions: number
+  deletions: number
+  binary?: boolean
+  tooLarge?: boolean
+}
+
+export interface SourceCommitDetail extends SourceCommit {
+  changes: CommitChange[]
+}
+
+export interface SourceFileDiff extends CommitChange {
+  diff?: string
+}
+
+export interface SourceEntry {
+  path: string
+  size: number
+  executable?: boolean
+}
+
+export interface SourceFile {
+  text: string
+  binary: boolean
+  size: number
+}
+
 export interface DoctorCheck {
   name: string
   ok: boolean
@@ -666,6 +721,17 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>
 }
 
+// Downloads ride the session cookie like every other call; fetch keeps the
+// error handling uniform and hands back a blob.
+async function fetchOK(path: string): Promise<Response> {
+  const res = await fetch(path)
+  if (res.status === 401) throw unauthorized()
+  if (!res.ok) throw new ApiError(res.status, await errorMessage(res))
+  return res
+}
+
+const downloadBlob = async (path: string): Promise<Blob> => (await fetchOK(path)).blob()
+
 // Apps live in a space, so every app path carries it.
 const appPath = (space: string, app: string, suffix = '') =>
   `/v1/spaces/${encodeURIComponent(space)}/apps/${encodeURIComponent(app)}${suffix}`
@@ -688,6 +754,27 @@ export const api = {
     request<{ builds: BuildSummary[] }>(appPath(space, app, '/builds')),
   build: (space: string, app: string, sequence: number) =>
     request<AppRelease>(appPath(space, app, `/builds/${sequence}`)),
+
+  commits: (space: string, app: string) =>
+    request<{ enabled: boolean; commits: SourceCommit[] }>(appPath(space, app, '/commits')),
+  commit: (space: string, app: string, id: string) =>
+    request<SourceCommitDetail>(appPath(space, app, `/commits/${id}`)),
+  commitDiff: (space: string, app: string, id: string, path: string) =>
+    request<SourceFileDiff>(appPath(space, app, `/commits/${id}/diff?path=${encodeURIComponent(path)}`)),
+  commitTree: (space: string, app: string, id: string) =>
+    request<{ files: SourceEntry[] }>(appPath(space, app, `/commits/${id}/tree`)),
+  // Files come back as plain text; the server flags binary ones so the
+  // console offers a download instead of printing bytes.
+  commitFile: async (space: string, app: string, id: string, path: string): Promise<SourceFile> => {
+    const res = await fetchOK(appPath(space, app, `/commits/${id}/file?path=${encodeURIComponent(path)}`))
+    const binary = res.headers.get('X-Donkey-Binary') === 'true'
+    const blob = await res.blob()
+    return { text: binary ? '' : await blob.text(), binary, size: blob.size }
+  },
+  downloadCommitFile: (space: string, app: string, id: string, path: string) =>
+    downloadBlob(appPath(space, app, `/commits/${id}/file?path=${encodeURIComponent(path)}&download=true`)),
+  downloadArchive: (space: string, app: string, id: string) =>
+    downloadBlob(appPath(space, app, `/commits/${id}/archive`)),
   traffic: (
     space: string,
     app: string,
@@ -931,12 +1018,8 @@ export const api = {
     request<FileListing>(appPath(space, app, `/files?path=${encodeURIComponent(path)}`)),
   // The download rides the session cookie like every other call; fetch keeps
   // the error handling uniform and hands back a blob.
-  downloadFile: async (space: string, app: string, path: string): Promise<Blob> => {
-    const res = await fetch(appPath(space, app, `/files/download?path=${encodeURIComponent(path)}`))
-    if (res.status === 401) throw unauthorized()
-    if (!res.ok) throw new ApiError(res.status, await errorMessage(res))
-    return res.blob()
-  },
+  downloadFile: (space: string, app: string, path: string) =>
+    downloadBlob(appPath(space, app, `/files/download?path=${encodeURIComponent(path)}`)),
   uploadFile: (space: string, app: string, path: string, file: File) => {
     const body = new FormData()
     body.append('file', file)

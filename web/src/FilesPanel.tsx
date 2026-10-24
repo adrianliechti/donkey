@@ -14,19 +14,7 @@ import {
   X,
 } from 'lucide-react'
 import { api, type FileListing } from './api'
-import { Button, ErrorNote, errText, IconButton, Input, List, ListRow, SectionHeader, Spinner } from './ui'
-
-function humanSize(n: number): string {
-  if (n < 1024) return `${n} B`
-  const units = ['KB', 'MB', 'GB', 'TB']
-  let size = n / 1024
-  let i = 0
-  while (size >= 1024 && i < units.length - 1) {
-    size /= 1024
-    i++
-  }
-  return `${size.toFixed(1)} ${units[i]}`
-}
+import { Button, ErrorNote, errText, humanSize, IconButton, Input, List, ListRow, saveBlob, SectionHeader, Spinner } from './ui'
 
 // FilesPanel browses the app's disk — the one part of an app a redeploy
 // cannot rebuild, so seeding it and getting things out of it belong here.
@@ -251,16 +239,7 @@ export function FilesPanel({ space, app }: { space: string; app: string }) {
                   <>
                     {!e.isDir && (
                       <IconButton icon={Download} size="sm" label={`Download ${e.name}`} onClick={() =>
-                        run(`Downloading ${e.name}…`, async () => {
-                          // The download carries the session, so it goes
-                          // through the API client and comes back as a blob.
-                          const url = URL.createObjectURL(await api.downloadFile(space, app, full))
-                          const a = document.createElement('a')
-                          a.href = url
-                          a.download = e.name
-                          a.click()
-                          URL.revokeObjectURL(url)
-                        })
+                        run(`Downloading ${e.name}…`, async () => saveBlob(await api.downloadFile(space, app, full), e.name))
                       } />
                     )}
                     <IconButton icon={Pencil} size="sm" label={`Rename ${e.name}`} onClick={() => setRenaming({ name: e.name, value: e.name })} />

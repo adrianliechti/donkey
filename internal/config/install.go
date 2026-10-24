@@ -65,6 +65,8 @@ type InstallFile struct {
 	DefaultPlatform string `json:"defaultPlatform,omitempty"`
 
 	Build InstallBuild `json:"build,omitempty"`
+	// Data is donkey-server's own volume (source history, for now).
+	Data InstallData `json:"data,omitempty"`
 
 	Auth     InstallAuth    `json:"auth,omitempty"`
 	Platform PlatformConfig `json:"platform,omitempty"`

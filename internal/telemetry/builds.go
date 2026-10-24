@@ -74,6 +74,16 @@ func (s *Store) InsertBuild(ctx context.Context, space, app, image string, ok bo
 	return sequence, tx.Commit()
 }
 
+// PurgeBuilds removes an app's whole history. Removing an app takes its
+// records with it, so a later app by the same name starts with its own.
+func (s *Store) PurgeBuilds(ctx context.Context, space, app string) error {
+	if err := validBuildScope(space, app); err != nil {
+		return err
+	}
+	_, err := s.db.ExecContext(ctx, "DELETE FROM build_records WHERE space = ? AND app = ?", space, app)
+	return err
+}
+
 // Builds lists an app's retained history, newest first.
 func (s *Store) Builds(ctx context.Context, space, app string) ([]BuildSummary, error) {
 	if err := validBuildScope(space, app); err != nil {

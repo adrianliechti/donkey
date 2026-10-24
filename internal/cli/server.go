@@ -501,6 +501,12 @@ func validateKubernetesSettings(settings *config.InstallFile) error {
 	if err := settings.Build.Packages.ValidateRuntime("kubernetes"); err != nil {
 		return err
 	}
+	if err := settings.Data.Validate(); err != nil {
+		return err
+	}
+	if err := settings.Data.ValidateRuntime("kubernetes"); err != nil {
+		return err
+	}
 	if err := settings.AddonImages.Validate(); err != nil {
 		return err
 	}
@@ -572,6 +578,7 @@ func kubernetesSystemInput(settings *config.InstallFile, skipNamespace bool, reg
 		ProxyServices:              settings.ProxyServices,
 		CommonOfferings:            settings.CommonOfferings,
 		BuildkitImage:              settings.BuildkitImage,
+		Data:                       settings.Data,
 	}
 	if in.BuildkitImage == "" {
 		in.BuildkitImage = config.DefaultBuildkitImage

@@ -354,6 +354,11 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 			Target: dockerRegistryAuthPath, ReadOnly: true,
 		})
 	}
+	// The server's data (source history) is a folder of the state volume it
+	// already mounts.
+	if settings.Data.Enabled() {
+		serverEnv["DONKEY_DATA_DIR"] = dockerDataDir
+	}
 	maps.Copy(serverEnv, builderEnvMap(settings.Build.BuildSettings))
 	if len(settings.Build.Env) > 0 {
 		raw, err := json.Marshal(settings.Build.Env)
@@ -573,6 +578,12 @@ func validateDockerSettings(settings *config.InstallFile) error {
 		return err
 	}
 	if err := settings.Build.Packages.ValidateRuntime("docker"); err != nil {
+		return err
+	}
+	if err := settings.Data.Validate(); err != nil {
+		return err
+	}
+	if err := settings.Data.ValidateRuntime("docker"); err != nil {
 		return err
 	}
 	if err := settings.AddonPlugins.Validate(); err != nil {

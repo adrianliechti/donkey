@@ -42,7 +42,12 @@ export function DangerZone({ space, app, onDestroyed }: { space: string; app: st
           <Callout tone="danger" icon={TriangleAlert} title={`Remove ${app} and everything donkey created for it?`}>
             The space's services are never touched.
           </Callout>
-          <ToggleRow label="Keep its disk" description="Redeploying later picks the data back up." checked={keepData} onChange={setKeepData} />
+          <ToggleRow
+            label="Keep its data"
+            description="Its disk, build history and source history stay; redeploying later picks them back up."
+            checked={keepData}
+            onChange={setKeepData}
+          />
           <ErrorNote message={error} />
           <div className="flex justify-end gap-2">
             <Button kind="quiet" onClick={() => setConfirming(false)} disabled={busy}>

@@ -61,6 +61,7 @@ five ideas:
 │  donkey CLI   │─sign-in─▶│ donkey-system                           │
 │  (thin client)│   HTTP   │  ├─ donkey-server   REST API, detection,│
 └───────────────┘          │  │      manifests, AI, rollout watching │
+                           │  │      data volume: source history     │
                            │  ├─ donkey-buildkitd  image builds      │──▶ registry
                            │  ├─ donkey-packages  build package proxy│─▶ package registries
                            │  ├─ donkey-ai      openai addon endpoint│──▶ model API
@@ -86,9 +87,11 @@ five ideas:
   token it gets back in `~/.config/donkey/config.yaml`. The single
   exception: `donkey server install` uses your kubeconfig to bootstrap the
   control plane.
-- **donkey-server** — stateless API pod; all state lives in Kubernetes
-  objects. Deploys arrive as tar.gz uploads and stream progress back as
-  NDJSON. Configured entirely via env from the install settings. It also
+- **donkey-server** — API pod whose state lives in Kubernetes objects, with
+  one exception: its data volume, which holds every app's
+  [source history](#source-history) as git. Deploys arrive as tar.gz uploads
+  and stream progress back as NDJSON. Configured entirely via env from the
+  install settings. It also
   serves the **admin console** (React/Tailwind, embedded in the binary) on
   the domain itself: open `https://<domain>` in a browser, sign in at your
   IdP (the gateway runs the login, like for any app — one sign-in covers
@@ -753,7 +756,7 @@ applies anything, and `donkey doctor` keeps checking them after):
 
 | Requirement | Why | Notes |
 |---|---|---|
-| **Kubernetes cluster** with a default StorageClass | donkey-telemetry always claims its 2 Gi DuckDB volume; apps with `storage.paths` and provisioned services claim their own | any conformant cluster; nothing donkey-specific. Donkey brings its own edge, normally as a `LoadBalancer` Service; on clusters where nothing assigns those an address (kind), set `gateway.serviceType: NodePort` or `ClusterIP`. cert-manager is required only for `tls.mode: cert-manager`; external-dns with `--source=crd` only when `gateway.externalDNS` is set |
+| **Kubernetes cluster** with a default StorageClass | donkey-telemetry always claims its 2 Gi DuckDB volume and donkey-server its 5 Gi `donkey-data` volume for the [source history](#source-history) (unless `data` names a claim or is disabled); apps with `storage.paths` and provisioned services claim their own | any conformant cluster; nothing donkey-specific. Donkey brings its own edge, normally as a `LoadBalancer` Service; on clusters where nothing assigns those an address (kind), set `gateway.serviceType: NodePort` or `ClusterIP`. cert-manager is required only for `tls.mode: cert-manager`; external-dns with `--source=crd` only when `gateway.externalDNS` is set |
 | **Container registry** the cluster can pull from | donkey pushes every build there | `registry.url` + credentials; `registry.caSecret` when its certificate comes from a private CA |
 | **DNS** pointing public hostnames to the gateway address | apps are served at `<app>.<space>.<domain>`, the API and login callback at `<domain>` | configure a wildcard plus apex yourself, or let `gateway.externalDNS` publish exact records |
 | **OIDC provider** (Pocket ID, Entra ID, Keycloak, …) | the one way in: console, CLI and protected apps all sign in against it | required — `auth.issuer` (+ client id/secret); `platform.admins` optionally seeds the platform admins |
@@ -869,6 +872,59 @@ donkey-telemetry (bounded history per app), which is what the console's
 Deployment tab renders and lets you browse. A `--no-build --tag` rollback
 adopts the decisions recorded with that image, not whatever a newer analysis
 found.
+
+### Source history
+
+Every deploy's files are kept as git — one bare repository per app, in the
+`source/` folder of donkey-server's data volume — and the console's
+**Source** tab reads it: who deployed what, line by line, and what donkey's
+build changed on top.
+
+- **Your uploads are `main`.** A deploy whose files differ from the last
+  one becomes a commit by the person who deployed (name and email from the
+  sign-in), compared with the previous upload. The CLI adds the git
+  revision it deployed from. Redeploying unchanged files adds nothing.
+- **The platform's changes are `platform`.** When the build changed its
+  copy — wrote `.donkey/Dockerfile`, repaired a file — that becomes a commit
+  by *Donkey Platform* merging the upload it built, compared with that
+  upload: its diff is exactly the platform's change, and your next upload is
+  still compared with your own previous one.
+- **Builds are tags.** `build-<n>` names the commit build *n* used. The
+  console marks the commit the app runs as *live*, and failed builds in red.
+- Any version can be browsed file by file — syntax highlighted, with the
+  changes that version made to each file — and downloaded as a `.zip`.
+
+The repositories are written with go-git (no `git` binary in the image), one
+pack per commit, and are plain git: a copy of the volume opens in any client
+(`git log --graph --all` on `<space>/<app>.git`). Files over 8 MiB, and
+anything beyond 128 MiB per upload, are left out and named in the commit
+message. Removing an app deletes its source history and build records with
+it, so a later app by the same name starts with its own; `donkey destroy
+--keep-data` (the console's *Keep its data*) keeps them, like the disk, for
+the same app's redeploy. Deleting the space deletes all of it.
+
+The data volume is donkey-server's own and general-purpose; the source
+history is its first tenant. It is on by default — the `donkey-data` claim
+(5 Gi, ReadWriteOnce) on Kubernetes, a folder of the `donkey-data` state
+volume on Docker:
+
+```yaml
+data:
+  existingClaim: donkey-data-nfs  # a claim you manage — or storageClass/size for donkey's
+  accessMode: ReadWriteMany       # shared storage keeps donkey-server's rolling updates
+  # disabled: true                # no data volume, and no source history
+```
+
+A ReadWriteOnce volume can be attached by one node at a time, so
+donkey-server then rolls without a surge pod on upgrades: the old pod
+finishes its deploys and stops before the new one starts, and the console is
+unavailable in between. Shared storage (NFS, `ReadWriteMany`) keeps the
+surging rolling update. A claim's class and access mode are fixed once
+created, so choose them before the first install; to move later, create the
+new claim yourself and name it in `data.existingClaim`. The API behind the
+tab is
+`GET /v1/spaces/{space}/apps/{app}/commits`, plus `/commits/{id}` and its
+`/diff?path=`, `/tree`, `/file?path=` and `/archive`.
 
 ### Restricted networks
 
@@ -1276,7 +1332,7 @@ existing token for automation.)
 | `donkey files ls/get/put/rm/mv` | what's on the app's disk — seed it, fetch something out, clear it |
 | `donkey addon add/attach/remove/list` | the space's services (see [Services](#services)); `remove NAME` disconnects the app, `remove NAME --space` deletes the service itself |
 | `donkey addon tunnel NAME` | reach a service from your machine — a private line while the command runs; services never get a public address |
-| `donkey destroy` | remove everything donkey created for the app (`--keep-data` spares disks and secrets — a kept database keeps its credentials; deleting data always asks — `--force` for scripts) |
+| `donkey destroy` | remove everything donkey created for the app, its build and source history included (`--keep-data` spares disks, secrets and history — a kept database keeps its credentials; deleting data always asks — `--force` for scripts) |
 
 Image tags are `<git-sha>-<timestamp>` (the CLI reads the sha locally and
 sends it along; uploads never include `.git`), so every deploy is traceable
@@ -1350,6 +1406,11 @@ The `donkey-telemetry-data` PVC is cluster-only too; its database file is
 affect apps, but it erases the current 30-day traffic history and the
 retained build records; include it in volume snapshots when that history
 matters.
+
+donkey-server's data volume (`donkey-data`, or the claim named in
+`data.existingClaim`) holds every app's git history. Losing it does not
+affect apps either, but the history it held is gone; snapshot it with the
+same care, or point it at storage that is already backed up.
 
 **PVC data is the one thing that cannot be reconstructed.** Everything above
 is a copy of something you have; a volume is not. donkey never snapshots,
@@ -1675,6 +1736,12 @@ company with an internal PKI uses. Tear down with `devkube --cluster donkey dele
   are what makes a diagnosis readable, and blanking them would buy nothing.
   Your own logs stay unredacted; only the copy sent to the endpoint is
   scrubbed.
+- The source history keeps every upload as it arrived. Key material never
+  gets there (uploads exclude it), but a credential written into an
+  ordinary source file is committed with it and stays in the history after
+  the file changes — rotate it rather than delete it. The history is
+  readable by the space's members, like the builds and files they deploy,
+  and is removed with the app (unless its data is kept) and with the space.
 - The assistant is required, so its endpoint is part of donkey's trust
   boundary: source summaries of every deployed app go there, and redacted
   failure logs when something breaks. Point it at a model you control (the

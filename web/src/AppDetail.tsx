@@ -5,6 +5,7 @@ import {
   Box,
   ExternalLink,
   FileText,
+  GitCommitHorizontal,
   Globe2,
   HardDrive,
   KeyRound,
@@ -24,6 +25,7 @@ import { EnvEditor } from './EnvEditor'
 import { FilesPanel } from './FilesPanel'
 import { LogsPanel } from './LogsPanel'
 import { NetworkCard } from './NetworkCard'
+import { SourcePanel } from './SourcePanel'
 import { StoredRelease } from './StoredRelease'
 import { TrafficPanel } from './TrafficPanel'
 import { DrawerBody } from './dialog'
@@ -51,11 +53,12 @@ import {
 // The app panel slides over the fleet. Each tab is one job — glance, read,
 // browse, configure, change how it's reached — and the header that answers
 // "is it up?" stays above all of them.
-export type AppTab = 'overview' | 'release' | 'traffic' | 'logs' | 'files' | 'variables' | 'settings'
+export type AppTab = 'overview' | 'release' | 'source' | 'traffic' | 'logs' | 'files' | 'variables' | 'settings'
 
 const TABS: { id: AppTab; label: string; icon: React.ReactNode }[] = [
   { id: 'overview', label: 'Overview', icon: <FileText className="size-4" aria-hidden /> },
   { id: 'release', label: 'Deployment', icon: <Rocket className="size-4" aria-hidden /> },
+  { id: 'source', label: 'Source', icon: <GitCommitHorizontal className="size-4" aria-hidden /> },
   { id: 'traffic', label: 'Telemetry', icon: <Activity className="size-4" aria-hidden /> },
   { id: 'logs', label: 'Logs', icon: <ScrollText className="size-4" aria-hidden /> },
   { id: 'files', label: 'Files', icon: <HardDrive className="size-4" aria-hidden /> },
@@ -201,6 +204,7 @@ export function AppDetail({
               </>
             )}
             {shown === 'release' && <StoredRelease space={space} app={app} />}
+            {shown === 'source' && <SourcePanel space={space} app={app} />}
             {shown === 'logs' && (
               <>
                 {!status.healthy && <DiagnosisSection space={space} app={app} image={status.image} />}

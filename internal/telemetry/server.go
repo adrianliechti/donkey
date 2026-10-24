@@ -145,6 +145,7 @@ func (s *Service) apiHandler() http.Handler {
 	mux.HandleFunc("PUT /v1/builds", s.requireQueryToken(s.handlePutBuild))
 	mux.HandleFunc("GET /v1/builds", s.requireQueryToken(s.handleBuilds))
 	mux.HandleFunc("GET /v1/builds/record", s.requireQueryToken(s.handleBuildRecord))
+	mux.HandleFunc("DELETE /v1/builds", s.requireQueryToken(s.handleDeleteBuilds))
 	mux.HandleFunc("DELETE /v1/spaces/{space}", s.requireQueryToken(s.handleDeleteSpace))
 	return mux
 }
@@ -401,6 +402,14 @@ func (s *Service) handleResources(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeServiceJSON(w, http.StatusOK, report)
+}
+
+func (s *Service) handleDeleteBuilds(w http.ResponseWriter, r *http.Request) {
+	if err := s.store.PurgeBuilds(r.Context(), r.URL.Query().Get("space"), r.URL.Query().Get("app")); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	writeServiceJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 func (s *Service) handleDeleteSpace(w http.ResponseWriter, r *http.Request) {

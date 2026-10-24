@@ -120,6 +120,20 @@ func (s *Server) handleProjectDeploy(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// The reviewed fixes are donkey's, accepted by the person deploying: the
+	// source history keeps the upload as sent, and the fixes show up as the
+	// platform's change beside whatever the build itself does.
+	var pristine string
+	if len(patches) > 0 && s.history != nil && r.URL.Query().Get("dryRun") != "true" {
+		if pristine, err = os.MkdirTemp("", "donkey-project-upload-*"); err == nil {
+			defer os.RemoveAll(pristine)
+			err = os.CopyFS(pristine, os.DirFS(dir))
+		}
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err)
+			return
+		}
+	}
 	if err := applyProjectPatches(dir, patches); err != nil {
 		writeErr(w, http.StatusConflict, err)
 		return
@@ -162,7 +176,7 @@ func (s *Server) handleProjectDeploy(w http.ResponseWriter, r *http.Request) {
 		recorder := newReleaseRecorder(time.Now(), plan.Apps[index])
 		records[sp.app.Name], configs[sp.app.Name] = recorder, sp.app
 		out.release = recorder
-		res := s.deployApp(ctx, out, filepath.Join(dir, sp.root), sp.app, deployOpts{Root: dir, Analysis: sp.analysis, NoWait: cyclic, Hosts: hosts, Reviewed: true, DryRun: dryRun, NoVerify: connected[sp.root]})
+		res := s.deployApp(ctx, out, filepath.Join(dir, sp.root), sp.app, deployOpts{Root: dir, Pristine: pristine, Analysis: sp.analysis, NoWait: cyclic, Hosts: hosts, Reviewed: true, DryRun: dryRun, NoVerify: connected[sp.root]})
 		out.release = nil
 		if !cyclic || dryRun {
 			finish(res)

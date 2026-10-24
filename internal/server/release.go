@@ -41,6 +41,10 @@ type AppRelease struct {
 	Decisions json.RawMessage `json:"decisions,omitempty"`
 	// Truncated is retained for reading older records that omitted output.
 	Truncated bool `json:"truncated,omitempty"`
+
+	// source is what the deploy leaves for the source history; it goes to
+	// the git volume, never into the record.
+	source *sourceCapture
 }
 
 // releaseRecorder observes the same structured events and text sent to the
@@ -54,6 +58,12 @@ type releaseRecorder struct {
 
 	analysis *ai.Analysis
 	build    PlanBuild
+}
+
+func (r *releaseRecorder) sourceCaptured(capture *sourceCapture) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.release.source = capture
 }
 
 func newReleaseRecorder(started time.Time, plan *Plan) *releaseRecorder {
@@ -281,14 +291,15 @@ func (s *Server) persistRelease(ctx context.Context, space, app string, release 
 		return
 	}
 	scrubRelease(&release, s.knownSecrets(ctx, space, app))
-	raw, err := marshalRelease(release)
-	if err != nil {
+	// The source history tags the commit with this build's number; a record
+	// that could not be stored still leaves the commits, just untagged.
+	var sequence int64
+	if raw, err := marshalRelease(release); err != nil {
 		log.Printf("store release app=%s space=%s: %v", app, space, err)
-		return
-	}
-	if _, err := s.telemetry.RecordBuild(ctx, space, app, release.Result.ImageRef, release.Result.OK, raw); err != nil {
+	} else if sequence, err = s.telemetry.RecordBuild(ctx, space, app, release.Result.ImageRef, release.Result.OK, raw); err != nil {
 		log.Printf("store release app=%s space=%s: %v", app, space, err)
 	}
+	s.recordSource(ctx, space, app, release, sequence)
 }
 
 func marshalRelease(release AppRelease) ([]byte, error) {

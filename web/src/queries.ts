@@ -39,6 +39,41 @@ export const buildQuery = (space: string, app: string, sequence: number) =>
     staleTime: Infinity, // a stored build never changes
   })
 
+// The source history. A commit's files never change, so trees, files and
+// diffs are cached for good; the list and a commit's builds do grow.
+export const commitsQuery = (space: string, app: string) =>
+  queryOptions({
+    queryKey: ['commits', space, app],
+    queryFn: () => api.commits(space, app),
+  })
+
+export const commitQuery = (space: string, app: string, id: string) =>
+  queryOptions({
+    queryKey: ['commit', space, app, id],
+    queryFn: () => api.commit(space, app, id),
+  })
+
+export const commitDiffQuery = (space: string, app: string, id: string, path: string) =>
+  queryOptions({
+    queryKey: ['commit-diff', space, app, id, path],
+    queryFn: () => api.commitDiff(space, app, id, path),
+    staleTime: Infinity,
+  })
+
+export const commitTreeQuery = (space: string, app: string, id: string) =>
+  queryOptions({
+    queryKey: ['commit-tree', space, app, id],
+    queryFn: () => api.commitTree(space, app, id),
+    staleTime: Infinity,
+  })
+
+export const commitFileQuery = (space: string, app: string, id: string, path: string) =>
+  queryOptions({
+    queryKey: ['commit-file', space, app, id, path],
+    queryFn: () => api.commitFile(space, app, id, path),
+    staleTime: Infinity,
+  })
+
 export const trafficQuery = (space: string, app = '', source: TrafficSource = 'edge', range: TrafficRange = '30d') =>
   queryOptions({
     queryKey: ['traffic', space, app, source, range],
@@ -129,6 +164,26 @@ export function useAppBuilds(space: string, app: string) {
 
 export function useAppBuild(space: string, app: string, sequence: number | null) {
   return present(useQuery({ ...buildQuery(space, app, sequence ?? 0), enabled: sequence !== null }))
+}
+
+export function useCommits(space: string, app: string) {
+  return present(useQuery(commitsQuery(space, app)))
+}
+
+export function useCommit(space: string, app: string, id: string | null) {
+  return present(useQuery({ ...commitQuery(space, app, id ?? ''), enabled: id !== null }))
+}
+
+export function useCommitDiff(space: string, app: string, id: string, path: string, enabled = true) {
+  return present(useQuery({ ...commitDiffQuery(space, app, id, path), enabled }))
+}
+
+export function useCommitTree(space: string, app: string, id: string) {
+  return present(useQuery(commitTreeQuery(space, app, id)))
+}
+
+export function useCommitFile(space: string, app: string, id: string, path: string | null) {
+  return present(useQuery({ ...commitFileQuery(space, app, id, path ?? ''), enabled: path !== null }))
 }
 
 // enabled=false only reads what an earlier run left in the cache.
