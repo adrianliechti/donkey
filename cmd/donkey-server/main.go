@@ -224,6 +224,12 @@ func main() {
 	// The single orchestrator migrates before accepting mutations. API pods
 	// may overlap during a rolling update, so they must never migrate state.
 	if orchestrator {
+		// The orchestrator writes every build's source, recipe and settings to
+		// the data volume; without it a deploy would leave no record.
+		if cfg.DataDir == "" {
+			fmt.Fprintln(os.Stderr, "donkey-orchestrator needs its data volume: DONKEY_DATA_DIR is not set")
+			os.Exit(1)
+		}
 		if err := rt.EnsureSpaceConfigs(ctx); err != nil {
 			fmt.Fprintln(os.Stderr, "migrating space settings:", err)
 			os.Exit(1)

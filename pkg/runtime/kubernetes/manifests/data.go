@@ -30,7 +30,7 @@ func dataClaimName(in SystemInput) string {
 // dataVolumeClaim is created only when the installation names no claim of
 // its own.
 func dataVolumeClaim(in SystemInput) *corev1.PersistentVolumeClaim {
-	if !in.Data.Enabled() || in.Data.ExistingClaim != "" {
+	if in.Data.ExistingClaim != "" {
 		return nil
 	}
 	claim := &corev1.PersistentVolumeClaim{
@@ -57,9 +57,6 @@ func dataVolumeClaim(in SystemInput) *corev1.PersistentVolumeClaim {
 // where. The claim belongs to the pod's uid: a fresh volume is made writable
 // for it, and an already-owned one is left alone.
 func withDataVolume(in SystemInput, spec *corev1.PodSpec) {
-	if !in.Data.Enabled() {
-		return
-	}
 	container := &spec.Containers[0]
 	container.Env = append(container.Env, corev1.EnvVar{Name: "DONKEY_DATA_DIR", Value: DataMountPath})
 	container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{Name: "data", MountPath: DataMountPath})

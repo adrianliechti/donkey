@@ -7,6 +7,23 @@ export type Exposure = 'public' | 'protected' | 'internal'
 export type AppMode = 'web' | 'api'
 export type CorsPolicy = '' | 'allowAll'
 
+/** A deploy donkey-orchestrator is working on, or finished lately — an app
+ * deployed for the first time exists nowhere else until it runs. */
+export interface ActiveDeploy {
+  space: string
+  app: string
+  stage: BoardStage
+  /** The latest progress line of the deploy's log. */
+  line?: string
+  by?: string
+  via: 'console' | 'cli'
+  startedAt: string
+  finishedAt?: string
+  error?: string
+}
+
+export type BoardStage = 'queued' | DeployStage | 'done' | 'failed'
+
 export interface AppSummary {
   name: string
   space: string
@@ -20,6 +37,8 @@ export interface AppSummary {
   mode?: AppMode
   hasStorage?: boolean
   addons?: string[]
+  /** What the app is written in, read off its build recipe ("python", "go"…). */
+  stack?: string
 }
 
 export interface AppStatus {
@@ -251,6 +270,11 @@ export interface ServiceHTTPResponse {
   body: string
   truncated: boolean
   durationMs: number
+  /** Bytes received, and the target actually requested. */
+  size?: number
+  url?: string
+  /** A body that is not text arrives base64-encoded. */
+  encoding?: 'base64'
 }
 
 export interface PlatformConfig {
@@ -601,8 +625,8 @@ export interface DeployUpdate {
   result?: DeployResult
   stage?: DeployStage
   baseImages?: string[]
-  dockerfile?: string
-  dockerignore?: string
+  /** Where the recipe this build used sits in its commit. */
+  recipe?: string
   changes?: SourceChange[]
 }
 
@@ -623,9 +647,6 @@ export interface AppRelease {
   update: DeployUpdate
   lines: string[]
   buildLog?: string
-  dockerfile?: string
-  dockerignore?: string
-  changes?: SourceChange[]
   result: DeployResult
   truncated?: boolean
 }
@@ -704,53 +725,14 @@ export interface DoctorReport {
   domain: string
 }
 
-export interface RedisKey {
-  id: string
-  name: string
-}
-
-export interface RedisValue {
-  type: string
-  ttl: number
-  size: number
-  value: unknown
-  editable: boolean
-  truncated: boolean
-}
-
 /** A database, or a Trino catalog; unavailable sizes are null. */
 export interface DbDatabase {
   name: string
   size: number | null
 }
 
-/** One table of a browsed database; rows is the planner's estimate. */
-export interface DbTable {
-  schema: string
-  name: string
-  rows: number | null
-}
-
 /** A grid cell travels as text; null stays null. */
 export type DbCell = string | null
-
-export interface DbRowsPage {
-  columns: string[]
-  /** The primary key columns — empty means the grid stays read-only. */
-  key: string[]
-  rows: DbCell[][]
-  /** Null when the backend does not count the entire table. */
-  total: number | null
-  limit: number
-  offset: number
-  hasMore: boolean
-}
-
-/** What a row edit sends: the path names the table, this names the row. */
-export interface DbRowChange {
-  key?: Record<string, string>
-  values?: Record<string, string>
-}
 
 export interface DbQueryResult {
   columns: string[]
@@ -793,7 +775,9 @@ function unauthorized(): ApiError {
   return new ApiError(401, 'The session expired — signing in again.')
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+// request, fetchOK and servicePath are exported for the service consoles,
+// which keep their own calls beside them (see consoles.ts).
+export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers)
   // FormData needs the browser's multipart content type and boundary.
   if (typeof init?.body === 'string' && !headers.has('Content-Type')) {
@@ -810,7 +794,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 // Downloads ride the session cookie like every other call; fetch keeps the
 // error handling uniform and hands back a blob.
-async function fetchOK(path: string): Promise<Response> {
+export async function fetchOK(path: string): Promise<Response> {
   const res = await fetch(path)
   if (res.status === 401) throw unauthorized()
   if (!res.ok) throw new ApiError(res.status, await errorMessage(res))
@@ -819,11 +803,22 @@ async function fetchOK(path: string): Promise<Response> {
 
 const downloadBlob = async (path: string): Promise<Blob> => (await fetchOK(path)).blob()
 
+// saveBlob hands a fetched download to the browser under a name. Downloads go
+// through fetch because they carry the session; a plain <a href> could not.
+export function saveBlob(blob: Blob, name: string) {
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = name
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
 // Apps live in a space, so every app path carries it.
 const appPath = (space: string, app: string, suffix = '') =>
   `/v1/spaces/${encodeURIComponent(space)}/apps/${encodeURIComponent(app)}${suffix}`
 
-const servicePath = (space: string, service: string, suffix = '') =>
+export const servicePath = (space: string, service: string, suffix = '') =>
   `/v1/spaces/${encodeURIComponent(space)}/services/${encodeURIComponent(service)}${suffix}`
 
 export const api = {
@@ -833,6 +828,7 @@ export const api = {
   doctor: () => request<DoctorReport>('/v1/doctor'),
   apps: () => request<{ apps: AppSummary[] }>('/v1/apps'),
   fleet: () => request<SpaceList & { apps: AppSummary[] }>('/v1/fleet'),
+  deploys: async () => (await request<{ deploys: ActiveDeploy[] | null }>('/v1/deploys')).deploys ?? [],
   status: async (space: string, app: string): Promise<AppStatus> => {
     const st = await request<AppStatus>(appPath(space, app, '/status'))
     return { ...st, pods: st.pods ?? [] }
@@ -843,7 +839,7 @@ export const api = {
     request<AppRelease>(appPath(space, app, `/builds/${sequence}`)),
 
   commits: (space: string, app: string) =>
-    request<{ enabled: boolean; commits: SourceCommit[] }>(appPath(space, app, '/commits')),
+    request<{ commits: SourceCommit[] }>(appPath(space, app, '/commits')),
   commit: (space: string, app: string, id: string) =>
     request<SourceCommitDetail>(appPath(space, app, `/commits/${id}`)),
   commitDiff: (space: string, app: string, id: string, path: string) =>
@@ -945,15 +941,6 @@ export const api = {
     request<{ binding: Record<string, string>; host: string; port: number; type?: string; protocol?: string }>(
       servicePath(space, service, '/binding'),
     ),
-  serviceAIBase: (space: string, service: string) => servicePath(space, service, '/ai'),
-  testServiceHTTP: (space: string, service: string, input: ServiceHTTPRequest, signal?: AbortSignal) =>
-    request<ServiceHTTPResponse>(servicePath(space, service, '/http/request'), {
-      method: 'POST', body: JSON.stringify(input), signal,
-    }),
-  serviceExa: (space: string, service: string, operation: 'search' | 'contents', body: Record<string, unknown>) =>
-    request<{ results?: { title?: string; url: string; text?: string }[] }>(servicePath(space, service, `/exa/${operation}`), {
-      method: 'POST', body: JSON.stringify(body),
-    }),
   // Services belong to the space; apps hold connections to them.
   spaceAddons: (space: string) =>
     request<{ addons: SpaceAddonEntry[] }>(`/v1/spaces/${encodeURIComponent(space)}/services`),
@@ -985,127 +972,6 @@ export const api = {
     request<{ ok: boolean }>(appPath(space, app, `/services/${encodeURIComponent(addon)}`), {
       method: 'DELETE',
     }),
-  redisKeys: (space: string, service: string, pattern: string, cursor = '0') =>
-    request<{ keys: RedisKey[]; cursor: string; db: number }>(servicePath(space, service, `/keys?${new URLSearchParams({ pattern, cursor })}`)),
-  redisValue: (space: string, service: string, id: string) =>
-    request<RedisValue>(servicePath(space, service, `/keys/value?${new URLSearchParams({ id })}`)),
-  redisCreate: (space: string, service: string, name: string, value: string, ttl?: number) =>
-    request<{ ok: boolean }>(servicePath(space, service, '/keys'), { method: 'POST', body: JSON.stringify({ name, value, ttl }) }),
-  redisSave: (space: string, service: string, id: string, value: string, previous: string, ttl?: number) =>
-    request<{ ok: boolean }>(servicePath(space, service, `/keys/value?${new URLSearchParams({ id })}`), { method: 'PUT', body: JSON.stringify({ value, previous, ttl }) }),
-  redisDelete: (space: string, service: string, id: string) =>
-    request<{ ok: boolean }>(servicePath(space, service, `/keys/value?${new URLSearchParams({ id })}`), { method: 'DELETE' }),
-  // The database browser — talks to a space service's postgres through the
-  // server; values travel as strings (or null), which is what a grid edits.
-  // Containment lives in the path (service → database → table → rows);
-  // postgres details like the schema ride the query, defaulting to public.
-  dbDatabases: (space: string, service: string, signal?: AbortSignal) =>
-    request<{ databases: DbDatabase[]; default: string; protocol: string }>(
-      servicePath(space, service, '/databases'), { signal },
-    ),
-  dbSchemas: (space: string, service: string, db: string, signal?: AbortSignal) =>
-    request<{ schemas: string[]; default: string }>(servicePath(space, service, `/databases/${encodeURIComponent(db)}/schemas`), { signal }),
-  dbCreateDatabase: (space: string, service: string, name: string) =>
-    request<{ ok: boolean; name: string }>(servicePath(space, service, '/databases'), {
-      method: 'POST',
-      body: JSON.stringify({ name }),
-    }),
-  dbDropDatabase: (space: string, service: string, db: string) =>
-    request<{ ok: boolean }>(servicePath(space, service, `/databases/${encodeURIComponent(db)}`), {
-      method: 'DELETE',
-    }),
-  dbTables: (space: string, service: string, db: string, schema?: string, signal?: AbortSignal) =>
-    request<{ tables: DbTable[] }>(
-      servicePath(space, service, `/databases/${encodeURIComponent(db)}/tables${schema === undefined ? '' : `?${new URLSearchParams({ schema })}`}`), { signal },
-    ),
-  dbDropTable: (space: string, service: string, db: string, schema: string, table: string) =>
-    request<{ ok: boolean }>(
-      servicePath(
-        space,
-        service,
-        `/databases/${encodeURIComponent(db)}/tables/${encodeURIComponent(table)}?schema=${encodeURIComponent(schema)}`,
-      ),
-      { method: 'DELETE' },
-    ),
-  dbRows: (
-    space: string,
-    service: string,
-    db: string,
-    schema: string,
-    table: string,
-    limit: number,
-    offset: number,
-    order?: { column: string; desc: boolean },
-    signal?: AbortSignal,
-  ) =>
-    request<DbRowsPage>(
-      servicePath(
-        space,
-        service,
-        `/databases/${encodeURIComponent(db)}/tables/${encodeURIComponent(table)}/rows?schema=${encodeURIComponent(schema)}&limit=${limit}&offset=${offset}` +
-          (order
-            ? `&order=${encodeURIComponent(order.column)}&dir=${order.desc ? 'desc' : 'asc'}`
-            : ''),
-      ), { signal },
-    ),
-  dbInsertRow: (
-    space: string,
-    service: string,
-    db: string,
-    schema: string,
-    table: string,
-    body: DbRowChange,
-  ) =>
-    request<{ ok: boolean }>(
-      servicePath(
-        space,
-        service,
-        `/databases/${encodeURIComponent(db)}/tables/${encodeURIComponent(table)}/rows?schema=${encodeURIComponent(schema)}`,
-      ),
-      { method: 'POST', body: JSON.stringify(body) },
-    ),
-  dbUpdateRow: (
-    space: string,
-    service: string,
-    db: string,
-    schema: string,
-    table: string,
-    body: DbRowChange,
-  ) =>
-    request<{ ok: boolean; affected: number }>(
-      servicePath(
-        space,
-        service,
-        `/databases/${encodeURIComponent(db)}/tables/${encodeURIComponent(table)}/rows?schema=${encodeURIComponent(schema)}`,
-      ),
-      { method: 'PUT', body: JSON.stringify(body) },
-    ),
-  dbDeleteRow: (
-    space: string,
-    service: string,
-    db: string,
-    schema: string,
-    table: string,
-    body: DbRowChange,
-  ) =>
-    request<{ ok: boolean; affected: number }>(
-      servicePath(
-        space,
-        service,
-        `/databases/${encodeURIComponent(db)}/tables/${encodeURIComponent(table)}/rows?schema=${encodeURIComponent(schema)}`,
-      ),
-      { method: 'DELETE', body: JSON.stringify(body) },
-    ),
-  dbQuery: (space: string, service: string, db: string, sql: string, signal?: AbortSignal, schema?: string) =>
-    request<DbQueryResult>(
-      servicePath(space, service, db ? `/databases/${encodeURIComponent(db)}/query` : '/query'),
-      {
-        method: 'POST',
-        body: JSON.stringify({ sql, schema }),
-        signal,
-      },
-    ),
-
   // diagnose asks the assistant to read the app's current evidence — this
   // can take a while (a model call with real logs behind it).
   diagnose: (space: string, app: string) =>

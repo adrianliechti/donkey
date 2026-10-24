@@ -115,7 +115,7 @@ func TestPersistReleaseRedactsAndStoresVersionedBuild(t *testing.T) {
 	release := releaseFixture()
 	release.Lines = append(release.Lines, "OPENAI_API_KEY="+secret)
 	release.BuildLog = "Authorization: Bearer " + secret
-	release.Dockerfile = "FROM node:22-slim\nENV OPENAI_API_KEY=" + secret + "\nCMD [\"node\", \"server.js\"]"
+	release.Update.Recipe = ".donkey/Dockerfile"
 
 	s.persistRelease(context.Background(), "acme", "web", release)
 	raw := store.stored["acme/web"]
@@ -129,8 +129,9 @@ func TestPersistReleaseRedactsAndStoresVersionedBuild(t *testing.T) {
 	if err := json.Unmarshal(raw, &stored); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(stored.Dockerfile, "FROM node:22-slim") {
-		t.Fatal("the record should keep the Dockerfile the image was built from")
+	// The recipe itself is in the build's commit; the record says where.
+	if stored.Update.Recipe != ".donkey/Dockerfile" {
+		t.Fatalf("the record should name the recipe the image was built from, got %q", stored.Update.Recipe)
 	}
 	var envelope struct {
 		Image string `json:"image"`

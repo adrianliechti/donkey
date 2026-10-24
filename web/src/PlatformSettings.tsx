@@ -4,7 +4,8 @@ import { api, type PlatformConfig } from './api'
 import { fleetQuery } from './queries'
 import { MembershipEditor } from './MembershipEditor'
 import { Modal, ModalBody, ModalFooter, ModalHeader, ModalNotice } from './dialog'
-import { Button, Spinner, errText } from './ui'
+import { Button, Spinner } from './ui'
+import { errText } from './format'
 
 export function PlatformSettings({ onClose }: { onClose: () => void }) {
   const queryClient = useQueryClient()

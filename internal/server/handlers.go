@@ -68,6 +68,8 @@ type StatusResponse struct {
 	Exposure string `json:"exposure,omitempty"`
 	// Port the app listens on (donkey.yaml's `port`).
 	Port int `json:"port,omitempty"`
+	// Stack is what the app is written in (detect.Stack), for its icon.
+	Stack string `json:"stack,omitempty"`
 	// Endpoint is the asynchronously prepared edge behind URL. It is omitted
 	// for internal apps and runtimes without endpoint diagnostics.
 	Endpoint *EndpointStatusResponse `json:"endpoint,omitempty"`
@@ -129,6 +131,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		Image:    st.Image,
 		Pods:     st.Instances,
 		Restarts: st.Restarts,
+		Stack:    st.Stack,
 		// The claim is the disk: it outlives the pods, so this is true even
 		// while the app is stopped or crash-looping — which is exactly when
 		// someone needs to look at what is on it.
@@ -953,11 +956,9 @@ func (s *Server) handleDestroy(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadGateway, fmt.Errorf("the app is removed, but its build history is not: %w — removing it again finishes the job", err))
 			return
 		}
-		if s.history != nil {
-			if err := s.history.RemoveApp(space, app); err != nil {
-				writeErr(w, http.StatusBadGateway, fmt.Errorf("the app is removed, but its source history is not: %w — removing it again finishes the job", err))
-				return
-			}
+		if err := s.history.RemoveApp(space, app); err != nil {
+			writeErr(w, http.StatusBadGateway, fmt.Errorf("the app is removed, but its source history is not: %w — removing it again finishes the job", err))
+			return
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})

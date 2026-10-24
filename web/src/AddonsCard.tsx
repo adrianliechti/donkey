@@ -4,7 +4,19 @@ import { api, type AddAddonRequest, type SpaceAddonEntry } from './api'
 import { AddServiceDialog } from './AddonForm'
 import { useAppServices, useInvalidateServices, useSpaceServices } from './queries'
 import { serviceUI } from './serviceProtocol'
-import { Chip, ErrorNote, errText, IconButton, List, ListRow, Section, SectionHeader, Spinner, StateChip, SuccessNote } from './ui'
+import {
+  Chip,
+  ErrorNote,
+  IconButton,
+  List,
+  ListRow,
+  Section,
+  SectionHeader,
+  Spinner,
+  StateChip,
+  SuccessNote,
+} from './ui'
+import { errText } from './format'
 
 /**
  * The services this app can use: every service of the space in one list,

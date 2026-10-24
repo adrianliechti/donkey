@@ -11,7 +11,7 @@ const protocols: Record<string, ServiceUI> = {
   redis: { Icon: KeyRound, console: 'redis', noun: 'keys' },
   s3: { Icon: Archive, console: 's3', noun: 'buckets' },
   openai: { Icon: Sparkles, console: 'openai', noun: 'chat' },
-  http: { Icon: Globe, console: 'http', noun: 'request tester' },
+  http: { Icon: Globe, console: 'http', noun: 'requests' },
   exa: { Icon: Search, console: 'exa', noun: 'search' },
 }
 const unknown: ServiceUI = { Icon: Server, noun: 'service' }

@@ -6,6 +6,7 @@ package server
 // door.
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -18,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
@@ -150,27 +152,49 @@ func (s *Server) handleS3DeleteBucket(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-// s3EmptyBucket removes every object so the bucket itself can go. The
-// listing feeds the batched remover directly — no key list ever sits in
-// memory whole.
+// s3EmptyBucket removes every object so the bucket itself can go.
 func s3EmptyBucket(ctx context.Context, client *minio.Client, bucket string) error {
-	listed := client.ListObjects(ctx, bucket, minio.ListObjectsOptions{Recursive: true})
+	_, err := s3RemoveAll(ctx, client, bucket, nil, []string{""})
+	return err
+}
+
+// s3RemoveAll removes the named objects and everything under the named
+// prefixes, and says how many objects went. The listing feeds the batched
+// remover directly — no key list ever sits in memory whole.
+func s3RemoveAll(ctx context.Context, client *minio.Client, bucket string, keys, prefixes []string) (int, error) {
 	toRemove := make(chan minio.ObjectInfo)
+	listed := make(chan struct{})
 	var listErr error
+	sent := 0
 	go func() {
+		defer close(listed)
 		defer close(toRemove)
-		for obj := range listed {
-			if obj.Err != nil {
-				listErr = obj.Err
-				return
-			}
-			// Selected on ctx: without it, a remover that stopped reading
-			// leaves this send blocked for the life of the process.
+		// Selected on ctx: without it, a remover that stopped reading
+		// leaves this send blocked for the life of the process.
+		send := func(obj minio.ObjectInfo) bool {
 			select {
 			case toRemove <- obj:
+				sent++
+				return true
 			case <-ctx.Done():
 				listErr = ctx.Err()
+				return false
+			}
+		}
+		for _, key := range keys {
+			if !send(minio.ObjectInfo{Key: key}) {
 				return
+			}
+		}
+		for _, prefix := range prefixes {
+			for obj := range client.ListObjects(ctx, bucket, minio.ListObjectsOptions{Prefix: prefix, Recursive: true}) {
+				if obj.Err != nil {
+					listErr = obj.Err
+					return
+				}
+				if !send(obj) {
+					return
+				}
 			}
 		}
 	}()
@@ -178,17 +202,31 @@ func s3EmptyBucket(ctx context.Context, client *minio.Client, bucket string) err
 	// remover reading toRemove, which blocks the lister above forever — and a
 	// single failed multi-delete reports one error per object in the batch.
 	var removeErr error
+	failed := 0
 	for rerr := range client.RemoveObjects(ctx, bucket, toRemove, minio.RemoveObjectsOptions{}) {
-		if rerr.Err != nil && removeErr == nil {
-			removeErr = rerr.Err
+		if rerr.Err != nil {
+			failed++
+			if removeErr == nil {
+				removeErr = rerr.Err
+			}
 		}
 	}
+	// The remover drained the channel (or ctx ended the lister's sends), so
+	// the lister is done, and its count and error can be read.
+	<-listed
 	if removeErr != nil {
-		return removeErr
+		return sent - failed, removeErr
 	}
-	// The remover drains the channel, so the lister goroutine is done by the
-	// time its error is read.
-	return listErr
+	return sent, listErr
+}
+
+// s3Object is one object as the browser lists it.
+type s3Object struct {
+	Key          string `json:"key"`
+	Size         int64  `json:"size"`
+	Modified     string `json:"modified"`
+	ETag         string `json:"etag,omitempty"`
+	StorageClass string `json:"storageClass,omitempty"`
 }
 
 func (s *Server) handleS3Objects(w http.ResponseWriter, r *http.Request) {
@@ -201,46 +239,253 @@ func (s *Server) handleS3Objects(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	prefix := q.Get("prefix")
+	if err := s3utils.CheckValidObjectNamePrefix(prefix); err != nil {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("%q won't work as a prefix", prefix))
+		return
+	}
 	max, _ := strconv.Atoi(q.Get("max"))
-	if max < 1 || max > 500 {
+	if max < 1 || max > 1000 {
 		max = 500
+	}
+	// Non-recursive listing folds keys at "/" — the store's flat namespace
+	// comes back as the folders people put into their key names. Recursive
+	// lists every object under the prefix, for downloading a folder.
+	delimiter := "/"
+	if q.Get("recursive") == "true" {
+		delimiter = ""
 	}
 	client, err := s.s3Connect(ctx, r)
 	if err != nil {
 		writeErr(w, s3Status(err), err)
 		return
 	}
-	type object struct {
-		Key      string `json:"key"`
-		Size     int64  `json:"size"`
-		Modified string `json:"modified"`
+	// One page of the store's own listing, so its continuation token carries
+	// the next request on exactly where this one stopped. The streaming API
+	// hides the token, and within a page it hands out objects before folders,
+	// so no "start after the last one shown" survives it. (This call takes no
+	// context; the client's transport timeouts bound it.)
+	page, err := minio.Core{Client: client}.ListObjectsV2(bucket, prefix, "", q.Get("token"), delimiter, max)
+	if err != nil {
+		writeErr(w, s3Status(err), err)
+		return
 	}
 	prefixes := []string{}
-	objects := []object{}
-	truncated := false
-	// Non-recursive listing folds keys at "/" — the store's flat namespace
-	// comes back as the folders people put into their key names.
-	for info := range client.ListObjects(ctx, bucket, minio.ListObjectsOptions{Prefix: prefix, Recursive: false}) {
-		if info.Err != nil {
-			writeErr(w, s3Status(info.Err), info.Err)
-			return
-		}
+	for _, p := range page.CommonPrefixes {
+		prefixes = append(prefixes, p.Prefix)
+	}
+	objects := []s3Object{}
+	for _, info := range page.Contents {
 		// A zero-byte marker named exactly like the prefix would list the
 		// folder inside itself.
 		if info.Key == prefix {
 			continue
 		}
-		if len(prefixes)+len(objects) >= max {
-			truncated = true
+		objects = append(objects, s3Object{
+			Key:          info.Key,
+			Size:         info.Size,
+			Modified:     info.LastModified.UTC().Format(time.RFC3339),
+			ETag:         strings.Trim(info.ETag, `"`),
+			StorageClass: info.StorageClass,
+		})
+	}
+	next := ""
+	if page.IsTruncated {
+		next = page.NextContinuationToken
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"prefixes": prefixes, "objects": objects, "truncated": page.IsTruncated, "next": next})
+}
+
+// The preview pane reads up to this much of an object as text.
+const s3PreviewBytes = 256 << 10
+
+// s3MayBeText rules out the content types that are never text, so their
+// bytes are not fetched only to be found binary.
+func s3MayBeText(contentType string) bool {
+	media, _, _ := mime.ParseMediaType(contentType)
+	top, sub, _ := strings.Cut(media, "/")
+	switch top {
+	case "image", "video", "audio", "font":
+		return false
+	case "application":
+		switch sub {
+		case "zip", "gzip", "x-gzip", "x-tar", "x-7z-compressed", "x-bzip2", "x-xz", "zstd", "pdf", "wasm", "vnd.apache.parquet", "x-parquet":
+			return false
+		}
+	}
+	return true
+}
+
+// s3Text is the bytes as text when they are: UTF-8 without NULs. A preview
+// cut mid-rune drops the partial rune rather than declaring the file binary.
+func s3Text(data []byte, cut bool) (string, bool) {
+	if bytes.IndexByte(data, 0) >= 0 {
+		return "", false
+	}
+	for drop := 0; drop < 4 && drop <= len(data); drop++ {
+		if utf8.Valid(data[:len(data)-drop]) {
+			return string(data[:len(data)-drop]), true
+		}
+		if !cut {
 			break
 		}
-		if strings.HasSuffix(info.Key, "/") {
-			prefixes = append(prefixes, info.Key)
-			continue
-		}
-		objects = append(objects, object{Key: info.Key, Size: info.Size, Modified: info.LastModified.UTC().Format(time.RFC3339)})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"prefixes": prefixes, "objects": objects, "truncated": truncated})
+	return "", false
+}
+
+// handleS3Info is the preview pane: an object's metadata, and its first
+// s3PreviewBytes as text when it is text.
+func (s *Server) handleS3Info(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+	q := r.URL.Query()
+	bucket, key := r.PathValue("bucket"), q.Get("key")
+	if err := s3utils.CheckValidBucketName(bucket); err != nil {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("%q is not a valid bucket name", bucket))
+		return
+	}
+	if key == "" {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("which object?"))
+		return
+	}
+	client, err := s.s3Connect(ctx, r)
+	if err != nil {
+		writeErr(w, s3Status(err), err)
+		return
+	}
+	st, err := client.StatObject(ctx, bucket, key, minio.StatObjectOptions{})
+	if err != nil {
+		writeErr(w, s3Status(err), err)
+		return
+	}
+	metadata := map[string]string{}
+	for k, v := range st.UserMetadata {
+		metadata[k] = v
+	}
+	out := map[string]any{
+		"key":          st.Key,
+		"size":         st.Size,
+		"modified":     st.LastModified.UTC().Format(time.RFC3339),
+		"contentType":  st.ContentType,
+		"etag":         strings.Trim(st.ETag, `"`),
+		"storageClass": st.StorageClass,
+		"versionId":    st.VersionID,
+		"metadata":     metadata,
+	}
+	if q.Get("text") != "false" && st.Size > 0 && s3MayBeText(st.ContentType) {
+		var opts minio.GetObjectOptions
+		_ = opts.SetRange(0, s3PreviewBytes-1)
+		obj, err := client.GetObject(ctx, bucket, key, opts)
+		if err != nil {
+			writeErr(w, s3Status(err), err)
+			return
+		}
+		defer obj.Close()
+		data, err := io.ReadAll(io.LimitReader(obj, s3PreviewBytes))
+		if err != nil {
+			writeErr(w, s3Status(err), err)
+			return
+		}
+		cut := st.Size > int64(len(data))
+		if text, ok := s3Text(data, cut); ok {
+			out["text"] = text
+			out["truncated"] = cut
+		}
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// handleS3DeleteMany removes a selection: objects by key, folders with
+// everything in them. Emptying the whole bucket is the bucket's own delete.
+func (s *Server) handleS3DeleteMany(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+	bucket := r.PathValue("bucket")
+	if err := s3utils.CheckValidBucketName(bucket); err != nil {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("%q is not a valid bucket name", bucket))
+		return
+	}
+	var req struct {
+		Keys     []string `json:"keys"`
+		Prefixes []string `json:"prefixes"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<20)).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if len(req.Keys)+len(req.Prefixes) == 0 || len(req.Keys) > 1000 || len(req.Prefixes) > 100 {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("delete 1 to 1000 objects and up to 100 folders at once"))
+		return
+	}
+	for _, key := range req.Keys {
+		if err := s3utils.CheckValidObjectName(key); err != nil {
+			writeErr(w, http.StatusBadRequest, fmt.Errorf("%q won't work as an object key", key))
+			return
+		}
+	}
+	for _, prefix := range req.Prefixes {
+		if !strings.HasSuffix(prefix, "/") || s3utils.CheckValidObjectName(strings.TrimSuffix(prefix, "/")) != nil {
+			writeErr(w, http.StatusBadRequest, fmt.Errorf("%q is not a folder", prefix))
+			return
+		}
+	}
+	client, err := s.s3Connect(ctx, r)
+	if err != nil {
+		writeErr(w, s3Status(err), err)
+		return
+	}
+	deleted, err := s3RemoveAll(ctx, client, bucket, req.Keys, req.Prefixes)
+	if err != nil {
+		writeErr(w, s3Status(err), fmt.Errorf("%d deleted, then: %w", deleted, err))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deleted": deleted})
+}
+
+// s3FolderKey checks a folder's marker key: "a/b/", no empty or dot
+// segments — those are legal in S3 and confusing everywhere else.
+func s3FolderKey(key string) error {
+	if !strings.HasSuffix(key, "/") || strings.HasPrefix(key, "/") || s3utils.CheckValidObjectName(key) != nil {
+		return fmt.Errorf("%q won't work as a folder", key)
+	}
+	for part := range strings.SplitSeq(strings.TrimSuffix(key, "/"), "/") {
+		if part == "" || part == "." || part == ".." {
+			return fmt.Errorf("%q won't work as a folder", key)
+		}
+	}
+	return nil
+}
+
+// handleS3CreateFolder writes the zero-byte marker that makes an empty
+// folder visible — S3 has no folders, only keys with slashes in them.
+func (s *Server) handleS3CreateFolder(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+	bucket := r.PathValue("bucket")
+	if err := s3utils.CheckValidBucketName(bucket); err != nil {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("%q is not a valid bucket name", bucket))
+		return
+	}
+	var req struct {
+		Key string `json:"key"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8<<10)).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := s3FolderKey(req.Key); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	client, err := s.s3Connect(ctx, r)
+	if err != nil {
+		writeErr(w, s3Status(err), err)
+		return
+	}
+	if _, err := client.PutObject(ctx, bucket, req.Key, bytes.NewReader(nil), 0, minio.PutObjectOptions{ContentType: "application/x-directory"}); err != nil {
+		writeErr(w, s3Status(err), err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "key": req.Key})
 }
 
 func (s *Server) handleS3Upload(w http.ResponseWriter, r *http.Request) {

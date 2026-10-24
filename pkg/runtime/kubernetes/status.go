@@ -52,6 +52,7 @@ func deploymentStatus(dep *appsv1.Deployment) *rt.AppStatus {
 	st.Image = dep.Annotations[manifests.AnnotationImage]
 	st.Mode = dep.Annotations[manifests.AnnotationMode]
 	st.CORS = dep.Annotations[manifests.AnnotationCORS]
+	st.Stack = dep.Annotations[manifests.AnnotationStack]
 	if st.Image == "" && len(dep.Spec.Template.Spec.Containers) > 0 {
 		st.Image = dep.Spec.Template.Spec.Containers[0].Image
 	}

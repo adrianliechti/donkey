@@ -6,7 +6,7 @@ Deploy your apps to Kubernetes without the hard parts.
 $ donkey deploy
 · Packing up shop (space acme) and sending it to the server…
 ✓ shop will be built with automatic detection (python)
-✓ Image ready: registry.example.com/donkey/shop:4f2a9c1b03de-20260724143022
+✓ Image ready: registry.example.com/donkey/acme/shop:4f2a9c1b03de-20260724143022
 · Keeping /app/uploads on a disk — views.py saves uploaded files there
 · Checking the app's health at /healthz
 ✓ shop is running.
@@ -432,7 +432,7 @@ $ donkey deploy
 Looking at your app…
 ✓ wiki will be built with automatic detection (node)
 Building the image…
-✓ Image ready: registry.example.com/donkey/wiki:4f2a9c1b03de-20260725143022
+✓ Image ready: registry.example.com/donkey/acme/wiki:4f2a9c1b03de-20260725143022
 · Keeping /app/data on a disk — server.js opens data/wiki.db with better-sqlite3
 · Keeping /app/uploads on a disk — routes/upload.js writes attachments there
 · One 1Gi disk holds those folders. Put a `storage:` block in donkey.yaml to
@@ -841,7 +841,7 @@ applies anything, and `donkey doctor` keeps checking them after):
 
 | Requirement | Why | Notes |
 |---|---|---|
-| **Kubernetes cluster** with a default StorageClass | donkey-telemetry always claims its 2 Gi DuckDB volume and donkey-orchestrator its 5 Gi `donkey-data` volume for the [source history](#source-history) (unless `data` names a claim or is disabled); apps with `storage.paths` and provisioned services claim their own | any conformant cluster; nothing donkey-specific. Donkey brings its own edge, normally as a `LoadBalancer` Service; on clusters where nothing assigns those an address (kind), set `gateway.serviceType: NodePort` or `ClusterIP`. cert-manager is required only for `tls.mode: cert-manager`; external-dns with `--source=crd` only when `gateway.externalDNS` is set |
+| **Kubernetes cluster** with a default StorageClass | donkey-telemetry always claims its 2 Gi DuckDB volume and donkey-orchestrator its 5 Gi `donkey-data` volume for the [source history](#source-history) (unless `data` names a claim of your own); apps with `storage.paths` and provisioned services claim their own | any conformant cluster; nothing donkey-specific. Donkey brings its own edge, normally as a `LoadBalancer` Service; on clusters where nothing assigns those an address (kind), set `gateway.serviceType: NodePort` or `ClusterIP`. cert-manager is required only for `tls.mode: cert-manager`; external-dns with `--source=crd` only when `gateway.externalDNS` is set |
 | **Container registry** the cluster can pull from | donkey pushes every build there | `registry.url` + credentials; `registry.caSecret` when its certificate comes from a private CA |
 | **DNS** pointing public hostnames to the gateway address | apps are served at `<app>.<space>.<domain>`, the API and login callback at `<domain>` | configure a wildcard plus apex yourself, or let `gateway.externalDNS` publish exact records |
 | **OIDC provider** (Pocket ID, Entra ID, Keycloak, …) | the one way in: console, CLI and protected apps all sign in against it | required — `auth.issuer` (+ client id/secret); `platform.admins` optionally seeds the platform admins |
@@ -990,13 +990,12 @@ it, so a later app by the same name starts with its own; `donkey destroy
 the same app's redeploy. Deleting the space deletes all of it.
 
 The data volume is general-purpose; the source history is its first tenant.
-It is on by default — the `donkey-data` claim (5 Gi) on Kubernetes, a folder
-of the `donkey-data` state volume on Docker:
+Every installation has one — the `donkey-data` claim (5 Gi) on Kubernetes, a
+folder of the `donkey-data` state volume on Docker:
 
 ```yaml
 data:
   existingClaim: donkey-data-nfs  # a claim you manage — or storageClass/size for donkey's
-  # disabled: true                # no data volume, and no source history
 ```
 
 donkey-orchestrator alone mounts it: deploys write the history there, and
@@ -1523,8 +1522,9 @@ Before upgrading:
   pods are gone. The new install restores the gateway at its normal replica
   count. Keep it stopped if an upgrade fails, then retry the install.
 - Kubernetes now needs a data claim for the orchestrator: provide a default
-  StorageClass, set `data.storageClass` or `data.existingClaim`, or use
-  `data.disabled: true` to run without source history.
+  StorageClass, or set `data.storageClass` or `data.existingClaim`. The data
+  volume is no longer optional — remove `data.disabled` from donkey-install.yaml
+  if you set it.
 - Review space membership. Per-app users/groups become Viewers of **all** apps
   in their space. Previously unrestricted protected apps now require space
   membership. Public apps become protected until an admin enables

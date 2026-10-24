@@ -52,18 +52,40 @@ type DeployUpdate struct {
 	Result     *DeployResult `json:"result,omitempty"`
 	Stage      string        `json:"stage,omitempty"`
 	BaseImages []string      `json:"baseImages,omitempty"`
-	// Dockerfile is the exact file this build used, reported once it is
-	// settled — the app's own, or the one the assistant wrote.
-	Dockerfile   string            `json:"dockerfile,omitempty"`
-	Dockerignore *string           `json:"dockerignore,omitempty"`
-	Changes      []ai.SourceChange `json:"changes,omitempty"`
+	// Recipe is where the Dockerfile this build used sits in the build
+	// context, reported once it is settled — the app's own, or the one the
+	// assistant wrote. The file itself is in the source history.
+	Recipe  string            `json:"recipe,omitempty"`
+	Changes []ai.SourceChange `json:"changes,omitempty"`
 }
 
-// lineStreamer writes progress lines to the client as they happen.
+// lineStreamer writes progress lines to the client as they happen, and
+// keeps each app's entry on the deploy board current.
 type lineStreamer struct {
 	w       http.ResponseWriter
 	f       http.Flusher
 	release *releaseRecorder
+	// tickets are the board entries of the apps this stream deploys; current
+	// is the app the pipeline is on, which updates without an app name and
+	// plain lines belong to.
+	tickets map[string]*deployTicket
+	current string
+}
+
+// watch puts an app of this stream on the deploy board.
+func (l *lineStreamer) watch(app string, ticket *deployTicket) {
+	if l.tickets == nil {
+		l.tickets = map[string]*deployTicket{}
+	}
+	l.tickets[app] = ticket
+	l.current = app
+}
+
+func (l *lineStreamer) ticket(app string) *deployTicket {
+	if app == "" {
+		app = l.current
+	}
+	return l.tickets[app]
 }
 
 func newLineStreamer(w http.ResponseWriter, release *releaseRecorder) *lineStreamer {
@@ -86,7 +108,15 @@ func (l *lineStreamer) Line(format string, a ...any) {
 	if l.release != nil {
 		l.release.line(line)
 	}
+	l.ticket("").line(line)
 	l.send(map[string]any{"line": line})
+}
+
+// Note goes to the client only: text a CLI user may want to copy right
+// away, like the build recipe, whose files the source history keeps — so
+// neither the release record nor the board repeats them.
+func (l *lineStreamer) Note(format string, a ...any) {
+	l.send(map[string]any{"line": fmt.Sprintf(format, a...)})
 }
 
 // Write lets the streamer act as the build progress sink.
@@ -108,6 +138,9 @@ func (l *lineStreamer) Result(res DeployResult) {
 func (l *lineStreamer) Update(update DeployUpdate) {
 	if l.release != nil {
 		l.release.update(update)
+	}
+	if update.Stage != "" {
+		l.ticket(update.App).stage(update.Stage)
 	}
 	l.send(map[string]any{"update": update})
 }
@@ -230,6 +263,18 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 		SHA:       r.URL.Query().Get("sha"),
 	}
 	deployCtx := context.WithoutCancel(r.Context())
+	// On the board from here on, queued while another deploy holds the app.
+	// A dry run changes nothing and stays off it. The console uploads
+	// through a reviewed plan; everything else is the CLI.
+	if !opts.DryRun {
+		via := "cli"
+		if planned != nil {
+			via = "console"
+		}
+		ticket := s.board.start(space, app.Name, deployer(r), via, started)
+		defer ticket.finish(false, "the deploy stopped before it finished")
+		out.watch(app.Name, ticket)
+	}
 	// Keep the release and source history in the same order as deployments,
 	// and finish saving them before deletion or settings changes can run.
 	spaceMu := s.spaceLock(space)
@@ -247,6 +292,7 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 	log.Printf("deploy app=%s space=%s image=%s sha=%s duration=%s %s",
 		res.App, res.Space, res.ImageRef, r.URL.Query().Get("sha"),
 		time.Since(started).Round(time.Second), outcome)
+	out.ticket(app.Name).finish(res.OK, res.Error)
 	out.Result(res)
 	if !opts.DryRun && !opts.BuildOnly {
 		s.persistRelease(deployCtx, res.Space, res.App, release.finish(s, deployCtx, app))
@@ -348,7 +394,7 @@ func (s *Server) deployApp(ctx context.Context, out *lineStreamer, dir string, a
 
 	imageRef := opts.Tag
 	if imageRef == "" {
-		imageRef = build.ImageTag(s.cfg.Registry.URL, app.Name, opts.SHA, time.Now(), s.cfg.Registry.Immutable)
+		imageRef = build.ImageTag(s.cfg.Registry.URL, space, app.Name, opts.SHA, time.Now(), s.cfg.Registry.Immutable)
 	}
 	// A caller-supplied image bypasses the build, so it must come from
 	// donkey's own registry — otherwise any image on the internet could run
@@ -372,7 +418,7 @@ func (s *Server) deployApp(ctx context.Context, out *lineStreamer, dir string, a
 			return s.renderDryRun(app, opts.Tag, opts.Hosts)
 		}
 		out.Update(DeployUpdate{Stage: "releasing"})
-		return s.applyAndWait(ctx, out, app, dir, opts.Tag, opts.NoWait, opts.Hosts)
+		return s.applyAndWait(ctx, out, app, dir, opts.Tag, s.storedStack(ctx, space, app.Name, opts.Tag), opts.NoWait, opts.Hosts)
 	}
 
 	out.Update(DeployUpdate{Stage: "detecting"})
@@ -429,7 +475,7 @@ func (s *Server) deployApp(ctx context.Context, out *lineStreamer, dir string, a
 	// The source history keeps both versions: the upload as it arrived and,
 	// when the build changed its copy, what was actually built. The copy is
 	// gone once this returns, so the difference is taken on the way out.
-	if release := out.release; release != nil && s.history != nil && !opts.BuildOnly {
+	if release := out.release; release != nil && !opts.BuildOnly {
 		uploaded := buildDir
 		if opts.Pristine != "" {
 			if rel, err := filepath.Rel(opts.Root, buildDir); err == nil {
@@ -507,11 +553,11 @@ func (s *Server) deployApp(ctx context.Context, out *lineStreamer, dir string, a
 	if stored, e := s.rt.GetEnv(ctx, space, app.Name); e != nil || len(stored) > 0 {
 		req.Verify = nil
 	}
-	var release func(*build.Result) error
+	var release func(*build.Result, string) error
 	if !opts.BuildOnly {
-		release = func(result *build.Result) error {
+		release = func(result *build.Result, stack string) error {
 			return s.rt.Deploy(ctx, runtime.DeploySpec{App: app, Space: space, ImageRef: result.ImageRef,
-				Decisions: decisionsJSON(app), NoWait: opts.NoWait, Hosts: opts.Hosts}, out)
+				Decisions: decisionsJSON(app), Stack: stack, NoWait: opts.NoWait, Hosts: opts.Hosts}, out)
 		}
 	}
 	outcome, err := s.buildGenerated(ctx, out, builder, dir, app, req, release)
@@ -537,12 +583,12 @@ func (s *Server) deployApp(ctx context.Context, out *lineStreamer, dir string, a
 		out.Line("✓ Completed after %d attempts.", outcome.Attempts)
 	}
 	if det.Strategy != config.BuildDockerfile || outcome.Attempts > 1 {
-		// CLI clients consume text progress; structured updates also retain
-		// these artifacts for the console and release history.
-		out.Line("· Build recipe — save as %s:\n%s", detect.AIDockerfilePath, outcome.Dockerfile)
-		out.Line("· Build exclusions — save as %s.dockerignore:\n%s", detect.AIDockerfilePath, outcome.Dockerignore)
+		// CLI clients consume text progress; the console and the release
+		// history find these files in the build's commit.
+		out.Note("· Build recipe — save as %s:\n%s", detect.AIDockerfilePath, outcome.Dockerfile)
+		out.Note("· Build exclusions — save as %s.dockerignore:\n%s", detect.AIDockerfilePath, outcome.Dockerignore)
 		for _, change := range outcome.Changes {
-			out.Line("· Source repair in the build copy — %s:\n%s", change.Path, change.Diff)
+			out.Note("· Source repair in the build copy — %s:\n%s", change.Path, change.Diff)
 		}
 	}
 	return res
@@ -663,6 +709,22 @@ func (s *Server) adoptConsoleChoices(ctx context.Context, space string, app *con
 	return lines
 }
 
+// storedStack is what a no-build deploy's image is written in: the image's
+// own build record names the recipe's base images, and the running app
+// answers for images that predate the build store.
+func (s *Server) storedStack(ctx context.Context, space, app, imageRef string) string {
+	if record, err := s.telemetry.BuildByImage(ctx, space, app, imageRef); err == nil {
+		var release AppRelease
+		if json.Unmarshal(record, &release) == nil && len(release.Update.BaseImages) > 0 {
+			return detect.Stack(release.Update.BaseImages)
+		}
+	}
+	if status, err := s.rt.Status(ctx, space, app); err == nil && status != nil {
+		return status.Stack
+	}
+	return ""
+}
+
 // adoptStoredDecisions fills what donkey.yaml leaves open, and says what it
 // kept. The deployed tag's own build record is asked first — its decisions
 // are the ones that image was verified with — and the running Deployment's
@@ -719,13 +781,14 @@ func (s *Server) adoptStoredDecisions(ctx context.Context, space, imageRef strin
 // whole go-live choreography (storage, declared services, routes, waiting),
 // and turns its typed failures into the deploy's result — with the AI
 // diagnosis attached where there is real evidence.
-func (s *Server) applyAndWait(ctx context.Context, out *lineStreamer, app *config.AppConfig, root, imageRef string, noWait bool, hosts map[string]string) DeployResult {
+func (s *Server) applyAndWait(ctx context.Context, out *lineStreamer, app *config.AppConfig, root, imageRef, stack string, noWait bool, hosts map[string]string) DeployResult {
 	space := app.Space
 	err := s.rt.Deploy(ctx, runtime.DeploySpec{
 		App:       app,
 		Space:     space,
 		ImageRef:  imageRef,
 		Decisions: decisionsJSON(app),
+		Stack:     stack,
 		NoWait:    noWait,
 		Hosts:     hosts,
 	}, out)

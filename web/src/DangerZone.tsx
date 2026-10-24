@@ -1,7 +1,8 @@
 import { useState } from 'react'
 import { Trash2, TriangleAlert } from 'lucide-react'
 import { api } from './api'
-import { Button, Callout, ErrorNote, errText, IconButton, Section, SectionHeader, ToggleRow } from './ui'
+import { Button, Callout, ErrorNote, IconButton, Section, SectionHeader, ToggleRow } from './ui'
+import { errText } from './format'
 
 export function DangerZone({ space, app, onDestroyed }: { space: string; app: string; onDestroyed: () => void }) {
   const [confirming, setConfirming] = useState(false)

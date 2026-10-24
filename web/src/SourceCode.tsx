@@ -2,7 +2,7 @@ import { useMemo } from 'react'
 import { highlightToHtml, type HighlightLanguage } from '@tanstack/highlight'
 import githubDarkTheme from '@tanstack/highlight/themes/github-dark'
 import githubLightTheme from '@tanstack/highlight/themes/github-light'
-import { useColorScheme } from './ui'
+import { useColorScheme } from './hooks'
 
 // One file of an app's source, highlighted, with line numbers in the same
 // gutter the diff view uses. The highlighter knows a fixed set of languages;

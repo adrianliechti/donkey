@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
 import { Check, ClipboardCopy, Eye, EyeOff, Plus, Trash2 } from 'lucide-react'
 import { api } from './api'
-import { Button, ErrorNote, errText, IconButton, SectionHeader, Spinner, SuccessNote } from './ui'
+import { Button, ErrorNote, IconButton, SectionHeader, Spinner, SuccessNote } from './ui'
+import { errText } from './format'
 
 const KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
 // Row actions stay out of sight until the row is hovered or focused: with
@@ -174,11 +175,7 @@ export function EnvEditor({ space, app, onSaved }: { space: string; app: string;
       {env !== null && (
         <>
           <div className="overflow-hidden rounded-lg border border-line">
-            {keys.length === 0 ? (
-              <p className="px-3 py-5 text-center text-sm text-muted">
-                No variables yet — add the first one below.
-              </p>
-            ) : (
+            {keys.length > 0 && (
               <div className="divide-y divide-line/60">
                 {keys.map((key) => (
                   <div
@@ -265,7 +262,7 @@ export function EnvEditor({ space, app, onSaved }: { space: string; app: string;
             )}
 
             {pasteMode ? (
-              <div className="border-t border-line/70">
+              <div className="border-t border-line/70 first:border-t-0">
                 <textarea
                   value={pasteText}
                   onChange={(e) => setPasteText(e.target.value)}
@@ -284,7 +281,7 @@ export function EnvEditor({ space, app, onSaved }: { space: string; app: string;
             ) : (
               <form
                 onSubmit={addVar}
-                className="grid grid-cols-[minmax(0,1fr)_minmax(0,1.6fr)_4.5rem] items-stretch border-t border-line/70"
+                className="grid grid-cols-[minmax(0,1fr)_minmax(0,1.6fr)_4.5rem] items-stretch border-t border-line/70 first:border-t-0"
               >
                 <input
                   value={newKey}

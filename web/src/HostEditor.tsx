@@ -1,5 +1,6 @@
 import { useId } from 'react'
-import { Eyebrow, Select, inputClass as field } from './ui'
+import { inputClass as field } from './controls'
+import { Eyebrow, Select } from './ui'
 
 const inputClass = field('md', 'flex-1')
 

@@ -13,8 +13,9 @@ import {
   Upload,
   X,
 } from 'lucide-react'
-import { api, type FileListing } from './api'
-import { Button, ErrorNote, errText, humanSize, IconButton, Input, List, ListRow, saveBlob, SectionHeader, Spinner } from './ui'
+import { api, type FileListing, saveBlob } from './api'
+import { Button, ErrorNote, IconButton, Input, List, ListRow, SectionHeader, Spinner } from './ui'
+import { errText, humanSize } from './format'
 
 // FilesPanel browses the app's disk — the one part of an app a redeploy
 // cannot rebuild, so seeding it and getting things out of it belong here.

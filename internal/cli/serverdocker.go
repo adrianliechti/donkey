@@ -408,9 +408,7 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 	serverEnv["DONKEY_ORCHESTRATOR_URL"] = "http://" + dockerOrchestratorName + ":" + dockerOrchestratorPort
 	// The source history is written where deploys run, and served from there
 	// too: a folder of the state volume the orchestrator already mounts.
-	if settings.Data.Enabled() {
-		orchestratorEnv["DONKEY_DATA_DIR"] = dockerDataDir
-	}
+	orchestratorEnv["DONKEY_DATA_DIR"] = dockerDataDir
 	if err := replaceInfraContainer(ctx, cli, infraContainer{
 		Name:         dockerTelemetryName,
 		Image:        settings.Image,

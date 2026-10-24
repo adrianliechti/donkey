@@ -15,15 +15,15 @@ runtime has [its own page](README_KUBERNETES.md). A complete walkthrough is
 | app Deployment + Service | container `donkey.<space>.<app>` on the space's network |
 | PersistentVolumeClaim `<app>-data` | named volume `donkey.<space>.<name>.data` |
 | space service Deployment + Service | container `donkey.<space>.<service>` on the space's network |
-| app route ConfigMap `<app>-route` | `/var/lib/donkey/routes/<space>/<app>.json`, read by the gateway |
-| shared-address route ConfigMap `<app>-route-<target>-<slug>` | `/var/lib/donkey/routes/<space>/<app>.on.<target>.<slug>.json` |
-| space service binding Secret `<service>-binding` | `/var/lib/donkey/bindings/<space>/<service>.json` |
-| app service binding Secret `<app>-binding-<service>` | `/var/lib/donkey/bindings/<space>/<app>.<service>.json` |
-| app environment Secret `<app>-env` | `/var/lib/donkey/env/<space>/<app>.json` |
-| `<space>-space` ConfigMap / `config.yaml` | `/var/lib/donkey/spaces/<space>/config.json` |
-| `donkey` ConfigMap / `platform.yaml` | `/var/lib/donkey/platform/config.json` |
+| app route ConfigMap `<app>-route` | `/var/lib/donkey/routes/<space>/<app>.yaml`, read by the gateway |
+| shared-address route ConfigMap `<app>-route-<target>-<slug>` | `/var/lib/donkey/routes/<space>/<app>.on.<target>.<slug>.yaml` |
+| space service binding Secret `<service>-binding` | `/var/lib/donkey/bindings/<space>/<service>.yaml` |
+| app service binding Secret `<app>-binding-<service>` | `/var/lib/donkey/bindings/<space>/<app>.<service>.yaml` |
+| app environment Secret `<app>-env` | `/var/lib/donkey/env/<space>/<app>.yaml` |
+| `<space>-space` ConfigMap / `config.yaml` | `/var/lib/donkey/spaces/<space>/config.yaml` |
+| `donkey` ConfigMap / `platform.yaml` | `/var/lib/donkey/platform/config.yaml` |
 | control plane in `donkey-system` | containers `donkey-server`, `donkey-orchestrator`, `donkey-gateway`, `donkey-ai`, `donkey-proxy`, `donkey-telemetry`, `donkey-packages`, `donkey-buildkitd` (and optionally `donkey-registry`) on the `donkey` network |
-| `donkey-proxy` Secret / `services.json` | `/var/lib/donkey/proxy/services.json`; rendered Compose mounts private `proxy-services.json` instead |
+| `donkey-proxy` Secret / `services.json` | `/var/lib/donkey/proxy/services.yaml`; rendered Compose mounts private `proxy-services.json` instead |
 
 The two runtimes share the rules, not the spelling. On both, identity is
 read from labels and never from a name; object names are derived from the
@@ -34,13 +34,17 @@ label and cannot hold a dot. Docker joins with `.` because a container name
 can, and donkey names never contain one — so `donkey.my-team.web` is
 unambiguous however many hyphens either half has, and the dots keep app
 containers out of the control plane's `donkey-<name>` space. The same holds
-for the state files: `web.postgres.json` is app `web`'s copy of the
-`postgres` binding, `postgres.json` the space's own. Docker volumes cannot be
+for the state files: `web.postgres.yaml` is app `web`'s copy of the
+`postgres` binding, `postgres.yaml` the space's own. Docker volumes cannot be
 renamed, so these names are also the ones that stay.
 
 Route, binding and console state that Kubernetes keeps in objects lives in
 files on the shared state volume (`donkey-data`). Space and platform settings
-use the same fields as Kubernetes, stored as JSON rather than embedded YAML. RBAC is always active. The first signed-in user becomes a platform admin and
+use the same fields as Kubernetes, stored as plain YAML files rather than
+embedded in a ConfigMap. Installations from before kept these records as
+`.json` files of the same name; they are still read (a `.yaml` beside one
+wins), and the next write of a record replaces its `.json`, so upgrading
+needs no migration step. RBAC is always active. The first signed-in user becomes a platform admin and
 can add others in Account → Platform settings. An optional install-file
 `platform.admins` seeds the initial list. Server startup creates missing records
 for existing spaces with empty membership and unrestricted domains, preserving
@@ -58,14 +62,15 @@ Kubernetes ConfigMaps or Secrets. State paths below are relative to
 
 | Data | Docker storage |
 |---|---|
-| Platform admins | `platform/config.json` |
-| Space admins, developers, domains | `spaces/<space>/config.json` |
-| App environment | `env/<space>/<app>.json` |
-| Gateway routes (membership comes from space settings) | `routes/<space>/<app>.json`; shared-address routes as `routes/<space>/<app>.on.<target>.<slug>.json` |
-| Service credentials | `bindings/<space>/<service>.json` for the space's own binding, `bindings/<space>/<app>.<service>.json` for an app's copy (older `shared.<service>.json` files are moved at startup) |
-| App metadata | `meta/<space>/<app>.json` |
-| Saved deployment configuration | `deploy/<space>/<app>.json` |
-| Console route | `routes/system/donkey-server.json` |
+| Platform admins | `platform/config.yaml` |
+| Space admins, developers, domains | `spaces/<space>/config.yaml` |
+| App environment (`donkey env`) | `env/<space>/<app>.yaml` |
+| Gateway routes (membership comes from space settings) | `routes/<space>/<app>.yaml`; shared-address routes as `routes/<space>/<app>.on.<target>.<slug>.yaml` |
+| Service credentials | `bindings/<space>/<service>.yaml` for the space's own binding, `bindings/<space>/<app>.<service>.yaml` for an app's copy (older `shared.<service>.json` files are moved at startup) |
+| App metadata | `meta/<space>/<app>.yaml` |
+| Saved deployment configuration, including `donkey.yaml` env | `deploy/<space>/<app>.yaml` |
+| Console route | `routes/system/console.yaml` |
+| Source history (each app's code, build recipe and settings per build) | `source/<space>/<app>.git` |
 | Built-in CA | `ca/ca.crt`, `ca/ca.key` |
 | ACME certificates and account | `certs/` |
 

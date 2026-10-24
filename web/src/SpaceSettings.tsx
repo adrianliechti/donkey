@@ -6,7 +6,9 @@ import { api, type SpaceConfig } from './api'
 import { Modal, ModalBody, ModalFooter, ModalHeader, ModalNotice } from './dialog'
 import { MembershipEditor } from './MembershipEditor'
 import { OfferingSettings } from './OfferingSettings'
-import { Button, Field, IconButton, Input, List, ListRow, SectionHeader, Spinner, ToggleRow, errText, useMediaQuery } from './ui'
+import { Button, Field, IconButton, Input, List, ListRow, SectionHeader, Spinner, ToggleRow } from './ui'
+import { errText } from './format'
+import { useMediaQuery } from './hooks'
 
 const sections = [
   { label: 'General', icon: Settings },

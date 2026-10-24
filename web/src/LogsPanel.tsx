@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { ArrowDownToLine, RefreshCw } from 'lucide-react'
 import { api } from './api'
-import { ErrorNote, errText, IconButton, Section, SectionHeader, Select } from './ui'
+import { ErrorNote, IconButton, Section, SectionHeader, Select } from './ui'
+import { errText } from './format'
 
 export function LogsPanel({ space, app }: { space: string; app: string }) {
   const [logs, setLogs] = useState('')
@@ -108,7 +109,7 @@ export function LogsPanel({ space, app }: { space: string; app: string }) {
             const pane = paneRef.current
             if (pane) pinnedRef.current = pane.scrollHeight - pane.scrollTop - pane.clientHeight < 40
           }}
-          className="min-h-0 flex-1 overflow-auto overscroll-y-auto rounded-lg border border-line bg-well p-3 font-mono text-xs leading-relaxed text-emphasis whitespace-pre-wrap focus-visible:outline-2 focus-visible:outline-accent-strong"
+          className="min-h-0 flex-1 overflow-auto rounded-lg border border-line bg-well p-3 font-mono text-xs leading-relaxed text-emphasis whitespace-pre-wrap focus-visible:outline-2 focus-visible:outline-accent-strong"
         >
           {logs ||
             (busy

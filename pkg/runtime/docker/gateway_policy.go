@@ -14,7 +14,7 @@ func ReadGatewayPolicies(dir string) (map[string]config.SpaceConfig, config.Plat
 	s := state{dir: dir}
 	policies := map[string]config.SpaceConfig{}
 	var platform config.PlatformConfig
-	if _, err := s.readJSON(&platform, "platform", "config.json"); err != nil {
+	if _, err := s.readRecord(&platform, "platform", "config"); err != nil {
 		return nil, platform, err
 	}
 	if err := platform.Validate(); err != nil {
@@ -32,7 +32,7 @@ func ReadGatewayPolicies(dir string) (map[string]config.SpaceConfig, config.Plat
 			continue
 		}
 		var policy config.SpaceConfig
-		if _, err := s.readJSON(&policy, "spaces", space.Name(), "config.json"); err != nil {
+		if _, err := s.readRecord(&policy, "spaces", space.Name(), "config"); err != nil {
 			return nil, platform, err
 		}
 		if err := policy.Validate(); err != nil {

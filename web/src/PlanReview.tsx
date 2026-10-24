@@ -3,7 +3,21 @@ import { type AppMode, type Exposure, type Plan, type PlanEdit, type PortSource 
 import { FindingsList } from './FindingsList'
 import { HostEditor } from './HostEditor'
 import { useFleet } from './queries'
-import { APP_MODES, ChoiceCards, CodeCard, CopyButton, Disclosure, Eyebrow, Field, Input, List, ListRow, Section, SectionHeader, ToggleRow, loginHint } from './ui'
+import {
+  ChoiceCards,
+  CodeCard,
+  CopyButton,
+  Disclosure,
+  Eyebrow,
+  Field,
+  Input,
+  List,
+  ListRow,
+  Section,
+  SectionHeader,
+  ToggleRow,
+} from './ui'
+import { APP_MODES, loginHint } from './vocabulary'
 
 const PORT_SOURCE: Record<PortSource, string> = {
   config: 'from donkey.yaml',

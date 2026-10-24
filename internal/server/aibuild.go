@@ -32,7 +32,7 @@ type buildOutcome struct {
 // repository Dockerfile is tried unchanged first; subsequent attempts can
 // repair the recipe and isolated source using evidence from either stage.
 func (s *Server) buildGenerated(ctx context.Context, out *lineStreamer, builder build.Builder,
-	dir string, app *config.AppConfig, req build.Request, release func(*build.Result) error,
+	dir string, app *config.AppConfig, req build.Request, release func(result *build.Result, stack string) error,
 ) (*buildOutcome, error) {
 	attempts := s.cfg.Build.BuildAttempts()
 	known := s.knownSecrets(ctx, app.Space, app.Name)
@@ -125,7 +125,8 @@ func (s *Server) buildGenerated(ctx context.Context, out *lineStreamer, builder 
 		}
 		outcome.Attempts = attempt
 		outcome.Dockerignore = ignore
-		out.Update(DeployUpdate{Dockerfile: outcome.Dockerfile, Dockerignore: &ignore, BaseImages: dockerfileBaseImages([]byte(outcome.Dockerfile))})
+		images := dockerfileBaseImages([]byte(outcome.Dockerfile))
+		out.Update(DeployUpdate{Recipe: recipePath, BaseImages: images})
 		attemptReq := req
 		attemptReq.Strategy, attemptReq.DockerfilePath = config.BuildDockerfile, recipePath
 		// A changed candidate must always create a new runtime generation,
@@ -145,7 +146,7 @@ func (s *Server) buildGenerated(ctx context.Context, out *lineStreamer, builder 
 			if release != nil {
 				stage = "rollout"
 				out.Update(DeployUpdate{Stage: "releasing"})
-				err = release(result)
+				err = release(result, detect.Stack(images))
 				if err != nil {
 					var rollout *runtime.RolloutError
 					if !errors.As(err, &rollout) {

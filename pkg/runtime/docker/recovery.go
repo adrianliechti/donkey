@@ -13,6 +13,7 @@ import (
 	"github.com/adrianliechti/donkey/internal/config"
 	cerrdefs "github.com/containerd/errdefs"
 	"github.com/docker/docker/api/types/container"
+	"sigs.k8s.io/yaml"
 )
 
 // Keep the original container and app records until the candidate is ready.
@@ -45,7 +46,7 @@ func (r *Runtime) prepareRecovery(ctx context.Context, space string, app *config
 		return nil, err
 	}
 	recovery := &appRecovery{r: r, space: space, app: app.Name, id: info.ID, running: info.State != nil && info.State.Running}
-	paths := [][]string{{"env", space, app.Name + ".json"}, {"meta", space, app.Name + ".json"}, {"deploy", space, app.Name + ".json"}, {"routes", space, app.Name + ".json"}}
+	paths := [][]string{{"env", space, app.Name}, {"meta", space, app.Name}, {"deploy", space, app.Name}, {"routes", space, app.Name}}
 	bindings, err := r.state.listBindings(space, app.Name)
 	if err != nil {
 		return nil, err
@@ -62,11 +63,11 @@ func (r *Runtime) prepareRecovery(ctx context.Context, space string, app *config
 	}
 	for _, route := range routes {
 		if strings.HasPrefix(route, app.Name+".on.") {
-			paths = append(paths, []string{"routes", space, route + ".json"})
+			paths = append(paths, []string{"routes", space, route})
 		}
 	}
 	for _, route := range app.Routes {
-		paths = append(paths, []string{"routes", space, pathRouteName(app.Name, route.App, route.Path) + ".json"})
+		paths = append(paths, []string{"routes", space, pathRouteName(app.Name, route.App, route.Path)})
 	}
 	seen := map[string]bool{}
 	for _, p := range paths {
@@ -75,7 +76,7 @@ func (r *Runtime) prepareRecovery(ctx context.Context, space string, app *config
 			continue
 		}
 		seen[key] = true
-		data, err := os.ReadFile(r.state.path(p...))
+		data, err := readRecordFile(r.state.path(p...))
 		if err != nil && !os.IsNotExist(err) {
 			return nil, err
 		}
@@ -106,7 +107,12 @@ func (a *appRecovery) restore(ctx context.Context) error {
 		if record.data == nil {
 			err = a.r.state.remove(record.path...)
 		} else {
-			err = a.r.state.writeJSON(json.RawMessage(record.data), record.path...)
+			// The saved bytes may be a legacy JSON record; either way the
+			// record goes back as YAML.
+			var data []byte
+			if data, err = yaml.YAMLToJSON(record.data); err == nil {
+				err = a.r.state.writeRecord(json.RawMessage(data), record.path...)
+			}
 		}
 		result = errors.Join(result, err)
 	}

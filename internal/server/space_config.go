@@ -129,7 +129,7 @@ func (s *Server) authorizeRoute(w http.ResponseWriter, r *http.Request) bool {
 	}
 	switch r.Pattern {
 	case "GET /v1/ping", "GET /v1/apps", "GET /v1/spaces", "GET /v1/fleet", "GET /v1/catalog",
-		"POST /v1/plans", "PUT /v1/plans/{id}", "POST /v1/deploys",
+		"POST /v1/plans", "PUT /v1/plans/{id}", "POST /v1/deploys", "GET /v1/deploys",
 		"POST /v1/projects/plans", "PUT /v1/projects/plans/{id}", "POST /v1/projects/deploys":
 		return true
 	default:

@@ -4,7 +4,19 @@ import { Globe, Lock, Network, type LucideIcon } from 'lucide-react'
 import { api, type AppMode, type Exposure, type NetworkInfo } from './api'
 import { HostEditor } from './HostEditor'
 import { networkQuery } from './queries'
-import { APP_MODES, Button, ChoiceCards, Eyebrow, ErrorNote, errText, loginHint, Section, SectionHeader, Spinner, SuccessNote, ToggleRow } from './ui'
+import {
+  Button,
+  ChoiceCards,
+  ErrorNote,
+  Eyebrow,
+  Section,
+  SectionHeader,
+  Spinner,
+  SuccessNote,
+  ToggleRow,
+} from './ui'
+import { APP_MODES, loginHint } from './vocabulary'
+import { errText } from './format'
 
 /**
  * How the app is reached, changed on the spot — no deploy.

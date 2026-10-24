@@ -57,7 +57,7 @@ func TestExistingSpacesMigrateWithoutResettingSettings(t *testing.T) {
 
 func TestSharedRouteCannotEscapeSpaceDomains(t *testing.T) {
 	r := &Runtime{state: state{dir: t.TempDir()}, opts: Options{Domain: "example.com"}}
-	if err := r.state.writeJSON(config.DefaultSpaceConfig("team", "example.com"), "spaces", "team", "config.json"); err != nil {
+	if err := r.state.writeRecord(config.DefaultSpaceConfig("team", "example.com"), "spaces", "team", "config"); err != nil {
 		t.Fatal(err)
 	}
 	app := &config.AppConfig{Name: "api", Internal: true, Routes: []config.RouteConfig{{App: "web", Path: "/api"}}}

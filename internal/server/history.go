@@ -13,10 +13,12 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/adrianliechti/donkey/internal/config"
 	"github.com/adrianliechti/donkey/internal/detect"
 	"github.com/adrianliechti/donkey/internal/history"
 	"github.com/adrianliechti/donkey/internal/identity"
@@ -24,13 +26,18 @@ import (
 )
 
 // The source history: every deploy's upload as a git commit by the person
-// who deployed, and — when the build changed its copy — what was actually
-// built, as a commit by the platform (see internal/history for the layout).
-// Recording is best-effort like the release record beside it: a deploy that
-// already happened never fails over its history.
+// who deployed, and what was actually built on top as a commit by the
+// platform — the recipe the assistant wrote, its repairs, and the settings
+// the build ran with (see internal/history for the layout). Recording is
+// best-effort like the release record beside it: a deploy that already
+// happened never fails over its history.
 
 // commitListLimit bounds one history listing.
 const commitListLimit = 200
+
+// settingsFile is where a build's commit keeps the configuration it ran
+// with, beside the recipe in the app's folder.
+const settingsFile = ".donkey/deploy.yaml"
 
 // sourceCapture is what a deploy leaves for its source history.
 type sourceCapture struct {
@@ -158,7 +165,7 @@ func sameFile(original, copied string, info fs.FileInfo) (bool, error) {
 // changes on platform, and tags the commit the build used with its number.
 func (s *Server) recordSource(ctx context.Context, space, app string, release AppRelease, build int64) {
 	capture := release.source
-	if s.history == nil || capture == nil {
+	if capture == nil {
 		return
 	}
 	upload, err := s.history.RecordUpload(space, app, history.UploadInput{
@@ -172,12 +179,21 @@ func (s *Server) recordSource(ctx context.Context, space, app string, release Ap
 		return
 	}
 	built := upload
-	if len(capture.changes) > 0 {
+	changes := capture.changes
+	if release.settings != nil {
+		body, err := buildSettings(release.settings, build, release.Result.ImageRef, detect.Stack(release.Update.BaseImages))
+		if err != nil {
+			log.Printf("source history app=%s space=%s: rendering the build's settings: %v", app, space, err)
+		} else {
+			changes = append(slices.Clone(changes), history.FileChange{Path: path.Join(capture.appPath, settingsFile), Content: body})
+		}
+	}
+	if len(changes) > 0 {
 		platform, err := s.history.RecordPlatform(space, app, history.PlatformInput{
 			Base:    upload,
-			Changes: capture.changes,
+			Changes: changes,
 			When:    releaseTime(release.FinishedAt),
-			Message: platformMessage(build, capture.changes),
+			Message: platformMessage(build, changes),
 		})
 		if err != nil {
 			log.Printf("source history app=%s space=%s: recording the build's changes: %v", app, space, err)
@@ -188,6 +204,41 @@ func (s *Server) recordSource(ctx context.Context, space, app string, release Ap
 	if err := s.history.TagBuild(space, app, build, built); err != nil {
 		log.Printf("source history app=%s space=%s: tagging build %d: %v", app, space, build, err)
 	}
+}
+
+// buildSettings renders what a build ran with as donkey.yaml: the effective
+// configuration, with the console's choices and the deploy's decisions in
+// it, so every build in the source history says how it was deployed. Env
+// values and service parameters stay out — the history is permanent and can
+// be downloaded, and the donkey.yaml that was uploaded is in the commit
+// beneath anyway.
+func buildSettings(app *config.AppConfig, build int64, image, stack string) ([]byte, error) {
+	out := *app
+	out.Env = nil
+	if out.Storage != nil && len(out.Storage.Paths) == 0 {
+		out.Storage = nil
+	}
+	out.Addons = make([]config.AddonConfig, len(app.Addons))
+	for i, addon := range app.Addons {
+		addon.Parameters = nil
+		out.Addons[i] = addon
+	}
+	body, err := out.Render()
+	if err != nil {
+		return nil, err
+	}
+	which := "this build"
+	if build > 0 {
+		which = fmt.Sprintf("build #%d", build)
+	}
+	header := "# What " + which + " ran with, written by donkey for the record and never\n# read back: donkey.yaml is the file you edit.\n"
+	if image != "" {
+		header += "# image: " + image + "\n"
+	}
+	if stack != "" {
+		header += "# stack: " + stack + "\n"
+	}
+	return append([]byte(header), body...), nil
 }
 
 // sourceAuthor names the person behind a deploy the way space membership
@@ -226,7 +277,8 @@ func uploadMessage(app string, capture *sourceCapture) string {
 }
 
 // platformMessage says in a line what the build did to the upload: wrote
-// its recipe, repaired source, or both — then each file on its own line.
+// its recipe, repaired source, or both — then each file on its own line. A
+// build that did neither still records its settings, and says only that.
 func platformMessage(build int64, changes []history.FileChange) string {
 	var recipe, repaired int
 	lines := make([]string, 0, len(changes))
@@ -236,6 +288,8 @@ func platformMessage(build int64, changes []history.FileChange) string {
 	for _, change := range changes {
 		verb := "Repaired"
 		switch {
+		case change.Path == settingsFile || strings.HasSuffix(change.Path, "/"+settingsFile):
+			verb = "Recorded"
 		case strings.HasPrefix(change.Path, recipeDir) || strings.Contains(change.Path, "/"+recipeDir):
 			recipe++
 			verb = "Wrote"
@@ -255,6 +309,9 @@ func platformMessage(build int64, changes []history.FileChange) string {
 		parts = append(parts, "repaired 1 file")
 	} else if repaired > 1 {
 		parts = append(parts, fmt.Sprintf("repaired %d files", repaired))
+	}
+	if len(parts) == 0 {
+		parts = append(parts, "recorded its settings")
 	}
 	subject := "The build " + strings.Join(parts, " and ")
 	if build > 0 {
@@ -325,16 +382,11 @@ func (index buildIndex) commit(c history.Commit) SourceCommit {
 }
 
 // handleCommits: GET /v1/spaces/{space}/apps/{app}/commits — the history,
-// newest first. Without a configured volume there is none to show, which is
-// a state of the installation, not an error.
+// newest first.
 func (s *Server) handleCommits(w http.ResponseWriter, r *http.Request) {
 	space, app, err := s.spaceApp(r)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
-		return
-	}
-	if s.history == nil {
-		writeJSON(w, http.StatusOK, map[string]any{"enabled": false, "commits": []SourceCommit{}})
 		return
 	}
 	commits, err := s.history.Log(space, app, commitListLimit)
@@ -347,7 +399,7 @@ func (s *Server) handleCommits(w http.ResponseWriter, r *http.Request) {
 	for _, c := range commits {
 		out = append(out, index.commit(c))
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"enabled": true, "commits": out})
+	writeJSON(w, http.StatusOK, map[string]any{"commits": out})
 }
 
 // handleCommit: GET .../commits/{commit} — one commit and the files it changed.
@@ -470,10 +522,6 @@ func (s *Server) historyRequest(w http.ResponseWriter, r *http.Request) (space, 
 	space, app, err := s.spaceApp(r)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
-		return "", "", false
-	}
-	if s.history == nil {
-		writeErr(w, http.StatusNotFound, errors.New("this installation keeps no source history — give the control plane a data volume to turn it on"))
 		return "", "", false
 	}
 	return space, app, true

@@ -36,7 +36,4 @@ func TestDockerBundleKeepsDataInTheStateVolume(t *testing.T) {
 	if got := byDefault.Services["server"].Environment["DONKEY_DATA_DIR"]; got != "" {
 		t.Fatalf("donkey-server should have no data dir, got %q", got)
 	}
-	if got := render(config.InstallData{Disabled: true}).Services["orchestrator"].Environment["DONKEY_DATA_DIR"]; got != "" {
-		t.Fatalf("a disabled data volume leaves the server without one, got %q", got)
-	}
 }

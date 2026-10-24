@@ -5,30 +5,29 @@ import {
   createRoute,
   createRouter,
   HeadContent,
-  Link,
   Navigate,
   Outlet,
   redirect,
   RouterProvider,
   useNavigate,
-  useParams,
 } from '@tanstack/react-router'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { Activity, ArrowLeft, Search } from 'lucide-react'
-import { setUnauthorizedHandler, type AppSummary } from './api'
+import { Activity, Search } from 'lucide-react'
+import { setUnauthorizedHandler } from './api'
 import { AppDetail, type AppTab } from './AppDetail'
-import { AppsList } from './AppsList'
+import type { SourceSearch } from './sourceSearch'
 import { CommandPalette } from './CommandPalette'
-import { DeployView } from './DeployView'
-import { Drawer, DrawerBody, PaneHeader } from './dialog'
+import { useDeploy } from './deploy'
+import { DeployProvider } from './DeployDrawer'
+import { FleetOverview, SpaceOverview } from './Overview'
 import { fleetQuery, statusQuery, useFleet } from './queries'
-import { SpaceCard } from './SpaceCard'
+import { Crumbs } from './Switcher'
 import { SystemView } from './SystemView'
-import { DonkeyLogo, ErrorNote, IconButton, Spinner, Toolbar, healthOf, type Health } from './ui'
+import { DonkeyLogo, IconButton, Toolbar } from './ui'
 import { UserMenu } from './UserMenu'
 import { PlatformSettings } from './PlatformSettings'
-
-const healthRank: Record<Health, number> = { bad: 0, unknown: 1, ok: 2 }
+import { ServiceDetail } from './ServiceDetail'
+import { cleanServiceSearch, type ServiceSearch } from './serviceSearch'
 
 // The routes live in the hash (#/app/acme/shop/logs) so refresh keeps your
 // place, an unhealthy app can be linked to a teammate, and bookmarks from
@@ -45,13 +44,24 @@ const queryClient = new QueryClient({
 })
 
 function Shell() {
+  return (
+    <DeployProvider>
+      <Frame />
+    </DeployProvider>
+  )
+}
+
+// The console's frame: the bar on top — whose breadcrumb is how you get
+// anywhere — and the page under it. Every page is a space's app (or the
+// system view); the fleet has no page of its own, its map is the breadcrumb.
+function Frame() {
   const navigate = useNavigate()
   const { data: fleet } = useFleet()
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [platformSettingsOpen, setPlatformSettingsOpen] = useState(false)
 
   // ⌘K / Ctrl-K opens the palette from anywhere. Registered once at the shell
-  // so it works over the fleet, an app panel, or any page.
+  // so it works on every page and over open switchers.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
@@ -66,9 +76,13 @@ function Shell() {
   return (
     <div className="flex min-h-screen flex-col">
       <HeadContent />
-      <header className="sticky top-0 z-30 border-b border-line bg-card/95 backdrop-blur">
-        <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-4 py-2.5">
-          <div className="flex min-w-0 items-center gap-3">
+      {/* A fixed height (h-13), border included: the app header sticks at
+          top-13, exactly where it already sits, so it never moves when the
+          page scrolls. Header, tabs and page share one gutter (px-6), so the
+          logo, the first tab and the content start on the same line. */}
+      <header className="sticky top-0 z-30 h-13 border-b border-line bg-card/95 backdrop-blur">
+        <div className="flex h-full items-center justify-between gap-4 px-6">
+          <div className="flex min-w-0 items-center gap-1">
             <button
               onClick={() => navigate({ to: '/' })}
               className="flex shrink-0 items-center gap-2 font-mono text-base font-bold tracking-tight focus-visible:outline-2 focus-visible:outline-accent-strong"
@@ -76,11 +90,11 @@ function Shell() {
               <DonkeyLogo className="size-5 text-ink" />
               Donkey
             </button>
-            <Breadcrumb />
+            <Crumbs />
           </div>
-          {/* A uniform icon toolbar. Deploying lives inside a space now (its
-              Add menu), so there is no global Deploy here. */}
-          <Toolbar>
+          {/* -mr-2: the last icon's glyph, not its hover box, meets the
+              gutter the Deploy button and the page content end on. */}
+          <Toolbar className="-mr-2">
             <IconButton icon={Search} label="Search apps and spaces — ⌘K" onClick={() => setPaletteOpen(true)} />
             {fleet?.platformAdmin && (
               <IconButton icon={Activity} label="System health" onClick={() => navigate({ to: '/system' })} />
@@ -100,203 +114,82 @@ function Shell() {
       <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} />
       {platformSettingsOpen && <PlatformSettings onClose={() => setPlatformSettingsOpen(false)} />}
 
-      {/* The paddock: the fleet lives on a dotted field. */}
-      <main className="dotgrid flex-1">
-        <div className="mx-auto max-w-6xl px-4 py-8">
-          <Outlet />
-        </div>
-      </main>
+      <div className="flex min-w-0 flex-1 flex-col">
+        <Outlet />
+      </div>
     </div>
   )
 }
 
-// Breadcrumb says where you are and lets you step back up: the space is a
-// link to its own page, the app name is where you are. It shows on both the
-// space page (space only) and inside an app (space / app).
-function Breadcrumb() {
-  const params = useParams({ strict: false }) as { space?: string; name?: string }
-  if (!params.space) return null
-  return (
-    <span className="flex min-w-0 items-center gap-1.5 font-mono text-sm text-muted">
-      <span aria-hidden>/</span>
-      {params.name ? (
-        <Link
-          to="/space/$space"
-          params={{ space: params.space }}
-          className="truncate text-ink-soft hover:text-ink hover:underline"
-        >
-          {params.space}
-        </Link>
-      ) : (
-        <span className="truncate font-semibold text-ink">{params.space}</span>
-      )}
-      {params.name && (
-        <>
-          <span aria-hidden>/</span>
-          <span className="truncate font-semibold text-ink">{params.name}</span>
-        </>
-      )}
-    </span>
-  )
-}
-
-// A space as a place of its own: its services and apps, linkable and
-// bookmarkable, reached from the breadcrumb or the command palette. It reuses
-// the same SpaceCard the fleet shows, so there is one way a space looks.
-function SpacePage({ space }: { space: string }) {
-  const { data, error, reload } = useFleet()
-  const apps = (data?.apps ?? [])
-    .filter((a: AppSummary) => (a.space || 'default') === space)
-    .sort((a, b) => {
-      const ra = healthRank[healthOf(a.healthy, a.ready)]
-      const rb = healthRank[healthOf(b.healthy, b.ready)]
-      return ra !== rb ? ra - rb : a.name.localeCompare(b.name)
-    })
-  // Known if it still has apps or is a declared (possibly empty) space. After
-  // a delete it is neither, so we send the operator back to the fleet.
-  const known = !data || apps.length > 0 || (data.spaces ?? []).includes(space)
-
-  return (
-    <div className="space-y-5">
-      <Link
-        to="/"
-        className="inline-flex items-center gap-1.5 text-sm text-muted hover:text-ink"
-      >
-        <ArrowLeft className="size-4" aria-hidden /> Fleet
-      </Link>
-      <ErrorNote message={error} />
-      {!data && !error && <Spinner label="Asking the cluster…" />}
-      {data && !known && (
-        <div className="rounded-xl border border-line bg-card p-8 text-center text-sm text-muted">
-          The space <span className="font-mono">{space}</span> is no longer here.
-        </div>
-      )}
-      {data && known && (
-        <SpaceCard
-          space={space}
-          apps={apps}
-          role={data.roles[space] ?? 'viewer'}
-          onChanged={reload}
-        />
-      )}
-    </div>
-  )
-}
-
-// The fleet is a layout, not a page: the app panel renders into its Outlet,
-// so opening an app or switching its tabs never unmounts the canvas behind
-// it — no refetch, no skeleton flash.
-function FleetLayout() {
-  return (
-    <>
-      <AppsList />
-      <Outlet />
-    </>
-  )
-}
-
-// A drawer bound to a route: it opens with the route and, on close, slides
-// out first and navigates back to the fleet when the exit has finished.
-// Closing never resets the fleet's scroll — the panel sat on top of it.
-function useRouteDrawer() {
+// An app is a page of its own: the room its dashboards, logs and diffs need,
+// a real place in the browser's history, and the breadcrumb's switcher for the
+// next one. A redeploy slides over it, so the app stays in view meanwhile.
+function AppPage({ space, name, tab }: { space: string; name: string; tab: AppTab }) {
   const navigate = useNavigate()
-  const [open, setOpen] = useState(true)
-  return {
-    open,
-    close: () => setOpen(false),
-    afterClose: () => navigate({ to: '/', resetScroll: false }),
-  }
-}
-
-// The app panel slides over the fleet instead of replacing it — the canvas
-// behind it keeps saying how everything else is doing.
-function AppOverlay({ space, name, tab }: { space: string; name: string; tab: AppTab }) {
-  const navigate = useNavigate()
-  const drawer = useRouteDrawer()
+  const openDeploy = useDeploy()
 
   return (
-    // Reading code wants the room a file tree and a source pane need side by
-    // side; every other tab keeps the panel's usual width.
-    <Drawer {...drawer} onClose={drawer.close} label={`${name} — app details`} width={tab === 'source' ? 'max-w-5xl' : undefined}>
-      <AppDetail
-        // A different app resets the panel; a different tab must not.
-        key={`${space}/${name}`}
-        space={space}
-        app={name}
-        tab={tab}
-        onTab={(next) =>
-          navigate({
-            to: '/app/$space/$name/{-$tab}',
-            params: { space, name, tab: next === 'overview' ? undefined : next },
-            // Tabs change the panel, not the page: the fleet behind must
-            // not jump to the top.
-            resetScroll: false,
-          })
-        }
-        onDeploy={() =>
-          navigate({ to: '/deploy/$space/$name', params: { space, name }, resetScroll: false })
-        }
-        onBack={drawer.close}
-      />
-    </Drawer>
+    <AppDetail
+      // A different app resets the page; a different tab must not.
+      key={`${space}/${name}`}
+      space={space}
+      app={name}
+      tab={tab}
+      onTab={(next) =>
+        navigate({
+          to: '/app/$space/$name/{-$tab}',
+          params: { space, name, tab: next === 'overview' ? undefined : next },
+        })
+      }
+      onDeploy={() => openDeploy({ space, name })}
+      onRemoved={() => navigate({ to: '/space/$space', params: { space } })}
+    />
   )
 }
 
-// Deploy slides over the fleet like the app panel, so the canvas behind keeps
-// saying how everything else is doing while a new app comes up. Wider than the
-// app panel, to hold the live build's split view.
-function DeployOverlay({ space, name }: { space: string; name: string }) {
+// A service is a page too: its console in the first tabs, then Connection
+// and Settings. Crossing tabs keeps the console's place in the query.
+function ServicePage({ space, name, tab }: { space: string; name: string; tab?: string }) {
   const navigate = useNavigate()
-  const drawer = useRouteDrawer()
-
   return (
-    <Drawer {...drawer} onClose={drawer.close} label="Deploy an app" width="max-w-4xl">
-      <PaneHeader
-        prominent
-        eyebrow={name ? `Redeploy · ${space}` : space ? `Deploy into ${space}` : 'Deploy'}
-        title={name || 'New app'}
-        onClose={drawer.close}
-        closeLabel="Close deploy"
-      />
-      <DrawerBody>
-        <DeployView
-          space={space}
-          name={name}
-          onDeployed={(s, n) =>
-            navigate({
-              to: '/app/$space/$name/{-$tab}',
-              params: { space: s, name: n, tab: undefined },
-              resetScroll: false,
-            })
-          }
-        />
-      </DrawerBody>
-    </Drawer>
+    <ServiceDetail
+      key={`${space}/${name}`}
+      space={space}
+      service={name}
+      tab={tab}
+      onTab={(next) =>
+        navigate({ to: '/service/$space/$name/{-$tab}', params: { space, name, tab: next }, search: true })
+      }
+      onRemoved={() => navigate({ to: '/space/$space', params: { space } })}
+    />
   )
+}
+
+// Old deploy links open the deploy drawer over the front page.
+function DeployLink({ space = '', name = '' }: { space?: string; name?: string }) {
+  const openDeploy = useDeploy()
+  useEffect(() => {
+    openDeploy({ space, name })
+  }, [openDeploy, space, name])
+  return <Navigate to="/" replace />
 }
 
 // Code-style routes: the whole map in one place, typed params included.
 // Titles live on the routes (HeadContent renders them); loaders warm the
-// query cache so a view opens with its data already there.
+// query cache so a view opens with its data already there — hovering an app
+// in the switcher already warms its status.
 const rootRoute = createRootRouteWithContext<{ queryClient: QueryClient }>()({
   component: Shell,
+  loader: ({ context }) => context.queryClient.ensureQueryData(fleetQuery),
   head: () => ({ meta: [{ title: pageTitle('Apps') }] }),
 })
 
-// Pathless layout: it has no path of its own, so it stays mounted for both
-// the bare fleet ('/') and an open app panel ('/app/…') — that persistence
-// is the whole point (see FleetLayout).
-const fleetRoute = createRoute({
+// Donkey's front page: every space, how its apps are doing, what is being
+// deployed right now.
+const homeRoute = createRoute({
   getParentRoute: () => rootRoute,
-  id: 'fleet',
-  component: FleetLayout,
-  loader: ({ context }) => context.queryClient.ensureQueryData(fleetQuery),
-})
-
-const fleetIndexRoute = createRoute({
-  getParentRoute: () => fleetRoute,
   path: '/',
-  component: () => null,
+  component: FleetOverview,
 })
 
 // The previous console called the fleet "#/apps" — old bookmarks land here.
@@ -311,92 +204,105 @@ const legacyAppsRoute = createRoute({
 const systemRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/system',
-  component: SystemView,
+  component: () => (
+    <main className="w-full px-6 py-6">
+      <SystemView />
+    </main>
+  ),
   head: () => ({ meta: [{ title: pageTitle('System') }] }),
 })
 
 const spaceRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/space/$space',
-  loader: ({ context }) => context.queryClient.ensureQueryData(fleetQuery),
   head: ({ params }) => ({ meta: [{ title: pageTitle(params.space) }] }),
   component: () => {
     const { space } = spaceRoute.useParams()
-    return <SpacePage space={space} />
+    return <SpaceOverview space={space} />
   },
 })
 
-// Deploy overlays the fleet in three shapes: space-less (the palette's
-// entry — the space is chosen in the review), into a named space (a space's
-// Add menu), and a redeploy of a specific app. All slide over the fleet, so
-// they hang off the fleet layout.
 const deployRoute = createRoute({
-  getParentRoute: () => fleetRoute,
+  getParentRoute: () => rootRoute,
   path: '/deploy',
-  component: () => <DeployOverlay space="" name="" />,
-  head: () => ({ meta: [{ title: pageTitle('Deploy') }] }),
+  component: () => <DeployLink />,
 })
 
 const deploySpaceRoute = createRoute({
-  getParentRoute: () => fleetRoute,
+  getParentRoute: () => rootRoute,
   path: '/deploy/$space',
-  component: () => {
-    const { space } = deploySpaceRoute.useParams()
-    return <DeployOverlay space={space} name="" />
-  },
-  head: () => ({ meta: [{ title: pageTitle('Deploy') }] }),
+  component: () => <DeployLink space={deploySpaceRoute.useParams().space} />,
 })
 
 const deployAppRoute = createRoute({
-  getParentRoute: () => fleetRoute,
+  getParentRoute: () => rootRoute,
   path: '/deploy/$space/$name',
   component: () => {
     const { space, name } = deployAppRoute.useParams()
-    return <DeployOverlay space={space} name={name} />
+    return <DeployLink space={space} name={name} />
   },
-  head: () => ({ meta: [{ title: pageTitle('Deploy') }] }),
 })
 
-// One route for the panel and every one of its tabs ({-$tab} is optional,
+// One route for the app and every one of its tabs ({-$tab} is optional,
 // so old "/app/space/name" links still land on the overview). Crossing tabs
 // stays inside this route — nothing above it re-renders, nothing reloads.
 const appRoute = createRoute({
-  getParentRoute: () => fleetRoute,
+  getParentRoute: () => rootRoute,
   path: '/app/$space/$name/{-$tab}',
+  // Where the Source tab has drilled down to — a commit, its files, one
+  // file — so back and forward walk the drilldown and every step can be
+  // linked. Anything else in the query is dropped.
+  validateSearch: (search: Record<string, unknown>): SourceSearch => ({
+    commit: typeof search.commit === 'string' && search.commit ? search.commit : undefined,
+    files: search.files === true || search.files === 1 || search.files === '1' ? 1 : undefined,
+    path: typeof search.path === 'string' && search.path ? search.path : undefined,
+  }),
   loader: ({ context, params }) =>
     context.queryClient.ensureQueryData(statusQuery(params.space, params.name)),
   head: ({ params }) => ({ meta: [{ title: pageTitle(params.name) }] }),
   component: () => {
     const { space, name, tab } = appRoute.useParams()
     // The tab comes from the URL, so it can name something that doesn't
-    // exist — fall back rather than render an empty panel.
+    // exist — fall back rather than render an empty page.
     const known = APP_TABS.find((t) => t === tab) ?? 'overview'
-    return <AppOverlay space={space} name={name} tab={known} />
+    return <AppPage space={space} name={name} tab={known} />
+  },
+})
+
+// A service and every one of its tabs. Its console keeps its place — the
+// table, the folder, the key — in the query, in keys of its own choosing.
+const serviceRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/service/$space/$name/{-$tab}',
+  validateSearch: (search: Record<string, unknown>): ServiceSearch => cleanServiceSearch(search),
+  head: ({ params }) => ({ meta: [{ title: pageTitle(params.name) }] }),
+  component: () => {
+    const { space, name, tab } = serviceRoute.useParams()
+    return <ServicePage space={space} name={name} tab={tab} />
   },
 })
 
 const routeTree = rootRoute.addChildren([
-  fleetRoute.addChildren([
-    fleetIndexRoute,
-    appRoute,
-    deployRoute,
-    deploySpaceRoute,
-    deployAppRoute,
-  ]),
+  homeRoute,
+  appRoute,
+  serviceRoute,
+  spaceRoute,
+  deployRoute,
+  deploySpaceRoute,
+  deployAppRoute,
   legacyAppsRoute,
   systemRoute,
-  spaceRoute,
 ])
 
 const router = createRouter({
   routeTree,
   history: createHashHistory(),
   context: { queryClient },
-  // Hovering a card warms its data through the loader; staleness is
+  // Hovering a link warms its data through the loader; staleness is
   // Query's business, so the router's own preload timer is switched off.
   defaultPreload: 'intent',
   defaultPreloadStaleTime: 0,
-  // An unknown hash is an old or mistyped link — the fleet is always a
+  // An unknown hash is an old or mistyped link — the start page is always a
   // sensible place to land.
   defaultNotFoundComponent: () => <Navigate to="/" replace />,
 })

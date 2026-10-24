@@ -265,6 +265,9 @@ func TestReloadChangesTargetsAndRefusesInvalidConfig(t *testing.T) {
 	assertResponse(http.StatusServiceUnavailable, "")
 	data = valid
 	assertResponse(http.StatusOK, "two")
+	// The Docker runtime writes the file as YAML.
+	data = "- name: erp\n  targetUrl: " + one.URL + "\n"
+	assertResponse(http.StatusOK, "one")
 	data = `[]`
 	assertResponse(http.StatusNotFound, "")
 }

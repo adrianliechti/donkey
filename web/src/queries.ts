@@ -2,22 +2,41 @@
 // key, so a remounted panel shows what it knew instantly and refreshes in
 // the background — no skeleton flash for data the console already had.
 // Reads are queryOptions factories, so route loaders can warm the cache
-// (`ensureQueryData`) before a view renders. Writes stay plain api.* calls;
-// they just invalidate the keys they touch.
+// (`ensureQueryData`) before a view renders. Writes are mutations that
+// invalidate the keys they touch (older views still call api.* directly and
+// invalidate by hand).
+import { useState } from 'react'
 import {
   keepPreviousData,
   queryOptions,
+  useMutation,
   useQuery,
   useQueryClient,
   type UseQueryResult,
 } from '@tanstack/react-query'
-import { api, type AnalyticsFilter, type ResourceRange, type TrafficRange, type TrafficSource } from './api'
-import { errText } from './ui'
+import {
+  type AddAddonRequest,
+  type AnalyticsFilter,
+  api,
+  type ResourceRange,
+  type SpaceConfig,
+  type TrafficRange,
+  type TrafficSource,
+} from './api'
+import { errText } from './format'
 
 export const fleetQuery = queryOptions({
   queryKey: ['fleet'],
   queryFn: () => api.fleet(),
   refetchInterval: 10_000,
+})
+
+// The deploy board: watched closely while something is under way, lazily
+// otherwise — a deploy started from the CLI shows up within seconds either way.
+export const deploysQuery = queryOptions({
+  queryKey: ['deploys'],
+  queryFn: () => api.deploys(),
+  refetchInterval: (query) => ((query.state.data ?? []).some((d) => !d.finishedAt) ? 2_000 : 10_000),
 })
 
 export const statusQuery = (space: string, app: string) =>
@@ -147,6 +166,15 @@ export const spaceServicesQuery = (space: string) =>
     queryFn: async () => (await api.spaceAddons(space)).addons ?? [],
   })
 
+// A service's variables with their values — secrets, so never kept around
+// longer than the page that shows them.
+export const serviceBindingQuery = (space: string, service: string) =>
+  queryOptions({
+    queryKey: ['service-binding', space, service],
+    queryFn: () => api.serviceBinding(space, service),
+    gcTime: 0,
+  })
+
 // Providers refresh their catalogs, and admins edit availability per space.
 export const catalogQuery = queryOptions({
   queryKey: ['catalog'],
@@ -176,6 +204,29 @@ function present<T>(q: UseQueryResult<T>) {
 
 export function useFleet() {
   return present(useQuery(fleetQuery))
+}
+
+// What is being deployed, by app ("space/app"). When a deploy finishes, the
+// fleet and that app's status are refreshed at once rather than at their next
+// poll, so a placeholder turns into the app without a gap.
+export function useDeploys() {
+  const qc = useQueryClient()
+  const q = useQuery(deploysQuery)
+  const running = (q.data ?? []).filter((d) => !d.finishedAt).map((d) => `${d.space}/${d.app}`).join(',')
+  const [seen, setSeen] = useState(running)
+  if (seen !== running) {
+    setSeen(running)
+    const done = seen.split(',').filter((key) => key && !running.split(',').includes(key))
+    if (done.length > 0) {
+      qc.invalidateQueries({ queryKey: fleetQuery.queryKey })
+      for (const key of done) {
+        const [space, app] = key.split('/')
+        qc.invalidateQueries({ queryKey: statusQuery(space, app).queryKey })
+      }
+    }
+  }
+  const byApp = new Map((q.data ?? []).map((d) => [`${d.space}/${d.app}`, d]))
+  return { deploys: q.data ?? [], byApp }
 }
 
 export function useAppStatus(space: string, app: string) {
@@ -249,6 +300,10 @@ export function useSpaceServices(space: string, enabled = true) {
   return present(useQuery({ ...spaceServicesQuery(space), enabled }))
 }
 
+export function useServiceBinding(space: string, service: string) {
+  return present(useQuery(serviceBindingQuery(space, service)))
+}
+
 export function useCatalog(space?: string, enabled = true) {
   return present(useQuery({ ...(space ? spaceCatalogQuery(space) : catalogQuery), enabled }))
 }
@@ -263,4 +318,56 @@ export function useInvalidateServices() {
     qc.invalidateQueries({ queryKey: ['app-services', space] })
     qc.invalidateQueries({ queryKey: fleetQuery.queryKey })
   }
+}
+
+// A mutation's error in the console's one voice, or '' while there is none.
+export function mutationError(m: { error: unknown }, fallback: string) {
+  return m.error ? errText(m.error, fallback) : ''
+}
+
+export function useCreateSpace() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ name, settings }: { name: string; settings: SpaceConfig }) => api.createSpace(name, settings),
+    onSuccess: () => qc.invalidateQueries({ queryKey: fleetQuery.queryKey }),
+  })
+}
+
+export function useDeleteSpace(space: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: () => api.deleteSpace(space),
+    onSuccess: () => {
+      qc.removeQueries({ queryKey: spaceServicesQuery(space).queryKey })
+      return qc.invalidateQueries({ queryKey: fleetQuery.queryKey })
+    },
+  })
+}
+
+export function useAddService(space: string) {
+  const invalidate = useInvalidateServices()
+  return useMutation({
+    mutationFn: (req: AddAddonRequest) => api.addSpaceAddon(space, req),
+    onSuccess: () => invalidate(space),
+  })
+}
+
+// Connecting a service to an app (or taking it away) restarts the app with
+// the service's variables in or out.
+export function useConnectService(space: string) {
+  const invalidate = useInvalidateServices()
+  return useMutation({
+    mutationFn: ({ app, service, connect }: { app: string; service: string; connect: boolean }) =>
+      connect ? api.addAddon(space, app, { name: service }) : api.removeAddon(space, app, service),
+    onSuccess: () => invalidate(space),
+  })
+}
+
+export function useRemoveService(space: string) {
+  const invalidate = useInvalidateServices()
+  return useMutation({
+    mutationFn: ({ name, keepData, orphan }: { name: string; keepData: boolean; orphan: boolean }) =>
+      api.removeSpaceAddon(space, name, keepData, orphan),
+    onSuccess: () => invalidate(space),
+  })
 }

@@ -179,10 +179,9 @@ func TestHistoryIsServedWhereItIsWritten(t *testing.T) {
 
 	rec := send(http.MethodGet, "/v1/spaces/acme/apps/web/commits")
 	var listed struct {
-		Enabled bool           `json:"enabled"`
 		Commits []SourceCommit `json:"commits"`
 	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &listed); err != nil || !listed.Enabled || len(listed.Commits) != 1 {
+	if err := json.Unmarshal(rec.Body.Bytes(), &listed); err != nil || len(listed.Commits) != 1 {
 		t.Fatalf("history through the API: %d %s", rec.Code, rec.Body.String())
 	}
 	rec = send(http.MethodGet, "/v1/spaces/acme/apps/web/commits/"+listed.Commits[0].ID+"/archive")
@@ -274,6 +273,49 @@ func historyGet(t *testing.T, handler http.HandlerFunc, target string, values ma
 	return rec
 }
 
+func TestBuildsRecordTheSettingsTheyRanWith(t *testing.T) {
+	s := historyServer(t, "registry/web:1")
+	upload := t.TempDir()
+	writeFiles(t, upload, map[string]string{"Dockerfile": "FROM nginx\n", "donkey.yaml": "name: web\nport: 8080\n"})
+
+	// A build of the app's own Dockerfile changes nothing in its copy, yet
+	// its commit still says what it ran with — without values that are not
+	// the history's to keep.
+	release := releaseFixture()
+	release.source = captureSource(upload, buildCopy(t, upload, func(string) {}), ".", "")
+	release.settings = &config.AppConfig{
+		Name: "web", Space: "acme", Port: 8080, Healthcheck: config.Healthcheck{Path: "/healthz"}, Storage: &config.StorageConfig{},
+		Env:    map[string]string{"API_TOKEN": "s3cret-token-value"},
+		Addons: []config.AddonConfig{{Type: "postgres", Parameters: map[string]any{"password": "p4ssw0rd-value"}}},
+	}
+	s.persistRelease(asPerson(context.Background()), "acme", "web", release)
+
+	commits, err := s.history.Log("acme", "web", 10)
+	if err != nil || len(commits) != 2 {
+		t.Fatalf("commits = %+v, %v", commits, err)
+	}
+	built := commits[0]
+	if built.Kind != history.KindPlatform || !strings.HasPrefix(built.Message, "Build #1 recorded its settings") {
+		t.Fatalf("the build's commit = %+v", built)
+	}
+	body, err := s.history.ReadFile("acme", "web", built.ID, settingsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings := string(body)
+	for _, want := range []string{"# What build #1 ran with", "# image: registry/web:1", "port: 8080", "path: /healthz", "type: postgres"} {
+		if !strings.Contains(settings, want) {
+			t.Errorf("deploy.yaml is missing %q:\n%s", want, settings)
+		}
+	}
+	// An app without a disk says nothing about storage.
+	for _, secret := range []string{"s3cret-token-value", "API_TOKEN", "p4ssw0rd-value", "storage"} {
+		if strings.Contains(settings, secret) {
+			t.Errorf("deploy.yaml keeps %q:\n%s", secret, settings)
+		}
+	}
+}
+
 func TestDeploysRecordUploadsAndPlatformChanges(t *testing.T) {
 	s := historyServer(t, "registry/web:2")
 	ctx := asPerson(context.Background())
@@ -307,13 +349,12 @@ func TestDeploysRecordUploadsAndPlatformChanges(t *testing.T) {
 		t.Fatalf("list: %d %s", rec.Code, rec.Body.String())
 	}
 	var listed struct {
-		Enabled bool           `json:"enabled"`
 		Commits []SourceCommit `json:"commits"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &listed); err != nil {
 		t.Fatal(err)
 	}
-	if !listed.Enabled || len(listed.Commits) != 2 {
+	if len(listed.Commits) != 2 {
 		t.Fatalf("history = %+v", listed)
 	}
 	built, uploaded := listed.Commits[0], listed.Commits[1]
@@ -406,17 +447,4 @@ func TestHistoryRequestsFailPlainly(t *testing.T) {
 		rec.Header().Get("Content-Disposition") != "" {
 		t.Fatalf("a missing archive is an error, not an empty download: %d %v", rec.Code, rec.Header())
 	}
-
-	s.history = nil
-	rec := historyGet(t, s.handleCommits, "/", nil)
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"enabled":false`) {
-		t.Fatalf("without a volume the history is off, not broken: %d %s", rec.Code, rec.Body.String())
-	}
-	if rec := historyGet(t, s.handleCommit, "/", map[string]string{"commit": unknown}); rec.Code != http.StatusNotFound {
-		t.Fatalf("detail without a volume: %d", rec.Code)
-	}
-	// Persisting a release with nothing to keep it in is not an error.
-	release := releaseFixture()
-	release.source = &sourceCapture{root: t.TempDir()}
-	s.persistRelease(context.Background(), "acme", "web", release)
 }

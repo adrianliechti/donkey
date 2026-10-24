@@ -11,6 +11,7 @@ import (
 
 	"github.com/go-sql-driver/mysql"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/adrianliechti/donkey/internal/addons"
 	"github.com/adrianliechti/donkey/pkg/runtime"
@@ -150,6 +151,50 @@ func (c *databaseConn) Query(ctx context.Context, query string, args ...any) (*d
 		}
 	}
 	return r, err
+}
+
+// QueryText runs a statement whose rows the console shows. Postgres renders
+// every value as text, exactly as psql prints it — timestamps, arrays, jsonb,
+// numerics to the last digit — so what the grid shows is what an edit sends
+// back, and nothing passes through a Go type on the way.
+func (c *databaseConn) QueryText(ctx context.Context, query string, args ...any) (*databaseRows, error) {
+	if c.pg != nil {
+		args = append([]any{pgx.QueryResultFormats{pgx.TextFormatCode}}, args...)
+	}
+	return c.Query(ctx, query, args...)
+}
+
+// Cells is the current row as the grid carries it: strings and nulls. Rows
+// from QueryText arrive as postgres' own text; MySQL's driver values are
+// rendered by cell.
+func (r *databaseRows) Cells() ([]any, error) {
+	if r.pg != nil && textFormat(r.pg.FieldDescriptions()) {
+		raw := r.pg.RawValues()
+		out := make([]any, len(raw))
+		for i, b := range raw {
+			if b != nil {
+				out[i] = string(b)
+			}
+		}
+		return out, nil
+	}
+	values, err := r.Values()
+	if err != nil {
+		return nil, err
+	}
+	for i, v := range values {
+		values[i] = cell(v)
+	}
+	return values, nil
+}
+
+func textFormat(fields []pgconn.FieldDescription) bool {
+	for _, f := range fields {
+		if f.Format != pgx.TextFormatCode {
+			return false
+		}
+	}
+	return true
 }
 
 func (r *databaseRows) Next() bool {

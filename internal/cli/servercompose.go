@@ -285,9 +285,7 @@ func dockerComposeFiles(settings *config.InstallFile, bundledRegistry bool) (map
 	serverEnv["DONKEY_ORCHESTRATOR_URL"] = "http://" + dockerOrchestratorName + ":" + dockerOrchestratorPort
 	// The source history is written where deploys run, and served from there
 	// too: a folder of the state volume both processes already mount.
-	if settings.Data.Enabled() {
-		orchestratorEnv["DONKEY_DATA_DIR"] = dockerDataDir
-	}
+	orchestratorEnv["DONKEY_DATA_DIR"] = dockerDataDir
 
 	gatewayEnv := map[string]string{
 		"DONKEY_RUNTIME":                 "docker",

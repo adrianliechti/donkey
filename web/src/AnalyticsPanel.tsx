@@ -21,15 +21,16 @@ import {
   Disclosure,
   ErrorNote,
   Eyebrow,
-  focusRing,
   Section,
   SectionHeader,
   SectionTitle,
   Select,
   Spinner,
   StatGrid,
+  TabLabel,
   wellClass,
 } from './ui'
+import { focusRing } from './controls'
 
 const integer = new Intl.NumberFormat()
 const compact = new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 })
@@ -124,12 +125,9 @@ export function AnalyticsPanel({
   const { data: network } = useNetwork(space, app, canManage)
 
   const hasData = !!data && (data.totals.visits > 0 || data.totals.pageviews > 0 || data.totals.events > 0)
-  // Pages are counted on web apps with an address that did not opt out.
-  // APIs and internal apps have no audience to show, only traffic; viewers
-  // cannot read the settings and go by what was recorded.
-  const counts = network ? network.exposure !== 'internal' && network.mode !== 'api' && network.analytics !== false : undefined
-  // An empty audience shrinks to a line: a web-mode app that serves JSON
-  // would otherwise carry a block of zeros forever.
+  // An empty audience is left out: a web-mode app that serves JSON would
+  // otherwise carry a block of zeros forever, and APIs and internal apps
+  // have no audience to show, only traffic.
   const showAudience = hasData || (!data && !error) || filters.length > 0
   const filter = (dimension: AnalyticsDimension, value: string) =>
     setFilters((current) => [...current.filter((f) => f.dimension !== dimension), { dimension, value }])
@@ -143,14 +141,6 @@ export function AnalyticsPanel({
         {optedOut && (
           <Section>
             <OffNotice onOpenSettings={onOpenSettings} />
-          </Section>
-        )}
-        {counts !== false && (
-          <Section>
-            <SectionHeader
-              title="Audience"
-              description="No page visits in this range. The gateway counts them on the app's HTML pages."
-            />
           </Section>
         )}
         <TrafficPanel space={space} app={app} range={range} onRange={setRange} />
@@ -579,7 +569,7 @@ function BreakdownCard({
                   d === dimension ? 'bg-raised font-medium text-ink' : 'text-muted hover:text-ink'
                 }`}
               >
-                {TAB_LABEL[d]}
+                <TabLabel>{TAB_LABEL[d]}</TabLabel>
               </button>
             ))}
           </div>

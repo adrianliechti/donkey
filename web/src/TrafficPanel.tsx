@@ -1,15 +1,12 @@
 import { useState } from 'react'
-import { Activity, Cpu, MemoryStick } from 'lucide-react'
+import { Cpu, MemoryStick } from 'lucide-react'
 import type { ResourcePoint, ResourceRange, TrafficPoint, TrafficRange, TrafficTotals } from './api'
 import { useResources, useTraffic } from './queries'
 import { Drawer, DrawerBody, PaneHeader } from './dialog'
-import { ago, ErrorNote, Eyebrow, Section, SectionHeader, Select, Spinner, StatGrid } from './ui'
+import { ErrorNote, Eyebrow, Section, SectionHeader, Select, Spinner, StatGrid } from './ui'
+import { ago } from './format'
 
 const integer = new Intl.NumberFormat()
-const compactInteger = new Intl.NumberFormat(undefined, {
-  notation: 'compact',
-  maximumFractionDigits: 1,
-})
 const rangeOptions: { value: TrafficRange; label: string }[] = [
   { value: '48h', label: 'last 48 hours' },
   { value: '7d', label: 'last 7 days' },
@@ -24,45 +21,15 @@ const resourceRangeOptions: { value: ResourceRange; label: string }[] = [
 ]
 
 /**
- * Space cards only need a quiet signal that telemetry exists. The full
- * dashboard opens on demand, keeping the fleet about apps and services.
+ * A whole space's traffic, opened from its ⋯ menu in the breadcrumb. The
+ * report is only asked for while the drawer is open.
  */
-export function SpaceTelemetry({ space }: { space: string }) {
-  const [open, setOpen] = useState(false)
-  const { data, error } = useTraffic(space)
-  const errors = (data?.totals.clientErrors ?? 0) + (data?.totals.serverErrors ?? 0)
-  const title = error
-    ? `Telemetry unavailable: ${error}`
-    : data
-      ? `Telemetry — ${integer.format(data.totals.requests)} requests, ${integer.format(errors)} errors in the last 30 days`
-      : 'Open space telemetry'
-
+export function SpaceTrafficDrawer({ space, open, onClose }: { space: string; open: boolean; onClose: () => void }) {
   return (
-    <>
-      <button
-        type="button"
-        title={title}
-        aria-label={title}
-        onClick={() => setOpen(true)}
-        className={`inline-flex h-8 items-center gap-1.5 rounded-md px-2 font-mono text-[11px] transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-strong ${
-          error
-            ? 'text-danger hover:bg-danger/10'
-            : 'text-muted hover:bg-line/60 hover:text-ink'
-        }`}
-      >
-        <Activity className="size-3.5" aria-hidden />
-        {data && <span>{compactInteger.format(data.totals.requests)}</span>}
-        {errors > 0 && <span className="size-1.5 rounded-full bg-danger" aria-hidden />}
-      </button>
-
-      <Drawer open={open} onClose={() => setOpen(false)} label={`${space} — telemetry`} width="max-w-4xl">
-        <PaneHeader prominent eyebrow="Space telemetry" title={space}
-          onClose={() => setOpen(false)} closeLabel="Close space telemetry" />
-        <DrawerBody>
-          <TrafficPanel space={space} app="" />
-        </DrawerBody>
-      </Drawer>
-    </>
+    <Drawer open={open} onClose={onClose} label={`${space} — traffic`} width="max-w-4xl">
+      <PaneHeader prominent eyebrow="Space traffic" title={space} onClose={onClose} closeLabel="Close space traffic" />
+      <DrawerBody>{open && <TrafficPanel space={space} app="" />}</DrawerBody>
+    </Drawer>
   )
 }
 

@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useSearch } from '@tanstack/react-router'
 import {
   BadgeCheck,
   Box,
@@ -8,14 +9,11 @@ import {
   GitCommitHorizontal,
   Globe2,
   HardDrive,
-  KeyRound,
   Rocket,
   RotateCw,
   ScrollText,
   SlidersHorizontal,
-  Stethoscope,
   UploadCloud,
-  X,
 } from 'lucide-react'
 import { api, type EndpointState, type EndpointStatus } from './api'
 import { AddonsCard } from './AddonsCard'
@@ -26,45 +24,46 @@ import { EnvEditor } from './EnvEditor'
 import { FilesPanel } from './FilesPanel'
 import { LogsPanel } from './LogsPanel'
 import { NetworkCard } from './NetworkCard'
+import { Sheet } from './Sheet'
+import type { SourceSearch } from './sourceSearch'
 import { SourcePanel } from './SourcePanel'
 import { StoredRelease } from './StoredRelease'
-import { DrawerBody } from './dialog'
-import { useAppBuild, useAppBuilds, useAppStatus, useFleet } from './queries'
+import { DeployPlaceholder, DeployProgress } from './Overview'
+import { useAppBuild, useAppBuilds, useAppStatus, useDeploys, useFleet } from './queries'
 import { SignalChips } from './ReleaseView'
 import {
-  ago,
+  Button,
   Card,
   ErrorNote,
-  errText,
-  ExposureBadge,
-  healthLine,
-  healthOf,
   IconButton,
+  LinkButton,
   List,
   ListRow,
   Section,
   SectionHeader,
   Spinner,
   StateChip,
-  StatusDot,
+  TabLabel,
   Toolbar,
 } from './ui'
+import { ago, errText } from './format'
 
-// The app panel slides over the fleet. Each tab is one job — glance, read,
+// An app is a page of its own. Each tab is one job — glance, read,
 // browse, configure, change how it's reached — and the header that answers
 // "is it up?" stays above all of them.
 export type AppTab = 'overview' | 'release' | 'source' | 'traffic' | 'logs' | 'files' | 'variables' | 'settings'
 
 const TABS: { id: AppTab; label: string; icon: React.ReactNode }[] = [
   { id: 'overview', label: 'Overview', icon: <FileText className="size-4" aria-hidden /> },
-  { id: 'release', label: 'Deployment', icon: <Rocket className="size-4" aria-hidden /> },
   { id: 'source', label: 'Source', icon: <GitCommitHorizontal className="size-4" aria-hidden /> },
+  { id: 'release', label: 'Deployment', icon: <Rocket className="size-4" aria-hidden /> },
   // One view of how the app is used: its audience, requests and resources.
   // The id stays 'traffic' so links to #/app/…/traffic keep working.
   { id: 'traffic', label: 'Analytics', icon: <ChartColumn className="size-4" aria-hidden /> },
   { id: 'logs', label: 'Logs', icon: <ScrollText className="size-4" aria-hidden /> },
   { id: 'files', label: 'Files', icon: <HardDrive className="size-4" aria-hidden /> },
-  { id: 'variables', label: 'Variables', icon: <KeyRound className="size-4" aria-hidden /> },
+  // Settings is everything about how the app runs: how it is reached, its
+  // variables, and removing it. 'variables' links land here too.
   { id: 'settings', label: 'Settings', icon: <SlidersHorizontal className="size-4" aria-hidden /> },
 ]
 
@@ -77,118 +76,90 @@ export function AppDetail({
   tab,
   onTab,
   onDeploy,
-  onBack,
+  onRemoved,
 }: {
   space: string
   app: string
   tab: AppTab
   onTab: (tab: AppTab) => void
   onDeploy: () => void
-  onBack: () => void
+  onRemoved: () => void
 }) {
   const { data: status, error, reload } = useAppStatus(space, app)
+  const search = useSearch({ strict: false }) as SourceSearch
   const { data: fleet } = useFleet()
+  const deploy = useDeploys().byApp.get(`${space}/${app}`)
   const canManage = fleet?.roles[space] === 'admin' || fleet?.roles[space] === 'developer'
   // The tab also comes from the URL, so it can name one that is not offered:
   // .../files for an app with no disk. Fall back rather than leave the panel
   // blank with nothing selected.
-  const shown: AppTab = !canManage && !VIEWER_TABS.includes(tab) ? 'overview' : tab === 'files' && !status?.hasStorage ? 'overview' : tab
+  const asked: AppTab = tab === 'variables' ? 'settings' : tab
+  const shown: AppTab = !canManage && !VIEWER_TABS.includes(asked) ? 'overview' : asked === 'files' && !status?.hasStorage ? 'overview' : asked
+  // The log pane and the file browser are workbenches: the page stands
+  // still and they scroll inside (see Sheet). Everything else is a document.
+  const fill = shown === 'logs' || (shown === 'source' && !!search.files)
 
   return (
-    <>
-      {/* The header never scrolls; only the tab body below it does. */}
-      <div className={`shrink-0 ${status?.found ? '' : 'border-b border-line'}`}>
-        {/* The same title row as every dialog: identity left, portlet right. */}
-        <div className="flex items-start justify-between gap-3 px-5 pt-4">
-          <div className="min-w-0">
-            <div className="flex items-center gap-2.5">
-              <h1 className="truncate font-mono text-xl font-bold tracking-tight">{app}</h1>
-              {status?.found && <ExposureBadge exposure={status.exposure} mode={status.mode} />}
-            </div>
-            {status?.found && (
-              <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-ink-soft">
-                <span className="flex items-center gap-2">
-                  <StatusDot health={healthOf(status.healthy, status.ready)} />
-                  {healthLine[healthOf(status.healthy, status.ready)](status.ready)}
-                </span>
-                {status.startedAt && <span className="text-xs text-muted">up {ago(status.startedAt)}</span>}
-                {(status.restarts ?? 0) > 0 && (
-                  <span className="text-xs text-danger">{status.restarts} restarts</span>
-                )}
-                {/* The one way to the diagnosis, the same on every tab: it
-                    lives on Logs, next to the evidence it reads. */}
-                {canManage && !status.healthy && (
-                  <button
-                    type="button"
-                    onClick={() => onTab('logs')}
-                    className="flex items-center gap-1 text-xs text-danger underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-accent-strong"
-                  >
-                    <Stethoscope className="size-3.5" aria-hidden /> Diagnose
-                  </button>
-                )}
-              </div>
-            )}
+    // The breadcrumb above names the app and shows its health; the sheet's
+    // top edge is its tabs and what can be done to it, and stays in reach
+    // however far a tab scrolls.
+    <Sheet
+      fill={fill}
+      tabs={
+        status?.found && (
+          <div className="flex items-center justify-between gap-4 px-6">
+            {/* Files is only offered when there is a disk to browse — an app
+                without one has nothing on it a redeploy would not rebuild.
+                The tabs' underline sits on the header's own border (-mb-px),
+                -ml-3 puts the first tab's icon on the page gutter, and the row
+                scrolls sideways when the tabs are wider than the page. */}
+            <nav
+              className="-mb-px -ml-3 flex min-w-0 gap-1 self-stretch overflow-x-auto overflow-y-hidden pt-1 scrollbar-none"
+              role="tablist"
+            >
+              {TABS.filter((t) => (canManage || VIEWER_TABS.includes(t.id)) && (t.id !== 'files' || status.hasStorage)).map((t) => (
+                <button
+                  key={t.id}
+                  role="tab"
+                  aria-selected={shown === t.id}
+                  onClick={() => onTab(t.id)}
+                  className={`flex h-11 shrink-0 items-center gap-1.5 border-b-2 px-3 text-sm transition-colors focus-visible:outline-2 focus-visible:outline-accent-strong ${
+                    shown === t.id
+                      ? 'border-accent font-medium text-ink'
+                      : 'border-transparent text-muted hover:border-line hover:text-ink'
+                  }`}
+                >
+                  {t.icon}
+                  <TabLabel>{t.label}</TabLabel>
+                  {/* An app in trouble: the way to its diagnosis is Logs. */}
+                  {t.id === 'logs' && !status.healthy && <span className="size-1.5 rounded-full bg-danger" aria-label="unhealthy" />}
+                </button>
+              ))}
+            </nav>
+            <Toolbar className="gap-2">
+              {canManage && <RestartButton space={space} app={app} onRestarted={reload} />}
+              {status.url && (
+                <LinkButton href={status.url} icon={ExternalLink} kind="quiet" size="sm">
+                  Open
+                </LinkButton>
+              )}
+              {canManage && (
+                <Button icon={UploadCloud} size="sm" onClick={onDeploy}>
+                  Deploy
+                </Button>
+              )}
+            </Toolbar>
           </div>
-          {/* The same icon portlet as every dialog header. -mr-2: the close
-              glyph lines up with the content edge, not its hit area. */}
-          <Toolbar className="-mr-2">
-            {status?.found && status.url && (
-              /* An anchor (opens a new tab), dressed as an icon button. */
-              <a
-                href={status.url}
-                target="_blank"
-                rel="noreferrer"
-                title="Open the app in a new tab"
-                aria-label="Open the app in a new tab"
-                className="flex size-8 shrink-0 items-center justify-center rounded-md text-muted transition-colors hover:bg-line/60 hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-strong"
-              >
-                <ExternalLink className="size-4" aria-hidden />
-              </a>
-            )}
-            {canManage && status?.found && <RestartButton space={space} app={app} onRestarted={reload} />}
-            {canManage && status?.found && <IconButton icon={UploadCloud} label="Deploy a new version" onClick={onDeploy} />}
-            <span className="mx-0.5 h-4 w-px bg-line" aria-hidden />
-            <IconButton icon={X} label="Close the app panel (Esc)" onClick={onBack} />
-          </Toolbar>
-        </div>
-
-        {status?.found && (
-          /* Files is only offered when there is a disk to browse — an app
-             without one has nothing on it a redeploy would not rebuild. */
-          // The bar's bottom line is an inset shadow, painted under the tabs,
-          // so the active underline sits on it without spilling out: nothing
-          // overflows vertically, and the bar only scrolls sideways when the
-          // tabs are wider than the panel (phones).
-          <nav
-            className="mt-3 flex gap-1 overflow-x-auto overflow-y-hidden overscroll-x-contain px-5 shadow-[inset_0_-1px_0_var(--color-line)] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
-            role="tablist"
-          >
-            {TABS.filter((t) => (canManage || VIEWER_TABS.includes(t.id)) && (t.id !== 'files' || status.hasStorage)).map((t) => (
-              <button
-                key={t.id}
-                role="tab"
-                aria-selected={shown === t.id}
-                onClick={() => onTab(t.id)}
-                className={`flex h-10 shrink-0 items-center gap-1.5 border-b-2 px-3 text-sm transition-colors focus-visible:outline-2 focus-visible:outline-accent-strong ${
-                  shown === t.id
-                    ? 'border-accent font-medium text-ink'
-                    : 'border-transparent text-muted hover:border-line hover:text-ink'
-                }`}
-              >
-                {t.icon}
-                {t.label}
-              </button>
-            ))}
-          </nav>
-        )}
-      </div>
-
-      {/* Keyed by tab: each tab opens scrolled to its top. */}
-      <DrawerBody key={shown}>
+        )
+      }
+    >
+      <div className={`flex w-full flex-col gap-5 px-6 py-6 ${fill ? 'min-h-0 flex-1' : ''}`}>
         <ErrorNote message={error} />
         {status === null && !error && <Spinner label="Asking the cluster…" />}
 
-        {status && !status.found && (
+        {/* Not running (yet): its first deploy, as it goes or how it ended. */}
+        {status && !status.found && deploy && <DeployPlaceholder deploy={deploy} />}
+        {status && !status.found && !deploy && (
           <Card className="p-8 text-center">
             <h2 className="font-mono text-xl font-bold tracking-tight">{app}</h2>
             <p className="mt-2 text-sm text-muted">
@@ -199,41 +170,49 @@ export function AppDetail({
             </p>}
           </Card>
         )}
+        {/* A new version on its way to a running app. */}
+        {status?.found && deploy && !deploy.finishedAt && (
+          <div className="rounded-lg border border-accent/40 bg-accent-soft/30 px-4 py-3">
+            <DeployProgress deploy={deploy} compact />
+          </div>
+        )}
 
         {status?.found && (
           <>
             {shown === 'overview' && (
               <>
                 {canManage && <AboutApp space={space} app={app} onOpenBuild={() => onTab('release')} />}
-                {canManage && <InstancesCard pods={status.pods} />}
-                {!canManage && <Section><SectionHeader title="App overview" description="Open the app using the link above, or view its health and usage in Telemetry." /></Section>}
+                {canManage && <InstancesCard pods={status.pods} startedAt={status.startedAt} />}
+                {!canManage && <Section><SectionHeader title="App overview" description="Open the app using the link above, or see how it is used in Analytics." /></Section>}
                 {canManage && status.endpoint && <EndpointCard endpoint={status.endpoint} />}
                 {canManage && <AddonsCard space={space} app={app} />}
               </>
             )}
-            {shown === 'release' && <StoredRelease space={space} app={app} />}
             {shown === 'source' && <SourcePanel space={space} app={app} />}
+            {shown === 'release' && <StoredRelease space={space} app={app} />}
             {shown === 'logs' && (
-              <>
+              // The log pane takes what the sheet leaves; it is the one thing
+              // that scrolls.
+              <div className="flex min-h-0 flex-1 flex-col gap-5">
                 {!status.healthy && <DiagnosisSection space={space} app={app} image={status.image} />}
                 <LogsPanel space={space} app={app} />
-              </>
+              </div>
             )}
             {shown === 'traffic' && (
               <AnalyticsPanel space={space} app={app} canManage={canManage} onOpenSettings={() => onTab('settings')} />
             )}
             {shown === 'files' && <FilesPanel space={space} app={app} />}
-            {shown === 'variables' && <EnvEditor space={space} app={app} onSaved={reload} />}
             {shown === 'settings' && (
               <>
                 <NetworkCard space={space} app={app} onChanged={reload} />
-                <DangerZone space={space} app={app} onDestroyed={onBack} />
+                <EnvEditor space={space} app={app} onSaved={reload} />
+                <DangerZone space={space} app={app} onDestroyed={onRemoved} />
               </>
             )}
           </>
         )}
-      </DrawerBody>
-    </>
+      </div>
+    </Sheet>
   )
 }
 
@@ -362,10 +341,17 @@ function EndpointCard({ endpoint }: { endpoint: EndpointStatus }) {
   )
 }
 
-function InstancesCard({ pods }: { pods: string[] }) {
+// The pod summaries carry no start time of their own; the status knows when
+// the newest instance came up — exact for a single one, and said as the
+// newest for several.
+function InstancesCard({ pods, startedAt }: { pods: string[]; startedAt?: string }) {
+  const one = pods.length === 1
   return (
     <Section className="space-y-3">
-      <SectionHeader title="Instances" />
+      <SectionHeader
+        title="Instances"
+        actions={!one && startedAt ? <span className="text-xs text-muted">newest up {ago(startedAt)}</span> : undefined}
+      />
       {pods.length === 0 ? (
         <p className="text-sm text-muted">
           No instances running — the app may be starting, or its rollout is stuck. The logs usually
@@ -382,6 +368,7 @@ function InstancesCard({ pods }: { pods: string[] }) {
               <ListRow key={p}>
                 <Box className="size-4 shrink-0 text-muted" aria-hidden />
                 <span className="min-w-0 flex-1 truncate font-mono text-sm">{name}</span>
+                {one && startedAt && <span className="shrink-0 text-xs text-muted">up {ago(startedAt)}</span>}
                 <span className="flex flex-wrap justify-end gap-1.5">
                   {m && <StateChip state={m[1].trim()} />}
                   {m?.[2] && m[2].split(', ').map((note) => <StateChip key={note} state={note} />)}

@@ -37,11 +37,18 @@ type runSpec struct {
 	Host        string   `json:"host,omitempty"`
 	Mode        string   `json:"mode,omitempty"`
 	CORS        string   `json:"cors,omitempty"`
+	// Stack is what the app is written in (detect.Stack), shown as a label.
+	Stack string `json:"stack,omitempty"`
+	// Env is donkey.yaml's env, with the binding references the deploy wired
+	// in. Like a Deployment's literal env on Kubernetes it belongs to the
+	// deploy — the next one replaces it, so a dropped key goes — and it wins
+	// over the stored `donkey env` values, which persist.
+	Env map[string]string `json:"env,omitempty"`
 }
 
 func (r *Runtime) runRecord(space, app string) (*runSpec, error) {
 	var spec runSpec
-	found, err := r.state.readJSON(&spec, "deploy", space, app+".json")
+	found, err := r.state.readRecord(&spec, "deploy", space, app)
 	if err != nil || !found {
 		return nil, err
 	}
@@ -49,7 +56,7 @@ func (r *Runtime) runRecord(space, app string) (*runSpec, error) {
 }
 
 func (r *Runtime) setRunRecord(space, app string, spec runSpec) error {
-	return r.state.writeJSON(spec, "deploy", space, app+".json")
+	return r.state.writeRecord(spec, "deploy", space, app)
 }
 
 // Deploy takes a built image live as a container. The same choreography as
@@ -130,21 +137,6 @@ func (r *Runtime) Deploy(ctx context.Context, spec rt.DeploySpec, out rt.Progres
 		}
 	}
 
-	// donkey.yaml's own env lands in the stored env (its keys win), so the
-	// running container and later restarts agree on what the app sees.
-	if len(app.Env) > 0 {
-		env, err := r.state.env(space, app.Name)
-		if err != nil {
-			return err
-		}
-		for k, v := range app.Env {
-			env[k] = v
-		}
-		if err := r.state.setEnv(space, app.Name, env); err != nil {
-			return err
-		}
-	}
-
 	// What this deploy settled, for no-build deploys and the console.
 	if err := r.SetAppMeta(ctx, space, app.Name, rt.MetaDecisions, optional(spec.Decisions)); err != nil {
 		return err
@@ -157,7 +149,8 @@ func (r *Runtime) Deploy(ctx context.Context, spec rt.DeploySpec, out rt.Progres
 	}
 
 	run := runSpec{Image: r.pullRef(spec.ImageRef), Port: app.Port, Command: app.Command,
-		Healthcheck: app.Healthcheck.Path, Host: r.appHost(space, app), Mode: app.GatewayMode(), CORS: app.CORS}
+		Healthcheck: app.Healthcheck.Path, Host: r.appHost(space, app), Mode: app.GatewayMode(), CORS: app.CORS,
+		Stack: spec.Stack, Env: app.Env}
 	if app.HasStorage() {
 		run.Paths = app.Storage.Paths
 	}
@@ -240,7 +233,7 @@ func (r *Runtime) appHost(space string, app *config.AppConfig) string {
 // it no longer claims.
 func (r *Runtime) applyRoutes(ctx context.Context, space string, app *config.AppConfig, port int, hosts ...map[string]string) error {
 	var settings config.SpaceConfig
-	if _, err := r.state.readJSON(&settings, "spaces", space, "config.json"); err != nil {
+	if _, err := r.state.readRecord(&settings, "spaces", space, "config"); err != nil {
 		return err
 	}
 	if err := settings.Validate(); err != nil {
@@ -408,9 +401,11 @@ func (r *Runtime) imagePullOptions(ref string) (image.PullOptions, error) {
 	return opts, nil
 }
 
-// appEnv composes the container's environment: stored env, the addon
-// bindings the app holds, and donkey's own PORT.
-func (r *Runtime) appEnv(space, app string, port int) (map[string]string, error) {
+// appEnv composes the container's environment in the order a Kubernetes pod
+// gets it: the stored env (`donkey env`), the addon bindings the app holds,
+// the telemetry defaults and donkey's own PORT — and donkey.yaml's env from
+// the run record over all of them.
+func (r *Runtime) appEnv(space, app string, spec runSpec) (map[string]string, error) {
 	env, err := r.state.env(space, app)
 	if err != nil {
 		return nil, err
@@ -449,7 +444,10 @@ func (r *Runtime) appEnv(space, app string, port int) (map[string]string, error)
 			}
 		}
 	}
-	env["PORT"] = strconv.Itoa(port)
+	env["PORT"] = strconv.Itoa(spec.Port)
+	for k, v := range spec.Env {
+		env[k] = v
+	}
 	return env, nil
 }
 
@@ -524,7 +522,7 @@ func (r *Runtime) initVolumeDirs(ctx context.Context, vol string, subs []string,
 
 // runApp (re)creates the app's container from its run record.
 func (r *Runtime) runApp(ctx context.Context, space, app string, spec runSpec) error {
-	env, err := r.appEnv(space, app, spec.Port)
+	env, err := r.appEnv(space, app, spec)
 	if err != nil {
 		return err
 	}
@@ -538,6 +536,9 @@ func (r *Runtime) runApp(ctx context.Context, space, app string, spec runSpec) e
 	labels[labelHost] = spec.Host
 	labels[labelMode] = spec.Mode
 	labels[labelCORS] = spec.CORS
+	if spec.Stack != "" {
+		labels[labelStack] = spec.Stack
+	}
 
 	volumes, err := r.appMounts(ctx, space, app, spec)
 	if err != nil {
@@ -687,7 +688,7 @@ func (r *Runtime) Destroy(ctx context.Context, space, app string, keepData bool)
 	if err := r.state.cleanupApp(space, app, keepData); err != nil {
 		return err
 	}
-	return r.state.remove("deploy", space, app+".json")
+	return r.state.remove("deploy", space, app)
 }
 
 // --- Network --------------------------------------------------------------

@@ -92,9 +92,4 @@ func TestDataVolume(t *testing.T) {
 	if claim == nil || *claim.Spec.StorageClassName != "nfs-client" || claim.Spec.Resources.Requests.Storage().String() != "20Gi" {
 		t.Fatalf("shaped claim = %+v", claim)
 	}
-
-	_, orchestrator, claim = dataObjects(t, config.InstallData{Disabled: true})
-	if claim != nil || dataEnv(orchestrator) != "" || mountedClaim(orchestrator) != "" {
-		t.Fatal("a disabled data volume is not mounted")
-	}
 }

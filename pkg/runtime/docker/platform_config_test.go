@@ -51,10 +51,30 @@ func TestPlatformConfigInitializationAndPersistence(t *testing.T) {
 	if err != nil || !reflect.DeepEqual(got, updated) {
 		t.Fatalf("restart reset admins: %+v, %v", got, err)
 	}
-	if err := os.WriteFile(r.state.path("platform", "config.json"), []byte("{}"), 0o644); err != nil {
+	if err := os.WriteFile(r.state.path("platform", "config.yaml"), []byte("{}"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := restarted.InitPlatformConfig(ctx, first); err == nil {
 		t.Fatal("empty persisted settings triggered a new bootstrap")
+	}
+}
+
+// Settings saved as JSON by an older version are the settings: the first
+// sign-in after an upgrade must not bootstrap over them.
+func TestLegacyPlatformConfigIsNotBootstrappedOver(t *testing.T) {
+	ctx := context.Background()
+	r := &Runtime{state: state{dir: t.TempDir()}}
+	if err := os.MkdirAll(r.state.path("platform"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(r.state.path("platform", "config.json"), []byte(`{"admins":{"users":["owner@example.com"]}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := r.InitPlatformConfig(ctx, config.PlatformConfig{Admins: config.AccessConfig{Users: []string{"intruder@example.com"}}})
+	if err != nil || !reflect.DeepEqual(got.Admins.Users, []string{"owner@example.com"}) {
+		t.Fatalf("legacy admins = %+v, %v", got, err)
+	}
+	if _, err := os.Stat(r.state.path("platform", "config.yaml")); !os.IsNotExist(err) {
+		t.Fatal("a create-only write published next to the legacy record")
 	}
 }

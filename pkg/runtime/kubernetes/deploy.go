@@ -308,6 +308,7 @@ func (r *Runtime) manifestInput(spec rt.DeploySpec, includeCreds bool) (manifest
 		ObjectName:      r.name(space, app.Name),
 		ImageRef:        spec.ImageRef,
 		Decisions:       spec.Decisions,
+		Stack:           spec.Stack,
 		RegistryHost:    r.opts.Registry.Host(),
 		Domain:          r.appHost(space, app),
 		TLS:             r.opts.TLS,

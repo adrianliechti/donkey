@@ -6,15 +6,12 @@ import (
 )
 
 // InstallData is the control plane's data volume, mounted into
-// donkey-orchestrator. Today it holds every app's source history (one git
-// repository per app, under source/); it is a general volume so later data
-// has a place too. On by default; production installations usually put it on
+// donkey-orchestrator. It holds every app's source history (one git
+// repository per app, under source/) — the code, build recipe and settings
+// of each build — and is a general volume so later data has a place too.
+// Every installation has one; production installations usually put it on
 // shared storage (an NFS-backed claim).
 type InstallData struct {
-	// Disabled gives the control plane no data volume, and with it no source
-	// history.
-	Disabled bool `json:"disabled,omitempty"`
-
 	// ExistingClaim (Kubernetes) names a PersistentVolumeClaim you manage in
 	// the system namespace. Without it donkey creates donkey-data.
 	ExistingClaim string `json:"existingClaim,omitempty"`
@@ -28,9 +25,6 @@ const DefaultDataSize = "5Gi"
 
 var quantityRE = regexp.MustCompile(`^[0-9]+(\.[0-9]+)?(Ki|Mi|Gi|Ti|Pi|Ei|k|M|G|T|P|E)?$`)
 
-// Enabled reports whether the control plane gets a data volume.
-func (d InstallData) Enabled() bool { return !d.Disabled }
-
 // ClaimSize is the size of the claim donkey creates.
 func (d InstallData) ClaimSize() string {
 	if d.Size != "" {
@@ -41,9 +35,6 @@ func (d InstallData) ClaimSize() string {
 
 // Validate checks what can be wrong without consulting the runtime.
 func (d InstallData) Validate() error {
-	if d.Disabled && (d.ExistingClaim != "" || d.StorageClass != "" || d.Size != "") {
-		return fmt.Errorf("data.disabled gives the control plane no volume, so the other data settings would do nothing — remove them or the disabled flag")
-	}
 	if d.Size != "" && !quantityRE.MatchString(d.Size) {
 		return fmt.Errorf("data.size %q is not a storage size (like 5Gi)", d.Size)
 	}

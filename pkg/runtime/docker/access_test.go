@@ -70,7 +70,7 @@ func TestAccessMigrationDeduplicatesAcrossAppsAndKeepsSpacesSeparate(t *testing.
 	}
 	other := config.SpaceConfig{AllowPublic: true, Domains: []string{}}
 	for space, settings := range map[string]config.SpaceConfig{"team": policy, "other": other} {
-		if err := r.state.writeJSON(settings, "spaces", space, "config.json"); err != nil {
+		if err := r.state.writeRecord(settings, "spaces", space, "config"); err != nil {
 			t.Fatal(err)
 		}
 	}

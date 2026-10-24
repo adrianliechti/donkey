@@ -193,11 +193,9 @@ func (s *Server) handleDeleteSpace(w http.ResponseWriter, r *http.Request) {
 	}
 	// The space's source history goes with it, so a new space by the same
 	// name starts with none of the old one's code.
-	if s.history != nil {
-		if err := s.history.RemoveSpace(space); err != nil {
-			writeErr(w, http.StatusBadGateway, err)
-			return
-		}
+	if err := s.history.RemoveSpace(space); err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
@@ -213,10 +211,11 @@ type AppListEntry struct {
 	Restarts int32  `json:"restarts,omitempty"`
 	// StartedAt is when the newest pod came up (RFC 3339; empty when none).
 	StartedAt string `json:"startedAt,omitempty"`
-	// Mode, exposure, disk and attached services —
-	// what the console's canvas cards show without a per-app request.
+	// Mode, exposure, stack, disk and attached services — what the
+	// console's cards show without a per-app request.
 	Exposure   string   `json:"exposure,omitempty"`
 	Mode       string   `json:"mode,omitempty"`
+	Stack      string   `json:"stack,omitempty"`
 	HasStorage bool     `json:"hasStorage,omitempty"`
 	Addons     []string `json:"addons,omitempty"`
 }
@@ -308,6 +307,7 @@ func (s *Server) listAppEntries(ctx context.Context) ([]AppListEntry, error) {
 			Restarts:   st.Restarts,
 			Exposure:   exposureOf(st),
 			Mode:       modeOfStatus(st),
+			Stack:      st.Stack,
 			HasStorage: hasStorage,
 			Addons:     addonNames,
 		}

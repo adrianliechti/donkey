@@ -1,7 +1,6 @@
 // Small shared pieces so every view speaks the same visual language.
 //
-// Sizing is one scale everywhere: a control (button, input, select, icon
-// button) is `sm` = 32px or `md` = 36px tall, so anything placed in a row
+// Sizing is one scale everywhere (controls.ts), so anything placed in a row
 // lines up without per-call padding fiddling. Dialogs and drawers share the
 // header/body/footer frame in dialog.tsx; sections inside a panel share
 // SectionHeader (title left, action portlet right).
@@ -11,7 +10,6 @@ import {
   type ReactNode,
   type TextareaHTMLAttributes,
   useState,
-  useSyncExternalStore,
 } from 'react'
 import { Listbox, ListboxButton, ListboxOption, ListboxOptions, Switch } from '@headlessui/react'
 import {
@@ -22,56 +20,15 @@ import {
   Copy,
   CircleCheck,
   Globe,
-  KeyRound,
   Loader2,
-  Lock,
-  Network,
   type LucideIcon,
 } from 'lucide-react'
 import type { AppMode, Exposure } from './api'
+import { type ControlSize, controlSize, fieldBase, focusRing, iconSize, inputClass } from './controls'
+import type { Health } from './vocabulary'
 
-export type ControlSize = 'sm' | 'md'
 
-// One height per size, shared by every control that can sit in a row.
-export const controlSize: Record<ControlSize, string> = {
-  sm: 'h-7 px-2.5 text-xs',
-  md: 'h-8 px-3 text-sm',
-}
-const iconSize: Record<ControlSize, string> = { sm: 'size-3.5', md: 'size-4' }
 
-export const focusRing =
-  'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-strong'
-
-// useColorScheme follows the OS light/dark preference — the console has no
-// theme toggle and stores nothing, so this reads `prefers-color-scheme` live.
-// It exists for the rare place a value can't be a CSS token: the code
-// highlighter's theme is a token→hex map chosen in JS.
-const darkQuery = () => window.matchMedia('(prefers-color-scheme: dark)')
-export function useColorScheme(): 'light' | 'dark' {
-  return useSyncExternalStore(
-    (cb) => {
-      const mq = darkQuery()
-      mq.addEventListener('change', cb)
-      return () => mq.removeEventListener('change', cb)
-    },
-    () => (darkQuery().matches ? 'dark' : 'light'),
-    () => 'dark',
-  )
-}
-
-// useMediaQuery answers a CSS media query live — for the few layouts that
-// have to branch in JS (a tab list that is vertical on desktop, say).
-export function useMediaQuery(query: string): boolean {
-  return useSyncExternalStore(
-    (cb) => {
-      const mq = window.matchMedia(query)
-      mq.addEventListener('change', cb)
-      return () => mq.removeEventListener('change', cb)
-    },
-    () => window.matchMedia(query).matches,
-    () => false,
-  )
-}
 
 // The source SVG stays a plain monochrome shape. Rendering it as a mask lets
 // each surface choose the color in CSS and keeps the brand mark identical
@@ -80,25 +37,7 @@ export function DonkeyLogo({ className = '' }: { className?: string }) {
   return <span className={`donkey-logo ${className}`} aria-hidden />
 }
 
-// errText gives every catch block the same voice: the server's own message
-// when there is one, the caller's plain-language fallback otherwise.
-export function errText(err: unknown, fallback: string): string {
-  return err instanceof Error ? err.message : fallback
-}
 
-export type Health = 'ok' | 'bad' | 'unknown'
-
-export function healthOf(healthy: boolean, ready: string): Health {
-  if (ready === 'status unavailable') return 'unknown'
-  return healthy ? 'ok' : 'bad'
-}
-
-// One wording for an app's state, wherever it is shown.
-export const healthLine: Record<Health, (ready: string) => string> = {
-  ok: (ready) => `running (${ready})`,
-  bad: (ready) => `not fully up (${ready})`,
-  unknown: () => 'status unknown — checking again',
-}
 
 // The dots glow: on a dark field, a lit lamp reads faster than a color chip.
 const dotColor: Record<Health, string> = {
@@ -111,71 +50,19 @@ export function StatusDot({ health }: { health: Health }) {
   return <span className={`inline-block size-2.5 rounded-full ${dotColor[health]}`} aria-hidden />
 }
 
-// APP_MODES names the kind of traffic an app takes. The choice only bites
-// behind the login: a browser is sent to the sign-in page, an API client is
-// asked for an OAuth access token. Public and internal apps skip both.
-export const APP_MODES: { value: AppMode; icon: LucideIcon; label: string; hint: string }[] = [
-  {
-    value: 'web',
-    icon: Globe,
-    label: 'Web app',
-    hint: 'Pages people open in a browser. Behind the login, visitors sign in through your identity provider.',
-  },
-  {
-    value: 'api',
-    icon: KeyRound,
-    label: 'API',
-    hint: 'REST APIs, MCP servers, webhook receivers. Behind the login, clients present an OAuth access token instead of signing in.',
-  },
-]
 
-// loginHint spells out what "behind the login" means for the given mode —
-// the one exposure whose meaning depends on it.
-export function loginHint(mode: AppMode): string {
-  return mode === 'api'
-    ? 'Clients present an OAuth access token from your identity provider; MCP clients find the sign-in by discovery.'
-    : 'Visitors sign in through your identity provider.'
-}
-
-// ExposureBadge says how the world reaches an app — the console's shorthand
-// for the network settings: open globe, locked door, OAuth key, or stable-only.
+// ExposureBadge marks the exception: an app anyone can reach. Behind the
+// login is the default and says nothing; an internal app shows it by having
+// no address at all.
 export function ExposureBadge({ exposure, mode }: { exposure?: Exposure; mode?: AppMode }) {
-  if (!exposure) return null
-  const spec = {
-    public: {
-      icon: <Globe className="size-3" aria-hidden />,
-      label: 'public',
-      tone: 'text-ink-soft border-line',
-      title: mode === 'api' ? 'Public API — anyone with the address can call it' : 'Public — anyone with the address can open it',
-    },
-    protected:
-      mode === 'api'
-        ? {
-            icon: <KeyRound className="size-3" aria-hidden />,
-            label: 'oauth',
-            tone: 'text-accent border-accent/40',
-            title: 'API behind the login — clients present an OAuth access token',
-          }
-        : {
-            icon: <Lock className="size-3" aria-hidden />,
-            label: 'login',
-            tone: 'text-accent border-accent/40',
-            title: 'Behind the login — visitors sign in through the identity provider',
-          },
-    internal: {
-      icon: <Network className="size-3" aria-hidden />,
-      label: 'internal',
-      tone: 'text-muted border-line',
-      title: 'Internal — only the apps of this space reach it, by name',
-    },
-  }[exposure]
+  if (exposure !== 'public') return null
   return (
     <span
-      title={spec.title}
-      className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wide ${spec.tone}`}
+      title={mode === 'api' ? 'Public API — anyone with the address can call it' : 'Public — anyone with the address can open it'}
+      className="inline-flex items-center gap-1 rounded border border-warning/40 px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wide text-warning"
     >
-      {spec.icon}
-      {spec.label}
+      <Globe className="size-3" aria-hidden />
+      public
     </span>
   )
 }
@@ -517,6 +404,19 @@ export function CodeCard({
   )
 }
 
+// TabLabel keeps a tab as wide as it is when selected: an invisible bold
+// copy shares the cell, so turning bold never nudges the tabs beside it.
+export function TabLabel({ children }: { children: string }) {
+  return (
+    <span className="inline-grid justify-items-center">
+      <span className="col-start-1 row-start-1">{children}</span>
+      <span className="invisible col-start-1 row-start-1 font-medium" aria-hidden>
+        {children}
+      </span>
+    </span>
+  )
+}
+
 // Toolbar is the action portlet: a tight row of icon buttons and small
 // controls, right-aligned by whoever places it.
 export function Toolbar({ children, className = '' }: { children: ReactNode; className?: string }) {
@@ -563,6 +463,40 @@ export function Button({
       {Icon && <Icon className={`${iconSize[size]} shrink-0`} aria-hidden />}
       {children}
     </button>
+  )
+}
+
+// A Button that is a link out — the same look, opened in a new tab, so
+// modifier clicks and copy-link work as on any anchor.
+export function LinkButton({
+  children,
+  href,
+  kind = 'primary',
+  size = 'md',
+  icon: Icon,
+  className = '',
+}: {
+  children?: ReactNode
+  href: string
+  kind?: 'primary' | 'quiet'
+  size?: ControlSize
+  icon?: LucideIcon
+  className?: string
+}) {
+  const styles = {
+    primary: 'bg-ink text-surface hover:bg-emphasis border border-transparent font-medium',
+    quiet: 'bg-transparent text-ink-soft hover:bg-line/50 hover:text-ink border border-line',
+  }[kind]
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noreferrer"
+      className={`inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-md transition-[color,background-color,border-color,scale] duration-(--duration-fast) ease-emphasized motion-safe:active:scale-[.97] ${focusRing} ${controlSize[size]} ${styles} ${className}`}
+    >
+      {children}
+      {Icon && <Icon className={`${iconSize[size]} shrink-0`} aria-hidden />}
+    </a>
   )
 }
 
@@ -660,15 +594,6 @@ export function CopyButton({ text, label = 'Copy' }: { text: string; label?: str
   )
 }
 
-// The text controls. Every input in the console wears this: mono, on the
-// surface colour, the accent ring on focus. Heights follow controlSize so a
-// field and a button in one row share a baseline.
-const fieldBase =
-  'min-w-0 rounded-md border border-line bg-surface font-mono text-ink placeholder:text-muted/60 focus:outline-2 focus:outline-accent-strong disabled:opacity-50'
-
-export function inputClass(size: ControlSize = 'md', extra = ''): string {
-  return `${fieldBase} ${controlSize[size]} ${extra}`
-}
 
 // `bare` drops the outline for an input that sits inside a list row: the
 // row is already the frame.
@@ -762,7 +687,7 @@ export function Select<T extends string | number>({
           <ListboxOption
             key={String(o.value)}
             value={o.value}
-            className={`flex cursor-default items-center justify-between gap-2 ${optionPad} font-mono text-ink-soft data-focus:bg-accent-soft data-focus:text-ink`}
+            className={`flex items-center justify-between gap-2 ${optionPad} font-mono text-ink-soft data-focus:bg-accent-soft data-focus:text-ink`}
           >
             {({ selected }) => (
               <>
@@ -816,38 +741,8 @@ export function Skeleton({ className = '' }: { className?: string }) {
   return <div className={`animate-pulse rounded-md bg-line/60 ${className}`} aria-hidden />
 }
 
-// saveBlob hands a fetched download to the browser under a name. Downloads go
-// through fetch because they carry the session; a plain <a href> could not.
-export function saveBlob(blob: Blob, name: string) {
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = name
-  a.click()
-  URL.revokeObjectURL(url)
-}
 
-// humanSize turns a byte count into "512 B", "1.4 MB" — files, objects, disks.
-export function humanSize(n: number): string {
-  if (n < 1024) return `${n} B`
-  const units = ['KB', 'MB', 'GB', 'TB']
-  let size = n / 1024
-  let i = 0
-  while (size >= 1024 && i < units.length - 1) {
-    size /= 1024
-    i++
-  }
-  return `${size.toFixed(1)} ${units[i]}`
-}
 
-// ago turns an RFC 3339 timestamp into "3m", "2h", "5d" — fleet-triage units.
-export function ago(iso: string): string {
-  const secs = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 1000))
-  if (secs < 90) return `${secs}s`
-  if (secs < 5400) return `${Math.round(secs / 60)}m`
-  if (secs < 129600) return `${Math.round(secs / 3600)}h`
-  return `${Math.round(secs / 86400)}d`
-}
 
 export function UpdatedAgo({ at }: { at: number | null }) {
   if (at === null) return null

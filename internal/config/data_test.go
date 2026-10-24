@@ -16,8 +16,6 @@ func TestInstallDataValidation(t *testing.T) {
 		{name: "nfs claim", data: InstallData{ExistingClaim: "donkey-data-nfs"}, runtime: "kubernetes"},
 		{name: "shaped claim", data: InstallData{StorageClass: "nfs-client", Size: "20Gi"}, runtime: "kubernetes"},
 		{name: "docker default", runtime: "docker"},
-		{name: "disabled", data: InstallData{Disabled: true}, runtime: "docker"},
-		{name: "disabled with settings", data: InstallData{Disabled: true, Size: "5Gi"}, runtime: "kubernetes", err: "would do nothing"},
 		{name: "bad size", data: InstallData{Size: "lots"}, runtime: "kubernetes", err: "not a storage size"},
 		{name: "claim and size", data: InstallData{ExistingClaim: "mine", Size: "5Gi"}, runtime: "kubernetes", err: "would do nothing"},
 		{name: "bad claim", data: InstallData{ExistingClaim: "Not_A_Name"}, runtime: "kubernetes", err: "not a valid claim name"},

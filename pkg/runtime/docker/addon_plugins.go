@@ -2,12 +2,8 @@ package docker
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"io/fs"
 	"log"
-	"os"
-	"strings"
 
 	cerrdefs "github.com/containerd/errdefs"
 
@@ -18,7 +14,7 @@ import (
 
 func (r *Runtime) pluginState(space, name string) (*addons.Provisioning, error) {
 	var state addons.Provisioning
-	found, err := r.state.readJSON(&state, "provisioning", space, name+".json")
+	found, err := r.state.readRecord(&state, "provisioning", space, name)
 	if err != nil || !found {
 		return nil, err
 	}
@@ -30,7 +26,7 @@ func (r *Runtime) pluginState(space, name string) (*addons.Provisioning, error) 
 }
 
 func (r *Runtime) savePluginState(space string, state *addons.Provisioning) error {
-	return r.state.writeJSON(state, "provisioning", space, state.Instance.Name+".json")
+	return r.state.writeRecord(state, "provisioning", space, state.Instance.Name)
 }
 
 func (r *Runtime) provisionPlugin(ctx context.Context, space string, spec rt.ServiceSpec, plugin *addons.Plugin, desc *addonv1.Offering, previous *addons.Provisioning) (map[string]string, addons.Parameters, error) {
@@ -88,7 +84,7 @@ func (r *Runtime) provisionPlugin(ctx context.Context, space string, spec rt.Ser
 		return nil, nil, err
 	}
 	metadata := addons.Metadata{Type: plugin.Type(), Protocol: state.Protocol, Parameters: params}
-	if err := r.state.writeJSON(metadata, "service-metadata", space, spec.Name+".json"); err != nil {
+	if err := r.state.writeRecord(metadata, "service-metadata", space, spec.Name); err != nil {
 		return nil, nil, err
 	}
 	return info.Env, params, nil
@@ -142,21 +138,7 @@ func (r *Runtime) deprovisionPlugin(ctx context.Context, space, name string, kee
 }
 
 func (r *Runtime) pluginServiceNames(space string) ([]string, error) {
-	entries, err := os.ReadDir(r.state.path("provisioning", space))
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	var names []string
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
-			continue
-		}
-		names = append(names, strings.TrimSuffix(entry.Name(), ".json"))
-	}
-	return names, nil
+	return r.state.records("provisioning", space)
 }
 
 // unboundPluginServices lists plugin instances that have no binding right

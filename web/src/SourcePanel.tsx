@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { useNavigate, useSearch } from '@tanstack/react-router'
 import {
-  ArrowLeft,
+  ChevronLeft,
   ChevronRight,
   Download,
   File,
@@ -10,73 +11,74 @@ import {
   FolderTree,
   GitCommitHorizontal,
   GitCompareArrows,
-  History,
 } from 'lucide-react'
-import { api, type CommitChange, type SourceCommit, type SourceEntry } from './api'
+import { api, type CommitChange, saveBlob, type SourceCommit, type SourceEntry } from './api'
 import { DiffView } from './DiffView'
 import { SourceCode } from './SourceCode'
 import { useCommit, useCommitDiff, useCommitFile, useCommits, useCommitTree } from './queries'
 import {
-  ago,
   Button,
-  Callout,
   CopyButton,
   DonkeyLogo,
   ErrorNote,
-  errText,
-  humanSize,
   IconButton,
   List,
   ListRow,
-  saveBlob,
   SectionHeader,
   Select,
   Spinner,
   Toolbar,
 } from './ui'
+import { ago, errText, humanSize } from './format'
+import type { SourceSearch } from './sourceSearch'
 
 // The Source tab: the app's history as git keeps it. Every deploy's upload
 // is a commit by the person who deployed it, and when the build changed its
 // copy — a generated Dockerfile, an automatic repair — the platform's own
 // commit sits on top. Three views, one at a time: the history, one commit's
-// changes, and the files of a version.
-
-type View = { kind: 'history' } | { kind: 'commit'; id: string } | { kind: 'browse'; id: string; path: string | null }
+// changes, and the files of a version. Which one is open lives in the URL
+// (see sourceSearch.ts), so back and forward walk the drilldown and a
+// commit or a file can be linked.
 
 // A shown file is bounded: beyond this the browser would be laying out a
 // table for minutes. The download is always there.
 const maxShownSize = 1 << 20
 
 export function SourcePanel({ space, app }: { space: string; app: string }) {
-  const [view, setView] = useState<View>({ kind: 'history' })
+  const search = useSearch({ strict: false }) as SourceSearch
+  const navigate = useNavigate()
   const root = useRef<HTMLDivElement>(null)
   const opened = useRef(false)
-  const key = view.kind === 'history' ? 'history' : `${view.kind}:${view.id}`
+  const key = `${search.commit ?? 'history'}:${search.files ?? ''}`
   // A different view opens at its top, like a different tab does.
   useEffect(() => {
     if (opened.current) root.current?.scrollIntoView({ block: 'start' })
     opened.current = true
   }, [key])
 
-  const open = (id: string) => setView({ kind: 'commit', id })
-  const browse = (id: string, path: string | null = null) => setView({ kind: 'browse', id, path })
-  const back = () => setView({ kind: 'history' })
+  const go = (next: SourceSearch) =>
+    navigate({ to: '/app/$space/$name/{-$tab}', params: { space, name: app, tab: 'source' }, search: next, resetScroll: false })
+  const open = (id: string) => go({ commit: id })
+  const browse = (id: string, path: string | null = null) => go({ commit: id, files: 1, path: path ?? undefined })
+  const history = () => go({})
 
   return (
-    <div ref={root} className="flex flex-col gap-5">
-      {view.kind === 'history' && <HistoryView space={space} app={app} onOpen={open} onBrowse={browse} />}
-      {view.kind === 'commit' && (
+    // scroll-mt clears the console's bar and the app's tab bar. Browsing
+    // files is a workbench that fills the sheet (see AppDetail).
+    <div ref={root} className={`flex scroll-mt-28 flex-col gap-5 ${search.files ? 'min-h-0 flex-1' : ''}`}>
+      {!search.commit && <HistoryView space={space} app={app} onOpen={open} onBrowse={browse} />}
+      {search.commit && !search.files && (
         // Keyed: following a parent link opens a fresh view, not this one's
         // open diffs and errors.
-        <CommitView key={view.id} space={space} app={app} id={view.id} onBack={back} onOpen={open} onBrowse={browse} />
+        <CommitView key={search.commit} space={space} app={app} id={search.commit} onHistory={history} onOpen={open} onBrowse={browse} />
       )}
-      {view.kind === 'browse' && (
+      {search.commit && search.files && (
         <BrowseView
           space={space}
           app={app}
-          id={view.id}
-          path={view.path}
-          onBack={back}
+          id={search.commit}
+          path={search.path ?? null}
+          onHistory={history}
           onOpen={open}
           onBrowse={browse}
         />
@@ -102,17 +104,6 @@ function HistoryView({
   if (!data && !error) return <Spinner label="Opening the source history…" />
   if (error) return <ErrorNote message={error} />
   if (!data) return null
-  if (!data.enabled) {
-    return (
-      <section className="space-y-3">
-        <SectionHeader title="Source" />
-        <Callout tone="neutral" icon={History} title="This installation keeps no source history">
-          Every deploy can be kept as a commit: the upload by the person who deployed it, and what the build changed on
-          top. An administrator turns it on by giving the control plane a data volume.
-        </Callout>
-      </section>
-    )
-  }
   if (data.commits.length === 0) {
     return (
       <section className="space-y-3">
@@ -207,23 +198,49 @@ function CommitView({
   space,
   app,
   id,
-  onBack,
+  onHistory,
   onOpen,
   onBrowse,
 }: {
   space: string
   app: string
   id: string
-  onBack: () => void
+  onHistory: () => void
   onOpen: (id: string) => void
   onBrowse: (id: string, path?: string | null) => void
 }) {
   const { data: commit, error } = useCommit(space, app, id)
+  const { data: history } = useCommits(space, app)
   const download = useDownload()
+
+  // Stepping through the history without going back to it: newer is up the
+  // list, older down — and j / k, as in most code browsers.
+  const list = history?.commits ?? []
+  const at = list.findIndex((c) => c.id === id)
+  const newer = at > 0 ? list[at - 1] : undefined
+  const older = at >= 0 && at < list.length - 1 ? list[at + 1] : undefined
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null
+      if (e.metaKey || e.ctrlKey || e.altKey || target?.closest('input, textarea, select, [contenteditable]')) return
+      if (e.key === 'j' && older) onOpen(older.id)
+      if (e.key === 'k' && newer) onOpen(newer.id)
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [newer, older, onOpen])
 
   return (
     <section className="space-y-4">
-      <ViewBar onBack={onBack}>
+      <Trail steps={[{ label: 'History', onClick: onHistory }, { label: commit ? `${short(id)} · ${subject(commit.message)}` : short(id) }]}>
+        <Button kind="quiet" size="sm" icon={ChevronLeft} disabled={!newer} onClick={() => newer && onOpen(newer.id)} title="Newer commit (k)">
+          Newer
+        </Button>
+        <Button kind="quiet" size="sm" disabled={!older} onClick={() => older && onOpen(older.id)} title="Older commit (j)">
+          Older
+          <ChevronRight className="size-3.5" aria-hidden />
+        </Button>
+        <span className="mx-0.5 h-4 w-px bg-line" aria-hidden />
         <IconButton icon={FolderTree} label="Browse the files of this version" onClick={() => onBrowse(id)} />
         <IconButton
           icon={Download}
@@ -231,7 +248,7 @@ function CommitView({
           disabled={download.busy}
           onClick={() => download.run(api.downloadArchive(space, app, id), archiveName(app, id))}
         />
-      </ViewBar>
+      </Trail>
       <ErrorNote message={error || download.error} />
       {!commit && !error && <Spinner label="Opening the commit…" />}
       {commit && (
@@ -377,7 +394,7 @@ function BrowseView({
   app,
   id,
   path,
-  onBack,
+  onHistory,
   onOpen,
   onBrowse,
 }: {
@@ -385,7 +402,7 @@ function BrowseView({
   app: string
   id: string
   path: string | null
-  onBack: () => void
+  onHistory: () => void
   onOpen: (id: string) => void
   onBrowse: (id: string, path?: string | null) => void
 }) {
@@ -410,9 +427,18 @@ function BrowseView({
   }))
   if (!versions.some((v) => v.value === id)) versions.unshift({ value: id, label: short(id) })
 
+  const subjectLine = (history?.commits ?? []).find((c) => c.id === id)?.message
   return (
-    <section className="space-y-3">
-      <ViewBar onBack={onBack}>
+    // The tree and the file scroll on their own; the page stands still.
+    <section className="flex min-h-0 flex-1 flex-col gap-3">
+      <Trail
+        steps={[
+          { label: 'History', onClick: onHistory },
+          { label: subjectLine ? `${short(id)} · ${subject(subjectLine)}` : short(id), onClick: () => onOpen(id) },
+          { label: 'Files', onClick: shown ? () => onBrowse(id, null) : undefined },
+          ...(shown ? [{ label: shown, mono: true }] : []),
+        ]}
+      >
         <Select
           variant="quiet"
           value={id}
@@ -427,11 +453,11 @@ function BrowseView({
           disabled={download.busy}
           onClick={() => download.run(api.downloadArchive(space, app, id), archiveName(app, id))}
         />
-      </ViewBar>
+      </Trail>
       <ErrorNote message={error || download.error} />
       {!files && !error && <Spinner label="Opening the files…" />}
       {files && (
-        <div className="grid gap-3 md:grid-cols-[15rem_minmax(0,1fr)]">
+        <div className="grid min-h-0 flex-1 grid-rows-[auto_minmax(0,1fr)] gap-3 md:grid-cols-[15rem_minmax(0,1fr)] md:grid-rows-[minmax(0,1fr)]">
           <FileTree files={files} selected={shown} changed={changed} onSelect={(p) => onBrowse(id, p)} />
           {shown ? (
             <FilePane
@@ -557,7 +583,7 @@ function FileTree({
   return (
     <nav
       aria-label="Files of this version"
-      className="max-h-64 overflow-auto rounded-lg border border-line py-1 md:max-h-[70vh]"
+      className="max-h-64 overflow-auto rounded-lg border border-line py-1 md:max-h-none"
     >
       {rows}
     </nav>
@@ -619,7 +645,7 @@ function FilePane({
   const download = useDownload()
 
   return (
-    <div className="flex min-w-0 flex-col overflow-hidden rounded-lg border border-line">
+    <div className="flex min-h-0 min-w-0 flex-col overflow-hidden rounded-lg border border-line">
       <div className="flex min-h-10 items-center justify-between gap-2 border-b border-line py-1 pl-3 pr-1.5">
         <span className="min-w-0 truncate font-mono text-xs text-ink" title={path}>
           {path}
@@ -644,7 +670,7 @@ function FilePane({
           />
         </Toolbar>
       </div>
-      <div className="min-h-0 md:max-h-[70vh] md:overflow-auto">
+      <div className="min-h-0 flex-1 overflow-auto">
         <ErrorNote message={(showChanges ? diffError : error) || download.error} />
         {!exists ? (
           <p className="p-4 text-sm text-muted">This file is not part of this version.</p>
@@ -676,12 +702,39 @@ function FilePane({
 
 // ─── Pieces ─────────────────────────────────────────────────────────────
 
-function ViewBar({ onBack, children }: { onBack: () => void; children: React.ReactNode }) {
+// Where the drilldown stands — History / commit / Files / path — with every
+// step but the last a way back to it, and the view's own tools on the right.
+type Step = { label: string; onClick?: () => void; mono?: boolean }
+
+function Trail({ steps, children }: { steps: Step[]; children: React.ReactNode }) {
   return (
-    <div className="flex min-h-8 flex-wrap items-center justify-between gap-2">
-      <Button kind="quiet" size="sm" icon={ArrowLeft} onClick={onBack}>
-        History
-      </Button>
+    <div className="flex min-h-8 flex-wrap items-center justify-between gap-x-4 gap-y-2">
+      <nav aria-label="Source" className="flex min-w-0 flex-wrap items-center gap-1 text-sm">
+        {steps.map((step, i) => {
+          const last = i === steps.length - 1
+          return (
+            <span key={i} className="flex min-w-0 items-center gap-1">
+              {i > 0 && <ChevronRight className="size-3.5 shrink-0 text-muted" aria-hidden />}
+              {step.onClick && !last ? (
+                <button
+                  type="button"
+                  onClick={step.onClick}
+                  className={`max-w-80 truncate rounded px-1 text-muted underline-offset-2 hover:text-ink hover:underline focus-visible:outline-2 focus-visible:outline-accent-strong ${step.mono ? 'font-mono' : ''}`}
+                >
+                  {step.label}
+                </button>
+              ) : (
+                <span
+                  aria-current={last ? 'page' : undefined}
+                  className={`max-w-[32rem] truncate px-1 ${last ? 'font-medium text-ink' : 'text-muted'} ${step.mono ? 'font-mono text-[13px]' : ''}`}
+                >
+                  {step.label}
+                </span>
+              )}
+            </span>
+          )
+        })}
+      </nav>
       <Toolbar>{children}</Toolbar>
     </div>
   )

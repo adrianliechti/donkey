@@ -86,21 +86,44 @@ html {
   /* Locking the page scroll under a drawer must not shift the layout where
    * scrollbars take room. */
   scrollbar-gutter: stable;
+  /* The console's own scrollbars: a quiet thumb on no track. The color
+   * inherits, so every pane takes it from here; the width does not (see the
+   * base layer below). */
+  @apply scrollbar-thumb-line-strong scrollbar-track-transparent;
   /* Lets height animate to and from `auto`. */
   interpolate-size: allow-keywords;
 }
 
-/* Panels and dialogs do not rubber-band. The page may (it is a document);
- * the overlays are tools, and in Safari a bouncing drawer tears the sticky
- * header off its content. Every inner scroll area keeps its overscroll to
- * itself, so hitting the end of a list never moves what is behind it. A base
- * default, so one pane can still opt into handing its scroll on (the log
- * pane, with `overscroll-y-auto`). */
+/* Nothing rubber-bands. The console is an app, not a document: in Safari
+ * a bouncing page drags the sticky header and tabs past its ends, and a
+ * bouncing drawer tears its header off its content. Every scroll area keeps
+ * its scroll to itself, so hitting the end of a list never moves what is
+ * behind it. A base default, so a pane can still opt out with a utility. */
 @layer base {
+  html,
+  body,
   .overflow-auto,
+  .overflow-x-auto,
   .overflow-y-auto,
+  .overflow-scroll,
+  .overflow-x-scroll,
   .overflow-y-scroll {
     overscroll-behavior: none;
+  }
+
+  /* Thin scrollbars everywhere; a utility (scrollbar-none) still wins. */
+  * {
+    @apply scrollbar-thin;
+  }
+
+  /* Everything clickable shows the hand, as links already do. Tailwind v4
+   * resets buttons to the arrow, which left a breadcrumb link and the
+   * switcher button beside it pointing differently. */
+  button:not(:disabled),
+  [role='button']:not([aria-disabled='true']),
+  [role='option']:not([aria-disabled='true']),
+  [role='menuitem']:not([aria-disabled='true']) {
+    cursor: pointer;
   }
 }
 

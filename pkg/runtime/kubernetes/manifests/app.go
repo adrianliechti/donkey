@@ -73,6 +73,9 @@ type Input struct {
 	// healthcheck) as an annotation on the Deployment, so later no-build
 	// deploys can keep those decisions instead of silently dropping them.
 	Decisions string
+	// Stack is what the app is written in (detect.Stack), kept as an
+	// annotation for listings.
+	Stack string
 	// RouteTargets are the paths of other apps' addresses this app answers
 	// on. The server resolves the hostnames, so this package stays pure.
 	RouteTargets []RouteTarget
@@ -427,6 +430,9 @@ func deployment(in Input) (*appsv1.Deployment, error) {
 	}
 	if in.Decisions != "" {
 		annotations[AnnotationDecisions] = in.Decisions
+	}
+	if in.Stack != "" {
+		annotations[AnnotationStack] = in.Stack
 	}
 	dep := &appsv1.Deployment{
 		TypeMeta: metav1.TypeMeta{APIVersion: "apps/v1", Kind: "Deployment"},

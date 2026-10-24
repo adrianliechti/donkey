@@ -29,12 +29,16 @@ type Server struct {
 	plans     *planStore
 	telemetry *telemetry.Client
 	resources *telemetry.ResourceExporter
-	// history is every app's source as git, or nil when the installation
-	// gives the server no volume for it.
+	// history is every app's source as git. Only donkey-orchestrator, which
+	// owns the data volume, has one; donkey-server forwards every route that
+	// reads or writes it (see orchestrated).
 	history *history.Store
 
 	// deploying lets a terminating orchestrator finish in-flight deploys.
 	deploying sync.WaitGroup
+	// board is what the orchestrator is deploying now and finished lately,
+	// for the console to show apps that do not exist yet (see deploys.go).
+	board deployBoard
 	// draining flips on SIGTERM: readiness fails and, in the orchestrator,
 	// new deploys are refused.
 	draining atomic.Bool
@@ -59,8 +63,8 @@ func New(cfg *Config, rt runtime.Provider) (*Server, error) {
 	if err := ai.Reachable(context.Background(), cfg.AIModel); err != nil {
 		return nil, err
 	}
-	// A configured volume that cannot be written is a broken installation,
-	// not a reason to deploy without the history it promised.
+	// A volume that cannot be written is a broken installation, not a reason
+	// to deploy without the history it promises.
 	var source *history.Store
 	if cfg.DataDir != "" {
 		if source, err = history.New(filepath.Join(cfg.DataDir, "source")); err != nil {
@@ -162,6 +166,9 @@ func (s *Server) routes() http.Handler {
 	mux.Handle("POST /v1/spaces/{space}/services/{service}/buckets/{bucket}/objects", s.auth(s.handleS3Upload))
 	mux.Handle("GET /v1/spaces/{space}/services/{service}/buckets/{bucket}/objects/download", s.auth(s.handleS3Download))
 	mux.Handle("DELETE /v1/spaces/{space}/services/{service}/buckets/{bucket}/objects", s.auth(s.handleS3DeleteObject))
+	mux.Handle("GET /v1/spaces/{space}/services/{service}/buckets/{bucket}/objects/info", s.auth(s.handleS3Info))
+	mux.Handle("POST /v1/spaces/{space}/services/{service}/buckets/{bucket}/objects/delete", s.auth(s.handleS3DeleteMany))
+	mux.Handle("POST /v1/spaces/{space}/services/{service}/buckets/{bucket}/folders", s.auth(s.handleS3CreateFolder))
 	// The database browser, for services that speak SQL. Schema is a query
 	// detail (default public) — most users never touch it.
 	mux.Handle("GET /v1/spaces/{space}/services/{service}/databases", s.auth(s.handleDbDatabases))
@@ -169,6 +176,7 @@ func (s *Server) routes() http.Handler {
 	mux.Handle("DELETE /v1/spaces/{space}/services/{service}/databases/{db}", s.auth(s.handleDbDropDatabase))
 	mux.Handle("GET /v1/spaces/{space}/services/{service}/databases/{db}/schemas", s.auth(s.handleDbSchemas))
 	mux.Handle("GET /v1/spaces/{space}/services/{service}/databases/{db}/tables", s.auth(s.handleDbTables))
+	mux.Handle("GET /v1/spaces/{space}/services/{service}/databases/{db}/tables/{table}", s.auth(s.handleDbTable))
 	mux.Handle("DELETE /v1/spaces/{space}/services/{service}/databases/{db}/tables/{table}", s.auth(s.handleDbDropTable))
 	mux.Handle("GET /v1/spaces/{space}/services/{service}/databases/{db}/tables/{table}/rows", s.auth(s.handleDbRows))
 	mux.Handle("POST /v1/spaces/{space}/services/{service}/databases/{db}/tables/{table}/rows", s.auth(s.handleDbInsertRow))
@@ -183,6 +191,8 @@ func (s *Server) routes() http.Handler {
 	mux.Handle("GET /v1/spaces/{space}/services/{service}/keys/value", s.auth(s.handleRedisValue))
 	mux.Handle("PUT /v1/spaces/{space}/services/{service}/keys/value", s.auth(s.handleRedisSave))
 	mux.Handle("DELETE /v1/spaces/{space}/services/{service}/keys/value", s.auth(s.handleRedisDelete))
+	mux.Handle("PATCH /v1/spaces/{space}/services/{service}/keys/value", s.auth(s.handleRedisChange))
+	mux.Handle("GET /v1/spaces/{space}/services/{service}/keys/databases", s.auth(s.handleRedisDatabases))
 	// The services an app is connected to.
 	mux.Handle("GET /v1/spaces/{space}/apps/{app}/services", s.auth(s.handleListAppServices))
 	// The app's disk: browse, upload, download, rename, remove.

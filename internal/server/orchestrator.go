@@ -46,6 +46,9 @@ type orchestratedRoute struct {
 func (s *Server) orchestrated() []orchestratedRoute {
 	return []orchestratedRoute{
 		{"POST /v1/deploys", s.handleDeploy},
+		// What the orchestrator is deploying now and finished lately: the
+		// board lives in this process, beside the deploys it describes.
+		{"GET /v1/deploys", s.handleDeploys},
 		// A plan is a deploy read out loud before it happens: what the app is,
 		// how it will be built, what it needs and what will break. The console
 		// reviews one, `donkey init` prints one, and the deploy that follows

@@ -248,7 +248,7 @@ func (c *trinoClient) serveDatabase(w http.ResponseWriter, r *http.Request, oper
 	switch operation {
 	case "databases":
 		c.catalog, c.schema = "", ""
-	case "schemas", "tables", "rows":
+	case "schemas", "tables", "rows", "table":
 		catalog, err := trinoIdent(c.catalog)
 		if err != nil {
 			writeErr(w, http.StatusBadRequest, err)
@@ -267,20 +267,21 @@ func (c *trinoClient) serveDatabase(w http.ResponseWriter, r *http.Request, oper
 				return
 			}
 			query = "SHOW TABLES FROM " + catalog + "." + schema
+			if operation == "table" {
+				table, err := trinoIdent(r.PathValue("table"))
+				if err != nil {
+					writeErr(w, http.StatusBadRequest, err)
+					return
+				}
+				query = "SHOW COLUMNS FROM " + catalog + "." + schema + "." + table
+			}
 			if operation == "rows" {
 				table, err := trinoIdent(r.PathValue("table"))
 				if err != nil {
 					writeErr(w, http.StatusBadRequest, err)
 					return
 				}
-				limit, _ = strconv.Atoi(r.URL.Query().Get("limit"))
-				if limit < 1 || limit > 200 {
-					limit = 50
-				}
-				offset, _ = strconv.Atoi(r.URL.Query().Get("offset"))
-				if offset < 0 {
-					offset = 0
-				}
+				limit, offset = pageBounds(r.URL.Query())
 				order := ""
 				if column := r.URL.Query().Get("order"); column != "" {
 					column, err = trinoIdent(column)
@@ -313,6 +314,24 @@ func (c *trinoClient) serveDatabase(w http.ResponseWriter, r *http.Request, oper
 	}
 	if result.Truncated {
 		writeErr(w, http.StatusBadGateway, fmt.Errorf("Trino returned more than %d %s; narrow the selection using SQL", limit, operation))
+		return
+	}
+	if operation == "table" {
+		// SHOW COLUMNS: Column, Type, Extra, Comment. Trino knows no keys or
+		// defaults, and nullability only per connector — those stay null.
+		columns := []tableColumn{}
+		for _, row := range result.Rows {
+			text := func(i int) string {
+				if i < len(row) {
+					if value, ok := row[i].(string); ok {
+						return value
+					}
+				}
+				return ""
+			}
+			columns = append(columns, tableColumn{Name: text(0), Type: text(1), Extra: text(2), Comment: text(3)})
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"columns": columns, "indexes": []tableIndex{}, "kind": "table", "rows": nil, "size": nil})
 		return
 	}
 	names := []string{}

@@ -286,6 +286,8 @@ type AppStatus struct {
 	Mode string
 	// CORS is the gateway's cross-origin policy; empty disables it.
 	CORS string
+	// Stack is what the app is written in, as its last deploy recorded it.
+	Stack string
 	// Port the app listens on (donkey.yaml's `port`).
 	Port int32
 	// Restarts sums restarts across instances — what separates "quietly
@@ -321,6 +323,9 @@ type DeploySpec struct {
 	// Decisions records what this deploy settled (storage, health route), so
 	// a no-build deploy keeps the same shape.
 	Decisions string
+	// Stack is what the app is written in, read off its recipe (see
+	// detect.Stack); "" when no base image says.
+	Stack string
 	// NoWait skips waiting for the app to become healthy.
 	NoWait bool
 }
