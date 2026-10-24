@@ -45,8 +45,9 @@ type MCPOperation struct {
 	OperationTotals
 }
 
-// MCP is always application-reported, independently of the selected HTTP
-// source. Gateway transport requests are never added to operation counts.
+// MCP operations and HTTP transport requests are separate measurements.
+// Both use the selected source, so legacy app metrics cannot double-count
+// the gateway's automatic protocol observations.
 type MCPReport struct {
 	Source     string          `json:"source"`
 	Totals     OperationTotals `json:"totals"`
@@ -92,13 +93,17 @@ func mcpCallerError(code string) bool {
 
 func (s *Store) ingestMCPPoint(ctx context.Context, tx *sql.Tx, resources map[string]string, metric *metricspb.Metric,
 	histogram *metricspb.Histogram, point *metricspb.HistogramDataPoint, trustedGateway bool, now time.Time) (bool, error) {
-	// Accurate operation timing and outcomes belong to MCP SDK/server
-	// instrumentation. The gateway is only an HTTP transport observer.
-	space, app := resources["service.namespace"], resources["service.name"]
-	if trustedGateway || !config.ValidName(space) || !config.ValidName(app) {
+	attrs := attributesMap(point.Attributes)
+	source, space, app := SourceApp, resources["service.namespace"], resources["service.name"]
+	if trustedGateway {
+		if resources["service.name"] != "donkey-gateway" {
+			return false, nil
+		}
+		source, space, app = SourceEdge, attrs["donkey.space.name"], attrs["donkey.app.name"]
+	}
+	if !config.ValidName(space) || !config.ValidName(app) {
 		return false, nil
 	}
-	attrs := attributesMap(point.Attributes)
 	method := boundedDimension(attrs["mcp.method.name"])
 	if method == "" || point.TimeUnixNano == 0 || point.TimeUnixNano > math.MaxInt64 || point.StartTimeUnixNano > math.MaxInt64 ||
 		point.Count > math.MaxInt64 || point.Sum == nil || point.Flags&1 != 0 {
@@ -132,13 +137,13 @@ func (s *Store) ingestMCPPoint(ctx context.Context, tx *sql.Tx, resources map[st
 		target = attrs["gen_ai.prompt.name"]
 	}
 	target = boundedDimension(target)
-	key := MCPServerOperationDuration + ":" + metricStreamKey(SourceApp, space, app, method, 0, resources, attrs)
-	count, sum, buckets, keep, err := normalizeTemporality(ctx, tx, key, SourceApp, space, app,
+	key := MCPServerOperationDuration + ":" + metricStreamKey(source, space, app, method, 0, resources, attrs)
+	count, sum, buckets, keep, err := normalizeTemporality(ctx, tx, key, source, space, app,
 		histogram.AggregationTemporality, point.StartTimeUnixNano, point.TimeUnixNano, point.Count, sum, buckets, now.Unix())
 	if err != nil || !keep || count == 0 {
 		return keep, err
 	}
-	err = upsertOperation(ctx, tx, at.Truncate(time.Hour).Unix(), "mcp", SourceApp, space, app, method, target, status, errorType, count, sum, buckets)
+	err = upsertOperation(ctx, tx, at.Truncate(time.Hour).Unix(), "mcp", source, space, app, method, target, status, errorType, count, sum, buckets)
 	return err == nil, err
 }
 
@@ -186,7 +191,7 @@ func (a *operationAggregate) finish() OperationTotals {
 }
 
 func (s *Store) operationBreakdowns(ctx context.Context, report *TrafficReport, window trafficWindow) error {
-	where := "space = ? AND hour >= ? AND hour <= ? AND ((kind = 'http' AND source = ?) OR (kind = 'mcp' AND source = 'app'))"
+	where := "space = ? AND hour >= ? AND hour <= ? AND source = ?"
 	args := []any{report.Space, window.from.Unix(), window.through.Unix(), report.Source}
 	if report.App != "" {
 		where += " AND app = ?"
@@ -246,7 +251,7 @@ func (s *Store) operationBreakdowns(ctx context.Context, report *TrafficReport, 
 	if len(report.Endpoints) > 25 {
 		report.Endpoints = report.Endpoints[:25]
 	}
-	report.MCP = MCPReport{Source: SourceApp, Totals: total.finish(), Operations: make([]MCPOperation, 0, len(operations))}
+	report.MCP = MCPReport{Source: report.Source, Totals: total.finish(), Operations: make([]MCPOperation, 0, len(operations))}
 	for k, agg := range operations {
 		report.MCP.Operations = append(report.MCP.Operations, MCPOperation{App: k.app, Method: k.method, Target: k.target, OperationTotals: agg.finish()})
 	}

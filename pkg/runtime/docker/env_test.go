@@ -167,6 +167,23 @@ type discardProgress struct{}
 
 func (discardProgress) Line(string, ...any) {}
 
+func TestGatewayTelemetryDoesNotConfigureAppSDK(t *testing.T) {
+	r := &Runtime{state: state{dir: t.TempDir()}, opts: Options{TelemetryKey: []byte("configured"), TelemetryContainer: "donkey-telemetry"}}
+	env, err := r.appEnv("team", "api", runSpec{Port: 8080})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for key := range env {
+		if strings.HasPrefix(key, "OTEL_") {
+			t.Fatalf("injected application telemetry: %s", key)
+		}
+	}
+	env, err = r.appEnv("team", "api", runSpec{Port: 8080, Env: map[string]string{"OTEL_EXPORTER_OTLP_ENDPOINT": "https://collector.example"}})
+	if err != nil || env["OTEL_EXPORTER_OTLP_ENDPOINT"] != "https://collector.example" {
+		t.Fatalf("explicit user configuration lost: %v %v", env, err)
+	}
+}
+
 // donkey.yaml's env wins over the bindings as well, its references resolve,
 // and a detach takes them out of the run record as Kubernetes takes them out
 // of the Deployment — so the restart that follows does not trip over them.

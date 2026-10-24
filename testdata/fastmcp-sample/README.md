@@ -13,31 +13,26 @@ MCP client to `https://fastmcp-sample.samples.<domain>/mcp` and authorize it.
 Open the app's Analytics tab to see gateway HTTP requests, authenticated callers,
 and application-reported MCP operations, errors and latency.
 
-Donkey's gateway measures HTTP traffic and verified callers automatically.
-Tool names and operation outcomes come from the application. FastMCP already
-creates [native OpenTelemetry spans](https://gofastmcp.com/servers/telemetry).
-`telemetry.py` configures the SDK before FastMCP loads and converts its inbound
-request spans into the `mcp.server.operation.duration` histogram. The adapter
-uses FastMCP 4.0.2's `fastmcp.span.seam` marker to count each inbound request once,
-including discovery, without counting mounted-server or client spans again.
+Donkey's gateway measures HTTP traffic, verified callers and MCP operations
+automatically. This sample has no telemetry SDK, exporter or instrumentation.
+Its Streamable HTTP transport sends SSE responses, so tool failures demonstrate
+why HTTP status alone cannot describe an MCP operation's outcome.
 
-The OTLP HTTP metric exporter uses Donkey's injected `OTEL_*` endpoint,
-authentication headers and service identity. Exports run every 10 seconds
-(`OTEL_METRIC_EXPORT_INTERVAL` overrides this in milliseconds). Without an OTLP
-endpoint, the sample runs locally without exporting. Keep FastMCP's default
-`native` telemetry mode enabled. Trace sampling is always on for accurate
-operation counts; traces themselves are not exported to Donkey.
+The gateway's MCP plugin observes method and tool name, matches JSON-RPC
+responses, and records operation duration and errors. It exports no arguments,
+results, resource URIs or request/session IDs. The Analytics tab shows both HTTP
+traffic and MCP operations without a source selector. Metrics normally arrive
+within 10 seconds.
 
-Only method, tool/prompt name, protocol error code when available, and error
-type become metric attributes. Arguments, results, user/session/request IDs and
-resource URIs are not exported. Gateway rejections and malformed messages that
-never reach FastMCP's request dispatcher appear only in HTTP traffic. The
-adapter preserves FastMCP's error classification; it does not reconstruct
-JSON-RPC error codes absent from the span.
+The observer supports JSON and SSE responses with bounded parsing and temporary
+request correlation. It cannot see traffic that bypasses the gateway or internal
+work inside a tool. See the repository's traffic telemetry documentation for
+observation limits. FastMCP's optional native OTel tracing remains available for
+applications that want detailed traces in their own observability backend.
 
-To test the adapter against the pinned FastMCP version:
+The repository's live test verifies OAuth, calls both tools, and waits for new
+gateway HTTP and MCP metrics:
 
 ```sh
-python -m pip install -r requirements.txt
-python -m unittest test_telemetry.py
+DONKEY_E2E_MCP_SPACE=samples hack/verify.sh docker -run '^TestFastMCPTelemetry$'
 ```

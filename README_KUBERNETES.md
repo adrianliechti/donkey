@@ -331,7 +331,6 @@ exist only when their feature is configured.
 | App route ConfigMap | `<app>-route` | `<space>-<app>-route` | `route.yaml` |
 | Shared-address route ConfigMap | `<app>-route-<target>-<path-slug>` | `<space>-<app>-route-<target>-<path-slug>` | `route.yaml` |
 | App environment Secret | `<app>-env` | `<space>-<app>-env` | Environment variable names and values |
-| App telemetry Secret | `<app>-telemetry` | `<space>-<app>-telemetry` | OpenTelemetry environment variables |
 | App registry Secret | `<app>-registry` | `<space>-<app>-registry` | `.dockerconfigjson` |
 | Service registry Secret | `<service>-registry` | `<space>-<service>-registry` | `.dockerconfigjson` |
 | Space service binding Secret | `<service>-binding` | `<space>-<service>-binding` | The service's own environment variables, such as `DATABASE_URL` |
@@ -369,7 +368,9 @@ platform namespace. The `team` / `my-api` certificate is `team-my-api-tls` in
 either placement. ACME and built-in CA modes do not create per-app TLS Secrets.
 Registry Secrets use `kubernetes.io/dockerconfigjson`; environment, telemetry
 and service credential Secrets use `Opaque`. Environment keys retain their
-standard names, such as `DATABASE_URL` and `OTEL_EXPORTER_OTLP_ENDPOINT`.
+standard names, such as `DATABASE_URL`. Gateway telemetry needs no application
+Secret or SDK configuration; older `<app>-telemetry` Secrets are no longer
+referenced by new deployments.
 
 For space `team` and app `my-api`, the Certificate is `team-my-api`, its Secret
 is `team-my-api-tls`, and the DNSEndpoint is `team-my-api-dns`. These names and

@@ -1,9 +1,5 @@
 import os
 
-from telemetry import configure_telemetry
-
-configure_telemetry()
-
 from fastmcp import FastMCP
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -39,5 +35,5 @@ if __name__ == "__main__":
         port=int(os.environ.get("PORT", "8000")),
         path="/mcp",
         stateless_http=True,
-        json_response=True,
+        json_response=False,
     )

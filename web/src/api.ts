@@ -122,7 +122,7 @@ export interface TrafficReport {
   series: TrafficPoint[]
   endpoints: TrafficEndpoint[]
   mcp: {
-    source: 'app'
+    source: TrafficSource
     totals: OperationTotals
     operations: MCPOperation[]
   }

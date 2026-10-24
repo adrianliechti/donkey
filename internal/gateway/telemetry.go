@@ -32,9 +32,11 @@ const (
 )
 
 type edgeTelemetry struct {
-	provider *metric.MeterProvider
-	duration otelmetric.Float64Histogram
-	key      []byte
+	provider    *metric.MeterProvider
+	duration    otelmetric.Float64Histogram
+	mcpDuration otelmetric.Float64Histogram
+	mcp         mcpTracker
+	key         []byte
 	// views are document loads, web are browser events, callers are verified
 	// identities across all requests. All are nil while telemetry is disabled.
 	views   *batchExporter[telemetry.ViewEvent]
@@ -90,6 +92,15 @@ func newEdgeTelemetry(cfg *Config) (*edgeTelemetry, error) {
 		_ = t.provider.Shutdown(context.Background())
 		return nil, err
 	}
+	t.mcpDuration, err = meter.Float64Histogram(telemetry.MCPServerOperationDuration,
+		otelmetric.WithDescription("Duration of MCP requests observed by the donkey gateway."),
+		otelmetric.WithUnit("s"),
+		otelmetric.WithExplicitBucketBoundaries(telemetry.MCPDurationBounds...),
+	)
+	if err != nil {
+		_ = t.provider.Shutdown(context.Background())
+		return nil, err
+	}
 	t.views = newBatchExporter(base+"/v1/donkey/views", token, client, func(events []telemetry.ViewEvent) any {
 		return telemetry.ViewBatch{Events: events}
 	})
@@ -102,7 +113,7 @@ func newEdgeTelemetry(cfg *Config) (*edgeTelemetry, error) {
 	return t, nil
 }
 
-func (t *edgeTelemetry) Record(r *http.Request, rt route, sess *session, status int, elapsed time.Duration, contentType string) {
+func (t *edgeTelemetry) RecordHTTP(r *http.Request, rt route, sess *session, status int, elapsed time.Duration) {
 	if t == nil || t.provider == nil || rt.Space == "" || rt.App == "" {
 		return
 	}
@@ -135,8 +146,11 @@ func (t *edgeTelemetry) Record(r *http.Request, rt route, sess *session, status 
 			UserHash: appHash, SpaceUserHash: spaceHash,
 		})
 	}
+}
 
-	if r.Method != http.MethodGet || status < 200 || status >= 300 || !wantsHTML(r) ||
+func (t *edgeTelemetry) RecordView(r *http.Request, rt route, sess *session, status int, contentType string) {
+	if t == nil || t.views == nil || rt.Space == "" || rt.App == "" ||
+		r.Method != http.MethodGet || status < 200 || status >= 300 || !wantsHTML(r) ||
 		!strings.HasPrefix(strings.ToLower(contentType), "text/html") {
 		return
 	}

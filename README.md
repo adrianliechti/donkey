@@ -238,7 +238,7 @@ Every app's **Analytics** tab shows its traffic below the
 the whole space, with **last 48 hours**, **last 7 days**, and **last 30 days**
 ranges. The 48-hour series uses hourly
 buckets; week and month series use daily buckets. The console's
-default source is **Gateway**: donkey-gateway records one stable OpenTelemetry
+traffic source is the **gateway**: donkey-gateway records one stable OpenTelemetry
 `http.server.request.duration` histogram for every matched app request,
 including authentication failures, access denials, login redirects and CORS
 preflights. Unmatched hosts/paths and the gateway's own OAuth and browser
@@ -254,33 +254,30 @@ unique signed-in visitors HMAC-pseudonymized per app and per space. The
 console shows the [web analytics](#web-analytics) audience instead, which does
 see route transitions and anonymous visitors.
 
-Apps also receive standard exporter defaults:
+Gateway analytics use built-in protocol plugins with shared request/response hooks:
 
-```text
-OTEL_SERVICE_NAME=<app>
-OTEL_RESOURCE_ATTRIBUTES=service.namespace=<space>
-OTEL_EXPORTER_OTLP_ENDPOINT=http://donkey-telemetry…:4318
-OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
-OTEL_METRICS_EXPORTER=otlp
-```
+- **HTTP** measures all routed websites and APIs, including authentication
+  failures and CORS preflights, and reports verified callers.
+- **Web** injects the browser analytics script into eligible HTML responses.
+  Its page views and SPA navigation remain distinct from HTTP requests.
+- **MCP** observes Streamable HTTP JSON-RPC requests and JSON/SSE responses,
+  extracting operation metadata without application instrumentation.
 
-Explicit app environment values win over these defaults. The injected variables
-configure an OpenTelemetry SDK; they do not magically instrument application
-code. Use the language's HTTP auto-instrumentation or SDK and emit the stable
-HTTP server duration histogram. It is kept separate from the gateway's data,
-because adding both would count the same request twice, and is read through
-the traffic API with `?source=app`; the console's source picker switches between
-**gateway** and **application**. Each app's HMAC token is valid only for its own
-[`service.namespace` / `service.name` resource](https://opentelemetry.io/docs/specs/semconv/resource/service/),
-so it cannot write another app's series or the trusted edge series.
+All plugins use the gateway's authenticated OpenTelemetry exporter. Apps need
+no SDK, exporter, analytics cookie or telemetry credentials. New deployments no
+longer receive automatic `OTEL_*` environment variables. Explicit user-supplied
+OTel configuration still works with the user's own observability backend.
 
-**HTTP routes.** The traffic report includes up to 25 routes ranked by request
-count, with method, app, 4xx/5xx counts and latency. Gateway routes are the
-configured app prefixes. Application instrumentation can report more detailed
-matched templates using `http.route`, for example `/users/{id}`. Donkey never
-uses `url.path` or a query string to invent a route; missing templates appear
-as **Unknown route**. Historical HTTP totals survive the upgrade; route
-breakdowns begin with the first export received after the upgrade.
+The console shows gateway data only. For compatibility, the query API retains
+`?source=app` and the receiver still accepts previously issued app credentials.
+Legacy application series remain separate and are never added to gateway HTTP
+or MCP totals. Existing app exporters can be removed when their apps redeploy.
+
+**HTTP routes.** The traffic report includes up to 25 configured gateway route
+prefixes ranked by request count, with method, app, 4xx/5xx counts and latency.
+The gateway cannot infer an application's matched route templates; raw URLs,
+query strings and resource URIs are not used as metric labels. Historical HTTP
+totals survive upgrades; route breakdowns start with their first observed export.
 
 **Authenticated callers.** The gateway separately reports distinct verified
 identities across all matched HTTP requests, including API calls and verified
@@ -293,39 +290,41 @@ and an application's own API key is not interpreted as a gateway identity.
 Counts use the same time range as traffic and appear in the gateway report's
 `totals.authenticatedCallers` and each series point.
 
-**MCP operations.** Applications can export the
+**MCP operations.** The gateway MCP plugin emits the
 [`mcp.server.operation.duration` histogram](https://github.com/open-telemetry/semantic-conventions-genai/blob/9ffc7e00c639be7712e544e3e54331e885dccf84/docs/gen-ai/mcp.md#metric-mcpserveroperationduration)
-over the same authenticated OTLP endpoint. Donkey follows that Development
-convention snapshot; HTTP conventions remain stable. MCP instrumentation must
-run in the application or SDK so it can time individual logical operations
-and see their results, including streaming responses. The gateway does not
-parse or modify MCP request/response bodies.
+using that Development convention snapshot. It observes inbound requests and
+matched results, including JSON-RPC errors and tool results with `isError: true`.
+Notifications, progress updates and server-initiated requests are not counted as
+completed client operations. Unknown request methods are grouped as `_OTHER`.
+Latency is measured at the gateway, including the upstream hop; it is not an
+application's internal execution time. HTTP requests and MCP operations are
+separate counts: an HTTP 200 can carry a failed tool result.
 
-The histogram uses seconds, with recommended boundaries
+The histogram uses seconds with boundaries
 `[0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 30, 60, 120, 300]`.
-Delta and cumulative explicit histograms are supported, with retry
-deduplication. As with HTTP metrics, the first cumulative export establishes
-a baseline. Report attributes are:
+Reports include method, tool/prompt name, operation and caller error counts,
+and average/p50/p95 latency. JSON-RPC codes `-32700`, `-32600`, `-32601`,
+`-32602` and `-32002` are caller errors. Other JSON-RPC errors, tool errors and
+observed HTTP transport failures are operation errors.
 
-| Attribute | Meaning |
-| --- | --- |
-| `mcp.method.name` | Required; e.g. `tools/call`, `prompts/get`, `resources/read` |
-| `gen_ai.tool.name` | Tool name for tool operations |
-| `gen_ai.prompt.name` | Prompt name for prompt operations |
-| `rpc.response.status_code` | String form of a JSON-RPC error code; absent for success |
-| `error.type` | Failure class; `tool_error` for a tool result with `isError: true` |
+Observation never reads ahead or delays a stream to finish parsing. Each JSON
+body or SSE event has a 1 MiB observation limit; oversized, encoded or malformed
+messages continue through unchanged but may have no MCP measurement. Only
+metadata is exported: arguments, results, resource URIs and request/session IDs
+are never stored in telemetry or used as metric labels. Hashed request/session
+and SSE event IDs support in-memory correlation and replay deduplication, capped
+at 4096 request entries and 4096 event entries for 10 minutes per gateway.
+Resumption on another gateway or after state expires cannot recover the missing
+observation. A disconnected stream without a matched result is not guessed to
+be successful or failed. This plugin covers Streamable HTTP, not stdio or the
+legacy HTTP+SSE transport. HTTP traffic remains visible in every case.
 
-The traffic report's `mcp` section always contains **application** operations,
-independently of the HTTP source picker. Its totals include operation count,
-operation errors, caller errors, and average/p50/p95 latency; its top 25 rows
-group by app, method and tool/prompt name. It never adds gateway HTTP requests
-to operation counts. JSON-RPC codes `-32700`, `-32600`, `-32601`, `-32602` and
-`-32002` count as caller errors when instrumentation has not reported an
-operation `error.type`. Other JSON-RPC error codes count as operation errors.
-HTTP 200 alone does not imply tool success. Arguments, results, resource URIs,
-request IDs and session IDs are not retained as report dimensions. The console
-shows MCP operations once an application has exported them. The new rollups
-and caller observations follow normal telemetry retention and space deletion.
+The [FastMCP sample](testdata/fastmcp-sample) exercises successful calls and tool
+errors with no telemetry code or SDK. The analytics console shows MCP operations
+as soon as the gateway observes them. Add further protocol plugins at the
+internal `telemetryPlugin` interface; the shared hooks own proxy integration,
+while plugins own protocol interpretation. All data follows normal telemetry
+retention and space deletion.
 
 No Collector is required: the purpose-built service already accepts standard
 OTLP/HTTP and owns retention/query semantics. A Collector remains useful when an

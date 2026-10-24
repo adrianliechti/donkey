@@ -76,7 +76,8 @@ Kubernetes ConfigMaps or Secrets. State paths below are relative to
 
 Installation credentials are passed to control-plane containers as environment
 variables. Registry authentication is passed to the Docker API when pulling
-images; app telemetry values are injected into the app container environment.
+images. Gateway plugins collect app traffic telemetry without injecting SDK
+configuration or telemetry credentials into app containers.
 The rendered Compose bundle provides a `secrets.env` input and mounts
 `buildkitd.toml`. These files and Docker volumes are distinct from Kubernetes
 Secret and ConfigMap objects.

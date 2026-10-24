@@ -687,6 +687,6 @@ func (s *Server) serveOAuthApp(w http.ResponseWriter, r *http.Request, rt route)
 	// An OAuth client presents this grant for as long as its refresh token
 	// lasts, well past the access token in hand.
 	idpToken := s.idpToken(w, r, rt, sess, true, time.Now().Add(oauthRefreshTokenTTL))
-	s.proxy(rt, sess, true, idpToken, false).ServeHTTP(w, r)
+	s.proxy(rt, sess, true, idpToken).ServeHTTP(w, r)
 	return sess
 }

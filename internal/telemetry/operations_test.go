@@ -56,11 +56,22 @@ func TestMCPMetricsOutcomesRetriesAndSourceSeparation(t *testing.T) {
 	}{
 		{"", "", 5}, {"", "tool_error", 2}, {"-32602", "", 3}, {"-32603", "", 1},
 	} {
-		req := mcpMetrics(now, sample.code, sample.errorType, sample.count)
-		for range 2 {
-			accepted, rejected, err := s.IngestMetrics(ctx, req, false)
-			if err != nil || accepted != 1 || rejected != 0 {
-				t.Fatalf("ingest=%d/%d: %v", accepted, rejected, err)
+		for _, edge := range []bool{false, true} {
+			count := sample.count
+			if !edge {
+				count *= 2
+			}
+			req := mcpMetrics(now, sample.code, sample.errorType, count)
+			if edge {
+				req.ResourceMetrics[0].Resource.Attributes = []*commonpb.KeyValue{stringAttribute("service.name", "donkey-gateway")}
+				p := req.ResourceMetrics[0].ScopeMetrics[0].Metrics[0].GetHistogram().DataPoints[0]
+				p.Attributes = append(p.Attributes, stringAttribute("donkey.space.name", "team"), stringAttribute("donkey.app.name", "site"))
+			}
+			for range 2 {
+				accepted, rejected, err := s.IngestMetrics(ctx, req, edge)
+				if err != nil || accepted != 1 || rejected != 0 {
+					t.Fatalf("ingest=%d/%d: %v", accepted, rejected, err)
+				}
 			}
 		}
 	}
@@ -69,15 +80,19 @@ func TestMCPMetricsOutcomesRetriesAndSourceSeparation(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if r.Totals.Requests != 0 || r.MCP.Source != SourceApp || r.MCP.Totals.Operations != 11 || r.MCP.Totals.Errors != 3 || r.MCP.Totals.CallerErrors != 3 {
-			t.Fatalf("HTTP and MCP outcomes: %+v", r)
+		factor := int64(1)
+		if source == SourceApp {
+			factor = 2
+		}
+		if r.Totals.Requests != 0 || r.MCP.Source != source || r.MCP.Totals.Operations != 11*factor || r.MCP.Totals.Errors != 3*factor || r.MCP.Totals.CallerErrors != 3*factor {
+			t.Fatalf("HTTP and MCP outcomes: %+v", r.MCP)
 		}
 		if r.MCP.Totals.P95LatencyMS != 30000 || r.MCP.Totals.AverageLatencyMS != 30000 || len(r.MCP.Operations) != 1 || r.MCP.Operations[0].Target != "weather" {
 			t.Fatalf("MCP buckets or grouping: %+v", r.MCP)
 		}
 	}
 	if a, r, err := s.IngestMetrics(ctx, mcpMetrics(now, "", "", 1), true); err != nil || a != 0 || r != 1 {
-		t.Fatalf("gateway must not forge MCP operations: %d/%d %v", a, r, err)
+		t.Fatalf("gateway metrics require the gateway resource: %d/%d %v", a, r, err)
 	}
 }
 

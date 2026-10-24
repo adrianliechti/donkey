@@ -453,7 +453,7 @@ func (s *suite) waitFastMCPTelemetry(t *testing.T, space string, browser *http.C
 				divide = true
 			}
 		}
-		if add && divide && report.Totals.AuthenticatedCallers > 0 &&
+		if report.MCP.Source == telemetry.SourceEdge && add && divide && report.Totals.AuthenticatedCallers > 0 &&
 			report.Totals.Requests >= before.Totals.Requests+4 &&
 			report.MCP.Totals.Operations >= before.MCP.Totals.Operations+4 &&
 			report.MCP.Totals.Errors > before.MCP.Totals.Errors {

@@ -20,7 +20,6 @@ import (
 
 	"github.com/adrianliechti/donkey/internal/addons"
 	"github.com/adrianliechti/donkey/internal/config"
-	"github.com/adrianliechti/donkey/internal/telemetry"
 	rt "github.com/adrianliechti/donkey/pkg/runtime"
 )
 
@@ -426,24 +425,7 @@ func (r *Runtime) appEnv(space, app string, spec runSpec) (map[string]string, er
 			env[k] = v
 		}
 	}
-	if len(r.opts.TelemetryKey) > 0 {
-		defaults := map[string]string{
-			"OTEL_SERVICE_NAME":             app,
-			"OTEL_RESOURCE_ATTRIBUTES":      "service.namespace=" + space,
-			"OTEL_EXPORTER_OTLP_ENDPOINT":   "http://" + r.opts.TelemetryContainer + ":4318",
-			"OTEL_EXPORTER_OTLP_PROTOCOL":   "http/protobuf",
-			"OTEL_EXPORTER_OTLP_HEADERS":    "x-donkey-telemetry-token=" + telemetry.AppToken(r.opts.TelemetryKey, space, app),
-			"OTEL_METRICS_EXPORTER":         "otlp",
-			"OTEL_TRACES_EXPORTER":          "none",
-			"OTEL_LOGS_EXPORTER":            "none",
-			"OTEL_SEMCONV_STABILITY_OPT_IN": "http",
-		}
-		for key, value := range defaults {
-			if _, configured := env[key]; !configured {
-				env[key] = value
-			}
-		}
-	}
+
 	env["PORT"] = strconv.Itoa(spec.Port)
 	for k, v := range spec.Env {
 		env[k] = v

@@ -46,11 +46,16 @@ func (s *Server) serveApp(w http.ResponseWriter, r *http.Request) {
 	if strings.HasPrefix(r.URL.Path, analytics.Prefix) && s.serveAnalytics(w, r) {
 		return
 	}
+	r = s.observeTraffic(r, rt)
 	var sess *session
 	metrics := httpsnoop.CaptureMetrics(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sess = s.serveRoute(w, r, rt)
 	}), w, r)
-	s.telemetry.Record(r, rt, sess, metrics.Code, metrics.Duration, w.Header().Get("Content-Type"))
+	for _, observation := range trafficObservations(r) {
+		if observation.finish != nil {
+			observation.finish(sess, metrics.Code, metrics.Duration, w.Header().Get("Content-Type"))
+		}
+	}
 }
 
 // Capture the whole matched route, including authentication and preflight
@@ -106,8 +111,7 @@ func (s *Server) serveRoute(w http.ResponseWriter, r *http.Request, rt route) *s
 		clearCORSHeaders(w.Header())
 	}
 	idpToken := s.idpToken(w, r, rt, sess, fromToken, time.Time{})
-	inject := s.countsVisits(rt) && wantsDocument(r)
-	s.proxy(rt, sess, fromToken, idpToken, inject).ServeHTTP(w, r)
+	s.proxy(rt, sess, fromToken, idpToken).ServeHTTP(w, r)
 	return sess
 }
 
@@ -192,17 +196,14 @@ func (s *Server) idpToken(w http.ResponseWriter, r *http.Request, rt route, sess
 // proxy forwards to the app. A ReverseProxy is built per request, so the
 // identity serveApp established rides in the closure — nothing is verified
 // twice. idpToken is the visitor's IdP access token, if the route gets one;
-// inject adds the analytics script to the page coming back.
-func (s *Server) proxy(rt route, sess *session, fromToken bool, idpToken string, inject bool) *httputil.ReverseProxy {
-	acceptsGzip := false
+// Telemetry plugins attach their observation hooks to the request context.
+func (s *Server) proxy(rt route, sess *session, fromToken bool, idpToken string) *httputil.ReverseProxy {
 	return &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
-			if inject {
-				// Without the client's codings, the transport asks for gzip
-				// itself and hands back the page decoded — the one encoding
-				// every app server speaks and the gateway can edit.
-				acceptsGzip = analytics.AcceptsGzip(pr.In)
-				pr.Out.Header.Del("Accept-Encoding")
+			for _, observation := range trafficObservations(pr.In) {
+				if observation.rewrite != nil {
+					observation.rewrite(pr)
+				}
 			}
 			if fromToken {
 				// The token authenticated to the gateway; the app gets the
@@ -279,8 +280,10 @@ func (s *Server) proxy(rt route, sess *session, fromToken bool, idpToken string,
 			}
 		},
 		ModifyResponse: func(res *http.Response) error {
-			if inject {
-				injectScript(res, acceptsGzip)
+			for _, observation := range trafficObservations(res.Request) {
+				if observation.response != nil {
+					observation.response(res)
+				}
 			}
 			if routeAllowsAllOrigins(rt) {
 				setCORSHeaders(res.Header)

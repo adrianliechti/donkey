@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Cpu, MemoryStick } from 'lucide-react'
-import type { ResourcePoint, ResourceRange, TrafficPoint, TrafficRange, TrafficSource, TrafficTotals } from './api'
+import type { ResourcePoint, ResourceRange, TrafficPoint, TrafficRange, TrafficTotals } from './api'
 import { useResources, useTraffic } from './queries'
 import { Drawer, DrawerBody, PaneHeader } from './dialog'
 import { ErrorNote, Eyebrow, Section, SectionHeader, Select, Spinner, StatGrid } from './ui'
@@ -53,8 +53,7 @@ export function TrafficPanel({
   const [own, setOwn] = useState<TrafficRange>('30d')
   const range = shared ?? own
   const setRange = onRange ?? setOwn
-  const [source, setSource] = useState<TrafficSource>('edge')
-  const { data, error } = useTraffic(space, app, source, range)
+  const { data, error } = useTraffic(space, app, 'edge', range)
   const errors = data ? data.totals.clientErrors + data.totals.serverErrors : 0
 
   return (
@@ -62,23 +61,9 @@ export function TrafficPanel({
       <Section className="space-y-5">
         <SectionHeader
           title="Traffic"
-          description={
-            source === 'edge'
-              ? 'HTTP traffic through the gateway, including sign-in and access responses.'
-              : 'HTTP traffic reported by the application.'
-          }
+          description="HTTP traffic through the gateway, including sign-in and access responses."
           actions={
             <>
-              <Select
-                variant="quiet"
-                ariaLabel="Traffic source"
-                value={source}
-                onChange={setSource}
-                options={[
-                  { value: 'edge', label: 'gateway' },
-                  { value: 'app', label: 'application' },
-                ]}
-              />
               {(!shared || onRange) && (
                 <Select
                   variant="quiet"
@@ -117,12 +102,10 @@ export function TrafficPanel({
               ]}
             />
 
-            {source === 'edge' && (
-              <p className="text-xs text-muted" title={data.definitions.authenticatedCallers}>
-                <span className="font-mono text-ink">{integer.format(data.totals.authenticatedCallers ?? 0)}</span>{' '}
-                distinct authenticated callers · anonymous callers excluded
-              </p>
-            )}
+            <p className="text-xs text-muted" title={data.definitions.authenticatedCallers}>
+              <span className="font-mono text-ink">{integer.format(data.totals.authenticatedCallers ?? 0)}</span>{' '}
+              distinct authenticated callers · anonymous callers excluded
+            </p>
 
             <div className="space-y-2">
               <div className="flex items-center justify-between gap-3">
@@ -191,7 +174,7 @@ export function TrafficPanel({
         <Section className="space-y-4">
           <SectionHeader
             title="MCP operations"
-            description="Operations reported by MCP servers, including tool calls, prompts and resources."
+            description="MCP requests observed by the gateway, including tool calls, prompts and resources."
           />
           <StatGrid
             stats={[
@@ -209,7 +192,7 @@ export function TrafficPanel({
               {
                 label: 'P95 latency',
                 value: latency(data.mcp.totals.p95LatencyMs),
-                note: `avg ${latency(data.mcp.totals.averageLatencyMs)}`,
+                note: `gateway observed · avg ${latency(data.mcp.totals.averageLatencyMs)}`,
               },
             ]}
           />
