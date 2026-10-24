@@ -1,5 +1,9 @@
 import os
 
+from telemetry import configure_telemetry
+
+configure_telemetry()
+
 from fastmcp import FastMCP
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -15,6 +19,12 @@ mcp = FastMCP(
 def add(a: int, b: int) -> int:
     """Add two integers."""
     return a + b
+
+
+@mcp.tool
+def divide(a: float, b: float) -> float:
+    """Divide two numbers. A zero divisor demonstrates an MCP tool error."""
+    return a / b
 
 
 @mcp.custom_route("/health", methods=["GET"])

@@ -201,7 +201,7 @@ func (s *suite) deployProject(t *testing.T, dir, space string, expected []string
 		stream = io.TeeReader(stream, f)
 	}
 	decoder := json.NewDecoder(stream)
-	dockerfiles := map[string]string{}
+	recipes := map[string]string{}
 	currentApp := ""
 	for {
 		var message struct {
@@ -219,8 +219,8 @@ func (s *suite) deployProject(t *testing.T, dir, space string, expected []string
 			if update.App != "" && update.Stage != "" {
 				t.Logf("%s: %s", update.App, update.Stage)
 			}
-			if update.Dockerfile != "" {
-				dockerfiles[currentApp] = update.Dockerfile
+			if update.Recipe != "" {
+				recipes[currentApp] = update.Recipe
 			}
 			for _, base := range update.BaseImages {
 				if strings.Contains(base, "/microservices-demo/") || strings.Contains(base, "online-boutique") || strings.Contains(base, "hipster-shop") {
@@ -236,8 +236,8 @@ func (s *suite) deployProject(t *testing.T, dir, space string, expected []string
 				if !app.OK {
 					t.Errorf("%s failed: %s\n%s", app.App, app.Error, app.Diagnosis)
 				}
-				if dockerfiles[app.App] == "" {
-					t.Errorf("%s did not report its generated Dockerfile", app.App)
+				if recipes[app.App] == "" {
+					t.Errorf("%s did not report its build recipe path", app.App)
 				}
 			}
 			if !result.OK || len(result.Apps) != len(expected) {

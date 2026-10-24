@@ -114,6 +114,9 @@ docker)
   # The install publishes the API on the host loopback; the gateway on 443.
   export DONKEY_E2E_SERVER="http://127.0.0.1:8088"
   export DONKEY_E2E_GATEWAY="127.0.0.1:443"
+  if docker inspect donkey-identity >/dev/null 2>&1; then
+    export DONKEY_E2E_IDP="${DONKEY_E2E_IDP:-127.0.0.1:5556}"
+  fi
   ;;
 
 *)

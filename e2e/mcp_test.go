@@ -21,7 +21,24 @@ import (
 	"time"
 
 	"github.com/adrianliechti/donkey/internal/server"
+	"github.com/adrianliechti/donkey/internal/telemetry"
 )
+
+// Exercise an already deployed sample without rebuilding or changing its exposure.
+func TestFastMCPTelemetry(t *testing.T) {
+	space := os.Getenv("DONKEY_E2E_MCP_SPACE")
+	if space == "" || os.Getenv("DONKEY_E2E_IDP") == "" {
+		t.Skip("set DONKEY_E2E_MCP_SPACE and DONKEY_E2E_IDP to verify a deployed FastMCP sample")
+	}
+	s := newSuite(t)
+	if s.edge == nil {
+		t.Fatal("DONKEY_E2E_GATEWAY is required")
+	}
+	endpoint := "https://fastmcp-sample." + space + "." + s.domain + "/mcp"
+	token := s.authorizeMCP(t, endpoint)
+	s.callFastMCP(t, endpoint, token)
+	s.waitFastMCPTelemetry(t, space)
+}
 
 func TestBuilderFastMCPOAuth(t *testing.T) {
 	if os.Getenv("DONKEY_E2E_BUILDER") != "true" {
@@ -42,6 +59,7 @@ func TestBuilderFastMCPOAuth(t *testing.T) {
 	}
 	token := s.authorizeMCP(t, base+"/mcp")
 	s.callFastMCP(t, base+"/mcp", token)
+	s.waitFastMCPTelemetry(t, "e2e-fastmcp")
 
 	path := "/v1/spaces/e2e-fastmcp/apps/fastmcp-sample/network"
 	setNetwork := func(exposure string) *server.NetworkResponse {
@@ -335,7 +353,8 @@ func (s *suite) mcpBrowserClient(t *testing.T) *http.Client {
 	transport := base.Clone()
 	dialer := &net.Dialer{Timeout: 10 * time.Second}
 	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
-		if strings.HasPrefix(address, "auth.donkey-identity:") {
+		host, _, _ := net.SplitHostPort(address)
+		if host == "auth.donkey-identity" || host == "auth."+s.domain {
 			return dialer.DialContext(ctx, network, idp)
 		}
 		return dialer.DialContext(ctx, network, gateway)
@@ -390,7 +409,36 @@ func (s *suite) callFastMCP(t *testing.T, endpoint, token string) {
 	if !bytes.Contains(result, []byte("7")) || bytes.Contains(result, []byte(`"isError":true`)) {
 		t.Fatalf("FastMCP add response: %s", result)
 	}
-	t.Logf("FastMCP add(3, 4) passed at %s", endpoint)
+	failed := call(4, "tools/call", map[string]any{"name": "divide", "arguments": map[string]int{"a": 1, "b": 0}})
+	if !bytes.Contains(failed, []byte(`"isError":true`)) {
+		t.Fatalf("FastMCP divide(1, 0) did not return a tool error: %s", failed)
+	}
+	t.Logf("FastMCP add(3, 4) and divide(1, 0) passed at %s", endpoint)
+}
+
+func (s *suite) waitFastMCPTelemetry(t *testing.T, space string) {
+	t.Helper()
+	var report telemetry.TrafficReport
+	deadline := time.Now().Add(90 * time.Second)
+	for time.Now().Before(deadline) {
+		s.raw(t, http.MethodGet, "/v1/spaces/"+space+"/apps/fastmcp-sample/traffic?range=48h&source=edge", nil, &report)
+		var add, divide bool
+		for _, operation := range report.MCP.Operations {
+			if operation.Method == "tools/call" && operation.Target == "add" && operation.Operations > 0 && operation.Errors == 0 {
+				add = true
+			}
+			if operation.Method == "tools/call" && operation.Target == "divide" && operation.Errors > 0 {
+				divide = true
+			}
+		}
+		if add && divide && report.Totals.AuthenticatedCallers > 0 && report.Totals.Requests > 0 {
+			t.Logf("FastMCP telemetry: %d HTTP requests, %d authenticated callers, %d MCP operations, %d operation errors",
+				report.Totals.Requests, report.Totals.AuthenticatedCallers, report.MCP.Totals.Operations, report.MCP.Totals.Errors)
+			return
+		}
+		time.Sleep(2 * time.Second)
+	}
+	t.Fatalf("FastMCP telemetry did not arrive: %+v", report)
 }
 
 func (s *suite) waitMCPStatus(t *testing.T, endpoint string, want int) {
