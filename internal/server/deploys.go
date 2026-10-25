@@ -71,6 +71,17 @@ type deployTicket struct {
 	id    uint64
 }
 
+func (b *deployBoard) active() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for _, entry := range b.entries {
+		if entry.FinishedAt == nil {
+			return true
+		}
+	}
+	return false
+}
+
 func (b *deployBoard) start(space, app, by, via string, now time.Time) *deployTicket {
 	b.mu.Lock()
 	defer b.mu.Unlock()

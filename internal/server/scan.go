@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -19,7 +18,6 @@ import (
 	"github.com/adrianliechti/donkey/internal/ai"
 	"github.com/adrianliechti/donkey/internal/build"
 	"github.com/adrianliechti/donkey/internal/config"
-	"github.com/adrianliechti/donkey/internal/telemetry"
 )
 
 // The scan policy lives here, not in the build package: the build engine
@@ -81,6 +79,9 @@ type AppSecurity struct {
 	Summary     ScanSummary `json:"summary"`
 	ScannedAt   string      `json:"scannedAt,omitempty"`
 	DBUpdatedAt string      `json:"dbUpdatedAt,omitempty"`
+	// Failed refreshes keep the last successful findings and their timestamp.
+	RefreshError string `json:"refreshError,omitempty"`
+	AttemptedAt  string `json:"attemptedAt,omitempty"`
 }
 
 // securityOf reads the badge off a record.
@@ -137,6 +138,15 @@ func (a *AppScan) Shown() *AppScan {
 	shown := *a
 	shown.SBOM = ""
 	return &shown
+}
+
+// Both arrays are written even when empty. Missing or null arrays mean an
+// incomplete record, not evidence that the image has no findings.
+func (a *AppScan) validate() error {
+	if a == nil || a.Vulnerabilities == nil || a.Secrets == nil {
+		return fmt.Errorf("the stored scan is incomplete")
+	}
+	return nil
 }
 
 // encodeSBOM packs the inventory for the record; an inventory is text that
@@ -342,37 +352,18 @@ func (s *Server) checkStoredScan(ctx context.Context, out *lineStreamer, space s
 	if !s.cfg.Build.Scan.IsEnabled() {
 		return nil, nil
 	}
-	raw, err := s.telemetry.BuildByImage(ctx, space, app.Name, imageRef)
-	if err != nil && !errors.Is(err, telemetry.ErrNoBuild) {
+	stored, err := s.loadScan(ctx, space, app.Name, imageRef)
+	if err != nil {
 		return nil, fmt.Errorf("reading the image's recorded scan; retry when build history is available: %w", err)
 	}
-	var release AppRelease
-	if err == nil {
-		if err := json.Unmarshal(raw, &release); err != nil {
-			return nil, fmt.Errorf("the image's recorded scan is not readable: %w", err)
-		}
-	}
-	if release.Scan == nil {
+	if stored == nil {
 		out.Line("· No vulnerability scan is on record for this image; it is deployed as it is")
 		return nil, nil
 	}
-	stored := release.Scan
-	report := &build.ScanReport{
-		Scanner: stored.Scanner, OS: stored.OS, EndOfLife: stored.EndOfLife, DBUpdatedAt: stored.DBUpdatedAt,
-		Vulnerabilities: stored.Vulnerabilities, Secrets: stored.Secrets,
-	}
-	policy, err := s.scanPolicy(ctx, space, app.Name)
+	record, err := s.reevaluateScan(ctx, space, app.Name, stored)
 	if err != nil {
 		return nil, err
 	}
-	verdicts := map[string]ai.Verdict{}
-	for _, v := range stored.Verdicts {
-		verdicts[v.ID] = v
-	}
-	record := scanRecord(report, policy, evaluateScan(report, policy), verdicts)
-	// Re-evaluation only changes the policy decision, not the inventory.
-	record.SBOM = stored.SBOM
-	record.ScannedAt = stored.ScannedAt
 	when := ""
 	if stored.DBUpdatedAt != "" {
 		when = " (database from " + shortDate(stored.DBUpdatedAt) + ")"
@@ -387,6 +378,20 @@ func (s *Server) checkStoredScan(ctx context.Context, out *lineStreamer, space s
 	if record.Blocked {
 		return record, fmt.Errorf("%s", refusalMessage(record))
 	}
+	return record, nil
+}
+
+func (s *Server) reevaluateScan(ctx context.Context, space, app string, stored *AppScan) (*AppScan, error) {
+	policy, err := s.scanPolicy(ctx, space, app)
+	if err != nil {
+		return nil, err
+	}
+	report := &build.ScanReport{
+		Scanner: stored.Scanner, OS: stored.OS, EndOfLife: stored.EndOfLife, DBUpdatedAt: stored.DBUpdatedAt,
+		Vulnerabilities: stored.Vulnerabilities, Secrets: stored.Secrets,
+	}
+	record := scanRecord(report, policy, evaluateScan(report, policy), scanVerdicts(stored))
+	record.SBOM, record.ScannedAt = stored.SBOM, stored.ScannedAt
 	return record, nil
 }
 

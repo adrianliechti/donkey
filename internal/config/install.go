@@ -456,6 +456,9 @@ const (
 // refused image is never pushed under the app's name. Unset values mean the
 // defaults below, which are the recommended ones.
 type ScanSettings struct {
+	// Rescan is the interval for checking deployed SBOMs. Empty means 4h;
+	// "0" disables periodic checks without disabling the build-time gate.
+	Rescan string `json:"rescan,omitempty"`
 	// Enabled is a pointer so unset ≠ off; unset means on.
 	Enabled *bool `json:"enabled,omitempty"`
 	// Image is the scanner image (Trivy). Empty means DefaultScannerImage.
@@ -489,6 +492,17 @@ type ScanSettings struct {
 // IsEnabled is on unless an installation turns the scan off.
 func (s ScanSettings) IsEnabled() bool {
 	return s.Enabled == nil || *s.Enabled
+}
+
+func (s ScanSettings) RescanInterval() time.Duration {
+	if !s.IsEnabled() || s.Rescan == "0" {
+		return 0
+	}
+	if s.Rescan == "" {
+		return 4 * time.Hour
+	}
+	d, _ := time.ParseDuration(s.Rescan)
+	return d
 }
 
 // ScannerImage is the scanner to mount beside the image.
@@ -550,12 +564,14 @@ func (s ScanSettings) EnvVars() map[string]string {
 	set("DONKEY_BUILDER_SCAN_IGNORE_UNFIXED", optional(s.IgnoreUnfixed))
 	set("DONKEY_BUILDER_SCAN_SECRETS", s.Secrets)
 	set("DONKEY_BUILDER_SCAN_TRIAGE", s.Triage)
+	set("DONKEY_BUILDER_SCAN_RESCAN", s.Rescan)
 	return env
 }
 
 // ScanSettingsFromEnv reads what EnvVars wrote.
 func ScanSettingsFromEnv(get func(string) string) ScanSettings {
 	s := ScanSettings{
+		Rescan:           get("DONKEY_BUILDER_SCAN_RESCAN"),
 		Image:            get("DONKEY_BUILDER_SCAN_IMAGE"),
 		DBRepository:     get("DONKEY_BUILDER_SCAN_DB_REPOSITORY"),
 		JavaDBRepository: get("DONKEY_BUILDER_SCAN_JAVA_DB_REPOSITORY"),
@@ -575,6 +591,11 @@ func ScanSettingsFromEnv(get func(string) string) ScanSettings {
 // Validate refuses values the accessors above would otherwise read as a
 // default — a typo in build.scan.block must not silently mean "critical".
 func (s ScanSettings) Validate() error {
+	if s.Rescan != "" && s.Rescan != "0" {
+		if d, err := time.ParseDuration(s.Rescan); err != nil || d < time.Minute {
+			return fmt.Errorf("build.scan.rescan must be 0 or a duration of at least 1m (got %q)", s.Rescan)
+		}
+	}
 	switch s.BlockSeverity() {
 	case ScanBlockNone, ScanBlockCritical, ScanBlockHigh:
 	default:

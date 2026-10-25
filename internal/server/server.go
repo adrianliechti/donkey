@@ -14,6 +14,7 @@ import (
 
 	"github.com/adrianliechti/donkey/internal/ai"
 	"github.com/adrianliechti/donkey/internal/build"
+	"github.com/adrianliechti/donkey/internal/deployment"
 	"github.com/adrianliechti/donkey/internal/history"
 	"github.com/adrianliechti/donkey/internal/identity"
 	"github.com/adrianliechti/donkey/internal/telemetry"
@@ -36,7 +37,9 @@ type Server struct {
 	// history is every app's source as git. Only donkey-orchestrator, which
 	// owns the data volume, has one; donkey-server forwards every route that
 	// reads or writes it (see orchestrated).
-	history *history.Store
+	history        *history.Store
+	deploymentOnce sync.Once
+	deployments    *deployment.Store
 
 	// deploying lets a terminating orchestrator finish in-flight deploys.
 	deploying sync.WaitGroup
@@ -53,6 +56,17 @@ type Server struct {
 	// Space settings and deletion wait for deployments and other mutations
 	// in that space. Different apps can still deploy concurrently.
 	spaceLocks sync.Map
+}
+
+func (s *Server) deploymentStore() *deployment.Store {
+	s.deploymentOnce.Do(func() {
+		dir := ""
+		if s.cfg.DataDir != "" {
+			dir = filepath.Join(s.cfg.DataDir, "deployments")
+		}
+		s.deployments = &deployment.Store{Dir: dir}
+	})
+	return s.deployments
 }
 
 func New(cfg *Config, rt runtime.Provider) (*Server, error) {
@@ -85,10 +99,14 @@ func New(cfg *Config, rt runtime.Provider) (*Server, error) {
 
 // lockApp serializes work on one app. The returned function releases it.
 func (s *Server) lockApp(space, app string) func() {
-	value, _ := s.appLocks.LoadOrStore(space+"/"+app, &sync.Mutex{})
-	mu := value.(*sync.Mutex)
+	mu := s.appLock(space, app)
 	mu.Lock()
 	return mu.Unlock
+}
+
+func (s *Server) appLock(space, app string) *sync.Mutex {
+	value, _ := s.appLocks.LoadOrStore(space+"/"+app, &sync.Mutex{})
+	return value.(*sync.Mutex)
 }
 
 func (s *Server) spaceLock(space string) *sync.RWMutex {
@@ -130,8 +148,6 @@ func (s *Server) routes() http.Handler {
 	mux.Handle("GET /v1/apps", s.auth(s.handleListApps))
 	mux.Handle("GET /v1/fleet", s.auth(s.handleFleet))
 	mux.Handle("GET /v1/spaces/{space}/apps/{app}/status", s.auth(s.handleStatus))
-	mux.Handle("GET /v1/spaces/{space}/apps/{app}/builds", s.auth(s.handleBuilds))
-	mux.Handle("GET /v1/spaces/{space}/apps/{app}/builds/{sequence}", s.auth(s.handleBuild))
 	mux.Handle("GET /v1/spaces/{space}/apps/{app}/logs", s.auth(s.handleLogs))
 	mux.Handle("GET /v1/spaces/{space}/apps/{app}/env", s.auth(s.handleGetEnv))
 	// How the app is reached (exposure, domain), changeable without a deploy.

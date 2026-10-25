@@ -773,7 +773,7 @@ func (s *Server) adoptConsoleChoices(ctx context.Context, space string, app *con
 // own build record names the recipe's base images, and the running app
 // answers for images that predate the build store.
 func (s *Server) storedStack(ctx context.Context, space, app, imageRef string) string {
-	if record, err := s.telemetry.BuildByImage(ctx, space, app, imageRef); err == nil {
+	if record, err := s.deploymentStore().BuildByImage(ctx, space, app, imageRef); err == nil {
 		var release AppRelease
 		if json.Unmarshal(record, &release) == nil && len(release.Update.BaseImages) > 0 {
 			return detect.Stack(release.Update.BaseImages)
@@ -788,13 +788,13 @@ func (s *Server) storedStack(ctx context.Context, space, app, imageRef string) s
 // adoptStoredDecisions fills what donkey.yaml leaves open, and says what it
 // kept. The deployed tag's own build record is asked first — its decisions
 // are the ones that image was verified with — and the running Deployment's
-// record answers for images that predate the build store or when telemetry
-// is unreachable. An adopted value that no longer fits is dropped again, and
+// record answers for images that predate the build store or when history
+// is unavailable. An adopted value that no longer fits is dropped again, and
 // only ever the adopted values.
 func (s *Server) adoptStoredDecisions(ctx context.Context, space, imageRef string, app *config.AppConfig) []string {
 	var raw string
 	if imageRef != "" {
-		if record, err := s.telemetry.BuildByImage(ctx, space, app.Name, imageRef); err == nil {
+		if record, err := s.deploymentStore().BuildByImage(ctx, space, app.Name, imageRef); err == nil {
 			var release AppRelease
 			if json.Unmarshal(record, &release) == nil && len(release.Decisions) > 0 {
 				raw = string(release.Decisions)

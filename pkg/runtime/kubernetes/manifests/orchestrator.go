@@ -83,6 +83,9 @@ func orchestratorDeployment(in SystemInput) *appsv1.Deployment {
 			Resources:       orchestratorResources(),
 			SecurityContext: systemSecurityContext(),
 			VolumeMounts:    mounts,
+			// Startup may migrate deployment history before opening the
+			// listener. Allow ten minutes before liveness can restart it.
+			StartupProbe: &corev1.Probe{ProbeHandler: health, PeriodSeconds: 10, FailureThreshold: 60},
 			// Readiness asks /readyz, which starts failing the moment the pod
 			// begins draining — that is what takes it out of the Service while
 			// it finishes the deploys it already accepted.

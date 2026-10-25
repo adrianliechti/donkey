@@ -173,7 +173,7 @@ func (s *Server) handleCreateSpace(w http.ResponseWriter, r *http.Request) {
 
 // handleDeleteSpace removes the whole lifecycle boundary: routes, apps,
 // bindings, managed services, disks, runtime space, retained telemetry and
-// source history.
+// source history, deployment records and scan inventories.
 func (s *Server) handleDeleteSpace(w http.ResponseWriter, r *http.Request) {
 	space, err := s.space(r)
 	if err != nil {
@@ -194,6 +194,10 @@ func (s *Server) handleDeleteSpace(w http.ResponseWriter, r *http.Request) {
 	// The space's source history goes with it, so a new space by the same
 	// name starts with none of the old one's code.
 	if err := s.history.RemoveSpace(space); err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	if err := s.deploymentStore().RemoveSpace(space); err != nil {
 		writeErr(w, http.StatusBadGateway, err)
 		return
 	}

@@ -63,7 +63,7 @@ function policyText(scan: AppScan): string {
   return parts.join(' · ') + '.'
 }
 
-export function ScanSection({ scan }: { scan: AppScan }) {
+export function ScanSection({ scan, current = false }: { scan: AppScan; current?: boolean }) {
   const vulnerabilities = [...(scan.vulnerabilities ?? [])].sort(
     (a, b) =>
       order.indexOf(a.severity) - order.indexOf(b.severity) ||
@@ -100,7 +100,7 @@ export function ScanSection({ scan }: { scan: AppScan }) {
         title="Security scan"
         description={
           scan.blocked
-            ? `Refused by the policy. ${details ? details + '. ' : ''}${policyText(scan)}`
+            ? `${current ? 'Would be refused by the current policy. The app continues running.' : 'Refused by the policy.'} ${details ? details + '. ' : ''}${policyText(scan)}`
             : `${details ? details + '. ' : ''}${policyText(scan)}`
         }
       />

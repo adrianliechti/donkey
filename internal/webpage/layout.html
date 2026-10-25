@@ -1,0 +1,51 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{.Title}} · Donkey</title>
+<!-- web/public/favicon.svg as a data URI: the tile flips with the colour scheme, so the tab shows the console's icon. -->
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><style>:root{--tile:%23171717;--mark:%23fff}@media(prefers-color-scheme:light){:root{--tile:%23fff;--mark:%23171717}}</style><rect width='24' height='24' rx='5' fill='var(--tile)'/><path fill='var(--mark)' transform='translate(24 0) scale(-1 1)' d='M21.34 10.35l-.07-.07-.09-.09L18 7V6a.5.5 0 0 0-.87-.34L13.46 9H7c-.68 0-1.31.35-1.68.92l-2.7 2.67A1 1 0 0 0 4 14l1-.93V19h3v-4h5v4h3v-5.17c0-.53.21-1.04.59-1.41L18 11l2 1c.15.08.32.13.5.13.6-.02 1.09-.52 1.08-1.13-.01-.24-.08-.47-.24-.65Z'/></svg>">
+<style>
+  /* The console's role tokens (web/src/index.css) by value — Tailwind's neutral
+     ramp, blue accent — as light-dark() pairs, so the page follows the OS like
+     the console does. Change this and index.css together.
+       surface  #fafafa / #0a0a0a    line        #e5e5e5 / #262626
+       card     #ffffff / #171717    line-strong #d4d4d4 / #404040
+       ink      #171717 / #f5f5f5    ink-soft    #525252 / #a1a1a1
+       emphasis #404040 / #d4d4d4    muted       #737373
+       accent-strong #155dfc / #2b7fff */
+  :root { color-scheme: light dark }
+  body {
+    margin: 0; min-height: 100vh; box-sizing: border-box; padding: 1rem;
+    display: flex; align-items: center; justify-content: center;
+    background: light-dark(#fafafa, #0a0a0a); color: light-dark(#171717, #f5f5f5);
+    font: 15px/1.6 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  /* The console's panel: rounded-xl, line border, card fill, shadow-sm. */
+  .card {
+    width: 100%; max-width: 28rem; box-sizing: border-box; padding: 2.4rem 2.6rem; text-align: center;
+    border: 1px solid light-dark(#e5e5e5, #262626); border-radius: 12px;
+    background: light-dark(#fff, #171717);
+    box-shadow: 0 1px 3px 0 rgb(0 0 0 / .1), 0 1px 2px -1px rgb(0 0 0 / .1);
+  }
+  .mark { display: block; width: 32px; height: 32px; margin: 0 auto }
+  h1 { font-size: 1.05rem; margin: .8rem 0 .4rem; font-weight: 600; text-wrap: balance }
+  p { margin: .3rem 0; color: light-dark(#525252, #a1a1a1); font-size: .88rem }
+  code { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: .85em; color: light-dark(#171717, #f5f5f5); overflow-wrap: anywhere }
+  a { color: light-dark(#155dfc, #2b7fff); text-decoration: underline; text-underline-offset: 2px }
+  .foot { margin-top: 1.5rem; font-size: .72rem; color: #737373; letter-spacing: .08em; text-transform: uppercase }
+  /* Buttons as the console draws them: primary is ink on surface, quiet is a line border. */
+  .actions { display: flex; flex-wrap: wrap; justify-content: center; gap: .6rem; margin-top: 1.4rem }
+  button {
+    font: inherit; font-size: .88rem; font-weight: 500; padding: .5rem 1rem; border-radius: 6px; cursor: pointer;
+    border: 1px solid light-dark(#e5e5e5, #262626); background: transparent; color: light-dark(#525252, #a1a1a1);
+  }
+  button:hover { background: light-dark(rgb(229 229 229 / .6), rgb(38 38 38 / .6)); color: light-dark(#171717, #f5f5f5) }
+  button.primary { background: light-dark(#171717, #f5f5f5); color: light-dark(#fafafa, #0a0a0a); border-color: transparent }
+  button.primary:hover { background: light-dark(#404040, #d4d4d4) }
+  :focus-visible { outline: 2px solid light-dark(#155dfc, #2b7fff); outline-offset: 2px }
+</style>
+<div class="card">
+  <!-- The console's one-colour mark (web/public/logo.svg): takes the text colour and faces the content, as the console's does. -->
+  <svg class="mark" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" transform="translate(24 0) scale(-1 1)" d="M21.34 10.35l-.07-.07-.09-.09L18 7V6a.5.5 0 0 0-.87-.34L13.46 9H7c-.68 0-1.31.35-1.68.92l-2.7 2.67A1 1 0 0 0 4 14l1-.93V19h3v-4h5v4h3v-5.17c0-.53.21-1.04.59-1.41L18 11l2 1c.15.08.32.13.5.13.6-.02 1.09-.52 1.08-1.13-.01-.24-.08-.47-.24-.65Z"/></svg>
+  {{block "body" .}}{{end}}
+</div>

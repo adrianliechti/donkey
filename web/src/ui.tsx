@@ -75,6 +75,7 @@ export function ScanBadge({ security, className = '' }: { security?: AppSecurity
       ? `${security.summary.secrets} ${security.summary.secrets === 1 ? 'secret' : 'secrets'}`
       : '',
     security.scannedAt ? `scanned ${new Date(security.scannedAt).toLocaleDateString()}` : '',
+    security.refreshError ?? '',
   ]
     .filter(Boolean)
     .join(' · ')
@@ -735,7 +736,7 @@ export function Toolbar({ children, className = '' }: { children: ReactNode; cla
 const buttonStyles = {
   primary: 'bg-ink text-surface hover:bg-emphasis border border-transparent font-medium',
   quiet: 'bg-transparent text-ink-soft hover:bg-line/60 hover:text-ink border border-line',
-  danger: 'bg-transparent text-danger hover:bg-danger hover:text-white border border-danger/40',
+  danger: 'bg-transparent text-danger hover:bg-danger hover:text-on-accent border border-danger/40',
 }
 const buttonBase = `inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-md transition-[color,background-color,border-color,scale] duration-(--duration-fast) ease-emphasized motion-safe:active:scale-[.97] ${focusRing}`
 

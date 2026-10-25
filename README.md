@@ -128,11 +128,12 @@ five ideas:
   where the heavy work runs: plans (the assistant's reading of an upload, kept
   in its memory between review and deploy), builds and their repair loop
   against BuildKit, pushes, applies, rollout waits, and the release records it
-  writes to donkey-telemetry. Changes that must not interleave with a deploy
+  writes to donkey-data. Changes that must not interleave with a deploy
   run here too, because they share its per-app and per-service locks: an
   app's network settings, and adding, removing, connecting and
   disconnecting services. It owns the control plane's data volume, which
-  holds every app's [source history](#source-history): deploys write it,
+  holds deployment records, scan inventories and every app's
+  [source history](#source-history): deploys write it,
   and the Source tab's reads and app and space removal are served here too,
   so one process owns the repositories. It runs as one replica with a
   `Recreate` rollout, since those locks and plans are process memory. Stopping it drains: new
@@ -170,8 +171,8 @@ five ideas:
   `donkey-server` binary: a single-replica OTLP/HTTP metrics receiver with a
   private query API backed by an embedded DuckDB file on its own 2 Gi PVC.
   It keeps 30 days of hourly HTTP histograms, hourly view/visitor
-  rollups, [web analytics](#web-analytics) events, and the versioned build records the console's Deployment tab
-  renders (a bounded history per app). Only this process opens the file; `Recreate` upgrades preserve
+  rollups and [web analytics](#web-analytics) events.
+  Only this process opens the file; `Recreate` upgrades preserve
   DuckDB's single-writer ownership. The server and the orchestrator can query
   it, while the gateway and apps can only ingest with scope-specific
   credentials.
@@ -1003,6 +1004,7 @@ build:
   provenance: min       # SLSA provenance attestation: min (default) | max | off
   sbom: true            # attach an SPDX SBOM to every image (off by default)
   scan:                 # vulnerability scan before every push — see below
+    rescan: 4h          # re-check deployed SBOMs; 0 disables periodic checks
     block: critical     # refuse findings with a fix at or above: none | critical | high
     ignoreUnfixed: true # findings without a fixed version inform, never refuse
     secrets: block      # a credential baked into the image: block | warn | off
@@ -1012,6 +1014,8 @@ build:
     # dbRepository: registry.example.com/ghcr/aquasecurity/trivy-db   # no internet: see Restricted networks
     # javaDbRepository: registry.example.com/ghcr/aquasecurity/trivy-java-db
 ```
+
+### Vulnerability scanning
 
 **Every image is scanned before it is pushed.** The build engine runs
 [Trivy](https://trivy.dev) against the freshly built image the same way it
@@ -1029,7 +1033,9 @@ the app first: is the package imported, executed, on a request path, or a
 build-time leftover nothing runs? A high-confidence "not affected" verdict
 turns the refusal into a warning and the deploy continues, with the reason
 and the files it rests on in the deploy output and the release record;
-`triage: off` makes the gate purely mechanical. A space admin can also record
+`triage: off` makes the gate purely mechanical. Severity always comes from
+the scanner; the assistant's verdict is a source-based assessment, not proof
+that a vulnerable function is unreachable. A space admin can also record
 a **waiver** in the space settings (`securityWaivers`: app, finding id,
 reason, expiry) — deliberately not a `donkey.yaml` key, because a developer
 who can lift the gate from the app's own config has no gate. A refused
@@ -1057,8 +1063,30 @@ and that the database repository answers. The scan's outcome also travels
 with the running workload the way the stack does, so the fleet, a space's
 tiles and the app's page carry it as a badge — clean, fixable, warning, waived or
 needs action — and the Deployment tab shows the numbers by severity, the
-policy's findings, and every finding the scanner reported. The badge reflects
-the last deployment's scan; background rescanning is not implemented yet.
+policy's findings, and every finding the scanner reported.
+
+The orchestrator rechecks deployed SBOMs **every four hours** by default
+(`build.scan.rescan`; `0` disables this). It reads the compressed inventory
+from `donkey-data`, matches it against the shared, cached vulnerability
+database and updates the badge and **Latest findings** on the app's Overview.
+It does not pull application images, rebuild, restart apps or make assistant
+calls. Database updates are the main download cost; matching uses CPU and
+reads the cached database. If `donkey-data` is on NFS, those reads also use
+the storage network. Secret findings from the original image scan and
+existing assistant verdicts are preserved; new findings get no automatic
+assistant waiver.
+New vulnerabilities and expired waivers can mark an app **needs action**,
+while the app continues running. Failed checks retain the last successful
+findings, show a refresh error and retry after 15 minutes. Checks run one at
+a time, skip active deployments, and resume overdue work after a restart.
+Images without a stored inventory become eligible after their next build.
+If an already scanned app loses its inventory, checks report a refresh error;
+rebuilding the app restores the inventory. Incomplete stored scans also stop
+rollbacks instead of being treated as clean results.
+The interval accepts durations of at least one minute. `enabled: false`
+disables both build scans and periodic checks; `rescan: 0` disables only
+periodic checks. The latest report is also available at
+`GET /v1/spaces/{space}/apps/{app}/security`; it omits the compressed SBOM.
 
 **Every image carries its paperwork.** BuildKit attaches a standard SLSA
 provenance attestation to every push (and an SPDX SBOM when opted in), and
@@ -1067,16 +1095,33 @@ labels — so any registry tool can answer where an image came from without
 knowing donkey. `provenance: max` additionally embeds the Dockerfile and
 every build-arg **value** into the pushed attestation; never choose it while
 `build.env` carries credentials, which is exactly why `min` is the default.
-The SBOM stays opt-in because it pulls a scanner image (covered by
-`registryMirrors`) and lengthens every build.
+This registry SBOM attestation stays opt-in because it adds a separate scan
+(covered by `registryMirrors`) and lengthens every build. The vulnerability
+scanner always creates its own stored inventory when enabled, even with
+`build.sbom: false`.
 
 **Every deploy leaves a versioned record.** The full release view — plan,
 findings, complete build log, the exact Dockerfile the image was built from,
 and the decisions the deploy settled — is stored per build in
-donkey-telemetry (bounded history per app), which is what the console's
+`donkey-data/deployments/` (the latest 20 releases per app), which is what the console's
 Deployment tab renders and lets you browse. A `--no-build --tag` rollback
 adopts the decisions recorded with that image, not whatever a newer analysis
 found.
+
+SBOMs and the latest scan report for each image live under
+`deployments/<space>/<app>/scans/`, beside the `releases/` directory, and
+remain available when older releases expire. Source Git history
+stays under `source/`; scanner databases stay under `scanner/`. Deleting an
+app or space removes its deployment artifacts too; `keepData` preserves an
+app's history and inventories for a later redeploy.
+
+On the first orchestrator startup after upgrading, a one-off migration copies
+existing release records from telemetry onto `donkey-data`, preserving build
+numbers, timestamps and Git links. Each copy is verified before its telemetry
+record is deleted. Interrupted migrations resume on startup; a completion
+marker skips later runs. This migration and telemetry's legacy build API can
+be removed in the next release, once installations have passed through this
+upgrade. Telemetry keeps analytics, metrics and other OTel data.
 
 ### Source history
 
@@ -1108,7 +1153,7 @@ it, so a later app by the same name starts with its own; `donkey destroy
 --keep-data` (the console's *Keep its data*) keeps them, like the disk, for
 the same app's redeploy. Deleting the space deletes all of it.
 
-The data volume is general-purpose; the source history is its first tenant.
+The data volume holds source history, deployment records and scanner data.
 Every installation has one — the `donkey-data` claim (5 Gi) on Kubernetes, a
 folder of the `donkey-data` state volume on Docker:
 
@@ -1726,8 +1771,8 @@ new Deployments, Pods, Services, routes, services and Docker resources are
 then born with one consistent schema. Back up data first if an old PVC or
 Docker volume is not disposable — deleting a space intentionally deletes it.
 
-**What to back up.** Donkey state lives in Kubernetes objects and the telemetry
-PVC, and nearly
+**What to back up.** Donkey state lives in Kubernetes objects, `donkey-data`
+and the telemetry PVC, and nearly
 all of it is reproducible: images rebuild from the repositories, manifests
 re-render from `donkey.yaml`, namespaces and routes are re-created by the next
 deploy. What is *not* reproducible has to live outside the cluster:
@@ -1750,12 +1795,13 @@ long as its data does.
 
 The `donkey-telemetry-data` PVC is cluster-only too; its database file is
 `/var/lib/donkey/telemetry.duckdb`. Losing it does not
-affect apps, but it erases the current 30-day traffic history and the
-retained build records; include it in volume snapshots when that history
+affect apps, but it erases the current 30-day traffic and analytics history;
+include it in volume snapshots when that history
 matters.
 
 The data volume (`donkey-data`, or the claim named in
-`data.existingClaim`) holds every app's git history. Losing it does not
+`data.existingClaim`) holds Git history, deployment records, SBOMs and current
+scan reports. Losing it does not
 affect apps either, but the history it held is gone; snapshot it with the
 same care, or point it at storage that is already backed up.
 

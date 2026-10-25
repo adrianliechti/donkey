@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -158,6 +159,13 @@ func (s *Server) buildGenerated(ctx context.Context, out *lineStreamer, builder 
 		evidence := ""
 		if err == nil {
 			outcome.Result = result
+			// Keep the inventory once the image is published, even if a
+			// later rollout or repair fails before a release is recorded.
+			if out.lastScan != nil && s.cfg.DataDir != "" {
+				if err := s.storeScan(ctx, app.Space, app.Name, result.ImageRef, out.lastScan); err != nil {
+					log.Printf("store image scan app=%s space=%s: %v", app.Name, app.Space, err)
+				}
+			}
 			out.Line("✓ Image ready: %s", result.ImageRef)
 			if release != nil {
 				stage = "rollout"

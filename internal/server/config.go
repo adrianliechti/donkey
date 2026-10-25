@@ -106,8 +106,8 @@ type Config struct {
 	// seed, the first verified sign-in becomes the first platform admin.
 	PlatformAdmins *config.AccessConfig
 	AIModel        string
-	// DataDir is donkey-server's own volume. The source history lives in its
-	// source/ folder, one git repository per app; empty turns it off.
+	// DataDir is the orchestrator's volume: source/ holds Git history,
+	// deployments/ holds releases and SBOMs, and scanner/ holds databases.
 	DataDir string
 }
 

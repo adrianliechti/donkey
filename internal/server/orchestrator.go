@@ -45,6 +45,9 @@ type orchestratedRoute struct {
 // drift apart, and authorizeRoute sees the same r.Pattern in both processes.
 func (s *Server) orchestrated() []orchestratedRoute {
 	return []orchestratedRoute{
+		{"GET /v1/spaces/{space}/apps/{app}/builds", s.handleBuilds},
+		{"GET /v1/spaces/{space}/apps/{app}/builds/{sequence}", s.handleBuild},
+		{"GET /v1/spaces/{space}/apps/{app}/security", s.handleSecurity},
 		{"POST /v1/deploys", s.handleDeploy},
 		// What the orchestrator is deploying now and finished lately: the
 		// board lives in this process, beside the deploys it describes.
@@ -292,6 +295,13 @@ const drainTimeout = config.DeployDrainTimeout
 // given until drainTimeout to finish. Without this, every orchestrator
 // upgrade would kill whatever was mid-build.
 func (s *Server) RunOrchestrator(ctx context.Context) error {
+	if err := s.migrateTelemetryDeployments(ctx); err != nil {
+		return err
+	}
+	background, stopBackground := context.WithCancel(ctx)
+	backgroundDone := make(chan struct{})
+	go func() { defer close(backgroundDone); s.scanLoop(background) }()
+	defer func() { stopBackground(); <-backgroundDone }()
 	srv := &http.Server{
 		Addr:    s.cfg.Listen,
 		Handler: s.orchestratorRoutes(),

@@ -1,0 +1,11 @@
+<h1>Allow {{.Client}} to use this API?</h1>
+<p>Resource<br><code>{{.Resource}}</code></p>
+<p>After approval, the browser returns to<br><code>{{.Redirect}}</code></p>
+<form method="post" action="/oauth2/authorize">
+  <input type="hidden" name="request" value="{{.Request}}">
+  <div class="actions">
+    <button class="primary" name="decision" value="approve">Allow access</button>
+    <button name="decision" value="deny">Cancel</button>
+  </div>
+</form>
+<div class="foot">donkey gateway</div>

@@ -4,8 +4,14 @@
 /*
  * Mission-control, light and dark.
  *
- * Warm stone neutrals, a cool indigo accent, and green/red strictly as health
- * semantics. The console follows the operating system's light/dark preference
+ * Achromatic neutrals (Tailwind's `neutral` ramp, chroma 0 throughout), a
+ * clean blue accent, and green/red strictly as health semantics. The ramp is
+ * achromatic on purpose: a tinted one (stone) read black on deep surfaces and
+ * brown on borders and muted text, because sRGB shows no hue that dark while
+ * the midtones carry it. The gateway and CLI pages (internal/webpage) repeat
+ * these values by hand; change both together.
+ *
+ * The console follows the operating system's light/dark preference
  * automatically — there is no toggle and nothing is stored: the theme is
  * `prefers-color-scheme`, full stop.
  *
@@ -25,21 +31,25 @@
  */
 @theme {
   /* Surfaces, page → elevated */
-  --color-surface: light-dark(oklch(98.5% 0.001 106.423), oklch(14.7% 0.004 49.25)); /* stone-50 / 950 */
-  --color-card: light-dark(oklch(100% 0 0), oklch(21.6% 0.006 56.043)); /* white / stone-900 */
-  --color-raised: light-dark(oklch(97% 0.001 106.424), oklch(26.8% 0.007 34.298)); /* stone-100 / 800 */
-  --color-canvas: light-dark(oklch(97% 0.001 106.424), oklch(18% 0.005 56)); /* inset above the page */
-  --color-well: light-dark(oklch(97% 0.001 106.424), oklch(11% 0.004 49)); /* log panes — the darkest */
+  --color-surface: light-dark(oklch(98.5% 0 0), oklch(14.5% 0 0)); /* neutral-50 / 950 */
+  --color-card: light-dark(oklch(100% 0 0), oklch(20.5% 0 0)); /* white / neutral-900 */
+  --color-raised: light-dark(oklch(97% 0 0), oklch(26.9% 0 0)); /* neutral-100 / 800 */
+  --color-well: light-dark(oklch(97% 0 0), oklch(11% 0 0)); /* log panes — the darkest */
 
   /* Borders */
-  --color-line: light-dark(oklch(92.3% 0.003 48.717), oklch(26.8% 0.007 34.298)); /* stone-200 / 800 */
-  --color-line-strong: light-dark(oklch(86.9% 0.005 56.366), oklch(37.4% 0.01 67.558)); /* stone-300 / 700 */
+  --color-line: light-dark(oklch(92.2% 0 0), oklch(26.9% 0 0)); /* neutral-200 / 800 */
+  --color-line-strong: light-dark(oklch(87% 0 0), oklch(37.1% 0 0)); /* neutral-300 / 700 */
 
   /* Text, strong → faint */
-  --color-ink: light-dark(oklch(21.6% 0.006 56.043), oklch(97% 0.001 106.424)); /* stone-900 / 100 */
-  --color-emphasis: light-dark(oklch(37.4% 0.01 67.558), oklch(86.9% 0.005 56.366)); /* stone-700 / 300 */
-  --color-ink-soft: light-dark(oklch(44.4% 0.011 73.639), oklch(70.9% 0.01 56.259)); /* stone-600 / 400 */
-  --color-muted: light-dark(oklch(55.3% 0.013 58.071), oklch(55.3% 0.013 58.071)); /* stone-500 */
+  --color-ink: light-dark(oklch(20.5% 0 0), oklch(97% 0 0)); /* neutral-900 / 100 */
+  --color-emphasis: light-dark(oklch(37.1% 0 0), oklch(87% 0 0)); /* neutral-700 / 300 */
+  --color-ink-soft: light-dark(oklch(43.9% 0 0), oklch(70.8% 0 0)); /* neutral-600 / 400 */
+  --color-muted: light-dark(oklch(55.6% 0 0), oklch(55.6% 0 0)); /* neutral-500 */
+
+  /* The backdrop under a dialog or drawer, and the drawer's shadow. Used with
+     an opacity modifier (bg-scrim/60); the ramp's own dark, never a literal
+     black, so what shows through stays in the ramp's family. */
+  --color-scrim: light-dark(oklch(14.5% 0 0), oklch(0% 0 0)); /* neutral-950 / black */
 
   /* Accent — clean blue. Swap all four to restyle the console: e.g. teal
      (…181/182 hues), violet (…293), or a neutral slate (…257) for a
@@ -47,10 +57,7 @@
   --color-accent: light-dark(oklch(62.3% 0.214 259.815), oklch(70.7% 0.165 254.624)); /* blue-500 / 400 */
   --color-accent-strong: light-dark(oklch(54.6% 0.245 262.881), oklch(62.3% 0.214 259.815)); /* blue-600 / 500 */
   --color-accent-soft: light-dark(oklch(93.2% 0.032 255.585), oklch(28.2% 0.091 267.935)); /* blue-100 / 950 */
-  --color-on-accent: light-dark(
-    oklch(100% 0 0),
-    oklch(14.7% 0.004 49.25)
-  ); /* text on an accent fill: white / stone-950 */
+  --color-on-accent: light-dark(oklch(100% 0 0), oklch(14.5% 0 0)); /* text on an accent fill: white / neutral-950 */
 
   /* Health semantics */
   --color-success: light-dark(oklch(59.6% 0.145 163.225), oklch(76.5% 0.177 163.223)); /* emerald-600 / 400 */

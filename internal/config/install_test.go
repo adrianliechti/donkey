@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"sigs.k8s.io/yaml"
 )
@@ -666,6 +667,30 @@ func TestScanSettings(t *testing.T) {
 	}
 	if err := (InstallBuild{BuildSettings: BuildSettings{Scan: ScanSettings{Block: "x"}}}).Validate(); err == nil || !strings.Contains(err.Error(), "build.scan.block") {
 		t.Errorf("build validation must cover the scan: %v", err)
+	}
+}
+
+func TestPeriodicScanSettings(t *testing.T) {
+	if (ScanSettings{}).RescanInterval() != 4*time.Hour {
+		t.Fatal("rescan default is not four hours")
+	}
+	for _, value := range []string{"0", "1m", "4h", "24h"} {
+		settings := ScanSettings{Rescan: value}
+		if err := settings.Validate(); err != nil {
+			t.Fatal(err)
+		}
+		env := settings.EnvVars()
+		if restored := ScanSettingsFromEnv(func(key string) string { return env[key] }); restored.Rescan != value {
+			t.Fatalf("lost rescan interval: %+v", restored)
+		}
+	}
+	for _, value := range []string{"-1h", "30s", "tomorrow", "0s"} {
+		if err := (ScanSettings{Rescan: value}).Validate(); err == nil {
+			t.Fatalf("accepted interval %q", value)
+		}
+	}
+	if (ScanSettings{Enabled: new(false)}).RescanInterval() != 0 || (ScanSettings{Rescan: "0"}).RescanInterval() != 0 {
+		t.Fatal("disabled scanner still schedules work")
 	}
 }
 

@@ -71,6 +71,7 @@ func TestViewerOnlySeesInformativeConsoleData(t *testing.T) {
 		{"GET", "/v1/spaces/team/apps/web/logs"},
 		{"GET", "/v1/spaces/team/apps/web/builds"},
 		{"GET", "/v1/spaces/team/apps/web/builds/1"},
+		{"GET", "/v1/spaces/team/apps/web/security"},
 		{"GET", "/v1/spaces/team/apps/web/env"},
 		{"GET", "/v1/spaces/team/apps/web/files"},
 		{"GET", "/v1/spaces/team/apps/web/files/download"},

@@ -589,6 +589,9 @@ func (r *Runtime) Status(ctx context.Context, space, app string) (*rt.AppStatus,
 	if spec, err := r.runRecord(space, app); err == nil && spec != nil {
 		st.Mode = spec.Mode
 		st.CORS = spec.CORS
+		if r.pushRef(spec.Image) == st.Image {
+			st.Security = spec.Security
+		}
 	}
 	st.Restarts = int32(info.RestartCount)
 	if info.State != nil {
@@ -743,6 +746,18 @@ func (r *Runtime) SetEnv(ctx context.Context, space, app string, env map[string]
 }
 
 // --- App metadata ---------------------------------------------------------
+
+func (r *Runtime) UpdateSecurity(ctx context.Context, space, app, image, security string) error {
+	spec, err := r.runRecord(space, app)
+	if err != nil {
+		return err
+	}
+	if spec == nil || r.pushRef(spec.Image) != image {
+		return fmt.Errorf("the app's image changed during the scan")
+	}
+	spec.Security = security
+	return r.setRunRecord(space, app, *spec)
+}
 
 func (r *Runtime) AppMeta(ctx context.Context, space, app, key string) (string, error) {
 	m, err := r.state.meta(space, app)

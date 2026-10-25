@@ -68,6 +68,8 @@ export interface AppSecurity {
   summary: ScanSummary
   scannedAt?: string
   dbUpdatedAt?: string
+  refreshError?: string
+  attemptedAt?: string
 }
 
 export type EndpointState = 'ready' | 'issuing' | 'propagating' | 'error' | 'unknown' | 'unmanaged'
@@ -969,6 +971,7 @@ export const api = {
     return { ...st, pods: st.pods ?? [] }
   },
   builds: (space: string, app: string) => request<{ builds: BuildSummary[] }>(appPath(space, app, '/builds')),
+  security: (space: string, app: string) => request<{ scan: AppScan | null }>(appPath(space, app, '/security')),
   build: (space: string, app: string, sequence: number) =>
     request<AppRelease>(appPath(space, app, `/builds/${sequence}`)),
 

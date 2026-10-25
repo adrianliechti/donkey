@@ -171,6 +171,12 @@ type AppSummaryProvider interface {
 	InvalidateAppSummaries()
 }
 
+// SecurityProvider updates only the current image's security metadata. It
+// never changes the workload or restarts it. Callers serialize with deploys.
+type SecurityProvider interface {
+	UpdateSecurity(ctx context.Context, space, app, image, security string) error
+}
+
 type AppSummary struct {
 	AppRef
 	Status     AppStatus

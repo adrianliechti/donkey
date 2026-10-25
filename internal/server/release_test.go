@@ -1,10 +1,8 @@
 package server
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -12,7 +10,6 @@ import (
 	"time"
 
 	"github.com/adrianliechti/donkey/internal/config"
-	"github.com/adrianliechti/donkey/internal/telemetry"
 	"github.com/adrianliechti/donkey/pkg/runtime"
 )
 
@@ -61,48 +58,6 @@ func releaseFixture() AppRelease {
 	}
 }
 
-// fakeBuildStore stands in for donkey-telemetry: it records what the server
-// stores and serves it back, over the same HTTP surface the real client uses.
-type fakeBuildStore struct {
-	stored  map[string]json.RawMessage // keyed space/app
-	lastPut []byte
-}
-
-func (f *fakeBuildStore) handler() http.Handler {
-	mux := http.NewServeMux()
-	mux.HandleFunc("PUT /v1/builds", func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
-		f.lastPut = body
-		var envelope struct {
-			Space  string          `json:"space"`
-			App    string          `json:"app"`
-			Record json.RawMessage `json:"record"`
-		}
-		_ = json.Unmarshal(body, &envelope)
-		f.stored[envelope.Space+"/"+envelope.App] = envelope.Record
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"sequence":1}`))
-	})
-	mux.HandleFunc("GET /v1/builds/record", func(w http.ResponseWriter, r *http.Request) {
-		record, ok := f.stored[r.URL.Query().Get("space")+"/"+r.URL.Query().Get("app")]
-		if !ok {
-			http.Error(w, "no matching build record", http.StatusNotFound)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write(record)
-	})
-	return mux
-}
-
-func testBuildStore(t *testing.T) (*fakeBuildStore, *telemetry.Client) {
-	t.Helper()
-	store := &fakeBuildStore{stored: map[string]json.RawMessage{}}
-	server := httptest.NewServer(store.handler())
-	t.Cleanup(server.Close)
-	return store, telemetry.NewClient(server.URL, bytes.Repeat([]byte{7}, 32))
-}
-
 func TestPersistReleaseRedactsAndStoresVersionedBuild(t *testing.T) {
 	const secret = "this-is-a-real-secret"
 	rt := releaseRuntime{
@@ -110,19 +65,21 @@ func TestPersistReleaseRedactsAndStoresVersionedBuild(t *testing.T) {
 		meta:   map[string]string{},
 		env:    map[string]string{"OPENAI_API_KEY": secret},
 	}
-	store, client := testBuildStore(t)
-	s := &Server{cfg: &Config{Domain: "example.com", SessionKey: testSessionKey}, rt: rt, telemetry: client}
+	s := &Server{cfg: &Config{DataDir: t.TempDir(), Domain: "example.com", SessionKey: testSessionKey}, rt: rt}
 	release := releaseFixture()
 	release.Lines = append(release.Lines, "OPENAI_API_KEY="+secret)
 	release.BuildLog = "Authorization: Bearer " + secret
 	release.Update.Recipe = ".donkey/Dockerfile"
 
 	s.persistRelease(context.Background(), "acme", "web", release)
-	raw := store.stored["acme/web"]
+	raw, err := s.deploymentStore().Build(context.Background(), "acme", "web", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(raw) == 0 {
 		t.Fatal("the release was not stored")
 	}
-	if strings.Contains(string(store.lastPut), secret) {
+	if strings.Contains(string(raw), secret) {
 		t.Fatal("the stored release leaked a known app secret")
 	}
 	var stored AppRelease
@@ -133,15 +90,9 @@ func TestPersistReleaseRedactsAndStoresVersionedBuild(t *testing.T) {
 	if stored.Update.Recipe != ".donkey/Dockerfile" {
 		t.Fatalf("the record should name the recipe the image was built from, got %q", stored.Update.Recipe)
 	}
-	var envelope struct {
-		Image string `json:"image"`
-		OK    bool   `json:"ok"`
-	}
-	if err := json.Unmarshal(store.lastPut, &envelope); err != nil {
-		t.Fatal(err)
-	}
-	if envelope.Image != "registry/web:1" || !envelope.OK {
-		t.Fatalf("record envelope should carry the image and outcome, got %+v", envelope)
+	builds, err := s.deploymentStore().Builds(context.Background(), "acme", "web")
+	if err != nil || len(builds) != 1 || builds[0].Image != "registry/web:1" || !builds[0].OK {
+		t.Fatalf("record envelope should carry the image and outcome, got %+v, %v", builds, err)
 	}
 }
 
@@ -182,9 +133,10 @@ func TestHandleBuildReturnsStoredRecord(t *testing.T) {
 	want := releaseFixture()
 	want.Plan.Findings = nil // Older records may have encoded this as null.
 	raw, _ := json.Marshal(want)
-	store, client := testBuildStore(t)
-	store.stored["acme/web"] = raw
-	s := &Server{rt: releaseRuntime{}, telemetry: client}
+	s := &Server{cfg: &Config{DataDir: t.TempDir()}, rt: releaseRuntime{}}
+	if _, err := s.deploymentStore().RecordBuild(context.Background(), "acme", "web", want.Result.ImageRef, true, raw); err != nil {
+		t.Fatal(err)
+	}
 	req := httptest.NewRequest(http.MethodGet, "/v1/spaces/acme/apps/web/builds/1", nil)
 	req.SetPathValue("space", "acme")
 	req.SetPathValue("app", "web")

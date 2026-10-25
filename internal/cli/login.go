@@ -15,6 +15,7 @@ import (
 	"github.com/adrianliechti/donkey/internal/apiclient"
 	"github.com/adrianliechti/donkey/internal/config"
 	"github.com/adrianliechti/donkey/internal/ui"
+	"github.com/adrianliechti/donkey/internal/webpage"
 )
 
 func loginCommand(options Options) *cli.Command {
@@ -129,8 +130,7 @@ func browserLogin(ctx context.Context, u *ui.UI, serverURL string) (string, erro
 				http.NotFound(w, r)
 				return
 			}
-			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			fmt.Fprint(w, loginDonePage)
+			webpage.WriteNotice(w, http.StatusOK, webpage.Notice{Title: "Signed in", Detail: "Close this tab and return to the terminal.", Foot: "donkey cli"})
 			select {
 			case tokens <- tok:
 			default:
@@ -153,9 +153,3 @@ func browserLogin(ctx context.Context, u *ui.UI, serverURL string) (string, erro
 		return "", ctx.Err()
 	}
 }
-
-const loginDonePage = `<!doctype html><meta charset="utf-8"><title>donkey</title>
-<body style="font-family:system-ui;display:grid;place-items:center;height:100vh;margin:0">
-<div style="text-align:center"><div style="font-size:3rem">🫏</div>
-<h1 style="margin:.5rem 0 0">Signed in</h1>
-<p style="color:#777">Close this tab and return to the terminal.</p></div>`

@@ -4,8 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -14,7 +15,6 @@ import (
 	"github.com/adrianliechti/donkey/internal/ai"
 	"github.com/adrianliechti/donkey/internal/build"
 	"github.com/adrianliechti/donkey/internal/config"
-	"github.com/adrianliechti/donkey/internal/telemetry"
 )
 
 type unavailableScanPolicy struct{ repairRuntime }
@@ -48,38 +48,37 @@ func TestSecurityBadgeKeepsNonblockingWarnings(t *testing.T) {
 }
 
 func TestStoredScanLookupFailuresDoNotBypassPolicy(t *testing.T) {
-	for _, tc := range []struct {
-		name      string
-		status    int
-		body      string
-		wantError bool
-	}{
-		{"history unavailable", http.StatusServiceUnavailable, "unavailable", true},
-		{"unreadable record", http.StatusOK, "{", true},
-		{"legacy image", http.StatusNotFound, "no record", false},
-		{"legacy record", http.StatusOK, `{ "result": { "ok": true } }`, false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.WriteHeader(tc.status)
-				_, _ = w.Write([]byte(tc.body))
-			}))
-			defer upstream.Close()
-			s := &Server{cfg: &Config{}, telemetry: telemetry.NewClient(upstream.URL, nil)}
+	for _, mode := range []string{"unavailable", "corrupt", "legacy"} {
+		t.Run(mode, func(t *testing.T) {
+			dir := t.TempDir()
+			s := &Server{cfg: &Config{DataDir: dir}, rt: repairRuntime{}}
+			if mode == "unavailable" {
+				if err := os.WriteFile(filepath.Join(dir, "deployments"), []byte("not a directory"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			} else if mode == "corrupt" {
+				path := filepath.Join(dir, "deployments", "team", "app", "releases")
+				if err := os.MkdirAll(path, 0700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(path, "00000000000000000001.json"), []byte("{"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
 			response := httptest.NewRecorder()
 			_, err := s.checkStoredScan(context.Background(), newLineStreamer(response, nil), "team", &config.AppConfig{Name: "app"}, "registry/app:old")
-			if (err != nil) != tc.wantError {
+			if (err != nil) != (mode != "legacy") {
 				t.Fatalf("error = %v", err)
 			}
-			if tc.wantError && strings.Contains(response.Body.String(), "deployed as it is") {
-				t.Fatal("lookup failure presented as an unscanned legacy image")
+			if err != nil && strings.Contains(response.Body.String(), "deployed as it is") {
+				t.Fatal("lookup failure bypassed policy")
 			}
 		})
 	}
 }
 
 func TestStoredScanReevaluatesWithoutLosingEvidence(t *testing.T) {
-	store, client := testBuildStore(t)
+	dir := t.TempDir()
 	policy := defaultPolicy()
 	report := &build.ScanReport{Vulnerabilities: []build.Vulnerability{criticalFixable}, SBOM: []byte("inventory")}
 	verdict := ai.Verdict{ID: criticalFixable.ID, Verdict: ai.VerdictNotAffected, Confidence: ai.ConfidenceHigh}
@@ -91,8 +90,10 @@ func TestStoredScanReevaluatesWithoutLosingEvidence(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		store.stored["team/app"] = raw
-		s := &Server{cfg: &Config{}, rt: repairRuntime{}, telemetry: client}
+		s := &Server{cfg: &Config{DataDir: dir}, rt: repairRuntime{}}
+		if _, err := s.deploymentStore().RecordBuild(context.Background(), "team", "app", "registry/app:old", true, raw); err != nil {
+			t.Fatal(err)
+		}
 		s.cfg.Build.Scan.Block = block
 		out := newLineStreamer(httptest.NewRecorder(), nil)
 		record, err = s.checkStoredScan(context.Background(), out, "team", &config.AppConfig{Name: "app"}, "registry/app:old")
@@ -105,6 +106,22 @@ func TestStoredScanReevaluatesWithoutLosingEvidence(t *testing.T) {
 	}
 	if record.Summary.Judged != 1 || record.Blocked {
 		t.Fatal("restoring the threshold lost the assistant's verdict")
+	}
+}
+
+func TestIncompleteStoredScansCannotAllowRollback(t *testing.T) {
+	for _, raw := range []string{"null", "{}", `{"vulnerabilities":[],"secrets":null}`} {
+		t.Run(raw, func(t *testing.T) {
+			s := &Server{cfg: &Config{DataDir: t.TempDir()}, rt: repairRuntime{}}
+			ctx := context.Background()
+			if err := s.deploymentStore().PutScan(ctx, "team", "app", "registry/app:1", json.RawMessage(raw)); err != nil {
+				t.Fatal(err)
+			}
+			out := newLineStreamer(httptest.NewRecorder(), nil)
+			if _, err := s.checkStoredScan(ctx, out, "team", &config.AppConfig{Name: "app"}, "registry/app:1"); err == nil {
+				t.Fatal("incomplete record was accepted as a clean scan")
+			}
+		})
 	}
 }
 

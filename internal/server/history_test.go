@@ -12,13 +12,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 
 	"github.com/adrianliechti/donkey/internal/config"
 	"github.com/adrianliechti/donkey/internal/history"
 	"github.com/adrianliechti/donkey/internal/identity"
-	"github.com/adrianliechti/donkey/internal/telemetry"
 	"github.com/adrianliechti/donkey/pkg/runtime"
 )
 
@@ -106,40 +104,6 @@ func TestPlatformMessageSaysWhatTheBuildDid(t *testing.T) {
 	}
 }
 
-// historyTelemetry numbers builds and lists them back, like donkey-telemetry.
-type historyTelemetry struct {
-	mu     sync.Mutex
-	builds []telemetry.BuildSummary
-}
-
-func (f *historyTelemetry) handler() http.Handler {
-	mux := http.NewServeMux()
-	mux.HandleFunc("PUT /v1/builds", func(w http.ResponseWriter, r *http.Request) {
-		var envelope struct {
-			Image string `json:"image"`
-			OK    bool   `json:"ok"`
-		}
-		_ = json.NewDecoder(r.Body).Decode(&envelope)
-		f.mu.Lock()
-		sequence := int64(len(f.builds) + 1)
-		f.builds = append([]telemetry.BuildSummary{{Sequence: sequence, Image: envelope.Image, OK: envelope.OK}}, f.builds...)
-		f.mu.Unlock()
-		writeJSON(w, http.StatusOK, map[string]int64{"sequence": sequence})
-	})
-	mux.HandleFunc("GET /v1/builds", func(w http.ResponseWriter, r *http.Request) {
-		f.mu.Lock()
-		defer f.mu.Unlock()
-		writeJSON(w, http.StatusOK, map[string]any{"builds": f.builds})
-	})
-	mux.HandleFunc("DELETE /v1/builds", func(w http.ResponseWriter, r *http.Request) {
-		f.mu.Lock()
-		defer f.mu.Unlock()
-		f.builds = nil
-		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
-	})
-	return mux
-}
-
 // destroyRuntime removes nothing for real; it only has to say the runtime
 // part of a removal went through.
 type destroyRuntime struct {
@@ -219,7 +183,7 @@ func TestRemovingAnAppRemovesItsHistory(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		builds, err := s.telemetry.Builds(context.Background(), "acme", "web")
+		builds, err := s.deploymentStore().Builds(context.Background(), "acme", "web")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -240,17 +204,13 @@ func historyServer(t *testing.T, image string) *Server {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fake := &historyTelemetry{}
-	ts := httptest.NewServer(fake.handler())
-	t.Cleanup(ts.Close)
 	return &Server{
-		cfg: &Config{Domain: "example.com", SessionKey: testSessionKey},
+		cfg: &Config{DataDir: t.TempDir(), Domain: "example.com", SessionKey: testSessionKey},
 		rt: releaseRuntime{
 			status: &runtime.AppStatus{Found: true, UpToDate: true, WantReplica: 1, ReadyReplica: 1, Image: image},
 			meta:   map[string]string{},
 		},
-		telemetry: telemetry.NewClient(ts.URL, bytes.Repeat([]byte{7}, 32)),
-		history:   store,
+		history: store,
 	}
 }
 

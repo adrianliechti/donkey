@@ -41,7 +41,7 @@ const heights: Record<ModalHeight, string> = {
 }
 
 export const backdropClass =
-  'fixed inset-0 bg-black/60 transition-opacity duration-(--duration-base) ease-emphasized data-closed:opacity-0 data-leave:duration-(--duration-fast) data-leave:ease-exit'
+  'fixed inset-0 bg-scrim/60 transition-opacity duration-(--duration-base) ease-emphasized data-closed:opacity-0 data-leave:duration-(--duration-fast) data-leave:ease-exit'
 
 export function Modal({
   open = true,
@@ -216,12 +216,12 @@ export function Drawer({
       <Dialog onClose={onClose} aria-label={label} className="relative z-50">
         <DialogBackdrop
           transition
-          className="fixed inset-0 bg-black/50 transition-opacity duration-(--duration-panel) ease-emphasized data-closed:opacity-0 data-leave:duration-(--duration-panel-exit) data-leave:ease-exit"
+          className="fixed inset-0 bg-scrim/50 transition-opacity duration-(--duration-panel) ease-emphasized data-closed:opacity-0 data-leave:duration-(--duration-panel-exit) data-leave:ease-exit"
         />
         <div className="fixed inset-0 flex justify-end">
           <DialogPanel
             transition
-            className={`flex h-full w-full ${width} flex-col overflow-hidden border-l border-line bg-card shadow-[-24px_0_60px_rgba(0,0,0,.5)] transition-transform duration-(--duration-panel) ease-emphasized will-change-transform data-closed:translate-x-full data-leave:duration-(--duration-panel-exit) data-leave:ease-exit`}
+            className={`flex h-full w-full ${width} flex-col overflow-hidden border-l border-line bg-card shadow-[-24px_0_60px] shadow-scrim/50 transition-transform duration-(--duration-panel) ease-emphasized will-change-transform data-closed:translate-x-full data-leave:duration-(--duration-panel-exit) data-leave:ease-exit`}
           >
             {children}
           </DialogPanel>

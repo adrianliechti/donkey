@@ -31,7 +31,8 @@ import type { SourceSearch } from './sourceSearch'
 import { SourcePanel } from './SourcePanel'
 import { StoredRelease } from './StoredRelease'
 import { DeployPlaceholder, DeployProgress } from './DeployProgress'
-import { useAppBuild, useAppBuilds, useAppStatus, useDeploys, useFleet } from './queries'
+import { useAppBuild, useAppBuilds, useAppStatus, useAppSecurity, useDeploys, useFleet } from './queries'
+import { ScanSection } from './ScanSection'
 import { SignalChips } from './ReleaseView'
 import {
   Button,
@@ -190,9 +191,7 @@ export function AppDetail({
             {shown === 'overview' && (
               <>
                 {canManage && <AboutApp space={space} app={app} onOpenBuild={() => onTab('release')} />}
-                {canManage && status.security && (
-                  <SecuritySection security={status.security} onOpenBuild={() => onTab('release')} />
-                )}
+                {canManage && status.security && <SecuritySection space={space} app={app} security={status.security} />}
                 {canManage && <InstancesCard pods={status.pods} startedAt={status.startedAt} />}
                 {!canManage && (
                   <Section>
@@ -270,16 +269,17 @@ function AboutApp({ space, app, onOpenBuild }: { space: string; app: string; onO
 }
 
 // What the scan made of the running image, in one line, with the way to
-// the full findings on the Deployment tab.
+// the latest findings below it.
 const securityText: Record<AppSecurity['state'], string> = {
   clean: 'Nothing with a fix available at or above the policy’s threshold.',
   fixable: 'Fixes are available below the threshold; they do not refuse a deploy.',
   warning: 'The last scan reported a secret or an unsupported operating system — see the findings.',
-  waived: 'Runs on a waiver, or on the assistant’s reading that the app is not affected — see the release.',
+  waived: 'Runs on a waiver, or on the assistant’s reading that the app is not affected — see the findings.',
   'needs-action': 'Would be refused by today’s policy.',
 }
 
-function SecuritySection({ security, onOpenBuild }: { security: AppSecurity; onOpenBuild: () => void }) {
+function SecuritySection({ space, app, security }: { space: string; app: string; security: AppSecurity }) {
+  const [expanded, setExpanded] = useState(false)
   const dates = [
     security.scannedAt && `Scanned ${readableDate(security.scannedAt)}`,
     security.dbUpdatedAt && `database from ${readableDate(security.dbUpdatedAt)}`,
@@ -291,10 +291,10 @@ function SecuritySection({ security, onOpenBuild }: { security: AppSecurity; onO
         actions={
           <button
             type="button"
-            onClick={onOpenBuild}
+            onClick={() => setExpanded(!expanded)}
             className="rounded px-1 text-xs text-muted underline-offset-2 transition-colors hover:text-ink hover:underline focus-visible:outline-2 focus-visible:outline-accent-strong"
           >
-            Findings
+            {expanded ? 'Hide findings' : 'Latest findings'}
           </button>
         }
       />
@@ -315,7 +315,20 @@ function SecuritySection({ security, onOpenBuild }: { security: AppSecurity; onO
         {dates.length > 0 && dates.join(' · ') + '. '}
         {securityText[security.state]}
       </p>
+      {security.refreshError && <ErrorNote message={security.refreshError} />}
+      {expanded && <CurrentScan space={space} app={app} scannedAt={security.scannedAt} />}
     </Section>
+  )
+}
+
+function CurrentScan({ space, app, scannedAt }: { space: string; app: string; scannedAt?: string }) {
+  const { data, error } = useAppSecurity(space, app, scannedAt)
+  if (error) return <ErrorNote message={error} />
+  if (!data) return <Spinner label="Loading the latest scan…" />
+  return data.scan ? (
+    <ScanSection scan={data.scan} current />
+  ) : (
+    <p className="text-sm text-muted">No scan is stored for this image.</p>
   )
 }
 

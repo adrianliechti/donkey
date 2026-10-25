@@ -3,10 +3,10 @@ package gateway
 import (
 	"crypto/sha256"
 	"crypto/subtle"
+	_ "embed"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"html/template"
 	"net"
 	"net/http"
 	"net/url"
@@ -16,6 +16,7 @@ import (
 
 	"github.com/adrianliechti/donkey/internal/config"
 	"github.com/adrianliechti/donkey/internal/identity"
+	"github.com/adrianliechti/donkey/internal/webpage"
 )
 
 const (
@@ -408,16 +409,18 @@ func redirectOAuthError(w http.ResponseWriter, r *http.Request, redirect, state,
 	http.Redirect(w, r, u.String(), http.StatusFound)
 }
 
-var oauthConsentPage = template.Must(template.New("oauth-consent").Parse(`<!doctype html>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Authorize API client — donkey</title>
-<style>:root{color-scheme:dark}body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#16120e;color:#ece5dc;font:15px/1.55 system-ui,sans-serif}.card{max-width:30rem;padding:2.4rem;border:1px solid #332a22;border-radius:14px;background:#1c1712;box-shadow:0 20px 60px #0007}h1{font-size:1.1rem;margin:0 0 .8rem}p{color:#a89c8e}code{color:#e8a33d;overflow-wrap:anywhere}.actions{display:flex;gap:.7rem;margin-top:1.5rem}button{border:1px solid #594637;border-radius:8px;padding:.65rem 1rem;background:#282018;color:#ece5dc;cursor:pointer}button.primary{background:#d9872f;color:#17110b;border-color:#d9872f}</style>
-<div class="card"><h1>Allow {{.Client}} to use this API?</h1><p>Resource<br><code>{{.Resource}}</code></p><p>After approval, the browser returns to<br><code>{{.Redirect}}</code></p><form method="post" action="/oauth2/authorize"><input type="hidden" name="request" value="{{.Request}}"><div class="actions"><button class="primary" name="decision" value="approve">Allow access</button><button name="decision" value="deny">Cancel</button></div></form></div>`))
+// The consent form wears the console's shell (internal/webpage); only the
+// question and its two answers are its own.
+//
+//go:embed consent.html
+var consentHTML string
+
+var oauthConsentPage = webpage.Parse(consentHTML)
 
 func renderOAuthConsent(w http.ResponseWriter, client, resource, redirect, request string) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-store")
-	_ = oauthConsentPage.Execute(w, map[string]string{"Client": client, "Resource": resource, "Redirect": redirect, "Request": request})
+	webpage.Write(w, http.StatusOK, oauthConsentPage, map[string]string{
+		"Title": "Authorize API client", "Client": client, "Resource": resource, "Redirect": redirect, "Request": request,
+	})
 }
 
 func (s *Server) handleOAuthAuthorizeConsent(w http.ResponseWriter, r *http.Request) {

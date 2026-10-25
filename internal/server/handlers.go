@@ -953,9 +953,9 @@ func (s *Server) handleDestroy(w http.ResponseWriter, r *http.Request) {
 	// The app's build and source history go with it, so a later app by the
 	// same name starts with its own. Keeping the data is the redeploy case:
 	// the same app comes back to its disk and its history alike. The runtime
-	// goes first, so retrying after a telemetry hiccup finishes the job.
+	// goes first, so retrying after a storage hiccup finishes the job.
 	if !keepData {
-		if err := s.telemetry.PurgeBuilds(r.Context(), space, app); err != nil {
+		if err := s.deploymentStore().RemoveApp(space, app); err != nil {
 			writeErr(w, http.StatusBadGateway, fmt.Errorf("the app is removed, but its build history is not: %w — removing it again finishes the job", err))
 			return
 		}
