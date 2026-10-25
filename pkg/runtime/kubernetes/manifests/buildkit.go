@@ -56,11 +56,38 @@ type registrySection struct {
 	plainHTTP bool
 }
 
+// buildkitGCPolicy replaces BuildKit's default garbage-collection rules.
+// The default first rule gives cache mounts and uploaded build contexts a
+// 512MB budget measured against the whole worker's usage, so on a worker
+// holding a few images they are the first thing pruned and pruned often;
+// the package caches assistant-written Dockerfiles mount would be fetched
+// again and again. These two rules apply one generous but bounded budget to
+// cache mounts and images alike, least recently used first: 20GB is never
+// pruned, up to half of its volume may be used, a tenth is left free, and
+// nothing is kept past 90 days. donkey is an in-house platform whose build
+// engine has a disk of its own; a bigger cache is cheaper than a rebuilt
+// one. (A step run with llb.IgnoreCache still discards its cache mounts —
+// that is BuildKit's own rule for --no-cache, not garbage collection — so
+// donkey's own steps keep no state in the engine.)
+const buildkitGCPolicy = `  [[worker.oci.gcpolicy]]
+    keepDuration = "2160h"
+    reservedSpace = "20GB"
+    maxUsedSpace = "50%"
+    minFreeSpace = "10%"
+  [[worker.oci.gcpolicy]]
+    all = true
+    reservedSpace = "20GB"
+    maxUsedSpace = "50%"
+    minFreeSpace = "10%"
+`
+
 // BuildkitTOML renders the config file. Every installation gets one for the
-// garbage collector; no fixed disk-size ceiling is imposed here. Private-CA registries and mirrors are named here too.
+// garbage collector (see buildkitGCPolicy). Private-CA registries and
+// mirrors are named here too.
 func BuildkitTOML(c BuildkitConfig) string {
 	var b strings.Builder
 	b.WriteString("[worker.oci]\n  gc = true\n")
+	b.WriteString(buildkitGCPolicy)
 
 	sections := map[string]*registrySection{}
 	at := func(host string) *registrySection {

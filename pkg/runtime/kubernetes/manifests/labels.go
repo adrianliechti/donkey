@@ -19,6 +19,10 @@ const (
 	// AnnotationStack records what the app is written in (detect.Stack), so
 	// lists can show it without reading the app's history.
 	AnnotationStack = "donkey.local/stack"
+	// AnnotationSecurity records the vulnerability scan's outcome for the
+	// deployed image (JSON), so lists can show it without opening the
+	// release record.
+	AnnotationSecurity = "donkey.local/security"
 	// AnnotationDecisions records deploy-time analysis decisions on the
 	// Deployment (JSON), so no-build deploys can keep them. It is read back
 	// through the provider's meta API, so it is spelled by that API.

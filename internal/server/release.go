@@ -31,7 +31,10 @@ type AppRelease struct {
 	Update     DeployUpdate `json:"update"`
 	Lines      []string     `json:"lines"`
 	BuildLog   string       `json:"buildLog,omitempty"`
-	Result     DeployResult `json:"result"`
+	// Scan is what the vulnerability scan found and what the policy made
+	// of it, for the image this release built or reused.
+	Scan   *AppScan     `json:"scan,omitempty"`
+	Result DeployResult `json:"result"`
 	// Decisions is what this deploy settled (storage, health route), kept
 	// with the image it was verified against: a `--no-build` rollback to
 	// this record's tag adopts these, not whatever a newer analysis found.
@@ -137,12 +140,17 @@ func (r *releaseRecorder) update(update DeployUpdate) {
 	if update.Stage != "" {
 		r.release.Update.Stage = update.Stage
 	}
+	if update.Stage == "building" || update.Stage == "detecting" {
+		r.release.Scan = nil
+	}
 	if update.BaseImages != nil {
 		r.release.Update.BaseImages = append([]string{}, update.BaseImages...)
 	}
 	if update.Recipe != "" {
 		r.release.Update.Recipe = update.Recipe
 	}
+	// update.Scan is for the watcher; the record carries it once, in full,
+	// through scan().
 }
 
 func (r *releaseRecorder) inspection(build PlanBuild, analysis *ai.Analysis) {
@@ -152,6 +160,12 @@ func (r *releaseRecorder) inspection(build PlanBuild, analysis *ai.Analysis) {
 	if analysis != nil {
 		r.analysis = analysis
 	}
+}
+
+func (r *releaseRecorder) scan(record *AppScan) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.release.Scan = record
 }
 
 func (r *releaseRecorder) result(result DeployResult) {

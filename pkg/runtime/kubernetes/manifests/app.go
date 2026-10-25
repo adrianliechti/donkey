@@ -76,6 +76,9 @@ type Input struct {
 	// Stack is what the app is written in (detect.Stack), kept as an
 	// annotation for listings.
 	Stack string
+	// Security is the vulnerability scan's outcome for the image (JSON),
+	// kept as an annotation for listings.
+	Security string
 	// RouteTargets are the paths of other apps' addresses this app answers
 	// on. The server resolves the hostnames, so this package stays pure.
 	RouteTargets []RouteTarget
@@ -395,6 +398,9 @@ func deployment(in Input) (*appsv1.Deployment, error) {
 	}
 	if in.Stack != "" {
 		annotations[AnnotationStack] = in.Stack
+	}
+	if in.Security != "" {
+		annotations[AnnotationSecurity] = in.Security
 	}
 	dep := &appsv1.Deployment{
 		TypeMeta: metav1.TypeMeta{APIVersion: "apps/v1", Kind: "Deployment"},

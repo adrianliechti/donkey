@@ -218,6 +218,8 @@ type AppListEntry struct {
 	Stack      string   `json:"stack,omitempty"`
 	HasStorage bool     `json:"hasStorage,omitempty"`
 	Addons     []string `json:"addons,omitempty"`
+	// Security is the vulnerability scan's outcome for the running image.
+	Security *AppSecurity `json:"security,omitempty"`
 }
 
 // handleListApps finds every deployed app, with the space it belongs to. The
@@ -308,6 +310,7 @@ func (s *Server) listAppEntries(ctx context.Context) ([]AppListEntry, error) {
 			Exposure:   exposureOf(st),
 			Mode:       modeOfStatus(st),
 			Stack:      st.Stack,
+			Security:   parseSecurity(st.Security),
 			HasStorage: hasStorage,
 			Addons:     addonNames,
 		}

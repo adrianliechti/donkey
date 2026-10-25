@@ -17,7 +17,7 @@ import {
   UploadCloud,
   type LucideIcon,
 } from 'lucide-react'
-import { api, type EndpointState, type EndpointStatus } from './api'
+import { api, type AppSecurity, type EndpointState, type EndpointStatus } from './api'
 import { AddonsCard } from './AddonsCard'
 import { AnalyticsPanel } from './AnalyticsPanel'
 import { DangerZone } from './DangerZone'
@@ -47,8 +47,9 @@ import {
   Spinner,
   StateChip,
   TabBar,
+  ScanBadge,
 } from './ui'
-import { ago, errText } from './format'
+import { ago, errText, scanCounts } from './format'
 
 // An app is a page of its own. Each tab is one job — glance, read,
 // browse, configure, change how it's reached — and the header that answers
@@ -158,9 +159,13 @@ export function AppDetail({
         <ErrorNote message={error || (actionError?.tab === shown ? actionError.message : '')} />
         {status === null && !error && <Spinner label="Asking the cluster…" />}
 
-        {/* Not running (yet): its first deploy, as it goes or how it ended. */}
-        {status && !status.found && deploy && <DeployPlaceholder deploy={deploy} />}
-        {status && !status.found && !deploy && (
+        {/* Not running (yet): its first deploy, as it goes or how it failed.
+            A deploy that went through for an app that is gone again (removed
+            since) is no longer news: the app is simply not here. */}
+        {status && !status.found && deploy && (!deploy.finishedAt || deploy.stage === 'failed') && (
+          <DeployPlaceholder deploy={deploy} />
+        )}
+        {status && !status.found && (!deploy || (deploy.finishedAt && deploy.stage !== 'failed')) && (
           <Card className="p-8 text-center">
             <h2 className="font-mono text-xl font-bold tracking-tight">{app}</h2>
             <p className="mt-2 text-sm text-muted">
@@ -185,6 +190,9 @@ export function AppDetail({
             {shown === 'overview' && (
               <>
                 {canManage && <AboutApp space={space} app={app} onOpenBuild={() => onTab('release')} />}
+                {canManage && status.security && (
+                  <SecuritySection security={status.security} onOpenBuild={() => onTab('release')} />
+                )}
                 {canManage && <InstancesCard pods={status.pods} startedAt={status.startedAt} />}
                 {!canManage && (
                   <Section>
@@ -257,6 +265,56 @@ function AboutApp({ space, app, onOpenBuild }: { space: string; app: string; onO
           <SignalChips signals={stack} />
         </div>
       )}
+    </Section>
+  )
+}
+
+// What the scan made of the running image, in one line, with the way to
+// the full findings on the Deployment tab.
+const securityText: Record<AppSecurity['state'], string> = {
+  clean: 'Nothing with a fix available at or above the policy’s threshold.',
+  fixable: 'Fixes are available below the threshold; they do not refuse a deploy.',
+  warning: 'The last scan reported a secret or an unsupported operating system — see the findings.',
+  waived: 'Runs on a waiver, or on the assistant’s reading that the app is not affected — see the release.',
+  'needs-action': 'Would be refused by today’s policy.',
+}
+
+function SecuritySection({ security, onOpenBuild }: { security: AppSecurity; onOpenBuild: () => void }) {
+  const dates = [
+    security.scannedAt && `Scanned ${readableDate(security.scannedAt)}`,
+    security.dbUpdatedAt && `database from ${readableDate(security.dbUpdatedAt)}`,
+  ].filter(Boolean)
+  return (
+    <Section className="space-y-2">
+      <SectionHeader
+        title="Security"
+        actions={
+          <button
+            type="button"
+            onClick={onOpenBuild}
+            className="rounded px-1 text-xs text-muted underline-offset-2 transition-colors hover:text-ink hover:underline focus-visible:outline-2 focus-visible:outline-accent-strong"
+          >
+            Findings
+          </button>
+        }
+      />
+      <p className="flex flex-wrap items-center gap-2 text-sm text-ink">
+        <ScanBadge security={security} />
+        <span>
+          {scanCounts(security.summary)}
+          {security.summary.fixable > 0 && <span className="text-muted"> · {security.summary.fixable} with a fix</span>}
+          {security.summary.secrets > 0 && (
+            <span className="text-muted">
+              {' '}
+              · {security.summary.secrets} {security.summary.secrets === 1 ? 'secret' : 'secrets'}
+            </span>
+          )}
+        </span>
+      </p>
+      <p className="text-xs leading-relaxed text-muted">
+        {dates.length > 0 && dates.join(' · ') + '. '}
+        {securityText[security.state]}
+      </p>
     </Section>
   )
 }

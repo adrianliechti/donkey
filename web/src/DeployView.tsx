@@ -242,7 +242,15 @@ export function DeployView({
           if (event.app) current = event.app
           update((prev) => ({
             ...prev,
-            update: { ...prev.update, ...event, changes: [...(prev.update.changes ?? []), ...(event.changes ?? [])] },
+            update: {
+              ...prev.update,
+              ...event,
+              scan:
+                event.stage === 'building' || event.stage === 'detecting'
+                  ? undefined
+                  : (event.scan ?? prev.update.scan),
+              changes: [...(prev.update.changes ?? []), ...(event.changes ?? [])],
+            },
             result: event.result ?? prev.result,
           }))
         },

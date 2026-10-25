@@ -51,6 +51,7 @@ type suite struct {
 	api    *apiclient.Client
 	server string
 	token  string
+	user   string
 	domain string
 	// edge dials every hostname at the gateway's one address — curl's
 	// --resolve, in Go. Nil when DONKEY_E2E_GATEWAY isn't set.
@@ -67,9 +68,17 @@ func newSuite(t *testing.T) *suite {
 	if err != nil || len(key) != 32 {
 		t.Fatal("DONKEY_E2E_SESSION_KEY must be 32 bytes of hex (the installation's session key)")
 	}
+	// The suite signs in as e2e@localhost unless DONKEY_E2E_USER names the
+	// address of someone who is a platform admin on the installation — an
+	// install that has already seen its first sign-in has its admin, and
+	// nobody else may create spaces.
+	user := os.Getenv("DONKEY_E2E_USER")
+	if user == "" {
+		user = "e2e@localhost"
+	}
 	token, err := identity.SealToken(key, identity.Identity{
 		Subject: "e2e",
-		Email:   "e2e@localhost",
+		Email:   user,
 		Expires: time.Now().Add(2 * time.Hour).Unix(),
 	})
 	if err != nil {
@@ -83,7 +92,7 @@ func newSuite(t *testing.T) *suite {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := &suite{api: api, server: server, token: token, domain: domain}
+	s := &suite{api: api, server: server, token: token, user: user, domain: domain}
 	if gw := os.Getenv("DONKEY_E2E_GATEWAY"); gw != "" {
 		tlsCfg := &tls.Config{}
 		if caFile := os.Getenv("DONKEY_E2E_CA"); caFile != "" {

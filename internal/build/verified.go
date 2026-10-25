@@ -11,10 +11,11 @@ import (
 	ocispecs "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
-// buildVerified builds the image, proves it starts, and only then exports it.
-// The ordering is why this runs through the gateway rather than a plain solve:
-// a plain solve exports whatever the frontend produced, so a broken image
-// would already be in the registry before anything could object.
+// buildVerified builds the image, scans it, proves it starts, and only then
+// exports it. The ordering is why this runs through the gateway rather than
+// a plain solve: a plain solve exports whatever the frontend produced, so a
+// broken or refused image would already be in the registry before anything
+// could object.
 func (b *BuildKitBuilder) buildVerified(ctx context.Context, c *bkclient.Client, req Request) (*Result, error) {
 	opt, err := b.solveOpt(req)
 	if err != nil {
@@ -32,10 +33,18 @@ func (b *BuildKitBuilder) buildVerified(ctx context.Context, c *bkclient.Client,
 	}
 	opt.Frontend, opt.FrontendAttrs = "", nil
 
+	// What the gateway function learns is kept here: BuildKit wraps the
+	// error it returns, and which side's error wins the race is not
+	// something a caller should have to unwrap.
+	var report *ScanReport
+	var scanErr error
 	buildFn := func(ctx context.Context, gw gateway.Client) (*gateway.Result, error) {
 		res, err := gw.Solve(ctx, gateway.SolveRequest{
 			Frontend:    frontend,
 			FrontendOpt: frontendAttrs,
+			// Finish the app build before starting the scanner, so a lazy
+			// build failure cannot be mistaken for a scanner outage.
+			Evaluate: true,
 		})
 		if err != nil {
 			return nil, err
@@ -48,19 +57,38 @@ func (b *BuildKitBuilder) buildVerified(ctx context.Context, c *bkclient.Client,
 		if err != nil {
 			return nil, err
 		}
-		spec := *req.Verify
-		spec.Platform = platform
-		def, err := verifyState(app, cfg, spec).Marshal(ctx, llb.Platform(platform))
-		if err != nil {
-			return nil, fmt.Errorf("preparing the startup check: %w", err)
+		// The scan comes first: its verdict is deterministic and cheap next
+		// to waiting for an app to come up, so a refused image fails fast.
+		if req.Scan != nil {
+			spec := *req.Scan
+			spec.Platform = platform
+			report, err = scan(ctx, gw, app, spec)
+			if err != nil {
+				scanErr = &ScanError{Err: err}
+				return nil, scanErr
+			}
+			if spec.Judge != nil {
+				if err := spec.Judge(ctx, report); err != nil {
+					scanErr = err
+					return nil, err
+				}
+			}
 		}
-		// Evaluate: nothing downstream consumes this, so without asking the
-		// probe would never run.
-		if _, err := gw.Solve(ctx, gateway.SolveRequest{
-			Definition: def.ToPB(),
-			Evaluate:   true,
-		}); err != nil {
-			return nil, fmt.Errorf("the image was built, but it doesn't start: %w", err)
+		if req.Verify != nil {
+			spec := *req.Verify
+			spec.Platform = platform
+			def, err := verifyState(app, cfg, spec).Marshal(ctx, llb.Platform(platform))
+			if err != nil {
+				return nil, fmt.Errorf("preparing the startup check: %w", err)
+			}
+			// Evaluate: nothing downstream consumes this, so without asking
+			// the probe would never run.
+			if _, err := gw.Solve(ctx, gateway.SolveRequest{
+				Definition: def.ToPB(),
+				Evaluate:   true,
+			}); err != nil {
+				return nil, fmt.Errorf("the image was built, but it doesn't start: %w", err)
+			}
 		}
 		return res, nil
 	}
@@ -71,12 +99,16 @@ func (b *BuildKitBuilder) buildVerified(ctx context.Context, c *bkclient.Client,
 		resp, err = c.Build(ctx, *opt, "donkey", buildFn, ch)
 		return err
 	}); err != nil {
+		if scanErr != nil {
+			return nil, scanErr
+		}
 		return nil, err
 	}
 	return &Result{
 		ImageRef: req.ImageRef,
 		Digest:   resp.ExporterResponse["containerimage.digest"],
 		LogPath:  req.Progress.LogPath,
+		Scan:     report,
 	}, nil
 }
 

@@ -25,6 +25,7 @@ import (
 	"github.com/adrianliechti/donkey/internal/ai"
 	"github.com/adrianliechti/donkey/internal/config"
 	"github.com/adrianliechti/donkey/internal/packages"
+	"github.com/adrianliechti/donkey/pkg/runtime/kubernetes/manifests"
 )
 
 // Run without a Donkey installation or JFrog credentials:
@@ -258,7 +259,15 @@ func osPackageBuildkit(t *testing.T, ctx context.Context) (string, string) {
 		}
 		return strings.TrimSpace(string(out))
 	}
-	docker("run", "--detach", "--rm", "--privileged", "--name", name, "--publish", "127.0.0.1::1234", config.DefaultBuildkitImage, "--addr", "tcp://0.0.0.0:1234")
+	// donkey's own config file, so the engine garbage-collects the way an
+	// installation's does — the scanner's database cache depends on it.
+	configDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(configDir, "buildkitd.toml"), []byte(manifests.BuildkitTOML(manifests.BuildkitConfig{})), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	docker("run", "--detach", "--rm", "--privileged", "--name", name, "--publish", "127.0.0.1::1234",
+		"--volume", configDir+":/etc/buildkit:ro",
+		config.DefaultBuildkitImage, "--addr", "tcp://0.0.0.0:1234", "--config", "/etc/buildkit/buildkitd.toml")
 	t.Cleanup(func() {
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()

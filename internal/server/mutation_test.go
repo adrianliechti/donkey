@@ -53,6 +53,7 @@ func TestDeletionWaitsForTheDeployReleaseRecord(t *testing.T) {
 				recording:      recording, resume: make(chan struct{}),
 			}
 			s := planServer(rt, &ai.Analysis{})
+			_, s.telemetry = testBuildStore(t)
 			s.cfg.Registry = config.Registry{URL: "registry.example.com"}
 			// Resolve the lock from donkey.yaml, without a space query parameter.
 			upload := appUpload(t, map[string]string{"donkey.yaml": "name: web\nspace: team\nport: 4000\n"})

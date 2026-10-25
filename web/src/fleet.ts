@@ -1,4 +1,4 @@
-import type { ActiveDeploy, AppSummary } from './api'
+import type { AppSecurity, ActiveDeploy, AppSummary } from './api'
 import { healthOf, type StatusTone } from './vocabulary.ts'
 
 export type SpaceFilter = 'all' | 'pinned' | 'attention'
@@ -30,6 +30,29 @@ export function recentDeploys(deploys: ActiveDeploy[]): ActiveDeploy[] {
   return [...deploys].sort(
     (a, b) => Number(isDeploying(b)) - Number(isDeploying(a)) || Date.parse(deployTime(b)) - Date.parse(deployTime(a)),
   )
+}
+
+// spaceSecurity is a space's badge: its worst app's word, with every app's
+// numbers behind it. Spaces whose apps were never scanned get none.
+const securityRank: Record<AppSecurity['state'], number> = {
+  clean: 0,
+  fixable: 1,
+  warning: 2,
+  waived: 3,
+  'needs-action': 4,
+}
+
+export function spaceSecurity(apps: AppSummary[]): AppSecurity | undefined {
+  const scanned = apps.flatMap((app) => (app.security ? [app.security] : []))
+  if (scanned.length === 0) return undefined
+  const worst = scanned.reduce((w, s) => ((securityRank[s.state] ?? 0) > (securityRank[w.state] ?? 0) ? s : w))
+  const summary = { ...scanned[0].summary }
+  for (const scan of scanned.slice(1)) {
+    for (const key of Object.keys(scan.summary) as (keyof AppSecurity['summary'])[]) {
+      summary[key] = (summary[key] ?? 0) + (scan.summary[key] ?? 0)
+    }
+  }
+  return { state: worst.state, summary }
 }
 
 export function summarizeSpaces(names: string[], apps: AppSummary[], deploys: ActiveDeploy[]): SpaceSummary[] {

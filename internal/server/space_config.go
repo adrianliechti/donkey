@@ -165,6 +165,14 @@ func (s *Server) handlePutSpaceConfig(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
+	// A waiver is somebody's decision; the sign-in says whose.
+	if id := requestIdentity(r.Context()); id != nil {
+		for i := range access.SecurityWaivers {
+			if access.SecurityWaivers[i].By == "" {
+				access.SecurityWaivers[i].By = waiverAuthor(id)
+			}
+		}
+	}
 	previous, err := s.rt.SpaceConfig(r.Context(), r.PathValue("space"))
 	if err != nil {
 		writeAccessError(w, err)
@@ -227,4 +235,13 @@ func (s *Server) checkExistingDomains(ctx context.Context, space string, policy 
 		}
 	}
 	return nil
+}
+
+func waiverAuthor(id *identity.Identity) string {
+	for _, name := range []string{id.Email, id.PreferredUsername, id.Name, id.Subject} {
+		if name != "" {
+			return name
+		}
+	}
+	return ""
 }

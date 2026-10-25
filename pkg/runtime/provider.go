@@ -288,6 +288,9 @@ type AppStatus struct {
 	CORS string
 	// Stack is what the app is written in, as its last deploy recorded it.
 	Stack string
+	// Security is the vulnerability scan's outcome for the running image,
+	// as its deploy recorded it (opaque JSON the control plane reads).
+	Security string
 	// Port the app listens on (donkey.yaml's `port`).
 	Port int32
 	// Restarts sums restarts across instances — what separates "quietly
@@ -323,6 +326,10 @@ type DeploySpec struct {
 	// Decisions records what this deploy settled (storage, health route), so
 	// a no-build deploy keeps the same shape.
 	Decisions string
+	// Security is the vulnerability scan's outcome for the image (opaque
+	// JSON), kept with the workload so listings show it without opening
+	// the release.
+	Security string
 	// Stack is what the app is written in, read off its recipe (see
 	// detect.Stack); "" when no base image says.
 	Stack string

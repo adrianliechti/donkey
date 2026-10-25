@@ -16,6 +16,7 @@ import {
   EmptyState,
   ErrorNote,
   ExposureBadge,
+  ScanBadge,
   Eyebrow,
   LinkButton,
   Mark,
@@ -164,6 +165,7 @@ function AppTile({ app, deploy }: { app: AppSummary; deploy?: ActiveDeploy }) {
           </Link>
         </span>
         <span className="flex shrink-0 items-center gap-2">
+          <ScanBadge security={app.security} />
           <ExposureBadge exposure={app.exposure} mode={app.mode} />
           {app.url && (
             <LinkButton href={app.url} icon={ExternalLink} kind="quiet" size="sm" className="relative z-10">

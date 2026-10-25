@@ -2,6 +2,8 @@ package manifests
 
 import (
 	"encoding/json"
+	"maps"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -31,6 +33,10 @@ func buildEnv(b config.InstallBuild) []corev1.EnvVar {
 		if e.Value != "" {
 			env = append(env, e)
 		}
+	}
+	scan := b.Scan.EnvVars()
+	for _, key := range slices.Sorted(maps.Keys(scan)) {
+		env = append(env, corev1.EnvVar{Name: key, Value: scan[key]})
 	}
 	if len(b.Env) > 0 {
 		// A map travels as JSON, the way DONKEY_PLATFORM_ADMINS does — but out of the

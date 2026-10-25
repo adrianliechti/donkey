@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/adrianliechti/donkey/internal/ai"
+	"github.com/adrianliechti/donkey/internal/build"
 	"github.com/adrianliechti/donkey/internal/history"
 	"github.com/adrianliechti/donkey/internal/identity"
 	"github.com/adrianliechti/donkey/internal/telemetry"
@@ -23,6 +24,9 @@ type Server struct {
 	cfg       *Config
 	rt        runtime.Provider
 	assistant ai.Assistant
+	// scanner matches image inventories against the vulnerability database
+	// kept on the data volume (see scan.go); the orchestrator is who scans.
+	scanner *build.Scanner
 	// plans holds what donkey read about an upload between review and deploy,
 	// so the assistant answers once per app rather than once per screen. It
 	// lives in donkey-orchestrator, which serves every plan route.
@@ -72,7 +76,7 @@ func New(cfg *Config, rt runtime.Provider) (*Server, error) {
 		}
 	}
 	return &Server{
-		cfg: cfg, rt: rt, assistant: assistant, plans: newPlanStore(),
+		cfg: cfg, rt: rt, assistant: assistant, scanner: newScanner(cfg), plans: newPlanStore(),
 		telemetry: telemetry.NewClient(cfg.TelemetryURL, cfg.TelemetryKey),
 		resources: telemetry.NewResourceExporter(cfg.TelemetryOTLPEndpoint, cfg.TelemetryKey),
 		history:   source,

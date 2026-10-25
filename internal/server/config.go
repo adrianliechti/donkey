@@ -225,6 +225,7 @@ func FromEnv() (*Config, error) {
 		return nil, err
 	}
 	c.Build.SBOM = os.Getenv("DONKEY_BUILDER_SBOM") == "true"
+	c.Build.Scan = config.ScanSettingsFromEnv(os.Getenv)
 	key, err := hex.DecodeString(os.Getenv("DONKEY_SESSION_KEY"))
 	if err != nil || len(key) != 32 {
 		return nil, fmt.Errorf("DONKEY_SESSION_KEY must be 32 bytes of hex — `donkey server install` generates it")

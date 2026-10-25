@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { filterSpaces, isDeploying, recentDeploys, spaceState, summarizeSpaces } from '../src/fleet.ts'
+import { filterSpaces, isDeploying, recentDeploys, spaceSecurity, spaceState, summarizeSpaces } from '../src/fleet.ts'
 
 const app = (name, space, healthy = true, ready = '1/1') => ({ name, space, healthy, ready, image: '', url: '' })
 const deploy = (name, space, stage, startedAt = '2026-10-25T10:00:00Z') => ({
@@ -10,6 +10,17 @@ const deploy = (name, space, stage, startedAt = '2026-10-25T10:00:00Z') => ({
   startedAt,
   via: 'cli',
   ...(stage === 'failed' || stage === 'done' ? { finishedAt: '2026-10-25T10:02:00Z' } : {}),
+})
+
+test('security warnings aggregate without changing running app health', () => {
+  const apps = [
+    { ...app('clean', 'team'), security: { state: 'clean', summary: { secrets: 0, critical: 0 } } },
+    { ...app('warning', 'team'), security: { state: 'warning', summary: { secrets: 1, critical: 0, unknown: 2 } } },
+  ]
+  assert.deepEqual(spaceSecurity(apps), { state: 'warning', summary: { secrets: 1, critical: 0, unknown: 2 } })
+  assert.equal(summarizeSpaces(['team'], apps, [])[0].running, 2)
+  assert.equal(apps[0].security.summary.unknown, undefined)
+  assert.equal(spaceSecurity([app('legacy', 'team')]), undefined)
 })
 
 test('health counts separate running, down, and unknown, including the default space', () => {

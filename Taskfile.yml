@@ -240,6 +240,13 @@ tasks:
     cmds:
       - go test -tags e2e -count=1 -timeout 20m -v -run '^TestOSPackageMirrors$' ./internal/build
 
+  verify:scan:
+    desc: "Vulnerability scan E2E against a disposable BuildKit in Docker: inventory, matching, rescan, doctor probes (pulls the scanner image and its database)"
+    env:
+      DONKEY_E2E_SCAN: 'true'
+    cmds:
+      - go test -tags e2e -count=1 -timeout 15m -v -run '^TestScan' ./internal/build
+
   prepare:monorepos:
     desc: Fetch the pinned Google microservices-demo repository for live tests
     cmds:

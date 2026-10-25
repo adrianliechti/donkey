@@ -55,6 +55,8 @@ func (s *Server) buildGenerated(ctx context.Context, out *lineStreamer, builder 
 		if err := ctx.Err(); err != nil {
 			return outcome, err
 		}
+		// The image and its scan must always describe the same attempt.
+		outcome.Result = nil
 		out.Update(DeployUpdate{Stage: "building"})
 		generated := req.Strategy != config.BuildDockerfile || attempt > 1
 		ignore := ""
@@ -129,12 +131,26 @@ func (s *Server) buildGenerated(ctx context.Context, out *lineStreamer, builder 
 		out.Update(DeployUpdate{Recipe: recipePath, BaseImages: images})
 		attemptReq := req
 		attemptReq.Strategy, attemptReq.DockerfilePath = config.BuildDockerfile, recipePath
+		if req.Scan != nil {
+			// The policy's judge needs this attempt's recipe and the source
+			// it was built from; the scan itself is the same every time.
+			scan := *req.Scan
+			scan.Judge = s.scanJudge(out, app, req.ContextDir, relativeOrEmpty(req.ContextDir, dir), outcome.Dockerfile, known)
+			attemptReq.Scan = &scan
+		}
 		// A changed candidate must always create a new runtime generation,
 		// even when the registry allows overwriting tags.
 		if attempt > 1 {
 			attemptReq.ImageRef = fmt.Sprintf("%s-repair-%d", req.ImageRef, attempt)
 		}
 		result, err := builder.Build(ctx, attemptReq)
+		var scanErr *build.ScanError
+		if errors.As(err, &scanErr) || ctx.Err() != nil {
+			if ctx.Err() != nil {
+				return outcome, ctx.Err()
+			}
+			return outcome, err
+		}
 		if err == nil && result == nil {
 			return outcome, fmt.Errorf("the builder returned no image")
 		}
@@ -162,9 +178,22 @@ func (s *Server) buildGenerated(ctx context.Context, out *lineStreamer, builder 
 		lastErr = err
 		// Provisioning may have created new service credentials during rollout.
 		known = append(known, s.knownSecrets(ctx, app.Space, app.Name)...)
-		if stage == "build" {
+		var refused *build.ScanBlockedError
+		switch {
+		case errors.As(err, &refused):
+			// The image was built and refused by the vulnerability policy.
+			// A generated recipe gets another go — a newer base tag or a
+			// bumped dependency is exactly a repair — but an app's own
+			// Dockerfile is never rewritten over a policy verdict: the
+			// developer gets the findings and the proposals instead.
+			if !generated {
+				return outcome, err
+			}
+			stage = "scan"
+			evidence = refusedEvidence(out, refused)
+		case stage == "build":
 			evidence = failureText(err, req.Progress.LogPath, known...)
-		} else {
+		default:
 			evidence = ai.RedactEvidence(err.Error()+"\n"+tailBytes([]byte(evidence), 12*1024), known...)
 		}
 		out.Line("· Attempt %d failed during %s. %s", attempt, stage, ai.RedactEvidence(err.Error(), known...))
@@ -182,6 +211,16 @@ func (s *Server) buildGenerated(ctx context.Context, out *lineStreamer, builder 
 		}
 	}
 	return outcome, fmt.Errorf("the app still could not be verified after %d attempts: %w", attempts, lastErr)
+}
+
+// relativeOrEmpty is dir inside root, or "" when it is the root itself (or
+// cannot be expressed relative to it).
+func relativeOrEmpty(root, dir string) string {
+	rel, err := filepath.Rel(root, dir)
+	if err != nil || rel == "." {
+		return ""
+	}
+	return filepath.ToSlash(rel)
 }
 
 // signalHighlights is the short version of what donkey established, for the

@@ -39,6 +39,8 @@ export interface AppSummary {
   addons?: string[]
   /** What the app is written in, read off its build recipe ("python", "go"…). */
   stack?: string
+  /** The vulnerability scan's outcome for the running image. */
+  security?: AppSecurity
 }
 
 export interface AppStatus {
@@ -55,7 +57,17 @@ export interface AppStatus {
   exposure?: Exposure
   mode?: AppMode
   port?: number
+  /** The vulnerability scan's outcome for the running image. */
+  security?: AppSecurity
   endpoint?: EndpointStatus
+}
+
+/** The scan's outcome as a running app carries it: one word, the numbers behind it. */
+export interface AppSecurity {
+  state: 'clean' | 'fixable' | 'warning' | 'waived' | 'needs-action'
+  summary: ScanSummary
+  scannedAt?: string
+  dbUpdatedAt?: string
 }
 
 export type EndpointState = 'ready' | 'issuing' | 'propagating' | 'error' | 'unknown' | 'unmanaged'
@@ -278,6 +290,18 @@ export interface SpaceConfig {
   allowPublic: boolean
   domains: string[]
   offerings?: Record<string, SpaceOffering>
+  /** Space admins' decisions to deploy an app despite a scanner finding. */
+  securityWaivers?: SecurityWaiver[]
+}
+
+export interface SecurityWaiver {
+  app: string
+  /** A CVE id, or a secret rule (optionally rule@file). */
+  id: string
+  reason: string
+  by?: string
+  /** A date (valid through that day) or an RFC 3339 time; empty never expires. */
+  expires?: string
 }
 
 export interface SpaceOffering {
@@ -657,6 +681,8 @@ export interface DeployUpdate {
   /** Where the recipe this build used sits in its commit. */
   recipe?: string
   changes?: SourceChange[]
+  /** The vulnerability scan's outcome as soon as it is known (no inventory). */
+  scan?: AppScan
 }
 
 export interface ProjectPlan {
@@ -676,8 +702,88 @@ export interface AppRelease {
   update: DeployUpdate
   lines: string[]
   buildLog?: string
+  /** What the vulnerability scan found and what the policy made of it. */
+  scan?: AppScan
   result: DeployResult
   truncated?: boolean
+}
+
+/** One known weakness in one package of the image. */
+export interface Vulnerability {
+  id: string
+  severity: 'critical' | 'high' | 'medium' | 'low' | 'unknown'
+  score?: number
+  package: string
+  installed: string
+  fixed?: string
+  status?: string
+  class: string
+  type: string
+  target?: string
+  path?: string
+  title?: string
+  description?: string
+  url?: string
+  published?: string
+}
+
+/** A credential-shaped value found in a file of the image (masked). */
+export interface ImageSecret {
+  target: string
+  rule: string
+  category?: string
+  severity: string
+  title: string
+  line?: number
+  match?: string
+}
+
+/** The assistant's reading of one finding. */
+export interface Verdict {
+  id: string
+  verdict: 'affected' | 'not-affected' | 'unsure'
+  confidence: 'high' | 'medium' | 'low'
+  reason: string
+  evidence: string[]
+  fix?: string
+}
+
+export interface ScanSummary {
+  critical: number
+  high: number
+  medium: number
+  low: number
+  unknown?: number
+  fixable: number
+  unfixed: number
+  secrets: number
+  blocking: number
+  waived: number
+  judged: number
+}
+
+export interface ScanPolicy {
+  block: 'none' | 'critical' | 'high'
+  ignoreUnfixed: boolean
+  secrets: 'block' | 'warn' | 'off'
+  triage: boolean
+  waivers?: SecurityWaiver[]
+}
+
+export interface AppScan {
+  scanner: string
+  os?: string
+  endOfLife?: boolean
+  dbUpdatedAt?: string
+  policy: ScanPolicy
+  summary: ScanSummary
+  findings: Finding[]
+  vulnerabilities: Vulnerability[]
+  secrets: ImageSecret[]
+  verdicts?: Verdict[]
+  blocked: boolean
+  /** The scanner's CycloneDX inventory of the image, gzip + base64. */
+  sbom?: string
 }
 
 /** One line of an app's build history, newest first. */

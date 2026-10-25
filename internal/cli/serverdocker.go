@@ -681,6 +681,7 @@ func builderEnvMap(b config.BuildSettings) map[string]string {
 	if b.SBOM {
 		env["DONKEY_BUILDER_SBOM"] = "true"
 	}
+	maps.Copy(env, b.Scan.EnvVars())
 	return env
 }
 

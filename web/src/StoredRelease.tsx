@@ -78,6 +78,7 @@ function StoredBuild({ space, app, sequence }: { space: string; app: string; seq
           buildLog={release.buildLog ?? ''}
           update={release.update ?? { stage: 'releasing' }}
           result={release.result}
+          scan={release.scan}
           layout="stacked"
         />
       )}

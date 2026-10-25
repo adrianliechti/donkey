@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"maps"
 	"os"
 	"slices"
 	"strconv"
@@ -260,6 +261,7 @@ func dockerComposeFiles(settings *config.InstallFile, bundledRegistry bool) (map
 	if settings.Build.SBOM {
 		serverEnv["DONKEY_BUILDER_SBOM"] = "true"
 	}
+	maps.Copy(serverEnv, settings.Build.Scan.EnvVars())
 	if features.BuildEnvironment {
 		serverEnv["DONKEY_BUILD_ENV"] = "${DONKEY_BUILD_ENV:-}"
 	}

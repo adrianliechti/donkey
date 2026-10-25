@@ -79,8 +79,11 @@ export function DeployProgress({ deploy, compact = false }: { deploy: ActiveDepl
         </div>
       )}
       {(failed ? deploy.error : deploy.line) && (
+        // A live log line stays on one line so the block keeps its height
+        // while it changes; a failure is final, and its reason — which
+        // names the finding that refused an image — is shown in full.
         <p
-          className={`truncate font-mono text-xs ${failed ? 'text-danger' : 'text-muted'}`}
+          className={`font-mono text-xs ${failed ? 'text-danger' : 'text-muted'} ${failed && !compact ? 'break-words' : 'truncate'}`}
           title={failed ? deploy.error : deploy.line}
         >
           {failed ? deploy.error : deploy.line}
@@ -142,7 +145,7 @@ export function DeployPlaceholder({ deploy }: { deploy: ActiveDeploy }) {
           </Button>
         )}
       </div>
-      <div className="mt-4 max-w-2xl">
+      <div className="mt-4">
         <DeployProgress deploy={deploy} />
       </div>
       <p className="mt-4 text-xs text-muted">

@@ -44,6 +44,7 @@ const (
 	labelMode         = "local.donkey.mode"
 	labelCORS         = "local.donkey.cors"
 	labelStack        = "local.donkey.stack"
+	labelSecurity     = "local.donkey.security"
 
 	dockerInstallation = "donkey"
 
@@ -579,6 +580,7 @@ func (r *Runtime) Status(ctx context.Context, space, app string) (*rt.AppStatus,
 	}
 	st.Image = r.pushRef(st.Image)
 	st.Stack = info.Config.Labels[labelStack]
+	st.Security = info.Config.Labels[labelSecurity]
 	if p, err := strconv.Atoi(info.Config.Labels[labelPort]); err == nil {
 		st.Port = int32(p)
 	}

@@ -24,10 +24,16 @@ RUN CGO_ENABLED=1 go build \
     -ldflags "-X github.com/adrianliechti/donkey/internal/server.Version=${VERSION}" \
     -o /out/donkey-server ./cmd/donkey-server
 
+# The vulnerability scanner the orchestrator matches inventories with — the
+# same pinned release the build engine inventories images with
+# (config.DefaultScannerImage); a test keeps the two in step.
+FROM aquasec/trivy:0.76.1@sha256:790fd66d1697395d8693d1acaa1ea702406a20f109b6fc7bac8db623eca6c06c AS scanner
+
 FROM debian:bookworm-slim
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates libstdc++6 wget \
     && rm -rf /var/lib/apt/lists/*
+COPY --from=scanner --chmod=0755 /usr/local/bin/trivy /usr/local/bin/trivy
 # No USER: Kubernetes pins an unprivileged numeric uid; Docker's control-plane
 # process holds the engine socket and is already host-powerful. HOME remains
 # writable for either runtime-selected identity.

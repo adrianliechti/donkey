@@ -70,6 +70,8 @@ type StatusResponse struct {
 	Port int `json:"port,omitempty"`
 	// Stack is what the app is written in (detect.Stack), for its icon.
 	Stack string `json:"stack,omitempty"`
+	// Security is the vulnerability scan's outcome for the running image.
+	Security *AppSecurity `json:"security,omitempty"`
 	// Endpoint is the asynchronously prepared edge behind URL. It is omitted
 	// for internal apps and runtimes without endpoint diagnostics.
 	Endpoint *EndpointStatusResponse `json:"endpoint,omitempty"`
@@ -132,6 +134,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		Pods:     st.Instances,
 		Restarts: st.Restarts,
 		Stack:    st.Stack,
+		Security: parseSecurity(st.Security),
 		// The claim is the disk: it outlives the pods, so this is true even
 		// while the app is stopped or crash-looping — which is exactly when
 		// someone needs to look at what is on it.
@@ -1019,7 +1022,8 @@ func (s *Server) buildChecks(ctx context.Context) []DoctorCheck {
 	}
 	checks = append(checks, reg)
 
-	return append(checks, s.builderChecks(ctx)...)
+	checks = append(checks, s.builderChecks(ctx)...)
+	return append(checks, s.scanChecks(ctx)...)
 }
 
 // handleBuildChecks: GET /v1/doctor on donkey-orchestrator.

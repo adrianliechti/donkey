@@ -96,7 +96,20 @@ provider mirrors this. There is no client-side extraction.
 line, in both runtimes. The only `sh -c` site is `initVolumeDirs`, whose
 interpolated values are `StorageSubPath` slugs restricted to `[a-z0-9-]`. donkey
 runs no command of its own against an app image — an app that must migrate does
-so in its own start path.
+so in its own start path. The one external binary the orchestrator executes is
+the pinned vulnerability scanner (`internal/build/trivy.go`): an argv exec of
+`trivy sbom` against an inventory document in a private work directory, never
+against an image; the image itself is only ever read inside the build engine's
+sandbox. The scanner's database and its docker config for the mirrors (0600)
+live under `scanner/` on the orchestrator's data volume.
+
+**Vulnerability gate.** Every image is inventoried and matched against the
+scanner's database before it is pushed; a finding at or above `build.scan.block`
+with a fix available refuses the deploy, as does a credential found in the
+image. Only a space admin's recorded waiver or the assistant's high-confidence
+"not affected" reading (off with `build.scan.triage: off`) lets such an image
+through, and both are stored with the release record. `--no-build` deploys and
+rollbacks re-read the recorded scan against the policy of the day.
 
 **Namespace and space boundaries.** `ValidateSpace` reserves the mapping onto
 `donkey-system`; a namespace lacking donkey's `donkey.local/managed` annotation
