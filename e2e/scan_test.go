@@ -289,7 +289,18 @@ http.createServer((req, res) => {
 
 	t.Run("cleanup", func(t *testing.T) {
 		for _, name := range []string{vulnApp, leakyApp, cleanApp} {
-			_ = s.api.Destroy(ctx, scanSpace, name, false)
+			if err := s.api.Destroy(ctx, scanSpace, name, false); err != nil {
+				t.Fatal(err)
+			}
+		}
+		var board struct {
+			Deploys []server.ActiveDeploy `json:"deploys"`
+		}
+		s.raw(t, http.MethodGet, "/v1/deploys", nil, &board)
+		for _, deploy := range board.Deploys {
+			if deploy.Space == scanSpace && (deploy.App == vulnApp || deploy.App == leakyApp || deploy.App == cleanApp) {
+				t.Errorf("removed test app still appears on the deployment board: %+v", deploy)
+			}
 		}
 		if ownSpace {
 			s.rawTry(http.MethodDelete, "/v1/spaces/"+scanSpace)

@@ -98,3 +98,32 @@ func TestDeployBoardNewerDeployWins(t *testing.T) {
 	dry.stage("building") // a dry run has no ticket; using it is harmless
 	dry.finish(true, "")
 }
+
+func TestDeployBoardRemovalKeepsQueuedWorkAndOtherScopes(t *testing.T) {
+	var board deployBoard
+	now := time.Now()
+	visible := func(string) bool { return true }
+	failed := board.start("team", "failed", "Ada", "cli", now)
+	failed.finish(false, "refused before a workload existed")
+	board.start("team", "complete", "Ada", "cli", now).finish(true, "")
+	queued := board.start("team", "queued", "Ada", "cli", now)
+	board.start("other", "complete", "Ada", "cli", now).finish(true, "")
+
+	board.forgetFinished("team", "failed")
+	failed.finish(false, "late callback must not restore the removed entry")
+	if got := board.list(now, visible); len(got) != 3 {
+		t.Fatalf("app removal did not clear just its own attempt: %+v", got)
+	}
+	board.forgetFinished("team", "queued")
+	queued.stage("building")
+	board.forgetFinished("team", "")
+	got := board.list(now, visible)
+	if len(got) != 2 || !board.active() {
+		t.Fatalf("space removal lost queued work or another space: %+v", got)
+	}
+	queued.finish(true, "")
+	board.forgetFinished("team", "")
+	if got := board.list(now, visible); len(got) != 1 || got[0].Space != "other" || board.active() {
+		t.Fatalf("completed work was not cleared: %+v", got)
+	}
+}

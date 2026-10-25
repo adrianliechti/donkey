@@ -87,6 +87,9 @@ func TestDeletionWaitsForTheDeployReleaseRecord(t *testing.T) {
 			if !rt.deleted || !strings.Contains(result.Body.String(), `"ok":true`) {
 				t.Fatalf("deploy/delete did not finish: deleted=%v, deploy=%s", rt.deleted, result.Body.String())
 			}
+			if got := s.board.list(time.Now(), func(string) bool { return true }); len(got) != 0 {
+				t.Fatalf("deletion left a deployment placeholder: %+v", got)
+			}
 		})
 	}
 }

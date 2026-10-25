@@ -1,4 +1,4 @@
-import { Loader2, Rocket } from 'lucide-react'
+import { Check, Loader2, Rocket } from 'lucide-react'
 import type { ActiveDeploy } from './api'
 import { useDeploy } from './deploy'
 import { ago } from './format'
@@ -124,19 +124,22 @@ function StageBar({ deploy }: { deploy: ActiveDeploy }) {
 export function DeployPlaceholder({ deploy }: { deploy: ActiveDeploy }) {
   const openDeploy = useDeploy()
   const failed = deploy.stage === 'failed'
+  const done = deploy.stage === 'done'
   return (
     <div
-      className={`rounded-lg border border-dashed p-6 ${failed ? 'border-danger/50 bg-danger/[.03]' : 'border-accent/50 bg-accent-soft/30'}`}
+      className={`rounded-lg border p-6 ${failed ? 'border-dashed border-danger/50 bg-danger/[.03]' : done ? 'border-line bg-card' : 'border-dashed border-accent/50 bg-accent-soft/30'}`}
     >
       <div className="flex min-h-8 flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2.5">
           {failed ? (
             <span className="size-3 rounded-full border-2 border-danger" aria-hidden />
+          ) : done ? (
+            <Check className="size-4 text-success" aria-hidden />
           ) : (
             <Loader2 className="size-4 animate-spin text-accent" aria-hidden />
           )}
           <h2 className="text-sm font-semibold text-ink">
-            {failed ? 'The first deploy failed' : 'Deploying the first version'}
+            {failed ? 'The first deploy failed' : done ? 'Deployment finished' : 'Deploying the first version'}
           </h2>
         </div>
         {failed && (
@@ -150,8 +153,10 @@ export function DeployPlaceholder({ deploy }: { deploy: ActiveDeploy }) {
       </div>
       <p className="mt-4 text-xs text-muted">
         {failed
-          ? 'Nothing runs yet. The build record keeps the full log.'
-          : 'The rest of this page appears as soon as the app runs — you can close the deploy window or the browser meanwhile.'}
+          ? 'Nothing runs yet. Resolve the error and deploy again.'
+          : done
+            ? 'The deployment finished. Waiting for the latest app status.'
+            : 'The rest of this page appears as soon as the app runs — you can close the deploy window or the browser meanwhile.'}
       </p>
     </div>
   )

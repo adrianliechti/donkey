@@ -950,6 +950,7 @@ func (s *Server) handleDestroy(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadGateway, err)
 		return
 	}
+	s.board.forgetFinished(space, app)
 	// The app's build and source history go with it, so a later app by the
 	// same name starts with its own. Keeping the data is the redeploy case:
 	// the same app comes back to its disk and its history alike. The runtime

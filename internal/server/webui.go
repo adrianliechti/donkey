@@ -184,6 +184,7 @@ func (s *Server) handleDeleteSpace(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadGateway, err)
 		return
 	}
+	s.board.forgetFinished(space, "")
 	// Runtime deletion comes first. If telemetry is temporarily unavailable,
 	// retrying this endpoint is safe and completes the purge without reviving
 	// any runtime resource.

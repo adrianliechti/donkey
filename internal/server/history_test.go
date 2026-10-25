@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/adrianliechti/donkey/internal/config"
 	"github.com/adrianliechti/donkey/internal/history"
@@ -169,6 +170,7 @@ func TestRemovingAnAppRemovesItsHistory(t *testing.T) {
 		release.source = captureSource(upload, buildCopy(t, upload, func(string) {}), ".", "")
 		s.persistRelease(asPerson(context.Background()), "acme", "web", release)
 		s.rt = destroyRuntime{releaseRuntime: s.rt.(releaseRuntime)}
+		s.board.start("acme", "web", "Ada", "cli", time.Now()).finish(true, "")
 
 		req := httptest.NewRequest(http.MethodDelete, fmt.Sprintf("/v1/spaces/acme/apps/web?keepData=%t", keepData), nil)
 		req.SetPathValue("space", "acme")
@@ -177,6 +179,9 @@ func TestRemovingAnAppRemovesItsHistory(t *testing.T) {
 		s.handleDestroy(rec, req)
 		if rec.Code != http.StatusOK {
 			t.Fatalf("destroy: %d %s", rec.Code, rec.Body.String())
+		}
+		if got := s.board.list(time.Now(), func(string) bool { return true }); len(got) != 0 {
+			t.Fatalf("removed app left a deployment placeholder: %+v", got)
 		}
 
 		commits, err := s.history.Log("acme", "web", 10)

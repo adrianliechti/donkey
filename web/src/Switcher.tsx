@@ -281,6 +281,8 @@ function AppSwitcher({ space, current, service }: { space: string; current?: str
 // way, or a hollow ring for one that never ran (its first deploy failed).
 function AppMark({ app, deploy }: { app: Partial<AppSummary>; deploy?: ActiveDeploy }) {
   if (deploy && !deploy.finishedAt) return <Loader2 className="size-3.5 animate-spin text-accent" aria-hidden />
+  if (app.ready === undefined && deploy?.stage === 'done')
+    return <Check className="size-3.5 text-success" aria-hidden />
   if (app.ready === undefined) return <span className="size-2.5 rounded-full border-2 border-danger" aria-hidden />
   return <AppIcon health={healthOf(!!app.healthy, app.ready)} stack={app.stack} />
 }

@@ -367,7 +367,10 @@ export function useDeleteSpace(space: string) {
     mutationFn: () => api.deleteSpace(space),
     onSuccess: () => {
       qc.removeQueries({ queryKey: spaceServicesQuery(space).queryKey })
-      return qc.invalidateQueries({ queryKey: fleetQuery.queryKey })
+      return Promise.all([
+        qc.invalidateQueries({ queryKey: fleetQuery.queryKey }),
+        qc.invalidateQueries({ queryKey: deploysQuery.queryKey }),
+      ])
     },
   })
 }
