@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -123,8 +124,10 @@ func TestSpaceRBACProtectsReadWriteAndMembership(t *testing.T) {
 		status       int
 	}{
 		{"GET", "/v1/spaces/team/apps/api/env", 200},
+		{"GET", "/v1/spaces/team/settings", 200},
 		{"POST", "/v1/spaces/team/apps/api/restart", 200},
 		{"GET", "/v1/spaces/other/apps/api/env", 403},
+		{"GET", "/v1/spaces/other/settings", 403},
 		{"GET", "/v1/spaces/other/apps/api/logs", 403},
 		{"GET", "/v1/spaces/other/apps/api/files", 403},
 		{"GET", "/v1/spaces/other/services/db/tunnel", 403},
@@ -151,8 +154,52 @@ func TestSpaceRBACProtectsReadWriteAndMembership(t *testing.T) {
 		}
 	}
 	r.readErr = errors.New("storage unavailable")
-	if rec := callAs(t, s, "dev@example.com", "GET", "/v1/spaces/team/apps/api/env", nil); rec.Code != 502 || strings.Contains(rec.Body.String(), "space-secret") {
-		t.Fatalf("storage failure granted access: %d %s", rec.Code, rec.Body.String())
+	for _, path := range []string{"/v1/spaces/team/apps/api/env", "/v1/spaces/team/settings"} {
+		if rec := callAs(t, s, "dev@example.com", "GET", path, nil); rec.Code != 502 || strings.Contains(rec.Body.String(), "space-secret") {
+			t.Fatalf("storage failure granted access: %d %s", rec.Code, rec.Body.String())
+		}
+	}
+}
+
+func TestSpaceSettingsReadPermissions(t *testing.T) {
+	for _, tc := range []struct {
+		email  string
+		status int
+	}{
+		{"dev@example.com", 200},
+		{"owner@example.com", 200},
+		{"root@example.com", 200},
+		{"viewer@example.com", 403},
+		{"outsider@example.com", 403},
+	} {
+		t.Run(tc.email, func(t *testing.T) {
+			s, rt := spaceTestServer()
+			policy := rt.settings["team"]
+			policy.Developers = config.AccessConfig{Users: []string{"dev@example.com"}, Groups: []string{"builders"}}
+			policy.Viewers = config.AccessConfig{Users: []string{"viewer@example.com"}, Groups: []string{"readers"}}
+			policy.Offerings = map[string]config.SpaceOffering{"postgres": {Config: map[string]any{"password": "space-secret"}}}
+			rt.settings["team"] = policy
+			rec := callAs(t, s, tc.email, "GET", "/v1/spaces/team/settings", nil)
+			if rec.Code != tc.status {
+				t.Fatalf("settings: %d %s", rec.Code, rec.Body)
+			}
+			if tc.status != 200 {
+				return
+			}
+			var settings config.SpaceConfig
+			if err := json.Unmarshal(rec.Body.Bytes(), &settings); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(settings, policy) {
+				t.Fatalf("expected membership, domains and service offerings, got %s", rec.Body)
+			}
+			if tc.email == "dev@example.com" {
+				rec = callAs(t, s, tc.email, "PUT", "/v1/spaces/team/settings", []byte(mustJSON(t, policy)))
+				if rec.Code != 403 || rt.writes != 0 {
+					t.Fatalf("developer changed space settings: %d %s", rec.Code, rec.Body)
+				}
+			}
+		})
 	}
 }
 
@@ -164,6 +211,9 @@ func TestSpaceAdminCanDelegateAndRevocationIsImmediate(t *testing.T) {
 	}
 	if rec := callAs(t, s, "dev@example.com", "POST", "/v1/spaces/team/apps/api/restart", nil); rec.Code != 403 {
 		t.Fatalf("revocation: %d", rec.Code)
+	}
+	if rec := callAs(t, s, "dev@example.com", "GET", "/v1/spaces/team/settings", nil); rec.Code != 403 {
+		t.Fatalf("revoked member can still read settings: %d", rec.Code)
 	}
 	if r.restarts != 0 || r.writes != 1 {
 		t.Fatal("revoked developer mutated the app")

@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react'
 import { useScrolledPast } from './hooks'
+import { panelClass } from './ui'
 
 /**
  * The frame of an app's or a service's page: the overviews' dotted surface,
@@ -24,7 +25,7 @@ export function Sheet({ tabs, fill = false, children }: { tabs?: ReactNode; fill
   return (
     <div className={`dotgrid flex flex-col p-6 ${fill ? 'h-[calc(100dvh-52px)] min-h-[36rem]' : 'flex-1'}`}>
       <div
-        className={`flex min-h-0 flex-1 flex-col rounded-xl border border-line bg-card shadow-sm ${
+        className={`flex min-h-0 flex-1 flex-col ${panelClass} ${
           // A filled sheet never scrolls with the page, so nothing in it
           // sticks — it may clip to its corners, which a flush workbench needs.
           fill ? 'overflow-hidden' : ''

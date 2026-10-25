@@ -33,7 +33,8 @@ export function MembershipEditor({
   admins: AccessConfig
   developers?: AccessConfig
   viewers?: AccessConfig
-  onChange: (admins: AccessConfig, developers: AccessConfig, viewers: AccessConfig) => void
+  /** Omit to display members and roles without editing controls. */
+  onChange?: (admins: AccessConfig, developers: AccessConfig, viewers: AccessConfig) => void
   /** What an empty list means where the editor is used. */
   emptyText?: string
 }) {
@@ -54,7 +55,7 @@ export function MembershipEditor({
       const target = member.role === 'admin' ? admins : member.role === 'developer' ? developers : viewers
       target[member.kind] = [...(target[member.kind] ?? []), member.value]
     }
-    onChange(admins, developers, viewers)
+    onChange?.(admins, developers, viewers)
   }
 
   function add() {
@@ -80,13 +81,15 @@ export function MembershipEditor({
             <ListRow
               key={`${member.kind}:${member.value}:${member.role}`}
               actions={
-                <IconButton
-                  icon={X}
-                  size="sm"
-                  kind="danger"
-                  label={`Remove ${member.value}`}
-                  onClick={() => update(members.filter((_, i) => i !== index))}
-                />
+                onChange && (
+                  <IconButton
+                    icon={X}
+                    size="sm"
+                    kind="danger"
+                    label={`Remove ${member.value}`}
+                    onClick={() => update(members.filter((_, i) => i !== index))}
+                  />
+                )
               }
             >
               {/* The icon says what kind of member this is; a tooltip spells it out. */}
@@ -94,60 +97,67 @@ export function MembershipEditor({
               <span className="min-w-0 flex-1 truncate text-sm" title={`${member.value} · ${labels[member.kind]}`}>
                 {member.value}
               </span>
-              {developers && (
-                <Select<Role>
-                  variant="quiet"
-                  ariaLabel={`Role for ${member.value}`}
-                  value={member.role}
-                  onChange={(role) => update(members.map((m, i) => (i === index ? { ...m, role } : m)))}
-                  options={roleOptions}
-                  className="w-32"
-                />
-              )}
+              {developers &&
+                (onChange ? (
+                  <Select<Role>
+                    variant="quiet"
+                    ariaLabel={`Role for ${member.value}`}
+                    value={member.role}
+                    onChange={(role) => update(members.map((m, i) => (i === index ? { ...m, role } : m)))}
+                    options={roleOptions}
+                    className="w-32"
+                  />
+                ) : (
+                  <span className="shrink-0 text-sm text-muted">
+                    {roleOptions.find((option) => option.value === member.role)?.label}
+                  </span>
+                ))}
             </ListRow>
           )
         })}
         {/* The add row: the same shape as a member row, before it exists. */}
-        <ListRow
-          className="bg-surface/40"
-          actions={<IconButton icon={Plus} size="sm" label="Add member" onClick={add} disabled={!value.trim()} />}
-        >
-          <KindIcon className="size-4 shrink-0 text-muted" aria-hidden />
-          <Select<Kind>
-            variant="quiet"
-            ariaLabel="Member type"
-            value={kind}
-            onChange={setKind}
-            options={kinds.map((kind) => ({ value: kind, label: labels[kind] }))}
-            className="w-20 shrink-0"
-          />
-          <Input
-            bare
-            aria-label="Member identity"
-            value={value}
-            onChange={(e) => setValue(e.target.value)}
-            placeholder={placeholders[kind]}
-            autoCapitalize="none"
-            spellCheck={false}
-            className="flex-1 font-sans"
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') {
-                e.preventDefault()
-                add()
-              }
-            }}
-          />
-          {developers && (
-            <Select<Role>
+        {onChange && (
+          <ListRow
+            className="bg-surface/40"
+            actions={<IconButton icon={Plus} size="sm" label="Add member" onClick={add} disabled={!value.trim()} />}
+          >
+            <KindIcon className="size-4 shrink-0 text-muted" aria-hidden />
+            <Select<Kind>
               variant="quiet"
-              ariaLabel="New member role"
-              value={role}
-              onChange={setRole}
-              options={roleOptions}
-              className="w-32"
+              ariaLabel="Member type"
+              value={kind}
+              onChange={setKind}
+              options={kinds.map((kind) => ({ value: kind, label: labels[kind] }))}
+              className="w-20 shrink-0"
             />
-          )}
-        </ListRow>
+            <Input
+              bare
+              aria-label="Member identity"
+              value={value}
+              onChange={(e) => setValue(e.target.value)}
+              placeholder={placeholders[kind]}
+              autoCapitalize="none"
+              spellCheck={false}
+              className="flex-1 font-sans"
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault()
+                  add()
+                }
+              }}
+            />
+            {developers && (
+              <Select<Role>
+                variant="quiet"
+                ariaLabel="New member role"
+                value={role}
+                onChange={setRole}
+                options={roleOptions}
+                className="w-32"
+              />
+            )}
+          </ListRow>
+        )}
       </List>
       {developers && (
         <p className="text-xs leading-relaxed text-muted">

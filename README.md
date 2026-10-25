@@ -817,7 +817,7 @@ Apps continue to use their workload IP without a credential.
 ```yaml
 ai:
   baseUrl: https://api.openai.com/v1
-  model: gpt-6-sol
+  model: gpt-6.1-sol
 exa:
   baseUrl: https://api.exa.ai
 ```
@@ -1305,7 +1305,9 @@ affected pods).
 
 Space permissions are always enforced. Platform admins create spaces and can
 manage every space. Space admins manage their space, its membership, domains and offerings;
-developers manage its apps and services, including data and credentials. Viewers
+developers manage its apps and services, including data and credentials, and can
+view membership, domains and service offerings in **Space settings** without editing them.
+Space traffic is available to all three roles via **⋯ → Traffic**. Viewers
 can open apps and see their health and aggregate metrics in the console. They
 cannot see logs, build history, files, variables, service data or management
 settings, and cannot make changes. Assign users by email (or `sub:<subject>`

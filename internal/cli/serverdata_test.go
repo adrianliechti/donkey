@@ -15,7 +15,7 @@ func TestDockerBundleKeepsDataInTheStateVolume(t *testing.T) {
 			Runtime: "docker", Image: "ghcr.io/example/donkey-server:test", Domain: "apps.localhost",
 			TLS:  config.InstallTLS{Mode: "ca"},
 			Auth: config.InstallAuth{Issuer: "https://id.example.com", ClientID: "donkey"},
-			AI:   config.InstallAI{BaseURL: "https://api.openai.com/v1", Model: "gpt-6-sol"},
+			AI:   config.InstallAI{BaseURL: "https://api.openai.com/v1", Model: "gpt-6.1-sol"},
 			Data: data,
 		}
 		files, err := renderDockerBundle(settings)

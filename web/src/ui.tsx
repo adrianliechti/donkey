@@ -15,11 +15,13 @@ import {
   CircleCheck,
   Globe,
   Loader2,
+  Search,
+  X,
   type LucideIcon,
 } from 'lucide-react'
 import type { AppMode, Exposure } from './api'
 import { type ControlSize, controlSize, fieldBase, focusRing, iconSize, inputClass } from './controls'
-import type { Health } from './vocabulary'
+import type { Health, StatusTone } from './vocabulary'
 import { useNow } from './hooks'
 
 // The source SVG stays a plain monochrome shape. Rendering it as a mask lets
@@ -91,9 +93,19 @@ export function Card({ children, className = '' }: { children: ReactNode; classN
 //
 // Mixing them up (small caps for both) is what made sections and their
 // fields read as one flat list.
-export function Eyebrow({ children, className = '' }: { children: ReactNode; className?: string }) {
+export function Eyebrow({
+  children,
+  tone,
+  className = '',
+}: {
+  children: ReactNode
+  /** A label that carries news: the attention list is red, a deploy blue. */
+  tone?: 'danger' | 'accent'
+  className?: string
+}) {
+  const color = tone === 'danger' ? 'text-danger' : tone === 'accent' ? 'text-accent' : 'text-muted'
   return (
-    <span className={`block font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-muted ${className}`}>
+    <span className={`block font-mono text-[10px] font-semibold uppercase tracking-[0.14em] ${color} ${className}`}>
       {children}
     </span>
   )
@@ -187,6 +199,238 @@ export function ChoiceCards<T extends string>({
         )
       })}
     </div>
+  )
+}
+
+// ─── Pages ──────────────────────────────────────────────────────────────
+//
+// Every page sits on the paddock — the dotted field — behind the one gutter
+// (px-6) it shares with the header, so the logo, the first tab of a sheet
+// and the first tile start on the same line. An overview is tiles or a
+// panel on the field; an app or a service is one sheet on it (Sheet.tsx).
+// Levels of frame: a panel (the sheet, the fleet's list and its rail) is
+// rounded-xl; a tile or a list inside a page is rounded-lg; a control is
+// rounded-md.
+
+// A document page scrolls with the window. A page that `fill`s takes exactly
+// the window under the header (from the xl breakpoint up, where its panels
+// sit side by side) and stands still: its panels scroll inside, like a
+// workbench in a sheet. Narrower than that, the panels stack and the page
+// scrolls as a document.
+export function Page({ children, fill = false }: { children: ReactNode; fill?: boolean }) {
+  return (
+    <main
+      className={`dotgrid flex flex-1 flex-col gap-6 px-6 py-6 ${
+        fill ? 'xl:h-[calc(100dvh-3.25rem)] xl:min-h-[36rem] xl:flex-none' : ''
+      }`}
+    >
+      {children}
+    </main>
+  )
+}
+
+// PageBar is the top row of an overview: what the page is on the left, what
+// can be done to it on the right — a control's height (h-8), so the row
+// keeps its height whatever a state puts in either side.
+export function PageBar({ children, actions }: { children?: ReactNode; actions?: ReactNode }) {
+  return (
+    <div className="flex min-h-8 flex-wrap items-center justify-between gap-3">
+      <div className="flex min-w-0 flex-wrap items-center gap-3">{children}</div>
+      {actions && <Toolbar className="ml-auto gap-2">{actions}</Toolbar>}
+    </div>
+  )
+}
+
+// A panel: the page-level frame.
+export const panelClass = 'rounded-xl border border-line bg-card shadow-sm'
+
+// TabBar is the top edge of a sheet: the page's tabs on the left, what can
+// be done to the page on the right. The underline sits on the sheet's own
+// border (-mb-px), -ml-3 puts the first tab's icon on the page gutter, and
+// the row scrolls sideways when the tabs are wider than the page.
+export function TabBar<T extends string>({
+  tabs,
+  value,
+  onChange,
+  actions,
+}: {
+  tabs: { id: T; label: string; icon: LucideIcon; alert?: string }[]
+  value: T
+  onChange: (id: T) => void
+  actions?: ReactNode
+}) {
+  return (
+    <div className="flex items-center justify-between gap-4 px-6">
+      <nav
+        className="-mb-px -ml-3 flex min-w-0 gap-1 self-stretch overflow-x-auto overflow-y-hidden pt-1 scrollbar-none"
+        role="tablist"
+      >
+        {tabs.map((t) => (
+          <button
+            key={t.id}
+            role="tab"
+            aria-selected={value === t.id}
+            onClick={() => onChange(t.id)}
+            className={`flex h-11 shrink-0 items-center gap-1.5 border-b-2 px-3 text-sm transition-colors duration-(--duration-fast) focus-visible:outline-2 focus-visible:outline-accent-strong ${
+              value === t.id
+                ? 'border-accent font-medium text-ink'
+                : 'border-transparent text-muted hover:border-line hover:text-ink'
+            }`}
+          >
+            <t.icon className="size-4" aria-hidden />
+            <TabLabel>{t.label}</TabLabel>
+            {/* A tab with news: the dot says where to look (Logs, when the app is down). */}
+            {t.alert && (
+              <>
+                <span className="size-1.5 rounded-full bg-danger" aria-hidden />
+                <span className="sr-only">{t.alert}</span>
+              </>
+            )}
+          </button>
+        ))}
+      </nav>
+      {actions && <Toolbar className="gap-2">{actions}</Toolbar>}
+    </div>
+  )
+}
+
+// Segmented is a choice between a few views of one list — a filter, not
+// navigation — at a control's height. The chosen segment wears the pressed
+// tint of an icon button; the count beside each label is the quiet mono.
+export function Segmented<T extends string>({
+  value,
+  onChange,
+  options,
+  label,
+}: {
+  value: T
+  onChange: (value: T) => void
+  options: { value: T; label: string; count?: number }[]
+  label: string
+}) {
+  return (
+    <div
+      role="group"
+      aria-label={label}
+      className="inline-flex h-8 shrink-0 items-center gap-0.5 rounded-md border border-line bg-card p-0.5"
+    >
+      {options.map((o) => {
+        const selected = o.value === value
+        return (
+          <button
+            key={o.value}
+            type="button"
+            aria-pressed={selected}
+            onClick={() => onChange(o.value)}
+            className={`flex h-full items-center gap-1.5 rounded px-2.5 text-xs whitespace-nowrap transition-colors duration-(--duration-fast) focus-visible:outline-2 focus-visible:outline-accent-strong ${
+              selected ? 'bg-line/60 font-medium text-ink' : 'text-muted hover:text-ink'
+            }`}
+          >
+            <TabLabel>{o.label}</TabLabel>
+            {o.count !== undefined && (
+              <span className={`font-mono ${selected ? 'text-ink-soft' : 'text-muted'}`}>{o.count}</span>
+            )}
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
+// SearchField is the boxed search that sits in a bar beside buttons: a
+// control's height, on the card colour so it reads as a control on the
+// field. (The bare searches atop a list live in Workbench.)
+export function SearchField({
+  value,
+  onChange,
+  placeholder,
+  label,
+  className = 'w-64',
+}: {
+  value: string
+  onChange: (value: string) => void
+  placeholder: string
+  label?: string
+  className?: string
+}) {
+  return (
+    <label
+      className={`flex h-8 min-w-0 items-center gap-2 rounded-md border border-line bg-card pr-0.5 pl-2.5 transition-colors duration-(--duration-fast) focus-within:border-line-strong hover:border-line-strong ${className}`}
+    >
+      <Search className="size-3.5 shrink-0 text-muted" aria-hidden />
+      <input
+        type="search"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        aria-label={label ?? placeholder}
+        spellCheck={false}
+        className="h-full min-w-0 flex-1 bg-transparent text-sm text-ink outline-none placeholder:text-muted [&::-webkit-search-cancel-button]:hidden"
+      />
+      {value && <IconButton icon={X} size="sm" label="Clear" onClick={() => onChange('')} />}
+    </label>
+  )
+}
+
+// EmptyState says why a list or a grid is empty, in its place: an icon, a
+// line, the quiet reason, perhaps one thing to do. It fills the slot it
+// stands in — a panel's body, a dashed tile — so the page around it stays put.
+export function EmptyState({
+  icon: Icon,
+  title,
+  children,
+  action,
+}: {
+  icon?: LucideIcon
+  title?: ReactNode
+  children?: ReactNode
+  action?: ReactNode
+}) {
+  return (
+    <div className="px-6 py-12 text-center">
+      {Icon && <Icon className="mx-auto mb-3 size-6 text-muted" aria-hidden />}
+      {title && <h2 className="text-sm font-semibold break-words text-ink">{title}</h2>}
+      {children && <div className={`mx-auto max-w-md text-sm text-muted ${title ? 'mt-1' : ''}`}>{children}</div>}
+      {action && <div className="mt-4 flex justify-center">{action}</div>}
+    </div>
+  )
+}
+
+// StatusLine is one line of state: a dot (or a spinner, while something is
+// under way) and a few words, both in the tone of the news. `quiet` keeps
+// the dot and gives the words to screen readers only — for a state that is
+// not news. The fleet's rows and a space's page say how a space is doing
+// with the same line.
+const statusTone: Record<StatusTone, string> = {
+  danger: 'text-danger',
+  warning: 'text-warning',
+  accent: 'text-accent',
+  success: 'text-success',
+  muted: 'text-muted',
+}
+
+export function StatusLine({
+  tone,
+  label,
+  busy = false,
+  quiet = false,
+  size = 'sm',
+}: {
+  tone: StatusTone
+  label: ReactNode
+  busy?: boolean
+  quiet?: boolean
+  size?: ControlSize
+}) {
+  return (
+    <span className={`flex min-w-0 items-center gap-1.5 ${size === 'sm' ? 'text-xs' : 'text-sm'} ${statusTone[tone]}`}>
+      {busy ? (
+        <Loader2 className="size-3 shrink-0 animate-spin" aria-hidden />
+      ) : (
+        <span className="size-1.5 shrink-0 rounded-full bg-current" aria-hidden />
+      )}
+      <span className={quiet ? 'sr-only' : 'truncate'}>{label}</span>
+    </span>
   )
 }
 
@@ -345,6 +589,21 @@ export function Disclosure({
   )
 }
 
+// Mark is the small box a row or a tile leads with: a service's icon, a
+// space's initial. It sits on the raised tint and, under the hover tint of
+// the row or tile around it (a `group`), turns to the card colour so it does
+// not sink in. Decorative: what it stands for is named beside it.
+export function Mark({ children, className = 'text-muted' }: { children: ReactNode; className?: string }) {
+  return (
+    <span
+      className={`grid size-8 shrink-0 place-items-center rounded-md bg-raised transition-colors duration-(--duration-fast) group-hover:bg-card ${className}`}
+      aria-hidden
+    >
+      {children}
+    </span>
+  )
+}
+
 // Chip is a small mono token — a variable name, a detected runtime. Tinted,
 // no outline; `dashed` marks one that would apply but does not yet.
 export function Chip({ children, dashed = false, title }: { children: ReactNode; dashed?: boolean; title?: string }) {
@@ -421,6 +680,18 @@ export function Toolbar({ children, className = '' }: { children: ReactNode; cla
   return <div className={`flex shrink-0 items-center gap-1 ${className}`}>{children}</div>
 }
 
+// The primary action is ink on the surface — the console's one solid
+// button, and it carries no colour: blue is for what is selected or
+// focused, red for what destroys. A quiet button answers hover with the
+// same tint as an icon button or a crumb (line/60), so every control in a
+// row lights up alike.
+const buttonStyles = {
+  primary: 'bg-ink text-surface hover:bg-emphasis border border-transparent font-medium',
+  quiet: 'bg-transparent text-ink-soft hover:bg-line/60 hover:text-ink border border-line',
+  danger: 'bg-transparent text-danger hover:bg-danger hover:text-white border border-danger/40',
+}
+const buttonBase = `inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-md transition-[color,background-color,border-color,scale] duration-(--duration-fast) ease-emphasized motion-safe:active:scale-[.97] ${focusRing}`
+
 export function Button({
   children,
   onClick,
@@ -442,21 +713,13 @@ export function Button({
   title?: string
   className?: string
 }) {
-  // The primary action is ink on the surface — the console's one solid
-  // button, and it carries no colour: blue is for what is selected or
-  // focused, red for what destroys.
-  const styles = {
-    primary: 'bg-ink text-surface hover:bg-emphasis border border-transparent font-medium',
-    quiet: 'bg-transparent text-ink-soft hover:bg-line/50 hover:text-ink border border-line',
-    danger: 'bg-transparent text-danger hover:bg-danger hover:text-white border border-danger/40',
-  }[kind]
   return (
     <button
       type={type}
       onClick={onClick}
       disabled={disabled}
       title={title}
-      className={`inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-md transition-[color,background-color,border-color,scale] duration-(--duration-fast) ease-emphasized motion-safe:active:scale-[.97] disabled:pointer-events-none disabled:opacity-40 ${focusRing} ${controlSize[size]} ${styles} ${className}`}
+      className={`${buttonBase} disabled:pointer-events-none disabled:opacity-40 ${controlSize[size]} ${buttonStyles[kind]} ${className}`}
     >
       {Icon && <Icon className={`${iconSize[size]} shrink-0`} aria-hidden />}
       {children}
@@ -481,16 +744,12 @@ export function LinkButton({
   icon?: LucideIcon
   className?: string
 }) {
-  const styles = {
-    primary: 'bg-ink text-surface hover:bg-emphasis border border-transparent font-medium',
-    quiet: 'bg-transparent text-ink-soft hover:bg-line/50 hover:text-ink border border-line',
-  }[kind]
   return (
     <a
       href={href}
       target="_blank"
       rel="noreferrer"
-      className={`inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-md transition-[color,background-color,border-color,scale] duration-(--duration-fast) ease-emphasized motion-safe:active:scale-[.97] ${focusRing} ${controlSize[size]} ${styles} ${className}`}
+      className={`${buttonBase} ${controlSize[size]} ${buttonStyles[kind]} ${className}`}
     >
       {children}
       {Icon && <Icon className={`${iconSize[size]} shrink-0`} aria-hidden />}

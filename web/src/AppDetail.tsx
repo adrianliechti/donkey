@@ -9,11 +9,13 @@ import {
   GitCommitHorizontal,
   Globe2,
   HardDrive,
+  Loader2,
   Rocket,
   RotateCw,
   ScrollText,
   SlidersHorizontal,
   UploadCloud,
+  type LucideIcon,
 } from 'lucide-react'
 import { api, type EndpointState, type EndpointStatus } from './api'
 import { AddonsCard } from './AddonsCard'
@@ -28,11 +30,12 @@ import { Sheet } from './Sheet'
 import type { SourceSearch } from './sourceSearch'
 import { SourcePanel } from './SourcePanel'
 import { StoredRelease } from './StoredRelease'
-import { DeployPlaceholder, DeployProgress } from './Overview'
+import { DeployPlaceholder, DeployProgress } from './DeployProgress'
 import { useAppBuild, useAppBuilds, useAppStatus, useDeploys, useFleet } from './queries'
 import { SignalChips } from './ReleaseView'
 import {
   Button,
+  Callout,
   Card,
   ErrorNote,
   IconButton,
@@ -43,8 +46,7 @@ import {
   SectionHeader,
   Spinner,
   StateChip,
-  TabLabel,
-  Toolbar,
+  TabBar,
 } from './ui'
 import { ago, errText } from './format'
 
@@ -53,18 +55,18 @@ import { ago, errText } from './format'
 // "is it up?" stays above all of them.
 export type AppTab = 'overview' | 'release' | 'source' | 'traffic' | 'logs' | 'files' | 'variables' | 'settings'
 
-const TABS: { id: AppTab; label: string; icon: React.ReactNode }[] = [
-  { id: 'overview', label: 'Overview', icon: <FileText className="size-4" aria-hidden /> },
-  { id: 'source', label: 'Source', icon: <GitCommitHorizontal className="size-4" aria-hidden /> },
-  { id: 'release', label: 'Deployment', icon: <Rocket className="size-4" aria-hidden /> },
+const TABS: { id: AppTab; label: string; icon: LucideIcon }[] = [
+  { id: 'overview', label: 'Overview', icon: FileText },
+  { id: 'source', label: 'Source', icon: GitCommitHorizontal },
+  { id: 'release', label: 'Deployment', icon: Rocket },
   // One view of how the app is used: its audience, requests and resources.
   // The id stays 'traffic' so links to #/app/…/traffic keep working.
-  { id: 'traffic', label: 'Analytics', icon: <ChartColumn className="size-4" aria-hidden /> },
-  { id: 'logs', label: 'Logs', icon: <ScrollText className="size-4" aria-hidden /> },
-  { id: 'files', label: 'Files', icon: <HardDrive className="size-4" aria-hidden /> },
+  { id: 'traffic', label: 'Analytics', icon: ChartColumn },
+  { id: 'logs', label: 'Logs', icon: ScrollText },
+  { id: 'files', label: 'Files', icon: HardDrive },
   // Settings is everything about how the app runs: how it is reached, its
   // variables, and removing it. 'variables' links land here too.
-  { id: 'settings', label: 'Settings', icon: <SlidersHorizontal className="size-4" aria-hidden /> },
+  { id: 'settings', label: 'Settings', icon: SlidersHorizontal },
 ]
 
 // Viewers read how an app is doing, never how it is configured.
@@ -86,6 +88,10 @@ export function AppDetail({
   onRemoved: () => void
 }) {
   const { data: status, error, reload } = useAppStatus(space, app)
+  // What the last action from the toolbar had to say, on the tab it was
+  // said on: an error shows in the page, not in the toolbar, so the toolbar
+  // never changes shape — and leaving the tab leaves it behind.
+  const [actionError, setActionError] = useState<{ tab: AppTab; message: string } | null>(null)
   const search = useSearch({ strict: false }) as SourceSearch
   const { data: fleet } = useFleet()
   const deploy = useDeploys().byApp.get(`${space}/${app}`)
@@ -112,58 +118,44 @@ export function AppDetail({
       fill={fill}
       tabs={
         status?.found && (
-          <div className="flex items-center justify-between gap-4 px-6">
-            {/* Files is only offered when there is a disk to browse — an app
-                without one has nothing on it a redeploy would not rebuild.
-                The tabs' underline sits on the header's own border (-mb-px),
-                -ml-3 puts the first tab's icon on the page gutter, and the row
-                scrolls sideways when the tabs are wider than the page. */}
-            <nav
-              className="-mb-px -ml-3 flex min-w-0 gap-1 self-stretch overflow-x-auto overflow-y-hidden pt-1 scrollbar-none"
-              role="tablist"
-            >
-              {TABS.filter(
-                (t) => (canManage || VIEWER_TABS.includes(t.id)) && (t.id !== 'files' || status.hasStorage),
-              ).map((t) => (
-                <button
-                  key={t.id}
-                  role="tab"
-                  aria-selected={shown === t.id}
-                  onClick={() => onTab(t.id)}
-                  className={`flex h-11 shrink-0 items-center gap-1.5 border-b-2 px-3 text-sm transition-colors focus-visible:outline-2 focus-visible:outline-accent-strong ${
-                    shown === t.id
-                      ? 'border-accent font-medium text-ink'
-                      : 'border-transparent text-muted hover:border-line hover:text-ink'
-                  }`}
-                >
-                  {t.icon}
-                  <TabLabel>{t.label}</TabLabel>
-                  {/* An app in trouble: the way to its diagnosis is Logs. */}
-                  {t.id === 'logs' && !status.healthy && (
-                    <span className="size-1.5 rounded-full bg-danger" aria-label="unhealthy" />
-                  )}
-                </button>
-              ))}
-            </nav>
-            <Toolbar className="gap-2">
-              {canManage && <RestartButton space={space} app={app} onRestarted={reload} />}
-              {status.url && (
-                <LinkButton href={status.url} icon={ExternalLink} kind="quiet" size="sm">
-                  Open
-                </LinkButton>
-              )}
-              {canManage && (
-                <Button icon={UploadCloud} size="sm" onClick={onDeploy}>
-                  Deploy
-                </Button>
-              )}
-            </Toolbar>
-          </div>
+          // Files is only offered when there is a disk to browse — an app
+          // without one has nothing on it a redeploy would not rebuild. An
+          // app in trouble: the way to its diagnosis is Logs, so that tab
+          // carries the dot.
+          <TabBar
+            tabs={TABS.filter(
+              (t) => (canManage || VIEWER_TABS.includes(t.id)) && (t.id !== 'files' || status.hasStorage),
+            ).map((t) => (t.id === 'logs' && !status.healthy ? { ...t, alert: 'unhealthy' } : t))}
+            value={shown}
+            onChange={onTab}
+            actions={
+              <>
+                {canManage && (
+                  <RestartButton
+                    space={space}
+                    app={app}
+                    onRestarted={reload}
+                    onError={(message) => setActionError(message ? { tab: shown, message } : null)}
+                  />
+                )}
+                {status.url && (
+                  <LinkButton href={status.url} icon={ExternalLink} kind="quiet">
+                    Open
+                  </LinkButton>
+                )}
+                {canManage && (
+                  <Button icon={UploadCloud} onClick={onDeploy}>
+                    Deploy
+                  </Button>
+                )}
+              </>
+            }
+          />
         )
       }
     >
       <div className={`flex w-full flex-col gap-5 px-6 py-6 ${fill ? 'min-h-0 flex-1' : ''}`}>
-        <ErrorNote message={error} />
+        <ErrorNote message={error || (actionError?.tab === shown ? actionError.message : '')} />
         {status === null && !error && <Spinner label="Asking the cluster…" />}
 
         {/* Not running (yet): its first deploy, as it goes or how it ended. */}
@@ -183,9 +175,9 @@ export function AppDetail({
         )}
         {/* A new version on its way to a running app. */}
         {status?.found && deploy && !deploy.finishedAt && (
-          <div className="rounded-lg border border-accent/40 bg-accent-soft/30 px-4 py-3">
+          <Callout tone="info" icon={Loader2} role="status">
             <DeployProgress deploy={deploy} compact />
-          </div>
+          </Callout>
         )}
 
         {status?.found && (
@@ -391,33 +383,39 @@ function InstancesCard({ pods, startedAt }: { pods: string[]; startedAt?: string
   )
 }
 
-function RestartButton({ space, app, onRestarted }: { space: string; app: string; onRestarted: () => void }) {
+function RestartButton({
+  space,
+  app,
+  onRestarted,
+  onError,
+}: {
+  space: string
+  app: string
+  onRestarted: () => void
+  onError: (message: string) => void
+}) {
   const [busy, setBusy] = useState(false)
-  const [error, setError] = useState('')
 
   async function restart() {
     setBusy(true)
-    setError('')
+    onError('')
     try {
       await api.restart(space, app)
       onRestarted()
     } catch (err) {
-      setError(errText(err, 'Restarting did not work.'))
+      onError(errText(err, 'Restarting did not work.'))
     } finally {
       setBusy(false)
     }
   }
 
   return (
-    <>
-      {error && <span className="text-xs text-danger">{error}</span>}
-      <IconButton
-        icon={RotateCw}
-        label={busy ? 'Restarting…' : 'Restart the app'}
-        onClick={restart}
-        disabled={busy}
-        className={busy ? '[&>svg]:animate-spin' : ''}
-      />
-    </>
+    <IconButton
+      icon={RotateCw}
+      label={busy ? 'Restarting…' : 'Restart the app'}
+      onClick={restart}
+      disabled={busy}
+      className={busy ? '[&>svg]:animate-spin' : ''}
+    />
   )
 }

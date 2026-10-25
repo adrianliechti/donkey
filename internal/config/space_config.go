@@ -20,7 +20,7 @@ type SpaceConfig struct {
 	// subdomains; an empty list allows any hostname.
 	Domains []string `json:"domains" yaml:"domains"`
 	// Offerings adds to the common catalog and customizes offerings in this
-	// space. Config belongs to admins; Defaults may be overridden by apps.
+	// space. Config is set by admins; Defaults may be overridden by apps.
 	Offerings map[string]SpaceOffering `json:"offerings,omitempty" yaml:"offerings,omitempty"`
 }
 

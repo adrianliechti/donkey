@@ -32,7 +32,8 @@ only; no donkey component authorizes on them. The server's `auth`
   and storage failures never grant access or trigger another bootstrap.
 - Platform admins manage all spaces. Space admins manage membership, domains,
   and the space; developers manage apps and services, including credentials,
-  data, and tunnels. Viewers can open apps and read status and aggregate metrics,
+  data, and tunnels, and can view space settings, including membership, without
+  editing them. Viewers can open apps and read status and aggregate metrics,
   but cannot read logs, build history, files, variables or service data.
   Empty space membership grants nobody a role. Permissions
   are read on every API request, including the resolved targets of uploads and

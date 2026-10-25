@@ -23,3 +23,21 @@ export const fieldBase =
 export function inputClass(size: ControlSize = 'md', extra = ''): string {
   return `${fieldBase} ${controlSize[size]} ${extra}`
 }
+
+// A tile: a card on the field that leads somewhere — an app, a service. It
+// answers hover the way a row of a list does, with its background; the
+// border stays, nothing lifts or glows. A box on the raised tint inside it
+// (a mark, a chip) turns to the card colour under hover (group-hover), so
+// it does not sink into the tile. `pending` and `failed` are the dashed
+// tiles of an app on its first deploy.
+const tileTones = {
+  default: 'border-line bg-card hover:bg-raised',
+  danger: 'border-danger/50 bg-card hover:bg-raised',
+  pending: 'border-dashed border-accent/50 bg-accent-soft/30 hover:bg-accent-soft/50',
+  failed: 'border-dashed border-danger/50 bg-danger/[.03] hover:bg-danger/[.06]',
+}
+export type TileTone = keyof typeof tileTones
+
+export function tileClass(tone: TileTone = 'default'): string {
+  return `group rounded-lg border transition-colors duration-(--duration-fast) ${tileTones[tone]}`
+}

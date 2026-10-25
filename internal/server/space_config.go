@@ -123,7 +123,6 @@ func (s *Server) authorizeRoute(w http.ResponseWriter, r *http.Request) bool {
 			return true
 		}
 		admin := r.Pattern == "DELETE /v1/spaces/{space}" ||
-			r.Pattern == "GET /v1/spaces/{space}/settings" ||
 			r.Pattern == "PUT /v1/spaces/{space}/settings"
 		return s.requireSpace(w, r, space, admin)
 	}

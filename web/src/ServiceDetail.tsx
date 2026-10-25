@@ -18,7 +18,7 @@ import {
   SectionHeader,
   Spinner,
   StateChip,
-  TabLabel,
+  TabBar,
 } from './ui'
 import { healthOf } from './vocabulary'
 
@@ -62,36 +62,17 @@ export function ServiceDetail({
       fill={!!entry && ownTab && !!Console}
       tabs={
         entry && (
-          <div className="flex items-center justify-between gap-4 px-6">
-            <nav
-              className="-mb-px -ml-3 flex min-w-0 gap-1 self-stretch overflow-x-auto overflow-y-hidden pt-1 scrollbar-none"
-              role="tablist"
-            >
-              {tabs.map((t) => {
-                const Icon = t.icon
-                return (
-                  <button
-                    key={t.id}
-                    role="tab"
-                    aria-selected={shown === t.id}
-                    onClick={() => onTab(t.id)}
-                    className={`flex h-11 shrink-0 items-center gap-1.5 border-b-2 px-3 text-sm transition-colors focus-visible:outline-2 focus-visible:outline-accent-strong ${
-                      shown === t.id
-                        ? 'border-accent font-medium text-ink'
-                        : 'border-transparent text-muted hover:border-line hover:text-ink'
-                    }`}
-                  >
-                    <Icon className="size-4" aria-hidden />
-                    <TabLabel>{t.label}</TabLabel>
-                  </button>
-                )
-              })}
-            </nav>
-            <div className="flex shrink-0 items-center gap-2 py-2">
-              {entry.state && entry.state !== 'ready' && <StateChip state={entry.state} />}
-              {entry.type && <span className="font-mono text-xs text-muted">{entry.type}</span>}
-            </div>
-          </div>
+          <TabBar
+            tabs={tabs}
+            value={shown}
+            onChange={onTab}
+            actions={
+              <>
+                {entry.state && entry.state !== 'ready' && <StateChip state={entry.state} />}
+                {entry.type && <span className="font-mono text-xs text-muted">{entry.type}</span>}
+              </>
+            }
+          />
         )
       }
     >

@@ -70,13 +70,15 @@ export function SpaceActions({ space }: { space: string }) {
               <Activity className="size-4" aria-hidden /> Traffic
             </button>
           </MenuItem>
+          {role !== 'viewer' && (
+            <MenuItem>
+              <button type="button" onClick={() => setDialog('settings')} className={menuItem}>
+                <Settings className="size-4" aria-hidden /> Space settings
+              </button>
+            </MenuItem>
+          )}
           {role === 'admin' && (
             <>
-              <MenuItem>
-                <button type="button" onClick={() => setDialog('settings')} className={menuItem}>
-                  <Settings className="size-4" aria-hidden /> Space settings
-                </button>
-              </MenuItem>
               <div className="my-1 h-px bg-line" aria-hidden />
               <MenuItem>
                 <button
@@ -93,18 +95,19 @@ export function SpaceActions({ space }: { space: string }) {
       </Menu>
 
       {dialog === 'add' && <AddServiceFlow space={space} onClose={close} />}
-      {dialog === 'settings' && <SpaceSettingsDialog space={space} onClose={close} />}
+      {dialog === 'settings' && <SpaceSettingsDialog space={space} readOnly={role !== 'admin'} onClose={close} />}
       {dialog === 'delete' && <DeleteSpaceDialog space={space} apps={apps} onClose={close} />}
       <SpaceTrafficDrawer space={space} open={dialog === 'traffic'} onClose={close} />
     </>
   )
 }
 
-function SpaceSettingsDialog({ space, onClose }: { space: string; onClose: () => void }) {
+function SpaceSettingsDialog({ space, readOnly, onClose }: { space: string; readOnly: boolean; onClose: () => void }) {
   const queryClient = useQueryClient()
   return (
     <SpaceSettings
       space={space}
+      readOnly={readOnly}
       onClose={onClose}
       onSaved={() => queryClient.invalidateQueries({ queryKey: fleetQuery.queryKey })}
     />

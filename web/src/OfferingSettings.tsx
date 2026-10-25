@@ -16,10 +16,12 @@ function OfferingValues({
   schema,
   values,
   onChange,
+  readOnly = false,
 }: {
   schema?: ParametersSchema
   values: ServiceParameters
   onChange: (values: ServiceParameters) => void
+  readOnly?: boolean
 }) {
   const fields = schemaFields(schema)
   if (!fields.length) return null
@@ -36,20 +38,22 @@ function OfferingValues({
                 <ParameterField
                   field={field}
                   value={values[field.name]}
-                  disabled={false}
+                  disabled={readOnly}
                   onChange={(value) => onChange({ ...values, [field.name]: value })}
                 />
-                <button
-                  type="button"
-                  onClick={() => {
-                    const next = { ...values }
-                    delete next[field.name]
-                    onChange(next)
-                  }}
-                  className="self-end pb-2 text-xs text-muted underline-offset-2 hover:text-ink hover:underline"
-                >
-                  Use default
-                </button>
+                {!readOnly && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const next = { ...values }
+                      delete next[field.name]
+                      onChange(next)
+                    }}
+                    className="self-end pb-2 text-xs text-muted underline-offset-2 hover:text-ink hover:underline"
+                  >
+                    Use default
+                  </button>
+                )}
               </>
             ) : (
               <>
@@ -63,18 +67,20 @@ function OfferingValues({
                         : 'optional'}
                   </span>
                 </span>
-                <button
-                  type="button"
-                  onClick={() =>
-                    onChange({
-                      ...values,
-                      [field.name]: field.schema.default ?? (field.schema.type === 'boolean' ? false : ''),
-                    })
-                  }
-                  className="text-xs text-muted underline-offset-2 hover:text-ink hover:underline"
-                >
-                  Change
-                </button>
+                {!readOnly && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      onChange({
+                        ...values,
+                        [field.name]: field.schema.default ?? (field.schema.type === 'boolean' ? false : ''),
+                      })
+                    }
+                    className="text-xs text-muted underline-offset-2 hover:text-ink hover:underline"
+                  >
+                    Change
+                  </button>
+                )}
               </>
             )}
           </li>
@@ -92,9 +98,11 @@ function OfferingValues({
 export function OfferingSettings({
   offerings = {},
   onChange,
+  readOnly = false,
 }: {
   offerings?: Record<string, SpaceOffering>
   onChange: (offerings: Record<string, SpaceOffering>) => void
+  readOnly?: boolean
 }) {
   const { data: catalog, error } = useCatalog()
   const [editing, setEditing] = useState<string | null>(null)
@@ -109,7 +117,11 @@ export function OfferingSettings({
     <section aria-label="Offerings" className="space-y-3">
       <SectionHeader
         title="Service offerings"
-        description="Common services are always available. Switch others on for this space and pin defaults for new services."
+        description={
+          readOnly
+            ? 'Services available in this space and their defaults. Common services are always available.'
+            : 'Common services are always available. Switch others on for this space and pin defaults for new services.'
+        }
       />
       <ErrorNote message={error} />
       {!catalog && !error && <Spinner label="Loading offerings…" />}
@@ -136,6 +148,8 @@ export function OfferingSettings({
                 </div>
                 {type?.common ? (
                   <span className="text-xs text-muted">included</span>
+                ) : readOnly ? (
+                  <span className="text-xs text-muted">{enabled ? 'enabled' : 'disabled'}</span>
                 ) : (
                   <Toggle
                     size="sm"
@@ -150,7 +164,7 @@ export function OfferingSettings({
                 <IconButton
                   icon={ChevronDown}
                   size="sm"
-                  label={`Configure ${type?.title || id}`}
+                  label={`${readOnly ? 'View settings for' : 'Configure'} ${type?.title || id}`}
                   disabled={!enabled || !configurable}
                   active={expanded}
                   onClick={() => setEditing(expanded ? null : id)}
@@ -167,6 +181,7 @@ export function OfferingSettings({
                       </p>
                       <OfferingValues
                         schema={type?.spaceConfiguration}
+                        readOnly={readOnly}
                         values={entry?.config ?? {}}
                         onChange={(config) => update(id, { ...entry, config })}
                       />
@@ -180,12 +195,13 @@ export function OfferingSettings({
                       </p>
                       <OfferingValues
                         schema={type?.parameters}
+                        readOnly={readOnly}
                         values={entry?.defaults ?? {}}
                         onChange={(defaults) => update(id, { ...entry, defaults })}
                       />
                     </div>
                   )}
-                  {type?.common && entry && (
+                  {!readOnly && type?.common && entry && (
                     <button
                       type="button"
                       onClick={() => {

@@ -119,7 +119,7 @@ auth:
 
 ai:
   baseUrl: https://api.openai.com/v1
-  model: gpt-6-sol
+  model: gpt-6.1-sol
   # apiKey comes from the environment
 ```
 

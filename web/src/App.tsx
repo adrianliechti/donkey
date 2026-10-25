@@ -19,11 +19,12 @@ import type { SourceSearch } from './sourceSearch'
 import { CommandPalette } from './CommandPalette'
 import { useDeploy } from './deploy'
 import { DeployProvider } from './DeployDrawer'
-import { FleetOverview, SpaceOverview } from './Overview'
+import { FleetOverview } from './FleetOverview'
+import { SpaceOverview } from './Overview'
 import { fleetQuery, statusQuery, useFleet } from './queries'
 import { Crumbs } from './Switcher'
 import { SystemView } from './SystemView'
-import { DonkeyLogo, IconButton, Toolbar } from './ui'
+import { DonkeyLogo, IconButton, Page, Toolbar } from './ui'
 import { UserMenu } from './UserMenu'
 import { PlatformSettings } from './PlatformSettings'
 import { ServiceDetail } from './ServiceDetail'
@@ -190,6 +191,7 @@ const homeRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/',
   component: FleetOverview,
+  head: () => ({ meta: [{ title: pageTitle('Spaces') }] }),
 })
 
 // The previous console called the fleet "#/apps" — old bookmarks land here.
@@ -205,9 +207,9 @@ const systemRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/system',
   component: () => (
-    <main className="w-full px-6 py-6">
+    <Page>
       <SystemView />
-    </main>
+    </Page>
   ),
   head: () => ({ meta: [{ title: pageTitle('System') }] }),
 })

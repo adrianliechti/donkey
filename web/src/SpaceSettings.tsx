@@ -20,10 +20,12 @@ export function DomainSettings({
   domains,
   onChange,
   placeholder,
+  readOnly = false,
 }: {
   domains: string[]
   onChange: (domains: string[]) => void
   placeholder?: string
+  readOnly?: boolean
 }) {
   const [draft, setDraft] = useState('')
   function add() {
@@ -55,13 +57,15 @@ export function DomainSettings({
           <ListRow
             key={domain}
             actions={
-              <IconButton
-                icon={X}
-                size="sm"
-                kind="danger"
-                label={`Remove domain ${domain}`}
-                onClick={() => onChange(domains.filter((d) => d !== domain))}
-              />
+              !readOnly && (
+                <IconButton
+                  icon={X}
+                  size="sm"
+                  kind="danger"
+                  label={`Remove domain ${domain}`}
+                  onClick={() => onChange(domains.filter((d) => d !== domain))}
+                />
+              )
             }
           >
             <Globe2 className="size-4 shrink-0 text-muted" aria-hidden />
@@ -71,28 +75,30 @@ export function DomainSettings({
             <span className="hidden truncate font-mono text-xs text-muted sm:inline">https://my-app.{domain}</span>
           </ListRow>
         ))}
-        <ListRow
-          className="bg-surface/40"
-          actions={<IconButton icon={Plus} size="sm" label="Add domain" onClick={add} disabled={!draft.trim()} />}
-        >
-          <Plus className="size-4 shrink-0 text-muted" aria-hidden />
-          <Input
-            bare
-            aria-label="New domain"
-            value={draft}
-            placeholder="Add a domain — team.example.com"
-            autoCapitalize="none"
-            spellCheck={false}
-            onChange={(e) => setDraft(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') {
-                e.preventDefault()
-                add()
-              }
-            }}
-            className="flex-1"
-          />
-        </ListRow>
+        {!readOnly && (
+          <ListRow
+            className="bg-surface/40"
+            actions={<IconButton icon={Plus} size="sm" label="Add domain" onClick={add} disabled={!draft.trim()} />}
+          >
+            <Plus className="size-4 shrink-0 text-muted" aria-hidden />
+            <Input
+              bare
+              aria-label="New domain"
+              value={draft}
+              placeholder="Add a domain — team.example.com"
+              autoCapitalize="none"
+              spellCheck={false}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault()
+                  add()
+                }
+              }}
+              className="flex-1"
+            />
+          </ListRow>
+        )}
       </List>
     </section>
   )
@@ -109,11 +115,13 @@ export function SpaceForm({
   onChange,
   name,
   disabled = false,
+  readOnly = false,
 }: {
   settings: SpaceConfig
   onChange: (settings: SpaceConfig) => void
   name?: { value: string; onChange: (name: string) => void; domainPlaceholder?: string }
   disabled?: boolean
+  readOnly?: boolean
 }) {
   const desktop = useMediaQuery('(min-width: 640px)')
   return (
@@ -155,11 +163,13 @@ export function SpaceForm({
               label="Allow public apps"
               description="Off by default. Turning this off switches existing public apps to login protection and prevents public deployments."
               checked={settings.allowPublic ?? false}
+              disabled={readOnly}
               onChange={(allowPublic) => onChange({ ...settings, allowPublic })}
             />
             <DomainSettings
               domains={settings.domains ?? []}
               placeholder={name?.domainPlaceholder}
+              readOnly={readOnly}
               onChange={(domains) => onChange({ ...settings, domains })}
             />
           </TabPanel>
@@ -169,19 +179,26 @@ export function SpaceForm({
               description={
                 name
                   ? 'Add people or teams now, or later in space settings.'
-                  : 'Give people and teams a role in this space.'
+                  : readOnly
+                    ? 'People and teams with access to this space.'
+                    : 'Give people and teams a role in this space.'
               }
             />
             <MembershipEditor
               admins={settings.admins}
               developers={settings.developers}
               viewers={settings.viewers ?? {}}
-              onChange={(admins, developers, viewers) => onChange({ ...settings, admins, developers, viewers })}
+              onChange={
+                readOnly
+                  ? undefined
+                  : (admins, developers, viewers) => onChange({ ...settings, admins, developers, viewers })
+              }
             />
           </TabPanel>
           <TabPanel unmount={false} className="focus:outline-none">
             <OfferingSettings
               offerings={settings.offerings}
+              readOnly={readOnly}
               onChange={(offerings) => onChange({ ...settings, offerings })}
             />
           </TabPanel>
@@ -193,10 +210,12 @@ export function SpaceForm({
 
 export function SpaceSettings({
   space,
+  readOnly = false,
   onClose,
   onSaved,
 }: {
   space: string
+  readOnly?: boolean
   onClose: () => void
   onSaved: () => void
 }) {
@@ -226,7 +245,7 @@ export function SpaceSettings({
   }, [space])
 
   async function save() {
-    if (!settings) return
+    if (!settings || readOnly) return
     setBusy(true)
     setError('')
     try {
@@ -255,7 +274,7 @@ export function SpaceSettings({
       <ModalNotice message={error} />
       <ModalBody padded={false}>
         {settings ? (
-          <SpaceForm settings={settings} onChange={setSettings} disabled={busy} />
+          <SpaceForm settings={settings} onChange={setSettings} disabled={busy} readOnly={readOnly} />
         ) : (
           <div className="flex flex-1 items-center justify-center">
             {!error && <Spinner label="Loading space settings…" />}
@@ -263,12 +282,15 @@ export function SpaceSettings({
         )}
       </ModalBody>
       <ModalFooter>
+        {readOnly && <p className="mr-auto text-xs text-muted">Only space admins can change settings.</p>}
         <Button kind="quiet" onClick={onClose} disabled={busy}>
-          Cancel
+          {readOnly ? 'Close' : 'Cancel'}
         </Button>
-        <Button onClick={save} disabled={!dirty || busy}>
-          {busy ? 'Saving…' : 'Save settings'}
-        </Button>
+        {!readOnly && (
+          <Button onClick={save} disabled={!dirty || busy}>
+            {busy ? 'Saving…' : 'Save settings'}
+          </Button>
+        )}
       </ModalFooter>
     </Modal>
   )

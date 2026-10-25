@@ -239,7 +239,12 @@ export function useDeploys() {
     }
   }
   const byApp = new Map((q.data ?? []).map((d) => [`${d.space}/${d.app}`, d]))
-  return { deploys: q.data ?? [], byApp }
+  return {
+    deploys: q.data ?? [],
+    byApp,
+    error: q.error ? errText(q.error, 'Could not load recent deploys.') : '',
+    loading: q.isPending,
+  }
 }
 
 export function useAppStatus(space: string, app: string) {

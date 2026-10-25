@@ -5,6 +5,11 @@ import type { AppMode } from './api'
 
 export type Health = 'ok' | 'bad' | 'unknown'
 
+// The tone of a line of state — a dot and a few words — wherever one is
+// shown: the fleet's rows, a space's page. Health semantics and the accent;
+// muted when there is nothing to say.
+export type StatusTone = 'danger' | 'warning' | 'accent' | 'success' | 'muted'
+
 export function healthOf(healthy: boolean, ready: string): Health {
   if (ready === 'status unavailable') return 'unknown'
   return healthy ? 'ok' : 'bad'
