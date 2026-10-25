@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/adrianliechti/donkey/internal/ai"
 	"github.com/adrianliechti/donkey/internal/build"
@@ -36,6 +37,101 @@ func (repairRuntime) GetEnv(context.Context, string, string) (map[string]string,
 }
 func (repairRuntime) ListServices(context.Context, string, string) ([]runtime.ServiceBindingInfo, error) {
 	return nil, nil
+}
+func (repairRuntime) SpaceConfig(context.Context, string) (config.SpaceConfig, error) {
+	return config.SpaceConfig{}, nil
+}
+
+func TestScanRepairLifecycle(t *testing.T) {
+	clean := &build.ScanReport{}
+	blocked := &build.ScanReport{Vulnerabilities: []build.Vulnerability{criticalFixable}}
+	unavailable := &build.ScanError{Err: errors.New("database unavailable")}
+	type attempt struct {
+		report  *build.ScanReport
+		err     error
+		rollout bool
+	}
+	for _, tc := range []struct {
+		name             string
+		supplied         bool
+		attempts         []attempt
+		writes, rollouts int
+		ok               bool
+	}{
+		{name: "generated refusal repairs and deploys", attempts: []attempt{{report: blocked}, {report: clean}}, writes: 2, rollouts: 1, ok: true},
+		{name: "supplied refusal leaves runtime alone", supplied: true, attempts: []attempt{{report: blocked}}},
+		{name: "scanner outage leaves source and runtime alone", supplied: true, attempts: []attempt{{err: unavailable}}},
+		{name: "retry outage clears earlier refusal", attempts: []attempt{{report: blocked}, {err: unavailable}}, writes: 2},
+		{name: "failed rollout then refused repair has no stale image", attempts: []attempt{{report: clean, rollout: true}, {report: blocked}}, writes: 2, rollouts: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			s := &Server{cfg: &Config{}, rt: repairRuntime{}}
+			s.cfg.Build.Attempts = len(tc.attempts)
+			s.cfg.Build.Scan.Triage = config.ScanTriageOff
+			writes, builds, rollouts := 0, 0, 0
+			s.assistant = repairAssistant{write: func(in *ai.DockerfileInput) (*ai.DockerfileResult, error) {
+				writes++
+				if writes > 1 && tc.attempts[writes-2].report == blocked {
+					last := in.Attempts[len(in.Attempts)-1]
+					if last.Stage != "scan" || !strings.Contains(last.Failure, criticalFixable.Fixed) {
+						t.Fatalf("repair lost scan evidence: %+v", last)
+					}
+				}
+				return &ai.DockerfileResult{Dockerfile: fmt.Sprintf("FROM app:%d\n", writes)}, nil
+			}}
+			response := httptest.NewRecorder()
+			recorder := newReleaseRecorder(time.Now(), nil)
+			out := newLineStreamer(response, recorder)
+			builder := repairBuilder(func(req build.Request) (*build.Result, error) {
+				if builds >= len(tc.attempts) {
+					t.Fatal("unexpected repair after terminal failure")
+				}
+				if out.lastScan != nil || recorder.release.Scan != nil {
+					t.Fatal("new attempt retained the previous scan")
+				}
+				a := tc.attempts[builds]
+				builds++
+				if a.err != nil {
+					return nil, a.err
+				}
+				if err := req.Scan.Judge(context.Background(), a.report); err != nil {
+					return nil, err
+				}
+				return &build.Result{ImageRef: req.ImageRef, Scan: a.report}, nil
+			})
+			req := build.Request{ContextDir: dir, ImageRef: "registry/app:initial", Scan: &build.ScanSpec{}}
+			if tc.supplied {
+				req.Strategy, req.DockerfilePath = config.BuildDockerfile, "Dockerfile"
+				if err := os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte("FROM supplied\n"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			outcome, err := s.buildGenerated(context.Background(), out, builder, dir, &config.AppConfig{Name: "app", Space: "team", Port: 8080}, req, func(result *build.Result, _ string) error {
+				rollouts++
+				if out.lastScan == nil || out.lastScan.Blocked {
+					t.Fatal("releasing without a passing scan")
+				}
+				if tc.attempts[builds-1].rollout {
+					return &runtime.RolloutError{Reason: "startup failed"}
+				}
+				return nil
+			})
+			if (err == nil) != tc.ok || writes != tc.writes || rollouts != tc.rollouts || builds != len(tc.attempts) {
+				t.Fatalf("err=%v writes=%d builds=%d rollouts=%d", err, writes, builds, rollouts)
+			}
+			if !tc.ok && outcome.Result != nil {
+				t.Fatalf("failure carries another attempt's image: %+v", outcome.Result)
+			}
+			last := tc.attempts[len(tc.attempts)-1]
+			if last.err != nil && (out.lastScan != nil || recorder.release.Scan != nil) {
+				t.Fatal("scanner failure retained old findings")
+			}
+			if last.err != nil && !errors.Is(err, last.err) {
+				t.Fatalf("lost scanner error: %v", err)
+			}
+		})
+	}
 }
 
 func TestRepairLoopIncludesBuildAndRolloutEvidence(t *testing.T) {

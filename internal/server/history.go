@@ -19,10 +19,10 @@ import (
 	"time"
 
 	"github.com/adrianliechti/donkey/internal/config"
+	"github.com/adrianliechti/donkey/internal/deployment"
 	"github.com/adrianliechti/donkey/internal/detect"
 	"github.com/adrianliechti/donkey/internal/history"
 	"github.com/adrianliechti/donkey/internal/identity"
-	"github.com/adrianliechti/donkey/internal/telemetry"
 )
 
 // The source history: every deploy's upload as a git commit by the person
@@ -344,13 +344,13 @@ type SourceCommitDetail struct {
 // image the app runs. Both are best-effort: without them a commit still
 // shows, just without outcomes.
 type buildIndex struct {
-	builds  map[int64]telemetry.BuildSummary
+	builds  map[int64]deployment.BuildSummary
 	running string
 }
 
 func (s *Server) buildIndex(ctx context.Context, space, app string) buildIndex {
-	index := buildIndex{builds: map[int64]telemetry.BuildSummary{}}
-	builds, err := s.telemetry.Builds(ctx, space, app)
+	index := buildIndex{builds: map[int64]deployment.BuildSummary{}}
+	builds, err := s.deploymentStore().Builds(ctx, space, app)
 	if err != nil {
 		return index
 	}

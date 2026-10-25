@@ -69,6 +69,23 @@ ai:
   baseUrl: https://api.openai.com/v1
   model: gpt-6.1-sol
 
+# Builds: every image is scanned for known vulnerabilities before it is
+# pushed. The defaults below refuse critical findings that have a fix, let
+# the assistant waive a refusal it reads as not affecting the app, and
+# refuse credentials baked into images. A network without internet names
+# the database mirrors (see README, "Restricted networks").
+# build:
+#   registryMirrors:
+#     docker.io: https://registry.example.com/dockerhub
+#     ghcr.io: https://registry.example.com/ghcr
+#   scan:
+#     block: critical          # none | critical | high
+#     ignoreUnfixed: true
+#     secrets: block           # block | warn | off
+#     triage: assistant        # assistant | off
+#     dbRepository: registry.example.com/ghcr/aquasecurity/trivy-db
+#     javaDbRepository: registry.example.com/ghcr/aquasecurity/trivy-java-db
+
 # Optional web search and page contents; credential from EXA_API_KEY.
 # exa:
 #   baseUrl: https://api.exa.ai
@@ -121,6 +138,23 @@ auth:
 ai:
   baseUrl: https://api.openai.com/v1
   model: gpt-6.1-sol
+
+# Builds: every image is scanned for known vulnerabilities before it is
+# pushed. The defaults below refuse critical findings that have a fix, let
+# the assistant waive a refusal it reads as not affecting the app, and
+# refuse credentials baked into images. A network without internet names
+# the database mirrors (see README, "Restricted networks").
+# build:
+#   registryMirrors:
+#     docker.io: https://registry.example.com/dockerhub
+#     ghcr.io: https://registry.example.com/ghcr
+#   scan:
+#     block: critical          # none | critical | high
+#     ignoreUnfixed: true
+#     secrets: block           # block | warn | off
+#     triage: assistant        # assistant | off
+#     dbRepository: registry.example.com/ghcr/aquasecurity/trivy-db
+#     javaDbRepository: registry.example.com/ghcr/aquasecurity/trivy-java-db
 
 # Optional web search and page contents; credential from EXA_API_KEY.
 # exa:

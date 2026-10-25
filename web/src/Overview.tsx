@@ -1,5 +1,5 @@
 import { Link } from '@tanstack/react-router'
-import { AppWindow, Database, ExternalLink, HardDrive, Loader2, Network, UploadCloud } from 'lucide-react'
+import { AppWindow, Check, Database, ExternalLink, HardDrive, Loader2, Network, UploadCloud } from 'lucide-react'
 import type { ActiveDeploy, AppSummary, SpaceAddonEntry } from './api'
 import { AppIcon } from './AppIcon'
 import { preloadConsole } from './consoles'
@@ -16,6 +16,7 @@ import {
   EmptyState,
   ErrorNote,
   ExposureBadge,
+  ScanBadge,
   Eyebrow,
   LinkButton,
   Mark,
@@ -164,6 +165,7 @@ function AppTile({ app, deploy }: { app: AppSummary; deploy?: ActiveDeploy }) {
           </Link>
         </span>
         <span className="flex shrink-0 items-center gap-2">
+          <ScanBadge security={app.security} />
           <ExposureBadge exposure={app.exposure} mode={app.mode} />
           {app.url && (
             <LinkButton href={app.url} icon={ExternalLink} kind="quiet" size="sm" className="relative z-10">
@@ -217,23 +219,26 @@ function AppTile({ app, deploy }: { app: AppSummary; deploy?: ActiveDeploy }) {
 // An app on its first deploy: what it will be, filling in as the deploy goes.
 function DeployTile({ deploy }: { deploy: ActiveDeploy }) {
   const failed = deploy.stage === 'failed'
+  const done = deploy.stage === 'done'
   return (
     <Link
       to="/app/$space/$name/{-$tab}"
       params={{ space: deploy.space, name: deploy.app, tab: undefined }}
-      className={`block p-4 focus-visible:outline-2 focus-visible:outline-accent-strong ${tileClass(failed ? 'failed' : 'pending')}`}
+      className={`block p-4 focus-visible:outline-2 focus-visible:outline-accent-strong ${tileClass(failed ? 'failed' : done ? 'default' : 'pending')}`}
     >
       <div className="flex min-h-7 items-center justify-between gap-2">
         <span className="flex min-w-0 items-center gap-2">
           {failed ? (
             <span className="size-2.5 shrink-0 rounded-full border-2 border-danger" aria-hidden />
+          ) : done ? (
+            <Check className="size-3.5 shrink-0 text-success" aria-hidden />
           ) : (
             <Loader2 className="size-3.5 shrink-0 animate-spin text-accent" aria-hidden />
           )}
           <span className="truncate font-mono text-sm font-semibold text-ink">{deploy.app}</span>
         </span>
-        <Eyebrow tone={failed ? 'danger' : 'accent'} className="shrink-0">
-          {failed ? 'failed' : 'first deploy'}
+        <Eyebrow tone={failed ? 'danger' : done ? undefined : 'accent'} className="shrink-0">
+          {failed ? 'failed' : done ? 'deployed' : 'first deploy'}
         </Eyebrow>
       </div>
       <DeployState deploy={deploy} />

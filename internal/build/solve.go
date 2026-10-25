@@ -44,11 +44,12 @@ func (b *BuildKitBuilder) Build(ctx context.Context, req Request) (*Result, erro
 	}
 	defer c.Close()
 
-	// A build that has to prove the image starts runs through the gateway
-	// instead: the frontend's result is solved first, the probe runs on it,
-	// and only then is the image exported. Nothing that cannot start is ever
-	// pushed under an app's name.
-	if req.Verify != nil {
+	// A build that has to prove the image starts, or pass a vulnerability
+	// scan, runs through the gateway instead: the frontend's result is
+	// solved first, the scan and the probe run on it, and only then is the
+	// image exported. Nothing that cannot start, and nothing the policy
+	// refuses, is ever pushed under an app's name.
+	if req.Verify != nil || req.Scan != nil {
 		return b.buildVerified(ctx, c, req)
 	}
 

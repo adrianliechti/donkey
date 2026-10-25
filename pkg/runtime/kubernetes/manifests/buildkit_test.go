@@ -136,7 +136,7 @@ func TestBuildkitTOMLWithoutMirrors(t *testing.T) {
 		RegistryHost:   "registry.example.com",
 		RegistryCAFile: "/etc/donkey/registry-ca/ca.crt",
 	})
-	want := "[worker.oci]\n  gc = true\n" +
+	want := "[worker.oci]\n  gc = true\n" + buildkitGCPolicy +
 		"\n[registry.\"registry.example.com\"]\n  ca = [\"/etc/donkey/registry-ca/ca.crt\"]\n"
 	if got != want {
 		t.Errorf("got:\n%s\nwant:\n%s", got, want)
@@ -330,5 +330,38 @@ func TestProxyExcludesRegistry(t *testing.T) {
 		if e.Name == "NO_PROXY" && !strings.Contains(e.Value, "donkey-registry:5000") {
 			t.Errorf("NO_PROXY = %q, missing donkey's own registry", e.Value)
 		}
+	}
+}
+
+// The engine's garbage collector must not treat cache mounts as the first
+// thing to drop: the scanner's database and package caches live there.
+func TestBuildkitTOMLGCPolicyKeepsCacheMounts(t *testing.T) {
+	parsed := parseBuildkitTOML(t, BuildkitTOML(BuildkitConfig{}))
+	worker, _ := parsed["worker"].(map[string]any)
+	oci, _ := worker["oci"].(map[string]any)
+	rules, _ := oci["gcpolicy"].([]map[string]any)
+	if len(rules) == 0 {
+		// The TOML library may decode arrays of tables differently.
+		if raw, ok := oci["gcpolicy"].([]any); ok {
+			for _, r := range raw {
+				if m, ok := r.(map[string]any); ok {
+					rules = append(rules, m)
+				}
+			}
+		}
+	}
+	if len(rules) != 2 {
+		t.Fatalf("want two GC rules, got %d: %#v", len(rules), oci["gcpolicy"])
+	}
+	for i, rule := range rules {
+		if _, filtered := rule["filters"]; filtered {
+			t.Errorf("rule %d singles out record types; cache mounts must be kept like everything else: %v", i, rule)
+		}
+		if rule["minFreeSpace"] != "10%" || rule["maxUsedSpace"] != "50%" || rule["reservedSpace"] != "20GB" {
+			t.Errorf("rule %d bounds = %v", i, rule)
+		}
+	}
+	if rules[1]["all"] != true {
+		t.Errorf("the last rule must cover everything: %v", rules[1])
 	}
 }

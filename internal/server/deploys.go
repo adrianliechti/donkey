@@ -71,6 +71,30 @@ type deployTicket struct {
 	id    uint64
 }
 
+func (b *deployBoard) active() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for _, entry := range b.entries {
+		if entry.FinishedAt == nil {
+			return true
+		}
+	}
+	return false
+}
+
+// Explicit removal ends the app's visible lifecycle, including attempts
+// that never created a workload. Keep a newer queued deploy, which may be
+// waiting for the deletion's lock. Empty app selects the whole space.
+func (b *deployBoard) forgetFinished(space, app string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for key, entry := range b.entries {
+		if entry.Space == space && (app == "" || entry.App == app) && entry.FinishedAt != nil {
+			delete(b.entries, key)
+		}
+	}
+}
+
 func (b *deployBoard) start(space, app, by, via string, now time.Time) *deployTicket {
 	b.mu.Lock()
 	defer b.mu.Unlock()

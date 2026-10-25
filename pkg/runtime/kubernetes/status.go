@@ -2,6 +2,7 @@ package kubernetes
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sort"
 
@@ -10,10 +11,34 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/types"
 
 	rt "github.com/adrianliechti/donkey/pkg/runtime"
 	"github.com/adrianliechti/donkey/pkg/runtime/kubernetes/manifests"
 )
+
+func (c *Client) UpdateSecurity(ctx context.Context, namespace, name, space, app, image, security string) error {
+	deployments := c.Clientset.AppsV1().Deployments(namespace)
+	dep, err := deployments.Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return err
+	}
+	if err := c.requireOwnedObject("Deployment", namespace, name, dep.Labels, manifests.Labels(space, app, manifests.RoleWorkload)); err != nil {
+		return err
+	}
+	if deploymentStatus(dep).Image != image {
+		return fmt.Errorf("the app's image changed during the scan")
+	}
+	patch, err := json.Marshal(map[string]any{"metadata": map[string]any{
+		"resourceVersion": dep.ResourceVersion,
+		"annotations":     map[string]string{manifests.AnnotationSecurity: security},
+	}})
+	if err != nil {
+		return err
+	}
+	_, err = deployments.Patch(ctx, name, types.MergePatchType, patch, metav1.PatchOptions{})
+	return err
+}
 
 func (c *Client) AppStatus(ctx context.Context, namespace, objectName, space, app string) (*rt.AppStatus, error) {
 	dep, err := c.Clientset.AppsV1().Deployments(namespace).Get(ctx, objectName, metav1.GetOptions{})
@@ -53,6 +78,7 @@ func deploymentStatus(dep *appsv1.Deployment) *rt.AppStatus {
 	st.Mode = dep.Annotations[manifests.AnnotationMode]
 	st.CORS = dep.Annotations[manifests.AnnotationCORS]
 	st.Stack = dep.Annotations[manifests.AnnotationStack]
+	st.Security = dep.Annotations[manifests.AnnotationSecurity]
 	if st.Image == "" && len(dep.Spec.Template.Spec.Containers) > 0 {
 		st.Image = dep.Spec.Template.Spec.Containers[0].Image
 	}

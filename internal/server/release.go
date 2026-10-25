@@ -15,11 +15,11 @@ import (
 
 	"github.com/adrianliechti/donkey/internal/ai"
 	"github.com/adrianliechti/donkey/internal/config"
-	"github.com/adrianliechti/donkey/internal/telemetry"
+	"github.com/adrianliechti/donkey/internal/deployment"
 )
 
 // AppRelease is one deploy as the release screen rendered it live. Records
-// are versioned in the telemetry store — one per build, success or failure,
+// are versioned on the data volume — one per build, success or failure,
 // newest-first with bounded retention — so the console can show history, not
 // just the latest attempt. The files a build used or wrote (its recipe,
 // repairs and settings) are not copied in: they are the build's commit in
@@ -31,7 +31,10 @@ type AppRelease struct {
 	Update     DeployUpdate `json:"update"`
 	Lines      []string     `json:"lines"`
 	BuildLog   string       `json:"buildLog,omitempty"`
-	Result     DeployResult `json:"result"`
+	// Scan is what the vulnerability scan found and what the policy made
+	// of it, for the image this release built or reused.
+	Scan   *AppScan     `json:"scan,omitempty"`
+	Result DeployResult `json:"result"`
 	// Decisions is what this deploy settled (storage, health route), kept
 	// with the image it was verified against: a `--no-build` rollback to
 	// this record's tag adopts these, not whatever a newer analysis found.
@@ -137,12 +140,17 @@ func (r *releaseRecorder) update(update DeployUpdate) {
 	if update.Stage != "" {
 		r.release.Update.Stage = update.Stage
 	}
+	if update.Stage == "building" || update.Stage == "detecting" {
+		r.release.Scan = nil
+	}
 	if update.BaseImages != nil {
 		r.release.Update.BaseImages = append([]string{}, update.BaseImages...)
 	}
 	if update.Recipe != "" {
 		r.release.Update.Recipe = update.Recipe
 	}
+	// update.Scan is for the watcher; the record carries it once, in full,
+	// through scan().
 }
 
 func (r *releaseRecorder) inspection(build PlanBuild, analysis *ai.Analysis) {
@@ -152,6 +160,12 @@ func (r *releaseRecorder) inspection(build PlanBuild, analysis *ai.Analysis) {
 	if analysis != nil {
 		r.analysis = analysis
 	}
+}
+
+func (r *releaseRecorder) scan(record *AppScan) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.release.Scan = record
 }
 
 func (r *releaseRecorder) result(result DeployResult) {
@@ -272,7 +286,7 @@ func cloneReleaseApp(in *config.AppConfig) *config.AppConfig {
 // persistRelease stores only records attached to a real app. A first build
 // that fails before anything exists has no app page to attach one to; a failed
 // update does, and its failure is exactly the record worth keeping. Storage
-// is best-effort by design: the deploy already happened, and a telemetry
+// is best-effort by design: the deploy already happened, and a storage
 // hiccup must not turn it into a failure after the fact.
 func (s *Server) persistRelease(ctx context.Context, space, app string, release AppRelease) {
 	if space == "" || app == "" {
@@ -285,12 +299,17 @@ func (s *Server) persistRelease(ctx context.Context, space, app string, release 
 		return
 	}
 	scrubRelease(&release, s.knownSecrets(ctx, space, app))
+	if release.Scan != nil && release.Result.ImageRef != "" && release.Result.ImageRef == status.Image {
+		if err := s.storeScan(ctx, space, app, status.Image, release.Scan); err != nil {
+			log.Printf("store current scan app=%s space=%s: %v", app, space, err)
+		}
+	}
 	// The source history tags the commit with this build's number; a record
 	// that could not be stored still leaves the commits, just untagged.
 	var sequence int64
 	if raw, err := marshalRelease(release); err != nil {
 		log.Printf("store release app=%s space=%s: %v", app, space, err)
-	} else if sequence, err = s.telemetry.RecordBuild(ctx, space, app, release.Result.ImageRef, release.Result.OK, raw); err != nil {
+	} else if sequence, err = s.deploymentStore().RecordBuild(ctx, space, app, release.Result.ImageRef, release.Result.OK, raw); err != nil {
 		log.Printf("store release app=%s space=%s: %v", app, space, err)
 	}
 	s.recordSource(ctx, space, app, release, sequence)
@@ -359,7 +378,7 @@ func (s *Server) handleBuilds(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	builds, err := s.telemetry.Builds(r.Context(), space, app)
+	builds, err := s.deploymentStore().Builds(r.Context(), space, app)
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err)
 		return
@@ -379,8 +398,8 @@ func (s *Server) handleBuild(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, fmt.Errorf("the build number must be a number"))
 		return
 	}
-	raw, err := s.telemetry.Build(r.Context(), space, app, sequence)
-	if errors.Is(err, telemetry.ErrNoBuild) {
+	raw, err := s.deploymentStore().Build(r.Context(), space, app, sequence)
+	if errors.Is(err, deployment.ErrNotFound) {
 		writeErr(w, http.StatusNotFound, fmt.Errorf("no stored build %d is available for this app", sequence))
 		return
 	}

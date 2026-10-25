@@ -6,9 +6,9 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// The control plane's data volume: today every app's source history (one git
-// repository per app under source/), and the place for whatever else it comes
-// to keep. Its own claim, apart from telemetry's, so it can live on different
+// The control plane's data volume: source history under source/, release
+// records and SBOMs under deployments/, and scanner databases under scanner/.
+// Its own claim, apart from telemetry's, so it can live on different
 // storage — shared NFS in production. donkey-orchestrator alone mounts it: it
 // writes the history while deploying and serves every read of it, and as one
 // replica rolled with Recreate it never needs the volume on two nodes.

@@ -19,6 +19,82 @@ type Assistant interface {
 	// WriteDockerfile is also how the builder recovers: failed Dockerfiles and
 	// their failures come back in, a corrected one goes out.
 	WriteDockerfile(ctx context.Context, in *DockerfileInput) (*DockerfileResult, error)
+	// TriageVulnerabilities reads the app to say, per scanner finding,
+	// whether this app is actually affected. It is the one reading that may
+	// let a refused image through (see Verdict.Waives), so it only trusts
+	// itself when it has read the source.
+	TriageVulnerabilities(ctx context.Context, in *TriageInput) (*Triage, error)
+}
+
+// TriageInput is what the assistant needs to judge scanner findings.
+type TriageInput struct {
+	// Root is the build workspace the image was built from (or a checkout
+	// of it). Empty means the assistant answers from the findings alone —
+	// and then never with enough confidence to waive anything.
+	Root string
+	// AppDir is the app's folder inside Root, when the workspace holds more
+	// than the app (a monorepo); empty means Root is the app.
+	AppDir string
+	// Recipe is the Dockerfile that produced the image.
+	Recipe string
+	// Exposure is how the app is reached: public, protected or internal.
+	Exposure string
+	Findings []TriageFinding
+	// KnownSecrets are blanked from everything the assistant says back.
+	KnownSecrets []string
+	Progress     func(string)
+}
+
+// TriageFinding is one scanner finding, as the assistant sees it.
+type TriageFinding struct {
+	ID        string `json:"id"`
+	Severity  string `json:"severity"`
+	Package   string `json:"package"`
+	Installed string `json:"installed"`
+	Fixed     string `json:"fixed,omitempty"`
+	// Class is os-pkgs or lang-pkgs; Type the ecosystem; Path the package
+	// file inside the image, when the scanner named one.
+	Class       string `json:"class"`
+	Type        string `json:"type"`
+	Path        string `json:"path,omitempty"`
+	Title       string `json:"title,omitempty"`
+	Description string `json:"description,omitempty"`
+}
+
+// What a verdict can say, and how sure it is.
+const (
+	VerdictAffected    = "affected"
+	VerdictNotAffected = "not-affected"
+	VerdictUnsure      = "unsure"
+
+	ConfidenceHigh   = "high"
+	ConfidenceMedium = "medium"
+	ConfidenceLow    = "low"
+)
+
+// Verdict is the assistant's reading of one finding.
+type Verdict struct {
+	ID         string `json:"id"`
+	Verdict    string `json:"verdict"`
+	Confidence string `json:"confidence"`
+	// Reason is one to three sentences a developer can check.
+	Reason string `json:"reason"`
+	// Evidence names the files the reason rests on.
+	Evidence []string `json:"evidence"`
+	// Fix is the one change that makes the finding go away, when known.
+	Fix string `json:"fix,omitempty"`
+}
+
+// Waives says whether this verdict alone may lift a block: only a
+// high-confidence "not affected" does, and only one that came from reading
+// the source (see TriageVulnerabilities).
+func (v Verdict) Waives() bool {
+	return v.Verdict == VerdictNotAffected && v.Confidence == ConfidenceHigh
+}
+
+// Triage is the set of verdicts, one per finding asked about.
+type Triage struct {
+	Verdicts []Verdict `json:"verdicts"`
 }
 
 // DockerfileInput is what the assistant needs to write an app's Dockerfile.

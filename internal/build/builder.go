@@ -39,6 +39,9 @@ type Request struct {
 	// Verify, when set, runs the built image and requires it to start before
 	// the image is published. Nil skips the check entirely.
 	Verify *VerifySpec
+	// Scan, when set, checks the built image for known vulnerabilities (and
+	// credentials) before it is published, and lets Scan.Judge refuse it.
+	Scan *ScanSpec
 
 	// Progress receives the human-readable build progress stream (may be nil).
 	Progress ProgressSink
@@ -56,6 +59,8 @@ type Result struct {
 	ImageRef string
 	Digest   string
 	LogPath  string
+	// Scan is the vulnerability report, when the build scanned.
+	Scan *ScanReport
 }
 
 // SameRegistry reports whether an image reference lives under the registry

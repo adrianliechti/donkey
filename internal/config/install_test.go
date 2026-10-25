@@ -3,9 +3,11 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"sigs.k8s.io/yaml"
 )
@@ -613,5 +615,93 @@ func TestS3ServiceUsesRustFSImageMirror(t *testing.T) {
 		if got := images.Repository(typ); got != "mirror.example.com/rustfs/rustfs" {
 			t.Fatalf("%s image repository = %q", typ, got)
 		}
+	}
+}
+
+// Scan settings default to the recommended policy, refuse values that would
+// otherwise silently read as a default, and travel to the server as
+// environment without losing anything.
+func TestScanSettings(t *testing.T) {
+	var zero ScanSettings
+	if !zero.IsEnabled() || zero.ScannerImage() != DefaultScannerImage || zero.BlockSeverity() != ScanBlockCritical ||
+		!zero.IgnoreUnfixedFindings() || zero.SecretsPolicy() != ScanSecretsBlock || !zero.AssistantTriage() {
+		t.Errorf("zero value is not the recommended policy: %+v", zero)
+	}
+	if err := zero.Validate(); err != nil {
+		t.Errorf("zero value must validate: %v", err)
+	}
+	if len(zero.EnvVars()) != 0 {
+		t.Errorf("unset settings must travel as nothing, got %v", zero.EnvVars())
+	}
+	for name, bad := range map[string]ScanSettings{
+		"severity":        {Block: "severe"},
+		"secrets":         {Secrets: "maybe"},
+		"triage":          {Triage: "human"},
+		"scheme in repo":  {DBRepository: "https://jfrog.corp/ghcr/aquasecurity/trivy-db"},
+		"bad image":       {Image: "Aquasec/Trivy:latest"},
+		"bad java repo":   {JavaDBRepository: "not a reference!"},
+		"digest as repo?": {DBRepository: "jfrog.corp/x@sha256:zzz"},
+	} {
+		if err := bad.Validate(); err == nil {
+			t.Errorf("%s: %+v validated", name, bad)
+		}
+	}
+	good := ScanSettings{
+		Enabled: new(true), Image: "jfrog.corp/dockerhub/aquasec/trivy:0.76.1@sha256:790fd66d1697395d8693d1acaa1ea702406a20f109b6fc7bac8db623eca6c06c",
+		DBRepository: "jfrog.corp/ghcr/aquasecurity/trivy-db", JavaDBRepository: "jfrog.corp/ghcr/aquasecurity/trivy-java-db:1",
+		Block: "HIGH", IgnoreUnfixed: new(false), Secrets: "warn", Triage: "off",
+	}
+	if err := good.Validate(); err != nil {
+		t.Fatalf("a mirrored, strict configuration must validate: %v", err)
+	}
+	if good.BlockSeverity() != ScanBlockHigh || good.IgnoreUnfixedFindings() || good.SecretsPolicy() != ScanSecretsWarn || good.AssistantTriage() {
+		t.Errorf("accessors misread %+v", good)
+	}
+	env := good.EnvVars()
+	if len(env) != 8 {
+		t.Errorf("every set field travels: %v", env)
+	}
+	back := ScanSettingsFromEnv(func(key string) string { return env[key] })
+	if !reflect.DeepEqual(back, good) {
+		t.Errorf("round trip lost something:\n got %+v\nwant %+v", back, good)
+	}
+	if err := (InstallBuild{BuildSettings: BuildSettings{Scan: ScanSettings{Block: "x"}}}).Validate(); err == nil || !strings.Contains(err.Error(), "build.scan.block") {
+		t.Errorf("build validation must cover the scan: %v", err)
+	}
+}
+
+func TestPeriodicScanSettings(t *testing.T) {
+	if (ScanSettings{}).RescanInterval() != 4*time.Hour {
+		t.Fatal("rescan default is not four hours")
+	}
+	for _, value := range []string{"0", "1m", "4h", "24h"} {
+		settings := ScanSettings{Rescan: value}
+		if err := settings.Validate(); err != nil {
+			t.Fatal(err)
+		}
+		env := settings.EnvVars()
+		if restored := ScanSettingsFromEnv(func(key string) string { return env[key] }); restored.Rescan != value {
+			t.Fatalf("lost rescan interval: %+v", restored)
+		}
+	}
+	for _, value := range []string{"-1h", "30s", "tomorrow", "0s"} {
+		if err := (ScanSettings{Rescan: value}).Validate(); err == nil {
+			t.Fatalf("accepted interval %q", value)
+		}
+	}
+	if (ScanSettings{Enabled: new(false)}).RescanInterval() != 0 || (ScanSettings{Rescan: "0"}).RescanInterval() != 0 {
+		t.Fatal("disabled scanner still schedules work")
+	}
+}
+
+// The server image carries the scanner binary the orchestrator matches
+// with; it must be the release the build engine inventories with.
+func TestServerImageCarriesTheScanner(t *testing.T) {
+	raw, err := os.ReadFile("../../hack/Dockerfile.server")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), "FROM "+DefaultScannerImage+" AS scanner") {
+		t.Errorf("hack/Dockerfile.server does not copy the scanner from %s", DefaultScannerImage)
 	}
 }

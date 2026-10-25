@@ -351,6 +351,11 @@ func (r *Runtime) SetAppMeta(ctx context.Context, space, app, key string, value 
 		manifests.Labels(space, app, manifests.RoleWorkload), map[string]*string{key: value})
 }
 
+func (r *Runtime) UpdateSecurity(ctx context.Context, space, app, image, security string) error {
+	defer r.InvalidateAppSummaries()
+	return r.c.UpdateSecurity(ctx, r.ns(space), r.name(space, app), space, app, image, security)
+}
+
 // --- Files ----------------------------------------------------------------
 
 func (r *Runtime) ListFiles(ctx context.Context, space, app, path string) ([]rt.FileEntry, error) {

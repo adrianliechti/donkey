@@ -18,8 +18,12 @@ import {
   Search,
   X,
   type LucideIcon,
+  Shield,
+  ShieldAlert,
+  ShieldCheck,
 } from 'lucide-react'
-import type { AppMode, Exposure } from './api'
+import { scanCounts } from './format'
+import type { AppMode, AppSecurity, Exposure } from './api'
 import { type ControlSize, controlSize, fieldBase, focusRing, iconSize, inputClass } from './controls'
 import type { Health, StatusTone } from './vocabulary'
 import { useNow } from './hooks'
@@ -40,6 +44,50 @@ const dotColor: Record<Health, string> = {
 
 export function StatusDot({ health }: { health: Health }) {
   return <span className={`inline-block size-2.5 rounded-full ${dotColor[health]}`} aria-hidden />
+}
+
+// ScanBadge is the vulnerability scan's one word on a running app: quiet
+// when there is nothing to do, toned when there is. No scan, no badge. The
+// numbers behind the word are in its title.
+const scanLook: Record<
+  AppSecurity['state'],
+  { text: (s: AppSecurity['summary']) => string; className: string; icon: LucideIcon }
+> = {
+  clean: { text: () => 'clean', className: 'border-success/40 text-success', icon: ShieldCheck },
+  fixable: {
+    text: (s) => `${s.fixable} fixable`,
+    className: 'border-line-strong text-ink-soft',
+    icon: Shield,
+  },
+  waived: { text: () => 'waived', className: 'border-warning/40 text-warning', icon: ShieldAlert },
+  warning: { text: () => 'warning', className: 'border-warning/40 text-warning', icon: ShieldAlert },
+  'needs-action': { text: () => 'needs action', className: 'border-danger/40 text-danger', icon: ShieldAlert },
+}
+
+export function ScanBadge({ security, className = '' }: { security?: AppSecurity; className?: string }) {
+  if (!security) return null
+  const look = scanLook[security.state] ?? scanLook.fixable
+  const Icon = look.icon
+  const title = [
+    scanCounts(security.summary),
+    security.summary.fixable > 0 ? `${security.summary.fixable} with a fix` : '',
+    security.summary.secrets > 0
+      ? `${security.summary.secrets} ${security.summary.secrets === 1 ? 'secret' : 'secrets'}`
+      : '',
+    security.scannedAt ? `scanned ${new Date(security.scannedAt).toLocaleDateString()}` : '',
+    security.refreshError ?? '',
+  ]
+    .filter(Boolean)
+    .join(' · ')
+  return (
+    <span
+      title={title}
+      className={`inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded border px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wide ${look.className} ${className}`}
+    >
+      <Icon className="size-3" aria-hidden />
+      {look.text(security.summary)}
+    </span>
+  )
 }
 
 // ExposureBadge marks the exception: an app anyone can reach. Behind the
@@ -688,7 +736,7 @@ export function Toolbar({ children, className = '' }: { children: ReactNode; cla
 const buttonStyles = {
   primary: 'bg-ink text-surface hover:bg-emphasis border border-transparent font-medium',
   quiet: 'bg-transparent text-ink-soft hover:bg-line/60 hover:text-ink border border-line',
-  danger: 'bg-transparent text-danger hover:bg-danger hover:text-white border border-danger/40',
+  danger: 'bg-transparent text-danger hover:bg-danger hover:text-on-accent border border-danger/40',
 }
 const buttonBase = `inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-md transition-[color,background-color,border-color,scale] duration-(--duration-fast) ease-emphasized motion-safe:active:scale-[.97] ${focusRing}`
 

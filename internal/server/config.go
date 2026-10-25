@@ -106,8 +106,8 @@ type Config struct {
 	// seed, the first verified sign-in becomes the first platform admin.
 	PlatformAdmins *config.AccessConfig
 	AIModel        string
-	// DataDir is donkey-server's own volume. The source history lives in its
-	// source/ folder, one git repository per app; empty turns it off.
+	// DataDir is the orchestrator's volume: source/ holds Git history,
+	// deployments/ holds releases and SBOMs, and scanner/ holds databases.
 	DataDir string
 }
 
@@ -225,6 +225,7 @@ func FromEnv() (*Config, error) {
 		return nil, err
 	}
 	c.Build.SBOM = os.Getenv("DONKEY_BUILDER_SBOM") == "true"
+	c.Build.Scan = config.ScanSettingsFromEnv(os.Getenv)
 	key, err := hex.DecodeString(os.Getenv("DONKEY_SESSION_KEY"))
 	if err != nil || len(key) != 32 {
 		return nil, fmt.Errorf("DONKEY_SESSION_KEY must be 32 bytes of hex — `donkey server install` generates it")

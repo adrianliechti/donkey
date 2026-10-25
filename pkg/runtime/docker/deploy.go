@@ -38,6 +38,9 @@ type runSpec struct {
 	CORS        string   `json:"cors,omitempty"`
 	// Stack is what the app is written in (detect.Stack), shown as a label.
 	Stack string `json:"stack,omitempty"`
+	// Security is the vulnerability scan's outcome for the image (JSON),
+	// shown as a label.
+	Security string `json:"security,omitempty"`
 	// Env is donkey.yaml's env, with the binding references the deploy wired
 	// in. Like a Deployment's literal env on Kubernetes it belongs to the
 	// deploy — the next one replaces it, so a dropped key goes — and it wins
@@ -149,7 +152,7 @@ func (r *Runtime) Deploy(ctx context.Context, spec rt.DeploySpec, out rt.Progres
 
 	run := runSpec{Image: r.pullRef(spec.ImageRef), Port: app.Port, Command: app.Command,
 		Healthcheck: app.Healthcheck.Path, Host: r.appHost(space, app), Mode: app.GatewayMode(), CORS: app.CORS,
-		Stack: spec.Stack, Env: app.Env}
+		Stack: spec.Stack, Security: spec.Security, Env: app.Env}
 	if app.HasStorage() {
 		run.Paths = app.Storage.Paths
 	}
@@ -520,6 +523,9 @@ func (r *Runtime) runApp(ctx context.Context, space, app string, spec runSpec) e
 	labels[labelCORS] = spec.CORS
 	if spec.Stack != "" {
 		labels[labelStack] = spec.Stack
+	}
+	if spec.Security != "" {
+		labels[labelSecurity] = spec.Security
 	}
 
 	volumes, err := r.appMounts(ctx, space, app, spec)

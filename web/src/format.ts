@@ -28,3 +28,11 @@ export function ago(iso: string): string {
   if (secs < 129600) return `${Math.round(secs / 3600)}h`
   return `${Math.round(secs / 86400)}d`
 }
+
+/** The scan's numbers in one phrase: "2 critical, 5 high", or none. */
+export function scanCounts(summary: { critical: number; high: number; medium: number; low: number }): string {
+  const parts = (['critical', 'high', 'medium', 'low'] as const)
+    .filter((severity) => summary[severity] > 0)
+    .map((severity) => `${summary[severity]} ${severity}`)
+  return parts.length === 0 ? 'no known vulnerabilities' : parts.join(', ')
+}

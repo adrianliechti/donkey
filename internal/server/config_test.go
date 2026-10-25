@@ -139,3 +139,27 @@ func TestS3ServiceUsesRustFSImageEnvironment(t *testing.T) {
 		}
 	}
 }
+
+func TestConfigReadsScanSettings(t *testing.T) {
+	t.Setenv("DONKEY_REGISTRY_URL", "push.example.com/donkey")
+	t.Setenv("DONKEY_DOMAIN", "apps.example.com")
+	t.Setenv("DONKEY_BUILDKIT_ADDR", "tcp://donkey-buildkitd:1234")
+	t.Setenv("DONKEY_SESSION_KEY", strings.Repeat("00", 32))
+	t.Setenv("DONKEY_TELEMETRY_KEY", strings.Repeat("11", 32))
+	t.Setenv("DONKEY_BUILDER_SCAN_DB_REPOSITORY", "jfrog.corp/ghcr/aquasecurity/trivy-db")
+	t.Setenv("DONKEY_BUILDER_SCAN_BLOCK", "high")
+	t.Setenv("DONKEY_BUILDER_SCAN_TRIAGE", "off")
+
+	cfg, err := FromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	scan := cfg.Build.Scan
+	if !scan.IsEnabled() || scan.DBRepository != "jfrog.corp/ghcr/aquasecurity/trivy-db" || scan.BlockSeverity() != "high" || scan.AssistantTriage() {
+		t.Errorf("scan settings = %+v", scan)
+	}
+	t.Setenv("DONKEY_BUILDER_SCAN_BLOCK", "everything")
+	if _, err := FromEnv(); err == nil || !strings.Contains(err.Error(), "build.scan.block") {
+		t.Errorf("an unknown threshold must be refused at startup: %v", err)
+	}
+}

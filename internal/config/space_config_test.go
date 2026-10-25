@@ -2,7 +2,9 @@ package config
 
 import (
 	"github.com/adrianliechti/donkey/internal/identity"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestSpaceRoles(t *testing.T) {
@@ -73,5 +75,38 @@ func TestFirstPlatformAdminWithoutEmailUsesSubject(t *testing.T) {
 	}
 	if settings.IsAdmin(&identity.Identity{Subject: "user-123"}) || settings.IsAdmin(&identity.Identity{Email: "sub:User-123"}) {
 		t.Fatal("subject matched a different subject or an email")
+	}
+}
+
+// A waiver names one app and one finding, carries a reason, and expires:
+// a date is valid through that day, an RFC 3339 time to the second.
+func TestSecurityWaivers(t *testing.T) {
+	for name, bad := range map[string]SecurityWaiver{
+		"app":     {App: "Shop", ID: "CVE-1", Reason: "x"},
+		"id":      {App: "shop", ID: " ", Reason: "x"},
+		"reason":  {App: "shop", ID: "CVE-1"},
+		"expires": {App: "shop", ID: "CVE-1", Reason: "x", Expires: "next week"},
+	} {
+		if err := (SpaceConfig{SecurityWaivers: []SecurityWaiver{bad}}).Validate(); err == nil {
+			t.Errorf("%s: %+v validated", name, bad)
+		}
+	}
+	now := time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC)
+	settings := SpaceConfig{SecurityWaivers: []SecurityWaiver{
+		{App: "shop", ID: "CVE-1", Reason: "today, still valid", Expires: "2026-11-24"},
+		{App: "shop", ID: "CVE-2", Reason: "yesterday", Expires: "2026-11-23"},
+		{App: "shop", ID: "CVE-3", Reason: "an hour ago", Expires: "2026-11-24T11:00:00Z"},
+		{App: "shop", ID: "CVE-4", Reason: "never expires"},
+		{App: "api", ID: "CVE-1", Reason: "another app"},
+	}}
+	if err := settings.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	got := []string{}
+	for _, w := range settings.WaiversFor("shop", now) {
+		got = append(got, w.ID)
+	}
+	if strings.Join(got, ",") != "CVE-1,CVE-4" {
+		t.Errorf("active waivers = %v", got)
 	}
 }

@@ -12,9 +12,10 @@ import {
   Wrench,
   XCircle,
 } from 'lucide-react'
-import type { DeployResult, DeployStage, DeployUpdate, Plan, PlanSignal } from './api'
+import type { AppScan, DeployResult, DeployStage, DeployUpdate, Plan, PlanSignal } from './api'
 import { DiffView } from './DiffView'
 import { FindingsList } from './FindingsList'
+import { ScanSection } from './ScanSection'
 import { Button, Callout, Chip, CodeCard, Disclosure, Eyebrow, List, ListRow, Section, SectionHeader } from './ui'
 
 // A release reads top to bottom like the Overview tab: a status callout,
@@ -365,6 +366,7 @@ export function ReleaseView({
   onOpen,
   onBackToReview,
   onDeployAnother,
+  scan,
   layout = 'split',
 }: {
   plan: Plan
@@ -375,8 +377,11 @@ export function ReleaseView({
   onOpen?: () => void
   onBackToReview?: () => void
   onDeployAnother?: () => void
+  /** The stored scan; a live release carries its own on the update. */
+  scan?: AppScan
   layout?: 'split' | 'stacked'
 }) {
+  const scanned = scan ?? update.scan
   const running = result === undefined
   const actions = result && (onOpen || onBackToReview || onDeployAnother) && (
     <div className="flex flex-wrap items-center justify-end gap-2">
@@ -405,6 +410,7 @@ export function ReleaseView({
     <div className="flex flex-col gap-5">
       <ReleaseState update={update} result={result} />
       <DetectionDetails plan={plan} update={update} result={result} />
+      {scanned && <ScanSection scan={scanned} />}
       <ServicesNeeded plan={plan} />
       <Problems plan={plan} result={result} />
       {Boolean(update.changes?.length) && (

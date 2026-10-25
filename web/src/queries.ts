@@ -255,6 +255,16 @@ export function useAppBuilds(space: string, app: string) {
   return present(useQuery(buildsQuery(space, app)))
 }
 
+export function useAppSecurity(space: string, app: string, scannedAt?: string) {
+  return present(
+    useQuery({
+      queryKey: ['security', space, app, scannedAt],
+      queryFn: () => api.security(space, app),
+      refetchInterval: 60_000,
+    }),
+  )
+}
+
 export function useAppBuild(space: string, app: string, sequence: number | null) {
   return present(useQuery({ ...buildQuery(space, app, sequence ?? 0), enabled: sequence !== null }))
 }
@@ -357,7 +367,10 @@ export function useDeleteSpace(space: string) {
     mutationFn: () => api.deleteSpace(space),
     onSuccess: () => {
       qc.removeQueries({ queryKey: spaceServicesQuery(space).queryKey })
-      return qc.invalidateQueries({ queryKey: fleetQuery.queryKey })
+      return Promise.all([
+        qc.invalidateQueries({ queryKey: fleetQuery.queryKey }),
+        qc.invalidateQueries({ queryKey: deploysQuery.queryKey }),
+      ])
     },
   })
 }

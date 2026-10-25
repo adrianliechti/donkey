@@ -1,10 +1,13 @@
 import { useState } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import { Trash2, TriangleAlert } from 'lucide-react'
 import { api } from './api'
 import { Button, Callout, ErrorNote, IconButton, Section, SectionHeader, ToggleRow } from './ui'
 import { errText } from './format'
+import { deploysQuery, fleetQuery, statusQuery } from './queries'
 
 export function DangerZone({ space, app, onDestroyed }: { space: string; app: string; onDestroyed: () => void }) {
+  const queries = useQueryClient()
   const [confirming, setConfirming] = useState(false)
   const [keepData, setKeepData] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -15,6 +18,11 @@ export function DangerZone({ space, app, onDestroyed }: { space: string; app: st
     setError('')
     try {
       await api.destroy(space, app, keepData)
+      await Promise.all([
+        queries.invalidateQueries({ queryKey: fleetQuery.queryKey }),
+        queries.invalidateQueries({ queryKey: deploysQuery.queryKey }),
+        queries.invalidateQueries({ queryKey: statusQuery(space, app).queryKey }),
+      ])
       onDestroyed()
     } catch (err) {
       setError(errText(err, 'Removing did not work.'))

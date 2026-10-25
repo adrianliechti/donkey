@@ -17,6 +17,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/aymanbagabas/go-udiff"
@@ -57,14 +58,23 @@ type DeployUpdate struct {
 	// assistant wrote. The file itself is in the source history.
 	Recipe  string            `json:"recipe,omitempty"`
 	Changes []ai.SourceChange `json:"changes,omitempty"`
+	// Scan is the vulnerability scan's outcome as soon as it is known, so a
+	// release being watched shows its findings while the build goes on.
+	// Without the inventory: the record keeps that, the stream need not.
+	Scan *AppScan `json:"scan,omitempty"`
 }
 
 // lineStreamer writes progress lines to the client as they happen, and
 // keeps each app's entry on the deploy board current.
 type lineStreamer struct {
+	// BuildKit progress and the scan judge can write concurrently.
+	mu      sync.Mutex
 	w       http.ResponseWriter
 	f       http.Flusher
 	release *releaseRecorder
+	// lastScan is the latest scan this stream said, for the deploy that
+	// stamps the workload with its outcome.
+	lastScan *AppScan
 	// tickets are the board entries of the apps this stream deploys; current
 	// is the app the pipeline is on, which updates without an app name and
 	// plain lines belong to.
@@ -96,6 +106,8 @@ func newLineStreamer(w http.ResponseWriter, release *releaseRecorder) *lineStrea
 }
 
 func (l *lineStreamer) send(v map[string]any) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	b, _ := json.Marshal(v)
 	l.w.Write(append(b, '\n'))
 	if l.f != nil {
@@ -136,6 +148,9 @@ func (l *lineStreamer) Result(res DeployResult) {
 }
 
 func (l *lineStreamer) Update(update DeployUpdate) {
+	if update.Stage == "building" || update.Stage == "detecting" {
+		l.lastScan = nil
+	}
 	if l.release != nil {
 		l.release.update(update)
 	}
@@ -143,6 +158,16 @@ func (l *lineStreamer) Update(update DeployUpdate) {
 		l.ticket(update.App).stage(update.Stage)
 	}
 	l.send(map[string]any{"update": update})
+}
+
+// Scan keeps the vulnerability scan's outcome with the release record and
+// shows it to whoever is watching the release.
+func (l *lineStreamer) Scan(record *AppScan) {
+	l.lastScan = record
+	if l.release != nil {
+		l.release.scan(record)
+	}
+	l.Update(DeployUpdate{Scan: record.Shown()})
 }
 
 func (l *lineStreamer) Inspection(build PlanBuild, analysis *ai.Analysis) {
@@ -417,8 +442,14 @@ func (s *Server) deployApp(ctx context.Context, out *lineStreamer, dir string, a
 		if opts.DryRun {
 			return s.renderDryRun(app, opts.Tag, opts.Hosts)
 		}
+		// The image's scan is re-read against today's policy: a rollback
+		// to a refused image is still deploying a refused image.
+		stored, err := s.checkStoredScan(ctx, out, space, app, opts.Tag)
+		if err != nil {
+			return fail(err)
+		}
 		out.Update(DeployUpdate{Stage: "releasing"})
-		return s.applyAndWait(ctx, out, app, dir, opts.Tag, s.storedStack(ctx, space, app.Name, opts.Tag), opts.NoWait, opts.Hosts)
+		return s.applyAndWait(ctx, out, app, dir, opts.Tag, s.storedStack(ctx, space, app.Name, opts.Tag), securityJSON(stored), opts.NoWait, opts.Hosts)
 	}
 
 	out.Update(DeployUpdate{Stage: "detecting"})
@@ -553,11 +584,14 @@ func (s *Server) deployApp(ctx context.Context, out *lineStreamer, dir string, a
 	if stored, e := s.rt.GetEnv(ctx, space, app.Name); e != nil || len(stored) > 0 {
 		req.Verify = nil
 	}
+	// The scan is independent of the startup check: it needs nothing the
+	// runtime holds, so nothing above switches it off.
+	req.Scan = s.scanSpec()
 	var release func(*build.Result, string) error
 	if !opts.BuildOnly {
 		release = func(result *build.Result, stack string) error {
 			return s.rt.Deploy(ctx, runtime.DeploySpec{App: app, Space: space, ImageRef: result.ImageRef,
-				Decisions: decisionsJSON(app), Stack: stack, NoWait: opts.NoWait, Hosts: opts.Hosts}, out)
+				Decisions: decisionsJSON(app), Stack: stack, Security: securityJSON(out.lastScan), NoWait: opts.NoWait, Hosts: opts.Hosts}, out)
 		}
 	}
 	outcome, err := s.buildGenerated(ctx, out, builder, dir, app, req, release)
@@ -568,10 +602,21 @@ func (s *Server) deployApp(ctx context.Context, out *lineStreamer, dir string, a
 	if err != nil {
 		res.Error = err.Error()
 		var rollout *runtime.RolloutError
-		if errors.As(err, &rollout) {
+		var refused *build.ScanBlockedError
+		var scanErr *build.ScanError
+		switch {
+		case errors.As(err, &scanErr), errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+			// Infrastructure failures and cancellation need no source diagnosis.
+		case errors.As(err, &rollout):
 			s.diagnoseWith(ctx, &res, buildDir, space, app.Name, "rollout", rollout.Evidence.Logs, rollout.Evidence.Events)
-		} else if logs, e := os.ReadFile(logFile.Name()); e == nil {
-			s.diagnoseWith(ctx, &res, buildDir, space, app.Name, "build", tailBytes(logs, 15*1024), nil)
+		case errors.As(err, &refused):
+			// The build worked; the image was refused. The findings are the
+			// evidence, and the proposals are the version bumps they ask for.
+			s.diagnoseWith(ctx, &res, buildDir, space, app.Name, "scan", refusedEvidence(out, refused), nil)
+		default:
+			if logs, e := os.ReadFile(logFile.Name()); e == nil {
+				s.diagnoseWith(ctx, &res, buildDir, space, app.Name, "build", tailBytes(logs, 15*1024), nil)
+			}
 		}
 		return res
 	}
@@ -593,6 +638,21 @@ func (s *Server) deployApp(ctx context.Context, out *lineStreamer, dir string, a
 	}
 	return res
 
+}
+
+// refusedEvidence is what the assistant gets to propose a fix for a refused
+// image: the findings as the deploy said them, with the record's verdicts.
+func refusedEvidence(out *lineStreamer, refused *build.ScanBlockedError) string {
+	var b strings.Builder
+	b.WriteString(refused.Message + "\n")
+	if out.lastScan != nil {
+		for _, f := range out.lastScan.Findings {
+			if f.Level != LevelInfo {
+				b.WriteString(f.Text() + "\n")
+			}
+		}
+	}
+	return b.String()
 }
 
 func registryMirrorSummary(mirrors map[string]string) string {
@@ -713,7 +773,7 @@ func (s *Server) adoptConsoleChoices(ctx context.Context, space string, app *con
 // own build record names the recipe's base images, and the running app
 // answers for images that predate the build store.
 func (s *Server) storedStack(ctx context.Context, space, app, imageRef string) string {
-	if record, err := s.telemetry.BuildByImage(ctx, space, app, imageRef); err == nil {
+	if record, err := s.deploymentStore().BuildByImage(ctx, space, app, imageRef); err == nil {
 		var release AppRelease
 		if json.Unmarshal(record, &release) == nil && len(release.Update.BaseImages) > 0 {
 			return detect.Stack(release.Update.BaseImages)
@@ -728,13 +788,13 @@ func (s *Server) storedStack(ctx context.Context, space, app, imageRef string) s
 // adoptStoredDecisions fills what donkey.yaml leaves open, and says what it
 // kept. The deployed tag's own build record is asked first — its decisions
 // are the ones that image was verified with — and the running Deployment's
-// record answers for images that predate the build store or when telemetry
-// is unreachable. An adopted value that no longer fits is dropped again, and
+// record answers for images that predate the build store or when history
+// is unavailable. An adopted value that no longer fits is dropped again, and
 // only ever the adopted values.
 func (s *Server) adoptStoredDecisions(ctx context.Context, space, imageRef string, app *config.AppConfig) []string {
 	var raw string
 	if imageRef != "" {
-		if record, err := s.telemetry.BuildByImage(ctx, space, app.Name, imageRef); err == nil {
+		if record, err := s.deploymentStore().BuildByImage(ctx, space, app.Name, imageRef); err == nil {
 			var release AppRelease
 			if json.Unmarshal(record, &release) == nil && len(release.Decisions) > 0 {
 				raw = string(release.Decisions)
@@ -781,7 +841,7 @@ func (s *Server) adoptStoredDecisions(ctx context.Context, space, imageRef strin
 // whole go-live choreography (storage, declared services, routes, waiting),
 // and turns its typed failures into the deploy's result — with the AI
 // diagnosis attached where there is real evidence.
-func (s *Server) applyAndWait(ctx context.Context, out *lineStreamer, app *config.AppConfig, root, imageRef, stack string, noWait bool, hosts map[string]string) DeployResult {
+func (s *Server) applyAndWait(ctx context.Context, out *lineStreamer, app *config.AppConfig, root, imageRef, stack, security string, noWait bool, hosts map[string]string) DeployResult {
 	space := app.Space
 	err := s.rt.Deploy(ctx, runtime.DeploySpec{
 		App:       app,
@@ -789,6 +849,7 @@ func (s *Server) applyAndWait(ctx context.Context, out *lineStreamer, app *confi
 		ImageRef:  imageRef,
 		Decisions: decisionsJSON(app),
 		Stack:     stack,
+		Security:  security,
 		NoWait:    noWait,
 		Hosts:     hosts,
 	}, out)

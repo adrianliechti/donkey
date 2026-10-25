@@ -12,6 +12,7 @@ import {
   recentDeploys,
   spaceState,
   summarizeSpaces,
+  spaceSecurity,
   type SpaceFilter,
   type SpaceIssue,
   type SpaceSummary,
@@ -36,6 +37,7 @@ import {
   Segmented,
   Skeleton,
   StatusLine,
+  ScanBadge,
 } from './ui'
 import { healthLine, healthOf } from './vocabulary'
 
@@ -252,7 +254,12 @@ function SpaceRow({
           >
             {space.name}
           </Link>
-          <p className="text-xs text-muted">{role}</p>
+          {/* The role, and the space's scan word beside it — the one cell
+              with room for a word. */}
+          <p className="flex items-center gap-2 text-xs text-muted">
+            {role}
+            <ScanBadge security={spaceSecurity(space.apps)} />
+          </p>
         </div>
       </div>
       {/* Only news speaks: a healthy space is a green dot, an empty one says

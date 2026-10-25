@@ -11,6 +11,7 @@ import (
 
 	"github.com/adrianliechti/donkey/internal/ai"
 	"github.com/adrianliechti/donkey/internal/config"
+	"github.com/adrianliechti/donkey/internal/history"
 	"github.com/adrianliechti/donkey/pkg/runtime"
 )
 
@@ -53,6 +54,12 @@ func TestDeletionWaitsForTheDeployReleaseRecord(t *testing.T) {
 				recording:      recording, resume: make(chan struct{}),
 			}
 			s := planServer(rt, &ai.Analysis{})
+			s.cfg.DataDir = t.TempDir()
+			var err error
+			s.history, err = history.New(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
 			s.cfg.Registry = config.Registry{URL: "registry.example.com"}
 			// Resolve the lock from donkey.yaml, without a space query parameter.
 			upload := appUpload(t, map[string]string{"donkey.yaml": "name: web\nspace: team\nport: 4000\n"})
@@ -79,6 +86,9 @@ func TestDeletionWaitsForTheDeployReleaseRecord(t *testing.T) {
 			waitMutation(t, deleteDone)
 			if !rt.deleted || !strings.Contains(result.Body.String(), `"ok":true`) {
 				t.Fatalf("deploy/delete did not finish: deleted=%v, deploy=%s", rt.deleted, result.Body.String())
+			}
+			if got := s.board.list(time.Now(), func(string) bool { return true }); len(got) != 0 {
+				t.Fatalf("deletion left a deployment placeholder: %+v", got)
 			}
 		})
 	}

@@ -21,9 +21,15 @@ func main() {
 		fmt.Fprintln(os.Stderr, "DONKEY_SESSION_KEY must be 32 bytes of hex (the session-key entry of donkey)")
 		os.Exit(1)
 	}
+	// MINT_TOKEN_EMAIL names who the token is for — an installation that has
+	// seen its first sign-in has its admin, and nobody else manages spaces.
+	email := os.Getenv("MINT_TOKEN_EMAIL")
+	if email == "" {
+		email = "mint-token@localhost"
+	}
 	tok, err := identity.SealToken(key, identity.Identity{
 		Subject: "mint-token",
-		Email:   "mint-token@localhost",
+		Email:   email,
 		Expires: time.Now().Add(12 * time.Hour).Unix(),
 	})
 	if err != nil {

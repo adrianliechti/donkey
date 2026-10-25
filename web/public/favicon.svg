@@ -1,7 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24">
   <style>
-    :root { --tile: #14100c; --mark: #fff; }
-    @media (prefers-color-scheme: light) { :root { --tile: #fff; --mark: #14100c; } }
+    :root { --tile: #171717; --mark: #fff; }
+    @media (prefers-color-scheme: light) { :root { --tile: #fff; --mark: #171717; } }
   </style>
   <rect width="24" height="24" rx="5" fill="var(--tile)" />
   <g transform="translate(24 0) scale(-1 1)">

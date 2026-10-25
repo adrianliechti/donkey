@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -416,6 +417,212 @@ type BuildSettings struct {
 	// default: it pulls a scanner image (covered by registryMirrors) and
 	// lengthens every build.
 	SBOM bool `json:"sbom,omitempty"`
+
+	// Scan is the vulnerability scan every image passes before it is
+	// published, and the policy that decides what its findings mean.
+	Scan ScanSettings `json:"scan,omitempty"`
+}
+
+// DefaultScannerImage is the scanner (Trivy) the build engine runs against
+// every image before publishing it — mounted beside the unexported build
+// result, the way the startup check mounts busybox. Pinned by digest like
+// DefaultBuildkitImage; a restricted installation mirrors it through
+// build.registryMirrors like any other image a build pulls.
+const DefaultScannerImage = "aquasec/trivy:0.76.1@sha256:790fd66d1697395d8693d1acaa1ea702406a20f109b6fc7bac8db623eca6c06c"
+
+// The severities a scan policy can refuse a deploy on. A finding must also
+// have a fix available (see ScanSettings.IgnoreUnfixed) to count.
+const (
+	ScanBlockNone     = "none"
+	ScanBlockCritical = "critical"
+	ScanBlockHigh     = "high"
+)
+
+// What a credential found inside an image means for the deploy.
+const (
+	ScanSecretsBlock = "block"
+	ScanSecretsWarn  = "warn"
+	ScanSecretsOff   = "off"
+)
+
+// Who may let a blocked image through without a space admin's waiver.
+const (
+	ScanTriageAssistant = "assistant"
+	ScanTriageOff       = "off"
+)
+
+// ScanSettings configure the vulnerability scan and its policy. The scanner
+// runs inside the build engine against the image before it is exported, so a
+// refused image is never pushed under the app's name. Unset values mean the
+// defaults below, which are the recommended ones.
+type ScanSettings struct {
+	// Rescan is the interval for checking deployed SBOMs. Empty means 4h;
+	// "0" disables periodic checks without disabling the build-time gate.
+	Rescan string `json:"rescan,omitempty"`
+	// Enabled is a pointer so unset ≠ off; unset means on.
+	Enabled *bool `json:"enabled,omitempty"`
+	// Image is the scanner image (Trivy). Empty means DefaultScannerImage.
+	Image string `json:"image,omitempty"`
+	// DBRepository and JavaDBRepository are where the scanner fetches its
+	// vulnerability databases — OCI artifacts it pulls itself, by default
+	// ghcr.io/aquasecurity/trivy-db and ghcr.io/aquasecurity/trivy-java-db.
+	// Installations without internet name their mirrors here; the build
+	// engine's registryMirrors do not apply to these pulls. Credentials come
+	// from the same places builds get theirs: the registry login when the
+	// mirror is donkey's own registry host, else registry.dockerConfigDir.
+	DBRepository     string `json:"dbRepository,omitempty"`
+	JavaDBRepository string `json:"javaDbRepository,omitempty"`
+	// Block is the severity at or above which a finding with a fix available
+	// refuses the deploy: critical (the default), high, or none.
+	Block string `json:"block,omitempty"`
+	// IgnoreUnfixed keeps findings without a fixed version out of the
+	// blocking set — nothing the developer can do about them. A pointer so
+	// unset ≠ false; unset means true.
+	IgnoreUnfixed *bool `json:"ignoreUnfixed,omitempty"`
+	// Secrets is what a credential baked into the image means: block (the
+	// default), warn, or off (do not look for them).
+	Secrets string `json:"secrets,omitempty"`
+	// Triage decides whether the assistant's verdict may let a blocked image
+	// through: assistant (the default — a high-confidence "not affected"
+	// reading turns the block into a warning) or off (only a space admin's
+	// waiver does).
+	Triage string `json:"triage,omitempty"`
+}
+
+// IsEnabled is on unless an installation turns the scan off.
+func (s ScanSettings) IsEnabled() bool {
+	return s.Enabled == nil || *s.Enabled
+}
+
+func (s ScanSettings) RescanInterval() time.Duration {
+	if !s.IsEnabled() || s.Rescan == "0" {
+		return 0
+	}
+	if s.Rescan == "" {
+		return 4 * time.Hour
+	}
+	d, _ := time.ParseDuration(s.Rescan)
+	return d
+}
+
+// ScannerImage is the scanner to mount beside the image.
+func (s ScanSettings) ScannerImage() string {
+	if s.Image == "" {
+		return DefaultScannerImage
+	}
+	return s.Image
+}
+
+// BlockSeverity resolves the blocking threshold; unset means critical.
+func (s ScanSettings) BlockSeverity() string {
+	if s.Block == "" {
+		return ScanBlockCritical
+	}
+	return strings.ToLower(s.Block)
+}
+
+// IgnoreUnfixedFindings is on unless an installation wants unfixed findings
+// to block too.
+func (s ScanSettings) IgnoreUnfixedFindings() bool {
+	return s.IgnoreUnfixed == nil || *s.IgnoreUnfixed
+}
+
+// SecretsPolicy resolves what found credentials mean; unset means block.
+func (s ScanSettings) SecretsPolicy() string {
+	if s.Secrets == "" {
+		return ScanSecretsBlock
+	}
+	return strings.ToLower(s.Secrets)
+}
+
+// AssistantTriage says whether the assistant's verdict may waive a block.
+func (s ScanSettings) AssistantTriage() bool {
+	return s.Triage == "" || strings.ToLower(s.Triage) == ScanTriageAssistant
+}
+
+// EnvVars is how the settings travel to donkey-server: only what was set,
+// so an installation that says nothing renders the deployment it always
+// did. Every runtime's installer and the server's reader share this list.
+func (s ScanSettings) EnvVars() map[string]string {
+	env := map[string]string{}
+	set := func(key, value string) {
+		if value != "" {
+			env[key] = value
+		}
+	}
+	optional := func(v *bool) string {
+		if v == nil {
+			return ""
+		}
+		return strconv.FormatBool(*v)
+	}
+	set("DONKEY_BUILDER_SCAN", optional(s.Enabled))
+	set("DONKEY_BUILDER_SCAN_IMAGE", s.Image)
+	set("DONKEY_BUILDER_SCAN_DB_REPOSITORY", s.DBRepository)
+	set("DONKEY_BUILDER_SCAN_JAVA_DB_REPOSITORY", s.JavaDBRepository)
+	set("DONKEY_BUILDER_SCAN_BLOCK", s.Block)
+	set("DONKEY_BUILDER_SCAN_IGNORE_UNFIXED", optional(s.IgnoreUnfixed))
+	set("DONKEY_BUILDER_SCAN_SECRETS", s.Secrets)
+	set("DONKEY_BUILDER_SCAN_TRIAGE", s.Triage)
+	set("DONKEY_BUILDER_SCAN_RESCAN", s.Rescan)
+	return env
+}
+
+// ScanSettingsFromEnv reads what EnvVars wrote.
+func ScanSettingsFromEnv(get func(string) string) ScanSettings {
+	s := ScanSettings{
+		Rescan:           get("DONKEY_BUILDER_SCAN_RESCAN"),
+		Image:            get("DONKEY_BUILDER_SCAN_IMAGE"),
+		DBRepository:     get("DONKEY_BUILDER_SCAN_DB_REPOSITORY"),
+		JavaDBRepository: get("DONKEY_BUILDER_SCAN_JAVA_DB_REPOSITORY"),
+		Block:            get("DONKEY_BUILDER_SCAN_BLOCK"),
+		Secrets:          get("DONKEY_BUILDER_SCAN_SECRETS"),
+		Triage:           get("DONKEY_BUILDER_SCAN_TRIAGE"),
+	}
+	if v := get("DONKEY_BUILDER_SCAN"); v != "" {
+		s.Enabled = new(v == "true")
+	}
+	if v := get("DONKEY_BUILDER_SCAN_IGNORE_UNFIXED"); v != "" {
+		s.IgnoreUnfixed = new(v == "true")
+	}
+	return s
+}
+
+// Validate refuses values the accessors above would otherwise read as a
+// default — a typo in build.scan.block must not silently mean "critical".
+func (s ScanSettings) Validate() error {
+	if s.Rescan != "" && s.Rescan != "0" {
+		if d, err := time.ParseDuration(s.Rescan); err != nil || d < time.Minute {
+			return fmt.Errorf("build.scan.rescan must be 0 or a duration of at least 1m (got %q)", s.Rescan)
+		}
+	}
+	switch s.BlockSeverity() {
+	case ScanBlockNone, ScanBlockCritical, ScanBlockHigh:
+	default:
+		return fmt.Errorf("build.scan.block must be none, critical or high (got %q)", s.Block)
+	}
+	switch s.SecretsPolicy() {
+	case ScanSecretsBlock, ScanSecretsWarn, ScanSecretsOff:
+	default:
+		return fmt.Errorf("build.scan.secrets must be block, warn or off (got %q)", s.Secrets)
+	}
+	switch strings.ToLower(s.Triage) {
+	case "", ScanTriageAssistant, ScanTriageOff:
+	default:
+		return fmt.Errorf("build.scan.triage must be assistant or off (got %q)", s.Triage)
+	}
+	for name, value := range map[string]string{"image": s.Image, "dbRepository": s.DBRepository, "javaDbRepository": s.JavaDBRepository} {
+		if value == "" {
+			continue
+		}
+		if strings.Contains(value, "://") {
+			return fmt.Errorf("build.scan.%s must be an image reference without a scheme (got %q)", name, value)
+		}
+		if _, err := reference.ParseNormalizedNamed(value); err != nil {
+			return fmt.Errorf("build.scan.%s %q is not a valid image reference: %w", name, value, err)
+		}
+	}
+	return nil
 }
 
 // ProvenanceMode resolves the attestation tri-state: unset means "min",
@@ -476,6 +683,9 @@ func (b InstallBuild) Validate() error {
 		if _, err := ParseRegistryMirror(mirror); err != nil {
 			return fmt.Errorf("build.registryMirrors[%q] mirror %q is invalid: %w", host, mirror, err)
 		}
+	}
+	if err := b.Scan.Validate(); err != nil {
+		return err
 	}
 	return b.Packages.Validate()
 }

@@ -17,7 +17,7 @@ import {
   UploadCloud,
   type LucideIcon,
 } from 'lucide-react'
-import { api, type EndpointState, type EndpointStatus } from './api'
+import { api, type AppSecurity, type EndpointState, type EndpointStatus } from './api'
 import { AddonsCard } from './AddonsCard'
 import { AnalyticsPanel } from './AnalyticsPanel'
 import { DangerZone } from './DangerZone'
@@ -31,7 +31,8 @@ import type { SourceSearch } from './sourceSearch'
 import { SourcePanel } from './SourcePanel'
 import { StoredRelease } from './StoredRelease'
 import { DeployPlaceholder, DeployProgress } from './DeployProgress'
-import { useAppBuild, useAppBuilds, useAppStatus, useDeploys, useFleet } from './queries'
+import { useAppBuild, useAppBuilds, useAppStatus, useAppSecurity, useDeploys, useFleet } from './queries'
+import { ScanSection } from './ScanSection'
 import { SignalChips } from './ReleaseView'
 import {
   Button,
@@ -47,8 +48,9 @@ import {
   Spinner,
   StateChip,
   TabBar,
+  ScanBadge,
 } from './ui'
-import { ago, errText } from './format'
+import { ago, errText, scanCounts } from './format'
 
 // An app is a page of its own. Each tab is one job — glance, read,
 // browse, configure, change how it's reached — and the header that answers
@@ -158,9 +160,13 @@ export function AppDetail({
         <ErrorNote message={error || (actionError?.tab === shown ? actionError.message : '')} />
         {status === null && !error && <Spinner label="Asking the cluster…" />}
 
-        {/* Not running (yet): its first deploy, as it goes or how it ended. */}
-        {status && !status.found && deploy && <DeployPlaceholder deploy={deploy} />}
-        {status && !status.found && !deploy && (
+        {/* Not running (yet): its first deploy, as it goes or how it failed.
+            A deploy that went through for an app that is gone again (removed
+            since) is no longer news: the app is simply not here. */}
+        {status && !status.found && deploy && (!deploy.finishedAt || deploy.stage === 'failed') && (
+          <DeployPlaceholder deploy={deploy} />
+        )}
+        {status && !status.found && (!deploy || (deploy.finishedAt && deploy.stage !== 'failed')) && (
           <Card className="p-8 text-center">
             <h2 className="font-mono text-xl font-bold tracking-tight">{app}</h2>
             <p className="mt-2 text-sm text-muted">
@@ -185,6 +191,7 @@ export function AppDetail({
             {shown === 'overview' && (
               <>
                 {canManage && <AboutApp space={space} app={app} onOpenBuild={() => onTab('release')} />}
+                {canManage && status.security && <SecuritySection space={space} app={app} security={status.security} />}
                 {canManage && <InstancesCard pods={status.pods} startedAt={status.startedAt} />}
                 {!canManage && (
                   <Section>
@@ -258,6 +265,70 @@ function AboutApp({ space, app, onOpenBuild }: { space: string; app: string; onO
         </div>
       )}
     </Section>
+  )
+}
+
+// What the scan made of the running image, in one line, with the way to
+// the latest findings below it.
+const securityText: Record<AppSecurity['state'], string> = {
+  clean: 'Nothing with a fix available at or above the policy’s threshold.',
+  fixable: 'Fixes are available below the threshold; they do not refuse a deploy.',
+  warning: 'The last scan reported a secret or an unsupported operating system — see the findings.',
+  waived: 'Runs on a waiver, or on the assistant’s reading that the app is not affected — see the findings.',
+  'needs-action': 'Would be refused by today’s policy.',
+}
+
+function SecuritySection({ space, app, security }: { space: string; app: string; security: AppSecurity }) {
+  const [expanded, setExpanded] = useState(false)
+  const dates = [
+    security.scannedAt && `Scanned ${readableDate(security.scannedAt)}`,
+    security.dbUpdatedAt && `database from ${readableDate(security.dbUpdatedAt)}`,
+  ].filter(Boolean)
+  return (
+    <Section className="space-y-2">
+      <SectionHeader
+        title="Security"
+        actions={
+          <button
+            type="button"
+            onClick={() => setExpanded(!expanded)}
+            className="rounded px-1 text-xs text-muted underline-offset-2 transition-colors hover:text-ink hover:underline focus-visible:outline-2 focus-visible:outline-accent-strong"
+          >
+            {expanded ? 'Hide findings' : 'Latest findings'}
+          </button>
+        }
+      />
+      <p className="flex flex-wrap items-center gap-2 text-sm text-ink">
+        <ScanBadge security={security} />
+        <span>
+          {scanCounts(security.summary)}
+          {security.summary.fixable > 0 && <span className="text-muted"> · {security.summary.fixable} with a fix</span>}
+          {security.summary.secrets > 0 && (
+            <span className="text-muted">
+              {' '}
+              · {security.summary.secrets} {security.summary.secrets === 1 ? 'secret' : 'secrets'}
+            </span>
+          )}
+        </span>
+      </p>
+      <p className="text-xs leading-relaxed text-muted">
+        {dates.length > 0 && dates.join(' · ') + '. '}
+        {securityText[security.state]}
+      </p>
+      {security.refreshError && <ErrorNote message={security.refreshError} />}
+      {expanded && <CurrentScan space={space} app={app} scannedAt={security.scannedAt} />}
+    </Section>
+  )
+}
+
+function CurrentScan({ space, app, scannedAt }: { space: string; app: string; scannedAt?: string }) {
+  const { data, error } = useAppSecurity(space, app, scannedAt)
+  if (error) return <ErrorNote message={error} />
+  if (!data) return <Spinner label="Loading the latest scan…" />
+  return data.scan ? (
+    <ScanSection scan={data.scan} current />
+  ) : (
+    <p className="text-sm text-muted">No scan is stored for this image.</p>
   )
 }
 

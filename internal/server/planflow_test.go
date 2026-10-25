@@ -38,6 +38,10 @@ func (planAssistant) DiagnoseFailure(context.Context, *ai.FailureContext) (*ai.F
 	return nil, nil
 }
 
+func (planAssistant) TriageVulnerabilities(context.Context, *ai.TriageInput) (*ai.Triage, error) {
+	return &ai.Triage{}, nil
+}
+
 // planRuntime answers the handful of questions the plan asks the cluster.
 // Everything else is left embedded and unimplemented: a plan that grows into
 // another runtime call should fail loudly here rather than quietly pass.

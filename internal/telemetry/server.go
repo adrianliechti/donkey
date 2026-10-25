@@ -146,7 +146,11 @@ func (s *Service) apiHandler() http.Handler {
 	mux.HandleFunc("GET /v1/resources", s.requireQueryToken(s.handleResources))
 	mux.HandleFunc("GET /v1/analytics", s.requireQueryToken(s.handleAnalytics))
 	mux.HandleFunc("GET /v1/analytics/live", s.requireQueryToken(s.handleAnalyticsLive))
+	// Temporary compatibility for the one-off migration to donkey-data.
+	// Keep the old writer during the rolling upgrade, until the previous
+	// orchestrator has drained. New orchestrators write only to donkey-data.
 	mux.HandleFunc("PUT /v1/builds", s.requireQueryToken(s.handlePutBuild))
+	mux.HandleFunc("GET /v1/builds/scopes", s.requireQueryToken(s.handleBuildScopes))
 	mux.HandleFunc("GET /v1/builds", s.requireQueryToken(s.handleBuilds))
 	mux.HandleFunc("GET /v1/builds/record", s.requireQueryToken(s.handleBuildRecord))
 	mux.HandleFunc("DELETE /v1/builds", s.requireQueryToken(s.handleDeleteBuilds))
