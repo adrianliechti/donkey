@@ -247,6 +247,13 @@ tasks:
     cmds:
       - go test -tags e2e -count=1 -timeout 15m -v -run '^TestScan' ./internal/build
 
+  verify:repair:
+    desc: Repair a scan-refused recipe with a live model, then scan and start the repaired image in disposable BuildKit (needs Docker, internet and OPENAI_BASE_URL)
+    env:
+      DONKEY_E2E_REPAIR: 'true'
+    cmds:
+      - go test -tags e2e -count=1 -timeout 20m -v -run '^TestLiveScanRepair$' ./internal/server
+
   prepare:monorepos:
     desc: Fetch the pinned Google microservices-demo repository for live tests
     cmds:

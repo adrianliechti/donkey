@@ -25,6 +25,9 @@ func (s *Server) baseImageCheck(builder build.Builder, req build.Request, app *c
 	cache := map[string]string{}
 	checks := 0
 	return func(ctx context.Context, image string) (string, error) {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
 		image = strings.TrimSpace(image)
 		if len(image) > 512 {
 			return "", fmt.Errorf("image reference is too long")

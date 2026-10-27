@@ -250,6 +250,9 @@ func (o *openAI) investigate(ctx context.Context, root, instructions, task strin
 	}
 
 	for turn := 0; turn < maxTurns; turn++ {
+		if ctx.Err() != nil {
+			return input
+		}
 		resp, rerr := o.client.Responses.New(ctx, responses.ResponseNewParams{
 			Model:        shared.ResponsesModel(o.model),
 			Instructions: openai.String(instructions),
@@ -267,6 +270,9 @@ func (o *openAI) investigate(ctx context.Context, root, instructions, task strin
 		// configured, and server-side conversation state is the part such
 		// endpoints most often do not implement.
 		for _, item := range resp.Output {
+			if ctx.Err() != nil {
+				return input
+			}
 			if item.Type == "reasoning" {
 				reasoning := item.AsReasoning().ToParam()
 				input = append(input, responses.ResponseInputItemUnionParam{OfReasoning: &reasoning})

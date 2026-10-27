@@ -62,6 +62,13 @@ func TestBaseImageEvidenceAndBudget(t *testing.T) {
 	if err != nil || first != second || calls != 1 {
 		t.Fatal("equivalent references were checked twice")
 	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	for _, image := range []string{"alpine:3.20", "alpine:cancelled"} {
+		if result, err := check(ctx, image); result != "" || !errors.Is(err, context.Canceled) || calls != 1 {
+			t.Fatal("canceled check returned cached evidence or started a new inspection")
+		}
+	}
 	for i := 1; i < maxBaseImageChecks; i++ {
 		if _, err := check(context.Background(), fmt.Sprintf("alpine:test-%d", i)); err != nil {
 			t.Fatal(err)

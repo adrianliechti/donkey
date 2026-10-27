@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -15,6 +14,7 @@ import (
 	"time"
 
 	"github.com/adrianliechti/donkey/internal/config"
+	"github.com/adrianliechti/donkey/internal/testenv"
 )
 
 // The vulnerability scan against a real BuildKit, in the exact shape a
@@ -72,6 +72,19 @@ func TestScanOnGatewayResult(t *testing.T) {
 		}
 		if !strings.Contains(candidate.Reference, "@sha256:") || candidate.Scan == nil || candidate.Scan.OS == "" || len(candidate.Scan.SBOM) == 0 {
 			t.Fatalf("candidate missing resolved identity or scan: %+v", candidate)
+		}
+	})
+	t.Run("base candidate scanner outage keeps its cause", func(t *testing.T) {
+		run := scanner.Run
+		defer func() { scanner.Run = run }()
+		unavailable := errors.New("database unavailable")
+		scanner.Run = func(context.Context, string, []string, []string) ([]byte, error) {
+			return nil, unavailable
+		}
+		candidate, err := b.InspectBaseImage(ctx, "alpine:3.20", "linux/"+runtime.GOARCH, ScanSpec{Image: config.DefaultScannerImage, Matcher: scanner})
+		var scanErr *ScanError
+		if candidate != nil || !errors.As(err, &scanErr) || !errors.Is(err, unavailable) {
+			t.Fatalf("candidate scanner failure lost its cause: candidate=%+v err=%v", candidate, err)
 		}
 	})
 	build := func(judge func(context.Context, *ScanReport) error) (*Result, error) {
@@ -240,34 +253,6 @@ func TestScanDoctorProbes(t *testing.T) {
 // binary wrote.
 func dockerScanner(t *testing.T) *Scanner {
 	t.Helper()
-	dir := filepath.Join(t.TempDir(), "scanner")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	return &Scanner{
-		Dir: dir,
-		Run: func(ctx context.Context, work string, args []string, env []string) ([]byte, error) {
-			mapped := make([]string, 0, len(args))
-			for i := 0; i < len(args); i++ {
-				if args[i] == "--cache-dir" && i+1 < len(args) {
-					mapped = append(mapped, "--cache-dir", "/cache")
-					i++
-					continue
-				}
-				mapped = append(mapped, args[i])
-			}
-			docker := []string{"run", "--rm", "--volume", filepath.Join(dir, "cache") + ":/cache"}
-			if work != "" {
-				docker = append(docker, "--volume", work+":/work", "--workdir", "/work")
-			}
-			for _, kv := range env {
-				if strings.HasPrefix(kv, "TRIVY_") && !strings.HasPrefix(kv, "TRIVY_CACHE_DIR=") {
-					docker = append(docker, "--env", kv)
-				}
-			}
-			docker = append(docker, "--env", "TRIVY_CACHE_DIR=/cache", config.DefaultScannerImage)
-			docker = append(docker, mapped...)
-			return exec.CommandContext(ctx, "docker", docker...).CombinedOutput()
-		},
-	}
+	dir, run := testenv.Trivy(t)
+	return &Scanner{Dir: dir, Run: run}
 }

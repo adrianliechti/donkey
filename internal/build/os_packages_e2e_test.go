@@ -6,13 +6,11 @@ import (
 	"context"
 	"encoding/pem"
 	"fmt"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/http/httputil"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -20,12 +18,10 @@ import (
 	"testing"
 	"time"
 
-	bkclient "github.com/moby/buildkit/client"
-
 	"github.com/adrianliechti/donkey/internal/ai"
 	"github.com/adrianliechti/donkey/internal/config"
 	"github.com/adrianliechti/donkey/internal/packages"
-	"github.com/adrianliechti/donkey/pkg/runtime/kubernetes/manifests"
+	"github.com/adrianliechti/donkey/internal/testenv"
 )
 
 // Run without a Donkey installation or JFrog credentials:
@@ -219,78 +215,12 @@ func osPackageProxyConfig(mirror, host, caFile, debianRoot string) packages.Conf
 
 func runOSPackageProxy(t *testing.T, ctx context.Context, host string, cfg packages.Config) string {
 	t.Helper()
-	listener, err := net.Listen("tcp", "0.0.0.0:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	port := listener.Addr().(*net.TCPAddr).Port
-	listener.Close()
-	cfg.Listen = fmt.Sprintf(":%d", port)
-	proxyCtx, cancel := context.WithCancel(ctx)
-	done := make(chan error, 1)
-	go func() { done <- packages.Run(proxyCtx, &cfg) }()
-	t.Cleanup(func() {
-		cancel()
-		if err := <-done; err != nil {
-			t.Errorf("stopping proxy: %v", err)
-		}
-	})
-	client := &http.Client{Timeout: time.Second}
-	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); {
-		res, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/healthz", port))
-		if err == nil {
-			res.Body.Close()
-			return fmt.Sprintf("http://%s:%d", host, port)
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	t.Fatal("package proxy did not start")
-	return ""
+	return testenv.PackageProxy(t, ctx, host, cfg)
 }
 
 func osPackageBuildkit(t *testing.T, ctx context.Context) (string, string) {
 	t.Helper()
-	name := fmt.Sprintf("donkey-os-packages-e2e-%d", time.Now().UnixNano())
-	docker := func(args ...string) string {
-		t.Helper()
-		out, err := exec.CommandContext(ctx, "docker", args...).CombinedOutput()
-		if err != nil {
-			t.Fatalf("docker %v: %v\n%s", args, err, out)
-		}
-		return strings.TrimSpace(string(out))
-	}
-	// donkey's own config file, so the engine garbage-collects the way an
-	// installation's does — the scanner's database cache depends on it.
-	configDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(configDir, "buildkitd.toml"), []byte(manifests.BuildkitTOML(manifests.BuildkitConfig{})), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	docker("run", "--detach", "--rm", "--privileged", "--name", name, "--publish", "127.0.0.1::1234",
-		"--volume", configDir+":/etc/buildkit:ro",
-		config.DefaultBuildkitImage, "--addr", "tcp://0.0.0.0:1234", "--config", "/etc/buildkit/buildkitd.toml")
-	t.Cleanup(func() {
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		if out, err := exec.CommandContext(cleanupCtx, "docker", "rm", "--force", name).CombinedOutput(); err != nil {
-			t.Errorf("removing test BuildKit: %v: %s", err, out)
-		}
-	})
-	addr := "tcp://" + docker("port", name, "1234/tcp")
-	host := "host.docker.internal"
-	if runtime.GOOS == "linux" {
-		host = docker("inspect", "--format", "{{range .NetworkSettings.Networks}}{{.Gateway}}{{end}}", name)
-	}
-	client, err := bkclient.New(ctx, addr)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer client.Close()
-	ready, cancel := context.WithTimeout(ctx, time.Minute)
-	defer cancel()
-	if err := client.Wait(ready); err != nil {
-		t.Fatal(err)
-	}
-	return addr, host
+	return testenv.Buildkit(t, ctx)
 }
 
 func buildOSPackageProbe(t *testing.T, ctx context.Context, b *BuildKitBuilder, recipe string, verify *VerifySpec) error {

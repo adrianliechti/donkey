@@ -3,6 +3,7 @@ package ai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -181,5 +182,44 @@ func TestDockerfileToolsEditAndRetainTranscriptOnAnswerRetry(t *testing.T) {
 	}
 	if string(data) != "listen(8080)\n" {
 		t.Fatalf("edit not applied: %s", data)
+	}
+}
+
+func TestDockerfileImageCheckCancellationStopsPendingEdits(t *testing.T) {
+	root := write(t, map[string]string{"server.js": "listen(3000)\n"})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	calls := 0
+	client := &http.Client{Transport: requestTransport(func(r *http.Request) (*http.Response, error) {
+		calls++
+		if err := r.Context().Err(); err != nil {
+			return nil, err
+		}
+		output := []any{
+			map[string]any{"type": "function_call", "call_id": "read-1", "name": "read", "arguments": `{"file_path":"server.js","offset":1,"limit":1}`},
+			map[string]any{"type": "function_call", "call_id": "image-1", "name": "check_image", "arguments": `{"image":"node:lts"}`},
+			map[string]any{"type": "function_call", "call_id": "edit-1", "name": "edit", "arguments": `{"edits":[{"file_path":"server.js","old_string":"listen(3000)","new_string":"listen(8080)","replace_all":false}]}`},
+		}
+		data, err := json.Marshal(map[string]any{"status": "completed", "output": output})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(string(data))), Request: r}, nil
+	})}
+	o := &openAI{client: openai.NewClient(option.WithHTTPClient(client), option.WithAPIKey("test"), option.WithMaxRetries(0)), model: "test"}
+	result, err := o.WriteDockerfile(ctx, &DockerfileInput{Root: root, AllowEdits: true,
+		CheckImage: func(context.Context, string) (string, error) {
+			cancel()
+			return "", ctx.Err()
+		}})
+	if result != nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancellation lost: result=%+v err=%v", result, err)
+	}
+	data, err := os.ReadFile(filepath.Join(root, "server.js"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "listen(3000)\n" || calls != 1 {
+		t.Fatalf("continued after cancellation: source=%q model calls=%d", data, calls)
 	}
 }

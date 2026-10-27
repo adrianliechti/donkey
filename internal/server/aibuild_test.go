@@ -14,6 +14,7 @@ import (
 	"github.com/adrianliechti/donkey/internal/ai"
 	"github.com/adrianliechti/donkey/internal/build"
 	"github.com/adrianliechti/donkey/internal/config"
+	"github.com/adrianliechti/donkey/internal/detect"
 	"github.com/adrianliechti/donkey/pkg/runtime"
 )
 
@@ -268,6 +269,82 @@ func TestRecipeIgnorePreservesAuthorAndAllowsCorrections(t *testing.T) {
 	data, _ := os.ReadFile(filepath.Join(dir, recipe+".dockerignore"))
 	if string(data) != "author-specific\n" {
 		t.Fatalf("lost author exclusions: %q", data)
+	}
+}
+
+func TestSavedRecipeRepairUpdatesGeneratedExclusions(t *testing.T) {
+	for _, tc := range []struct {
+		name, authorIgnore, repairIgnore, want string
+	}{
+		{"correct exclusions", "", "cache\n", "cache\n"},
+		{"remove exclusions", "", "", ""},
+		{"preserve author exclusions", "private\n", "cache\n", "private\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := writeGeneratedFile(dir, detect.AIDockerfilePath, "FROM saved\n"); err != nil {
+				t.Fatal(err)
+			}
+			if err := writeGeneratedFile(dir, detect.AIDockerfilePath+".dockerignore", "src\n"); err != nil {
+				t.Fatal(err)
+			}
+			if tc.authorIgnore != "" {
+				if err := os.WriteFile(filepath.Join(dir, ".dockerignore"), []byte(tc.authorIgnore), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			s := &Server{cfg: &Config{}, rt: repairRuntime{}}
+			s.assistant = repairAssistant{write: func(in *ai.DockerfileInput) (*ai.DockerfileResult, error) {
+				if len(in.Attempts) != 1 || in.Attempts[0].Dockerignore != "src\n" {
+					t.Fatal("repair lost the saved exclusions")
+				}
+				return &ai.DockerfileResult{Dockerfile: "FROM repaired\n", Dockerignore: tc.repairIgnore}, nil
+			}}
+			builds := 0
+			builder := repairBuilder(func(req build.Request) (*build.Result, error) {
+				builds++
+				ignore := readDockerfile(req.ContextDir, req.DockerfilePath+".dockerignore")
+				if builds == 1 {
+					if ignore != "src\n" {
+						t.Fatalf("saved exclusions changed before first build: %q", ignore)
+					}
+					return nil, errors.New("source excluded from build context")
+				}
+				if ignore != tc.want {
+					t.Fatalf("incorrect repaired exclusions: got %q want %q", ignore, tc.want)
+				}
+				return &build.Result{ImageRef: req.ImageRef}, nil
+			})
+			outcome, err := s.buildGenerated(context.Background(), newLineStreamer(httptest.NewRecorder(), nil), builder, dir,
+				&config.AppConfig{Name: "app", Space: "team", Port: 8080},
+				build.Request{ContextDir: dir, ImageRef: "registry/app:initial", Strategy: config.BuildDockerfile, DockerfilePath: detect.AIDockerfilePath, GeneratedRecipe: true}, nil)
+			if err != nil || outcome.Attempts != 2 || outcome.Dockerignore != tc.want {
+				t.Fatalf("repair result: %+v, %v", outcome, err)
+			}
+		})
+	}
+}
+
+func TestRepairCancellationDoesNotSaveOrBuildRecipe(t *testing.T) {
+	dir := t.TempDir()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s := &Server{cfg: &Config{}, rt: repairRuntime{}}
+	s.assistant = repairAssistant{write: func(*ai.DockerfileInput) (*ai.DockerfileResult, error) {
+		cancel()
+		return &ai.DockerfileResult{Dockerfile: "FROM cancelled\n"}, nil
+	}}
+	builder := repairBuilder(func(build.Request) (*build.Result, error) {
+		t.Fatal("build started after cancellation")
+		return nil, nil
+	})
+	_, err := s.buildGenerated(ctx, newLineStreamer(httptest.NewRecorder(), nil), builder, dir,
+		&config.AppConfig{Name: "app", Space: "team", Port: 8080}, build.Request{ContextDir: dir}, nil)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancellation lost: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, detect.AIDockerfilePath)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("recipe saved after cancellation: %v", err)
 	}
 }
 

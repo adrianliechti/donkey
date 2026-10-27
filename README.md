@@ -2201,6 +2201,16 @@ verify:os-packages` with `OPENAI_API_KEY` and `DONKEY_MODEL` set (and
 `OPENAI_BASE_URL` for a custom endpoint). This live-model subtest is skipped
 unless explicitly enabled.
 
+`OPENAI_BASE_URL=http://localhost:4242/v1 task verify:repair` exercises the
+security repair loop with a live model and real BuildKit/Trivy. A vulnerable
+saved recipe must first fail scanning; the assistant then receives the
+findings, checks replacement base images and repairs the app. The resulting
+image must pass scanning and startup verification. The test uses an empty
+space policy, disables assistant waivers, and makes no registry push or
+runtime deployment. It needs Docker and internet access, uses `DONKEY_MODEL`
+or the default model, and removes its containers afterward. An optional
+`DONKEY_E2E_DNS` IP overrides DNS only for the test process and containers.
+
 Hostnames resolve through `sudo devkube connect`, which keeps donkey's
 hostnames in `/etc/hosts` while it runs. That is why this repo no longer
 patches CoreDNS, pins NodePorts or writes registry files on nodes — the demo

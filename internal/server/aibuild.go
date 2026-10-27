@@ -50,7 +50,7 @@ func (s *Server) buildGenerated(ctx context.Context, out *lineStreamer, builder 
 	checkImage := s.baseImageCheck(builder, req, app)
 	recipePath := req.DockerfilePath
 	originalIgnore := ""
-	if recipePath != "" {
+	if recipePath != "" && !req.GeneratedRecipe {
 		originalIgnore = recipePath + ".dockerignore"
 	}
 	for attempt := 1; attempt <= attempts; attempt++ {
@@ -94,6 +94,9 @@ func (s *Server) buildGenerated(ctx context.Context, out *lineStreamer, builder 
 			if err != nil {
 				return outcome, fmt.Errorf("the assistant couldn't prepare this app: %w", err)
 			}
+			if err := ctx.Err(); err != nil {
+				return outcome, err
+			}
 			if result == nil || strings.TrimSpace(result.Dockerfile) == "" {
 				return outcome, fmt.Errorf("the assistant returned no Dockerfile")
 			}
@@ -123,8 +126,8 @@ func (s *Server) buildGenerated(ctx context.Context, out *lineStreamer, builder 
 			outcome.Dockerfile = result.Dockerfile
 		} else {
 			outcome.Dockerfile = readDockerfile(req.ContextDir, recipePath)
-			ignore = readDockerfile(req.ContextDir, originalIgnore)
-			if _, err := os.Stat(filepath.Join(req.ContextDir, originalIgnore)); os.IsNotExist(err) {
+			ignore = readDockerfile(req.ContextDir, recipePath+".dockerignore")
+			if _, err := os.Stat(filepath.Join(req.ContextDir, recipePath+".dockerignore")); os.IsNotExist(err) {
 				ignore = readDockerfile(req.ContextDir, ".dockerignore")
 			}
 		}

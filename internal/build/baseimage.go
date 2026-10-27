@@ -55,6 +55,9 @@ func (b *BuildKitBuilder) InspectBaseImage(ctx context.Context, image, platform 
 		}
 	}()
 	var result *BaseImage
+	// BuildKit may return a transported error instead of the callback's
+	// error. Keep the scanner cause, as the final-image build does.
+	var scanErr error
 	_, err = c.Build(ctx, bkclient.SolveOpt{Session: []session.Attachable{auth}}, "donkey-base-image", func(ctx context.Context, gw gateway.Client) (*gateway.Result, error) {
 		_, digest, raw, err := gw.ResolveImageConfig(ctx, image, sourceresolver.Opt{ImageOpt: &sourceresolver.ResolveImageOpt{
 			Platform: &p, ResolveMode: llb.ResolveModeForcePull.String(),
@@ -76,12 +79,16 @@ func (b *BuildKitBuilder) InspectBaseImage(ctx context.Context, image, platform 
 		spec.Platform, spec.Secrets, spec.Judge = p, false, nil
 		report, err := scan(ctx, gw, llb.Image(pinned.String(), llb.Platform(p)), spec)
 		if err != nil {
-			return nil, &ScanError{Err: err}
+			scanErr = &ScanError{Err: err}
+			return nil, scanErr
 		}
 		result = &BaseImage{Reference: pinned.String(), Platform: platforms.Format(p), Versions: runtimeVersions(cfg.Config.Env), Scan: report}
 		return gateway.NewResult(), nil
 	}, ch)
 	if err != nil {
+		if scanErr != nil {
+			return nil, scanErr
+		}
 		return nil, err
 	}
 	return result, nil

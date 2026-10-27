@@ -142,6 +142,9 @@ func (o *openAI) WriteDockerfile(ctx context.Context, in *DockerfileInput) (*Doc
 		history := o.investigate(ctx, in.Root, instructions,
 			task+"\n"+dockerfileExploreInstruction, maxBuildExploreTurns,
 			exploreOptions{Writable: in.AllowEdits, Progress: in.Progress, Changes: &changes, KnownSecrets: in.KnownSecrets, CheckImage: in.CheckImage})
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		filesRead = exploredFiles(history)
 		history = append(history, responses.ResponseInputItemParamOfMessage(
 			dockerfileConcludeInstruction, responses.EasyInputMessageRoleUser))
@@ -316,6 +319,9 @@ func (o *openAI) structured(ctx context.Context, instructions, user, name string
 // is provider-enforced. Read the final message: OutputText also includes
 // commentary, which may precede the structured answer.
 func (o *openAI) structuredWith(ctx context.Context, instructions string, input []responses.ResponseInputItemUnionParam, name string, schema map[string]any, out any) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	params := responses.ResponseNewParams{
 		Model:        shared.ResponsesModel(o.model),
 		Instructions: openai.String(instructions),
