@@ -47,6 +47,7 @@ func (s *Server) buildGenerated(ctx context.Context, out *lineStreamer, builder 
 	outcome := &buildOutcome{}
 	var lastErr error
 	failedInputs := map[string]int{}
+	checkImage := s.baseImageCheck(builder, req, app)
 	recipePath := req.DockerfilePath
 	originalIgnore := ""
 	if recipePath != "" {
@@ -87,6 +88,7 @@ func (s *Server) buildGenerated(ctx context.Context, out *lineStreamer, builder 
 				Instructions: s.cfg.Build.Instructions + buildScope(req.ContextDir, dir),
 				Runtime:      string(contract), Attempts: history, KnownSecrets: known,
 				AllowEdits: true,
+				CheckImage: checkImage,
 				Progress:   func(line string) { out.Line("· %s", ai.RedactEvidence(line, known...)) },
 			})
 			if err != nil {
@@ -190,11 +192,11 @@ func (s *Server) buildGenerated(ctx context.Context, out *lineStreamer, builder 
 		switch {
 		case errors.As(err, &refused):
 			// The image was built and refused by the vulnerability policy.
-			// A generated recipe gets another go — a newer base tag or a
-			// bumped dependency is exactly a repair — but an app's own
+			// A generated recipe, including a saved one, gets another go:
+			// a newer base tag or bumped dependency is a repair. An app's own
 			// Dockerfile is never rewritten over a policy verdict: the
 			// developer gets the findings and the proposals instead.
-			if !generated {
+			if !generated && !req.GeneratedRecipe {
 				return outcome, err
 			}
 			stage = "scan"
@@ -204,6 +206,7 @@ func (s *Server) buildGenerated(ctx context.Context, out *lineStreamer, builder 
 		default:
 			evidence = ai.RedactEvidence(err.Error()+"\n"+tailBytes([]byte(evidence), 12*1024), known...)
 		}
+		evidence = ai.RedactEvidence(evidence, known...)
 		out.Line("· Attempt %d failed during %s. %s", attempt, stage, ai.RedactEvidence(err.Error(), known...))
 		history = append(history, ai.DockerfileAttempt{Dockerfile: outcome.Dockerfile, Dockerignore: ignore, Stage: stage, Failure: evidence})
 		digest, derr := contextDigest(req.ContextDir)

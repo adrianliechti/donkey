@@ -102,7 +102,7 @@ func TestAnswerTextSeparatesFinalOutput(t *testing.T) {
 
 func TestDockerfileToolsEditAndRetainTranscriptOnAnswerRetry(t *testing.T) {
 	root := write(t, map[string]string{"server.js": "listen(3000)\n"})
-	calls, answers := 0, 0
+	calls, answers, imageChecks := 0, 0, 0
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var request struct {
 			Input json.RawMessage `json:"input"`
@@ -125,6 +125,9 @@ func TestDockerfileToolsEditAndRetainTranscriptOnAnswerRetry(t *testing.T) {
 			if !strings.Contains(string(request.Input), "Edited server.js") || !strings.Contains(string(request.Input), "opaque-test-reasoning") {
 				t.Error("answer lost edit/ reasoning transcript")
 			}
+			if !strings.Contains(string(request.Input), "inspected-digest") {
+				t.Error("answer lost live base-image evidence")
+			}
 			if answers == 1 {
 				output = append(output, reply("invalid JSON"))
 			} else {
@@ -135,13 +138,14 @@ func TestDockerfileToolsEditAndRetainTranscriptOnAnswerRetry(t *testing.T) {
 			for _, tool := range request.Tools {
 				names = append(names, tool.Name)
 			}
-			if !reflect.DeepEqual(names, []string{"read", "glob", "grep", "edit"}) {
+			if !reflect.DeepEqual(names, []string{"read", "glob", "grep", "edit", "check_image"}) {
 				t.Errorf("wrong tool set: %v", names)
 			}
 			switch calls {
 			case 0:
 				output = append(output, map[string]any{"id": "reasoning-1", "type": "reasoning", "summary": []any{}, "encrypted_content": "opaque-test-reasoning"})
 				output = append(output, map[string]any{"type": "function_call", "call_id": "read-1", "name": "read", "arguments": `{"file_path":"server.js","offset":1,"limit":1}`})
+				output = append(output, map[string]any{"type": "function_call", "call_id": "image-1", "name": "check_image", "arguments": `{"image":"node:22-alpine"}`})
 			case 1:
 				if !strings.Contains(string(request.Input), "listen(3000)") {
 					t.Error("missing read result")
@@ -157,11 +161,18 @@ func TestDockerfileToolsEditAndRetainTranscriptOnAnswerRetry(t *testing.T) {
 	}))
 	defer provider.Close()
 	o := &openAI{client: openai.NewClient(option.WithBaseURL(provider.URL), option.WithAPIKey("test"), option.WithMaxRetries(0)), model: "test"}
-	result, err := o.WriteDockerfile(context.Background(), &DockerfileInput{Root: root, Port: 8080, AllowEdits: true, KnownSecrets: []string{"runtime-secret-value"}, Attempts: []DockerfileAttempt{{Stage: "rollout", Failure: "raw runtime-secret-value"}}})
+	result, err := o.WriteDockerfile(context.Background(), &DockerfileInput{Root: root, Port: 8080, AllowEdits: true, KnownSecrets: []string{"runtime-secret-value"}, Attempts: []DockerfileAttempt{{Stage: "scan", Failure: "raw runtime-secret-value"}},
+		CheckImage: func(ctx context.Context, image string) (string, error) {
+			imageChecks++
+			if image != "node:22-alpine" {
+				t.Errorf("wrong image lookup: %s", image)
+			}
+			return "inspected-digest; runtime-secret-value", nil
+		}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if calls != 3 || answers != 2 || len(result.Changes) != 1 || len(result.FilesRead) != 1 {
+	if calls != 3 || answers != 2 || imageChecks != 1 || len(result.Changes) != 1 || len(result.FilesRead) != 1 {
 		t.Fatalf("wrong investigation result: %+v, calls=%d answers=%d", result, calls, answers)
 	}
 	data, err := os.ReadFile(filepath.Join(root, "server.js"))

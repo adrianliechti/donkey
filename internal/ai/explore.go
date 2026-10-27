@@ -217,6 +217,7 @@ type exploreOptions struct {
 	Progress     func(string)
 	Changes      *[]SourceChange
 	KnownSecrets []string
+	CheckImage   func(context.Context, string) (string, error)
 }
 
 func (o *openAI) investigate(ctx context.Context, root, instructions, task string, maxTurns int, options ...exploreOptions) []responses.ResponseInputItemUnionParam {
@@ -239,6 +240,14 @@ func (o *openAI) investigate(ctx context.Context, root, instructions, task strin
 		}
 	}()
 	tools := ex.tools()
+	if opt.CheckImage != nil {
+		tool := responses.ToolParamOfFunction("check_image", map[string]any{
+			"type": "object", "properties": map[string]any{"image": map[string]any{"type": "string", "description": "Candidate base image reference, with a tag or digest."}},
+			"required": []string{"image"}, "additionalProperties": false,
+		}, true)
+		tool.OfFunction.Description = openai.String("Resolve and scan a base image using the build engine's mirrors, target platform and current vulnerability database. Returns its exact digest, declared runtime versions, OS support status and blocking package versions. Checks are bounded and cached for this deployment; this does not approve the final image.")
+		tools = append(tools, tool)
+	}
 
 	for turn := 0; turn < maxTurns; turn++ {
 		resp, rerr := o.client.Responses.New(ctx, responses.ResponseNewParams{
@@ -278,7 +287,26 @@ func (o *openAI) investigate(ctx context.Context, root, instructions, task strin
 				Name:      fc.Name,
 				Arguments: fc.Arguments,
 			}})
-			out := ex.call(fc.Name, fc.Arguments)
+			var out string
+			if fc.Name == "check_image" && opt.CheckImage != nil {
+				var args struct {
+					Image string `json:"image"`
+				}
+				if err := json.Unmarshal([]byte(fc.Arguments), &args); err != nil || args.Image == "" {
+					out = "Supply a valid image reference."
+				} else {
+					if opt.Progress != nil {
+						opt.Progress("Checking base image " + RedactEvidence(args.Image, opt.KnownSecrets...))
+					}
+					var err error
+					out, err = opt.CheckImage(ctx, args.Image)
+					if err != nil {
+						out = "Image check unavailable: " + err.Error()
+					}
+				}
+			} else {
+				out = ex.call(fc.Name, fc.Arguments)
+			}
 			if opt.Progress != nil {
 				var args struct {
 					Path     string `json:"path"`

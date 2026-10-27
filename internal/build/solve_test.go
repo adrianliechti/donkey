@@ -155,6 +155,9 @@ func TestSolveOptAttestationsAndLabels(t *testing.T) {
 	}
 
 	attrs := base(config.BuildSettings{})
+	if attrs["image-resolve-mode"] != "pull" {
+		t.Fatal("build may silently reuse an outdated local base image")
+	}
 	if attrs["attest:provenance"] != "mode=min" {
 		t.Errorf("provenance default = %q, want mode=min", attrs["attest:provenance"])
 	}

@@ -83,6 +83,12 @@ addons:
 - Do not add a Dockerfile or force a build strategy; Donkey chooses the build.
 - Do not configure image mirrors, package repositories or proxies; the
   installation provides them.
+- Donkey repairs scan refusals for its generated recipes, including saved
+  `.donkey/Dockerfile` recipes selected automatically. Keep the repaired recipe
+  and source changes it returns. For an explicitly selected Dockerfile, act
+  on the reported package and fixed version; do not weaken scan policy.
+- A scanner or vulnerability-database outage needs an operator fix and retry,
+  not an application dependency change.
 - Native or system packages: list them in the app's `README.md`, which the
   builder reads. Give the library or binary, why it is needed, build stage or
   runtime image, and package names per distro:

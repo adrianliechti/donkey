@@ -151,8 +151,9 @@ func (b *BuildKitBuilder) solveOpt(req Request) (*bkclient.SolveOpt, error) {
 	}
 	opt.Frontend = "dockerfile.v0"
 	opt.FrontendAttrs = map[string]string{
-		"filename": filepath.Base(dockerfilePath),
-		"platform": req.Platform,
+		"filename":           filepath.Base(dockerfilePath),
+		"platform":           req.Platform,
+		"image-resolve-mode": "pull",
 	}
 	// The installation's build environment sits under the app's own, and
 	// BuildKit hands these to every RUN — so a mirrored package registry

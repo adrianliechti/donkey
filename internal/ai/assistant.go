@@ -121,6 +121,8 @@ type DockerfileInput struct {
 	// AllowEdits is only enabled for an isolated, disposable build workspace.
 	AllowEdits bool         `json:"-"`
 	Progress   func(string) `json:"-"`
+	// CheckImage supplies current registry and vulnerability evidence.
+	CheckImage func(context.Context, string) (string, error) `json:"-"`
 }
 
 type DockerfileAttempt struct {

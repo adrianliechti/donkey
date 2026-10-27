@@ -97,6 +97,10 @@ func (o *openAI) Analyze(ctx context.Context, in *AnalyzeInput) (*Analysis, erro
 func (o *openAI) WriteDockerfile(ctx context.Context, in *DockerfileInput) (*DockerfileResult, error) {
 	instructions := extendedDockerfileInstructions(in.Instructions)
 	var b strings.Builder
+	fmt.Fprintf(&b, "Current UTC date: %s. Image versions and vulnerability fixes must come from live evidence, not your training cutoff.\n\n", time.Now().UTC().Format("2006-01-02"))
+	if in.CheckImage != nil {
+		b.WriteString("Use check_image before choosing the final runtime base, and to compare compatible replacements after a scan refusal. Check the returned runtime versions against the repository constraints. Prefer the inspected digest in FROM.\n\n")
+	}
 	if in.Port > 0 {
 		fmt.Fprintf(&b, "donkey will set PORT=%d.\n\n", in.Port)
 	}
@@ -109,7 +113,7 @@ func (o *openAI) WriteDockerfile(ctx context.Context, in *DockerfileInput) (*Doc
 	// The failures go first: on a retry they are the only thing that matters,
 	// and burying them under a file tree is how a model misses them.
 	if n := len(in.Attempts); n > 0 {
-		fmt.Fprintf(&b, "%d Dockerfile(s) have already been tried for this app and none produced a working image.\n"+
+		fmt.Fprintf(&b, "%d Dockerfile(s) have already been tried and none completed all build, security and startup checks.\n"+
 			"Read every failure before you write anything: they are the app telling you what it needs.\n"+
 			"Do not repeat a fix that has already been tried, and do not undo one that worked.\n\n", n)
 		for i, at := range in.Attempts {
@@ -137,7 +141,7 @@ func (o *openAI) WriteDockerfile(ctx context.Context, in *DockerfileInput) (*Doc
 	if in.Root != "" {
 		history := o.investigate(ctx, in.Root, instructions,
 			task+"\n"+dockerfileExploreInstruction, maxBuildExploreTurns,
-			exploreOptions{Writable: in.AllowEdits, Progress: in.Progress, Changes: &changes, KnownSecrets: in.KnownSecrets})
+			exploreOptions{Writable: in.AllowEdits, Progress: in.Progress, Changes: &changes, KnownSecrets: in.KnownSecrets, CheckImage: in.CheckImage})
 		filesRead = exploredFiles(history)
 		history = append(history, responses.ResponseInputItemParamOfMessage(
 			dockerfileConcludeInstruction, responses.EasyInputMessageRoleUser))

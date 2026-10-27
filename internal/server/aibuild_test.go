@@ -54,12 +54,14 @@ func TestScanRepairLifecycle(t *testing.T) {
 	for _, tc := range []struct {
 		name             string
 		supplied         bool
+		savedGenerated   bool
 		attempts         []attempt
 		writes, rollouts int
 		ok               bool
 	}{
 		{name: "generated refusal repairs and deploys", attempts: []attempt{{report: blocked}, {report: clean}}, writes: 2, rollouts: 1, ok: true},
 		{name: "supplied refusal leaves runtime alone", supplied: true, attempts: []attempt{{report: blocked}}},
+		{name: "saved generated refusal repairs and deploys", supplied: true, savedGenerated: true, attempts: []attempt{{report: blocked}, {report: clean}}, writes: 1, rollouts: 1, ok: true},
 		{name: "scanner outage leaves source and runtime alone", supplied: true, attempts: []attempt{{err: unavailable}}},
 		{name: "retry outage clears earlier refusal", attempts: []attempt{{report: blocked}, {err: unavailable}}, writes: 2},
 		{name: "failed rollout then refused repair has no stale image", attempts: []attempt{{report: clean, rollout: true}, {report: blocked}}, writes: 2, rollouts: 1},
@@ -72,7 +74,7 @@ func TestScanRepairLifecycle(t *testing.T) {
 			writes, builds, rollouts := 0, 0, 0
 			s.assistant = repairAssistant{write: func(in *ai.DockerfileInput) (*ai.DockerfileResult, error) {
 				writes++
-				if writes > 1 && tc.attempts[writes-2].report == blocked {
+				if builds > 0 && tc.attempts[builds-1].report == blocked {
 					last := in.Attempts[len(in.Attempts)-1]
 					if last.Stage != "scan" || !strings.Contains(last.Failure, criticalFixable.Fixed) {
 						t.Fatalf("repair lost scan evidence: %+v", last)
@@ -106,6 +108,7 @@ func TestScanRepairLifecycle(t *testing.T) {
 				if err := os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte("FROM supplied\n"), 0600); err != nil {
 					t.Fatal(err)
 				}
+				req.GeneratedRecipe = tc.savedGenerated
 			}
 			outcome, err := s.buildGenerated(context.Background(), out, builder, dir, &config.AppConfig{Name: "app", Space: "team", Port: 8080}, req, func(result *build.Result, _ string) error {
 				rollouts++

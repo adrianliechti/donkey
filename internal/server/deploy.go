@@ -558,15 +558,16 @@ func (s *Server) deployApp(ctx context.Context, out *lineStreamer, dir string, a
 		imageLabels["org.opencontainers.image.revision"] = opts.SHA
 	}
 	req := build.Request{
-		ContextDir:     buildDir,
-		ImageRef:       imageRef,
-		Platform:       platform,
-		Push:           true,
-		BuildEnv:       app.Build.Env,
-		Strategy:       det.Strategy,
-		DockerfilePath: det.DockerfilePath,
-		ImageLabels:    imageLabels,
-		Progress:       build.ProgressSink{LogPath: logFile.Name(), Writer: out},
+		ContextDir:      buildDir,
+		ImageRef:        imageRef,
+		Platform:        platform,
+		Push:            true,
+		BuildEnv:        app.Build.Env,
+		Strategy:        det.Strategy,
+		DockerfilePath:  det.DockerfilePath,
+		GeneratedRecipe: det.GeneratedRecipe,
+		ImageLabels:     imageLabels,
+		Progress:        build.ProgressSink{LogPath: logFile.Name(), Writer: out},
 	}
 	if det.DockerfilePath != "" {
 		req.DockerfilePath, err = filepath.Rel(buildDir, filepath.Join(dir, det.DockerfilePath))
@@ -645,6 +646,14 @@ func (s *Server) deployApp(ctx context.Context, out *lineStreamer, dir string, a
 func refusedEvidence(out *lineStreamer, refused *build.ScanBlockedError) string {
 	var b strings.Builder
 	b.WriteString(refused.Message + "\n")
+	if report := refused.Report; report != nil {
+		fmt.Fprintf(&b, "Scanned OS: %s; end of life: %t; vulnerability database: %s\n", report.OS, report.EndOfLife, report.DBUpdatedAt)
+		if out.lastScan == nil {
+			for _, v := range report.Vulnerabilities[:min(len(report.Vulnerabilities), 30)] {
+				fmt.Fprintf(&b, "%s. %s %s\n", vulnerabilityHeadline(v), vulnerabilityDetail(v), vulnerabilityFix(v))
+			}
+		}
+	}
 	if out.lastScan != nil {
 		for _, f := range out.lastScan.Findings {
 			if f.Level != LevelInfo {

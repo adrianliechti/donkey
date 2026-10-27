@@ -32,6 +32,8 @@ type Request struct {
 	// DockerfilePath is set for the dockerfile strategy (absolute or relative
 	// to ContextDir).
 	DockerfilePath string
+	// GeneratedRecipe records ownership even when a saved recipe is reused.
+	GeneratedRecipe bool
 	// ImageLabels are stamped into the image's OCI config — the standard
 	// org.opencontainers.image.* vocabulary (revision, created), so any
 	// registry tool can answer where an image came from.

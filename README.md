@@ -967,6 +967,19 @@ are rejected. Planning remains read-only. The investigation establishes: which d
 a Django project, whether the code honors `PORT`. A few well-chosen reads
 settle what a file tree can only hint at.
 
+With vulnerability scanning enabled, the assistant can use `check_image`
+before selecting a runtime base. This resolves the candidate through the
+build engine's configured mirrors for the target platform, then scans the
+exact resolved digest using the current vulnerability database. The answer
+includes declared runtime versions, OS end-of-life status, database age, and
+blocking packages with installed and fixed versions. The assistant can compare
+compatible candidates and pin the inspected digest, instead of choosing a
+version solely from its training data. There are at most eight checks per
+deployment, each bounded to two minutes; repeated candidates reuse the same
+evidence within that deployment. This is selection guidance: the completed
+app image still undergoes its own scan. Builds resolve tagged bases from the
+registry so local image caches do not hide published security updates.
+
 Because the output is an ordinary Dockerfile, everything it names — `FROM
 python:3.12-slim`, `apt-get`, `npm ci` — is an ordinary registry or package
 pull that `registryMirrors` and the internal package proxy cover. There is
@@ -978,7 +991,7 @@ they happen. Saving the recipe as `.donkey/Dockerfile` makes it the first
 choice on later deploys. Source repairs affect only the isolated build copy;
 keep the corresponding patches in your project to reproduce that image.
 
-**Build and rollout failures feed the same repair loop.** The assistant gets
+**Build, scan, and rollout failures feed the same repair loop.** The assistant gets
 the failed recipe, exclusions, runtime contract, and redacted failure evidence
 from every attempt. It can correct the recipe or source, including when an
 uploaded Dockerfile fails. There are six attempts by default; repeated failures
@@ -1039,8 +1052,11 @@ that a vulnerable function is unreachable. A space admin can also record
 a **waiver** in the space settings (`securityWaivers`: app, finding id,
 reason, expiry) — deliberately not a `donkey.yaml` key, because a developer
 who can lift the gate from the app's own config has no gate. A refused
-generated Dockerfile goes back through the repair loop (a newer base tag, a
-bumped dependency); an app's own Dockerfile is never rewritten over a policy
+generated Dockerfile, including a saved `.donkey/Dockerfile` selected by the
+automatic builder, goes back through the repair loop. The assistant receives
+the scan's OS, database timestamp, affected packages and fixed versions, and
+can update a compatible base or dependency before rebuilding and rescanning.
+An app's own or explicitly selected Dockerfile is never rewritten over a policy
 verdict — the developer gets the findings and the assistant's proposals
 instead. Scanner or policy-service failures stop the deploy without rewriting
 the app; retry the deploy after the service recovers. A refused image never

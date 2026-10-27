@@ -22,6 +22,9 @@ import (
 type Detection struct {
 	Strategy       config.BuildStrategy
 	DockerfilePath string // for the dockerfile strategy
+	// GeneratedRecipe also identifies a saved .donkey/Dockerfile selected
+	// automatically; security findings may repair it just like a fresh recipe.
+	GeneratedRecipe bool
 	// Summary is a one-line plain-language description of what was found.
 	Summary string
 }
@@ -55,9 +58,10 @@ func Detect(dir string, app *config.AppConfig) (*Detection, error) {
 	// for this app, by someone who saw it — so it is what gets built.
 	if _, err := os.Stat(filepath.Join(dir, AIDockerfilePath)); err == nil {
 		return &Detection{
-			Strategy:       config.BuildDockerfile,
-			DockerfilePath: AIDockerfilePath,
-			Summary:        "the Dockerfile donkey wrote for this app (" + AIDockerfilePath + ")",
+			Strategy:        config.BuildDockerfile,
+			DockerfilePath:  AIDockerfilePath,
+			GeneratedRecipe: true,
+			Summary:         "the Dockerfile donkey wrote for this app (" + AIDockerfilePath + ")",
 		}, nil
 	}
 	return detectAI(dir), nil
@@ -73,14 +77,16 @@ func dockerfileDetection(path string) *Detection {
 func detectAI(dir string) *Detection {
 	if _, err := os.Stat(filepath.Join(dir, AIDockerfilePath)); err == nil {
 		return &Detection{
-			Strategy:       config.BuildDockerfile,
-			DockerfilePath: AIDockerfilePath,
-			Summary:        "the Dockerfile donkey wrote for this app (" + AIDockerfilePath + ")",
+			Strategy:        config.BuildDockerfile,
+			DockerfilePath:  AIDockerfilePath,
+			GeneratedRecipe: true,
+			Summary:         "the Dockerfile donkey wrote for this app (" + AIDockerfilePath + ")",
 		}
 	}
 	return &Detection{
-		Strategy: config.BuildAI,
-		Summary:  "a Dockerfile donkey writes for this app",
+		Strategy:        config.BuildAI,
+		GeneratedRecipe: true,
+		Summary:         "a Dockerfile donkey writes for this app",
 	}
 }
 

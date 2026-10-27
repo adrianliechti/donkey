@@ -77,7 +77,7 @@ func TestDetectAIDockerfileIsReused(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Detect: %v", err)
 	}
-	if got.Strategy != config.BuildDockerfile || got.DockerfilePath != AIDockerfilePath {
+	if got.Strategy != config.BuildDockerfile || got.DockerfilePath != AIDockerfilePath || !got.GeneratedRecipe {
 		t.Errorf("strategy = %q, dockerfile = %q", got.Strategy, got.DockerfilePath)
 	}
 }
@@ -94,8 +94,18 @@ func TestDetectAIReusesItsOwnDockerfile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Detect: %v", err)
 	}
-	if got.Strategy != config.BuildDockerfile || got.DockerfilePath != AIDockerfilePath {
+	if got.Strategy != config.BuildDockerfile || got.DockerfilePath != AIDockerfilePath || !got.GeneratedRecipe {
 		t.Errorf("strategy = %q, dockerfile = %q", got.Strategy, got.DockerfilePath)
+	}
+}
+
+func TestExplicitRecipeKeepsAuthorOwnership(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, AIDockerfilePath, "FROM scratch\n")
+	app := &config.AppConfig{Build: config.BuildConfig{Type: config.BuildDockerfile, Dockerfile: AIDockerfilePath}}
+	got, err := Detect(dir, app)
+	if err != nil || got.GeneratedRecipe {
+		t.Fatalf("explicit recipe was opted into scan repair: %+v %v", got, err)
 	}
 }
 

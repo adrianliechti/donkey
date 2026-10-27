@@ -60,6 +60,20 @@ func TestScanOnGatewayResult(t *testing.T) {
 
 	b := &BuildKitBuilder{BuildkitAddr: addr, Registry: config.Registry{URL: "example.invalid/donkey"}}
 	scanner := dockerScanner(t)
+	t.Run("base candidate is scanned before building the app", func(t *testing.T) {
+		candidate, err := b.InspectBaseImage(ctx, "alpine:3.20", "linux/"+runtime.GOARCH, ScanSpec{Image: config.DefaultScannerImage, Matcher: scanner,
+			Judge: func(context.Context, *ScanReport) error {
+				t.Error("candidate check invoked final app policy")
+				return nil
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(candidate.Reference, "@sha256:") || candidate.Scan == nil || candidate.Scan.OS == "" || len(candidate.Scan.SBOM) == 0 {
+			t.Fatalf("candidate missing resolved identity or scan: %+v", candidate)
+		}
+	})
 	build := func(judge func(context.Context, *ScanReport) error) (*Result, error) {
 		logPath := filepath.Join(t.TempDir(), "build.log")
 		res, err := b.Build(ctx, Request{
