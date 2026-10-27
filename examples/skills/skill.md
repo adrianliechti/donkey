@@ -2,9 +2,10 @@
 name: donkey
 description: >
   Deploy and operate apps through the donkey CLI: configure donkey.yaml,
-  connect services, manage environment variables and persistent files,
-  verify deployments, and diagnose failures. Use for work on apps hosted
-  by Donkey; platform installation is a separate administrator task.
+  configure app authentication, connect services, manage environment variables
+  and persistent files, verify deployments, and diagnose failures. Use for
+  work on apps hosted by Donkey; platform installation is a separate
+  administrator task.
 ---
 
 # Donkey apps
@@ -68,6 +69,7 @@ addons:
 | `storage.size`, `storage.class` | Disk size (default `1Gi`), optional storage class. |
 | `replicas` | Default 1; must stay 1 with persistent storage. |
 | `resources.requests`, `resources.limits` | Optional CPU/memory. |
+| `oidc` | Register a web app for OIDC login; see OIDC web-app login below. |
 
 ### App requirements
 
@@ -140,6 +142,7 @@ Invalid:
 - `internal` with `host`
 - `internal` with `public` or `routes`
 - `public: true` when the space has not enabled `allowPublic`
+- `oidc` with `internal: true` or `mode: api`
 - a route path of `/`, or a route targeting the app itself
 
 Frontend and an externally reachable backend on one origin:
@@ -163,12 +166,59 @@ them; client-sent copies are dropped):
 
 - `X-Forwarded-User`: stable user ID (Entra object ID, else the IdP subject)
 - `X-Forwarded-Email`, `-Preferred-Username`, `-Name`, `-Groups`
-- `X-Forwarded-Access-Token`: the visitor's IdP access token
+- `X-Forwarded-Access-Token`: the visitor's IdP access token, when the
+  installation has `auth.scope` configured and the sign-in has a refresh token
 
-Public routes receive none, even for a signed-in visitor: an app that
-personalizes or calls services as the user must stay protected. Sibling apps
-bypass the gateway; these headers describe the visitor, they do not
-authorize calls from other apps.
+Public routes receive none, even for a signed-in visitor. Keep routes
+protected when the app relies on these headers or delegates with the user's
+IdP token. A public web app can instead manage its own login using OIDC below;
+its OIDC tokens provide identity and UserInfo access. Sibling apps bypass the
+gateway; these headers describe the visitor, they do not authorize calls
+from other apps.
+
+### OIDC web-app login
+
+Use this when a web app needs standard OIDC login through its authentication
+library. Register callbacks in that app's `donkey.yaml` and deploy:
+
+```yaml
+oidc:
+  redirectURIs:
+    - https://shop.acme.apps.example.com/auth/callback
+    - http://localhost:3000/auth/callback
+```
+
+- The app must be in web mode and have its own gateway address. Callback
+  URLs match exactly, use HTTPS (HTTP is allowed on loopback), and must stay
+  outside the gateway's reserved `/oauth2/` paths.
+- Issuer: the installation's base domain, e.g. `https://apps.example.com`.
+  Discovery: `/.well-known/openid-configuration`. Client ID:
+  `donkey_web_<space>_<app>` (`donkey_web_acme_shop` in this example).
+- Use Authorization Code with S256 PKCE, query responses, and scopes
+  `openid profile email`. Public browser clients use token authentication
+  method `none`, with no client secret.
+- Confidential server-side clients also use PKCE. Store a random secret of
+  at least 32 characters with `donkey env set`; put only its SHA-256 hex
+  digest in `oidc.clientSecretSHA256`. Use `client_secret_basic` or
+  `client_secret_post`. Keep the secret out of browser code and command output.
+- Web-app access tokens authorize `/oauth2/userinfo`; they do not authorize
+  API/MCP routes or downstream IdP APIs. Do not send `resource` for this flow.
+  Protected `mode: api` routes use their existing resource-bound OAuth flow.
+- OIDC login checks space membership even when the web app is public. Public
+  exposure still requires the space's `allowPublic`; do not change exposure
+  merely to add OIDC.
+- Request `offline_access` only when refresh tokens are needed. Approval is
+  interactive; refresh tokens rotate within a fixed 30-day grant lifetime.
+  Serialize refreshes: reuse of an old token revokes the entire grant.
+- `/oauth2/revoke` revokes the supplied access or refresh token's grant using
+  the client's usual authentication. The app manages its own session;
+  `/oauth2/logout` ends only the gateway browser session and is not an OIDC
+  RP-initiated logout endpoint. Silent `prompt=none` returns an interaction
+  error; use an interactive login when needed.
+- Console network edits preserve the registration. Remove `oidc` and deploy
+  before switching the app to API mode or internal exposure. Once the gateway
+  observes a registration removal or change, old grants stay invalid even if
+  the previous configuration is restored; start a fresh login.
 
 ## Services
 

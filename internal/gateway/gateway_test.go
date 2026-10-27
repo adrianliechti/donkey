@@ -3,16 +3,8 @@ package gateway
 import (
 	"bytes"
 	"context"
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
-	"crypto/tls"
-	"crypto/x509"
-	"crypto/x509/pkix"
 	"encoding/json"
-	"encoding/pem"
 	"fmt"
-	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -23,14 +15,9 @@ import (
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
-	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/kubernetes/fake"
 
 	"github.com/adrianliechti/donkey/internal/config"
 	"github.com/adrianliechti/donkey/internal/identity"
-	k8s "github.com/adrianliechti/donkey/pkg/runtime/kubernetes"
-	"github.com/adrianliechti/donkey/pkg/runtime/kubernetes/manifests"
 )
 
 var testKey = bytes.Repeat([]byte{7}, 32)
@@ -247,140 +234,6 @@ func TestCanonicalHTTPMethodIncludesQuery(t *testing.T) {
 	}
 	if got := canonicalHTTPMethod("BREW"); got != "_OTHER" {
 		t.Fatalf("unknown method=%q", got)
-	}
-}
-
-func TestRouteFromConfigMap(t *testing.T) {
-	cm := corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{
-			Labels: map[string]string{
-				manifests.LabelSpace: "acme",
-				manifests.LabelApp:   "shop",
-			},
-			Annotations: map[string]string{
-				"donkey.local/backend":   "http://shop.donkey-acme.svc.cluster.local:80",
-				"donkey.local/host":      "shop.example.com",
-				"donkey.local/path":      "/api",
-				"donkey.local/login":     "required",
-				manifests.AnnotationMode: config.AppModeAPI,
-				manifests.AnnotationCORS: config.CORSAllowAll,
-				"donkey.local/access":    `{"users":["ada@example.com"]}`,
-			},
-		},
-	}
-	rt, ok := routeFromConfigMap(cm)
-	if !ok {
-		t.Fatal("route with backend annotation should be picked up")
-	}
-	if rt.Host != "shop.example.com" || rt.Path != "/api" || !rt.Login || rt.Mode != config.AppModeAPI || rt.CORS != config.CORSAllowAll {
-		t.Errorf("unexpected route: %+v", rt)
-	}
-	if rt.Space != "acme" || rt.App != "shop" {
-		t.Errorf("route telemetry scope = %q/%q", rt.Space, rt.App)
-	}
-
-	// No backend annotation → not the gateway's route (an unrelated
-	// ConfigMap that happens to carry donkey labels).
-	plain := corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{
-			Annotations: map[string]string{"donkey.local/host": "donkey.example.com"},
-		},
-	}
-	if _, ok := routeFromConfigMap(plain); ok {
-		t.Error("routes without a backend annotation are not ours to serve")
-	}
-
-	// Scope is mandatory: without it the route would work while gateway
-	// request and view telemetry disappeared silently.
-	unscoped := cm.DeepCopy()
-	delete(unscoped.Labels, manifests.LabelApp)
-	if _, ok := routeFromConfigMap(*unscoped); ok {
-		t.Error("routes without a valid logical telemetry scope must not be served")
-	}
-	system := unscoped.DeepCopy()
-	delete(system.Labels, manifests.LabelSpace)
-	// Standard manager metadata is not routing authority; only Donkey identity
-	// may distinguish the intentional unscoped system route.
-	system.Labels[manifests.LabelManagedBy] = "Helm"
-	system.Labels[manifests.LabelRole] = manifests.SystemRole(manifests.ServerName)
-	system.Annotations[manifests.AnnotationToken] = manifests.TokenForward
-	if route, ok := routeFromConfigMap(*system); !ok || !route.Token || route.Space != "" || route.App != "" {
-		t.Errorf("the managed console route must remain system-scoped, got %+v, ok=%v", route, ok)
-	}
-	spoofedToken := cm.DeepCopy()
-	spoofedToken.Annotations[manifests.AnnotationToken] = manifests.TokenForward
-	if route, ok := routeFromConfigMap(*spoofedToken); !ok || route.Token {
-		t.Errorf("a tenant route must not opt into admin-token forwarding, got %+v, ok=%v", route, ok)
-	}
-
-	// A non-http backend must be refused, not proxied.
-	bad := cm.DeepCopy()
-	bad.Annotations["donkey.local/backend"] = "https://evil.example.com"
-	if _, ok := routeFromConfigMap(*bad); ok {
-		t.Error("only in-cluster plain-http backends are proxied")
-	}
-}
-
-func TestManagedCertificatesLoadOnlyOwnedGatewaySecrets(t *testing.T) {
-	owned := tlsSecret(t, "shop.example.com", map[string]string{
-		manifests.LabelInstallation: "donkey-system",
-		manifests.LabelRole:         manifests.RoleEdge,
-	})
-	owned.Name, owned.Namespace = "shop-tls", "donkey-system"
-	foreign := tlsSecret(t, "evil.example.com", map[string]string{
-		manifests.LabelInstallation: "another-donkey",
-		manifests.LabelRole:         manifests.RoleEdge,
-	})
-	foreign.Name, foreign.Namespace = "evil-tls", "donkey-system"
-	unrelated := tlsSecret(t, "config.example.com", map[string]string{
-		manifests.LabelInstallation: "donkey-system",
-		manifests.LabelRole:         manifests.RoleConfig,
-	})
-	unrelated.Name, unrelated.Namespace = "unrelated-tls", "donkey-system"
-
-	s := &Server{
-		cfg: &Config{SystemNamespace: "donkey-system"},
-		k8s: &k8s.Client{Clientset: fake.NewSimpleClientset(owned, foreign, unrelated)},
-	}
-	certificates := &managedCertificates{server: s, byHost: map[string]*tls.Certificate{}}
-	if err := certificates.reload(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if cert, err := certificates.getCertificate(&tls.ClientHelloInfo{ServerName: "SHOP.EXAMPLE.COM"}); err != nil || cert == nil {
-		t.Fatalf("owned app certificate was not loaded: cert=%v err=%v", cert != nil, err)
-	}
-	for _, host := range []string{"evil.example.com", "config.example.com"} {
-		if cert := certificates.find(host); cert != nil {
-			t.Errorf("certificate for %s crossed the ownership/role boundary", host)
-		}
-	}
-}
-
-func tlsSecret(t *testing.T, host string, labels map[string]string) *corev1.Secret {
-	t.Helper()
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	template := &x509.Certificate{
-		SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: host}, DNSNames: []string{host},
-		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour),
-		KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-	}
-	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	keyDER, err := x509.MarshalECPrivateKey(key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Labels: labels},
-		Data: map[string][]byte{
-			"tls.crt": pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}),
-			"tls.key": pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}),
-		},
 	}
 }
 

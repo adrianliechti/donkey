@@ -20,6 +20,12 @@ import (
 // protected hostname — the price of putting login in front of an app.
 func (s *Server) handler() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /.well-known/openid-configuration", s.handleOIDCDiscovery)
+	mux.HandleFunc("OPTIONS /.well-known/openid-configuration", s.handleOAuthPreflight)
+	mux.HandleFunc("GET /oauth2/jwks", s.handleOIDCJWKS)
+	mux.HandleFunc("GET /oauth2/userinfo", s.handleOIDCUserInfo)
+	mux.HandleFunc("POST /oauth2/userinfo", s.handleOIDCUserInfo)
+	mux.HandleFunc("POST /oauth2/revoke", s.handleOIDCRevoke)
 	mux.HandleFunc("GET /.well-known/oauth-protected-resource", s.handleOAuthResourceMetadata)
 	mux.HandleFunc("GET /.well-known/oauth-protected-resource/", s.handleOAuthResourceMetadata)
 	mux.HandleFunc("GET /.well-known/oauth-authorization-server", s.handleOAuthAuthorizationServerMetadata)

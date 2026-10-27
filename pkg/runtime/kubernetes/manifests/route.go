@@ -114,6 +114,9 @@ func ReadRoute(cm *corev1.ConfigMap) (config.GatewayRoute, error) {
 	if route.Path == "" {
 		route.Path = "/"
 	}
+	if err := route.OIDC.Validate(); err != nil {
+		return route, err
+	}
 	return route, nil
 }
 
@@ -126,6 +129,9 @@ func routeSettings(in Input, host, path string) config.GatewayRoute {
 		route.CORS = CORSAllowAll
 	}
 	route.Analytics = config.RouteAnalytics(in.App)
+	if path == "/" {
+		route.OIDC = in.App.OIDC
+	}
 	return route
 }
 

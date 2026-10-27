@@ -4,15 +4,16 @@ package config
 // and Docker's persisted JSON files.
 // Kubernetes takes identity from labels.
 type GatewayRoute struct {
-	Space       string `json:"space,omitempty" yaml:"-"`
-	App         string `json:"app,omitempty" yaml:"-"`
-	Host        string `json:"host" yaml:"host"`
-	Path        string `json:"path" yaml:"path"`
-	StripPrefix bool   `json:"stripPrefix,omitempty" yaml:"stripPrefix,omitempty"`
-	Backend     string `json:"backend" yaml:"backend"`
-	Login       bool   `json:"login,omitempty" yaml:"login,omitempty"`
-	Mode        string `json:"mode,omitempty" yaml:"mode,omitempty"`
-	CORS        string `json:"cors,omitempty" yaml:"cors,omitempty"`
+	Space       string      `json:"space,omitempty" yaml:"-"`
+	App         string      `json:"app,omitempty" yaml:"-"`
+	Host        string      `json:"host" yaml:"host"`
+	Path        string      `json:"path" yaml:"path"`
+	StripPrefix bool        `json:"stripPrefix,omitempty" yaml:"stripPrefix,omitempty"`
+	Backend     string      `json:"backend" yaml:"backend"`
+	Login       bool        `json:"login,omitempty" yaml:"login,omitempty"`
+	Mode        string      `json:"mode,omitempty" yaml:"mode,omitempty"`
+	CORS        string      `json:"cors,omitempty" yaml:"cors,omitempty"`
+	OIDC        *OIDCClient `json:"oidc,omitempty" yaml:"oidc,omitempty"`
 	// Analytics is AnalyticsOff when the app opted out of web analytics;
 	// empty leaves the gateway's default (on for web routes).
 	Analytics string `json:"analytics,omitempty" yaml:"analytics,omitempty"`

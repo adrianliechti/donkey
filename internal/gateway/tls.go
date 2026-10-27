@@ -9,26 +9,16 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
-	"errors"
 	"fmt"
-	"io/fs"
 	"log"
 	"math/big"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
 	"golang.org/x/crypto/acme"
 	"golang.org/x/crypto/acme/autocert"
-	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-
-	k8s "github.com/adrianliechti/donkey/pkg/runtime/kubernetes"
-	"github.com/adrianliechti/donkey/pkg/runtime/kubernetes/manifests"
 )
 
 // The gateway has three ways to a certificate —
@@ -36,22 +26,19 @@ import (
 //   - cert-manager: exact-host certificates arrive as labelled TLS Secrets.
 //   - acme:   one per hostname, issued on demand and pre-issued when a route
 //     appears. The routing table doubles as the issuance allowlist.
-//   - ca:     a self-signed CA kept in a Secret, signing per-hostname
+//   - ca:     a persisted self-signed CA, signing per-hostname
 //     certificates on the fly — for installs ACME cannot reach.
 //
-// ACME certificates/account state and the built-in CA live in Secrets, so
-// they survive restarts and are shared by replicas. cert-manager owns its
-// generated Secrets in the same namespace.
+// Runtime adapters persist ACME/account state and the built-in CA. The
+// gateway handles TLS without knowing the storage or runtime object format.
 
 // edgeTLS builds the https listener's TLS config and the plain listener's
 // handler (the https redirect — wrapped to also answer ACME HTTP-01
 // challenges in acme mode).
 func (s *Server) edgeTLS(ctx context.Context) (*tls.Config, http.Handler, error) {
 	redirect := http.HandlerFunc(redirectHTTPS)
-	if s.k8s != nil {
-		if err := s.k8s.MigrateGatewaySecrets(ctx, s.cfg.SystemNamespace); err != nil {
-			return nil, nil, fmt.Errorf("migrating gateway certificates: %w", err)
-		}
+	if err := s.tlsStore.PrepareGateway(ctx); err != nil {
+		return nil, nil, fmt.Errorf("preparing gateway TLS: %w", err)
 	}
 	switch s.cfg.TLSMode {
 	case "cert-manager":
@@ -61,7 +48,7 @@ func (s *Server) edgeTLS(ctx context.Context) (*tls.Config, http.Handler, error)
 			Prompt:     autocert.AcceptTOS,
 			Email:      s.cfg.ACMEEmail,
 			HostPolicy: s.allowHost,
-			Cache:      s.certCache(),
+			Cache:      s.tlsStore.GatewayCertificateCache(),
 		}
 		if s.cfg.ACMEDirectory != "" {
 			m.Client = &acme.Client{DirectoryURL: s.cfg.ACMEDirectory}
@@ -134,7 +121,7 @@ func (s *Server) hostServed(ctx context.Context, host string) bool {
 		return true
 	}
 	if stale {
-		if err := s.refreshRoutes(ctx); err == nil {
+		if err := s.refreshRoutesAfter(ctx, 2*time.Second); err == nil {
 			s.mu.RLock()
 			n = len(s.routes[host])
 			s.mu.RUnlock()
@@ -143,118 +130,11 @@ func (s *Server) hostServed(ctx context.Context, host string) bool {
 	return n > 0
 }
 
-// certCache is where issued certificates and the ACME account live: a
-// Secret on Kubernetes, a folder of the state directory on Docker.
-func (s *Server) certCache() autocert.Cache {
-	if s.cfg.Runtime == "docker" {
-		return autocert.DirCache(filepath.Join(s.cfg.StateDir, "certs"))
-	}
-	return &secretCache{
-		client:    s.k8s,
-		namespace: s.cfg.SystemNamespace,
-		name:      manifests.GatewayCertsSecret,
-	}
-}
-
-// --- Secret-backed autocert cache ----------------------------------------
-
-// secretCache stores autocert's entries (certificates, the account key,
-// pending challenges) as the data of one Secret. Replicas share it, and a
-// restarted pod finds its certificates where it left them.
-type secretCache struct {
-	client    *k8s.Client
-	namespace string
-	name      string
-}
-
-// cacheKey maps an autocert key onto a legal Secret data key: autocert uses
-// "+" (acme_account+key, <domain>+token), which Secret keys may not contain.
-// The replacement token cannot appear in domain names, so keys stay unique.
-func cacheKey(key string) string { return strings.ReplaceAll(key, "+", ".plus.") }
-
-func (c *secretCache) Get(ctx context.Context, key string) ([]byte, error) {
-	sec, err := c.client.Clientset.CoreV1().Secrets(c.namespace).Get(ctx, c.name, metav1.GetOptions{})
-	if apierrors.IsNotFound(err) {
-		return nil, autocert.ErrCacheMiss
-	}
-	if err != nil {
-		return nil, err
-	}
-	b, ok := sec.Data[cacheKey(key)]
-	if !ok {
-		return nil, autocert.ErrCacheMiss
-	}
-	return b, nil
-}
-
-func (c *secretCache) Put(ctx context.Context, key string, data []byte) error {
-	return c.update(ctx, func(m map[string][]byte) {
-		m[cacheKey(key)] = data
-	})
-}
-
-func (c *secretCache) Delete(ctx context.Context, key string) error {
-	return c.update(ctx, func(m map[string][]byte) {
-		delete(m, cacheKey(key))
-	})
-}
-
-// update read-modify-writes the Secret, retrying the races two replicas or a
-// burst of first-install issuances run into. One Secret caps out near 1 MiB
-// (~250 hostnames); past that, certificates still serve from memory but stop
-// persisting.
-func (c *secretCache) update(ctx context.Context, mutate func(map[string][]byte)) error {
-	secrets := c.client.Clientset.CoreV1().Secrets(c.namespace)
-	var lastErr error
-	for attempt := range 5 {
-		if attempt > 0 {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(time.Duration(attempt) * 50 * time.Millisecond):
-			}
-		}
-		sec, err := secrets.Get(ctx, c.name, metav1.GetOptions{})
-		if apierrors.IsNotFound(err) {
-			labels := manifests.SystemLabels(manifests.GatewayAppName)
-			labels[manifests.LabelInstallation] = c.namespace
-			labels[manifests.LabelInstance] = c.namespace
-			fresh := &corev1.Secret{
-				ObjectMeta: metav1.ObjectMeta{Name: c.name, Namespace: c.namespace, Labels: labels},
-				Data:       map[string][]byte{},
-			}
-			mutate(fresh.Data)
-			if _, err := secrets.Create(ctx, fresh, metav1.CreateOptions{}); err == nil {
-				return nil
-			} else if !apierrors.IsAlreadyExists(err) {
-				return err
-			}
-			lastErr = err
-			continue // somebody else created it first — merge into theirs
-		}
-		if err != nil {
-			return err
-		}
-		if sec.Data == nil {
-			sec.Data = map[string][]byte{}
-		}
-		mutate(sec.Data)
-		if _, err := secrets.Update(ctx, sec, metav1.UpdateOptions{}); err == nil {
-			return nil
-		} else if !apierrors.IsConflict(err) {
-			return err
-		} else {
-			lastErr = err
-		}
-	}
-	return lastErr
-}
-
 // --- Built-in CA ----------------------------------------------------------
 
 // caIssuer signs one certificate per hostname with a self-signed CA — the
-// local/internal answer where ACME can't reach. The CA keypair lives in a
-// Secret; leaves are minted in memory (a restart simply mints them again).
+// local/internal answer where ACME can't reach. The runtime adapter persists
+// the CA keypair; leaves are minted in memory on demand after each restart.
 type caIssuer struct {
 	caCert *x509.Certificate
 	caDER  []byte
@@ -266,21 +146,9 @@ type caIssuer struct {
 }
 
 func (s *Server) loadOrCreateCA(ctx context.Context) (*caIssuer, error) {
-	certPEM, keyPEM, err := s.readCA(ctx)
+	certPEM, keyPEM, err := s.tlsStore.GatewayCA(ctx, generateCA)
 	if err != nil {
 		return nil, err
-	}
-	if certPEM == nil {
-		certPEM, keyPEM, err = generateCA()
-		if err != nil {
-			return nil, err
-		}
-		stored, storedKey, werr := s.writeCA(ctx, certPEM, keyPEM)
-		if werr != nil {
-			return nil, werr
-		}
-		// A replica may have won the race — its CA is the CA.
-		certPEM, keyPEM = stored, storedKey
 	}
 	certBlock, _ := pem.Decode(certPEM)
 	keyBlock, _ := pem.Decode(keyPEM)
@@ -302,69 +170,6 @@ func (s *Server) loadOrCreateCA(ctx context.Context) (*caIssuer, error) {
 		allow:  s.allowHost,
 		leaves: map[string]*tls.Certificate{},
 	}, nil
-}
-
-// readCA returns the stored CA pair, or nils when none exists yet.
-func (s *Server) readCA(ctx context.Context) (certPEM, keyPEM []byte, err error) {
-	if s.cfg.Runtime == "docker" {
-		cert, cerr := os.ReadFile(filepath.Join(s.cfg.StateDir, "ca", "ca.crt"))
-		if errors.Is(cerr, fs.ErrNotExist) {
-			return nil, nil, nil
-		}
-		if cerr != nil {
-			return nil, nil, cerr
-		}
-		key, kerr := os.ReadFile(filepath.Join(s.cfg.StateDir, "ca", "ca.key"))
-		if kerr != nil {
-			return nil, nil, kerr
-		}
-		return cert, key, nil
-	}
-	sec, err := s.k8s.Clientset.CoreV1().Secrets(s.cfg.SystemNamespace).Get(ctx, manifests.GatewayCASecret, metav1.GetOptions{})
-	if apierrors.IsNotFound(err) {
-		return nil, nil, nil
-	}
-	if err != nil {
-		return nil, nil, err
-	}
-	return sec.Data["ca.crt"], sec.Data["ca.key"], nil
-}
-
-// writeCA stores a fresh CA pair and returns what is actually stored — the
-// racing replica's, when one got there first.
-func (s *Server) writeCA(ctx context.Context, certPEM, keyPEM []byte) ([]byte, []byte, error) {
-	if s.cfg.Runtime == "docker" {
-		dir := filepath.Join(s.cfg.StateDir, "ca")
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			return nil, nil, err
-		}
-		if err := os.WriteFile(filepath.Join(dir, "ca.key"), keyPEM, 0o600); err != nil {
-			return nil, nil, err
-		}
-		if err := os.WriteFile(filepath.Join(dir, "ca.crt"), certPEM, 0o644); err != nil {
-			return nil, nil, err
-		}
-		return certPEM, keyPEM, nil
-	}
-	secrets := s.k8s.Clientset.CoreV1().Secrets(s.cfg.SystemNamespace)
-	labels := manifests.SystemLabels(manifests.GatewayAppName)
-	labels[manifests.LabelInstallation] = s.cfg.SystemNamespace
-	labels[manifests.LabelInstance] = s.cfg.SystemNamespace
-	fresh := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: manifests.GatewayCASecret, Namespace: s.cfg.SystemNamespace, Labels: labels},
-		Data:       map[string][]byte{"ca.crt": certPEM, "ca.key": keyPEM},
-	}
-	if _, err := secrets.Create(ctx, fresh, metav1.CreateOptions{}); err != nil {
-		if !apierrors.IsAlreadyExists(err) {
-			return nil, nil, err
-		}
-		sec, gerr := secrets.Get(ctx, manifests.GatewayCASecret, metav1.GetOptions{})
-		if gerr != nil {
-			return nil, nil, gerr
-		}
-		return sec.Data["ca.crt"], sec.Data["ca.key"], nil
-	}
-	return certPEM, keyPEM, nil
 }
 
 func generateCA() (certPEM, keyPEM []byte, err error) {

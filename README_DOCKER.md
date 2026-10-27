@@ -71,8 +71,9 @@ Kubernetes ConfigMaps or Secrets. State paths below are relative to
 | Saved deployment configuration, including `donkey.yaml` env | `deploy/<space>/<app>.yaml` |
 | Console route | `routes/system/console.yaml` |
 | Source history (each app's code, build recipe and settings per build) | `source/<space>/<app>.git` |
-| Built-in CA | `ca/ca.crt`, `ca/ca.key` |
+| Built-in CA | `ca/ca.json` (atomic initialization), with `ca/ca.crt`, `ca/ca.key` exports; existing PEM pairs are preserved |
 | ACME certificates and account | `certs/` |
+| Gateway OIDC registrations, signing keys, codes and grants | `oidc/state.json` (private, atomically updated under `oidc/state.json.lock`; same store as Kubernetes) |
 
 Installation credentials are passed to control-plane containers as environment
 variables. Registry authentication is passed to the Docker API when pulling

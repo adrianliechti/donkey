@@ -35,6 +35,7 @@ const (
 	GatewayCertsSecret = "donkey-gateway-acme"
 	// GatewayCASecret stores the built-in CA of "ca" mode.
 	GatewayCASecret = "donkey-gateway-ca"
+	GatewayDataPVC  = "donkey-gateway-data"
 )
 
 // donkeyGatewayObjects renders the edge proxy. Every installation gets one;
@@ -43,12 +44,28 @@ func donkeyGatewayObjects(in SystemInput) []runtime.Object {
 	objs := []runtime.Object{donkeyGatewayServiceAccount(in)}
 	objs = append(objs, donkeyGatewayRouteAccess(in)...)
 	return append(objs,
+		donkeyGatewayDataClaim(in),
 		donkeyGatewaySecretsRole(in),
 		donkeyGatewaySecretsRoleBinding(in),
 		donkeyGatewayDeployment(in),
 		donkeyGatewayService(in),
 		donkeyGatewayHealthService(in),
 	)
+}
+
+func donkeyGatewayDataClaim(in SystemInput) *corev1.PersistentVolumeClaim {
+	claim := &corev1.PersistentVolumeClaim{
+		TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "PersistentVolumeClaim"},
+		ObjectMeta: metav1.ObjectMeta{Name: GatewayDataPVC, Namespace: in.Namespace, Labels: SystemLabels(GatewayAppName)},
+		Spec: corev1.PersistentVolumeClaimSpec{
+			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+			Resources:   corev1.VolumeResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("1Gi")}},
+		},
+	}
+	if in.Data.StorageClass != "" {
+		claim.Spec.StorageClassName = &in.Data.StorageClass
+	}
+	return claim
 }
 
 func donkeyGatewayServiceAccount(in SystemInput) *corev1.ServiceAccount {
@@ -76,6 +93,7 @@ func donkeyGatewayDeployment(in SystemInput) *appsv1.Deployment {
 		}}
 	}
 	env := []corev1.EnvVar{
+		{Name: "DONKEY_STATE_DIR", Value: "/var/lib/donkey"},
 		{Name: "DONKEY_LISTEN", Value: fmt.Sprintf(":%d", donkeyGatewayPort)},
 		{Name: "DONKEY_TLS_LISTEN", Value: fmt.Sprintf(":%d", donkeyGatewayTLSPort)},
 		{Name: "DONKEY_HEALTH_LISTEN", Value: fmt.Sprintf(":%d", donkeyGatewayHealthPort)},
@@ -124,6 +142,7 @@ func donkeyGatewayDeployment(in SystemInput) *appsv1.Deployment {
 			ImagePullPolicy: imagePullPolicy(in.ServerImage),
 			Args:            []string{"gateway"},
 			Env:             env,
+			VolumeMounts:    []corev1.VolumeMount{{Name: "gateway-state", MountPath: "/var/lib/donkey"}},
 			Ports: []corev1.ContainerPort{
 				{ContainerPort: donkeyGatewayPort, Name: "http"},
 				{ContainerPort: donkeyGatewayTLSPort, Name: "https"},
@@ -141,12 +160,19 @@ func donkeyGatewayDeployment(in SystemInput) *appsv1.Deployment {
 			}},
 			LivenessProbe: &corev1.Probe{ProbeHandler: health, PeriodSeconds: 15, FailureThreshold: 3},
 		}},
+		Volumes: []corev1.Volume{{Name: "gateway-state", VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: GatewayDataPVC}}}},
 	}
+	fsGroup := systemRunAsUser
+	fsPolicy := corev1.FSGroupChangeOnRootMismatch
+	spec.SecurityContext.FSGroup = &fsGroup
+	spec.SecurityContext.FSGroupChangePolicy = &fsPolicy
 	return &appsv1.Deployment{
 		TypeMeta:   metav1.TypeMeta{APIVersion: "apps/v1", Kind: "Deployment"},
 		ObjectMeta: metav1.ObjectMeta{Name: GatewayAppName, Namespace: in.Namespace, Labels: labels},
 		Spec: appsv1.DeploymentSpec{
 			Replicas: &replicas,
+			// One gateway owns the local transaction store and its RWO volume.
+			Strategy: appsv1.DeploymentStrategy{Type: appsv1.RecreateDeploymentStrategyType},
 			Selector: &metav1.LabelSelector{MatchLabels: SystemSelector(GatewayAppName)},
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: in.hashedTemplateMeta(GatewayAppName, in.ServerImage, in.donkeyGatewayConfigHash()),
@@ -158,7 +184,8 @@ func donkeyGatewayDeployment(in SystemInput) *appsv1.Deployment {
 
 // donkeyGatewayService is the edge: the one Service traffic enters the
 // cluster through, on ports 80 and 443. Sessions live in the sealed cookie
-// and certificates in a shared Secret, so scaling needs nothing but replicas.
+// and certificates in a shared Secret. Auth state uses a persistent volume;
+// this deployment runs one gateway and replaces it with Recreate.
 func donkeyGatewayService(in SystemInput) *corev1.Service {
 	serviceType := corev1.ServiceType(in.GatewayServiceType)
 	if serviceType == "" {

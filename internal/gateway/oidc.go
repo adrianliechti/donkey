@@ -112,18 +112,20 @@ func (s *Server) startCLILogin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) beginLogin(w http.ResponseWriter, r *http.Request, cliPort int, ret string) {
-	if err := s.auth.ready(r.Context()); err != nil {
-		s.errorPage(w, http.StatusBadGateway, "The sign-in service isn't reachable.", err.Error())
-		return
-	}
+	s.beginLoginOptions(w, r, cliPort, ret, nil)
+}
+
+func (s *Server) beginLoginOptions(w http.ResponseWriter, r *http.Request, cliPort int, ret string, maxAge *int64, options ...oauth2.AuthCodeOption) {
 	host := requestHost(r)
 	state := loginState{
-		State:   randomHex(16),
-		Nonce:   randomHex(16),
-		Host:    host,
-		Return:  ret,
-		CLIPort: cliPort,
-		Expires: time.Now().Add(loginTTL).Unix(),
+		State:    randomHex(16),
+		Nonce:    randomHex(16),
+		Host:     host,
+		Return:   ret,
+		CLIPort:  cliPort,
+		Expires:  time.Now().Add(loginTTL).Unix(),
+		MaxAge:   maxAge,
+		Verifier: oauth2.GenerateVerifier(),
 	}
 	sealed, err := identity.Seal(s.cfg.SessionKey, purposeLogin, state)
 	if err != nil {
@@ -132,13 +134,28 @@ func (s *Server) beginLogin(w http.ResponseWriter, r *http.Request, cliPort int,
 	}
 	// On the shared domain the callback arrives on the central host — the
 	// state cookie has to travel there, so it gets the domain too.
-	http.SetCookie(w, &http.Cookie{
+	cookie := &http.Cookie{
 		Name: stateCookie, Value: sealed, Path: "/oauth2/",
 		Domain: s.cookieDomain(host),
 		Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode,
 		MaxAge: int(loginTTL / time.Second),
-	})
-	url := s.auth.oauthConfig(host, s.upstream).AuthCodeURL(state.State, oidc.Nonce(state.Nonce))
+	}
+	// Browsers silently discard oversized cookies. Reject before redirecting
+	// instead of stranding the visitor at a callback with no login state.
+	if len(cookie.String()) > 4096 {
+		s.errorPage(w, http.StatusBadRequest, "This sign-in request is too large.", "Use a shorter URL or shorter authorization state and nonce values.")
+		return
+	}
+	if err := s.auth.ready(r.Context()); err != nil {
+		s.errorPage(w, http.StatusBadGateway, "The sign-in service isn't reachable.", err.Error())
+		return
+	}
+	http.SetCookie(w, cookie)
+	options = append(options, oidc.Nonce(state.Nonce), oauth2.S256ChallengeOption(state.Verifier))
+	if maxAge != nil {
+		options = append(options, oauth2.SetAuthURLParam("max_age", strconv.FormatInt(*maxAge, 10)))
+	}
+	url := s.auth.oauthConfig(host, s.upstream).AuthCodeURL(state.State, options...)
 	http.Redirect(w, r, url, http.StatusFound)
 }
 
@@ -178,7 +195,11 @@ func (s *Server) handleCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
-	token, err := s.auth.oauthConfig(requestHost(r), s.upstream).Exchange(ctx, r.URL.Query().Get("code"))
+	var options []oauth2.AuthCodeOption
+	if state.Verifier != "" {
+		options = append(options, oauth2.VerifierOption(state.Verifier))
+	}
+	token, err := s.auth.oauthConfig(requestHost(r), s.upstream).Exchange(ctx, r.URL.Query().Get("code"), options...)
 	if err != nil {
 		s.errorPage(w, http.StatusBadGateway, "The identity provider didn't hand out a token.", err.Error())
 		return
@@ -198,7 +219,9 @@ func (s *Server) handleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var claims struct {
+		AuthTime          int64  `json:"auth_time"`
 		Email             string `json:"email"`
+		EmailVerified     *bool  `json:"email_verified"`
 		Name              string `json:"name"`
 		PreferredUsername string `json:"preferred_username"`
 		// ObjectID is Entra's tenant-wide user ID (oid, with the profile
@@ -210,19 +233,25 @@ func (s *Server) handleCallback(w http.ResponseWriter, r *http.Request) {
 		s.errorPage(w, http.StatusBadGateway, "The ID token couldn't be read.", err.Error())
 		return
 	}
+	if state.MaxAge != nil && (claims.AuthTime <= 0 || claims.AuthTime > time.Now().Unix()+60 || time.Now().Unix()-claims.AuthTime-60 > *state.MaxAge) {
+		s.errorPage(w, http.StatusBadGateway, "The identity provider did not confirm a recent sign-in.", "The provider must return auth_time and honor max_age.")
+		return
+	}
 	name := claims.Name
 	if name == "" {
 		name = claims.PreferredUsername
 	}
 	sess := &session{
-		Subject: idToken.Subject,
-		Email:   claims.Email,
-		Name:    name,
+		Subject:       idToken.Subject,
+		Email:         claims.Email,
+		EmailVerified: claims.EmailVerified,
+		Name:          name,
 		// Kept apart too: apps get it as X-Forwarded-Preferred-Username.
 		PreferredUsername: claims.PreferredUsername,
 		ObjectID:          claims.ObjectID,
 		Groups:            claims.Groups,
 		Expires:           time.Now().Add(sessionTTL).Unix(),
+		AuthTime:          claims.AuthTime,
 	}
 	if s.upstream.Enabled() {
 		// Kept for the token apps and viewers hand on; the login's own

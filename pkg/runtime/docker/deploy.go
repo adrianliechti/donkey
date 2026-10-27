@@ -263,7 +263,7 @@ func (r *Runtime) applyRoutes(ctx context.Context, space string, app *config.App
 		}
 	} else {
 		route := Route{Space: space, App: app.Name, Host: host, Path: "/", Backend: backend, Login: login, Mode: app.GatewayMode(), CORS: app.CORS,
-			Analytics: config.RouteAnalytics(app)}
+			Analytics: config.RouteAnalytics(app), OIDC: app.OIDC}
 		if err := r.state.setRoute(space, app.Name, route); err != nil {
 			return err
 		}
@@ -692,6 +692,7 @@ func (r *Runtime) Network(ctx context.Context, space, app string) (*rt.NetworkSt
 		st.Mode = route.Mode
 		st.CORS = route.CORS
 		st.Analytics = route.Analytics
+		st.OIDC = route.OIDC
 		st.Access = route.Access
 	}
 	names, err := r.state.listRoutes(space)
@@ -763,6 +764,7 @@ func (r *Runtime) ApplyNetwork(ctx context.Context, cfg *config.AppConfig) (stri
 			Mode:      cfg.GatewayMode(),
 			CORS:      cfg.CORS,
 			Analytics: config.RouteAnalytics(cfg),
+			OIDC:      cfg.OIDC,
 		}
 		if err := r.state.setRoute(space, app, route); err != nil {
 			return "", err

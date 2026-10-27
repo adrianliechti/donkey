@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	"github.com/adrianliechti/donkey/internal/packages"
 	"github.com/adrianliechti/donkey/internal/server"
 	"github.com/adrianliechti/donkey/internal/serviceproxy"
+	"github.com/adrianliechti/donkey/internal/storage"
 	"github.com/adrianliechti/donkey/internal/telemetry"
 	"github.com/adrianliechti/donkey/pkg/runtime"
 	"github.com/adrianliechti/donkey/pkg/runtime/docker"
@@ -49,7 +51,12 @@ func main() {
 			fmt.Fprintln(os.Stderr, "configuration error:", err)
 			os.Exit(1)
 		}
-		gw, err := gateway.New(cfg)
+		backend, err := gatewayBackend(cfg)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "runtime error:", err)
+			os.Exit(1)
+		}
+		gw, err := gateway.New(cfg, backend, &storage.File{Path: filepath.Join(cfg.StateDir, "oidc", "state.json")})
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "startup error:", err)
 			os.Exit(1)

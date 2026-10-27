@@ -28,8 +28,10 @@ type loginState struct {
 	Return string `json:"return"`
 	// CLIPort: the callback mints a sealed token for the CLI waiting on
 	// 127.0.0.1:<CLIPort>.
-	CLIPort int   `json:"cli,omitempty"`
-	Expires int64 `json:"exp"`
+	CLIPort  int    `json:"cli,omitempty"`
+	Expires  int64  `json:"exp"`
+	MaxAge   *int64 `json:"max_age,omitempty"`
+	Verifier string `json:"verifier,omitempty"`
 }
 
 const (

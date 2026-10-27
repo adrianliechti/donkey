@@ -205,6 +205,8 @@ func (s *Server) handlePutNetwork(w http.ResponseWriter, r *http.Request) {
 	// A synthetic app config carries the choice through the same validation
 	// and rendering a donkey.yaml would.
 	cfg := &config.AppConfig{Name: app, Space: space, Port: int(st.Port)}
+	// Network edits preserve the explicit OIDC registration from donkey.yaml.
+	cfg.OIDC = net.OIDC
 	if req.Mode != config.AppModeWeb {
 		cfg.Mode = req.Mode
 	}

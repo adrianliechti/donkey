@@ -29,6 +29,8 @@ type AppConfig struct {
 	// cross-origin access; allowAll answers preflights and emits
 	// Access-Control-Allow-Origin: *.
 	CORS string `json:"cors,omitempty"`
+	// OIDC explicitly registers this web app with the gateway's OIDC provider.
+	OIDC *OIDCClient `json:"oidc,omitempty"`
 	// Analytics: false keeps donkey-gateway from adding its web analytics
 	// script to the app's HTML pages. Omitted means on — for web apps with an
 	// address; API-mode and internal apps never get it.
@@ -385,6 +387,12 @@ func (c *AppConfig) Validate() error {
 	}
 	if c.CORS != "" && c.CORS != CORSAllowAll {
 		return fmt.Errorf("cors must be allowAll when set")
+	}
+	if c.OIDC != nil && (c.Internal || c.IsAPI()) {
+		return fmt.Errorf("oidc requires a web app with a gateway address")
+	}
+	if err := c.OIDC.Validate(); err != nil {
+		return err
 	}
 	if c.Internal && c.Host != "" {
 		return fmt.Errorf("an internal app has no address, so `host` has no effect — drop one of the two")

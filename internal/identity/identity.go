@@ -17,9 +17,10 @@ import (
 // keeps it: the gateway's session cookie, the CLI's token, OAuth clients'
 // tokens and the short-lived hop to donkey's API all carry this one shape.
 type Identity struct {
-	Subject string `json:"sub"`
-	Email   string `json:"email,omitempty"`
-	Name    string `json:"name,omitempty"`
+	Subject       string `json:"sub"`
+	Email         string `json:"email,omitempty"`
+	EmailVerified *bool  `json:"email_verified,omitempty"`
+	Name          string `json:"name,omitempty"`
 	// PreferredUsername is the ID token's preferred_username claim, ObjectID
 	// Entra's oid: the tenant-wide user ID, where sub is pairwise per app.
 	PreferredUsername string   `json:"preferred_username,omitempty"`
@@ -27,6 +28,9 @@ type Identity struct {
 	Groups            []string `json:"groups,omitempty"`
 	// Expires (Unix seconds); a token never outlives it.
 	Expires int64 `json:"exp"`
+	// AuthTime is the upstream's auth_time, when it supplied one. It stays
+	// absent when the provider did not assert when authentication occurred.
+	AuthTime int64 `json:"auth_time,omitempty"`
 	// RefreshToken is the IdP's, kept when the installation names a token
 	// scope so the gateway can mint access tokens for it (see Upstream), and
 	// Grant names that sign-in across rotations. Sealed like the rest: it

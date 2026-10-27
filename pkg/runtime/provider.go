@@ -397,6 +397,7 @@ type NetworkState struct {
 	Protected  bool
 	Mode       string
 	CORS       string
+	OIDC       *config.OIDCClient
 	// Analytics is config.AnalyticsOff when the app opted out of web
 	// analytics.
 	Analytics string

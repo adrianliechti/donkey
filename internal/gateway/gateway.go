@@ -22,13 +22,11 @@ import (
 	"time"
 
 	"golang.org/x/sync/singleflight"
-	corev1 "k8s.io/api/core/v1"
 
 	"github.com/adrianliechti/donkey/internal/config"
 	"github.com/adrianliechti/donkey/internal/identity"
-	"github.com/adrianliechti/donkey/pkg/runtime/docker"
-	k8s "github.com/adrianliechti/donkey/pkg/runtime/kubernetes"
-	"github.com/adrianliechti/donkey/pkg/runtime/kubernetes/manifests"
+	"github.com/adrianliechti/donkey/internal/storage"
+	"github.com/adrianliechti/donkey/pkg/runtime"
 )
 
 type Config struct {
@@ -36,8 +34,8 @@ type Config struct {
 	// (the default — routes from ConfigMaps, certificates in Secrets) or
 	// "docker" (routes and certificates from the shared state directory).
 	Runtime string
-	// StateDir is the docker runtime's state directory (mounted read-only
-	// from the provider's volume).
+	// StateDir is the persistent gateway state directory. The composition
+	// root also passes it to Docker's route/TLS adapter.
 	StateDir string
 
 	// Listen serves plain http (the https redirect, and ACME HTTP-01
@@ -104,7 +102,7 @@ func FromEnv() (*Config, error) {
 		TLSMode:           envOr("DONKEY_TLS_MODE", "acme"),
 		ACMEEmail:         os.Getenv("DONKEY_ACME_EMAIL"),
 		ACMEDirectory:     os.Getenv("DONKEY_ACME_DIRECTORY"),
-		SystemNamespace:   envOr("DONKEY_SYSTEM_NAMESPACE", manifests.DefaultSystemNamespace),
+		SystemNamespace:   envOr("DONKEY_SYSTEM_NAMESPACE", "donkey-system"),
 		WorkloadNamespace: os.Getenv("DONKEY_WORKLOAD_NAMESPACE"),
 		ServerHost:        os.Getenv("DONKEY_SERVER_HOST"),
 		OIDCIssuer:        os.Getenv("DONKEY_OIDC_ISSUER"),
@@ -180,6 +178,7 @@ type route struct {
 	// directly in either mode.
 	Mode string
 	CORS string
+	OIDC *config.OIDCClient
 	// Analytics is config.AnalyticsOff when the app opted out of web
 	// analytics; see countsVisits.
 	Analytics string
@@ -198,13 +197,14 @@ type routeSource interface {
 }
 
 type Server struct {
-	cfg    *Config
-	k8s    *k8s.Client // set in kubernetes mode only (routes, cert storage)
-	source routeSource
-	auth   *authenticator
+	cfg      *Config
+	tlsStore runtime.GatewayTLSStore
+	source   routeSource
+	auth     *authenticator
 
-	mu     sync.RWMutex
-	routes map[string][]route // host -> routes, most specific path first
+	mu          sync.RWMutex
+	routes      map[string][]route     // host -> routes, most specific path first
+	oidcClients map[string]*oidcClient // published with the same route snapshot
 	// lastAttempt rate-limits the on-miss refresh: a fresh deploy's hostname
 	// must work immediately, an unknown-host scan (or a down API server)
 	// must not turn every request into a List.
@@ -226,16 +226,21 @@ type Server struct {
 	upstream             *identity.Upstream
 	upstreamMissingToken sync.Once
 
-	// OAuth authorization codes are short-lived and one-use. The gateway is
+	// API/MCP authorization codes are short-lived and one-use. The gateway is
 	// deployed as one replica, so keeping them here avoids a client database
 	// while still preventing replay. Rotated refresh tokens use the same
 	// short in-memory replay ledger; the tokens themselves remain sealed.
 	oauthMu          sync.Mutex
 	oauthCodes       map[string]oauthAuthorizationCode
 	oauthRefreshUsed map[string]int64
+	// Web-app OIDC state uses persistent transactions for codes, grants and keys.
+	oidcStore storage.Store
 }
 
-func New(cfg *Config) (*Server, error) {
+func New(cfg *Config, backend runtime.GatewayBackend, state storage.Store) (*Server, error) {
+	if backend == nil || state == nil {
+		return nil, fmt.Errorf("gateway requires a runtime backend and persistent state store")
+	}
 	telemetry, err := newEdgeTelemetry(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("configuring gateway telemetry: %w", err)
@@ -252,71 +257,41 @@ func New(cfg *Config) (*Server, error) {
 			Scope: cfg.OIDCScope,
 		},
 	}
-	switch cfg.Runtime {
-	case "docker":
-		s.source = fileRoutes{dir: cfg.StateDir}
-	default:
-		client, err := k8s.NewInCluster()
-		if err != nil {
-			_ = telemetry.Shutdown(context.Background())
-			return nil, err
-		}
-		// The gateway speaks for one installation: its own namespace is its
-		// identity, and a workload namespace confines it to the two it was
-		// given.
-		client = client.ForInstallation(cfg.SystemNamespace, cfg.WorkloadNamespace)
-		s.k8s = client
-		s.source = k8sRoutes{client: client}
+	s.source = runtimeRoutes{source: backend}
+	s.tlsStore = backend
+	s.oidcStore = state
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := s.updateOIDCState(ctx, func(*oidcProviderState) error { return nil }); err != nil {
+		_ = telemetry.Shutdown(ctx)
+		return nil, fmt.Errorf("opening gateway state: %w", err)
 	}
 	return s, nil
 }
 
-// k8sRoutes reads the route ConfigMaps this installation rendered.
-type k8sRoutes struct{ client *k8s.Client }
+// runtimeRoutes translates a runtime-neutral snapshot into the proxy's lookup
+// table. Membership decisions remain here; storage and ownership stay outside.
+type runtimeRoutes struct{ source runtime.GatewayRouteSource }
 
-func (k k8sRoutes) list(ctx context.Context) ([]route, error) {
-	cms, err := k.client.ListGatewayConfigMaps(ctx)
-	if err != nil {
-		return nil, err
-	}
-	policies, platform, err := gatewayPolicies(cms)
+func (s runtimeRoutes) list(ctx context.Context) ([]route, error) {
+	snapshot, err := s.source.GatewaySnapshot(ctx)
 	if err != nil {
 		return nil, err
 	}
 	var out []route
-	for _, cm := range cms {
-		if r, ok := routeFromConfigMap(cm); ok {
-			applyPolicy(&r, policies, platform)
-			out = append(out, r)
-		}
-	}
-	return out, nil
-}
-
-// fileRoutes reads the docker provider's routes folder.
-type fileRoutes struct{ dir string }
-
-func (f fileRoutes) list(ctx context.Context) ([]route, error) {
-	records, err := docker.ReadRoutes(f.dir)
-	if err != nil {
-		return nil, err
-	}
-	policies, platform, err := docker.ReadGatewayPolicies(f.dir)
-	if err != nil {
-		return nil, err
-	}
-	var out []route
-	for _, rec := range records {
+	for _, rec := range snapshot.Routes {
 		target, err := url.Parse(rec.Backend)
 		if err != nil || target.Scheme != "http" || target.Host == "" || rec.Host == "" {
 			continue
 		}
-
-		r := route{Space: rec.Space, App: rec.App, Host: rec.Host, Path: rec.Path, Backend: target, Login: rec.Login, Mode: rec.Mode, CORS: rec.CORS, Analytics: rec.Analytics, Token: rec.Token, StripPrefix: rec.StripPrefix}
+		if err := rec.OIDC.Validate(); err != nil {
+			return nil, err
+		}
+		r := route{Space: rec.Space, App: rec.App, Host: rec.Host, Path: rec.Path, Backend: target, Login: rec.Login, Mode: rec.Mode, CORS: rec.CORS, OIDC: rec.OIDC, Analytics: rec.Analytics, Token: rec.Token, StripPrefix: rec.StripPrefix}
 		if r.Path == "" {
 			r.Path = "/"
 		}
-		applyPolicy(&r, policies, platform)
+		applyPolicy(&r, snapshot.Spaces, snapshot.Platform)
 		out = append(out, r)
 	}
 	return out, nil
@@ -436,8 +411,18 @@ func (s *Server) pollRoutes(ctx context.Context) {
 // carrying a backend are this gateway's to serve — that is how the renderer
 // says "this route points at me".
 func (s *Server) refreshRoutes(ctx context.Context) error {
+	return s.refreshRoutesAfter(ctx, 0)
+}
+
+func (s *Server) refreshRoutesAfter(ctx context.Context, minAge time.Duration) error {
 	_, err, _ := s.refresh.Do("routes", func() (any, error) {
 		s.mu.Lock()
+		// Recheck inside the coalesced call: callers may have observed stale
+		// data before another refresh finished and entered this function late.
+		if time.Since(s.lastAttempt) < minAge {
+			s.mu.Unlock()
+			return nil, nil
+		}
 		s.lastAttempt = time.Now()
 		s.mu.Unlock()
 		list, err := s.source.list(ctx)
@@ -445,6 +430,7 @@ func (s *Server) refreshRoutes(ctx context.Context) error {
 			// Cached membership is not authority after a failed policy read.
 			// Keep the console reachable, but fail closed for app traffic.
 			s.mu.Lock()
+			s.oidcClients = nil
 			for host, routes := range s.routes {
 				var system []route
 				for _, r := range routes {
@@ -470,8 +456,10 @@ func (s *Server) refreshRoutes(ctx context.Context) error {
 				return len(table[host][i].Path) > len(table[host][j].Path)
 			})
 		}
+		clients, clientErr := s.syncOIDCClients(ctx, table)
 		s.mu.Lock()
 		s.routes = table
+		s.oidcClients = clients
 		s.mu.Unlock()
 		// A hostname that just appeared gets its certificate now, not on
 		// its first visit — the deploy's announcement should be
@@ -483,32 +471,9 @@ func (s *Server) refreshRoutes(ctx context.Context) error {
 				}
 			}
 		}
-		return nil, nil
+		return nil, clientErr
 	})
 	return err
-}
-
-func routeFromConfigMap(cm corev1.ConfigMap) (route, bool) {
-	settings, err := manifests.ReadRoute(&cm)
-	if err != nil || settings.Host == "" || settings.Backend == "" {
-		return route{}, false
-	}
-	target, err := url.Parse(settings.Backend)
-	if err != nil || target.Host == "" || target.Scheme != "http" {
-		return route{}, false
-	}
-	// Identity comes from ownership labels, never editable routing fields.
-	space, app := cm.Labels[manifests.LabelSpace], cm.Labels[manifests.LabelApp]
-	systemRoute := space == "" && app == "" &&
-		cm.Labels[manifests.LabelRole] == manifests.SystemRole(manifests.ServerName) && settings.Token
-	if (!config.ValidName(space) || !config.ValidName(app)) && !systemRoute {
-		return route{}, false
-	}
-	return route{
-		Space: space, App: app, Host: settings.Host, Path: settings.Path, Backend: target,
-		Login: settings.Login, Mode: settings.Mode, CORS: settings.CORS, Analytics: settings.Analytics, Token: systemRoute,
-		StripPrefix: settings.StripPrefix,
-	}, true
 }
 
 // lookup finds the most specific route for a request. On a miss it refreshes
@@ -521,7 +486,7 @@ func (s *Server) lookup(ctx context.Context, host, path string) (route, bool) {
 	stale := time.Since(s.lastAttempt) > 2*time.Second
 	s.mu.RUnlock()
 	if stale {
-		if err := s.refreshRoutes(ctx); err == nil {
+		if err := s.refreshRoutesAfter(ctx, 2*time.Second); err == nil {
 			return s.tableLookup(host, path)
 		}
 	}

@@ -11,10 +11,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/adrianliechti/donkey/pkg/runtime"
 	"golang.org/x/sync/singleflight"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-
-	"github.com/adrianliechti/donkey/pkg/runtime/kubernetes/manifests"
 )
 
 // managedCertificates is the live view of cert-manager's generated Secrets.
@@ -22,7 +20,7 @@ import (
 // immediate refresh on an unknown SNI keeps the implementation small while
 // still making a newly issued app certificate usable on its first request.
 type managedCertificates struct {
-	server *Server
+	source runtime.GatewayCertificateSource
 
 	mu          sync.RWMutex
 	byHost      map[string]*tls.Certificate
@@ -32,10 +30,11 @@ type managedCertificates struct {
 }
 
 func (s *Server) managedCertificateTLS(ctx context.Context) (*tls.Config, http.Handler, error) {
-	if s.k8s == nil {
-		return nil, nil, fmt.Errorf("cert-manager TLS needs the Kubernetes runtime")
+	source, ok := s.tlsStore.(runtime.GatewayCertificateSource)
+	if !ok {
+		return nil, nil, fmt.Errorf("the configured runtime does not supply managed TLS certificates")
 	}
-	certificates := &managedCertificates{server: s, byHost: map[string]*tls.Certificate{}}
+	certificates := &managedCertificates{source: source, byHost: map[string]*tls.Certificate{}}
 	if err := certificates.reload(ctx); err != nil {
 		// cert-manager may not have produced the first Secret yet, and a brief
 		// API outage must not crash the gateway. The poller and an SNI miss retry.
@@ -67,40 +66,34 @@ func (m *managedCertificates) poll(ctx context.Context) {
 }
 
 func (m *managedCertificates) reload(ctx context.Context) error {
+	return m.reloadAfter(ctx, 0)
+}
+
+func (m *managedCertificates) reloadAfter(ctx context.Context, minAge time.Duration) error {
 	_, err, _ := m.refresh.Do("certificates", func() (any, error) {
 		m.mu.Lock()
+		if time.Since(m.lastAttempt) < minAge {
+			m.mu.Unlock()
+			return nil, nil
+		}
 		m.lastAttempt = time.Now()
 		m.mu.Unlock()
-		selector := fmt.Sprintf("%s=%s", manifests.LabelInstallation, m.server.cfg.SystemNamespace)
-		list, err := m.server.k8s.Clientset.CoreV1().Secrets(m.server.cfg.SystemNamespace).List(ctx, metav1.ListOptions{
-			LabelSelector: selector,
-		})
+		records, err := m.source.GatewayCertificates(ctx)
 		if err != nil {
 			return nil, err
 		}
 		byHost := map[string]*tls.Certificate{}
 		var all []*tls.Certificate
-		for i := range list.Items {
-			secret := &list.Items[i]
-			if secret.Labels[manifests.LabelInstallation] != m.server.cfg.SystemNamespace {
-				continue
-			}
-			role := secret.Labels[manifests.LabelRole]
-			if role != manifests.RoleEdge && (role != manifests.SystemRole(manifests.GatewayAppName) || secret.Name != manifests.SystemCertificateSecretName) {
-				continue
-			}
-			certPEM, keyPEM := secret.Data["tls.crt"], secret.Data["tls.key"]
-			if len(certPEM) == 0 || len(keyPEM) == 0 {
-				continue
-			}
+		for _, record := range records {
+			certPEM, keyPEM := record.Certificate, record.PrivateKey
 			pair, err := tls.X509KeyPair(certPEM, keyPEM)
 			if err != nil {
-				log.Printf("ignoring invalid TLS Secret %s/%s: %v", secret.Namespace, secret.Name, err)
+				log.Printf("ignoring invalid TLS certificate %s: %v", record.Name, err)
 				continue
 			}
 			leaf, err := x509.ParseCertificate(pair.Certificate[0])
 			if err != nil {
-				log.Printf("ignoring invalid certificate in Secret %s/%s: %v", secret.Namespace, secret.Name, err)
+				log.Printf("ignoring invalid certificate %s: %v", record.Name, err)
 				continue
 			}
 			pair.Leaf = leaf
@@ -129,7 +122,7 @@ func (m *managedCertificates) getCertificate(hello *tls.ClientHelloInfo) (*tls.C
 	stale := time.Since(m.lastAttempt) > 2*time.Second
 	m.mu.RUnlock()
 	if stale {
-		if err := m.reload(hello.Context()); err != nil {
+		if err := m.reloadAfter(hello.Context(), 2*time.Second); err != nil {
 			return nil, fmt.Errorf("refreshing cert-manager certificates: %w", err)
 		}
 		if cert := m.find(host); cert != nil {

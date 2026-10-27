@@ -150,7 +150,7 @@ func (s *Server) handleOAuthAuthorizationServerMetadata(w http.ResponseWriter, r
 		"response_types_supported":                       []string{"code"},
 		"grant_types_supported":                          []string{"authorization_code", "refresh_token"},
 		"code_challenge_methods_supported":               []string{"S256"},
-		"token_endpoint_auth_methods_supported":          []string{"none"},
+		"token_endpoint_auth_methods_supported":          []string{"none", "client_secret_basic", "client_secret_post"},
 		"authorization_response_iss_parameter_supported": true,
 	})
 }
@@ -280,12 +280,15 @@ func clientSupportsGrant(client *oauthClient, grant string) bool {
 }
 
 func (s *Server) handleOAuthAuthorize(w http.ResponseWriter, r *http.Request) {
-	setCORSHeaders(w.Header())
 	if !s.onAuthorizationHost(r) {
 		http.NotFound(w, r)
 		return
 	}
 	q := r.URL.Query()
+	if strings.HasPrefix(q.Get("client_id"), "donkey_web_") {
+		s.handleOIDCAuthorize(w, r, q)
+		return
+	}
 	client, err := s.registeredOAuthClient(q.Get("client_id"))
 	redirect := q.Get("redirect_uri")
 	if err != nil || !contains(clientRedirects(client), redirect) {
@@ -424,13 +427,25 @@ func renderOAuthConsent(w http.ResponseWriter, client, resource, redirect, reque
 }
 
 func (s *Server) handleOAuthAuthorizeConsent(w http.ResponseWriter, r *http.Request) {
-	setCORSHeaders(w.Header())
 	if !s.onAuthorizationHost(r) {
 		http.NotFound(w, r)
 		return
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, 64*1024)
 	if err := r.ParseForm(); err != nil {
 		oauthError(w, http.StatusBadRequest, "invalid_request", "the consent response could not be read")
+		return
+	}
+	if r.PostForm.Get("flow") == "oidc" {
+		s.handleOIDCConsent(w, r)
+		return
+	}
+	if strings.HasPrefix(r.PostForm.Get("client_id"), "donkey_web_") {
+		if r.URL.RawQuery != "" {
+			oauthError(w, http.StatusBadRequest, "invalid_request", "authorization parameters must be in the form body")
+			return
+		}
+		s.handleOIDCAuthorize(w, r, r.PostForm)
 		return
 	}
 	var consent oauthConsent
@@ -488,12 +503,17 @@ func (s *Server) handleOAuthToken(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	if r.Header.Get("Authorization") != "" {
-		oauthError(w, http.StatusUnauthorized, "invalid_client", "this authorization server accepts public clients without a secret")
-		return
-	}
+	r.Body = http.MaxBytesReader(w, r.Body, 64*1024)
 	if err := r.ParseForm(); err != nil {
 		oauthError(w, http.StatusBadRequest, "invalid_request", "the token request could not be read")
+		return
+	}
+	if strings.HasPrefix(oidcRequestClientID(r), "donkey_web_") {
+		s.handleOIDCToken(w, r)
+		return
+	}
+	if r.Header.Get("Authorization") != "" {
+		oauthError(w, http.StatusUnauthorized, "invalid_client", "API clients authenticate without a secret")
 		return
 	}
 	switch r.Form.Get("grant_type") {
@@ -645,6 +665,10 @@ func (s *Server) consumeOAuthRefreshToken(raw string, expires int64) bool {
 }
 
 func (s *Server) handleOAuthPreflight(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/oauth2/authorize" {
+		http.NotFound(w, r)
+		return
+	}
 	if !s.onAuthorizationHost(r) {
 		http.NotFound(w, r)
 		return

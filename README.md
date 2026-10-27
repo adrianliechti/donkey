@@ -1632,6 +1632,124 @@ plus a scope) and holds a delegated permission, with admin consent, on every
 downstream API exchanged for. Users who signed in before the scope was set
 need to sign in once more (`donkey login` for the CLI).
 
+**OIDC login for web apps.** A web app can use the gateway as its OpenID
+Connect provider. The gateway reuses the existing upstream IdP and SSO
+session, asks the visitor to approve sharing their identity, and issues an
+ID token for that app. Register exact callback URLs in its `donkey.yaml`:
+
+```yaml
+name: shop
+space: acme
+port: 8000
+oidc:
+  redirectURIs:
+    - https://shop.acme.apps.example.com/auth/callback
+    - http://localhost:3000/auth/callback
+```
+
+Deploying this configuration registers client `donkey_web_acme_shop`.
+Client IDs follow `donkey_web_<space>_<app>` and stay stable across deploys.
+Registrations apply to web apps with their own gateway address. Callback
+URLs use HTTPS, with HTTP allowed on loopback for local development; they
+must match exactly and use a path outside the gateway's reserved `/oauth2/`
+paths. Removing `oidc`, deleting the app, or changing its registration
+invalidates its outstanding codes and grants at the next successful route
+refresh. Restoring the old settings does not restore those grants or pending
+consent forms. Console network edits preserve
+the registration; remove it in `donkey.yaml` before changing the app to API
+mode or internal exposure.
+
+Configure your OIDC library with:
+
+| Setting | Value for this example |
+| --- | --- |
+| Issuer / authority | `https://apps.example.com` (the installation's base domain) |
+| Client ID | `donkey_web_acme_shop` |
+| Redirect URI | One of the registered callback URLs |
+| Flow | Authorization Code with S256 PKCE |
+| Scopes | `openid profile email`; add `offline_access` for refresh tokens |
+
+Discovery is at `/.well-known/openid-configuration`. It advertises
+`/oauth2/authorize`, `/oauth2/token`, `/oauth2/userinfo`, `/oauth2/jwks`, and
+`/oauth2/revoke`. Login needs no API `resource` parameter. Both public browser
+clients and confidential server-side clients must use PKCE. Public clients
+use token-endpoint authentication method `none` and send no client secret.
+The token response includes an RS256-signed ID token, a one-hour access token
+(bounded by the grant's expiry), and the granted scopes. `openid` provides a
+stable subject; `profile` adds available name and preferred-username claims;
+`email` adds the email address. Claims are also available from UserInfo with
+the access token. No email-verification claim is invented when the upstream
+login has not supplied one.
+
+For a server-side web app, generate a random client secret of at least 32
+characters. Put its SHA-256 hex digest in `oidc.clientSecretSHA256`, and put
+the secret itself in the application's secret environment, for example with
+`donkey env set OIDC_CLIENT_SECRET=...`. Such clients authenticate using
+`client_secret_basic` or `client_secret_post`. This command generates both
+values; only the digest belongs in the repository:
+
+```sh
+python3 -c 'import secrets, hashlib; s = secrets.token_urlsafe(32); print("Client secret:", s); print("SHA-256:", hashlib.sha256(s.encode()).hexdigest())'
+```
+
+The gateway checks current space membership at authorization, code exchange,
+refresh, and UserInfo. Public exposure does not grant nonmembers OIDC access.
+The browser can still load a public app's sign-in screen when its space allows
+public apps. Upstream group claims are the snapshot from the user's sign-in;
+changing upstream group membership requires a new sign-in to refresh that
+snapshot.
+
+These web-app access tokens authorize UserInfo. API/MCP access continues to
+use the existing resource-bound OAuth flow, and protected backends continue
+to receive `X-Forwarded-Access-Token` when `auth.scope` is configured. OIDC
+login grants contain identity claims without upstream access or refresh
+tokens. ID tokens name Donkey as issuer and the registered app as audience.
+
+`offline_access` requires interactive approval and issues rotating refresh
+tokens with a fixed 30-day grant lifetime. Reusing an older refresh token
+revokes the whole grant, including its access tokens. Posting an access or
+refresh token to `/oauth2/revoke`, with the client's usual authentication,
+also revokes that grant. Already issued ID tokens remain verifiable until
+they expire; applications manage their own sessions. `/oauth2/logout` ends
+the gateway browser session; it is not an OIDC RP-initiated logout endpoint.
+
+Client registration versions, signing keys, one-use codes, and grants use the
+same transactional file store on both runtimes:
+`/var/lib/donkey/oidc/state.json`. Kubernetes mounts
+the dedicated `donkey-gateway-data` PVC (1 GiB; `data.storageClass` when set),
+and Docker uses its existing state volume. An OS lock, file sync, and atomic
+replacement protect transactions; expired records are removed on the next
+operation. Back up this state with the installation. Signing keys rotate
+after 30 days of use, retaining previous public keys until their ID tokens
+have expired.
+
+This configuration runs one gateway. Kubernetes uses `Recreate` so an
+upgrade releases the RWO volume before starting its replacement; gateway
+upgrades therefore briefly interrupt edge traffic. Multiple gateways on
+different nodes require a shared transactional store implementation, not
+independent local files. The gateway depends on a storage interface and
+runtime interfaces for routes and TLS; Kubernetes and Docker adapters are
+selected at startup outside the gateway package.
+
+Authentication requests do not access the Kubernetes API. Routes and
+membership refresh every 10 seconds, as do certificates in cert-manager
+mode. Requests for unknown routes or certificates can trigger a refresh,
+coalesced and limited to once per two seconds across callers. ACME cache
+reads use memory after one initial Secret read, including cached misses;
+failed reads back off for five seconds. Secret writes occur for certificate
+issuance/renewal, and CA loading happens at startup.
+
+The supported OIDC profile is the authorization-code flow with GET or form
+POST authorization requests, query responses, and explicit approval. Keep
+authorization state and nonce values short: requests that cannot fit the
+browser's login-state cookie are rejected before redirecting to the IdP.
+`prompt=login`, `prompt=consent`, and
+`max_age` are supported; `max_age` requires the upstream provider to return
+and honor `auth_time`. `prompt=none` returns `login_required` or
+`consent_required` without showing UI. Dynamic registration remains for
+API/MCP clients; web apps use the explicit registrations above. Implicit and
+hybrid flows, request objects, and RP-initiated logout are not advertised.
+
 **Certificates and DNS.** Every request reaches donkey-gateway directly;
 `tls.mode` changes its certificate source, not the traffic path. `acme`
 requests exact-host certificates from Let's Encrypt or an internal ACME

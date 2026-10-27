@@ -355,6 +355,7 @@ Platform resources always live in `kubernetes.system.namespace`
 | Secret | `donkey-registry` | `.dockerconfigjson`; `kubernetes.io/dockerconfigjson` |
 | Secret | `donkey-gateway-ca` | Built-in CA: `ca.crt`, `ca.key`; `Opaque` |
 | Secret | `donkey-gateway-acme` | ACME account, certificates and challenge cache; `Opaque` |
+| PVC | `donkey-gateway-data` | Gateway OIDC registration versions, signing keys, authorization codes and grants in `/var/lib/donkey/oidc/state.json`; 1 GiB, RWO, single gateway with `Recreate` upgrades |
 | Secret | `donkey-gateway-tls` | Platform certificate from cert-manager: `tls.crt`, `tls.key`; `kubernetes.io/tls` |
 | Secret | `<space>-<app>-tls` | App certificate from cert-manager: `tls.crt`, `tls.key`; `kubernetes.io/tls` |
 | Certificate | `donkey-gateway` | Platform certificate request; writes `donkey-gateway-tls` |
