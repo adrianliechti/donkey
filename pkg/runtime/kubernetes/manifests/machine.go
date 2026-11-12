@@ -75,7 +75,8 @@ type MachineInput struct {
 	// ever exists as a Secret.
 	Env      map[string]string
 	Settings config.MachineSettings
-	// RestrictEgress confines machines to DNS and the control plane.
+	// RestrictEgress confines machines to DNS and the control plane — the
+	// machines' own setting (machines.egress), not the one for spaces.
 	RestrictEgress bool
 	// ImagePullSecrets are existing secrets of the namespace; the Registry
 	// fields add one for the installation's own registry.
@@ -143,18 +144,21 @@ func MachineNamespace(name string) *corev1.Namespace {
 // installation isolates its spaces: a machine holds its owner's sign-in.
 //
 // In: the gateway, on the machine's front door, and nothing else — no app,
-// no other machine. Out: DNS, the API its CLI calls and the AI endpoint its
-// agent uses, named explicitly because some network plugins do not count
-// in-cluster pods as part of an address range. Then the rest of the network,
-// except the link-local range where cloud metadata services hand out node
-// credentials. restrictEgress drops that last rule, which leaves a machine
-// the control plane and nothing beyond it.
+// no other machine. Out: DNS, the API its CLI calls, the AI endpoint its
+// agent uses and the package mirror its package managers install from, named
+// explicitly because some network plugins do not count in-cluster pods as
+// part of an address range. That is all a machine gets unless the
+// installation opens it (restrictEgress false, machines.egress: open): an
+// agent that can install packages, ask its model and deploy, and reach
+// nothing else. Opened, it also gets the rest of the network, except the
+// link-local range where cloud metadata services hand out node credentials.
 func MachinePolicy(namespace, installation string, restrictEgress bool) *networkPolicy {
 	tcp, udp := corev1.ProtocolTCP, corev1.ProtocolUDP
 	door := intstr.FromInt32(config.MachinePort)
 	dns := intstr.FromInt32(dnsPort)
 	api := intstr.FromInt32(serverPort)
 	ai := intstr.FromInt32(aiPort)
+	mirror := intstr.FromInt32(packagesPort)
 	policy := &networkingv1.NetworkPolicy{
 		TypeMeta: metav1.TypeMeta{APIVersion: "networking.k8s.io/v1", Kind: "NetworkPolicy"},
 		ObjectMeta: metav1.ObjectMeta{
@@ -181,6 +185,10 @@ func MachinePolicy(namespace, installation string, restrictEgress bool) *network
 				{
 					To:    []networkingv1.NetworkPolicyPeer{systemPeer(installation, AIAppName)},
 					Ports: []networkingv1.NetworkPolicyPort{{Protocol: &tcp, Port: &ai}},
+				},
+				{
+					To:    []networkingv1.NetworkPolicyPeer{systemPeer(installation, PackagesAppName)},
+					Ports: []networkingv1.NetworkPolicyPort{{Protocol: &tcp, Port: &mirror}},
 				},
 			},
 		},
@@ -317,6 +325,8 @@ func machineDeployment(in MachineInput) (*appsv1.Deployment, error) {
 	}
 	spec := corev1.PodSpec{
 		Containers: []corev1.Container{container},
+		// What the owner's prompt says, instead of the pod's name.
+		Hostname: config.MachineHostname,
 		// A machine never talks to the cluster it runs on.
 		AutomountServiceAccountToken: new(false),
 		EnableServiceLinks:           new(false),

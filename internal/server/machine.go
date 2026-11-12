@@ -42,6 +42,9 @@ type MachineResponse struct {
 	// Outdated says the installation's machine image changed since this one
 	// started; a restart picks the new one up.
 	Outdated bool `json:"outdated,omitempty"`
+	// Egress is restricted or open: whether a machine reaches the control
+	// plane only, or the network at large.
+	Egress string `json:"egress,omitempty"`
 	// What every machine of this installation gets.
 	Storage string `json:"storage,omitempty"`
 	CPU     string `json:"cpu,omitempty"`
@@ -122,6 +125,7 @@ func (s *Server) machineResponse(st *runtime.MachineStatus) MachineResponse {
 	resp := MachineResponse{
 		Enabled: true, Allowed: true,
 		State:   string(st.State),
+		Egress:  settings.EgressMode(),
 		Storage: settings.StorageSize(), CPU: settings.CPULimit(), Memory: settings.MemoryLimit(),
 		Restarts: st.Restarts, Message: st.Message,
 	}

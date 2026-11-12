@@ -90,6 +90,9 @@ func TestMachineDeploymentIsLockedDown(t *testing.T) {
 	}
 	dep := machineObject[*appsv1.Deployment](t, objs)
 	pod := dep.Spec.Template.Spec
+	if pod.Hostname != "donkey" {
+		t.Errorf("hostname = %q — the owner's prompt would show the pod's name", pod.Hostname)
+	}
 	if pod.AutomountServiceAccountToken == nil || *pod.AutomountServiceAccountToken {
 		t.Error("the machine is handed a Kubernetes credential")
 	}
@@ -199,9 +202,10 @@ func TestMachineObjectsInASharedNamespace(t *testing.T) {
 	}
 }
 
-// Nothing reaches a machine but the gateway. Out, it gets DNS, the API and
-// the AI endpoint by name, and the network beyond — except the link-local
-// range where a cloud's metadata service hands out node credentials.
+// Nothing reaches a machine but the gateway. Out, it gets DNS, the API, the
+// AI endpoint and the package mirror by name, and the network beyond —
+// except the link-local range where a cloud's metadata service hands out
+// node credentials.
 func TestMachinePolicy(t *testing.T) {
 	p := MachinePolicy("donkey-platform", "donkey-system", false)
 	if len(p.Spec.PolicyTypes) != 2 {
@@ -218,28 +222,32 @@ func TestMachinePolicy(t *testing.T) {
 	if len(in.Ports) != 1 || in.Ports[0].Port.IntValue() != config.MachinePort {
 		t.Errorf("ingress ports = %+v, want the front door only", in.Ports)
 	}
-	if len(p.Spec.Egress) != 4 {
-		t.Fatalf("got %d egress rules, want DNS, API, AI and the network", len(p.Spec.Egress))
+	if len(p.Spec.Egress) != 5 {
+		t.Fatalf("got %d egress rules, want DNS, API, AI, the package mirror and the network", len(p.Spec.Egress))
 	}
 	for i, want := range []struct {
 		role string
 		port int
-	}{{SystemRole(ServerName), serverPort}, {SystemRole(AIAppName), aiPort}} {
+	}{{SystemRole(ServerName), serverPort}, {SystemRole(AIAppName), aiPort}, {SystemRole(PackagesAppName), packagesPort}} {
 		rule := p.Spec.Egress[i+1]
 		if rule.To[0].PodSelector.MatchLabels[LabelRole] != want.role || rule.Ports[0].Port.IntValue() != want.port {
 			t.Errorf("egress rule %d = %+v, want %s:%d", i+1, rule, want.role, want.port)
 		}
 	}
-	internet := p.Spec.Egress[3]
+	internet := p.Spec.Egress[4]
 	if internet.To[0].IPBlock.CIDR != "0.0.0.0/0" || !slices.Contains(internet.To[0].IPBlock.Except, "169.254.0.0/16") {
 		t.Errorf("the network rule leaves the metadata range open: %+v", internet.To[0].IPBlock)
 	}
 
 	// An installation that keeps its apps off the internet keeps machines
-	// off it too: the control plane, and nothing beyond.
+	// off it too: the control plane, and nothing beyond. The mirror is part
+	// of that, so an agent there can still install what it builds with.
 	restricted := MachinePolicy("donkey-platform", "donkey-system", true)
-	if len(restricted.Spec.Egress) != 3 {
-		t.Fatalf("restricted egress has %d rules, want DNS, API and AI", len(restricted.Spec.Egress))
+	if len(restricted.Spec.Egress) != 4 {
+		t.Fatalf("restricted egress has %d rules, want DNS, API, AI and the package mirror", len(restricted.Spec.Egress))
+	}
+	if mirror := restricted.Spec.Egress[3]; mirror.To[0].PodSelector.MatchLabels[LabelRole] != SystemRole(PackagesAppName) {
+		t.Errorf("restricted egress leaves the package mirror out: %+v", mirror)
 	}
 	for _, rule := range restricted.Spec.Egress {
 		for _, peer := range rule.To {
@@ -265,9 +273,10 @@ func TestMachinePolicy(t *testing.T) {
 	}
 }
 
-// The API and the AI endpoint admit machine pods — a machine's CLI and agent
-// call them — but only where the installation has machines, and only pods
-// that are machines in the namespace machines live in.
+// The API, the AI endpoint and the package mirror admit machine pods — a
+// machine's CLI, agent and package managers call them — but only where the
+// installation has machines, and only pods that are machines in the
+// namespace machines live in.
 func TestControlPlaneAdmitsMachinesOnlyWhenEnabled(t *testing.T) {
 	in := systemInput()
 	machines := func(p *networkPolicy) []networkingv1.NetworkPolicyPeer {
@@ -285,10 +294,15 @@ func TestControlPlaneAdmitsMachinesOnlyWhenEnabled(t *testing.T) {
 	if got := machines(aiNetworkPolicy(in)); len(got) != 0 {
 		t.Fatalf("the AI endpoint admits machines of an installation that has none: %+v", got)
 	}
+	if got := machines(packagesNetworkPolicy(in)); len(got) != 0 {
+		t.Fatalf("the package mirror admits machines of an installation that has none: %+v", got)
+	}
 
 	in.Machines = config.MachineSettings{Image: "machine:1"}
 	in.NamespacePrefix = "donkey-"
-	for name, policy := range map[string]*networkPolicy{"API": serverNetworkPolicy(in), "AI": aiNetworkPolicy(in)} {
+	for name, policy := range map[string]*networkPolicy{
+		"API": serverNetworkPolicy(in), "AI": aiNetworkPolicy(in), "package mirror": packagesNetworkPolicy(in),
+	} {
 		peers := machines(policy)
 		if len(peers) != 1 {
 			t.Fatalf("%s: %d machine peers", name, len(peers))

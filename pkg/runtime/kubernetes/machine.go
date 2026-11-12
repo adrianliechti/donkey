@@ -41,6 +41,13 @@ func (r *Runtime) machineAPIURL() string {
 	return fmt.Sprintf("http://%s.%s.svc", manifests.ServerName, r.opts.SystemNamespace)
 }
 
+// machinePackagesURL is the package mirror as a machine reaches it — the
+// Service builds use, named in full because a machine lives in a namespace
+// of its own.
+func (r *Runtime) machinePackagesURL() string {
+	return fmt.Sprintf("http://%s.%s.svc", manifests.PackagesAppName, r.opts.SystemNamespace)
+}
+
 func (r *Runtime) machineInput(spec rt.MachineSpec) (manifests.MachineInput, error) {
 	owner := spec.Email
 	if owner == "" {
@@ -56,9 +63,9 @@ func (r *Runtime) machineInput(spec rt.MachineSpec) (manifests.MachineInput, err
 		Host:             spec.Host,
 		Owner:            spec.Owner,
 		OwnerLabel:       owner,
-		Env:              rt.MachineEnv(spec, r.machineAPIURL(), r.aiProxyURL()),
+		Env:              rt.MachineEnv(spec, r.machineAPIURL(), r.aiProxyURL(), r.machinePackagesURL()),
 		Settings:         spec.Settings,
-		RestrictEgress:   r.opts.RestrictEgress,
+		RestrictEgress:   spec.Settings.RestrictEgress(),
 		ImagePullSecrets: r.opts.AddonImagePullSecrets,
 		TLS:              r.opts.TLS,
 		ExternalDNS:      r.opts.ExternalDNS,

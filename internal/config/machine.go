@@ -27,6 +27,11 @@ const (
 	// MachineDataPath is the machine's disk: the owner's home and workspace.
 	// Everything outside it comes from the image and is gone after a restart.
 	MachineDataPath = "/data"
+	// MachineHostname is what a machine calls itself. Its owner reads it in
+	// every terminal prompt (dev@donkey), where the runtime's own name for
+	// the container — a pod name, a container ID — says nothing to them.
+	// Every machine has the same one: nothing reaches a machine by it.
+	MachineHostname = "donkey"
 	// MachineUser is who the machine's processes run as. The image creates
 	// the account; the runtime pins the number so the disk stays writable.
 	MachineUser = int64(1000)
@@ -54,6 +59,32 @@ type MachineSettings struct {
 	// CPU and Memory cap one machine (defaults 2 and 4Gi).
 	CPU    string `json:"cpu,omitempty"`
 	Memory string `json:"memory,omitempty"`
+	// Egress is what a machine may reach: "restricted" (the default) — the
+	// control plane and nothing beyond it — or "open", the network at large.
+	Egress string `json:"egress,omitempty"`
+}
+
+// What a machine may reach. Restricted is the default, and it is a decision
+// about machines rather than about workloads in general: a machine runs an
+// agent that acts on what it reads, with its owner's sign-in in reach. Left
+// with the package mirror, its model and the API, it can still build, test
+// and deploy — and has nowhere to send anything else. Open is for
+// installations whose machines have to reach what donkey does not provide,
+// a Git host first of all.
+const (
+	MachineEgressRestricted = "restricted"
+	MachineEgressOpen       = "open"
+)
+
+// RestrictEgress says machines reach the control plane only.
+func (m MachineSettings) RestrictEgress() bool { return m.Egress != MachineEgressOpen }
+
+// EgressMode is the setting with its default filled in.
+func (m MachineSettings) EgressMode() string {
+	if m.RestrictEgress() {
+		return MachineEgressRestricted
+	}
+	return MachineEgressOpen
 }
 
 func (m MachineSettings) Enabled() bool { return m.Image != "" }
@@ -85,7 +116,7 @@ var cpuRE = regexp.MustCompile(`^([0-9]+(\.[0-9]+)?|[0-9]+m)$`)
 
 func (m MachineSettings) Validate() error {
 	if !m.Enabled() {
-		if m.Storage != "" || m.StorageClass != "" || m.CPU != "" || m.Memory != "" {
+		if m.Storage != "" || m.StorageClass != "" || m.CPU != "" || m.Memory != "" || m.Egress != "" {
 			return fmt.Errorf("machines.image is required to turn machines on — the other machines settings do nothing without it")
 		}
 		return nil
@@ -102,6 +133,11 @@ func (m MachineSettings) Validate() error {
 	if m.CPU != "" && !cpuRE.MatchString(m.CPU) {
 		return fmt.Errorf("machines.cpu %q is not a valid amount (try 2 or 500m)", m.CPU)
 	}
+	switch m.Egress {
+	case "", MachineEgressRestricted, MachineEgressOpen:
+	default:
+		return fmt.Errorf("machines.egress must be %s or %s, not %q", MachineEgressRestricted, MachineEgressOpen, m.Egress)
+	}
 	return nil
 }
 
@@ -113,6 +149,7 @@ func (m MachineSettings) Env() map[string]string {
 		"DONKEY_MACHINE_STORAGE_CLASS": m.StorageClass,
 		"DONKEY_MACHINE_CPU":           m.CPU,
 		"DONKEY_MACHINE_MEMORY":        m.Memory,
+		"DONKEY_MACHINE_EGRESS":        m.Egress,
 	}
 }
 
@@ -124,6 +161,7 @@ func MachineSettingsFromEnv(get func(string) string) MachineSettings {
 		StorageClass: get("DONKEY_MACHINE_STORAGE_CLASS"),
 		CPU:          get("DONKEY_MACHINE_CPU"),
 		Memory:       get("DONKEY_MACHINE_MEMORY"),
+		Egress:       get("DONKEY_MACHINE_EGRESS"),
 	}
 }
 

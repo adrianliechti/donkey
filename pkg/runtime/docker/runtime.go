@@ -119,6 +119,10 @@ type Options struct {
 	// TelemetryContainer accepts app-scoped OTLP metrics on every space
 	// network.
 	TelemetryContainer string
+	// PackagesContainer is the package mirror. It stays off every space
+	// network — builds reach it, apps do not — and joins a machine's, whose
+	// package managers install through it.
+	PackagesContainer string
 	// ServerContainer/OrchestratorContainer/GatewayContainer name donkey's
 	// own containers, so the provider can attach them to every space network
 	// (the server must reach apps for tunnels, the orchestrator to probe a
@@ -166,6 +170,9 @@ func New(opts Options) (*Runtime, error) {
 	}
 	if opts.TelemetryContainer == "" {
 		opts.TelemetryContainer = "donkey-telemetry"
+	}
+	if opts.PackagesContainer == "" {
+		opts.PackagesContainer = "donkey-packages"
 	}
 	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	if err != nil {

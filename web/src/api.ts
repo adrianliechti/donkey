@@ -991,6 +991,8 @@ export interface Machine {
   signInExpires?: string
   /** The installation's machine image changed since this one started. */
   outdated?: boolean
+  /** Whether a machine reaches the control plane only, or the network at large. */
+  egress?: 'restricted' | 'open'
   storage?: string
   cpu?: string
   memory?: string

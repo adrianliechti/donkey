@@ -86,7 +86,9 @@ func appPeers(in SystemInput) []networkingv1.NetworkPolicyPeer {
 // when it has none. A machine is a developer's computer that happens to sit
 // in the cluster: its CLI calls the API with its owner's sign-in and its
 // agent calls the AI endpoint with a token of its own, so both admit it —
-// and both still check that credential on every request.
+// and both still check that credential on every request. Its package
+// managers install through the mirror, which admits it as it admits a build:
+// by where the request comes from.
 func machinePeers(in SystemInput) []networkingv1.NetworkPolicyPeer {
 	if !in.Machines.Enabled() {
 		return nil

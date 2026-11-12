@@ -277,6 +277,12 @@ function Resting({
         Your home and workspace live on a {machine.storage ?? ''} disk at <Mono>/data</Mono> and survive restarts.
         {size && <> It may use up to {size}.</>}
       </p>
+      {machine.egress === 'restricted' && (
+        <p className="mt-2">
+          It has no way out to the internet: packages install from the installation's mirror, and it reaches its model
+          and donkey, nothing else.
+        </p>
+      )}
     </EmptyState>
   )
 }

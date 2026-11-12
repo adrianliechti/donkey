@@ -168,10 +168,11 @@ five ideas:
   [Packages on a developer's machine](#packages-on-a-developers-machine)). It
   proxies npm, PyPI, Go module, Maven and NuGet v3 requests to public
   registries by default or installation-wide enterprise upstreams. Its
-  NetworkPolicy admits BuildKit and donkey-server alone — the server forwards a
-  developer's requests after verifying their sign-in — and upstream
-  credentials stay in this process rather than becoming Docker build args or
-  reaching a laptop.
+  NetworkPolicy admits BuildKit, donkey-server and — where the installation
+  has them — [machines](#machines); the server forwards a developer's
+  requests after verifying their sign-in. Upstream credentials stay in this
+  process rather than becoming Docker build args or reaching a laptop or a
+  machine.
 - **donkey-telemetry** — a dedicated `telemetry` process role of the single
   `donkey-server` binary: a single-replica OTLP/HTTP metrics receiver with a
   private query API backed by an embedded DuckDB file on its own 2 Gi PVC.
@@ -1003,11 +1004,21 @@ the image (below).
   per start and stops working when the machine stops. The agent starts on
   the installation's `ai.model`.
 - *Your name and email* for `git config`, unless you already set your own.
-
-Package managers reach the public registries directly where the network
-allows it. Where it does not, `donkey packages run npm install` goes through
-the installation's mirror, exactly as on a laptop
-(see [Packages on a developer's machine](#packages-on-a-developers-machine)).
+- *The installation's package mirror*, the way a build gets it: npm, pnpm,
+  yarn, bun, pip, uv and Go are pointed at `donkey-packages` by the names
+  they read themselves (`NPM_CONFIG_REGISTRY`, `PIP_INDEX_URL`,
+  `UV_INDEX_URL`, `GOPROXY`). `npm install` in a terminal or by the agent
+  installs from the same registries as a deploy does, private packages
+  included, and no upstream credential comes near the machine. There is
+  nothing to prefix and nothing for the agent to remember. Lockfiles written
+  in a machine are a developer's lockfiles (see
+  [Packages on a developer's machine](#packages-on-a-developers-machine)):
+  npm leaves the address out, `uv.lock` names the mirror's, and a deploy
+  reads either.
+- *The donkey skill* for its agent
+  ([examples/skills/skill.md](examples/skills/skill.md)), installed in
+  `~/.agents/skills/donkey` on every start: how to deploy and operate apps
+  with the CLI, and what is different about working in a machine.
 
 **How it is reached, and by whom.** The agent was written to listen on a
 developer's loopback and trusts whoever reaches it. Three things stand in
@@ -1051,15 +1062,40 @@ in the agent just works. Two things follow from sharing one address:
   development server has to be told its base path (`vite --base
   /.donkey/port/5173/`), and one that cannot be has no address yet.
 
-**What it can reach.** On Kubernetes, machines live in a namespace of their
-own (`<prefix>platform`, Pod Security `restricted`) or, where the
-installation was given one namespace, beside the apps. One NetworkPolicy
-fences all of them whether or not spaces are isolated: in, the gateway and
-nothing else; out, DNS, the API and the AI endpoint, and the network beyond —
-except the link-local range where cloud metadata services live. With
-`kubernetes.restrictEgress` they get the control plane and nothing beyond it.
-A machine's pod holds no Kubernetes credential. On Docker each machine has a
-network of its own, shared only with the gateway, the API and the AI endpoint.
+**What can reach it, and what it can reach.** Both are limited, on both
+runtimes, and neither depends on how the installation treats its spaces.
+
+- *In:* the gateway, on the machine's front door, and nothing else — no app,
+  no other machine, no other workload of the cluster.
+- *Out:* the control plane and nothing beyond it — DNS, the API its CLI
+  calls, the AI endpoint its agent asks and the package mirror its package
+  managers install from. There is no way out to the internet.
+
+That is a decision about machines, not about workloads in general. A machine
+runs an agent that acts on what it reads, with its owner's sign-in in reach;
+left with the mirror, its model and the API it can still build, test and
+deploy, and has nowhere to send anything else. It also means a machine
+cannot clone from a Git host, fetch a URL or download a toolchain the mirror
+does not carry (`uv python install`, the agent's own language servers). An
+installation whose machines have to can open them:
+
+```yaml
+machines:
+  egress: open       # default: restricted
+```
+
+Opened, a machine reaches the network at large — except, on Kubernetes, the
+link-local range where cloud metadata services hand out node credentials.
+
+On Kubernetes, machines live in a namespace of their own (`<prefix>platform`,
+Pod Security `restricted`) or, where the installation was given one
+namespace, beside the apps; one NetworkPolicy fences all of them, and a
+machine's pod holds no Kubernetes credential. It takes a network plugin that
+enforces NetworkPolicy — the front door's credential check holds either way,
+the limit on what a machine can reach does not. On Docker each machine has a
+network of its own, shared only with the gateway, the API, the AI endpoint
+and the package mirror, and made internal — no route out of the engine —
+unless machines are opened.
 
 The agent's own per-command sandbox is switched off inside a machine: it is
 built from user namespaces, which a container without privileges cannot
@@ -1076,6 +1112,7 @@ machines:
   storageClass: ""     # default: the cluster's
   cpu: "2"             # the most one machine may use
   memory: 4Gi
+  egress: restricted   # or open — see above
 ```
 
 or pass `--machine-image` to `donkey server install`. Without an image the

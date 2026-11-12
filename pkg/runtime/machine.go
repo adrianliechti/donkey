@@ -3,9 +3,12 @@ package runtime
 import (
 	"context"
 	"io"
+	"maps"
+	"strings"
 	"time"
 
 	"github.com/adrianliechti/donkey/internal/config"
+	"github.com/adrianliechti/donkey/internal/packages"
 )
 
 // MachineProvider is the optional runtime capability behind personal
@@ -102,10 +105,11 @@ type MachineStatus struct {
 func (s *MachineStatus) Exists() bool { return s != nil && s.State != "" && s.State != MachineAbsent }
 
 // MachineEnv is the contract between the control plane and the machine
-// image, the same on every runtime. apiURL and aiURL are the control plane as
-// the machine reaches it from inside the runtime. Every value here is the
-// owner's own: a credential that opens something else never goes in.
-func MachineEnv(spec MachineSpec, apiURL, aiURL string) map[string]string {
+// image, the same on every runtime. apiURL, aiURL and packagesURL are the
+// control plane as the machine reaches it from inside the runtime. Every
+// value here is the owner's own: a credential that opens something else
+// never goes in.
+func MachineEnv(spec MachineSpec, apiURL, aiURL, packagesURL string) map[string]string {
 	env := map[string]string{
 		"DONKEY_MACHINE_ID":          spec.ID,
 		"DONKEY_MACHINE_HOST":        spec.Host,
@@ -125,6 +129,20 @@ func MachineEnv(spec MachineSpec, apiURL, aiURL string) map[string]string {
 		if spec.Model != "" {
 			env["WINGMAN_MODEL"] = spec.Model
 		}
+	}
+	if packagesURL = strings.TrimRight(packagesURL, "/"); packagesURL != "" {
+		// Package managers install through the installation's mirror, the
+		// way a build's do: the same registries, the same private packages,
+		// and no upstream credential anywhere near the machine. Nothing in
+		// the machine has to know — the tools read these names themselves —
+		// and it keeps working where the network lets nothing else out.
+		maps.Copy(env, packages.ManagerEnv(packagesURL))
+		// The mirror is plain HTTP inside the runtime, which pip only takes
+		// from a host it was told to trust.
+		env["PIP_TRUSTED_HOST"] = strings.TrimPrefix(strings.TrimPrefix(packagesURL, "http://"), "https://")
+		// A machine that reaches only the mirror cannot reach Go's checksum
+		// database. go.sum still pins what was downloaded.
+		env["GOSUMDB"] = "off"
 	}
 	for key, value := range env {
 		if value == "" {

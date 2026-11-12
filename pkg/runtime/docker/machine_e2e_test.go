@@ -108,6 +108,9 @@ func TestMachineDocker(t *testing.T) {
 		if info.Config.User != "1000:1000" {
 			t.Errorf("user = %q", info.Config.User)
 		}
+		if out, _ := run(t, "hostname; id -un"); out != "donkey\ndev" {
+			t.Errorf("the prompt would read %q, want dev@donkey", strings.ReplaceAll(out, "\n", " / "))
+		}
 		host := info.HostConfig
 		if !slices.Contains([]string(host.CapDrop), "ALL") || !slices.Contains(host.SecurityOpt, "no-new-privileges:true") {
 			t.Errorf("capabilities dropped %v, security options %v", host.CapDrop, host.SecurityOpt)
@@ -125,7 +128,15 @@ func TestMachineDocker(t *testing.T) {
 		if len(info.Mounts) != 1 || info.Mounts[0].Destination != config.MachineDataPath || info.Mounts[0].Name != name+".data" {
 			t.Errorf("mounts = %+v", info.Mounts)
 		}
+		// Restricted by default: a network with no way out of the engine.
+		nw, err := r.cli.NetworkInspect(ctx, name, network.InspectOptions{})
+		if err != nil || !nw.Internal {
+			t.Errorf("the machine's network is not internal (%v)", err)
+		}
 		serving(t)
+		if out, code := run(t, "curl -s -m 5 -o /dev/null -w '%{http_code}' https://example.com/"); code == 0 {
+			t.Errorf("a restricted machine reached the internet (%s)", out)
+		}
 		if out, _ := run(t, "id -u; stat -c %u /data; grep NoNewPrivs /proc/self/status; grep CapEff /proc/self/status"); !strings.Contains(out, "1000\n1000\n") ||
 			!strings.Contains(out, "NoNewPrivs:\t1") || !strings.Contains(out, "CapEff:\t0000000000000000") {
 			t.Errorf("inside the machine:\n%s", out)
@@ -133,8 +144,14 @@ func TestMachineDocker(t *testing.T) {
 	})
 
 	t.Run("is its owner's environment", func(t *testing.T) {
-		out, _ := run(t, `cat ~/.config/donkey/config.yaml; git config --global user.name; git config --global user.email; echo "$DONKEY_TOKEN|$OPENAI_BASE_URL|$OPENAI_API_KEY|$WINGMAN_MODEL"; pwd`)
-		for _, want := range []string{"url: " + r.machineAPIURL(), "Ada Owner", "ada@example.com", "sealed-sign-in|" + r.aiProxyURL() + "|dkm_e2e|test-model"} {
+		out, _ := run(t, `cat ~/.config/donkey/config.yaml; git config --global user.name; git config --global user.email; echo "$DONKEY_TOKEN|$OPENAI_BASE_URL|$OPENAI_API_KEY|$WINGMAN_MODEL"; echo "$NPM_CONFIG_REGISTRY $PIP_INDEX_URL $GOPROXY"; head -3 ~/.agents/skills/donkey/SKILL.md`)
+		for _, want := range []string{
+			"url: " + r.machineAPIURL(), "Ada Owner", "ada@example.com", "sealed-sign-in|" + r.aiProxyURL() + "|dkm_e2e|test-model",
+			// Package managers are pointed at the mirror before anybody asks.
+			r.machinePackagesURL() + "/npm/ " + r.machinePackagesURL() + "/pypi/ " + r.machinePackagesURL() + "/go/",
+			// The agent finds the donkey skill.
+			"name: donkey",
+		} {
 			if !strings.Contains(out, want) {
 				t.Errorf("missing %q in:\n%s", want, out)
 			}
@@ -197,12 +214,27 @@ func TestMachineDocker(t *testing.T) {
 			t.Errorf("model token still honoured: %v", tokens)
 		}
 
-		// Started again, it is the same home — with a new model token.
+		// Started again, it is the same home — with a new model token, and
+		// this time on an installation that opened its machines.
 		spec.AIToken = "dkm_second"
+		spec.Settings.Egress = config.MachineEgressOpen
 		if err := machines.Start(ctx, spec); err != nil {
 			t.Fatal(err)
 		}
 		serving(t)
+		if nw, err := r.cli.NetworkInspect(ctx, name, network.InspectOptions{}); err != nil || nw.Internal {
+			t.Errorf("an opened machine is still on an internal network (%v)", err)
+		}
+		// Restricted again takes effect on the next start too: the network
+		// is made again rather than kept as it was.
+		spec.Settings.Egress = ""
+		if err := machines.Start(ctx, spec); err != nil {
+			t.Fatal(err)
+		}
+		serving(t)
+		if nw, err := r.cli.NetworkInspect(ctx, name, network.InspectOptions{}); err != nil || !nw.Internal {
+			t.Errorf("a machine restricted again kept its open network (%v)", err)
+		}
 		if out, _ := run(t, "cat /data/home/note; ls /data/workspace"); out != "kept\nproject" {
 			t.Errorf("the disk after a restart:\n%s", out)
 		}

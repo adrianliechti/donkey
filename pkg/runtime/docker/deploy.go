@@ -559,6 +559,9 @@ type runConfig struct {
 	OneShot    bool                   // no restart policy, don't start-and-forget semantics change
 	// User overrides the image's user (uid:gid).
 	User string
+	// Hostname is what the container calls itself; empty leaves the engine's
+	// choice, its ID.
+	Hostname string
 	// Hardened drops every capability and forbids gaining any — what a
 	// personal machine runs with.
 	Hardened bool
@@ -605,6 +608,7 @@ func (r *Runtime) replaceContainer(ctx context.Context, name string, cfg runConf
 	if cfg.User != "" {
 		containerCfg.User = cfg.User
 	}
+	containerCfg.Hostname = cfg.Hostname
 	hostCfg := &container.HostConfig{Mounts: mounts}
 	if cfg.Labels[labelRole] == roleWorkload {
 		hostCfg.SecurityOpt = []string{"no-new-privileges:true"}

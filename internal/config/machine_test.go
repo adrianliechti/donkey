@@ -81,13 +81,26 @@ func TestMachineSettings(t *testing.T) {
 		"storage":                   {Image: "machine:1", Storage: "lots"},
 		"memory":                    {Image: "machine:1", Memory: "4 gigs"},
 		"cpu":                       {Image: "machine:1", CPU: "two"},
+		"egress":                    {Image: "machine:1", Egress: "internet"},
+		"egress without an image":   {Egress: "open"},
 	} {
 		if err := bad.Validate(); err == nil {
 			t.Errorf("%s: accepted %+v", name, bad)
 		}
 	}
+	// A machine reaches the control plane and nothing beyond it unless the
+	// installation says otherwise — and says so in so many words.
+	if !on.RestrictEgress() || on.EgressMode() != MachineEgressRestricted {
+		t.Fatalf("a machine is open by default: %q", on.EgressMode())
+	}
+	for egress, restricted := range map[string]bool{"": true, "restricted": true, "open": false} {
+		m := MachineSettings{Image: "machine:1", Egress: egress}
+		if err := m.Validate(); err != nil || m.RestrictEgress() != restricted {
+			t.Errorf("egress %q: restricted = %v (%v)", egress, m.RestrictEgress(), err)
+		}
+	}
 	// What the installer writes is what the control plane reads.
-	full := MachineSettings{Image: "machine:1", Storage: "20Gi", StorageClass: "fast", CPU: "500m", Memory: "2Gi"}
+	full := MachineSettings{Image: "machine:1", Storage: "20Gi", StorageClass: "fast", CPU: "500m", Memory: "2Gi", Egress: "open"}
 	if err := full.Validate(); err != nil {
 		t.Fatal(err)
 	}

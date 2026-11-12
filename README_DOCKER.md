@@ -141,8 +141,14 @@ within reach of app containers, so it takes nothing on trust: a request
 needs donkey-server's credential and a sign-in it verifies itself.
 
 A [machine](README.md#machines) gets a network of its own rather than a
-space's: `donkey.platform.<id>`, shared with `donkey-gateway`, `donkey-server`
-and `donkey-ai` and with nothing else — no app and no other machine. Its
+space's: `donkey.platform.<id>`, shared with `donkey-gateway`, `donkey-server`,
+`donkey-ai` and `donkey-packages` and with nothing else — no app and no other
+machine. It is the one place the package mirror joins a workload's network:
+a machine's package managers install through it, as a build's do. Unless the
+installation opens its machines (`machines.egress: open`), that network is
+an internal one: those four containers are all a machine reaches, and there
+is no route out of the engine. This is the one place the Docker runtime
+limits outbound traffic. Its
 container runs as user 1000 with every capability dropped,
 `no-new-privileges`, a process limit and the installation's CPU and memory
 caps. The network is removed when the machine stops and made again when it

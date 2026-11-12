@@ -33,8 +33,11 @@ import (
 //
 // "platform" is a name no space may take, so none of these can ever be an
 // app's. The network is the isolation: a machine shares it with the gateway
-// (which proxies to it), donkey-server (the API its CLI calls) and donkey-ai
-// (its model) and with nothing else — no app, no other machine.
+// (which proxies to it), donkey-server (the API its CLI calls), donkey-ai
+// (its model) and donkey-packages (its package mirror) and with nothing else
+// — no app, no other machine. Unless the installation opens machines
+// (machines.egress), the network is internal as well, so those four are all
+// a machine reaches.
 const (
 	labelMachine = "local.donkey.machine"
 	// labelSignInExpires is when the sign-in the machine holds runs out.
@@ -77,7 +80,7 @@ type machineRecord struct {
 // machineContainers are donkey's own containers a machine talks to.
 func (r *Runtime) machineContainers() []string {
 	var names []string
-	for _, name := range []string{r.opts.GatewayContainer, r.opts.ServerContainer, r.opts.AIContainer} {
+	for _, name := range []string{r.opts.GatewayContainer, r.opts.ServerContainer, r.opts.AIContainer, r.opts.PackagesContainer} {
 		if name != "" {
 			names = append(names, name)
 		}
@@ -87,6 +90,15 @@ func (r *Runtime) machineContainers() []string {
 
 func (r *Runtime) machineAPIURL() string {
 	return fmt.Sprintf("http://%s:8088", r.opts.ServerContainer)
+}
+
+// machinePackagesURL is the package mirror by its name on the machine's
+// network.
+func (r *Runtime) machinePackagesURL() string {
+	if r.opts.PackagesContainer == "" {
+		return ""
+	}
+	return fmt.Sprintf("http://%s:8090", r.opts.PackagesContainer)
 }
 
 func (m machines) Status(ctx context.Context, id string) (*rt.MachineStatus, error) {
@@ -151,7 +163,7 @@ func (m machines) Start(ctx context.Context, spec rt.MachineSpec) error {
 		return fmt.Errorf("%q is not a machine", spec.ID)
 	}
 	name := machineName(spec.ID)
-	if err := r.ensureMachineNetwork(ctx, spec.ID); err != nil {
+	if err := r.ensureMachineNetwork(ctx, spec.ID, spec.Settings.RestrictEgress()); err != nil {
 		return err
 	}
 	volume := name + ".data"
@@ -162,7 +174,7 @@ func (m machines) Start(ctx context.Context, spec rt.MachineSpec) error {
 		return err
 	}
 	image := r.pullRef(spec.Image)
-	env := rt.MachineEnv(spec, r.machineAPIURL(), r.aiProxyURL())
+	env := rt.MachineEnv(spec, r.machineAPIURL(), r.aiProxyURL(), r.machinePackagesURL())
 	// The record goes first: donkey-ai accepts the machine's model token from
 	// it, so it has to be there by the time the agent makes its first call.
 	record := machineRecord{Owner: spec.Owner, Image: image, Host: spec.Host, Env: env}
@@ -184,6 +196,7 @@ func (m machines) Start(ctx context.Context, spec rt.MachineSpec) error {
 		// Whatever the image says, a machine runs as its own unprivileged
 		// user, cannot become anyone else and holds no capability.
 		User:     fmt.Sprintf("%d:%d", config.MachineUser, config.MachineUser),
+		Hostname: config.MachineHostname,
 		Hardened: true,
 	}
 	settings := spec.Settings
@@ -295,17 +308,32 @@ func (r *Runtime) machineAITokens() ([]string, error) {
 
 // ensureMachineNetwork creates the machine's network and puts the gateway,
 // the API and the AI endpoint on it.
-func (r *Runtime) ensureMachineNetwork(ctx context.Context, id string) error {
+//
+// restricted makes it an internal network: one with no way out of the
+// engine. The machine still reaches the containers it shares the network
+// with — which is the whole of what a restricted machine may reach — and
+// nothing beyond them. A network cannot change that after the fact, so one
+// made the other way is made again.
+func (r *Runtime) ensureMachineNetwork(ctx context.Context, id string, restricted bool) error {
 	name := machineName(id)
 	labels := machineLabels(id, roleMachineNetwork)
 	nw, err := r.cli.NetworkInspect(ctx, name, network.InspectOptions{})
+	if err == nil {
+		if err := requireIdentity("network", name, nw.Labels, labels); err != nil {
+			return err
+		}
+		if nw.Internal != restricted {
+			if err := r.removeMachineNetwork(ctx, id); err != nil {
+				return err
+			}
+			err = cerrdefs.ErrNotFound
+		}
+	}
 	if cerrdefs.IsNotFound(err) {
-		if _, err := r.cli.NetworkCreate(ctx, name, network.CreateOptions{Labels: labels}); err != nil {
+		if _, err := r.cli.NetworkCreate(ctx, name, network.CreateOptions{Labels: labels, Internal: restricted}); err != nil {
 			return fmt.Errorf("creating the machine's network: %w", err)
 		}
 	} else if err != nil {
-		return err
-	} else if err := requireIdentity("network", name, nw.Labels, labels); err != nil {
 		return err
 	}
 	own, err := ownedSystemContainers(ctx, r.cli, r.machineContainers()...)

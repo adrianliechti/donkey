@@ -426,6 +426,7 @@ func controlPlaneEnv(in SystemInput, port int32) []corev1.EnvVar {
 		{Name: "DONKEY_MACHINE_STORAGE_CLASS", Value: in.Machines.StorageClass},
 		{Name: "DONKEY_MACHINE_CPU", Value: in.Machines.CPU},
 		{Name: "DONKEY_MACHINE_MEMORY", Value: in.Machines.Memory},
+		{Name: "DONKEY_MACHINE_EGRESS", Value: in.Machines.Egress},
 		{Name: "OPENAI_BASE_URL", Value: in.OpenAIBaseURL},
 		secretEnvVar("DONKEY_BUILDER_INSTRUCTIONS", "DONKEY_BUILDER_INSTRUCTIONS"),
 		// The session key lets the server verify sealed CLI tokens itself —

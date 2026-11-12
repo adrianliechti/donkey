@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -345,5 +347,43 @@ func TestGuardRewritesTheAgentsPreviewRedirect(t *testing.T) {
 	// The agent's own port has no path of its own.
 	if res := once(t, door, PortPrefix+upstream.Port()+"/api/workspace", withCredential); res.StatusCode != http.StatusNotFound {
 		t.Fatalf("the agent under a port path: %d, want 404", res.StatusCode)
+	}
+}
+
+// A fresh disk becomes its owner's home: the CLI knows its server, and the
+// agent finds the donkey skill where agents look for a person's own.
+func TestPrepareMakesAHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	workspace := filepath.Join(home, "workspace")
+	env := map[string]string{"DONKEY_SERVER_URL": "http://donkey-server:8088/"}
+	var log strings.Builder
+	if err := prepare(Options{Workspace: workspace, Getenv: func(key string) string { return env[key] }, Log: &log}); err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Stat(workspace); err != nil || !info.IsDir() {
+		t.Fatalf("no workspace: %v", err)
+	}
+	cfg, err := os.ReadFile(filepath.Join(home, ".config", "donkey", "config.yaml"))
+	if err != nil || !strings.Contains(string(cfg), "url: http://donkey-server:8088\n") || strings.Contains(string(cfg), "token") {
+		t.Fatalf("CLI config = %q (%v) — the address goes in, the sign-in stays in the environment", cfg, err)
+	}
+	skill, err := os.ReadFile(filepath.Join(home, ".agents", "skills", "donkey", "SKILL.md"))
+	if err != nil || !strings.Contains(string(skill), "name: donkey") {
+		t.Fatalf("the donkey skill was not installed: %v", err)
+	}
+	// A second start changes nothing and keeps what the owner did meanwhile.
+	note := filepath.Join(workspace, "note")
+	if err := os.WriteFile(note, []byte("mine"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := prepare(Options{Workspace: workspace, Getenv: func(key string) string { return env[key] }, Log: &log}); err != nil {
+		t.Fatal(err)
+	}
+	if kept, _ := os.ReadFile(note); string(kept) != "mine" {
+		t.Fatal("a restart touched the workspace")
+	}
+	if log.Len() != 0 {
+		t.Errorf("prepare complained: %s", log.String())
 	}
 }

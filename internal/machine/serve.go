@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/adrianliechti/donkey/examples/skills"
 	"github.com/adrianliechti/donkey/internal/config"
 )
 
@@ -174,6 +175,9 @@ func prepare(opts Options) error {
 	if err := connectCLI(opts.Getenv("DONKEY_SERVER_URL")); err != nil {
 		fmt.Fprintf(opts.Log, "donkey machine: the donkey CLI is not connected: %v\n", err)
 	}
+	if err := installSkill(home); err != nil {
+		fmt.Fprintf(opts.Log, "donkey machine: the donkey skill could not be installed: %v\n", err)
+	}
 	// Commits made here are the owner's. Only filled in while empty: a name
 	// they chose themselves stays.
 	gitIdentity("user.name", opts.Getenv("DONKEY_MACHINE_USER_NAME"))
@@ -208,6 +212,21 @@ func connectCLI(server string) error {
 	// from and shadow nothing useful: the environment always wins.
 	cfg.Server.Token = ""
 	return cfg.Save(path)
+}
+
+// installSkill gives the machine's agent the donkey skill: how to deploy and
+// operate apps with the CLI it finds here, and what is different about
+// working in a machine. It goes where agents look for a person's own skills
+// by convention (~/.agents/skills), which Wingman reads and other agents the
+// owner may run do too. Written on every start, so it is the skill of the
+// CLI in this image; a skill the owner keeps under their agent's own folder
+// (~/.wingman/skills) takes precedence over it.
+func installSkill(home string) error {
+	dir := filepath.Join(home, ".agents", "skills", "donkey")
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(skills.Donkey), 0o640)
 }
 
 func gitIdentity(key, value string) {

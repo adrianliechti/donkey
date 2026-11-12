@@ -77,6 +77,8 @@ ai:
 #   storage: 10Gi            # each machine's disk
 #   cpu: "2"                 # the most one machine may use
 #   memory: 4Gi
+#   egress: restricted       # the package mirror, the model and donkey only;
+#                            # open lets machines reach the network (a Git host)
 
 # Builds: every image is scanned for known vulnerabilities before it is
 # pushed. The defaults below refuse critical findings that have a fix, let
@@ -155,6 +157,8 @@ ai:
 #   image: ghcr.io/example/donkey-machine:latest
 #   cpu: "2"                 # the most one machine may use
 #   memory: 4Gi
+#   egress: restricted       # the package mirror, the model and donkey only;
+#                            # open lets machines reach the network (a Git host)
 
 # Builds: every image is scanned for known vulnerabilities before it is
 # pushed. The defaults below refuse critical findings that have a fix, let

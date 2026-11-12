@@ -150,6 +150,11 @@ func TestMachineLifecycle(t *testing.T) {
 	if got.SignInExpires == "" || got.Outdated {
 		t.Errorf("started machine = %+v", got)
 	}
+	// Unless the installation opens them, machines reach the control plane
+	// only — and the console is told, so it can say so.
+	if got.Egress != config.MachineEgressRestricted {
+		t.Errorf("egress = %q, want restricted by default", got.Egress)
+	}
 
 	spec := machines.specs[id]
 	if spec.Owner != machineOwner.Subject || spec.Email != "owner@example.com" || spec.Name != "Ada Owner" {
@@ -157,6 +162,9 @@ func TestMachineLifecycle(t *testing.T) {
 	}
 	if spec.Image != s.cfg.Machines.Image || spec.Model != "test-model" || spec.Host != id+".platform.example.com" {
 		t.Errorf("spec = %+v", spec)
+	}
+	if !spec.Settings.RestrictEgress() {
+		t.Error("the machine was started open on an installation that did not ask for it")
 	}
 	if spec.GuardToken != config.MachineGuardToken(testSessionKey, id) {
 		t.Error("the machine was given a credential the gateway will not present")
