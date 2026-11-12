@@ -4,33 +4,23 @@ import { Clock, ExternalLink, Info, Play, RotateCw, Square, SquareTerminal, Tras
 import type { Machine, MachineState } from './api'
 import { Modal, ModalBody, ModalFooter, ModalHeader } from './dialog'
 import { machineQuery, mutationError, useMachineAction } from './queries'
+import { HeaderActions } from './HeaderActions'
 import {
   Button,
   Callout,
   EmptyState,
   ErrorNote,
   IconButton,
-  LinkButton,
+  IconLink,
   Page,
-  PageBar,
   panelClass,
   Spinner,
-  StatusLine,
   wellClass,
 } from './ui'
 import { errText } from './format'
 import { useNow } from './hooks'
 
 type Confirm = 'restart' | 'stop' | 'delete'
-
-// How a state reads in the page bar.
-const stateLine: Record<MachineState, { tone: 'success' | 'accent' | 'danger' | 'muted'; label: string }> = {
-  running: { tone: 'success', label: 'Running' },
-  starting: { tone: 'accent', label: 'Starting' },
-  failed: { tone: 'danger', label: 'Not coming up' },
-  stopped: { tone: 'muted', label: 'Stopped' },
-  absent: { tone: 'muted', label: 'Not created' },
-}
 
 // The sign-in inside a machine is worth a word once it has days left, not
 // weeks: a restart renews it, and a restart ends what is running.
@@ -111,97 +101,95 @@ export function MachineView() {
   }
 
   const running = state === 'running' && !!machine.url
-  const line = stateLine[state]
   const signInEnds = machine.signInExpires ? new Date(machine.signInExpires) : null
   const signInSoon = running && signInEnds !== null && signInEnds.getTime() - now < SIGN_IN_WARNING_MS
 
+  // The page has no title row. What it is, the frame or the panel says
+  // itself; what can be done to the machine sits in the console's top bar,
+  // so the agent gets every line of height under it.
+  const actions = state !== 'absent' && (
+    <HeaderActions>
+      {running && machine.url && (
+        <IconLink icon={ExternalLink} label="Open the machine in a tab of its own" href={machine.url} />
+      )}
+      {(state === 'running' || state === 'failed') && (
+        <IconButton icon={RotateCw} label="Restart machine…" onClick={() => setConfirm('restart')} disabled={busy} />
+      )}
+      {state !== 'stopped' && (
+        <IconButton icon={Square} label="Stop machine…" onClick={() => setConfirm('stop')} disabled={busy} />
+      )}
+      <IconButton
+        icon={Trash2}
+        kind="danger"
+        label="Delete machine…"
+        onClick={() => setConfirm('delete')}
+        disabled={busy}
+      />
+    </HeaderActions>
+  )
+  const dialog = confirm && (
+    <ConfirmDialog action={confirm} onCancel={() => setConfirm(null)} onConfirm={() => run(confirm)} />
+  )
+
+  if (running && machine.url) {
+    return (
+      <Page bleed>
+        {actions}
+        {/* Only when there is something to say; otherwise the agent starts
+            right under the bar. */}
+        {(failure || machine.outdated || signInSoon) && (
+          <div className="shrink-0 space-y-2 border-b border-line px-6 py-3">
+            <ErrorNote message={failure} />
+            {machine.outdated && (
+              <Callout
+                tone="info"
+                icon={Info}
+                title="A newer machine image is available"
+                action={
+                  <Button kind="quiet" size="sm" onClick={() => setConfirm('restart')} disabled={busy}>
+                    Restart…
+                  </Button>
+                }
+              >
+                Restarting picks it up. Your disk stays as it is.
+              </Callout>
+            )}
+            {signInSoon && signInEnds && (
+              <Callout
+                tone="warning"
+                icon={Clock}
+                title={`The donkey sign-in inside this machine ends ${signInEnds.toLocaleString()}`}
+                action={
+                  <Button kind="quiet" size="sm" onClick={() => setConfirm('restart')} disabled={busy}>
+                    Restart…
+                  </Button>
+                }
+              >
+                After that, <Mono>donkey</Mono> commands in the machine stop working until it is restarted.
+              </Callout>
+            )}
+          </div>
+        )}
+        <iframe
+          src={machine.url}
+          title="Wingman, in your machine"
+          className="min-h-0 w-full flex-1 border-0"
+          allow="clipboard-read; clipboard-write; fullscreen"
+          referrerPolicy="no-referrer"
+        />
+        {dialog}
+      </Page>
+    )
+  }
+
   return (
-    <Page fill={running}>
-      <PageBar
-        actions={
-          state !== 'absent' && (
-            <>
-              {running && machine.url && (
-                <LinkButton kind="quiet" size="sm" href={machine.url} icon={ExternalLink}>
-                  Open in a tab
-                </LinkButton>
-              )}
-              {(state === 'running' || state === 'failed') && (
-                <IconButton
-                  icon={RotateCw}
-                  label="Restart machine…"
-                  onClick={() => setConfirm('restart')}
-                  disabled={busy}
-                />
-              )}
-              {state !== 'stopped' && (
-                <IconButton icon={Square} label="Stop machine…" onClick={() => setConfirm('stop')} disabled={busy} />
-              )}
-              <IconButton
-                icon={Trash2}
-                kind="danger"
-                label="Delete machine…"
-                onClick={() => setConfirm('delete')}
-                disabled={busy}
-              />
-            </>
-          )
-        }
-      >
-        <h1 className="font-mono text-base font-bold tracking-tight">Machine</h1>
-        <StatusLine tone={line.tone} label={line.label} busy={state === 'starting' || stop.isPending} size="md" />
-      </PageBar>
-
+    <Page>
+      {actions}
       <ErrorNote message={failure} />
-      {running && machine.outdated && (
-        <Callout
-          tone="info"
-          icon={Info}
-          title="A newer machine image is available"
-          action={
-            <Button kind="quiet" size="sm" onClick={() => setConfirm('restart')} disabled={busy}>
-              Restart…
-            </Button>
-          }
-        >
-          Restarting picks it up. Your disk stays as it is.
-        </Callout>
-      )}
-      {signInSoon && signInEnds && (
-        <Callout
-          tone="warning"
-          icon={Clock}
-          title={`The donkey sign-in inside this machine ends ${signInEnds.toLocaleString()}`}
-          action={
-            <Button kind="quiet" size="sm" onClick={() => setConfirm('restart')} disabled={busy}>
-              Restart…
-            </Button>
-          }
-        >
-          After that, <Mono>donkey</Mono> commands in the machine stop working until it is restarted.
-        </Callout>
-      )}
-
-      {running && machine.url ? (
-        // The frame fills what the window leaves under the bar; on a narrow
-        // window, where the page scrolls as a document, it keeps a height of
-        // its own.
-        <div className={`${panelClass} min-h-[70dvh] flex-1 overflow-hidden xl:min-h-0`}>
-          <iframe
-            src={machine.url}
-            title="Wingman, in your machine"
-            className="size-full border-0"
-            allow="clipboard-read; clipboard-write; fullscreen"
-            referrerPolicy="no-referrer"
-          />
-        </div>
-      ) : (
-        <div className={panelClass}>
-          <Resting machine={machine} state={state} busy={busy} onStart={() => run('restart')} />
-        </div>
-      )}
-
-      {confirm && <ConfirmDialog action={confirm} onCancel={() => setConfirm(null)} onConfirm={() => run(confirm)} />}
+      <div className={panelClass}>
+        <Resting machine={machine} state={state} busy={busy} onStart={() => run('restart')} />
+      </div>
+      {dialog}
     </Page>
   )
 }

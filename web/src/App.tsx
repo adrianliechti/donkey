@@ -9,6 +9,7 @@ import {
   Outlet,
   redirect,
   RouterProvider,
+  useLocation,
   useNavigate,
 } from '@tanstack/react-router'
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query'
@@ -20,6 +21,7 @@ import { CommandPalette } from './CommandPalette'
 import { useDeploy } from './deploy'
 import { DeployProvider } from './DeployDrawer'
 import { FleetOverview } from './FleetOverview'
+import { HeaderActionsProvider, HeaderActionsSlot } from './HeaderActions'
 import { SpaceOverview } from './Overview'
 import { fleetQuery, machineQuery, statusQuery, useFleet } from './queries'
 import { Crumbs } from './Switcher'
@@ -48,7 +50,9 @@ const queryClient = new QueryClient({
 function Shell() {
   return (
     <DeployProvider>
-      <Frame />
+      <HeaderActionsProvider>
+        <Frame />
+      </HeaderActionsProvider>
     </DeployProvider>
   )
 }
@@ -62,6 +66,7 @@ function Frame() {
   // Read once: whether there is a machine to offer a way to. The machine's
   // own page is what watches it.
   const { data: machine } = useQuery(machineQuery)
+  const onMachine = useLocation({ select: (l) => l.pathname === '/machine' })
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [platformSettingsOpen, setPlatformSettingsOpen] = useState(false)
 
@@ -100,9 +105,17 @@ function Frame() {
           {/* -mr-2: the last icon's glyph, not its hover box, meets the
               gutter the Deploy button and the page content end on. */}
           <Toolbar className="-mr-2">
+            {/* What the open page can do, where it has no title row of its
+                own (see HeaderActions). */}
+            <HeaderActionsSlot />
             <IconButton icon={Search} label="Search apps and spaces — ⌘K" onClick={() => setPaletteOpen(true)} />
             {machine?.enabled && machine.allowed && (
-              <IconButton icon={SquareTerminal} label="Your machine" onClick={() => navigate({ to: '/machine' })} />
+              <IconButton
+                icon={SquareTerminal}
+                label="Your machine"
+                active={onMachine}
+                onClick={() => navigate({ to: '/machine' })}
+              />
             )}
             {fleet?.platformAdmin && (
               <IconButton icon={Activity} label="System health" onClick={() => navigate({ to: '/system' })} />
