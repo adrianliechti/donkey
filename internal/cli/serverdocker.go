@@ -368,6 +368,12 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 		"OPENAI_BASE_URL":                settings.AI.BaseURL,
 		"OPENAI_API_KEY":                 settings.AI.APIKey,
 	}
+	// Personal machines stay off unless the installation names their image.
+	for key, value := range settings.Machines.Env() {
+		if value != "" {
+			serverEnv[key] = value
+		}
+	}
 	if len(settings.Build.RegistryMirrors) > 0 {
 		serverEnv["DONKEY_REGISTRY_MIRRORS"] = registryMirrorsJSON(settings.Build.RegistryMirrors)
 	}
@@ -654,6 +660,9 @@ func validateDockerSettings(settings *config.InstallFile) error {
 		return err
 	}
 	if err := config.ValidateBusyboxImage(settings.BusyboxImage); err != nil {
+		return err
+	}
+	if err := settings.Machines.Validate(); err != nil {
 		return err
 	}
 	return config.ValidateRegistryImage(settings.RegistryImage)

@@ -221,6 +221,11 @@ five ideas:
   login and access rules as annotations — and Secrets for env vars,
   registry pull auth and service bindings.
 
+- **Per user** — optionally, a [machine](#machines): a development container
+  with a disk of its own, the donkey CLI and a coding agent, reached only by
+  its owner. It belongs to a person rather than a space, and lives apart
+  from every space.
+
 Runtime metadata has one small identity vocabulary, spelled `donkey.local/*`
 on Kubernetes and `local.donkey.*` (reverse-DNS) on Docker: the installation
 is the ownership boundary, the space the lifecycle boundary, app and addon
@@ -941,6 +946,140 @@ get no tunnel: they are reached at their own address. The console's browsers
 cover tables, rows and a SQL view for anything with a `DATABASE_URL`;
 buckets, uploads and downloads for anything speaking S3; a streaming
 markdown chat for the AI, using the very token and proxy an app would.
+
+## Machines
+
+A machine is a development environment of your own inside the installation:
+a container with Python, Node and Go, the `donkey` CLI already signed in as
+you, and the [Wingman](https://github.com/adrianliechti/wingman-agent) coding
+agent. It opens in the console — **Your machine** in the header — with the
+agent's editor, chat and terminals shown right there. Nothing to install on a
+laptop, and nothing a laptop is allowed to reach has to be reachable from one.
+
+```
+ browser ── https://<id>.platform.<domain> ──▶ donkey-gateway
+   (the console shows it in a frame)            · signs you in (one sign-in with the console)
+                                                · admits the machine's owner, nobody else
+                                                · presents the machine's credential
+                                                        │
+                                             ┌──────────▼───────────────────────┐
+                                             │ your machine                     │
+                                             │  front door :8080  (checks it)   │
+                                             │  agent on the loopback           │──▶ donkey-ai (model)
+                                             │  donkey CLI, signed in as you    │──▶ donkey-server (API)
+                                             │  /data  your disk                │
+                                             └──────────────────────────────────┘
+```
+
+**One per person, not per space.** A machine belongs to whoever is signed in.
+It is not an app and has no space: it appears in no app list, and nothing a
+space's members can do reaches it. Platform administrators and everyone who
+is an admin or developer of at least one space may have one; a sign-in alone,
+or a viewer's role, does not — a machine costs compute, disk and model calls.
+
+**Create, stop, delete.** The first start creates the disk. *Stop* ends what
+is running and keeps the disk; *delete* removes the disk too. *Restart* is a
+start over a running machine: it comes back on the installation's current
+image with a fresh sign-in.
+
+**What is yours and what is the image's.** The disk is mounted at `/data`:
+your home is `/data/home`, the agent opens `/data/workspace`. Everything
+outside `/data` comes from the image and is the same after every restart. A
+machine runs as an unprivileged user and cannot become root, so there is no
+`apt-get install` — what you install for yourself goes to your home, where
+the image already points the tools: `npm install -g`, `go install`,
+`uv tool install`, `uv python install`. A toolchain everybody needs belongs in
+the image (below).
+
+**What a machine is handed** when it starts, and nothing else:
+
+- *Your donkey sign-in*, so `donkey deploy` works without a login. It is a
+  token of the machine's own, and it ends when a `donkey login` made at the
+  moment you signed in to the console would: 30 days after that sign-in,
+  however often the machine is restarted. The console says so a few days
+  ahead; restarting from the console renews it. No IdP token goes in.
+- *A model token* for `donkey-ai`, as `OPENAI_BASE_URL` / `OPENAI_API_KEY` —
+  the same stand-in scheme a space's `openai` service uses. It is generated
+  per start and stops working when the machine stops. The agent starts on
+  the installation's `ai.model`.
+- *Your name and email* for `git config`, unless you already set your own.
+
+Package managers reach the public registries directly where the network
+allows it. Where it does not, `donkey packages run npm install` goes through
+the installation's mirror, exactly as on a laptop
+(see [Packages on a developer's machine](#packages-on-a-developers-machine)).
+
+**How it is reached, and by whom.** The agent was written to listen on a
+developer's loopback and trusts whoever reaches it. Three things stand in
+front of that trust:
+
+1. *Its own address.* A machine answers on `<id>.platform.<domain>`, where
+   `<id>` is derived from your IdP subject and says nothing about you — it
+   ends up in a certificate, and certificates end up in public logs.
+   `platform` is a name no space may take, so no app can be given a
+   machine's hostname; and the gateway serves nothing else on one even if a
+   space that may use any hostname names it.
+2. *The gateway.* The route admits one subject: the owner. Not the members
+   of any space, and not a platform administrator, who may manage everything
+   else but has no business in someone's home directory and sign-in.
+3. *The front door.* Inside the container, `donkey machine serve` listens on
+   the one reachable port and refuses every request that does not carry a
+   credential only the gateway can compute (derived per machine from the
+   session key). So reaching the container is not enough — not for a
+   neighbour on the same network, and not on a cluster whose network plugin
+   ignores policies. It also refuses requests made by another site's page.
+
+The console shows the machine in a frame, from that address. Being a
+different origin is the point: nothing running in a machine can read the
+console's page or act with its session, and the gateway lets only the
+console frame it.
+
+**What it can reach.** On Kubernetes, machines live in a namespace of their
+own (`<prefix>platform`, Pod Security `restricted`) or, where the
+installation was given one namespace, beside the apps. One NetworkPolicy
+fences all of them whether or not spaces are isolated: in, the gateway and
+nothing else; out, DNS, the API and the AI endpoint, and the network beyond —
+except the link-local range where cloud metadata services live. With
+`kubernetes.restrictEgress` they get the control plane and nothing beyond it.
+A machine's pod holds no Kubernetes credential. On Docker each machine has a
+network of its own, shared only with the gateway, the API and the AI endpoint.
+
+The agent's own per-command sandbox is switched off inside a machine: it is
+built from user namespaces, which a container without privileges cannot
+create. The machine is the sandbox — and it holds your sign-in, so what the
+agent can do with `donkey` is what you can do. Its reviewer still asks before
+destructive commands.
+
+**Turning machines on.** Name the image in the install settings:
+
+```yaml
+machines:
+  image: ghcr.io/example/donkey-machine:1.0.0
+  storage: 10Gi        # each machine's disk (Kubernetes; a Docker volume has no size)
+  storageClass: ""     # default: the cluster's
+  cpu: "2"             # the most one machine may use
+  memory: 4Gi
+```
+
+or pass `--machine-image` to `donkey server install`. Without an image the
+feature is off: the console shows no way to it and the API answers 404.
+`task machine-image` builds the image from
+[hack/Dockerfile.machine](hack/Dockerfile.machine) (`task publish:machine`
+pushes it for both architectures).
+
+**An image of your own.** Add toolchains by building on that Dockerfile. The
+contract is small: the entry point is `donkey machine serve`, which listens on
+port 8080; the container runs as user 1000 with `/data` as its only writable
+home; and `donkey machine serve -- <command>` starts another agent or editor
+instead of Wingman, as long as it serves on the loopback
+(`--upstream http://127.0.0.1:<port>`).
+
+**Not there yet.** One machine per person. A machine runs until it is
+stopped — nothing stops an idle one. Only the agent's own port has an address
+outside the machine: a development server started inside it does not, and
+neither does Wingman's HTML file preview, which serves from a second loopback
+port. Machines are managed in the console only; the CLI has no command for
+them.
 
 ## Requirements for a real deployment
 
@@ -2232,6 +2371,7 @@ internal/
   ai/                 Assistant interface (analysis + failure diagnosis), OpenAI impl, secret-safe summarizer, log redaction
   config/             donkey.yaml, client config, install settings file
   doctor/             client-side check engine behind `donkey doctor`
+  machine/            what runs inside a personal machine: the front door and the agent's supervisor
   ui/                 all terminal output: plain language, jargon behind -v
   gitutil/            pure-Go .git reader: HEAD sha (image tags), repo root (default space)
 pkg/
@@ -2429,6 +2569,17 @@ company with an internal PKI uses. Tear down with `devkube --cluster donkey dele
   namespace per space); scoping them down is on the list. The orchestrator is
   the one that runs builds, and the only pod the privileged build engine
   admits; it accepts requests from donkey-server alone.
+- A [machine](#machines) holds its owner's donkey sign-in, and a coding
+  agent runs commands in it: what the agent can do with `donkey` is what its
+  owner can do, for as long as that sign-in lasts (30 days from the owner's
+  console sign-in at most). The agent it embeds trusts everything that
+  reaches it, so three checks stand in front: an address no app can take, a
+  route that admits one subject (a platform administrator is not let in), and
+  a front door inside the container that refuses requests without the
+  gateway's per-machine credential. That credential is derived from the
+  session key, so rotating the key locks every running machine until it is
+  restarted. Cluster administrators can read a machine's Secret and disk,
+  as they can any other.
 - The demo IdP approves everyone by design; it never leaves `hack/demo/`.
 - Space and app names from the API are validated server-side, and the space
   that would map onto `donkey-system` is reserved — no space name can reach

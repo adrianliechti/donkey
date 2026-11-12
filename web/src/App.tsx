@@ -11,8 +11,8 @@ import {
   RouterProvider,
   useNavigate,
 } from '@tanstack/react-router'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { Activity, Search } from 'lucide-react'
+import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query'
+import { Activity, Search, SquareTerminal } from 'lucide-react'
 import { setUnauthorizedHandler } from './api'
 import { AppDetail, type AppTab } from './AppDetail'
 import type { SourceSearch } from './sourceSearch'
@@ -21,9 +21,10 @@ import { useDeploy } from './deploy'
 import { DeployProvider } from './DeployDrawer'
 import { FleetOverview } from './FleetOverview'
 import { SpaceOverview } from './Overview'
-import { fleetQuery, statusQuery, useFleet } from './queries'
+import { fleetQuery, machineQuery, statusQuery, useFleet } from './queries'
 import { Crumbs } from './Switcher'
 import { SystemView } from './SystemView'
+import { MachineView } from './MachineView'
 import { DonkeyLogo, IconButton, Page, Toolbar } from './ui'
 import { UserMenu } from './UserMenu'
 import { PlatformSettings } from './PlatformSettings'
@@ -58,6 +59,9 @@ function Shell() {
 function Frame() {
   const navigate = useNavigate()
   const { data: fleet } = useFleet()
+  // Read once: whether there is a machine to offer a way to. The machine's
+  // own page is what watches it.
+  const { data: machine } = useQuery(machineQuery)
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [platformSettingsOpen, setPlatformSettingsOpen] = useState(false)
 
@@ -97,6 +101,9 @@ function Frame() {
               gutter the Deploy button and the page content end on. */}
           <Toolbar className="-mr-2">
             <IconButton icon={Search} label="Search apps and spaces — ⌘K" onClick={() => setPaletteOpen(true)} />
+            {machine?.enabled && machine.allowed && (
+              <IconButton icon={SquareTerminal} label="Your machine" onClick={() => navigate({ to: '/machine' })} />
+            )}
             {fleet?.platformAdmin && (
               <IconButton icon={Activity} label="System health" onClick={() => navigate({ to: '/system' })} />
             )}
@@ -214,6 +221,14 @@ const systemRoute = createRoute({
   head: () => ({ meta: [{ title: pageTitle('System') }] }),
 })
 
+// The signed-in person's own machine, with its coding agent embedded.
+const machineRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/machine',
+  component: MachineView,
+  head: () => ({ meta: [{ title: pageTitle('Machine') }] }),
+})
+
 const spaceRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/space/$space',
@@ -293,6 +308,7 @@ const routeTree = rootRoute.addChildren([
   deployAppRoute,
   legacyAppsRoute,
   systemRoute,
+  machineRoute,
 ])
 
 const router = createRouter({

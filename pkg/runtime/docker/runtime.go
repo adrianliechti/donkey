@@ -83,7 +83,7 @@ const (
 // order — what sameIdentity checks, exported for generated bundles whose
 // shell preflight re-implements that comparison with `docker inspect`.
 func IdentityLabelKeys() []string {
-	return []string{labelManaged, labelInstallation, labelSpace, labelApp, labelAddon, labelRole}
+	return []string{labelManaged, labelInstallation, labelSpace, labelApp, labelAddon, labelMachine, labelRole}
 }
 
 // SystemRoleOf is the naming rule for control-plane containers: the
@@ -1220,7 +1220,17 @@ func (r *Runtime) ExaProxyTokens(ctx context.Context) ([]string, error) {
 }
 
 func (r *Runtime) AIProxyTokens(ctx context.Context) ([]string, error) {
-	return r.state.bindingValues("OPENAI_API_KEY", "OPENAI_BASE_URL", r.aiProxyURL())
+	tokens, err := r.state.bindingValues("OPENAI_API_KEY", "OPENAI_BASE_URL", r.aiProxyURL())
+	if err != nil {
+		return nil, err
+	}
+	// A running machine's agent calls the same endpoint with a token of its
+	// own, valid for as long as the machine runs.
+	machines, err := r.machineAITokens()
+	if err != nil {
+		return nil, err
+	}
+	return append(tokens, machines...), nil
 }
 
 func (r *Runtime) serviceProxyURL() string {
@@ -1425,6 +1435,9 @@ func (r *Runtime) ReconcileOwnNetworks(ctx context.Context, every time.Duration)
 	for {
 		if err := AttachOwnContainers(ctx, r.cli, own...); err != nil && ctx.Err() == nil {
 			log.Printf("couldn't attach donkey's containers to the space networks: %v", err)
+		}
+		if err := r.attachMachineNetworks(ctx); err != nil && ctx.Err() == nil {
+			log.Printf("couldn't attach donkey's containers to the machine networks: %v", err)
 		}
 		select {
 		case <-ctx.Done():

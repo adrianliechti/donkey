@@ -69,6 +69,15 @@ ai:
   baseUrl: https://api.openai.com/v1
   model: gpt-6.1-sol
 
+# Optional: a development machine for everyone who builds here — toolchains,
+# the donkey CLI and a coding agent, opened in the console. One per person,
+# with a disk of its own. Naming the image turns machines on.
+# machines:
+#   image: ghcr.io/example/donkey-machine:latest
+#   storage: 10Gi            # each machine's disk
+#   cpu: "2"                 # the most one machine may use
+#   memory: 4Gi
+
 # Builds: every image is scanned for known vulnerabilities before it is
 # pushed. The defaults below refuse critical findings that have a fix, let
 # the assistant waive a refusal it reads as not affecting the app, and
@@ -138,6 +147,14 @@ auth:
 ai:
   baseUrl: https://api.openai.com/v1
   model: gpt-6.1-sol
+
+# Optional: a development machine for everyone who builds here — toolchains,
+# the donkey CLI and a coding agent, opened in the console. One per person,
+# with a disk of its own. Naming the image turns machines on.
+# machines:
+#   image: ghcr.io/example/donkey-machine:latest
+#   cpu: "2"                 # the most one machine may use
+#   memory: 4Gi
 
 # Builds: every image is scanned for known vulnerabilities before it is
 # pushed. The defaults below refuse critical findings that have a fix, let

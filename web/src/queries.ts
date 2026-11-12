@@ -31,6 +31,25 @@ export const fleetQuery = queryOptions({
   refetchInterval: 10_000,
 })
 
+// The signed-in person's machine. Read once for the header (is there a
+// machine to show a way to?); the machine page watches it — see MachineView.
+export const machineQuery = queryOptions({
+  queryKey: ['machine'],
+  queryFn: () => api.machine(),
+  staleTime: 30_000,
+})
+
+export function useMachineAction(action: 'start' | 'stop' | 'delete') {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: () =>
+      action === 'start' ? api.startMachine() : action === 'stop' ? api.stopMachine() : api.deleteMachine(),
+    // The answer is the machine as it is now; the page keeps watching it.
+    onSuccess: (machine) => qc.setQueryData(machineQuery.queryKey, machine),
+    onSettled: () => qc.invalidateQueries({ queryKey: machineQuery.queryKey }),
+  })
+}
+
 // The deploy board: watched closely while something is under way, lazily
 // otherwise — a deploy started from the CLI shows up within seconds either way.
 export const deploysQuery = queryOptions({

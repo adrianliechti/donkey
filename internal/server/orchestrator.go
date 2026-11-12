@@ -89,6 +89,12 @@ func (s *Server) orchestrated() []orchestratedRoute {
 		{"GET /v1/spaces/{space}/apps/{app}/commits/{commit}/tree", s.handleCommitTree},
 		{"GET /v1/spaces/{space}/apps/{app}/commits/{commit}/file", s.handleCommitFile},
 		{"GET /v1/spaces/{space}/apps/{app}/commits/{commit}/archive", s.handleCommitArchive},
+		// A person's own machine. Pulling its image and making its disk can
+		// take minutes, and a start must not die with the request or with a
+		// rolling donkey-server.
+		{"POST /v1/machine", s.handleStartMachine},
+		{"POST /v1/machine/stop", s.handleStopMachine},
+		{"DELETE /v1/machine", s.handleDeleteMachine},
 		// Removing an app or a space takes its history with it.
 		{"DELETE /v1/spaces/{space}/apps/{app}", s.handleDestroy},
 		{"DELETE /v1/spaces/{space}", s.handleDeleteSpace},

@@ -23,6 +23,7 @@ that never heard of donkey.
 | `donkey.local/space` | everything space-scoped | The lifecycle boundary: removing the space removes everything carrying it. |
 | `donkey.local/app` | an app's objects | The logical app. Never qualified, even where object names are. |
 | `donkey.local/addon` | a space service's objects | The logical service. An app's copy of a service binding deliberately carries **both** `app` and `addon`, because it represents that relationship. |
+| `donkey.local/machine` | a personal machine's objects | The machine's ID, derived from its owner's IdP subject. A machine belongs to a person: its objects carry no `space` and no `app`, which is what keeps them out of every app list and space sweep. |
 | `donkey.local/role` | every object | Donkey's immutable internal role (`workload`, `route`, `binding`, `storage`, …). This is the role selectors and ownership checks use; it is not Kubernetes API Kind or architectural component. |
 
 ### Description: `app.kubernetes.io/*`
@@ -336,7 +337,21 @@ exist only when their feature is configured.
 | Space service binding Secret | `<service>-binding` | `<space>-<service>-binding` | The service's own environment variables, such as `DATABASE_URL` |
 | App service binding Secret | `<app>-binding-<service>` | `<space>-<app>-binding-<service>` | The app's copy of a service binding |
 
-All rows above live in the workload namespace: normally `donkey-<space>`, or
+A [machine](README.md#machines) is made of the rows below, where `<id>` is
+its ID. They live in `<prefix>platform` — the namespace of the one space name
+nobody can take, Pod Security `restricted` — or in the shared workload
+namespace, and all carry `donkey.local/machine=<id>`:
+
+| Resource | Namespace of its own | Shared workload namespace | Content |
+|---|---|---|---|
+| Deployment and Service | `<id>` | `platform-<id>` | The machine; role `machine` |
+| Environment Secret | `<id>-machine` | `platform-<id>-machine` | The machine's whole environment, its sign-in and model token included; removed when it stops |
+| Disk | `<id>-data` | `platform-<id>-data` | The owner's home and workspace; kept when the machine stops |
+| Route ConfigMap | `<id>-route` | `platform-<id>-route` | `route.yaml`, with the `owner` it admits |
+| NetworkPolicy | `donkey-machines` | `donkey-machines` | One fence for every machine of the namespace |
+| Certificate, DNSEndpoint | `platform-<id>`, `platform-<id>-dns` | the same | In the system namespace, where the installation manages them per hostname |
+
+All rows of the first table live in the workload namespace: normally `donkey-<space>`, or
 `kubernetes.workload.namespace` when configured. For `team` / `my-api`, the
 environment Secret is `my-api-env` in `donkey-team`, or `team-my-api-env` in
 the shared namespace. A service's binding belongs to the service, not to a

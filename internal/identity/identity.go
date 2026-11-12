@@ -31,6 +31,13 @@ type Identity struct {
 	// AuthTime is the upstream's auth_time, when it supplied one. It stays
 	// absent when the provider did not assert when authentication occurred.
 	AuthTime int64 `json:"auth_time,omitempty"`
+	// LoginTime is when the gateway finished the IdP round trip this identity
+	// descends from (Unix seconds). Every credential derived from a sign-in
+	// keeps it, which is what lets a credential minted from another one —
+	// the sign-in handed to a personal machine — expire when a fresh login
+	// at that moment would have, instead of renewing itself forever. Absent
+	// on sign-ins older than the field.
+	LoginTime int64 `json:"lt,omitempty"`
 	// RefreshToken is the IdP's, kept when the installation names a token
 	// scope so the gateway can mint access tokens for it (see Upstream), and
 	// Grant names that sign-in across rotations. Sealed like the rest: it

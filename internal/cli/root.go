@@ -59,6 +59,7 @@ func Command(options Options) *cli.Command {
 		openCommand(),
 		doctorCommand(),
 		loginCommand(options),
+		machineCommand(),
 	}
 	if !options.DisableManagement {
 		commands = append(commands, serverCommand())

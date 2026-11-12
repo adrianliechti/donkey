@@ -1,0 +1,158 @@
+package config
+
+import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"regexp"
+
+	"github.com/distribution/reference"
+)
+
+// A machine is one person's development environment: a container with the
+// usual toolchains, the donkey CLI signed in as its owner and a coding agent,
+// reachable only by that owner through the gateway. It belongs to a user,
+// never to a space.
+
+const (
+	// MachineSpace is the name machines live under: a level of their address
+	// (<id>.platform.<domain>) and, on Kubernetes, their namespace. It is one
+	// of the names no space may take, so no app can ever claim a machine's
+	// hostname or sit beside it.
+	MachineSpace = "platform"
+	// MachinePort is where the machine's own front door listens. Everything
+	// behind it only answers on the loopback.
+	MachinePort = 8080
+	// MachineDataPath is the machine's disk: the owner's home and workspace.
+	// Everything outside it comes from the image and is gone after a restart.
+	MachineDataPath = "/data"
+	// MachineUser is who the machine's processes run as. The image creates
+	// the account; the runtime pins the number so the disk stays writable.
+	MachineUser = int64(1000)
+
+	DefaultMachineStorage = "10Gi"
+	DefaultMachineCPU     = "2"
+	DefaultMachineMemory  = "4Gi"
+
+	// MachineGuardHeader carries the credential the gateway presents to a
+	// machine. The machine's front door refuses requests without it, so being
+	// able to reach the container is not enough to use it.
+	MachineGuardHeader = "X-Donkey-Machine-Token"
+)
+
+// MachineSettings is what an installation decides about machines. An empty
+// image leaves the feature off.
+type MachineSettings struct {
+	// Image is the machine image, pullable by the runtime.
+	Image string `json:"image,omitempty"`
+	// Storage is the size of each machine's disk (default 10Gi). Docker
+	// volumes have no size, so it only applies on Kubernetes.
+	Storage string `json:"storage,omitempty"`
+	// StorageClass is the Kubernetes StorageClass; empty uses the default.
+	StorageClass string `json:"storageClass,omitempty"`
+	// CPU and Memory cap one machine (defaults 2 and 4Gi).
+	CPU    string `json:"cpu,omitempty"`
+	Memory string `json:"memory,omitempty"`
+}
+
+func (m MachineSettings) Enabled() bool { return m.Image != "" }
+
+func (m MachineSettings) StorageSize() string {
+	if m.Storage == "" {
+		return DefaultMachineStorage
+	}
+	return m.Storage
+}
+
+func (m MachineSettings) CPULimit() string {
+	if m.CPU == "" {
+		return DefaultMachineCPU
+	}
+	return m.CPU
+}
+
+func (m MachineSettings) MemoryLimit() string {
+	if m.Memory == "" {
+		return DefaultMachineMemory
+	}
+	return m.Memory
+}
+
+// cpuRE accepts whole and fractional cores and millicores; the runtime does
+// the real parsing.
+var cpuRE = regexp.MustCompile(`^([0-9]+(\.[0-9]+)?|[0-9]+m)$`)
+
+func (m MachineSettings) Validate() error {
+	if !m.Enabled() {
+		if m.Storage != "" || m.StorageClass != "" || m.CPU != "" || m.Memory != "" {
+			return fmt.Errorf("machines.image is required to turn machines on — the other machines settings do nothing without it")
+		}
+		return nil
+	}
+	if _, err := reference.ParseNormalizedNamed(m.Image); err != nil {
+		return fmt.Errorf("machines.image %q is not an image reference: %w", m.Image, err)
+	}
+	if m.Storage != "" && !sizeRE.MatchString(m.Storage) {
+		return fmt.Errorf("machines.storage %q is not a valid size (try 10Gi)", m.Storage)
+	}
+	if m.Memory != "" && !sizeRE.MatchString(m.Memory) {
+		return fmt.Errorf("machines.memory %q is not a valid size (try 4Gi)", m.Memory)
+	}
+	if m.CPU != "" && !cpuRE.MatchString(m.CPU) {
+		return fmt.Errorf("machines.cpu %q is not a valid amount (try 2 or 500m)", m.CPU)
+	}
+	return nil
+}
+
+// Env is how the installer hands the settings to the control plane.
+func (m MachineSettings) Env() map[string]string {
+	return map[string]string{
+		"DONKEY_MACHINE_IMAGE":         m.Image,
+		"DONKEY_MACHINE_STORAGE":       m.Storage,
+		"DONKEY_MACHINE_STORAGE_CLASS": m.StorageClass,
+		"DONKEY_MACHINE_CPU":           m.CPU,
+		"DONKEY_MACHINE_MEMORY":        m.Memory,
+	}
+}
+
+// MachineSettingsFromEnv reads what Env wrote.
+func MachineSettingsFromEnv(get func(string) string) MachineSettings {
+	return MachineSettings{
+		Image:        get("DONKEY_MACHINE_IMAGE"),
+		Storage:      get("DONKEY_MACHINE_STORAGE"),
+		StorageClass: get("DONKEY_MACHINE_STORAGE_CLASS"),
+		CPU:          get("DONKEY_MACHINE_CPU"),
+		Memory:       get("DONKEY_MACHINE_MEMORY"),
+	}
+}
+
+// MachineID names the machine of one signed-in user. It is derived from the
+// IdP subject and nothing else, so it is the same on every request, a valid
+// DNS label, and says nothing about who the person is — it ends up in a
+// hostname, and hostnames end up in certificate transparency logs.
+func MachineID(subject string) string {
+	sum := sha256.Sum256([]byte("donkey/machine/v1\x00" + subject))
+	return "m" + hex.EncodeToString(sum[:8])
+}
+
+var machineIDRE = regexp.MustCompile(`^m[0-9a-f]{16}$`)
+
+// ValidMachineID reports whether s is a name MachineID produces.
+func ValidMachineID(s string) bool { return machineIDRE.MatchString(s) }
+
+// MachineHost is the address a machine is served at.
+func MachineHost(id, domain string) string {
+	return id + "." + MachineSpace + "." + domain
+}
+
+// MachineGuardToken is what the gateway presents to one machine. It is
+// derived from the session key under a purpose of its own (the way the
+// orchestrator's credential is), so the gateway needs no record of it and
+// the route needs no secret: both sides compute it. It says nothing about the
+// key, opens exactly one machine, and rotates with the session key.
+func MachineGuardToken(sessionKey []byte, id string) string {
+	h := hmac.New(sha256.New, sessionKey)
+	_, _ = h.Write([]byte("donkey/machine/guard/v1\x00" + id))
+	return hex.EncodeToString(h.Sum(nil))
+}

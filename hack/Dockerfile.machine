@@ -1,0 +1,100 @@
+# syntax=docker/dockerfile:1
+
+# donkey-machine: the image of a personal machine — a development container
+# with the usual toolchains, the donkey CLI and the Wingman coding agent.
+# donkey starts one per user (machines.image in the install settings), mounts
+# the owner's disk at /data and reaches it on port 8080.
+#
+# Everything outside /data comes from this image and is the same after every
+# restart; the owner's home, workspace and whatever they install for
+# themselves live on the disk. Nothing here runs as root and nothing can
+# become root, so the toolchains are part of the image rather than something
+# to `apt-get install` later — rebuild it to add one.
+
+ARG GO_IMAGE=golang:1-bookworm
+ARG NODE_IMAGE=node:24-bookworm-slim
+ARG UV_IMAGE=ghcr.io/astral-sh/uv:0.13.7
+
+# Both Go programs are static and cross-compile, so they are built once on
+# the builder's own architecture for whichever platform is asked for.
+FROM --platform=$BUILDPLATFORM ${GO_IMAGE} AS build
+ARG TARGETOS
+ARG TARGETARCH
+ARG VERSION=dev
+# The coding agent, pinned: a machine image is rebuilt to take a newer one.
+ARG WINGMAN_VERSION=v0.20.2
+ENV CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH
+
+# `go install` puts a cross-compiled binary in a folder named after its
+# platform and a native one beside it, so it is picked up wherever it landed.
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    go install -trimpath -ldflags "-s -w" \
+      github.com/adrianliechti/wingman-agent/cmd/wingman@${WINGMAN_VERSION} \
+    && mkdir -p /out \
+    && cp "$(find /go/bin -type f -name wingman | head -n 1)" /out/wingman
+
+WORKDIR /src
+COPY go.mod go.sum ./
+# The public addon API is its own module, resolved through a replace directive.
+COPY pkg/addons/go.mod pkg/addons/go.sum ./pkg/addons/
+RUN --mount=type=cache,target=/go/pkg/mod go mod download
+COPY . .
+# The CLI links the package that embeds the console; it never serves it, so
+# an empty folder stands in for the build that donkey-server's image runs.
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    mkdir -p web/dist && touch web/dist/.gitkeep \
+    && go build -trimpath \
+      -ldflags "-s -w -X github.com/adrianliechti/donkey/internal/cli.version=${VERSION}" \
+      -o /out/donkey ./cmd/donkey
+
+FROM ${GO_IMAGE} AS go
+FROM ${NODE_IMAGE} AS node
+FROM ${UV_IMAGE} AS uv
+
+FROM debian:bookworm-slim
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+      bash-completion build-essential ca-certificates curl file git jq less nano \
+      openssh-client pkg-config procps python3 python3-pip python3-venv ripgrep \
+      sqlite3 tini unzip wget xz-utils zip \
+    && rm -rf /var/lib/apt/lists/*
+
+# Go, Node (with npm and corepack) and uv, each from its own official image.
+COPY --from=go /usr/local/go /usr/local/go
+COPY --from=node /usr/local/bin/node /usr/local/bin/node
+COPY --from=node /usr/local/lib/node_modules /usr/local/lib/node_modules
+COPY --from=node /usr/local/include/node /usr/local/include/node
+RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+    && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx \
+    && ln -s ../lib/node_modules/corepack/dist/corepack.js /usr/local/bin/corepack
+COPY --from=uv /uv /uvx /usr/local/bin/
+
+COPY --from=build --chmod=0755 /out/wingman /usr/local/bin/wingman
+COPY --from=build --chmod=0755 /out/donkey /usr/local/bin/donkey
+
+# The machine's one user. The number is the contract: the runtime runs the
+# container as 1000:1000 whatever this file says, and hands the disk to it.
+RUN groupadd --gid 1000 dev \
+    && useradd --uid 1000 --gid 1000 --home-dir /data/home --no-create-home --shell /bin/bash dev \
+    && mkdir -p /data && chown 1000:1000 /data
+
+# The home is on the disk, and so is everything a user installs for
+# themselves: npm's global prefix, Go's bin, uv's tools and Python versions.
+ENV HOME=/data/home \
+    SHELL=/bin/bash \
+    LANG=C.UTF-8 \
+    EDITOR=nano \
+    NPM_CONFIG_PREFIX=/data/home/.local \
+    GOPATH=/data/home/go \
+    PATH=/data/home/.local/bin:/data/home/go/bin:/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+USER 1000:1000
+WORKDIR /data
+EXPOSE 8080
+
+# tini is PID 1: an agent starts and abandons processes all day, and
+# something has to collect them.
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/donkey", "machine", "serve"]

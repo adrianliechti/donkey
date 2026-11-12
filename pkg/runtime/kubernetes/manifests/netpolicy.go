@@ -1,6 +1,8 @@
 package manifests
 
 import (
+	"github.com/adrianliechti/donkey/internal/config"
+
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -80,6 +82,30 @@ func appPeers(in SystemInput) []networkingv1.NetworkPolicyPeer {
 	}}
 }
 
+// machinePeers is where this installation's personal machines run, or nothing
+// when it has none. A machine is a developer's computer that happens to sit
+// in the cluster: its CLI calls the API with its owner's sign-in and its
+// agent calls the AI endpoint with a token of its own, so both admit it —
+// and both still check that credential on every request.
+func machinePeers(in SystemInput) []networkingv1.NetworkPolicyPeer {
+	if !in.Machines.Enabled() {
+		return nil
+	}
+	prefix := in.NamespacePrefix
+	if prefix == "" {
+		prefix = config.DefaultNamespacePrefix
+	}
+	namespace := Placement{SharedNamespace: in.WorkloadNamespace, NamespacePrefix: prefix}.Namespace(config.MachineSpace)
+	return []networkingv1.NetworkPolicyPeer{{
+		PodSelector: &metav1.LabelSelector{
+			MatchLabels: map[string]string{LabelInstallation: in.Namespace, LabelRole: RoleMachine},
+		},
+		NamespaceSelector: &metav1.LabelSelector{
+			MatchLabels: map[string]string{LabelNamespaceName: namespace},
+		},
+	}}
+}
+
 // serverNetworkPolicy is the admin API's second lock. The first is the
 // credential: every /v1 route verifies a sealed token. This says who may even
 // try — the gateway, through which every browser and CLI request arrives.
@@ -88,9 +114,9 @@ func appPeers(in SystemInput) []networkingv1.NetworkPolicyPeer {
 // shared this listener, which is what put the admin API in reach of tenant
 // code; it now runs as donkey-ai, and nothing an app needs lives here.
 func serverNetworkPolicy(in SystemInput) *networkPolicy {
-	return ingressPolicy(in, ServerName, serverPort, []networkingv1.NetworkPolicyPeer{
+	return ingressPolicy(in, ServerName, serverPort, append([]networkingv1.NetworkPolicyPeer{
 		systemPeer(in.Namespace, GatewayAppName),
-	})
+	}, machinePeers(in)...))
 }
 
 // buildkitNetworkPolicy is the one policy donkey cannot do without: the build
