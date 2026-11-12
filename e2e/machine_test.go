@@ -102,8 +102,8 @@ func TestMachine(t *testing.T) {
 		if owner.StatusCode != http.StatusOK || !strings.Contains(string(body), `"path":"/data/workspace"`) {
 			t.Fatalf("the owner got %d: %s", owner.StatusCode, body)
 		}
-		// The console, and nothing else, may show it in a frame.
-		if got := owner.Header.Get("Content-Security-Policy"); !strings.Contains(got, "frame-ancestors https://"+s.domain) {
+		// The console and the machine itself may show it in a frame.
+		if got := owner.Header.Get("Content-Security-Policy"); !strings.Contains(got, "frame-ancestors 'self' https://"+s.domain) {
 			t.Errorf("frame policy = %q", got)
 		}
 

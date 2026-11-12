@@ -1,9 +1,11 @@
 package machine
 
 import (
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -188,5 +190,160 @@ func TestOptionsRefuseAnAgentOffTheLoopback(t *testing.T) {
 	}
 	if got := strings.Join(opts.Command, " "); got != "wingman server --no-browser --port 9000" {
 		t.Errorf("agent = %q", got)
+	}
+}
+
+// once does one request at the door without following what it answers.
+func once(t *testing.T, door *httptest.Server, path string, headers map[string]string) *http.Response {
+	t.Helper()
+	req, err := http.NewRequest("GET", door.URL+path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Host = testHost
+	for name, value := range headers {
+		req.Header.Set(name, value)
+	}
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	res, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { res.Body.Close() })
+	return res
+}
+
+var withCredential = map[string]string{config.MachineGuardHeader: testToken}
+
+// The agent serves its HTML preview from a second loopback port. That port
+// answers on the machine's own address, under a path, with the path taken
+// off again before the request reaches it.
+func TestGuardServesOtherLoopbackPortsUnderAPath(t *testing.T) {
+	var seen []*http.Request
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = append(seen, r.Clone(r.Context()))
+		if r.URL.Path == "/__start" {
+			http.SetCookie(w, &http.Cookie{Name: "preview", Value: "signed", Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode})
+			http.Redirect(w, r, "/index.html", http.StatusSeeOther)
+			return
+		}
+		_, _ = w.Write([]byte("second"))
+	}))
+	defer second.Close()
+	port := second.Listener.Addr().(*net.TCPAddr).Port
+	prefix := PortPrefix + strconv.Itoa(port)
+	door, agent := guarded(t)
+
+	res := once(t, door, prefix+"/a%20b/x%2Fy.js?q=1", map[string]string{
+		config.MachineGuardHeader: testToken, "Origin": "https://" + testHost, "X-Forwarded-User": "owner",
+	})
+	if res.StatusCode != http.StatusOK || len(seen) != 1 || len(*agent) != 0 {
+		t.Fatalf("status = %d, port saw %d requests, agent saw %d", res.StatusCode, len(seen), len(*agent))
+	}
+	got := seen[0]
+	if got.URL.EscapedPath() != "/a%20b/x%2Fy.js" || got.URL.RawQuery != "q=1" {
+		t.Errorf("the port was asked for %q?%s", got.URL.EscapedPath(), got.URL.RawQuery)
+	}
+	if got.Host != "127.0.0.1:"+strconv.Itoa(port) || got.Header.Get("Origin") != "http://"+got.Host {
+		t.Errorf("host %q, origin %q — a development server only answers its own name", got.Host, got.Header.Get("Origin"))
+	}
+	if got.Header.Get(config.MachineGuardHeader) != "" || got.Header.Get("X-Forwarded-User") != "" {
+		t.Error("the door's credential or the visitor's identity reached the port")
+	}
+
+	// The bare path is the port's root.
+	once(t, door, prefix, withCredential)
+	if len(seen) != 2 || seen[1].URL.Path != "/" {
+		t.Fatalf("the bare prefix was asked as %q", seen[len(seen)-1].URL.Path)
+	}
+
+	// What the port redirects to and stores stays under its path: it shares
+	// the address with the agent and with every other port.
+	res = once(t, door, prefix+"/__start?token=abc&path=index.html", withCredential)
+	if res.StatusCode != http.StatusSeeOther || res.Header.Get("Location") != prefix+"/index.html" {
+		t.Errorf("redirect = %d %q", res.StatusCode, res.Header.Get("Location"))
+	}
+	cookies := res.Cookies()
+	if len(cookies) != 1 || cookies[0].Path != prefix+"/" || !cookies[0].HttpOnly || cookies[0].SameSite != http.SameSiteStrictMode {
+		t.Errorf("cookie = %+v", cookies)
+	}
+}
+
+// The path is one more way to the machine's loopback, not a way around the
+// door: it takes the same credential, reaches loopback ports only, and never
+// the agent — whose pages would look for their scripts in the wrong place.
+func TestGuardPortPathIsNotAWayAround(t *testing.T) {
+	door, agent := guarded(t)
+	if res := once(t, door, PortPrefix+"5173/", nil); res.StatusCode != http.StatusForbidden {
+		t.Errorf("without the credential: %d", res.StatusCode)
+	}
+	for _, path := range []string{
+		PortPrefix, PortPrefix + "/", PortPrefix + "0/", PortPrefix + "65536/", PortPrefix + "0080/",
+		PortPrefix + "http/", PortPrefix + "80:81/", PortPrefix + "-1/", PortPrefix + "8080@evil.example/",
+	} {
+		if res := once(t, door, path, withCredential); res.StatusCode != http.StatusNotFound {
+			t.Errorf("%s: %d, want 404", path, res.StatusCode)
+		}
+	}
+	if len(*agent) != 0 {
+		t.Fatalf("%d of those reached the agent", len(*agent))
+	}
+	// Nothing listening is said plainly.
+	if res := once(t, door, PortPrefix+"1/", withCredential); res.StatusCode != http.StatusBadGateway {
+		t.Errorf("a closed port: %d, want 502", res.StatusCode)
+	}
+}
+
+// Software in the machine names itself by its loopback address — which, in
+// the owner's browser, is the owner's own computer. Such a redirect is moved
+// onto the machine's address; everything else is left as written.
+func TestGuardPublicLocation(t *testing.T) {
+	g := &Guard{Host: testHost, Upstream: &url.URL{Scheme: "http", Host: "127.0.0.1:9000"}}
+	for _, tc := range []struct{ location, prefix, want string }{
+		// What the agent answers a preview with.
+		{"http://127.0.0.1:45678/__start?token=abc&path=site%2Findex.html", "", PortPrefix + "45678/__start?token=abc&path=site%2Findex.html"},
+		{"http://localhost:5173/", "", PortPrefix + "5173/"},
+		{"http://[::1]:5173/app#top", "", PortPrefix + "5173/app#top"},
+		{"http://127.0.0.1:5173", "", PortPrefix + "5173/"},
+		// The agent naming itself is the machine's own address.
+		{"http://127.0.0.1:9000/api/x?y=1", "", "/api/x?y=1"},
+		{"http://127.0.0.1:9000/api/x", PortPrefix + "5173", "/api/x"},
+		// A path from the root stays with whoever wrote it.
+		{"/login", "", "/login"},
+		{"/index.html", PortPrefix + "45678", PortPrefix + "45678/index.html"},
+		// One port sending the browser to another.
+		{"http://127.0.0.1:3000/cb", PortPrefix + "5173", PortPrefix + "3000/cb"},
+		// Not the door's to rewrite.
+		{"index.html", PortPrefix + "45678", "index.html"},
+		{"../up", "", "../up"},
+		{"https://example.org/x", "", "https://example.org/x"},
+		{"//example.org/x", PortPrefix + "45678", "//example.org/x"},
+		{"https://127.0.0.1:8443/x", "", "https://127.0.0.1:8443/x"},
+		{"http://10.0.0.5:5173/x", "", "http://10.0.0.5:5173/x"},
+		{"http://127.0.0.1/x", "", "http://127.0.0.1/x"},
+	} {
+		if got := g.publicLocation(tc.location, tc.prefix); got != tc.want {
+			t.Errorf("publicLocation(%q, %q) = %q, want %q", tc.location, tc.prefix, got, tc.want)
+		}
+	}
+}
+
+// The whole of what a preview does, at the door: the agent's redirect to its
+// preview port comes back as a path on the machine's own address.
+func TestGuardRewritesTheAgentsPreviewRedirect(t *testing.T) {
+	agent := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://127.0.0.1:45678/__start?token=abc&path=index.html", http.StatusTemporaryRedirect)
+	}))
+	defer agent.Close()
+	upstream, _ := url.Parse(agent.URL)
+	door := httptest.NewServer((&Guard{Token: testToken, Host: testHost, Upstream: upstream}).Handler())
+	defer door.Close()
+	res := once(t, door, "/preview?path=index.html", withCredential)
+	if want := PortPrefix + "45678/__start?token=abc&path=index.html"; res.StatusCode != http.StatusTemporaryRedirect || res.Header.Get("Location") != want {
+		t.Fatalf("redirect = %d %q, want %q", res.StatusCode, res.Header.Get("Location"), want)
+	}
+	// The agent's own port has no path of its own.
+	if res := once(t, door, PortPrefix+upstream.Port()+"/api/workspace", withCredential); res.StatusCode != http.StatusNotFound {
+		t.Fatalf("the agent under a port path: %d, want 404", res.StatusCode)
 	}
 }

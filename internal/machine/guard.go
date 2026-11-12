@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -35,31 +36,25 @@ type Guard struct {
 	Upstream *url.URL
 }
 
+// PortPrefix is where the machine's other loopback ports answer, on the
+// machine's own address: /.donkey/port/<port>/… reaches 127.0.0.1:<port>.
+//
+// It exists for what the agent serves beside itself. Its HTML preview comes
+// from a second loopback port, and its redirect there would send the owner's
+// browser to the owner's own computer; the door rewrites that redirect onto
+// this path instead (see publicLocation). A server the owner starts in the
+// machine is reachable the same way.
+//
+// Everything under it is the same origin as the agent's interface. A page
+// served from here can do in the machine what its owner can: previewing a
+// file runs it, the way building it would. A path prefix also cannot stand
+// in for a root — a page that asks for /assets/x.js asks the agent — so a
+// server that needs its own root wants an address of its own, which machines
+// do not have yet.
+const PortPrefix = "/.donkey/port/"
+
 func (g *Guard) Handler() http.Handler {
-	origin := g.Upstream.Scheme + "://" + g.Upstream.Host
-	proxy := &httputil.ReverseProxy{
-		Rewrite: func(pr *httputil.ProxyRequest) {
-			pr.SetURL(g.Upstream)
-			// The agent only answers to a loopback name, and compares the
-			// page's origin with it before taking a WebSocket: both are
-			// spelled the way it expects. The public address was checked
-			// before the request got here.
-			pr.Out.Host = g.Upstream.Host
-			if pr.In.Header.Get("Origin") != "" {
-				pr.Out.Header.Set("Origin", origin)
-			}
-			// What the gateway said about the visitor ends here. The agent
-			// has no use for it, and the owner's own tools must not mistake
-			// it for something to trust.
-			pr.Out.Header.Del(config.MachineGuardHeader)
-			identity.StripHeaders(pr.Out.Header)
-		},
-		// Agent responses stream; nothing may sit in a buffer.
-		FlushInterval: -1,
-		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
-			http.Error(w, "The machine's agent isn't answering yet — it may still be starting.", http.StatusBadGateway)
-		},
-	}
+	agent := g.proxy(g.Upstream, "")
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == runtime.MachineHealthPath {
 			g.health(w)
@@ -76,8 +71,138 @@ func (g *Guard) Handler() http.Handler {
 			http.Error(w, "cross-origin request denied", http.StatusForbidden)
 			return
 		}
-		proxy.ServeHTTP(w, r)
+		if strings.HasPrefix(r.URL.Path, PortPrefix) {
+			port, ok := portOf(r.URL.Path)
+			// The agent has an address already. Under this one its pages
+			// would ask for their scripts at the wrong place.
+			if !ok || port == g.Upstream.Port() {
+				http.NotFound(w, r)
+				return
+			}
+			upstream := &url.URL{Scheme: "http", Host: net.JoinHostPort("127.0.0.1", port)}
+			g.proxy(upstream, PortPrefix+port).ServeHTTP(w, r)
+			return
+		}
+		agent.ServeHTTP(w, r)
 	})
+}
+
+// portOf reads the port of a /.donkey/port/<port>/… path. Only the plain
+// spelling counts, so one port has one address.
+func portOf(path string) (string, bool) {
+	segment, _, _ := strings.Cut(strings.TrimPrefix(path, PortPrefix), "/")
+	port, err := strconv.Atoi(segment)
+	if err != nil || port < 1 || port > 65535 || strconv.Itoa(port) != segment {
+		return "", false
+	}
+	return segment, true
+}
+
+// proxy forwards to one loopback listener of the machine: the agent, or —
+// with the path prefix it answers under — another port.
+func (g *Guard) proxy(upstream *url.URL, prefix string) *httputil.ReverseProxy {
+	origin := upstream.Scheme + "://" + upstream.Host
+	return &httputil.ReverseProxy{
+		Rewrite: func(pr *httputil.ProxyRequest) {
+			pr.Out.URL.Scheme, pr.Out.URL.Host = upstream.Scheme, upstream.Host
+			if prefix != "" {
+				pr.Out.URL.Path = strings.TrimPrefix(pr.In.URL.Path, prefix)
+				if pr.Out.URL.Path == "" {
+					pr.Out.URL.Path = "/"
+				}
+				// The rest as the browser wrote it, so an escaped character
+				// arrives escaped. A prefix that was itself written with
+				// escapes leaves the spelling to the decoded path.
+				pr.Out.URL.RawPath = ""
+				if escaped, ok := strings.CutPrefix(pr.In.URL.EscapedPath(), prefix); ok && escaped != "" {
+					pr.Out.URL.RawPath = escaped
+				}
+			}
+			// The agent only answers to a loopback name, and compares the
+			// page's origin with it before taking a WebSocket: both are
+			// spelled the way it expects. The public address was checked
+			// before the request got here.
+			pr.Out.Host = upstream.Host
+			if pr.In.Header.Get("Origin") != "" {
+				pr.Out.Header.Set("Origin", origin)
+			}
+			// What the gateway said about the visitor ends here. Nothing in
+			// the machine has a use for it, and the owner's own tools must
+			// not mistake it for something to trust.
+			pr.Out.Header.Del(config.MachineGuardHeader)
+			identity.StripHeaders(pr.Out.Header)
+		},
+		ModifyResponse: func(res *http.Response) error {
+			if location := res.Header.Get("Location"); location != "" {
+				res.Header.Set("Location", g.publicLocation(location, prefix))
+			}
+			if prefix != "" {
+				scopeCookies(res, prefix)
+			}
+			return nil
+		},
+		// Agent responses stream; nothing may sit in a buffer.
+		FlushInterval: -1,
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			if prefix != "" {
+				http.Error(w, "Nothing in the machine is listening on port "+upstream.Port()+".", http.StatusBadGateway)
+				return
+			}
+			http.Error(w, "The machine's agent isn't answering yet — it may still be starting.", http.StatusBadGateway)
+		},
+	}
+}
+
+// publicLocation turns a redirect written inside the machine into one the
+// owner's browser can follow. Software in the machine names itself by its
+// loopback address, which in the owner's browser is the owner's own
+// computer: such a redirect is moved onto the machine's address, under the
+// port's path. A path from the root stays with the listener that wrote it.
+// Anything else — a relative path, another site — is the browser's to read.
+func (g *Guard) publicLocation(location, prefix string) string {
+	u, err := url.Parse(location)
+	if err != nil {
+		return location
+	}
+	if u.Host == "" {
+		if strings.HasPrefix(location, "/") && !strings.HasPrefix(location, "//") {
+			return prefix + location
+		}
+		return location
+	}
+	ip := net.ParseIP(u.Hostname())
+	if u.Scheme != "http" || u.Port() == "" || !(u.Hostname() == "localhost" || ip != nil && ip.IsLoopback()) {
+		return location
+	}
+	rest := u.RequestURI()
+	if !strings.HasPrefix(rest, "/") {
+		rest = "/" + rest
+	}
+	if u.Fragment != "" {
+		rest += "#" + u.EscapedFragment()
+	}
+	if u.Port() == g.Upstream.Port() {
+		return rest
+	}
+	return PortPrefix + u.Port() + rest
+}
+
+// scopeCookies keeps what a port's listener stores in the browser under that
+// port's path: it shares the machine's address with the agent and with every
+// other port, and a cookie set for "/" would travel to all of them.
+func scopeCookies(res *http.Response, prefix string) {
+	cookies := res.Cookies()
+	if len(cookies) == 0 {
+		return
+	}
+	res.Header.Del("Set-Cookie")
+	for _, cookie := range cookies {
+		if !strings.HasPrefix(cookie.Path, "/") {
+			cookie.Path = "/"
+		}
+		cookie.Path = prefix + cookie.Path
+		res.Header.Add("Set-Cookie", cookie.String())
+	}
 }
 
 func (g *Guard) ownOrigin(origin string) bool {

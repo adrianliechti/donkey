@@ -134,8 +134,9 @@ func TestMachineRouteCarriesTheGatewaysCredential(t *testing.T) {
 	if got.Get("Authorization") != "" || got.Get(accessTokenHeader) != "" || got.Get(idpAccessTokenHeader) != "" {
 		t.Errorf("a credential of the owner reached the machine: %v", got)
 	}
-	// The console, and only the console, may show the machine in a frame.
-	if policy := w.Header().Values("Content-Security-Policy"); len(policy) != 1 || policy[0] != "frame-ancestors https://example.com" {
+	// The console may show the machine in a frame, and the machine itself —
+	// its agent previews the owner's files in one. Nobody else.
+	if policy := w.Header().Values("Content-Security-Policy"); len(policy) != 1 || policy[0] != "frame-ancestors 'self' https://example.com" {
 		t.Errorf("frame policy = %q", policy)
 	}
 	if w.Header().Get("X-Frame-Options") != "" {

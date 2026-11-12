@@ -339,18 +339,21 @@ func (s *Server) proxy(rt route, sess *session, fromToken bool, idpToken string)
 	}
 }
 
-// allowConsoleFrame lets the console, and nothing else, show a machine inside
-// a frame. The machine is its own origin — which is what keeps whatever runs
-// in it away from the console's session — so embedding has to be granted, and
-// is granted to exactly one page. Added rather than set: a policy the machine
-// sent itself keeps applying next to this one.
+// allowConsoleFrame lets the console, and the machine itself, show a machine
+// inside a frame — and nothing else. The machine is its own origin, which is
+// what keeps whatever runs in it away from the console's session, so
+// embedding has to be granted: to the console, which shows the agent, and to
+// the machine, whose agent shows a preview of the owner's files in a frame of
+// its own (every ancestor of a frame has to be allowed, not only the top
+// one). Added rather than set: a policy the machine sent itself keeps
+// applying next to this one.
 func (s *Server) allowConsoleFrame(header http.Header) {
 	console := s.cfg.ServerHost
 	if console == "" {
 		console = s.cfg.Domain
 	}
 	header.Del("X-Frame-Options")
-	header.Add("Content-Security-Policy", "frame-ancestors https://"+console)
+	header.Add("Content-Security-Policy", "frame-ancestors 'self' https://"+console)
 }
 
 func setCORSHeaders(header http.Header) {

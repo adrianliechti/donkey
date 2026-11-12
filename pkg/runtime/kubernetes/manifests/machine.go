@@ -295,7 +295,12 @@ func machineDeployment(in MachineInput) (*appsv1.Deployment, error) {
 	container := corev1.Container{
 		Name:  MachineContainerName,
 		Image: in.Image,
-		Ports: []corev1.ContainerPort{{ContainerPort: config.MachinePort, Name: "http"}},
+		// A machine image is named by a tag that moves (:1, :latest), and a
+		// restart is promised to come back on the installation's current
+		// one. Asking the registry each start costs a digest check, not a
+		// download, and keeps a node's cached copy from deciding otherwise.
+		ImagePullPolicy: corev1.PullAlways,
+		Ports:           []corev1.ContainerPort{{ContainerPort: config.MachinePort, Name: "http"}},
 		EnvFrom: []corev1.EnvFromSource{{SecretRef: &corev1.SecretEnvSource{
 			LocalObjectReference: corev1.LocalObjectReference{Name: MachineEnvSecretName(in.ObjectName)},
 		}}},

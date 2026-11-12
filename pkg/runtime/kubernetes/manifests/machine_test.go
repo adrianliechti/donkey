@@ -113,6 +113,9 @@ func TestMachineDeploymentIsLockedDown(t *testing.T) {
 	if len(c.EnvFrom) != 1 || c.EnvFrom[0].SecretRef.Name != MachineEnvSecretName(testMachine) {
 		t.Errorf("envFrom = %+v", c.EnvFrom)
 	}
+	if c.ImagePullPolicy != corev1.PullAlways {
+		t.Errorf("pull policy = %q — a restart would keep a node's stale copy of a moving tag", c.ImagePullPolicy)
+	}
 	if c.LivenessProbe != nil {
 		t.Error("a liveness probe would restart a machine that is merely busy")
 	}

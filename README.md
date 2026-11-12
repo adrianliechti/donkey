@@ -1032,7 +1032,24 @@ front of that trust:
 The console shows the machine in a frame, from that address. Being a
 different origin is the point: nothing running in a machine can read the
 console's page or act with its session, and the gateway lets only the
-console frame it.
+console — and the machine itself — frame it.
+
+**Previews, and other ports.** The agent has one port, but a machine serves
+more than that: the agent's HTML preview comes from a second loopback port,
+and a server you start listens on a port of its own. Each of them answers on
+the machine's address under a path, `/.donkey/port/<port>/`, and a redirect
+that software in the machine writes to `http://127.0.0.1:<port>/…` — which is
+how the agent opens a preview — is moved there, so previewing an HTML file
+in the agent just works. Two things follow from sharing one address:
+
+- *Previewing is running.* A page served from the machine's address can do
+  in the agent what you can — open a terminal, change files — so a preview
+  is trusted like code you build. That is what a machine is for; just do
+  not preview a page you would not run.
+- *A path is not a root.* A page that asks for `/assets/app.js` asks the
+  agent, not the port. Pages with relative links work as they are; a
+  development server has to be told its base path (`vite --base
+  /.donkey/port/5173/`), and one that cannot be has no address yet.
 
 **What it can reach.** On Kubernetes, machines live in a namespace of their
 own (`<prefix>platform`, Pod Security `restricted`) or, where the
@@ -1075,11 +1092,10 @@ instead of Wingman, as long as it serves on the loopback
 (`--upstream http://127.0.0.1:<port>`).
 
 **Not there yet.** One machine per person. A machine runs until it is
-stopped — nothing stops an idle one. Only the agent's own port has an address
-outside the machine: a development server started inside it does not, and
-neither does Wingman's HTML file preview, which serves from a second loopback
-port. Machines are managed in the console only; the CLI has no command for
-them.
+stopped — nothing stops an idle one. Other ports share the machine's address
+under a path rather than having one of their own, so a server that needs its
+own root is not reachable. Machines are managed in the console only; the CLI
+has no command for them.
 
 ## Requirements for a real deployment
 
