@@ -1,0 +1,228 @@
+package manifests
+
+import (
+	"fmt"
+
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/intstr"
+)
+
+// The donkey gateway is donkey's own edge: traffic enters the cluster here.
+// It terminates TLS (from cert-manager Secrets, ACME, or its built-in CA),
+// routes by hostname and path, runs the OIDC login where a route demands one,
+// and forwards to the app.
+const (
+	GatewayAppName = "donkey-gateway"
+	// donkeyGatewayPort serves plain http (the https redirect and optional
+	// ACME HTTP-01 challenges); donkeyGatewayTLSPort terminates TLS. The health
+	// port serves probes — separate, because /healthz on a traffic port
+	// would shadow every app's own /healthz.
+	donkeyGatewayPort       = 8090
+	donkeyGatewayTLSPort    = 8443
+	donkeyGatewayHealthPort = 8091
+	// GatewayHealthServicePort is the Service port doctor probes, on the
+	// separate health Service (the edge Service carries only app traffic).
+	GatewayHealthServicePort = 8081
+	// GatewayHealthServiceName is that Service's name.
+	GatewayHealthServiceName = "donkey-gateway-health"
+
+	// GatewayCertsSecret stores the certificates the gateway issued (and its
+	// ACME account key) — its persistence across pod restarts.
+	GatewayCertsSecret = "donkey-gateway-acme"
+	// GatewayCASecret stores the built-in CA of "ca" mode.
+	GatewayCASecret = "donkey-gateway-ca"
+	GatewayDataPVC  = "donkey-gateway-data"
+)
+
+// donkeyGatewayObjects renders the edge proxy. Every installation gets one;
+// without an OIDC issuer it simply routes and never asks for a login.
+func donkeyGatewayObjects(in SystemInput) []runtime.Object {
+	objs := []runtime.Object{donkeyGatewayServiceAccount(in)}
+	objs = append(objs, donkeyGatewayRouteAccess(in)...)
+	return append(objs,
+		donkeyGatewayDataClaim(in),
+		donkeyGatewaySecretsRole(in),
+		donkeyGatewaySecretsRoleBinding(in),
+		donkeyGatewayDeployment(in),
+		donkeyGatewayService(in),
+		donkeyGatewayHealthService(in),
+	)
+}
+
+func donkeyGatewayDataClaim(in SystemInput) *corev1.PersistentVolumeClaim {
+	claim := &corev1.PersistentVolumeClaim{
+		TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "PersistentVolumeClaim"},
+		ObjectMeta: metav1.ObjectMeta{Name: GatewayDataPVC, Namespace: in.Namespace, Labels: SystemLabels(GatewayAppName)},
+		Spec: corev1.PersistentVolumeClaimSpec{
+			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+			Resources:   corev1.VolumeResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("1Gi")}},
+		},
+	}
+	if in.Data.StorageClass != "" {
+		claim.Spec.StorageClassName = &in.Data.StorageClass
+	}
+	return claim
+}
+
+func donkeyGatewayServiceAccount(in SystemInput) *corev1.ServiceAccount {
+	return &corev1.ServiceAccount{
+		TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "ServiceAccount"},
+		ObjectMeta: metav1.ObjectMeta{Name: GatewayAppName, Namespace: in.Namespace, Labels: SystemLabels(GatewayAppName)},
+	}
+}
+
+// donkeyGatewayConfigHash covers the secret-backed env vars (read only at pod
+// creation), so a rotated client secret or session key rolls the pod.
+func (in SystemInput) donkeyGatewayConfigHash() string {
+	return configHash(in.OIDCClientID, in.OIDCClientSecret, in.SessionKey, in.TelemetryKey)
+}
+
+func donkeyGatewayDeployment(in SystemInput) *appsv1.Deployment {
+	labels := SystemLabels(GatewayAppName)
+	replicas := int32(1)
+	secretEnv := func(name, key string) corev1.EnvVar {
+		return corev1.EnvVar{Name: name, ValueFrom: &corev1.EnvVarSource{
+			SecretKeyRef: &corev1.SecretKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{Name: SystemConfigSecretName},
+				Key:                  key,
+			},
+		}}
+	}
+	env := []corev1.EnvVar{
+		{Name: "DONKEY_STATE_DIR", Value: "/var/lib/donkey"},
+		{Name: "DONKEY_LISTEN", Value: fmt.Sprintf(":%d", donkeyGatewayPort)},
+		{Name: "DONKEY_TLS_LISTEN", Value: fmt.Sprintf(":%d", donkeyGatewayTLSPort)},
+		{Name: "DONKEY_HEALTH_LISTEN", Value: fmt.Sprintf(":%d", donkeyGatewayHealthPort)},
+		{Name: "DONKEY_OIDC_ISSUER", Value: in.OIDCIssuer},
+		{Name: "DONKEY_OIDC_SCOPE", Value: in.OIDCScope},
+		// The central callback lives on the base domain itself; hostnames
+		// under it share it (and one session cookie — SSO), custom domains
+		// outside keep per-host callbacks.
+		{Name: "DONKEY_DOMAIN", Value: in.Domain},
+		{Name: "DONKEY_SERVER_HOST", Value: in.ServerHost()},
+		// Where the gateway obtains certificates. In cert-manager mode it reads
+		// the generated TLS Secrets in the system namespace.
+		{Name: "DONKEY_TLS_MODE", Value: in.TLS.EffectiveMode()},
+		{Name: "DONKEY_ACME_EMAIL", Value: in.TLS.Email},
+		{Name: "DONKEY_ACME_DIRECTORY", Value: in.TLS.Directory},
+		{Name: "DONKEY_SYSTEM_NAMESPACE", Value: in.Namespace},
+		// Which namespaces hold routes. Empty means "every namespace", the
+		// arrangement where each space has one of its own; a value here is
+		// also what stops this gateway from serving another installation's
+		// apps, since both would otherwise match on managed-by=donkey.
+		{Name: "DONKEY_WORKLOAD_NAMESPACE", Value: in.WorkloadNamespace},
+		{Name: "DONKEY_TELEMETRY_OTLP_ENDPOINT", Value: TelemetryOTLPEndpoint(in.Namespace)},
+		secretEnv("DONKEY_OIDC_CLIENT_ID", "DONKEY_OIDC_CLIENT_ID"),
+		secretEnv("DONKEY_OIDC_CLIENT_SECRET", "DONKEY_OIDC_CLIENT_SECRET"),
+		secretEnv("DONKEY_SESSION_KEY", "DONKEY_SESSION_KEY"),
+		secretEnv("DONKEY_TELEMETRY_KEY", "DONKEY_TELEMETRY_KEY"),
+	}
+	// The gateway reaches the outside world too — the OIDC token exchange
+	// and, in acme mode, Let's Encrypt. On a network whose only way out is a
+	// forward proxy, builds would otherwise work while nobody could sign in
+	// and no certificate could be issued.
+	env = append(env, proxyEnv(in.Build.Proxy, registryHostOf(in.RegistryURL))...)
+	health := corev1.ProbeHandler{
+		HTTPGet: &corev1.HTTPGetAction{Path: "/healthz", Port: intstr.FromInt32(donkeyGatewayHealthPort)},
+	}
+	spec := corev1.PodSpec{
+		ServiceAccountName: GatewayAppName,
+		// Every app's traffic rides through this pod — it matters as much as
+		// the apps themselves.
+		PriorityClassName: systemPriorityClass,
+		SecurityContext:   systemPodSecurityContext(),
+		ImagePullSecrets:  systemImagePullSecrets(in),
+		Containers: []corev1.Container{{
+			Name:            "gateway",
+			Image:           in.ServerImage,
+			ImagePullPolicy: imagePullPolicy(in.ServerImage),
+			Args:            []string{"gateway"},
+			Env:             env,
+			VolumeMounts:    []corev1.VolumeMount{{Name: "gateway-state", MountPath: "/var/lib/donkey"}},
+			Ports: []corev1.ContainerPort{
+				{ContainerPort: donkeyGatewayPort, Name: "http"},
+				{ContainerPort: donkeyGatewayTLSPort, Name: "https"},
+				{ContainerPort: donkeyGatewayHealthPort, Name: "health"},
+			},
+			Resources: corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{
+					corev1.ResourceCPU:    resource.MustParse("50m"),
+					corev1.ResourceMemory: resource.MustParse("64Mi"),
+				},
+			},
+			SecurityContext: systemSecurityContext(),
+			ReadinessProbe: &corev1.Probe{ProbeHandler: corev1.ProbeHandler{
+				HTTPGet: &corev1.HTTPGetAction{Path: "/readyz", Port: intstr.FromInt32(donkeyGatewayHealthPort)},
+			}},
+			LivenessProbe: &corev1.Probe{ProbeHandler: health, PeriodSeconds: 15, FailureThreshold: 3},
+		}},
+		Volumes: []corev1.Volume{{Name: "gateway-state", VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: GatewayDataPVC}}}},
+	}
+	fsGroup := systemRunAsUser
+	fsPolicy := corev1.FSGroupChangeOnRootMismatch
+	spec.SecurityContext.FSGroup = &fsGroup
+	spec.SecurityContext.FSGroupChangePolicy = &fsPolicy
+	return &appsv1.Deployment{
+		TypeMeta:   metav1.TypeMeta{APIVersion: "apps/v1", Kind: "Deployment"},
+		ObjectMeta: metav1.ObjectMeta{Name: GatewayAppName, Namespace: in.Namespace, Labels: labels},
+		Spec: appsv1.DeploymentSpec{
+			Replicas: &replicas,
+			// One gateway owns the local transaction store and its RWO volume.
+			Strategy: appsv1.DeploymentStrategy{Type: appsv1.RecreateDeploymentStrategyType},
+			Selector: &metav1.LabelSelector{MatchLabels: SystemSelector(GatewayAppName)},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: in.hashedTemplateMeta(GatewayAppName, in.ServerImage, in.donkeyGatewayConfigHash()),
+				Spec:       spec,
+			},
+		},
+	}
+}
+
+// donkeyGatewayService is the edge: the one Service traffic enters the
+// cluster through, on ports 80 and 443. Sessions live in the sealed cookie
+// and certificates in a shared Secret. Auth state uses a persistent volume;
+// this deployment runs one gateway and replaces it with Recreate.
+func donkeyGatewayService(in SystemInput) *corev1.Service {
+	serviceType := corev1.ServiceType(in.GatewayServiceType)
+	if serviceType == "" {
+		serviceType = corev1.ServiceTypeLoadBalancer
+	}
+	ports := []corev1.ServicePort{
+		{Name: "http", Port: 80, TargetPort: intstr.FromInt32(donkeyGatewayPort)},
+		{Name: "https", Port: 443, TargetPort: intstr.FromInt32(donkeyGatewayTLSPort)},
+	}
+	if serviceType == corev1.ServiceTypeNodePort {
+		ports[0].NodePort = in.GatewayHTTPNodePort
+		ports[1].NodePort = in.GatewayHTTPSNodePort
+	}
+	return &corev1.Service{
+		TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "Service"},
+		ObjectMeta: metav1.ObjectMeta{Name: GatewayAppName, Namespace: in.Namespace, Labels: SystemLabels(GatewayAppName)},
+		Spec: corev1.ServiceSpec{
+			Type:     serviceType,
+			Selector: SystemSelector(GatewayAppName),
+			Ports:    ports,
+		},
+	}
+}
+
+// donkeyGatewayHealthService keeps the probes off the edge: doctor reaches
+// the gateway's health endpoint in-cluster without the edge Service having
+// to expose it to the world.
+func donkeyGatewayHealthService(in SystemInput) *corev1.Service {
+	return &corev1.Service{
+		TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "Service"},
+		ObjectMeta: metav1.ObjectMeta{Name: GatewayHealthServiceName, Namespace: in.Namespace, Labels: SystemLabels(GatewayAppName)},
+		Spec: corev1.ServiceSpec{
+			Type:     corev1.ServiceTypeClusterIP,
+			Selector: SystemSelector(GatewayAppName),
+			Ports: []corev1.ServicePort{
+				{Name: "health", Port: GatewayHealthServicePort, TargetPort: intstr.FromInt32(donkeyGatewayHealthPort)},
+			},
+		},
+	}
+}

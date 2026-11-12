@@ -1,0 +1,17 @@
+{
+  "lockfileVersion": 2,
+  "configVersion": 1,
+  "workspaces": {
+    "": {
+      "name": "fx",
+      "dependencies": {
+        "is-odd": "3.0.1",
+      },
+    },
+  },
+  "packages": {
+    "is-number": ["is-number@6.0.0", "http://127.0.0.1:4874/npm/is-number/-/is-number-6.0.0.tgz", {}, "sha512-Wu1VHeILBK8KAWJUAiSZQX94GmOE45Rg6/538fKwiloUu21KncEkYGPqob2oSZ5mUT73vLGrHQjKw3KMPwfDzg=="],
+
+    "is-odd": ["is-odd@3.0.1", "http://127.0.0.1:4874/npm/is-odd/-/is-odd-3.0.1.tgz", { "dependencies": { "is-number": "^6.0.0" } }, "sha512-CQpnWPrDwmP1+SMHXZhtLtJv90yiyVfluGsX5iNCVkrhQtU3TQHsUWPG9wkdk9Lgd5yNpAg9jQEo90CBaXgWMA=="],
+  }
+}

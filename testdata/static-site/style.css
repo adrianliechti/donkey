@@ -1,0 +1,44 @@
+:root {
+  color-scheme: light dark;
+  --ink: #2a2320;
+  --paper: #faf8f4;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ink: #ece5dc;
+    --paper: #211c18;
+  }
+}
+
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font: 16px/1.6 ui-sans-serif, system-ui, sans-serif;
+}
+
+main {
+  max-width: 34rem;
+  margin: 0 auto;
+  padding: 4rem 1.5rem;
+}
+
+h1 {
+  font-size: 2rem;
+  letter-spacing: -0.02em;
+  margin-bottom: 0.5rem;
+}
+
+.lead {
+  font-size: 1.1rem;
+}
+
+code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.9em;
+}
+
+a {
+  color: #c9821a;
+}

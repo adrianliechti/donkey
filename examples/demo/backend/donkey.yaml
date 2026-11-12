@@ -1,0 +1,30 @@
+name: backend
+space: demo
+port: 8000
+# The browser uses two paths on the dashboard's address. This backend is
+# externally reachable, including at its own hostname, so it is not internal.
+routes:
+  - app: dashboard
+    path: /api
+  - app: dashboard
+    path: /mcp
+# MCP clients are machines and cannot complete a browser login, so this app
+# opts out — which is why /mcp is reachable while the dashboard around it
+# still asks for one. Login attaches per route, not per hostname.
+public: true
+healthcheck:
+  path: /healthz
+# The desk's activity log lives on the app's own disk — the one piece of
+# state that is neither in postgres nor in the bucket, and the one part of
+# an app a redeploy cannot rebuild. `donkey files ls` can read it.
+storage:
+  size: 1Gi
+  paths:
+    - /app/data
+# Everything else runs on the space's services: tickets in postgres,
+# attachments in s3, triage and reply-drafting through the platform's
+# openai proxy. The deploy provisions them and injects each binding as env.
+addons:
+  - type: postgres
+  - type: s3
+  - type: openai

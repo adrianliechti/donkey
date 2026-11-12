@@ -1,0 +1,638 @@
+package manifests
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"strconv"
+	"strings"
+
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/intstr"
+
+	"github.com/adrianliechti/donkey/internal/config"
+)
+
+// SystemInput describes the donkey control plane (namespace donkey-system):
+// the API server, the orchestrator that builds and deploys behind it, the
+// in-cluster BuildKit and the donkey gateway — donkey's own edge proxy, which
+// terminates TLS, routes every app and runs the OIDC login where a route
+// demands one.
+type SystemInput struct {
+	Namespace   string // "donkey-system"
+	ServerImage string
+	Domain      string
+
+	// ServerHostname overrides where the API and console live (default: the
+	// domain itself). It must be the domain or a name under it — the login
+	// cookie's domain has to cover it.
+	ServerHostname string
+
+	// TLS selects ACME, the built-in CA, or exact-host cert-manager
+	// Certificates whose Secrets are read by donkey-gateway.
+	TLS config.InstallTLS
+	// ExternalDNS optionally publishes exact records at the gateway VIP.
+	ExternalDNS config.InstallExternalDNS
+
+	// GatewayServiceType is the type of the service traffic enters the
+	// cluster through: LoadBalancer (the default), NodePort or ClusterIP.
+	// Local clusters without a load-balancer controller (kind) need
+	// ClusterIP or NodePort — a LoadBalancer service never gets an address
+	// there, which would leave every donkey hostname unroutable.
+	GatewayServiceType string
+	// GatewayHTTPNodePort/GatewayHTTPSNodePort pin the node ports of a
+	// NodePort service, so port mappings (kind) or firewall rules can rely
+	// on them.
+	GatewayHTTPNodePort  int32
+	GatewayHTTPSNodePort int32
+
+	// RegistryCASecret names a Secret in the control-plane namespace holding
+	// ca.crt — the certificate authority the enterprise registry and package
+	// upstreams come from. The server, build engine and package proxy trust it.
+	RegistryCASecret string
+	// RegistryCAFingerprint rolls the startup readers when an operator updates
+	// ca.crt in that same Secret and reruns the installer.
+	RegistryCAFingerprint string
+	// RegistryDockerConfigSecret contains per-host auths entries for
+	// separately hosted BuildKit mirrors and is read dynamically by the
+	// server's BuildKit session auth provider.
+	RegistryDockerConfigSecret string
+
+	RegistryURL      string
+	RegistryUsername string
+	RegistryPassword string
+	RegistryInsecure bool
+	// RegistryImmutable marks a registry that refuses to overwrite a tag, so
+	// donkey makes every image tag unique.
+	RegistryImmutable bool
+
+	// PlatformAdmins optionally seeds the persisted platform settings.
+	// Otherwise the first verified sign-in becomes the first platform admin.
+	PlatformAdmins *config.AccessConfig
+
+	OIDCIssuer       string // OIDC issuer of the login gateway
+	OIDCClientID     string
+	OIDCClientSecret string
+	// OIDCScope is donkey's own API in the IdP — the audience of the
+	// user tokens apps and viewers receive; empty forwards none.
+	OIDCScope string
+	// SessionKey seals the login gateway's session cookies (32 bytes, hex).
+	// Generated at install, reused on re-installs — rotating it signs
+	// everyone out.
+	SessionKey string
+	// TelemetryKey authenticates OTLP ingestion and private queries. It is
+	// generated and persisted independently so session rotation cannot break
+	// exporters embedded in already-running apps.
+	TelemetryKey string
+
+	OpenAIBaseURL string
+	OpenAIAPIKey  string
+	AIModel       string
+	ExaBaseURL    string
+	ExaAPIKey     string
+
+	// DefaultPlatform is the build platform of the cluster's nodes.
+	DefaultPlatform string
+
+	// Build is the builder's settings, the mirrors every build pulls through,
+	// and the proxy donkey's own processes use.
+	Build config.InstallBuild
+	// AddonImages are pulled by the runtime, outside BuildKit.
+	AddonImages  config.InstallAddonImages
+	BusyboxImage string
+	// AddonImagePullSecrets are existing credentials in every workload
+	// namespace, referenced by managed service and file-helper pods without copying them.
+	AddonImagePullSecrets []string
+	AddonPlugins          config.AddonPlugins
+	CommonOfferings       config.CommonOfferings
+	ProxyServices         config.ProxyServices
+
+	BuildkitImage string
+
+	// Data is the volume donkey-orchestrator mounts (source history, for now).
+	Data config.InstallData
+
+	// NamespacePrefix maps a space onto its own namespace; ignored when
+	// WorkloadNamespace names one namespace for the whole installation.
+	NamespacePrefix string
+	// WorkloadNamespace, when set, is the single namespace every app lives
+	// in. It belongs to whoever created it: donkey neither creates nor
+	// deletes it, and needs no cluster-scoped rights at all — see
+	// serverAccessObjects.
+	WorkloadNamespace string
+	// SkipNamespace leaves the control plane's own namespace out of the
+	// render, because it already exists. donkey never adopts a namespace it
+	// didn't create: applying one would take ownership of its labels and mark
+	// it deletable.
+	SkipNamespace bool
+	// IsolateSpaces fences every space with a NetworkPolicy — see
+	// SpaceIsolationPolicy. On by default; the installer resolves the
+	// settings file's tri-state (unset means on) before it reaches here.
+	// Needs a CNI that enforces NetworkPolicy.
+	IsolateSpaces bool
+	// RestrictEgress adds the egress half of that fence — a space's pods reach
+	// only their own space, donkey-ai, donkey-telemetry and DNS, never the
+	// internet. Off by default; only meaningful with IsolateSpaces.
+	RestrictEgress bool
+}
+
+const (
+	// DefaultSystemNamespace is where the control plane lives unless an
+	// installation says otherwise.
+	DefaultSystemNamespace = config.DefaultSystemNamespace
+	// ServerName is donkey-server's Service — the openai addon points app
+	// bindings at its AI proxy path.
+	ServerName = "donkey-server"
+	// SystemConfigSecretName holds the installation credentials and the
+	// settings intentionally kept out of pod specs.
+	SystemConfigSecretName = "donkey"
+	// SystemConfigMapName holds the console route and platform settings.
+	SystemConfigMapName = "donkey"
+	// SystemRegistrySecretName lets Kubernetes pull credentialed control-plane
+	// images. It is exported for offline deployment bundle renderers.
+	SystemRegistrySecretName = "donkey-registry"
+	// BuildkitAppName is the build engine Deployment and Service. Installers
+	// wait for this exact generation before accepting an AI build.
+	BuildkitAppName          = "donkey-buildkitd"
+	buildkitName             = BuildkitAppName
+	registryDockerConfigPath = "/etc/donkey/registry-auth"
+	serverPort               = 8088
+	buildkitPort             = 1234
+
+	// The image names no user (hack/Dockerfile.server) because only the
+	// runtime can enforce one. Everything the server writes goes to /tmp, so
+	// any uid works.
+	systemRunAsUser = int64(1000)
+
+	// Keeps the control plane ahead of the apps it runs — donkey-server going
+	// down takes every deploy and log stream with it. Shipped in every
+	// cluster, so donkey installs no PriorityClass of its own.
+	systemPriorityClass = "system-cluster-critical"
+)
+
+// Scheme is always https: apps sit behind an OIDC login whose cookies are
+// Secure-only, so plain http was never a real option.
+func (in SystemInput) Scheme() string { return "https" }
+
+// ServerHost is where the donkey API and console live — the domain itself,
+// unless overridden.
+func (in SystemInput) ServerHost() string {
+	if in.ServerHostname != "" {
+		return in.ServerHostname
+	}
+	return in.Domain
+}
+
+// Shared reports whether the whole installation shares one app namespace.
+func (in SystemInput) Shared() bool { return in.WorkloadNamespace != "" }
+
+// SystemObjects renders the whole control plane, in apply order.
+func SystemObjects(in SystemInput) []runtime.Object {
+	var objs []runtime.Object
+	if !in.SkipNamespace {
+		objs = append(objs, systemNamespace(in))
+	}
+	objs = append(objs,
+		serverServiceAccount(in),
+		orchestratorServiceAccount(in),
+	)
+	objs = append(objs, serverAccessObjects(in)...)
+	objs = append(objs, orchestratorAccessObjects(in)...)
+	objs = append(objs, systemSecret(in))
+	if hasSystemRegistryCredentials(in) {
+		objs = append(objs, systemRegistryPullSecret(in))
+	}
+	// The build engine's config file has to exist before the deployment that
+	// mounts it.
+	objs = append(objs, systemConfigMap(in))
+	// Package traffic has its own unprivileged process and credentials. It is
+	// ready before builds are accepted by donkey-server.
+	objs = append(objs, packagesObjects(in)...)
+	// One replica owns the embedded DuckDB file and exposes OTLP/HTTP plus a
+	// separate control-plane query port.
+	objs = append(objs, telemetryObjects(in)...)
+	// The data claim exists before the orchestrator that mounts it.
+	if claim := dataVolumeClaim(in); claim != nil {
+		objs = append(objs, claim)
+	}
+	objs = append(objs,
+		buildkitDeployment(in),
+		systemService(in, buildkitName, buildkitPort, buildkitPort),
+		buildkitNetworkPolicy(in),
+	)
+	// The orchestrator runs every build and deploy; the API forwards to it,
+	// so it comes first.
+	objs = append(objs, orchestratorObjects(in)...)
+	objs = append(objs,
+		serverNetworkPolicy(in),
+		serverDeployment(in),
+		systemService(in, ServerName, 80, serverPort),
+	)
+	// In cert-manager mode the control-plane Certificate must exist before
+	// the gateway starts looking for its Secret. DNS is adjacent because it
+	// describes the same public hostnames.
+	objs = append(objs, systemTrafficObjects(in)...)
+	// The donkey gateway is the app edge — always there, login or not; the
+	// AI endpoint is the one workload apps reach, and runs apart from the
+	// admin API for exactly that reason.
+	objs = append(objs, donkeyGatewayObjects(in)...)
+	objs = append(objs, aiObjects(in)...)
+	objs = append(objs, proxyObjects(in)...)
+	return objs
+}
+
+// configHash rolls pods that read config only at startup. Each deployment
+// hashes just what it consumes: rotating the session key must not kill
+// in-flight builds, and a new registry host must roll buildkitd.
+func configHash(values ...string) string {
+	h := sha256.New()
+	for _, v := range values {
+		fmt.Fprintln(h, v)
+	}
+	return hex.EncodeToString(h.Sum(nil))[:16]
+}
+
+// serverConfigHash covers the secret-backed env vars of donkey-server
+// (secretKeyRef values are only read at pod creation).
+func (in SystemInput) serverConfigHash() string {
+	return configHash(in.SessionKey, in.TelemetryKey, in.OIDCClientID, in.OIDCClientSecret, in.RegistryPassword, in.OpenAIAPIKey,
+		buildEnvJSON(in.Build), in.Build.Instructions, in.Build.Proxy.HTTP, in.Build.Proxy.HTTPS, in.RegistryCAFingerprint, in.ProxyServices.JSON())
+}
+
+// orchestratorConfigHash is the same for donkey-orchestrator, which reads
+// everything the server does except the OIDC client: it never signs anybody
+// in. The session key is in both, so rotating it rolls both — which the
+// credential between them (internal/server orchestratorToken) depends on.
+func (in SystemInput) orchestratorConfigHash() string {
+	return configHash(in.SessionKey, in.TelemetryKey, in.RegistryPassword, in.OpenAIAPIKey,
+		buildEnvJSON(in.Build), in.Build.Instructions, in.Build.Proxy.HTTP, in.Build.Proxy.HTTPS, in.RegistryCAFingerprint, in.ProxyServices.JSON())
+}
+
+// hashedTemplateMeta is the pod template metadata of one control-plane
+// deployment: the full descriptive label set (version from the image that
+// actually runs in the pod) plus the config hash that rolls it.
+func (in SystemInput) hashedTemplateMeta(name, image, hash string) metav1.ObjectMeta {
+	return metav1.ObjectMeta{
+		Labels:      withVersion(SystemLabels(name), image),
+		Annotations: map[string]string{AnnotationConfigHash: hash},
+	}
+}
+
+// systemPodSecurityContext pins who donkey's own pods run as. The kubelet
+// checks runAsNonRoot against this numeric uid, so an image without a USER
+// still cannot come up as root.
+func systemPodSecurityContext() *corev1.PodSecurityContext {
+	return &corev1.PodSecurityContext{
+		RunAsNonRoot: new(true),
+		RunAsUser:    new(systemRunAsUser),
+		RunAsGroup:   new(systemRunAsUser),
+	}
+}
+
+// No way to gain more than it started with. donkey-server and
+// donkey-orchestrator hold cluster-admin, so a foothold inside either is the
+// worst donkey has to offer.
+func systemSecurityContext() *corev1.SecurityContext {
+	return &corev1.SecurityContext{
+		RunAsNonRoot:             new(true),
+		AllowPrivilegeEscalation: new(false),
+		Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+		SeccompProfile:           &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
+	}
+}
+
+func systemNamespace(in SystemInput) *corev1.Namespace {
+	return &corev1.Namespace{
+		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Namespace"},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        in.Namespace,
+			Labels:      SystemLabels("donkey-system"),
+			Annotations: map[string]string{AnnotationManaged: "true"},
+		},
+	}
+}
+
+func serverServiceAccount(in SystemInput) *corev1.ServiceAccount {
+	return &corev1.ServiceAccount{
+		TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "ServiceAccount"},
+		ObjectMeta: metav1.ObjectMeta{Name: ServerName, Namespace: in.Namespace, Labels: SystemLabels(ServerName)},
+	}
+}
+
+func systemSecret(in SystemInput) *corev1.Secret {
+	return &corev1.Secret{
+		TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "Secret"},
+		ObjectMeta: metav1.ObjectMeta{Name: SystemConfigSecretName, Namespace: in.Namespace, Labels: SystemLabels(ServerName)},
+		Type:       corev1.SecretTypeOpaque,
+		Data: map[string][]byte{
+			"DONKEY_REGISTRY_PASSWORD":  []byte(in.RegistryPassword),
+			"OPENAI_API_KEY":            []byte(in.OpenAIAPIKey),
+			"EXA_API_KEY":               []byte(in.ExaAPIKey),
+			"DONKEY_OIDC_CLIENT_ID":     []byte(in.OIDCClientID),
+			"DONKEY_OIDC_CLIENT_SECRET": []byte(in.OIDCClientSecret),
+			"DONKEY_SESSION_KEY":        []byte(in.SessionKey),
+			"DONKEY_TELEMETRY_KEY":      []byte(in.TelemetryKey),
+			// Build environment and proxy settings routinely carry credentials
+			// ("https://ci:token@jfrog.corp"); builder instructions can expose
+			// internal registry topology. Keep all three out of the Deployment.
+			"DONKEY_BUILD_ENV":            []byte(buildEnvJSON(in.Build)),
+			"DONKEY_BUILDER_INSTRUCTIONS": []byte(in.Build.Instructions),
+			"HTTP_PROXY":                  []byte(in.Build.Proxy.HTTP),
+			"HTTPS_PROXY":                 []byte(in.Build.Proxy.HTTPS),
+			"DONKEY_PACKAGES_PASSWORD":    []byte(in.Build.Packages.Password),
+		},
+	}
+}
+
+func systemRegistryPullSecret(in SystemInput) *corev1.Secret {
+	return RegistryPullSecret(
+		SystemRegistrySecretName, in.Namespace,
+		SystemLabels(RoleRegistryAuth),
+		registryHostOf(in.RegistryURL), in.RegistryUsername, in.RegistryPassword,
+	)
+}
+
+func systemImagePullSecrets(in SystemInput) []corev1.LocalObjectReference {
+	if !hasSystemRegistryCredentials(in) {
+		return nil
+	}
+	return []corev1.LocalObjectReference{{Name: SystemRegistrySecretName}}
+}
+
+func hasSystemRegistryCredentials(in SystemInput) bool {
+	return registryHostOf(in.RegistryURL) != "" && in.RegistryUsername != "" && in.RegistryPassword != ""
+}
+
+// registryCAPath is where the server, the orchestrator and buildkitd find
+// the registry's certificate authority.
+const registryCAPath = "/etc/donkey/registry-ca"
+
+// serverGracePeriod covers donkey-server's own short shutdown
+// (internal/server shutdownGrace) and nothing more. Deploys no longer run in
+// this pod, so stopping it never waits for a build.
+const serverGracePeriod = int64(30)
+
+// controlPlaneEnv is the configuration donkey-server and donkey-orchestrator
+// share. Both run the same control plane against the same runtime, so both
+// read the same registry, namespaces, traffic and build settings. Only the
+// listen port and the API's own settings differ (see serverDeployment).
+func controlPlaneEnv(in SystemInput, port int32) []corev1.EnvVar {
+	env := []corev1.EnvVar{
+		{Name: "DONKEY_LISTEN", Value: fmt.Sprintf(":%d", port)},
+		{Name: "DONKEY_REGISTRY_URL", Value: in.RegistryURL},
+		{Name: "DONKEY_REGISTRY_USERNAME", Value: in.RegistryUsername},
+		{Name: "DONKEY_REGISTRY_INSECURE", Value: strconv.FormatBool(in.RegistryInsecure)},
+		{Name: "DONKEY_REGISTRY_IMMUTABLE", Value: strconv.FormatBool(in.RegistryImmutable)},
+		{Name: "DONKEY_REGISTRY_CA_FILE", Value: registryCAFile(in)},
+		{Name: "DONKEY_DOMAIN", Value: in.Domain},
+		{Name: "DONKEY_BUILDKIT_ADDR", Value: fmt.Sprintf("tcp://%s.%s.svc:%d", buildkitName, in.Namespace, buildkitPort)},
+		{Name: "DONKEY_BUILDER_DEBIAN_MIRROR", Value: strconv.FormatBool(in.Build.Packages.Debian != "")},
+		{Name: "DONKEY_BUILDER_ALPINE_MIRROR", Value: strconv.FormatBool(in.Build.Packages.Alpine != "")},
+		{Name: "DONKEY_NAMESPACE_PREFIX", Value: in.NamespacePrefix},
+		{Name: "DONKEY_SYSTEM_NAMESPACE", Value: in.Namespace},
+		{Name: "DONKEY_WORKLOAD_NAMESPACE", Value: in.WorkloadNamespace},
+		{Name: "DONKEY_SPACE_ISOLATION", Value: strconv.FormatBool(in.IsolateSpaces)},
+		{Name: "DONKEY_RESTRICT_EGRESS", Value: strconv.FormatBool(in.RestrictEgress)},
+		{Name: "DONKEY_TELEMETRY_URL", Value: TelemetryAPIEndpoint(in.Namespace)},
+		{Name: "DONKEY_DEFAULT_PLATFORM", Value: in.DefaultPlatform},
+		{Name: "DONKEY_POSTGRES_IMAGE", Value: in.AddonImages.Postgres},
+		{Name: "DONKEY_REDIS_IMAGE", Value: in.AddonImages.Redis},
+		{Name: "DONKEY_BUSYBOX_IMAGE", Value: in.BusyboxImage},
+		{Name: "DONKEY_RUSTFS_IMAGE", Value: in.AddonImages.RustFS},
+		{Name: "DONKEY_ADDON_IMAGE_PULL_SECRETS", Value: strings.Join(in.AddonImagePullSecrets, ",")},
+		{Name: "DONKEY_ADDON_PLUGINS", Value: in.AddonPlugins.JSON()},
+		{Name: "DONKEY_COMMON_OFFERINGS", Value: in.CommonOfferings.JSON()},
+		{Name: "DONKEY_PROXY_SERVICES", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
+			LocalObjectReference: corev1.LocalObjectReference{Name: ProxyAppName}, Key: ProxyConfigKey,
+		}}},
+		{Name: "DONKEY_TLS_MODE", Value: in.TLS.EffectiveMode()},
+		{Name: "DONKEY_TLS_ISSUER_NAME", Value: in.TLS.IssuerName},
+		{Name: "DONKEY_TLS_ISSUER_KIND", Value: in.TLS.IssuerKind},
+		{Name: "DONKEY_TLS_ISSUER_GROUP", Value: in.TLS.IssuerGroup},
+		{Name: "DONKEY_EXTERNAL_DNS_TARGETS", Value: strings.Join(in.ExternalDNS.Targets, ",")},
+		{Name: "DONKEY_EXTERNAL_DNS_RECORD_TYPE", Value: in.ExternalDNS.EffectiveRecordType()},
+		{Name: "DONKEY_EXTERNAL_DNS_TTL", Value: strconv.FormatInt(in.ExternalDNS.TTL, 10)},
+		{Name: "DONKEY_AI_MODEL", Value: in.AIModel},
+		{Name: "OPENAI_BASE_URL", Value: in.OpenAIBaseURL},
+		secretEnvVar("DONKEY_BUILDER_INSTRUCTIONS", "DONKEY_BUILDER_INSTRUCTIONS"),
+		// The session key lets the server verify sealed CLI tokens itself —
+		// the direct (port-forwarded) path next to the gateway's headers —
+		// and the orchestrator verify them again after the server.
+		secretEnvVar("DONKEY_SESSION_KEY", "DONKEY_SESSION_KEY"),
+		secretEnvVar("DONKEY_TELEMETRY_KEY", "DONKEY_TELEMETRY_KEY"),
+		{Name: "DONKEY_PLATFORM_ADMINS", Value: adminsJSON(in)},
+		secretEnvVar("DONKEY_REGISTRY_PASSWORD", "DONKEY_REGISTRY_PASSWORD"),
+		secretEnvVar("OPENAI_API_KEY", "OPENAI_API_KEY"),
+	}
+	if in.RegistryDockerConfigSecret != "" {
+		env = append(env, corev1.EnvVar{Name: "DONKEY_REGISTRY_CONFIG_DIR", Value: registryDockerConfigPath})
+	}
+	env = append(env, buildEnv(in.Build)...)
+	// The control plane resolves versions and image configuration itself,
+	// so it needs the proxy as much as the build engine does.
+	return append(env, proxyEnv(in.Build.Proxy, registryHostOf(in.RegistryURL))...)
+}
+
+// controlPlaneVolumes mounts what the build path reads from Secrets: the
+// registry's certificate authority and the Docker config of separately
+// hosted mirrors.
+func controlPlaneVolumes(in SystemInput) ([]corev1.VolumeMount, []corev1.Volume) {
+	var mounts []corev1.VolumeMount
+	var volumes []corev1.Volume
+	if in.RegistryCASecret != "" {
+		mounts = append(mounts, corev1.VolumeMount{Name: "registry-ca", MountPath: registryCAPath, ReadOnly: true})
+		volumes = append(volumes, corev1.Volume{
+			Name: "registry-ca",
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{SecretName: in.RegistryCASecret},
+			},
+		})
+	}
+	if in.RegistryDockerConfigSecret != "" {
+		mounts = append(mounts, corev1.VolumeMount{Name: "registry-auth", MountPath: registryDockerConfigPath, ReadOnly: true})
+		volumes = append(volumes, corev1.Volume{
+			Name: "registry-auth",
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{SecretName: in.RegistryDockerConfigSecret},
+			},
+		})
+	}
+	return mounts, volumes
+}
+
+func serverDeployment(in SystemInput) *appsv1.Deployment {
+	labels := withVersion(SystemLabels(ServerName), in.ServerImage)
+	replicas := int32(1)
+	grace := serverGracePeriod
+	// A new pod is up and ready before the old one stops: with nothing
+	// long-running left in it, the API rolls without a gap.
+	maxSurge, maxUnavailable := intstr.FromInt32(1), intstr.FromInt32(0)
+	env := append(controlPlaneEnv(in, serverPort),
+		// Where the console's /ai/v1 requests are forwarded. The address
+		// only — the path the console asks for is what gets proxied.
+		corev1.EnvVar{Name: "DONKEY_AI_URL", Value: fmt.Sprintf("http://%s.%s.svc:80", AIAppName, in.Namespace)},
+		// Where plans, deploys and the changes serialized with them go.
+		corev1.EnvVar{Name: "DONKEY_ORCHESTRATOR_URL", Value: OrchestratorEndpoint(in.Namespace)},
+		corev1.EnvVar{Name: "DONKEY_TELEMETRY_OTLP_ENDPOINT", Value: TelemetryOTLPEndpoint(in.Namespace)},
+		corev1.EnvVar{Name: "DONKEY_OIDC_ISSUER", Value: in.OIDCIssuer},
+		corev1.EnvVar{Name: "DONKEY_OIDC_SCOPE", Value: in.OIDCScope},
+		secretEnvVar("DONKEY_OIDC_CLIENT_ID", "DONKEY_OIDC_CLIENT_ID"),
+		secretEnvVar("DONKEY_OIDC_CLIENT_SECRET", "DONKEY_OIDC_CLIENT_SECRET"),
+	)
+	health := corev1.ProbeHandler{
+		HTTPGet: &corev1.HTTPGetAction{Path: "/healthz", Port: intstr.FromInt32(serverPort)},
+	}
+	mounts, volumes := controlPlaneVolumes(in)
+	spec := corev1.PodSpec{
+		ServiceAccountName:            ServerName,
+		PriorityClassName:             systemPriorityClass,
+		SecurityContext:               systemPodSecurityContext(),
+		ImagePullSecrets:              systemImagePullSecrets(in),
+		TerminationGracePeriodSeconds: &grace,
+		Containers: []corev1.Container{{
+			Name:            "server",
+			ImagePullPolicy: imagePullPolicy(in.ServerImage),
+			Image:           in.ServerImage,
+			Env:             env,
+			Ports:           []corev1.ContainerPort{{ContainerPort: serverPort}},
+			Resources:       serverResources(),
+			SecurityContext: systemSecurityContext(),
+			VolumeMounts:    mounts,
+			// Readiness asks /readyz, which starts failing the moment the pod
+			// begins stopping — that is what takes it out of the Service while
+			// its replacement answers.
+			ReadinessProbe: &corev1.Probe{ProbeHandler: corev1.ProbeHandler{
+				HTTPGet: &corev1.HTTPGetAction{Path: "/readyz", Port: intstr.FromInt32(serverPort)},
+			}},
+			// A wedged server takes the console and every log stream with it,
+			// and nobody is watching it the way they watch their apps.
+			// /healthz keeps answering while the server stops, so this never
+			// cuts a shutdown short.
+			LivenessProbe: &corev1.Probe{ProbeHandler: health, PeriodSeconds: 15, FailureThreshold: 3},
+		}},
+		Volumes: volumes,
+	}
+	return &appsv1.Deployment{
+		TypeMeta:   metav1.TypeMeta{APIVersion: "apps/v1", Kind: "Deployment"},
+		ObjectMeta: metav1.ObjectMeta{Name: ServerName, Namespace: in.Namespace, Labels: labels},
+		Spec: appsv1.DeploymentSpec{
+			Replicas: &replicas,
+			Strategy: appsv1.DeploymentStrategy{
+				Type:          appsv1.RollingUpdateDeploymentStrategyType,
+				RollingUpdate: &appsv1.RollingUpdateDeployment{MaxSurge: &maxSurge, MaxUnavailable: &maxUnavailable},
+			},
+			Selector: &metav1.LabelSelector{MatchLabels: SystemSelector(ServerName)},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: in.hashedTemplateMeta(ServerName, in.ServerImage, in.serverConfigHash()),
+				Spec:       spec,
+			},
+		},
+	}
+}
+
+// imagePullPolicy pulls again only when the reference can point somewhere
+// else tomorrow. A version tag or a digest is a promise; ":latest" and a bare
+// name are not, and a dev install that reuses one would otherwise keep running
+// the image the node happens to have cached.
+func imagePullPolicy(image string) corev1.PullPolicy {
+	if strings.Contains(image, "@") {
+		return corev1.PullIfNotPresent
+	}
+	// Only the last path element can carry the tag — a registry's port colon
+	// (reg.example.com:5000/donkey) is not one.
+	name := image
+	if i := strings.LastIndex(name, "/"); i >= 0 {
+		name = name[i+1:]
+	}
+	// Everybody moves "latest" and "dev": a pod reusing a cached layer for
+	// those runs code nobody pushed, and an e2e run tests a stale server.
+	_, tag, ok := strings.Cut(name, ":")
+	if !ok || tag == "" || tag == "latest" || tag == "dev" {
+		return corev1.PullAlways
+	}
+	return corev1.PullIfNotPresent
+}
+
+// serverResources sizes donkey-server. Uploads stream through it to the
+// orchestrator, so it needs little local disk of its own — but a pod that
+// requests none is the first thing the kubelet evicts when a node runs short
+// of it. CPU is requested but not capped — throttling the API costs more
+// than the noisy neighbour it would prevent.
+func serverResources() corev1.ResourceRequirements {
+	return corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{
+			corev1.ResourceCPU:              resource.MustParse("100m"),
+			corev1.ResourceMemory:           resource.MustParse("256Mi"),
+			corev1.ResourceEphemeralStorage: resource.MustParse("256Mi"),
+		},
+	}
+}
+
+// orchestratorResources sizes donkey-orchestrator. Ephemeral storage is the
+// one nobody expects: the orchestrator unpacks build contexts on local disk,
+// and a pod that requests none is the first thing the kubelet evicts when a
+// node runs short of it. CPU is requested but not capped — throttling a
+// deploy midway costs more than the noisy neighbour it would prevent.
+func orchestratorResources() corev1.ResourceRequirements {
+	return corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{
+			corev1.ResourceCPU:              resource.MustParse("100m"),
+			corev1.ResourceMemory:           resource.MustParse("256Mi"),
+			corev1.ResourceEphemeralStorage: resource.MustParse("3Gi"),
+		},
+	}
+}
+
+// registryCAFile is where the server reads the registry's certificate
+// authority ("" when the registry's certificate is publicly trusted).
+func registryCAFile(in SystemInput) string {
+	if in.RegistryCASecret == "" {
+		return ""
+	}
+	return registryCAPath + "/ca.crt"
+}
+
+func systemService(in SystemInput, name string, port, targetPort int32) *corev1.Service {
+	return &corev1.Service{
+		TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "Service"},
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: in.Namespace, Labels: SystemLabels(name)},
+		Spec: corev1.ServiceSpec{
+			Type:     corev1.ServiceTypeClusterIP,
+			Selector: SystemSelector(name),
+			Ports:    []corev1.ServicePort{{Name: "http", Port: port, TargetPort: intstr.FromInt32(targetPort)}},
+		},
+	}
+}
+
+// adminsJSON seeds platform administrators; an empty value leaves bootstrap
+// to the first verified sign-in.
+func adminsJSON(in SystemInput) string {
+	if in.PlatformAdmins.Empty() {
+		return ""
+	}
+	b, err := json.Marshal(in.PlatformAdmins)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+// consoleRoute stores platform routing alongside platform.yaml in the donkey
+// ConfigMap. The server verifies the forwarded identity and management roles.
+func consoleRoute(in SystemInput) *corev1.ConfigMap {
+	return routeConfigMap(SystemConfigMapName, in.Namespace, SystemLabels(ServerName), config.GatewayRoute{
+		Backend: fmt.Sprintf("http://%s.%s.svc:80", ServerName, in.Namespace),
+		Host:    in.ServerHost(), Path: "/", Login: true, Token: true,
+	})
+}
+
+func systemConfigMap(in SystemInput) *corev1.ConfigMap {
+	cm := consoleRoute(in)
+	cm.Data["buildkitd.toml"] = buildkitTOML(in)
+	return cm
+}

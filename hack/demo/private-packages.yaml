@@ -1,0 +1,58 @@
+# E2E ONLY — the TLS mirror every package-manager build must authenticate to.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: private-packages
+  namespace: donkey-system
+  labels:
+    app: private-packages
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: private-packages
+  template:
+    metadata:
+      labels:
+        app: private-packages
+    spec:
+      containers:
+        - name: private-packages
+          image: registry.platform/donkey/private-packages:dev
+          imagePullPolicy: Always
+          env:
+            - name: TLS_CERT
+              value: /tls/tls.crt
+            - name: TLS_KEY
+              value: /tls/tls.key
+            - name: USERNAME
+              value: e2e-reader
+            - name: PASSWORD
+              value: e2e-token
+          ports:
+            - containerPort: 8443
+          readinessProbe:
+            httpGet:
+              scheme: HTTPS
+              path: /healthz
+              port: 8443
+          volumeMounts:
+            - name: tls
+              mountPath: /tls
+              readOnly: true
+      volumes:
+        - name: tls
+          secret:
+            secretName: private-packages-tls
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: packages
+  namespace: donkey-system
+spec:
+  selector:
+    app: private-packages
+  ports:
+    - port: 443
+      targetPort: 8443

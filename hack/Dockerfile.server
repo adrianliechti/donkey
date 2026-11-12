@@ -1,0 +1,42 @@
+# DuckDB's Go client uses CGO and ships platform-native static bindings. Build
+# the server inside each target platform so a multi-arch build gets the right
+# compiler and binding without a host cross-C toolchain.
+FROM --platform=$BUILDPLATFORM node:24-bookworm-slim AS web
+WORKDIR /web
+COPY web/package.json web/package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY web/ ./
+RUN npm run build
+
+FROM golang:1-bookworm AS build
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends g++ \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /src
+COPY go.mod go.sum ./
+# The public addon API is its own module, resolved through a replace directive.
+COPY pkg/addons/go.mod pkg/addons/go.sum ./pkg/addons/
+RUN go mod download
+COPY . .
+COPY --from=web /web/dist ./web/dist
+ARG VERSION=dev
+RUN CGO_ENABLED=1 go build \
+    -ldflags "-X github.com/adrianliechti/donkey/internal/server.Version=${VERSION}" \
+    -o /out/donkey-server ./cmd/donkey-server
+
+# The vulnerability scanner the orchestrator matches inventories with — the
+# same pinned release the build engine inventories images with
+# (config.DefaultScannerImage); a test keeps the two in step.
+FROM aquasec/trivy:0.76.1@sha256:790fd66d1697395d8693d1acaa1ea702406a20f109b6fc7bac8db623eca6c06c AS scanner
+
+FROM debian:bookworm-slim
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates libstdc++6 wget \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=scanner --chmod=0755 /usr/local/bin/trivy /usr/local/bin/trivy
+# No USER: Kubernetes pins an unprivileged numeric uid; Docker's control-plane
+# process holds the engine socket and is already host-powerful. HOME remains
+# writable for either runtime-selected identity.
+ENV HOME=/tmp
+COPY --from=build --chmod=0755 /out/donkey-server /donkey-server
+ENTRYPOINT ["/donkey-server"]

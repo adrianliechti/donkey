@@ -1,0 +1,9 @@
+[project]
+name = "fx"
+version = "0.1.0"
+requires-python = ">=3.9"
+dependencies = [
+    "anyio==4.4.0",
+    "idna==3.6 ; python_full_version < '3.12'",
+    "idna==3.7 ; python_full_version >= '3.12'",
+]

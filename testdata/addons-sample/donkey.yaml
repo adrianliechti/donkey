@@ -1,0 +1,6 @@
+addons:
+- type: postgres
+healthcheck:
+  path: /healthz
+name: addons-sample
+port: 3000

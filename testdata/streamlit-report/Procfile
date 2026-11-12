@@ -1,0 +1,9 @@
+# Streamlit is run by its own binary, not by python, and it takes the port and
+# address as flags rather than from the environment. This one line is what
+# makes it deployable anywhere:
+#   --server.address 0.0.0.0  it binds loopback otherwise, which in a container
+#                             means itself and nobody else
+#   --server.port $PORT       it would sit on 8501 and ignore the platform
+#   --server.headless         skips the first-run email prompt and the attempt
+#                             to open a browser that isn't there
+web: streamlit run app.py --server.port ${PORT:-8501} --server.address 0.0.0.0 --server.headless true --browser.gatherUsageStats false

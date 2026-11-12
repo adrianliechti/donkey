@@ -1,0 +1,690 @@
+//go:build e2e
+
+// Package e2e tests a RUNNING donkey installation end to end, through the
+// same doors real users take: the server API (the CLI's client) and the
+// gateway's https edge (a browser's view). It is runtime-agnostic — the same
+// suite verifies a kind and a docker installation, because it never talks to
+// Kubernetes or Docker directly.
+//
+// It needs (hack/verify.sh sets all of this up):
+//
+//	DONKEY_E2E_SERVER       the API base URL (direct or port-forwarded)
+//	DONKEY_E2E_SESSION_KEY  the installation's session key (hex) — the suite
+//	                        mints its own token, like `donkey login` would
+//	DONKEY_E2E_DOMAIN       the installation's app domain
+//	DONKEY_E2E_GATEWAY      host:port of the https edge (optional — without
+//	                        it the through-the-gateway tests are skipped)
+//	DONKEY_E2E_CA           PEM file the gateway's certificates chain to
+//
+// Run: go test -tags e2e -count=1 -timeout 30m ./e2e
+package e2e
+
+import (
+	"bytes"
+	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/adrianliechti/donkey/internal/apiclient"
+	"github.com/adrianliechti/donkey/internal/identity"
+	"github.com/adrianliechti/donkey/internal/server"
+)
+
+const (
+	space       = "e2e"
+	app         = "e2e-web"
+	packagesApp = "e2e-packages"
+)
+
+type suite struct {
+	api    *apiclient.Client
+	server string
+	token  string
+	user   string
+	domain string
+	// edge dials every hostname at the gateway's one address — curl's
+	// --resolve, in Go. Nil when DONKEY_E2E_GATEWAY isn't set.
+	edge *http.Client
+}
+
+func newSuite(t *testing.T) *suite {
+	t.Helper()
+	server := os.Getenv("DONKEY_E2E_SERVER")
+	if server == "" {
+		t.Skip("DONKEY_E2E_SERVER not set — the e2e suite needs a running installation (task verify)")
+	}
+	key, err := hex.DecodeString(os.Getenv("DONKEY_E2E_SESSION_KEY"))
+	if err != nil || len(key) != 32 {
+		t.Fatal("DONKEY_E2E_SESSION_KEY must be 32 bytes of hex (the installation's session key)")
+	}
+	// The suite signs in as e2e@localhost unless DONKEY_E2E_USER names the
+	// address of someone who is a platform admin on the installation — an
+	// install that has already seen its first sign-in has its admin, and
+	// nobody else may create spaces.
+	user := os.Getenv("DONKEY_E2E_USER")
+	if user == "" {
+		user = "e2e@localhost"
+	}
+	token, err := identity.SealToken(key, identity.Identity{
+		Subject: "e2e",
+		Email:   user,
+		Expires: time.Now().Add(2 * time.Hour).Unix(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	domain := os.Getenv("DONKEY_E2E_DOMAIN")
+	if domain == "" {
+		t.Fatal("DONKEY_E2E_DOMAIN must name the installation's app domain")
+	}
+	api, err := apiclient.New(server, token, os.Getenv("DONKEY_E2E_CA"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &suite{api: api, server: server, token: token, user: user, domain: domain}
+	if gw := os.Getenv("DONKEY_E2E_GATEWAY"); gw != "" {
+		tlsCfg := &tls.Config{}
+		if caFile := os.Getenv("DONKEY_E2E_CA"); caFile != "" {
+			pem, err := os.ReadFile(caFile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pool := x509.NewCertPool()
+			pool.AppendCertsFromPEM(pem)
+			tlsCfg.RootCAs = pool
+		}
+		dialer := &net.Dialer{Timeout: 10 * time.Second}
+		s.edge = &http.Client{
+			Timeout: 30 * time.Second,
+			// Redirects are assertions here (to the IdP, to https), never
+			// something to follow.
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+			Transport: &http.Transport{
+				TLSClientConfig: tlsCfg,
+				DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+					return dialer.DialContext(ctx, network, gw)
+				},
+			},
+		}
+	}
+	return s
+}
+
+// get fetches one app URL through the gateway; withToken rides the sealed
+// CLI token as Bearer, the way `donkey open`'s curl examples do.
+func (s *suite) get(t *testing.T, url string, withToken bool) (*http.Response, string) {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if withToken {
+		req.Header.Set("Authorization", "Bearer "+s.token)
+	}
+	resp, err := s.edge.Do(req)
+	if err != nil {
+		t.Fatalf("GET %s: %v", url, err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	return resp, string(body)
+}
+
+// waitBody polls a URL through the gateway until the body contains want.
+// A transport error counts as "not yet", not as a failure: a hostname that
+// just appeared is briefly unknown to the gateway, and until it syncs its
+// routes it has no certificate to offer — the handshake fails rather than
+// the request.
+func (s *suite) waitBody(t *testing.T, url, want string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	var last string
+	for time.Now().Before(deadline) {
+		status, body, err := s.try(url, true)
+		switch {
+		case err != nil:
+			last = err.Error()
+		case status == http.StatusOK && strings.Contains(body, want):
+			return
+		default:
+			last = fmt.Sprintf("%d: %s", status, body)
+		}
+		time.Sleep(2 * time.Second)
+	}
+	t.Fatalf("%s never served %q; last: %s", url, want, last)
+}
+
+// try is one attempt that reports its own failure instead of ending the test.
+func (s *suite) try(url string, withToken bool) (int, string, error) {
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return 0, "", err
+	}
+	if withToken {
+		req.Header.Set("Authorization", "Bearer "+s.token)
+	}
+	resp, err := s.edge.Do(req)
+	if err != nil {
+		return 0, "", err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	return resp.StatusCode, string(body), nil
+}
+
+// raw calls a server endpoint the CLI has no verb for (network, spaces).
+func (s *suite) raw(t *testing.T, method, path string, body any, out any) *http.Response {
+	t.Helper()
+	var rd io.Reader
+	if body != nil {
+		b, err := json.Marshal(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rd = bytes.NewReader(b)
+	}
+	req, err := http.NewRequest(method, s.server+path, rd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+s.token)
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	httpClient := &http.Client{Timeout: 5 * time.Minute}
+	if ca := os.Getenv("DONKEY_E2E_CA"); ca != "" {
+		pem, err := os.ReadFile(ca)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pool := x509.NewCertPool()
+		pool.AppendCertsFromPEM(pem)
+		tr := http.DefaultTransport.(*http.Transport).Clone()
+		tr.TLSClientConfig = &tls.Config{RootCAs: pool}
+		httpClient.Transport = tr
+	}
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		t.Fatalf("%s %s: %v", method, path, err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("%s %s: %d — %s", method, path, resp.StatusCode, raw)
+	}
+	if out != nil {
+		if err := json.Unmarshal(raw, out); err != nil {
+			t.Fatalf("%s %s: %v in %s", method, path, err, raw)
+		}
+	}
+	return resp
+}
+
+// rawTry is a request whose failure is not this test's business — used to
+// clear leftovers that may or may not be there.
+func (s *suite) rawTry(method, path string) {
+	req, err := http.NewRequest(method, s.server+path, nil)
+	if err != nil {
+		return
+	}
+	req.Header.Set("Authorization", "Bearer "+s.token)
+	resp, err := (&http.Client{Timeout: time.Minute}).Do(req)
+	if err == nil {
+		resp.Body.Close()
+	}
+}
+
+func (s *suite) appURL(path string) string {
+	return "https://" + app + "." + space + "." + s.domain + path
+}
+
+// TestEndToEnd is one ordered story: deploy → reach → change → destroy.
+// Subtests share the suite and depend on each other — the price of testing a
+// real installation instead of mocks.
+func TestEndToEnd(t *testing.T) {
+	s := newSuite(t)
+	ctx := context.Background()
+
+	t.Run("ping", func(t *testing.T) {
+		if err := s.api.Ping(ctx); err != nil {
+			t.Fatalf("the server didn't accept the connection: %v", err)
+		}
+	})
+
+	// Start from nothing. An app left behind by an interrupted run carries
+	// its console choices into this one's first deploy, and the suite would
+	// then be testing yesterday's settings.
+	t.Run("clean-slate", func(t *testing.T) {
+		_ = s.api.Destroy(ctx, space, app, false)
+		_ = s.api.Destroy(ctx, space, packagesApp, false)
+		_ = s.api.RemoveSpaceAddon(ctx, space, "postgres", false, false)
+		s.rawTry(http.MethodDelete, "/v1/spaces/"+space)
+		s.raw(t, http.MethodPost, "/v1/spaces", map[string]any{"name": space, "allowPublic": true, "viewers": map[string]any{"users": []string{"demo@example.com"}}}, nil)
+	})
+
+	t.Run("package-proxy-build", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFile(t, filepath.Join(dir, "Dockerfile"), `FROM node:22-alpine AS npm-probe
+RUN mkdir -p /tmp/npm-probe \
+  && cd /tmp/npm-probe \
+  && npm init -y \
+  && npm install --ignore-scripts --no-audit --no-fund is-number@7.0.0 \
+  && test -f node_modules/is-number/index.js \
+  && touch /npm-ok
+
+FROM python:3.12-slim AS pypi-probe
+RUN pip install --no-cache-dir --no-deps idna==3.10 \
+  && python -c 'import idna; assert idna.__version__ == "3.10"' \
+  && touch /pypi-ok
+
+FROM golang:1.25-alpine AS go-probe
+RUN mkdir -p /tmp/go-probe \
+  && cd /tmp/go-probe \
+  && go mod init example.invalid/probe \
+  && go mod download golang.org/x/text@v0.28.0 \
+  && touch /go-ok
+
+FROM maven:3.9.16-eclipse-temurin-21-alpine AS maven-probe
+RUN printf '%s\n' \
+  '<settings><mirrors><mirror><id>donkey</id>' \
+  '<url>${env.DONKEY_MAVEN_MIRROR}</url><mirrorOf>*</mirrorOf>' \
+  '</mirror></mirrors></settings>' > /tmp/settings.xml \
+  && mvn --batch-mode --settings /tmp/settings.xml dependency:get -Dartifact=org.apache.maven:maven-model:3.9.6 \
+  && touch /maven-ok
+
+FROM mcr.microsoft.com/dotnet/sdk:10.0-alpine AS nuget-probe
+RUN printf '%s\n' \
+  '<?xml version="1.0" encoding="utf-8"?>' \
+  '<configuration><packageSources><clear />' \
+  '<add key="donkey" value="%DONKEY_NUGET_SOURCE%" protocolVersion="3" allowInsecureConnections="true" />' \
+  '</packageSources></configuration>' > /tmp/NuGet.Config \
+  && mkdir -p /tmp/nuget-probe \
+  && printf '%s\n' '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup><ItemGroup><PackageReference Include="Newtonsoft.Json" Version="13.0.3" /></ItemGroup></Project>' > /tmp/nuget-probe/probe.csproj \
+  && dotnet restore /tmp/nuget-probe/probe.csproj --configfile /tmp/NuGet.Config \
+  && touch /nuget-ok
+
+FROM debian:bookworm-slim AS debian-probe
+RUN test -n "$DONKEY_DEBIAN_MIRROR" \
+  && . /etc/os-release \
+  && rm -f /etc/apt/sources.list.d/debian.sources /etc/apt/sources.list.d/debian.list \
+  && printf 'deb %s %s main\n' "$DONKEY_DEBIAN_MIRROR" "$VERSION_CODENAME" > /etc/apt/sources.list \
+  && apt-get update -o Acquire::AllowInsecureRepositories=true \
+  && apt-get install -y --allow-unauthenticated --no-install-recommends libjansson4 \
+  && dpkg-query -W libjansson4 \
+  && touch /debian-ok
+
+FROM alpine:3.21 AS alpine-probe
+RUN test -n "$DONKEY_ALPINE_MIRROR" \
+  && sed -i -E "s#https?://.*/(v[0-9]+\\.[0-9]+|edge)/#${DONKEY_ALPINE_MIRROR}/\\1/#" /etc/apk/repositories \
+  && apk add --no-cache jansson \
+  && apk info -e jansson \
+  && touch /alpine-ok
+
+FROM busybox:1.37
+RUN test -n "$NPM_CONFIG_REGISTRY" && test -n "$PIP_INDEX_URL" && test -n "$GOPROXY"
+RUN test -n "$DONKEY_MAVEN_MIRROR" && test -n "$MAVEN_REPO_CENTRAL" && test -n "$MVNW_REPOURL" && test -n "$DONKEY_NUGET_SOURCE"
+COPY --from=npm-probe /npm-ok /npm-ok
+COPY --from=pypi-probe /pypi-ok /pypi-ok
+COPY --from=go-probe /go-ok /go-ok
+COPY --from=maven-probe /maven-ok /maven-ok
+COPY --from=nuget-probe /nuget-ok /nuget-ok
+COPY --from=debian-probe /debian-ok /debian-ok
+COPY --from=alpine-probe /alpine-ok /alpine-ok
+RUN mkdir -p /site && echo packages-ok > /site/index.html
+CMD ["httpd", "-f", "-p", "8080", "-h", "/site"]
+`)
+		writeFile(t, filepath.Join(dir, "donkey.yaml"), fmt.Sprintf(
+			"name: %s\nspace: %s\nport: 8080\n", packagesApp, space))
+
+		var tarBuf bytes.Buffer
+		if _, err := apiclient.TarContext(dir, &tarBuf); err != nil {
+			t.Fatal(err)
+		}
+		deadline, cancel := context.WithTimeout(ctx, 10*time.Minute)
+		defer cancel()
+		res, err := s.api.Deploy(deadline, &tarBuf, apiclient.DeployOpts{Space: space},
+			func(line string) { t.Log(line) }, func(string) {})
+		if err != nil {
+			t.Fatalf("package proxy probe deploy failed: %v", err)
+		}
+		if !res.OK {
+			t.Fatalf("package proxy probe deploy failed: %s\n%s", res.Error, res.Diagnosis)
+		}
+		if err := s.api.Destroy(ctx, space, packagesApp, false); err != nil {
+			t.Fatalf("destroying package proxy probe: %v", err)
+		}
+	})
+
+	t.Run("doctor", func(t *testing.T) {
+		checks, _, err := s.api.Doctor(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, c := range checks {
+			if !c.OK {
+				t.Errorf("doctor: %s — %s", c.Name, c.Detail)
+			}
+		}
+	})
+
+	t.Run("deploy", func(t *testing.T) {
+		dir := t.TempDir()
+		copyDir(t, filepath.Join("..", "testdata", "fastapi-sample"), dir)
+		writeFile(t, filepath.Join(dir, "donkey.yaml"), fmt.Sprintf(
+			"name: %s\nspace: %s\nport: 8000\nhealthcheck:\n  path: /healthz\nstorage:\n  size: 1Gi\n  paths:\n    - /app/data\n    - /app/uploads\n", app, space))
+
+		var tarBuf bytes.Buffer
+		if _, err := apiclient.TarContext(dir, &tarBuf); err != nil {
+			t.Fatal(err)
+		}
+		deadline, cancel := context.WithTimeout(ctx, 15*time.Minute)
+		defer cancel()
+		res, err := s.api.Deploy(deadline, &tarBuf, apiclient.DeployOpts{Space: space},
+			func(line string) { t.Log(line) }, func(string) {})
+		if err != nil {
+			t.Fatalf("deploy failed: %v", err)
+		}
+		if !res.OK {
+			t.Fatalf("deploy failed: %s\n%s", res.Error, res.Diagnosis)
+		}
+		if res.URL == "" {
+			t.Fatal("a routed app should get a URL")
+		}
+	})
+
+	t.Run("status", func(t *testing.T) {
+		st, err := s.api.Status(ctx, space, app)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !st.Found || !st.Healthy {
+			t.Fatalf("the app should be healthy: %+v", st)
+		}
+		if !st.HasStorage {
+			t.Error("the app should own a disk")
+		}
+		if st.Exposure != "protected" {
+			t.Errorf("apps are login-protected by default, got %q", st.Exposure)
+		}
+	})
+
+	t.Run("apps", func(t *testing.T) {
+		apps, err := s.api.Apps(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, a := range apps {
+			if a.Name == app && a.Space == space {
+				return
+			}
+		}
+		t.Fatalf("the overview should list %s/%s", space, app)
+	})
+
+	t.Run("logs", func(t *testing.T) {
+		var buf bytes.Buffer
+		if err := s.api.Logs(ctx, space, app, "web", false, 50, 0, &buf); err != nil {
+			t.Fatal(err)
+		}
+		if buf.Len() == 0 {
+			t.Error("a running app should have logs")
+		}
+	})
+
+	if s.edge == nil {
+		t.Log("DONKEY_E2E_GATEWAY not set — skipping the through-the-gateway tests")
+	} else {
+		t.Run("gateway/login-redirect", func(t *testing.T) {
+			// A browser without a session is sent into the login.
+			req, err := http.NewRequest(http.MethodGet, s.appURL("/healthz"), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("Accept", "text/html")
+			resp, err := s.edge.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp.Body.Close()
+			if resp.StatusCode < 300 || resp.StatusCode >= 400 {
+				t.Fatalf("a protected app should redirect browsers to the login, got %d", resp.StatusCode)
+			}
+			if resp.Header.Get("Location") == "" {
+				t.Fatal("the redirect should say where the login is")
+			}
+		})
+
+		t.Run("gateway/api-unauthorized", func(t *testing.T) {
+			// Non-browser clients get a plain 401, never a redirect chain.
+			resp, _ := s.get(t, s.appURL("/healthz"), false)
+			if resp.StatusCode != http.StatusUnauthorized {
+				t.Fatalf("an API call without identity should get 401, got %d", resp.StatusCode)
+			}
+		})
+
+		t.Run("gateway/token-access", func(t *testing.T) {
+			s.waitBody(t, s.appURL("/healthz"), `"ok":true`, time.Minute)
+		})
+
+		t.Run("env", func(t *testing.T) {
+			if _, err := s.api.PutEnv(ctx, space, app, map[string]string{"GREETING": "hi-from-e2e"}, true); err != nil {
+				t.Fatal(err)
+			}
+			s.waitBody(t, s.appURL("/"), "hi-from-e2e", 3*time.Minute)
+		})
+
+		t.Run("addon", func(t *testing.T) {
+			deadline, cancel := context.WithTimeout(ctx, 5*time.Minute)
+			defer cancel()
+			if _, err := s.api.AddAddon(deadline, space, app, server.AddonRequest{Type: "postgres", Name: "postgres"}); err != nil {
+				t.Fatal(err)
+			}
+			s.waitBody(t, s.appURL("/db-check"), `"database":"ok"`, 3*time.Minute)
+
+			addons, err := s.api.SpaceAddons(ctx, space)
+			if err != nil {
+				t.Fatal(err)
+			}
+			found := false
+			for _, a := range addons {
+				if a.Name == "postgres" {
+					found = true
+					for _, attached := range a.AttachedTo {
+						if attached == app {
+							return
+						}
+					}
+				}
+			}
+			if !found {
+				t.Fatal("the space should list its postgres")
+			}
+			t.Fatal("postgres should be attached to the app")
+		})
+
+		t.Run("network/public", func(t *testing.T) {
+			s.raw(t, http.MethodPut, "/v1/spaces/"+space+"/apps/"+app+"/network",
+				map[string]string{"exposure": "public"}, nil)
+			deadline := time.Now().Add(time.Minute)
+			for {
+				resp, _ := s.get(t, s.appURL("/healthz"), false)
+				if resp.StatusCode == http.StatusOK {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf("a public app should serve without login, got %d", resp.StatusCode)
+				}
+				time.Sleep(2 * time.Second)
+			}
+		})
+
+		// `host` moves an app off its default address without a deploy:
+		// "@" claims the space's own, a plain name gives it a label of its
+		// own, and the console must read back the shape, not where it
+		// resolved to.
+		t.Run("network/host", func(t *testing.T) {
+			setHost := func(t *testing.T, host string) *server.NetworkResponse {
+				t.Helper()
+				var out struct {
+					Network *server.NetworkResponse `json:"network"`
+				}
+				s.raw(t, http.MethodPut, "/v1/spaces/"+space+"/apps/"+app+"/network",
+					map[string]string{"exposure": "public", "host": host}, &out)
+				return out.Network
+			}
+
+			net := setHost(t, "@")
+			if net.Host != "@" {
+				t.Errorf(`the space root should read back as "@", got %q`, net.Host)
+			}
+			spaceHost := space + "." + s.domain
+			if net.URL != "https://"+spaceHost {
+				t.Errorf("expected the space's own address, got %q", net.URL)
+			}
+			s.waitBody(t, "https://"+spaceHost+"/healthz", `"ok":true`, 2*time.Minute)
+
+			net = setHost(t, "shop")
+			if net.Host != "shop" {
+				t.Errorf("a label of its own should read back as %q, got %q", "shop", net.Host)
+			}
+			s.waitBody(t, "https://shop."+space+"."+s.domain+"/healthz", `"ok":true`, 2*time.Minute)
+
+			// Back to the default: the console reports no override at all.
+			net = setHost(t, "")
+			if net.Host != "" {
+				t.Errorf("the default address should read back empty, got %q", net.Host)
+			}
+			s.waitBody(t, s.appURL("/healthz"), `"ok":true`, 2*time.Minute)
+		})
+
+		t.Run("network/internal", func(t *testing.T) {
+			s.raw(t, http.MethodPut, "/v1/spaces/"+space+"/apps/"+app+"/network",
+				map[string]string{"exposure": "internal"}, nil)
+			deadline := time.Now().Add(time.Minute)
+			for {
+				resp, _ := s.get(t, s.appURL("/healthz"), true)
+				if resp.StatusCode == http.StatusNotFound {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf("an internal app should vanish from the edge, got %d", resp.StatusCode)
+				}
+				time.Sleep(2 * time.Second)
+			}
+			s.raw(t, http.MethodPut, "/v1/spaces/"+space+"/apps/"+app+"/network",
+				map[string]string{"exposure": "protected"}, nil)
+		})
+	}
+
+	t.Run("files", func(t *testing.T) {
+		if err := s.api.UploadFile(ctx, space, app, "app-data/hello.txt", strings.NewReader("hello from e2e")); err != nil {
+			t.Fatal(err)
+		}
+		listing, err := s.api.ListFiles(ctx, space, app, "app-data")
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, e := range listing.Entries {
+			if e.Name == "hello.txt" {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("the upload should appear in the listing: %+v", listing.Entries)
+		}
+		var buf bytes.Buffer
+		if err := s.api.DownloadFile(ctx, space, app, "app-data/hello.txt", &buf); err != nil {
+			t.Fatal(err)
+		}
+		if buf.String() != "hello from e2e" {
+			t.Fatalf("the download should match the upload, got %q", buf.String())
+		}
+	})
+
+	t.Run("destroy", func(t *testing.T) {
+		if err := s.api.Destroy(ctx, space, app, false); err != nil {
+			t.Fatal(err)
+		}
+		deadline := time.Now().Add(2 * time.Minute)
+		for {
+			st, err := s.api.Status(ctx, space, app)
+			if err == nil && !st.Found {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("the app should be gone after destroy: %+v (%v)", st, err)
+			}
+			time.Sleep(2 * time.Second)
+		}
+	})
+
+	t.Run("remove-space", func(t *testing.T) {
+		// The space still holds its postgres (and its data) — removing the
+		// space must take them along without a separate addon removal.
+		deadline := time.Now().Add(2 * time.Minute)
+		for {
+			var out struct {
+				Spaces []string `json:"spaces"`
+			}
+			s.raw(t, http.MethodDelete, "/v1/spaces/"+space, nil, nil)
+			s.raw(t, http.MethodGet, "/v1/spaces", nil, &out)
+			gone := true
+			for _, sp := range out.Spaces {
+				if sp == space {
+					gone = false
+				}
+			}
+			if gone {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("the space should be gone, still listed: %v", out.Spaces)
+			}
+			time.Sleep(2 * time.Second)
+		}
+	})
+}
+
+func copyDir(t *testing.T, from, to string) {
+	t.Helper()
+	entries, err := os.ReadDir(from)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			sub := filepath.Join(to, e.Name())
+			if err := os.MkdirAll(sub, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			copyDir(t, filepath.Join(from, e.Name()), sub)
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join(from, e.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, filepath.Join(to, e.Name()), string(b))
+	}
+}
+
+func writeFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}

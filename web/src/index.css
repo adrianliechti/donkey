@@ -1,0 +1,174 @@
+@import 'tailwindcss';
+@import '@fontsource-variable/jetbrains-mono';
+
+/*
+ * Mission-control, light and dark.
+ *
+ * Achromatic neutrals (Tailwind's `neutral` ramp, chroma 0 throughout), a
+ * clean blue accent, and green/red strictly as health semantics. The ramp is
+ * achromatic on purpose: a tinted one (stone) read black on deep surfaces and
+ * brown on borders and muted text, because sRGB shows no hue that dark while
+ * the midtones carry it. The gateway and CLI pages (internal/webpage) repeat
+ * these values by hand; change both together.
+ *
+ * The console follows the operating system's light/dark preference
+ * automatically — there is no toggle and nothing is stored: the theme is
+ * `prefers-color-scheme`, full stop.
+ *
+ * Every token is a plain semantic role (surface, card, ink, accent, success…)
+ * defined as a light-dark() pair of Tailwind's default oklch palette, so the
+ * console rides the framework's colours and both themes stay in gamut. One
+ * definition per token drives every utility — including the opacity modifiers
+ * (`bg-line/60`): the build expands each light-dark() to both computed values,
+ * switched by `color-scheme`. (Overriding a plain @theme variable in a media
+ * query bakes the light value into `/opacity` utilities statically, and
+ * `@theme inline` over a swappable var drops the opacity modifier — hence
+ * light-dark().)
+ *
+ * Components know only the role names below. Identifiers (apps, spaces,
+ * addresses, env keys) are always mono — JetBrains Mono is bundled, because
+ * the CSP allows no remote fonts.
+ */
+@theme {
+  /* Surfaces, page → elevated */
+  --color-surface: light-dark(oklch(98.5% 0 0), oklch(14.5% 0 0)); /* neutral-50 / 950 */
+  --color-card: light-dark(oklch(100% 0 0), oklch(20.5% 0 0)); /* white / neutral-900 */
+  --color-raised: light-dark(oklch(97% 0 0), oklch(26.9% 0 0)); /* neutral-100 / 800 */
+  --color-well: light-dark(oklch(97% 0 0), oklch(11% 0 0)); /* log panes — the darkest */
+
+  /* Borders */
+  --color-line: light-dark(oklch(92.2% 0 0), oklch(26.9% 0 0)); /* neutral-200 / 800 */
+  --color-line-strong: light-dark(oklch(87% 0 0), oklch(37.1% 0 0)); /* neutral-300 / 700 */
+
+  /* Text, strong → faint */
+  --color-ink: light-dark(oklch(20.5% 0 0), oklch(97% 0 0)); /* neutral-900 / 100 */
+  --color-emphasis: light-dark(oklch(37.1% 0 0), oklch(87% 0 0)); /* neutral-700 / 300 */
+  --color-ink-soft: light-dark(oklch(43.9% 0 0), oklch(70.8% 0 0)); /* neutral-600 / 400 */
+  --color-muted: light-dark(oklch(55.6% 0 0), oklch(55.6% 0 0)); /* neutral-500 */
+
+  /* The backdrop under a dialog or drawer, and the drawer's shadow. Used with
+     an opacity modifier (bg-scrim/60); the ramp's own dark, never a literal
+     black, so what shows through stays in the ramp's family. */
+  --color-scrim: light-dark(oklch(14.5% 0 0), oklch(0% 0 0)); /* neutral-950 / black */
+
+  /* Accent — clean blue. Swap all four to restyle the console: e.g. teal
+     (…181/182 hues), violet (…293), or a neutral slate (…257) for a
+     monochrome look. The shades pair as 500/400, 600/500, 100/950. */
+  --color-accent: light-dark(oklch(62.3% 0.214 259.815), oklch(70.7% 0.165 254.624)); /* blue-500 / 400 */
+  --color-accent-strong: light-dark(oklch(54.6% 0.245 262.881), oklch(62.3% 0.214 259.815)); /* blue-600 / 500 */
+  --color-accent-soft: light-dark(oklch(93.2% 0.032 255.585), oklch(28.2% 0.091 267.935)); /* blue-100 / 950 */
+  --color-on-accent: light-dark(oklch(100% 0 0), oklch(14.5% 0 0)); /* text on an accent fill: white / neutral-950 */
+
+  /* Health semantics */
+  --color-success: light-dark(oklch(59.6% 0.145 163.225), oklch(76.5% 0.177 163.223)); /* emerald-600 / 400 */
+  --color-danger: light-dark(oklch(57.7% 0.245 27.325), oklch(70.4% 0.191 22.216)); /* red-600 / 400 */
+  /* Warnings — the app will run and still not work. Amber, so a warning
+     never looks like a selection (blue) or a failure (red). */
+  --color-warning: light-dark(oklch(66.6% 0.179 58.318), oklch(82.8% 0.189 84.429)); /* amber-600 / 400 */
+
+  /* Analytics chart — two steps of the accent's blue: visitors the strong
+     one, pageviews the context behind it. Validated as a pair per mode
+     (lightness band, chroma, CVD and normal-vision separation); the dark
+     pair is stepped separately rather than flipped. */
+  --color-chart-visitors: light-dark(#2563eb, #4d93f7);
+  --color-chart-views: light-dark(#60a5fa, #2856d6);
+
+  --font-sans: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono Variable', ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas, monospace;
+
+  /* Motion: things enter decelerating, leave accelerating, and every exit is
+   * shorter than its entrance. Durations are read as duration-(--duration-x). */
+  --ease-emphasized: cubic-bezier(0.2, 0, 0, 1);
+  --ease-exit: cubic-bezier(0.4, 0, 1, 1);
+  --duration-fast: 120ms; /* hover, colour, small state flips */
+  --duration-base: 180ms; /* dialogs: scale + fade over a short distance */
+  --duration-panel: 260ms; /* drawers: the full width of the screen */
+  --duration-panel-exit: 180ms;
+}
+
+/* light-dark() resolves against color-scheme; setting both here is what makes
+ * the theme follow the OS, and makes native controls and scrollbars follow. */
+html {
+  background: var(--color-surface);
+  color: var(--color-ink);
+  color-scheme: light dark;
+  /* Locking the page scroll under a drawer must not shift the layout where
+   * scrollbars take room. */
+  scrollbar-gutter: stable;
+  /* The console's own scrollbars: a quiet thumb on no track. The color
+   * inherits, so every pane takes it from here; the width does not (see the
+   * base layer below). */
+  @apply scrollbar-thumb-line-strong scrollbar-track-transparent;
+  /* Lets height animate to and from `auto`. */
+  interpolate-size: allow-keywords;
+}
+
+/* Nothing rubber-bands. The console is an app, not a document: in Safari
+ * a bouncing page drags the sticky header and tabs past its ends, and a
+ * bouncing drawer tears its header off its content. Every scroll area keeps
+ * its scroll to itself, so hitting the end of a list never moves what is
+ * behind it. A base default, so a pane can still opt out with a utility. */
+@layer base {
+  html,
+  body,
+  .overflow-auto,
+  .overflow-x-auto,
+  .overflow-y-auto,
+  .overflow-scroll,
+  .overflow-x-scroll,
+  .overflow-y-scroll {
+    overscroll-behavior: none;
+  }
+
+  /* Thin scrollbars everywhere; a utility (scrollbar-none) still wins. */
+  * {
+    @apply scrollbar-thin;
+  }
+
+  /* Everything clickable shows the hand, as links already do. Tailwind v4
+   * resets buttons to the arrow, which left a breadcrumb link and the
+   * switcher button beside it pointing differently. */
+  button:not(:disabled),
+  [role='button']:not([aria-disabled='true']),
+  [role='option']:not([aria-disabled='true']),
+  [role='menuitem']:not([aria-disabled='true']) {
+    cursor: pointer;
+  }
+}
+
+/* Native checkboxes and radios take the ink, like the switch and the primary
+ * button — one accent for "on". */
+input[type='checkbox'],
+input[type='radio'] {
+  accent-color: var(--color-ink);
+}
+
+/* One-color brand mark: face it back toward the wordmark/content, and let
+ * currentColor choose the tone so it flips with the theme. */
+.donkey-logo {
+  display: inline-block;
+  flex: none;
+  background-color: currentColor;
+  -webkit-mask: url('/logo.svg') center / contain no-repeat;
+  mask: url('/logo.svg') center / contain no-repeat;
+  transform: scaleX(-1);
+}
+
+/* The paddock: the dotted field app cards sit on. */
+.dotgrid {
+  background-image: radial-gradient(color-mix(in srgb, var(--color-line-strong) 55%, transparent) 1px, transparent 1px);
+  background-size: 22px 22px;
+}
+
+/* Reduced motion drops travel, not cross-fades: opacity and colour keep their
+   (quick) transitions, transforms don't. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    transition-property: opacity, color, background-color, border-color, box-shadow, outline-color !important;
+    transition-duration: var(--duration-fast) !important;
+  }
+}

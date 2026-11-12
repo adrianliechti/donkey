@@ -1,0 +1,51 @@
+@import "tailwindcss";
+
+@theme {
+  /* A helpdesk: near-black ink on warm paper, one blue accent for data and
+     actions, and the status hues reserved for what they mean — priority and
+     sentiment — never decoration. Dark mode is its own selection below, not
+     an automatic flip. */
+  --color-ink: #0b0b0b;
+  --color-ink-soft: #52514e;
+  --color-muted: #898781;
+  --color-line: #e1e0d9;
+  --color-surface: #f9f9f7;
+  --color-card: #fcfcfb;
+  --color-accent: #2a78d6;
+  --color-accent-soft: #e9f1fb;
+  /* Status: good / warning / serious / critical. Sub-3:1 steps (warning,
+     serious on light) always travel with an icon or label — color never
+     carries a state alone. */
+  --color-good: #0ca30c;
+  --color-warn: #fab219;
+  --color-serious: #ec835a;
+  --color-critical: #d03b3b;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-ink: #ffffff;
+    --color-ink-soft: #c3c2b7;
+    --color-muted: #898781;
+    --color-line: #2c2c2a;
+    --color-surface: #0d0d0d;
+    --color-card: #1a1a19;
+    /* The accent steps up one notch so it carries the same weight on the
+       dark surface that the deeper blue does on paper. */
+    --color-accent: #3987e5;
+    --color-accent-soft: #17293f;
+  }
+}
+
+html {
+  background: var(--color-surface);
+  color: var(--color-ink);
+  color-scheme: light dark;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

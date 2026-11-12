@@ -1,0 +1,130 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: donkey-addons
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: mariadb-plugin
+  namespace: donkey-addons
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: mariadb-plugin
+  namespace: donkey-addons
+rules:
+  - apiGroups: [""]
+    resources: [secrets, services, persistentvolumeclaims]
+    verbs: [get, create, patch, delete]
+  - apiGroups: [apps]
+    resources: [deployments]
+    verbs: [get, create, patch, delete]
+  - apiGroups: [networking.k8s.io]
+    resources: [networkpolicies]
+    verbs: [get, create, patch, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: mariadb-plugin
+  namespace: donkey-addons
+subjects:
+  - kind: ServiceAccount
+    name: mariadb-plugin
+    namespace: donkey-addons
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: mariadb-plugin
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mariadb-plugin
+  namespace: donkey-addons
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: mariadb-plugin
+  template:
+    metadata:
+      labels:
+        app: mariadb-plugin
+    spec:
+      serviceAccountName: mariadb-plugin
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: plugin
+          image: donkey-addon-mariadb:dev
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: PLUGIN_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: DONKEY_INSTALLATION
+              value: donkey-system
+          ports:
+            - name: grpc
+              containerPort: 50051
+          readinessProbe:
+            grpc:
+              port: 50051
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mariadb-plugin
+  namespace: donkey-addons
+spec:
+  selector:
+    app: mariadb-plugin
+  ports:
+    - name: grpc
+      port: 50051
+      targetPort: grpc
+---
+# Provisioning credentials travel on this control-plane connection. Only
+# donkey-server may call it. Database ports have separate per-instance rules.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: mariadb-plugin
+  namespace: donkey-addons
+spec:
+  podSelector:
+    matchLabels:
+      app: mariadb-plugin
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: donkey-system
+          podSelector:
+            matchLabels:
+              donkey.local/installation: donkey-system
+              donkey.local/role: server
+      ports:
+        - protocol: TCP
+          port: 50051

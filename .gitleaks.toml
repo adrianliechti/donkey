@@ -1,0 +1,36 @@
+title = "Donkey secret scanning"
+minVersion = "v8.25.0"
+
+[extend]
+useDefault = true
+
+# These tests deliberately exercise credential detection. Each exception is
+# restricted to both a detector and an exact fixture value in a specific file.
+[[allowlists]]
+description = "Synthetic AWS access key used to test image secret scanning"
+targetRules = ["aws-access-token"]
+condition = "AND"
+paths = ['''(?:^|/)(?:e2e/scan_test\.go|internal/build/scan_e2e_test\.go)$''']
+regexes = ['''^AKIAQWERTYUIOPASDFGH$''']
+
+[[allowlists]]
+description = "Synthetic API key and incomplete JWT used to test redaction"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''(?:^|/)internal/ai/redact_test\.go$''']
+regexes = ['''^(?:sk-live-4f2a9c1b03de|eyJhbGciOiJIUzI1NiJ9\.abc)$''']
+
+# Golden manifest from manifests_test.go: reg.example.com, bob / hunter2.
+[[allowlists]]
+description = "Golden Docker config containing only example registry credentials"
+targetRules = ["kubernetes-secret-yaml"]
+condition = "AND"
+paths = ['''(?:^|/)testdata/golden/app-objects\.yaml$''']
+regexes = ['''^\.dockerconfigjson: eyJhdXRocyI6eyJyZWcuZXhhbXBsZS5jb20iOnsiYXV0aCI6IlltOWlPbWgxYm5SbGNqST0iLCJwYXNzd29yZCI6Imh1bnRlcjIiLCJ1c2VybmFtZSI6ImJvYiJ9fX0=$''']
+
+[[allowlists]]
+description = "Decoded bob / hunter2 auth from the golden Docker config"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''(?:^|/)testdata/golden/app-objects\.yaml$''']
+regexes = ['''^Ym9iOmh1bnRlcjI=$''']

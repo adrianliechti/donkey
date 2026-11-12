@@ -1,0 +1,177 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  annotations:
+    donkey.local/managed: "true"
+  labels:
+    app.kubernetes.io/instance: acme
+    app.kubernetes.io/managed-by: donkey
+    app.kubernetes.io/name: acme
+    app.kubernetes.io/part-of: acme
+    donkey.local/role: space
+    donkey.local/space: acme
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/warn: restricted
+  name: donkey-acme
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  labels:
+    app.kubernetes.io/instance: acme
+    app.kubernetes.io/managed-by: donkey
+    app.kubernetes.io/name: acme
+    app.kubernetes.io/part-of: acme
+    donkey.local/role: space
+    donkey.local/space: acme
+  name: acme-space
+  namespace: donkey-acme
+---
+apiVersion: v1
+data:
+  .dockerconfigjson: eyJhdXRocyI6eyJyZWcuZXhhbXBsZS5jb20iOnsiYXV0aCI6IlltOWlPbWgxYm5SbGNqST0iLCJwYXNzd29yZCI6Imh1bnRlcjIiLCJ1c2VybmFtZSI6ImJvYiJ9fX0=
+kind: Secret
+metadata:
+  labels:
+    app.kubernetes.io/instance: acme
+    app.kubernetes.io/managed-by: donkey
+    app.kubernetes.io/name: shop
+    app.kubernetes.io/part-of: acme
+    donkey.local/app: shop
+    donkey.local/role: registry-auth
+    donkey.local/space: acme
+  name: shop-registry
+  namespace: donkey-acme
+type: kubernetes.io/dockerconfigjson
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  annotations:
+    donkey.local/image: reg.example.com/donkey/shop:abc123-20260101000000
+  labels:
+    app.kubernetes.io/instance: acme
+    app.kubernetes.io/managed-by: donkey
+    app.kubernetes.io/name: shop
+    app.kubernetes.io/part-of: acme
+    app.kubernetes.io/version: abc123-20260101000000
+    donkey.local/app: shop
+    donkey.local/role: workload
+    donkey.local/space: acme
+  name: shop
+  namespace: donkey-acme
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      donkey.local/app: shop
+      donkey.local/role: workload
+      donkey.local/space: acme
+  strategy: {}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/instance: acme
+        app.kubernetes.io/managed-by: donkey
+        app.kubernetes.io/name: shop
+        app.kubernetes.io/part-of: acme
+        app.kubernetes.io/version: abc123-20260101000000
+        donkey.local/app: shop
+        donkey.local/role: workload
+        donkey.local/space: acme
+    spec:
+      automountServiceAccountToken: false
+      containers:
+      - env:
+        - name: PORT
+          value: "8000"
+        - name: APP_MODE
+          value: prod
+        - name: LOG_LEVEL
+          value: info
+        envFrom:
+        - secretRef:
+            name: shop-env
+            optional: true
+        - secretRef:
+            name: shop-binding-db
+        image: reg.example.com/donkey/shop:abc123-20260101000000
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8000
+          periodSeconds: 15
+        name: web
+        ports:
+        - containerPort: 8000
+          name: http
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 8000
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - NET_RAW
+          seccompProfile:
+            type: RuntimeDefault
+        startupProbe:
+          failureThreshold: 48
+          httpGet:
+            path: /healthz
+            port: 8000
+          periodSeconds: 5
+      enableServiceLinks: false
+      imagePullSecrets:
+      - name: shop-registry
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app.kubernetes.io/instance: acme
+    app.kubernetes.io/managed-by: donkey
+    app.kubernetes.io/name: shop
+    app.kubernetes.io/part-of: acme
+    donkey.local/app: shop
+    donkey.local/role: workload
+    donkey.local/space: acme
+  name: shop
+  namespace: donkey-acme
+spec:
+  ports:
+  - name: http
+    port: 80
+    targetPort: 8000
+  selector:
+    donkey.local/app: shop
+    donkey.local/role: workload
+    donkey.local/space: acme
+  type: ClusterIP
+status:
+  loadBalancer: {}
+---
+apiVersion: v1
+data:
+  route.yaml: |
+    host: shop.acme.apps.example.com
+    path: /
+    backend: http://shop.donkey-acme.svc:80
+    login: true
+kind: ConfigMap
+metadata:
+  labels:
+    app.kubernetes.io/instance: acme
+    app.kubernetes.io/managed-by: donkey
+    app.kubernetes.io/name: shop
+    app.kubernetes.io/part-of: acme
+    donkey.local/app: shop
+    donkey.local/role: route
+    donkey.local/space: acme
+  name: shop-route
+  namespace: donkey-acme

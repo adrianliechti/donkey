@@ -1,0 +1,74 @@
+version: 2
+
+before:
+  hooks:
+    - go mod tidy
+    # The admin console is embedded into the binaries.
+    - sh -c "cd web && npm install --no-audit --no-fund && npm run build"
+
+# The CLI only — the server ships as an image via `task publish`.
+builds:
+  - main: ./cmd/donkey
+    binary: donkey
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - windows
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X github.com/adrianliechti/donkey/internal/cli.version={{ .Version }}
+      - -X github.com/adrianliechti/donkey/internal/server.Version={{ .Version }}
+
+# The plain lowercase name keeps scripted downloads simple:
+# donkey_linux_amd64.tar.gz, donkey_darwin_arm64.tar.gz, …
+archives:
+  - name_template: "donkey_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  sort: asc
+
+# Homebrew casks support both macOS and Linux.
+homebrew_casks:
+  - name: donkey
+    binaries: [donkey]
+    # The publisher adds postflight_steps; GoReleaser's hooks still emit postflight.
+    skip_upload: true
+    homepage: "https://github.com/adrianliechti/donkey"
+    description: "Deploy applications to Kubernetes"
+    repository:
+      owner: adrianliechti
+      name: homebrew-tap
+
+    commit_author:
+      name: Adrian Liechti
+      email: adrian@localhost
+
+publishers:
+  - name: homebrew-cask
+    # Publish the extra cask file, excluding release archives.
+    ids: [homebrew-cask]
+    extra_files:
+      - glob: dist/homebrew/Casks/donkey.rb
+    env:
+      - GITHUB_TOKEN={{ .Env.GITHUB_TOKEN }}
+    cmd: ./scripts/publish-cask.sh {{ .Version }}
+
+scoops:
+  - repository:
+      owner: adrianliechti
+      name: scoop-bucket
+
+    commit_author:
+      name: Adrian Liechti
+      email: adrian@localhost
