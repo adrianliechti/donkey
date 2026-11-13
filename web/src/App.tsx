@@ -20,10 +20,13 @@ import { CommandPalette } from './CommandPalette'
 import { useDeploy } from './deploy'
 import { DeployProvider } from './DeployDrawer'
 import { FleetOverview } from './FleetOverview'
+import { HeaderActionsProvider, HeaderActionsSlot } from './HeaderActions'
 import { SpaceOverview } from './Overview'
 import { fleetQuery, statusQuery, useFleet } from './queries'
 import { Crumbs } from './Switcher'
 import { SystemView } from './SystemView'
+import { OpenMachineProvider } from './MachineFolders'
+import { MachineView } from './MachineView'
 import { DonkeyLogo, IconButton, Page, Toolbar } from './ui'
 import { UserMenu } from './UserMenu'
 import { PlatformSettings } from './PlatformSettings'
@@ -47,7 +50,11 @@ const queryClient = new QueryClient({
 function Shell() {
   return (
     <DeployProvider>
-      <Frame />
+      <OpenMachineProvider>
+        <HeaderActionsProvider>
+          <Frame />
+        </HeaderActionsProvider>
+      </OpenMachineProvider>
     </DeployProvider>
   )
 }
@@ -96,6 +103,9 @@ function Frame() {
           {/* -mr-2: the last icon's glyph, not its hover box, meets the
               gutter the Deploy button and the page content end on. */}
           <Toolbar className="-mr-2">
+            {/* What the open page can do, where it has no title row of its
+                own (see HeaderActions). */}
+            <HeaderActionsSlot />
             <IconButton icon={Search} label="Search apps and spaces — ⌘K" onClick={() => setPaletteOpen(true)} />
             {fleet?.platformAdmin && (
               <IconButton icon={Activity} label="System health" onClick={() => navigate({ to: '/system' })} />
@@ -214,6 +224,14 @@ const systemRoute = createRoute({
   head: () => ({ meta: [{ title: pageTitle('System') }] }),
 })
 
+// The signed-in person's own machine, with its coding agent embedded.
+const machineRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/machine',
+  component: MachineView,
+  head: () => ({ meta: [{ title: pageTitle('Machine') }] }),
+})
+
 const spaceRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/space/$space',
@@ -293,6 +311,7 @@ const routeTree = rootRoute.addChildren([
   deployAppRoute,
   legacyAppsRoute,
   systemRoute,
+  machineRoute,
 ])
 
 const router = createRouter({

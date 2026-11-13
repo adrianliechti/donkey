@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -188,6 +189,10 @@ type route struct {
 	// backend. Only donkey's own API route carries it: an app given one
 	// could replay its visitors' credentials against the API.
 	Token bool
+	// Machine is the personal machine this route leads to and Owner the IdP
+	// subject it belongs to. Nobody else passes — see allows.
+	Machine string
+	Owner   string
 }
 
 // routeSource is where the routing table comes from — the one seam between
@@ -288,6 +293,15 @@ func (s runtimeRoutes) list(ctx context.Context) ([]route, error) {
 			return nil, err
 		}
 		r := route{Space: rec.Space, App: rec.App, Host: rec.Host, Path: rec.Path, Backend: target, Login: rec.Login, Mode: rec.Mode, CORS: rec.CORS, OIDC: rec.OIDC, Analytics: rec.Analytics, Token: rec.Token, StripPrefix: rec.StripPrefix}
+		if rec.Machine != "" {
+			// A machine's route is its owner's alone. One that does not say
+			// whose it is, or tries to be something else as well, is not
+			// served at all rather than served to everyone.
+			if !config.ValidMachineID(rec.Machine) || rec.Owner == "" || rec.Space != "" || rec.App != "" || rec.Token {
+				continue
+			}
+			r = route{Host: rec.Host, Path: "/", Backend: target, Login: true, Analytics: config.AnalyticsOff, Machine: rec.Machine, Owner: rec.Owner}
+		}
 		if r.Path == "" {
 			r.Path = "/"
 		}
@@ -452,6 +466,12 @@ func (s *Server) refreshRoutesAfter(ctx context.Context, minAge time.Duration) e
 			table[r.Host] = append(table[r.Host], r)
 		}
 		for host := range table {
+			// A machine's hostname is its owner's alone. Whatever else
+			// claims the same address — an app of a space that may take any
+			// hostname — is not served there.
+			if i := slices.IndexFunc(table[host], func(r route) bool { return r.Machine != "" }); i >= 0 {
+				table[host] = []route{table[host][i]}
+			}
 			sort.Slice(table[host], func(i, j int) bool {
 				return len(table[host][i].Path) > len(table[host][j].Path)
 			})

@@ -168,10 +168,11 @@ five ideas:
   [Packages on a developer's machine](#packages-on-a-developers-machine)). It
   proxies npm, PyPI, Go module, Maven and NuGet v3 requests to public
   registries by default or installation-wide enterprise upstreams. Its
-  NetworkPolicy admits BuildKit and donkey-server alone — the server forwards a
-  developer's requests after verifying their sign-in — and upstream
-  credentials stay in this process rather than becoming Docker build args or
-  reaching a laptop.
+  NetworkPolicy admits BuildKit, donkey-server and — where the installation
+  has them — [machines](#machines); the server forwards a developer's
+  requests after verifying their sign-in. Upstream credentials stay in this
+  process rather than becoming Docker build args or reaching a laptop or a
+  machine.
 - **donkey-telemetry** — a dedicated `telemetry` process role of the single
   `donkey-server` binary: a single-replica OTLP/HTTP metrics receiver with a
   private query API backed by an embedded DuckDB file on its own 2 Gi PVC.
@@ -220,6 +221,11 @@ five ideas:
   listener redirects) — a ConfigMap carrying the app's backend, hostname,
   login and access rules as annotations — and Secrets for env vars,
   registry pull auth and service bindings.
+
+- **Per user** — optionally, a [machine](#machines): a development container
+  with a disk of its own, the donkey CLI and a coding agent, reached only by
+  its owner. It belongs to a person rather than a space, and lives apart
+  from every space.
 
 Runtime metadata has one small identity vocabulary, spelled `donkey.local/*`
 on Kubernetes and `local.donkey.*` (reverse-DNS) on Docker: the installation
@@ -942,6 +948,264 @@ cover tables, rows and a SQL view for anything with a `DATABASE_URL`;
 buckets, uploads and downloads for anything speaking S3; a streaming
 markdown chat for the AI, using the very token and proxy an app would.
 
+## Machines
+
+A machine is a development environment of your own inside the installation:
+a container with Python, Node and Go, the `donkey` CLI already signed in as
+you, and the [Wingman](https://github.com/adrianliechti/wingman-agent) coding
+agent. It opens in the console — **Machine**, beside *Deploy* on the front
+page, or *Your machine* in the ⌘K palette from anywhere — with the agent's
+editor, chat and terminals shown right there. Nothing to install on a
+laptop, and nothing a laptop is allowed to reach has to be reachable from one.
+
+```
+ browser ── https://<id>.platform.<domain> ──▶ donkey-gateway
+   (the console shows it in a frame)            · signs you in (one sign-in with the console)
+                                                · admits the machine's owner, nobody else
+                                                · presents the machine's credential
+                                                        │
+                                             ┌──────────▼───────────────────────┐
+                                             │ your machine                     │
+                                             │  front door :8080  (checks it)   │
+                                             │  agent, in the folder you opened │──▶ donkey-ai (model)
+                                             │  donkey CLI, signed in as you    │──▶ donkey-server (API)
+                                             │  /data  your disk                │
+                                             └──────────────────────────────────┘
+```
+
+**One per person, not per space.** A machine belongs to whoever is signed in.
+It is not an app and has no space: it appears in no app list, and nothing a
+space's members can do reaches it. Platform administrators and everyone who
+is an admin or developer of at least one space may have one; a sign-in alone,
+or a viewer's role, does not — a machine costs compute, disk and model calls.
+
+**It follows the folder.** There is no machine to create and none to start.
+One dialog asks one thing — which folder to open — and the machine follows
+from the answer: it is made, disk and all, for the first folder, and started
+whenever a folder is opened and it is not running. The dialog comes up over
+whatever page you are on — from the Machine button, from the palette, from
+an app's Source tab, from the folder named in the header while the agent is
+open — so closing it leaves you where you were, and nothing is made or
+started before a folder is named. With a folder already open, the Machine
+button goes straight to the agent.
+
+What can be done to the machine itself, for the day it should not look after
+itself, is the dialog's last section and a menu beside the agent: *Stop*
+ends what is running now and keeps the disk; *Delete* gives the disk back,
+and leads back to the overview — there is no page for not having a machine;
+*Restart* (in the menu) brings it back on the installation's current image
+with a fresh sign-in, in the folder it had open.
+
+**It stops when nobody uses it.** A machine is a desk, not a service: it is
+worth its CPU and memory while you are at it or its agent is working, and a
+start brings everything back, because the disk stays. So a machine that has
+gone unused for an hour (`machines.idle`, below) is stopped — the same stop
+as the one in the console, asked for by the machine itself with your
+sign-in. "In use" is what its front door can see, and it is deliberately
+generous:
+
+- *a browser is talking to it* — any request through the gateway, and every
+  byte on a connection that stays open, which is all a terminal ever sends;
+- *something in it is talking to its model.* The machine reaches `donkey-ai`
+  through its own front door (inside a machine, `OPENAI_BASE_URL` is a
+  loopback address), so an agent left to finish a long task keeps its
+  machine with no browser anywhere.
+
+A tab left open on a computer that is awake counts as use; a closed laptop
+does not. The console asking a machine for its folders never counts.
+
+**Folders.** Your work is in folders under `/data/workspace`, and the agent
+has one of them open at a time: its files, its sessions and its terminals
+start there. The dialog lists your folders, the one used last first, and
+its last row makes a new, empty one. The folder that is open is named in the
+header, and choosing another moves the agent there: what was running in the
+first one ends, its files stay. The machine itself does not restart for
+that, so it takes seconds.
+
+A machine that stops by itself is, most days, found stopped — so it can say
+what is on its disk without being started. While it runs, `donkey-server`
+keeps the list of its folders with the disk (an annotation on the
+PersistentVolumeClaim; a note in the state directory on Docker), and the
+dialog offers that list for a stopped machine: picking a folder starts the
+machine and opens it. The note is what the console last saw, not the disk
+itself — a folder made in a terminal while no console was looking is not on
+it — so the dialog also offers to start the machine just to look.
+
+**An app's source, in a folder.** The dialog's *From an app* section lists
+the apps you can see; pick one and a version (the newest, unless you choose
+another), and it is copied into a new folder as the first commit of a git
+repository there — so everything you and the agent change from then on
+reads as a change, and `donkey deploy` from the folder ships it. Every
+version in an app's [source history](#source-history) also has an *Open in
+your machine* button, on the app's Source tab, which opens the same dialog
+on that version. The machine fetches the source itself, with your sign-in:
+you get what the Source tab would let you download, and nothing else. A
+folder is only ever made, never filled: where a folder of the app's name is
+already there, the dialog offers to open it or to put the version beside it
+under another name.
+
+**What is yours and what is the image's.** The disk is mounted at `/data`:
+your home is `/data/home`, your folders are in `/data/workspace`. Everything
+outside `/data` comes from the image and is the same after every restart. A
+machine runs as an unprivileged user and cannot become root, so there is no
+`apt-get install` — what you install for yourself goes to your home, where
+the image already points the tools: `npm install -g`, `go install`,
+`uv tool install`, `uv python install`. A toolchain everybody needs belongs in
+the image (below).
+
+**What a machine is handed** when it starts, and nothing else:
+
+- *Your donkey sign-in*, so `donkey deploy` works without a login. It is a
+  token of the machine's own, and it ends when a `donkey login` made at the
+  moment you signed in to the console would: 30 days after that sign-in,
+  however often the machine is restarted. The console says so a few days
+  ahead; restarting from the console renews it. No IdP token goes in.
+- *A model token* for `donkey-ai`, as `OPENAI_BASE_URL` / `OPENAI_API_KEY` —
+  the same stand-in scheme a space's `openai` service uses. It is generated
+  per start and stops working when the machine stops. The agent starts on
+  the installation's `ai.model`.
+- *Your name and email* for `git config`, unless you already set your own.
+- *The installation's package mirror*, the way a build gets it: npm, pnpm,
+  yarn, bun, pip, uv and Go are pointed at `donkey-packages` by the names
+  they read themselves (`NPM_CONFIG_REGISTRY`, `PIP_INDEX_URL`,
+  `UV_INDEX_URL`, `GOPROXY`) — and Corepack, which fetches pnpm or yarn
+  itself for a project that names one, by `COREPACK_NPM_REGISTRY`. `npm install` in a terminal or by the agent
+  installs from the same registries as a deploy does, private packages
+  included, and no upstream credential comes near the machine. There is
+  nothing to prefix and nothing for the agent to remember. Lockfiles written
+  in a machine are a developer's lockfiles (see
+  [Packages on a developer's machine](#packages-on-a-developers-machine)):
+  npm leaves the address out, `uv.lock` names the mirror's, and a deploy
+  reads either.
+- *The donkey skill* for its agent
+  ([examples/skills/skill.md](examples/skills/skill.md)), installed in
+  `~/.agents/skills/donkey` on every start: how to deploy and operate apps
+  with the CLI, and what is different about working in a machine.
+
+**How it is reached, and by whom.** The agent was written to listen on a
+developer's loopback and trusts whoever reaches it. Three things stand in
+front of that trust:
+
+1. *Its own address.* A machine answers on `<id>.platform.<domain>`, where
+   `<id>` is derived from your IdP subject and says nothing about you — it
+   ends up in a certificate, and certificates end up in public logs.
+   `platform` is a name no space may take, so no app can be given a
+   machine's hostname; and the gateway serves nothing else on one even if a
+   space that may use any hostname names it.
+2. *The gateway.* The route admits one subject: the owner. Not the members
+   of any space, and not a platform administrator, who may manage everything
+   else but has no business in someone's home directory and sign-in.
+3. *The front door.* Inside the container, `donkey machine serve` listens on
+   the one reachable port and refuses every request that does not carry a
+   credential only the gateway can compute (derived per machine from the
+   session key). So reaching the container is not enough — not for a
+   neighbour on the same network, and not on a cluster whose network plugin
+   ignores policies. It also refuses requests made by another site's page.
+
+`donkey-server` reaches the same door for the two things it asks a machine
+on your behalf — which folders it has, and to open one. It presents a
+credential of its own, which the gateway's does not open and the gateway
+never forwards: nothing a browser sends, yours included, is taken for the
+control plane, and the control plane's credential is no way to the agent.
+
+The console shows the machine in a frame, from that address. Being a
+different origin is the point: nothing running in a machine can read the
+console's page or act with its session, and the gateway lets only the
+console — and the machine itself — frame it.
+
+**Previews, and other ports.** The agent has one port, but a machine serves
+more than that: the agent's HTML preview comes from a second loopback port,
+and a server you start listens on a port of its own. Each of them answers on
+the machine's address under a path, `/.donkey/port/<port>/`, and a redirect
+that software in the machine writes to `http://127.0.0.1:<port>/…` — which is
+how the agent opens a preview — is moved there, so previewing an HTML file
+in the agent just works. Two things follow from sharing one address:
+
+- *Previewing is running.* A page served from the machine's address can do
+  in the agent what you can — open a terminal, change files — so a preview
+  is trusted like code you build. That is what a machine is for; just do
+  not preview a page you would not run.
+- *A path is not a root.* A page that asks for `/assets/app.js` asks the
+  agent, not the port. Pages with relative links work as they are; a
+  development server has to be told its base path (`vite --base
+  /.donkey/port/5173/`), and one that cannot be has no address yet.
+
+**What can reach it, and what it can reach.** Both are limited, on both
+runtimes, and neither depends on how the installation treats its spaces.
+
+- *In:* the gateway and `donkey-server`, on the machine's front door, each
+  with its own credential, and nothing else — no app, no other machine, no
+  other workload of the cluster.
+- *Out:* the control plane and nothing beyond it — DNS, the API its CLI
+  calls, the AI endpoint its agent asks and the package mirror its package
+  managers install from. There is no way out to the internet.
+
+That is a decision about machines, not about workloads in general. A machine
+runs an agent that acts on what it reads, with its owner's sign-in in reach;
+left with the mirror, its model and the API it can still build, test and
+deploy, and has nowhere to send anything else. It also means a machine
+cannot clone from a Git host, fetch a URL or download a toolchain the mirror
+does not carry (`uv python install`, the agent's own language servers). An
+installation whose machines have to can open them:
+
+```yaml
+machines:
+  egress: open       # default: restricted
+```
+
+Opened, a machine reaches the network at large — except, on Kubernetes, the
+link-local range where cloud metadata services hand out node credentials.
+
+On Kubernetes, machines live in a namespace of their own (`<prefix>platform`,
+Pod Security `restricted`) or, where the installation was given one
+namespace, beside the apps; one NetworkPolicy fences all of them, and a
+machine's pod holds no Kubernetes credential. It takes a network plugin that
+enforces NetworkPolicy — the front door's credential check holds either way,
+the limit on what a machine can reach does not. On Docker each machine has a
+network of its own, shared only with the gateway, the API, the AI endpoint
+and the package mirror, and made internal — no route out of the engine —
+unless machines are opened.
+
+The agent's own per-command sandbox is switched off inside a machine: it is
+built from user namespaces, which a container without privileges cannot
+create. The machine is the sandbox — and it holds your sign-in, so what the
+agent can do with `donkey` is what you can do. Its reviewer still asks before
+destructive commands.
+
+**Turning machines on.** Name the image in the install settings:
+
+```yaml
+machines:
+  image: ghcr.io/example/donkey-machine:1.0.0
+  storage: 10Gi        # each machine's disk (Kubernetes; a Docker volume has no size)
+  storageClass: ""     # default: the cluster's
+  cpu: "2"             # the most one machine may use
+  memory: 4Gi
+  egress: restricted   # or open — see above
+  idle: 60m            # how long a machine may go unused before it stops; never to keep them
+```
+
+or pass `--machine-image` to `donkey server install`. Without an image the
+feature is off: the console shows no way to it and the API answers 404.
+`task machine-image` builds the image from
+[hack/Dockerfile.machine](hack/Dockerfile.machine) (`task publish:machine`
+pushes it for both architectures).
+
+**An image of your own.** Add toolchains by building on that Dockerfile. The
+contract is small: the entry point is `donkey machine serve`, which listens on
+port 8080; the container runs as user 1000 with `/data` as its only writable
+home; and `donkey machine serve -- <command>` runs another agent or editor
+instead of Wingman, as long as it serves on the loopback
+(`--upstream http://127.0.0.1:<port>`). The command is started in the folder
+that is opened, and ended and started again in the next one.
+
+**Not there yet.** One machine per person, and one folder open at a time. A
+restricted machine cannot clone from a Git host, so its folders start empty
+or from an app that is deployed here. Other ports share the machine's address
+under a path rather than having one of their own, so a server that needs its
+own root is not reachable. Machines are managed in the console only; the CLI
+has no command for them.
+
 ## Requirements for a real deployment
 
 donkey installs into a cluster you already run, and stays inside its own
@@ -1214,7 +1478,9 @@ build changed on top.
 - **Builds are tags.** `build-<n>` names the commit build *n* used. The
   console marks the commit the app runs as *live*, and failed builds in red.
 - Any version can be browsed file by file — syntax highlighted, with the
-  changes that version made to each file — and downloaded as a `.zip`.
+  changes that version made to each file — downloaded as a `.zip`, and,
+  where the installation has [machines](#machines), opened in yours as a
+  folder to keep working in.
 
 The repositories are written with go-git (no `git` binary in the image), one
 pack per commit, and are plain git: a copy of the volume opens in any client
@@ -1257,7 +1523,7 @@ to the source registry; a restricted network may then show Docker Hub in the
 final error even though the mirror was tried first.
 
 Every installation also runs `donkey-packages`. donkey declares its internal
-npm, pip, Go, Maven and NuGet settings after every `FROM` in an in-memory
+npm (and Corepack), pip, Go, Maven and NuGet settings after every `FROM` in an in-memory
 Dockerfile overlay, so they reach every `RUN` in every stage without changing
 the app's file. The public defaults are npmjs, PyPI, `proxy.golang.org`, Maven
 Central and the NuGet v3 service index; only the proxy process sees configured
@@ -1594,6 +1860,7 @@ is told to leave the local address alone (`NO_PROXY`).
 | Tool | How it is pointed at the mirror | Reaches |
 |---|---|---|
 | npm, pnpm, yarn 1, bun | `NPM_CONFIG_REGISTRY` | whatever the command starts |
+| Corepack, fetching pnpm or yarn itself | `COREPACK_NPM_REGISTRY` | whatever the command starts |
 | yarn 2 and later | `YARN_NPM_REGISTRY_SERVER` | whatever the command starts |
 | pip, uv | `PIP_INDEX_URL`, `UV_INDEX_URL` | whatever the command starts |
 | Go | `GOPROXY` | whatever the command starts |
@@ -2232,6 +2499,7 @@ internal/
   ai/                 Assistant interface (analysis + failure diagnosis), OpenAI impl, secret-safe summarizer, log redaction
   config/             donkey.yaml, client config, install settings file
   doctor/             client-side check engine behind `donkey doctor`
+  machine/            what runs inside a personal machine: the front door and the agent's supervisor
   ui/                 all terminal output: plain language, jargon behind -v
   gitutil/            pure-Go .git reader: HEAD sha (image tags), repo root (default space)
 pkg/
@@ -2429,6 +2697,17 @@ company with an internal PKI uses. Tear down with `devkube --cluster donkey dele
   namespace per space); scoping them down is on the list. The orchestrator is
   the one that runs builds, and the only pod the privileged build engine
   admits; it accepts requests from donkey-server alone.
+- A [machine](#machines) holds its owner's donkey sign-in, and a coding
+  agent runs commands in it: what the agent can do with `donkey` is what its
+  owner can do, for as long as that sign-in lasts (30 days from the owner's
+  console sign-in at most). The agent it embeds trusts everything that
+  reaches it, so three checks stand in front: an address no app can take, a
+  route that admits one subject (a platform administrator is not let in), and
+  a front door inside the container that refuses requests without the
+  gateway's per-machine credential. That credential is derived from the
+  session key, so rotating the key locks every running machine until it is
+  restarted. Cluster administrators can read a machine's Secret and disk,
+  as they can any other.
 - The demo IdP approves everyone by design; it never leaves `hack/demo/`.
 - Space and app names from the API are validated server-side, and the space
   that would map onto `donkey-system` is reserved — no space name can reach

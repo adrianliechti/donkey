@@ -252,6 +252,7 @@ func TestPackagesEnv(t *testing.T) {
 	env := packagesEnv("http://127.0.0.1:4874", packagesSettings{Maven: "/cache/settings.xml", NuGet: "/cache/NuGet.Config"})
 	for name, want := range map[string]string{
 		"NPM_CONFIG_REGISTRY":                        "http://127.0.0.1:4874/npm/",
+		"COREPACK_NPM_REGISTRY":                      "http://127.0.0.1:4874/npm",
 		"NPM_CONFIG_OMIT_LOCKFILE_REGISTRY_RESOLVED": "true",
 		"YARN_NPM_REGISTRY_SERVER":                   "http://127.0.0.1:4874/npm/",
 		"PIP_INDEX_URL":                              "http://127.0.0.1:4874/pypi/",

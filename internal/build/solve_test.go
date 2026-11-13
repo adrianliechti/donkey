@@ -20,20 +20,21 @@ func TestBuildEnvAlwaysAddsInternalPackageSettings(t *testing.T) {
 
 	got := builder.buildEnv(map[string]string{"SHARED": "app"})
 	want := map[string]string{
-		"NPM_CONFIG_REGISTRY":  "http://donkey-packages/npm/",
-		"PIP_INDEX_URL":        "http://donkey-packages/pypi/",
-		"PIP_TRUSTED_HOST":     "donkey-packages",
-		"UV_INDEX_URL":         "http://donkey-packages/pypi/",
-		"GOPROXY":              "http://donkey-packages/go/",
-		"GOSUMDB":              "off",
-		"GONOSUMDB":            "*",
-		"DONKEY_MAVEN_MIRROR":  "http://donkey-packages/maven/",
-		"MAVEN_REPO_CENTRAL":   "http://donkey-packages/maven/",
-		"MVNW_REPOURL":         "http://donkey-packages/maven/",
-		"DONKEY_NUGET_SOURCE":  "http://donkey-packages/nuget/index.json",
-		"DONKEY_DEBIAN_MIRROR": "",
-		"DONKEY_ALPINE_MIRROR": "",
-		"SHARED":               "app",
+		"NPM_CONFIG_REGISTRY":   "http://donkey-packages/npm/",
+		"COREPACK_NPM_REGISTRY": "http://donkey-packages/npm",
+		"PIP_INDEX_URL":         "http://donkey-packages/pypi/",
+		"PIP_TRUSTED_HOST":      "donkey-packages",
+		"UV_INDEX_URL":          "http://donkey-packages/pypi/",
+		"GOPROXY":               "http://donkey-packages/go/",
+		"GOSUMDB":               "off",
+		"GONOSUMDB":             "*",
+		"DONKEY_MAVEN_MIRROR":   "http://donkey-packages/maven/",
+		"MAVEN_REPO_CENTRAL":    "http://donkey-packages/maven/",
+		"MVNW_REPOURL":          "http://donkey-packages/maven/",
+		"DONKEY_NUGET_SOURCE":   "http://donkey-packages/nuget/index.json",
+		"DONKEY_DEBIAN_MIRROR":  "",
+		"DONKEY_ALPINE_MIRROR":  "",
+		"SHARED":                "app",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("buildEnv() = %#v, want %#v", got, want)
@@ -45,12 +46,14 @@ func TestBuildEnvUsesDockerPackagesURL(t *testing.T) {
 	got := builder.buildEnv(nil)
 	for key, want := range map[string]string{
 		"NPM_CONFIG_REGISTRY": "http://donkey-packages:8090/npm/",
-		"PIP_INDEX_URL":       "http://donkey-packages:8090/pypi/",
-		"PIP_TRUSTED_HOST":    "donkey-packages:8090",
-		"UV_INDEX_URL":        "http://donkey-packages:8090/pypi/",
-		"GOPROXY":             "http://donkey-packages:8090/go/",
-		"DONKEY_MAVEN_MIRROR": "http://donkey-packages:8090/maven/",
-		"DONKEY_NUGET_SOURCE": "http://donkey-packages:8090/nuget/index.json",
+		// Corepack fetches pnpm and yarn through the mirror too.
+		"COREPACK_NPM_REGISTRY": "http://donkey-packages:8090/npm",
+		"PIP_INDEX_URL":         "http://donkey-packages:8090/pypi/",
+		"PIP_TRUSTED_HOST":      "donkey-packages:8090",
+		"UV_INDEX_URL":          "http://donkey-packages:8090/pypi/",
+		"GOPROXY":               "http://donkey-packages:8090/go/",
+		"DONKEY_MAVEN_MIRROR":   "http://donkey-packages:8090/maven/",
+		"DONKEY_NUGET_SOURCE":   "http://donkey-packages:8090/nuget/index.json",
 	} {
 		if got[key] != want {
 			t.Errorf("%s = %q, want %q", key, got[key], want)

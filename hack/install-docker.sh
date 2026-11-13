@@ -21,7 +21,7 @@ IDP_PORT="${DONKEY_IDP_PORT:-5556}"
 IDP_ISSUER="${DONKEY_IDP_ISSUER:-http://${IDP_HOST}:${IDP_PORT}}"
 
 say "building donkey + images"
-(cd "${ROOT}" && task build && task server-image && task demo-idp-image && task private-packages-image)
+(cd "${ROOT}" && task build && task server-image && task machine-image && task demo-idp-image && task private-packages-image)
 
 say "authenticated package mirror"
 "${ROOT}/hack/install-private-packages-docker.sh"
@@ -31,6 +31,7 @@ say "installing the control plane (real install command, demo settings)"
   --file "${ROOT}/.build/private-packages-docker-install.yaml" \
   --runtime docker \
   --image "donkey/donkey-server:dev" \
+  --machine-image "donkey/donkey-machine:dev" \
   --domain "${DOMAIN}" \
   --tls-mode "ca" \
   --default-platform "${PLATFORM}" \

@@ -56,6 +56,7 @@ func serverSettingsFlags() []cli.Flag {
 		&cli.StringFlag{Name: "runtime", Usage: "where donkey runs apps: kubernetes (default) or docker (straight on a Docker engine, no cluster)"},
 		&cli.StringFlag{Name: "image", Usage: "donkey-server image reference (pullable by the cluster)"},
 		&cli.StringFlag{Name: "buildkit-image", Usage: "build engine image (default: a digest-pinned moby/buildkit)"},
+		&cli.StringFlag{Name: "machine-image", Usage: "image of personal development machines; naming one turns machines on"},
 		&cli.StringFlag{Name: "registry-url", Usage: "registry prefix for app images, as reachable FROM the cluster"},
 		&cli.StringFlag{Name: "registry-username", Usage: "registry login"},
 		&cli.BoolFlag{Name: "registry-insecure", Usage: "registry is plain HTTP (local/testing)"},
@@ -111,6 +112,7 @@ func loadInstallSettings(cmd *cli.Command, resolveSecretEnv bool) (*config.Insta
 	strOver(&settings.Runtime, "runtime")
 	strOver(&settings.Image, "image")
 	strOver(&settings.BuildkitImage, "buildkit-image")
+	strOver(&settings.Machines.Image, "machine-image")
 	strOver(&settings.Registry.URL, "registry-url")
 	strOver(&settings.Registry.Username, "registry-username")
 	strOver(&settings.Registry.CASecret, "registry-ca-secret")
@@ -532,6 +534,9 @@ func validateKubernetesSettings(settings *config.InstallFile) error {
 	if err := config.ValidateBusyboxImage(settings.BusyboxImage); err != nil {
 		return err
 	}
+	if err := settings.Machines.Validate(); err != nil {
+		return err
+	}
 	if err := config.ValidateRegistryImage(settings.RegistryImage); err != nil {
 		return err
 	}
@@ -583,6 +588,7 @@ func kubernetesSystemInput(settings *config.InstallFile, skipNamespace bool, reg
 		Build:                      settings.Build,
 		AddonImages:                settings.AddonImages,
 		BusyboxImage:               settings.BusyboxImage,
+		Machines:                   settings.Machines,
 		AddonImagePullSecrets:      settings.AddonImagePullSecrets,
 		AddonPlugins:               settings.AddonPlugins,
 		ProxyServices:              settings.ProxyServices,

@@ -21,6 +21,23 @@ type GatewayRoute struct {
 	Access *AccessConfig `json:"access,omitempty" yaml:"-"`
 	// Only the platform's own route forwards an identity token to its backend.
 	Token bool `json:"token,omitempty" yaml:"token,omitempty"`
+	// Machine names the personal machine this route leads to, and Owner the
+	// IdP subject it belongs to. Such a route admits its owner and nobody
+	// else — not the space's members, not a platform administrator — and the
+	// gateway presents the machine's own credential to the backend.
+	Machine string `json:"machine,omitempty" yaml:"machine,omitempty"`
+	Owner   string `json:"owner,omitempty" yaml:"owner,omitempty"`
+}
+
+// MachineRoute is the one route of a personal machine.
+func MachineRoute(id, owner, host, backend string) GatewayRoute {
+	return GatewayRoute{
+		Host: host, Path: "/", Backend: backend, Login: true,
+		// The machine's pages are the owner's own tools, not a product to
+		// measure.
+		Analytics: AnalyticsOff,
+		Machine:   id, Owner: owner,
+	}
 }
 
 // AnalyticsOff is the route value for an app that opted out of web analytics.

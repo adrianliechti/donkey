@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"github.com/felixge/httpsnoop"
 
 	"github.com/adrianliechti/donkey/internal/analytics"
+	"github.com/adrianliechti/donkey/internal/config"
 	"github.com/adrianliechti/donkey/internal/identity"
 )
 
@@ -106,6 +108,11 @@ func (s *Server) serveRoute(w http.ResponseWriter, r *http.Request, rt route) *s
 			if who == "" {
 				who = sess.Subject
 			}
+			if rt.Machine != "" {
+				s.errorPage(w, http.StatusForbidden, "This machine is someone else's.",
+					fmt.Sprintf("You're signed in as %s. A machine opens only for the person it belongs to — yours is in the console.", who))
+				return sess
+			}
 			s.deniedPage(w, who)
 			return sess
 		}
@@ -173,7 +180,9 @@ var transport = &http.Transport{
 // re-sealed with the new one: the browser, not the gateway, keeps it across
 // restarts.
 func (s *Server) idpToken(w http.ResponseWriter, r *http.Request, rt route, sess *session, fromToken bool, until time.Time) string {
-	if sess == nil || !rt.Login || !s.upstream.Enabled() {
+	// A machine runs whatever its owner asks an agent to run: it gets the
+	// donkey sign-in it was started with and no IdP token on top.
+	if sess == nil || !rt.Login || rt.Machine != "" || !s.upstream.Enabled() {
 		return ""
 	}
 	if sess.RefreshToken == "" {
@@ -248,6 +257,16 @@ func (s *Server) proxy(rt route, sess *session, fromToken bool, idpToken string)
 			pr.Out.Header.Set("X-Forwarded-Proto", "https")
 			identity.StripHeaders(pr.Out.Header)
 			pr.Out.Header.Del(accessTokenHeader)
+			// A machine's front door only opens for the gateway. The
+			// credential is derived, so no route record has to carry it, and
+			// a visitor's own copy of the header never travels.
+			pr.Out.Header.Del(config.MachineGuardHeader)
+			// The control plane's credential at a machine never comes from a
+			// browser, so one that claims to is dropped here.
+			pr.Out.Header.Del(config.MachineControlHeader)
+			if rt.Machine != "" {
+				pr.Out.Header.Set(config.MachineGuardHeader, config.MachineGuardToken(s.cfg.SessionKey, rt.Machine))
+			}
 			// The session cookie is the gateway's, not the app's — don't leak
 			// sealed identity material into app code.
 			stripCookie(pr.Out, append(sessionCookieNames(), stateCookie)...)
@@ -294,6 +313,9 @@ func (s *Server) proxy(rt route, sess *session, fromToken bool, idpToken string)
 			if routeAllowsAllOrigins(rt) {
 				setCORSHeaders(res.Header)
 			}
+			if rt.Machine != "" {
+				s.allowConsoleFrame(res.Header)
+			}
 			// An API mounted under a proxy prefix may redirect to /login or
 			// add a trailing slash. Keep that redirect on the API's route.
 			location := res.Header.Get("Location")
@@ -318,6 +340,23 @@ func (s *Server) proxy(rt route, sess *session, fromToken bool, idpToken string)
 				"It may be starting up or crashed — its logs know more. ("+err.Error()+")")
 		},
 	}
+}
+
+// allowConsoleFrame lets the console, and the machine itself, show a machine
+// inside a frame — and nothing else. The machine is its own origin, which is
+// what keeps whatever runs in it away from the console's session, so
+// embedding has to be granted: to the console, which shows the agent, and to
+// the machine, whose agent shows a preview of the owner's files in a frame of
+// its own (every ancestor of a frame has to be allowed, not only the top
+// one). Added rather than set: a policy the machine sent itself keeps
+// applying next to this one.
+func (s *Server) allowConsoleFrame(header http.Header) {
+	console := s.cfg.ServerHost
+	if console == "" {
+		console = s.cfg.Domain
+	}
+	header.Del("X-Frame-Options")
+	header.Add("Content-Security-Policy", "frame-ancestors 'self' https://"+console)
 }
 
 func setCORSHeaders(header http.Header) {

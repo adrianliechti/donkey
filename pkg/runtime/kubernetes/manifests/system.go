@@ -139,6 +139,9 @@ type SystemInput struct {
 	// only their own space, donkey-ai, donkey-telemetry and DNS, never the
 	// internet. Off by default; only meaningful with IsolateSpaces.
 	RestrictEgress bool
+	// Machines turns on personal machines. With an image named, the API and
+	// the AI endpoint admit machine pods — see machinePeers.
+	Machines config.MachineSettings
 }
 
 const (
@@ -418,6 +421,12 @@ func controlPlaneEnv(in SystemInput, port int32) []corev1.EnvVar {
 		{Name: "DONKEY_EXTERNAL_DNS_RECORD_TYPE", Value: in.ExternalDNS.EffectiveRecordType()},
 		{Name: "DONKEY_EXTERNAL_DNS_TTL", Value: strconv.FormatInt(in.ExternalDNS.TTL, 10)},
 		{Name: "DONKEY_AI_MODEL", Value: in.AIModel},
+		{Name: "DONKEY_MACHINE_IMAGE", Value: in.Machines.Image},
+		{Name: "DONKEY_MACHINE_STORAGE", Value: in.Machines.Storage},
+		{Name: "DONKEY_MACHINE_STORAGE_CLASS", Value: in.Machines.StorageClass},
+		{Name: "DONKEY_MACHINE_CPU", Value: in.Machines.CPU},
+		{Name: "DONKEY_MACHINE_MEMORY", Value: in.Machines.Memory},
+		{Name: "DONKEY_MACHINE_EGRESS", Value: in.Machines.Egress},
 		{Name: "OPENAI_BASE_URL", Value: in.OpenAIBaseURL},
 		secretEnvVar("DONKEY_BUILDER_INSTRUCTIONS", "DONKEY_BUILDER_INSTRUCTIONS"),
 		// The session key lets the server verify sealed CLI tokens itself —

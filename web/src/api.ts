@@ -971,7 +971,84 @@ const appPath = (space: string, app: string, suffix = '') =>
 export const servicePath = (space: string, service: string, suffix = '') =>
   `/v1/spaces/${encodeURIComponent(space)}/services/${encodeURIComponent(service)}${suffix}`
 
+/** What a personal machine is doing. */
+export type MachineState = 'absent' | 'stopped' | 'starting' | 'running' | 'failed'
+
+/** The signed-in person's own machine: a development container with a disk. */
+export interface Machine {
+  /** The installation offers machines at all. */
+  enabled: boolean
+  /** This person may have one (people who build here: admins and developers). */
+  allowed: boolean
+  state: MachineState
+  /** Where the machine's own interface answers while it runs. */
+  url?: string
+  startedAt?: string
+  restarts?: number
+  /** Why it is slow to start, or failing. */
+  message?: string
+  /** When the donkey sign-in inside the machine runs out; a restart renews it. */
+  signInExpires?: string
+  /** The installation's machine image changed since this one started. */
+  outdated?: boolean
+  /** Whether a machine reaches the control plane only, or the network at large. */
+  egress?: 'restricted' | 'open'
+  /** Minutes a machine may go unused before it stops; absent where it never does. */
+  idleMinutes?: number
+  /**
+   * What a stopped machine's disk held when it last ran: what can be offered
+   * before it is started. A running machine is asked itself (MachineWorkspace).
+   */
+  folders?: MachineFolder[]
+  storage?: string
+  cpu?: string
+  memory?: string
+}
+
+/** One folder of a machine's workspace. */
+export interface MachineFolder {
+  name: string
+  /** When it was last opened, or last changed at its top level. */
+  modified: string
+}
+
+/** A version of an app's source, as the app's history has it. */
+export interface MachineSource {
+  space: string
+  app: string
+  commit: string
+}
+
+/** The folders on a running machine's disk, and the one its agent has open. */
+export interface MachineWorkspace {
+  open?: string
+  /** The agent is answering in the open folder. */
+  ready?: boolean
+  /** Why nothing is open when something was. */
+  message?: string
+  folders: MachineFolder[]
+}
+
+/**
+ * Which folder to open. `create` and `source` make it first and refuse a
+ * name that is taken, so nothing is ever written into existing work.
+ */
+export interface OpenFolder {
+  folder: string
+  create?: boolean
+  source?: MachineSource
+}
+
 export const api = {
+  machine: () => request<Machine>('/v1/machine'),
+  machineWorkspace: () => request<MachineWorkspace>('/v1/machine/workspace'),
+  openMachineFolder: (open: OpenFolder) =>
+    request<MachineWorkspace>('/v1/machine/workspace', { method: 'POST', body: JSON.stringify(open) }),
+  // Starting a machine that already runs starts it again: a fresh sign-in,
+  // and the installation's current image.
+  startMachine: () => request<Machine>('/v1/machine', { method: 'POST' }),
+  stopMachine: () => request<Machine>('/v1/machine/stop', { method: 'POST' }),
+  deleteMachine: () => request<Machine>('/v1/machine', { method: 'DELETE' }),
   // ping is the cheap "server up, token good" check — doctor runs the
   // expensive dependency probes and belongs to the System page alone.
   ping: () => request<{ ok: boolean }>('/v1/ping'),

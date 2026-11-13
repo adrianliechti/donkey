@@ -4,8 +4,9 @@ description: >
   Deploy and operate apps through the donkey CLI: configure donkey.yaml,
   configure app authentication, connect services, manage environment variables
   and persistent files, verify deployments, and diagnose failures. Use for
-  work on apps hosted by Donkey; platform installation is a separate
-  administrator task.
+  work on apps hosted by Donkey, and when working inside a Donkey machine
+  (package installs, network limits, what persists); platform installation
+  is a separate administrator task.
 ---
 
 # Donkey apps
@@ -24,6 +25,47 @@ description: >
   `donkey login --server URL --token TOKEN` (`--ca-file FILE` for a private CA).
 - `DONKEY_TOKEN` overrides the saved token (`~/.config/donkey/config.yaml`).
 - Never put credentials in repository files or command output.
+
+## In a Donkey machine
+
+A machine is a development container the platform runs for one person.
+`DONKEY_MACHINE_ID` is set there.
+
+- The CLI is connected and signed in as the machine's owner: do not run
+  `donkey login`. An expired sign-in is renewed by restarting the machine
+  from the console; report it instead of retrying.
+- npm, pnpm, yarn, bun, pip, uv and Go already install through the
+  installation's package mirror; the environment names it
+  (`NPM_CONFIG_REGISTRY`, `PIP_INDEX_URL`, `UV_INDEX_URL`, `GOPROXY`).
+  Corepack fetches pnpm and yarn through it too (`corepack enable`). Leave
+  those as they are, and add no registry to `.npmrc`, `pip.conf`,
+  `pyproject.toml` or `go env`.
+- The network may reach nothing but that mirror, the model and the Donkey
+  API. A download that fails (a public Git host, `curl`, `uv python install`)
+  is the installation's policy: report it, do not work around it.
+- There is no root. Install tools into the home (`npm install -g`,
+  `uv tool install`, `go install`), never with `apt-get` or `sudo`.
+- `/data` (home and workspace) survives restarts; everything else comes from
+  the image and is reset.
+- Each project is a folder of `/data/workspace`, and the agent runs in the
+  one its owner opened from the console. Stay in it: another project is
+  another folder, opened there. A folder made from a deployed app is a git
+  repository whose first commit is the deployed version — `git diff` shows
+  what changed since.
+- A machine nobody uses stops after a while and keeps its disk. Work that
+  must outlive the machine is committed or deployed, not left running.
+- A server started in the machine answers its owner at
+  `/.donkey/port/<port>/` on the machine's address. That is a path, not a
+  root: set the server's base path to it. To show an app to anyone, deploy it.
+
+## Local package installs
+
+- On a developer's computer where the public registries are blocked,
+  `donkey packages run <command>` (e.g. `donkey packages run npm install`)
+  installs through the installation's mirror; `donkey packages proxy` keeps
+  it open for an IDE. Not needed in a Donkey machine.
+- A lockfile written this way may name the mirror's address. Keep it as it
+  is: a deploy reads it.
 
 ## App and space
 

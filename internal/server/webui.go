@@ -17,8 +17,18 @@ import (
 )
 
 // uiHandler serves the embedded admin console: real files as-is, everything
-// else falls back to index.html (the SPA handles its own views).
-func uiHandler() http.Handler {
+// else falls back to index.html (the SPA handles its own views). frames is
+// the one source the console may show inside a frame — the addresses of
+// personal machines — or "" when the installation has none.
+func uiHandler(frames string) http.Handler {
+	policy := "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
+		"img-src 'self' data:; connect-src 'self'; font-src 'self' data:; " +
+		"frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+	if frames != "" {
+		// A machine's interface is embedded from its own origin, which is
+		// what keeps whatever runs in it away from this page and its session.
+		policy += "; frame-src " + frames
+	}
 	sub, err := fs.Sub(web.Dist, "dist")
 	if err != nil {
 		panic(err) // embed is broken at build time, not at runtime
@@ -34,10 +44,7 @@ func uiHandler() http.Handler {
 		// injection or framing would act as the signed-in admin. The bundle
 		// is self-contained (no CDNs), so a strict policy costs nothing —
 		// 'unsafe-inline' covers only the stylesheet Tailwind injects.
-		w.Header().Set("Content-Security-Policy",
-			"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "+
-				"img-src 'self' data:; connect-src 'self'; font-src 'self' data:; "+
-				"frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+		w.Header().Set("Content-Security-Policy", policy)
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		// Apps and the console are https-only; the http listener just redirects.
