@@ -20,9 +20,11 @@ func TestMachineEnvPointsPackageManagersAtTheMirror(t *testing.T) {
 	env := MachineEnv(machineSpec(), "http://api", "http://ai/v1", "http://donkey-packages.donkey-system.svc/")
 	for name, want := range map[string]string{
 		"NPM_CONFIG_REGISTRY": "http://donkey-packages.donkey-system.svc/npm/",
-		"PIP_INDEX_URL":       "http://donkey-packages.donkey-system.svc/pypi/",
-		"UV_INDEX_URL":        "http://donkey-packages.donkey-system.svc/pypi/",
-		"GOPROXY":             "http://donkey-packages.donkey-system.svc/go/",
+		// Corepack fetches pnpm and yarn themselves, and has to be told too.
+		"COREPACK_NPM_REGISTRY": "http://donkey-packages.donkey-system.svc/npm",
+		"PIP_INDEX_URL":         "http://donkey-packages.donkey-system.svc/pypi/",
+		"UV_INDEX_URL":          "http://donkey-packages.donkey-system.svc/pypi/",
+		"GOPROXY":               "http://donkey-packages.donkey-system.svc/go/",
 		// Plain HTTP inside the runtime: pip and yarn have to be told.
 		"PIP_TRUSTED_HOST":           "donkey-packages.donkey-system.svc",
 		"YARN_UNSAFE_HTTP_WHITELIST": "donkey-packages.donkey-system.svc",

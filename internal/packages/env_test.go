@@ -10,7 +10,10 @@ func TestManagerEnv(t *testing.T) {
 	} {
 		env := ManagerEnv(mirror)
 		for name, want := range map[string]string{
-			"NPM_CONFIG_REGISTRY":      mirror + "/npm/",
+			"NPM_CONFIG_REGISTRY": mirror + "/npm/",
+			// Corepack joins the name of the package manager on with a slash
+			// of its own.
+			"COREPACK_NPM_REGISTRY":    mirror + "/npm",
 			"YARN_NPM_REGISTRY_SERVER": mirror + "/npm/",
 			"PIP_INDEX_URL":            mirror + "/pypi/",
 			"UV_INDEX_URL":             mirror + "/pypi/",

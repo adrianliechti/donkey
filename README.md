@@ -1068,7 +1068,8 @@ the image (below).
 - *The installation's package mirror*, the way a build gets it: npm, pnpm,
   yarn, bun, pip, uv and Go are pointed at `donkey-packages` by the names
   they read themselves (`NPM_CONFIG_REGISTRY`, `PIP_INDEX_URL`,
-  `UV_INDEX_URL`, `GOPROXY`). `npm install` in a terminal or by the agent
+  `UV_INDEX_URL`, `GOPROXY`) — and Corepack, which fetches pnpm or yarn
+  itself for a project that names one, by `COREPACK_NPM_REGISTRY`. `npm install` in a terminal or by the agent
   installs from the same registries as a deploy does, private packages
   included, and no upstream credential comes near the machine. There is
   nothing to prefix and nothing for the agent to remember. Lockfiles written
@@ -1522,7 +1523,7 @@ to the source registry; a restricted network may then show Docker Hub in the
 final error even though the mirror was tried first.
 
 Every installation also runs `donkey-packages`. donkey declares its internal
-npm, pip, Go, Maven and NuGet settings after every `FROM` in an in-memory
+npm (and Corepack), pip, Go, Maven and NuGet settings after every `FROM` in an in-memory
 Dockerfile overlay, so they reach every `RUN` in every stage without changing
 the app's file. The public defaults are npmjs, PyPI, `proxy.golang.org`, Maven
 Central and the NuGet v3 service index; only the proxy process sees configured
@@ -1859,6 +1860,7 @@ is told to leave the local address alone (`NO_PROXY`).
 | Tool | How it is pointed at the mirror | Reaches |
 |---|---|---|
 | npm, pnpm, yarn 1, bun | `NPM_CONFIG_REGISTRY` | whatever the command starts |
+| Corepack, fetching pnpm or yarn itself | `COREPACK_NPM_REGISTRY` | whatever the command starts |
 | yarn 2 and later | `YARN_NPM_REGISTRY_SERVER` | whatever the command starts |
 | pip, uv | `PIP_INDEX_URL`, `UV_INDEX_URL` | whatever the command starts |
 | Go | `GOPROXY` | whatever the command starts |

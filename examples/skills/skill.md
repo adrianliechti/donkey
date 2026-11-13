@@ -36,7 +36,8 @@ A machine is a development container the platform runs for one person.
   from the console; report it instead of retrying.
 - npm, pnpm, yarn, bun, pip, uv and Go already install through the
   installation's package mirror; the environment names it
-  (`NPM_CONFIG_REGISTRY`, `PIP_INDEX_URL`, `UV_INDEX_URL`, `GOPROXY`). Leave
+  (`NPM_CONFIG_REGISTRY`, `PIP_INDEX_URL`, `UV_INDEX_URL`, `GOPROXY`).
+  Corepack fetches pnpm and yarn through it too (`corepack enable`). Leave
   those as they are, and add no registry to `.npmrc`, `pip.conf`,
   `pyproject.toml` or `go env`.
 - The network may reach nothing but that mirror, the model and the Donkey

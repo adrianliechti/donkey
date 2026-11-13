@@ -25,6 +25,12 @@ func ManagerEnv(mirror string) map[string]string {
 		// follow them. Without them the lockfile still pins every version
 		// and its checksum, and each install asks its own registry.
 		"NPM_CONFIG_OMIT_LOCKFILE_REGISTRY_RESOLVED": "true",
+		// Corepack fetches pnpm and yarn themselves — the package manager a
+		// project names in package.json — and reads no npm setting for it:
+		// without this it asks registry.npmjs.org, which is exactly where a
+		// machine or a build behind the mirror cannot go. It takes the
+		// address without a trailing slash.
+		"COREPACK_NPM_REGISTRY": mirror + "/npm",
 		// yarn 2 and later, which also wants to be told that plain HTTP to
 		// the mirror is meant.
 		"YARN_NPM_REGISTRY_SERVER":   mirror + "/npm/",
