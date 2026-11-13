@@ -5,13 +5,14 @@ package machine
 
 import (
 	"crypto/subtle"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/adrianliechti/donkey/internal/config"
 	"github.com/adrianliechti/donkey/internal/identity"
@@ -34,6 +35,18 @@ type Guard struct {
 	Host string
 	// Upstream is the agent's loopback address.
 	Upstream *url.URL
+	// ControlToken is the control plane's own credential
+	// (config.MachineControlToken), and Control what it reaches with it:
+	// everything under ControlPrefix. The gateway's credential does not open
+	// it, so nothing a browser sends ever arrives there.
+	ControlToken string
+	Control      http.Handler
+	// Used is told of everything that comes through the door for the owner —
+	// what keeps an idle machine from being taken for a used one, and the
+	// other way around.
+	Used func()
+	// Reserved are loopback ports the door keeps to itself (the model relay).
+	Reserved []string
 }
 
 // PortPrefix is where the machine's other loopback ports answer, on the
@@ -60,6 +73,15 @@ func (g *Guard) Handler() http.Handler {
 			g.health(w)
 			return
 		}
+		if strings.HasPrefix(r.URL.Path, ControlPrefix) {
+			if g.Control == nil || g.ControlToken == "" ||
+				subtle.ConstantTimeCompare([]byte(r.Header.Get(config.MachineControlHeader)), []byte(g.ControlToken)) != 1 {
+				http.Error(w, "This is for donkey itself.", http.StatusForbidden)
+				return
+			}
+			g.Control.ServeHTTP(w, r)
+			return
+		}
 		if g.Token == "" || subtle.ConstantTimeCompare([]byte(r.Header.Get(config.MachineGuardHeader)), []byte(g.Token)) != 1 {
 			http.Error(w, "This machine only answers through its donkey address.", http.StatusForbidden)
 			return
@@ -71,11 +93,14 @@ func (g *Guard) Handler() http.Handler {
 			http.Error(w, "cross-origin request denied", http.StatusForbidden)
 			return
 		}
+		if g.Used != nil {
+			g.Used()
+		}
 		if strings.HasPrefix(r.URL.Path, PortPrefix) {
 			port, ok := portOf(r.URL.Path)
 			// The agent has an address already. Under this one its pages
 			// would ask for their scripts at the wrong place.
-			if !ok || port == g.Upstream.Port() {
+			if !ok || port == g.Upstream.Port() || slices.Contains(g.Reserved, port) {
 				http.NotFound(w, r)
 				return
 			}
@@ -133,6 +158,11 @@ func (g *Guard) proxy(upstream *url.URL, prefix string) *httputil.ReverseProxy {
 			identity.StripHeaders(pr.Out.Header)
 		},
 		ModifyResponse: func(res *http.Response) error {
+			// A connection that stays open — a terminal, the agent's stream —
+			// is used whenever something passes through it.
+			if stream, ok := res.Body.(io.ReadWriteCloser); ok && res.StatusCode == http.StatusSwitchingProtocols && g.Used != nil {
+				res.Body = usedStream{stream, g.Used}
+			}
 			if location := res.Header.Get("Location"); location != "" {
 				res.Header.Set("Location", g.publicLocation(location, prefix))
 			}
@@ -148,7 +178,7 @@ func (g *Guard) proxy(upstream *url.URL, prefix string) *httputil.ReverseProxy {
 				http.Error(w, "Nothing in the machine is listening on port "+upstream.Port()+".", http.StatusBadGateway)
 				return
 			}
-			http.Error(w, "The machine's agent isn't answering yet — it may still be starting.", http.StatusBadGateway)
+			http.Error(w, "Nothing is open in this machine yet, or its agent is still starting. Folders are opened on the Machine page of the donkey console.", http.StatusBadGateway)
 		},
 	}
 }
@@ -210,16 +240,11 @@ func (g *Guard) ownOrigin(origin string) bool {
 	return err == nil && u.Scheme == "https" && strings.EqualFold(u.Host, g.Host)
 }
 
-// health says whether the agent accepts connections. It is the one answer
-// given without the credential, to the runtime that asks whether the machine
-// is up, and it says nothing more than that.
+// health says the door is up. It is the one answer given without a
+// credential, to the runtime that asks whether the machine can take requests,
+// and it says nothing more than that — whether a folder is open is the
+// control plane's to ask.
 func (g *Guard) health(w http.ResponseWriter) {
-	conn, err := net.DialTimeout("tcp", g.Upstream.Host, time.Second)
-	if err != nil {
-		http.Error(w, "starting", http.StatusServiceUnavailable)
-		return
-	}
-	_ = conn.Close()
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	_, _ = w.Write([]byte("ok\n"))
 }

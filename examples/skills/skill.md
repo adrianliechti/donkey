@@ -46,6 +46,13 @@ A machine is a development container the platform runs for one person.
   `uv tool install`, `go install`), never with `apt-get` or `sudo`.
 - `/data` (home and workspace) survives restarts; everything else comes from
   the image and is reset.
+- Each project is a folder of `/data/workspace`, and the agent runs in the
+  one its owner opened from the console. Stay in it: another project is
+  another folder, opened there. A folder made from a deployed app is a git
+  repository whose first commit is the deployed version — `git diff` shows
+  what changed since.
+- A machine nobody uses stops after a while and keeps its disk. Work that
+  must outlive the machine is committed or deployed, not left running.
 - A server started in the machine answers its owner at
   `/.donkey/port/<port>/` on the machine's address. That is a path, not a
   root: set the server's base path to it. To show an app to anyone, deploy it.

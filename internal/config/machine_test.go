@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+	"time"
 )
 
 // A machine's name ends up in a hostname, so it has to be a DNS label that is
@@ -83,6 +84,10 @@ func TestMachineSettings(t *testing.T) {
 		"cpu":                       {Image: "machine:1", CPU: "two"},
 		"egress":                    {Image: "machine:1", Egress: "internet"},
 		"egress without an image":   {Egress: "open"},
+		"idle":                      {Image: "machine:1", Idle: "an hour"},
+		"idle in seconds":           {Image: "machine:1", Idle: "30s"},
+		"idle as a bare number":     {Image: "machine:1", Idle: "60"},
+		"idle without an image":     {Idle: "2h"},
 	} {
 		if err := bad.Validate(); err == nil {
 			t.Errorf("%s: accepted %+v", name, bad)
@@ -100,12 +105,61 @@ func TestMachineSettings(t *testing.T) {
 		}
 	}
 	// What the installer writes is what the control plane reads.
-	full := MachineSettings{Image: "machine:1", Storage: "20Gi", StorageClass: "fast", CPU: "500m", Memory: "2Gi", Egress: "open"}
+	// A machine nobody uses stops after an hour unless the installation
+	// names another time — or says, in so many words, never.
+	for idle, want := range map[string]time.Duration{"": time.Hour, "60m": time.Hour, "2h": 2 * time.Hour, "90m": 90 * time.Minute, "never": 0} {
+		m := MachineSettings{Image: "machine:1", Idle: idle}
+		if err := m.Validate(); err != nil || m.IdleTimeout() != want {
+			t.Errorf("idle %q: %s (%v), want %s", idle, m.IdleTimeout(), err, want)
+		}
+	}
+	full := MachineSettings{Image: "machine:1", Storage: "20Gi", StorageClass: "fast", CPU: "500m", Memory: "2Gi", Egress: "open", Idle: "2h"}
 	if err := full.Validate(); err != nil {
 		t.Fatal(err)
 	}
 	env := full.Env()
 	if got := MachineSettingsFromEnv(func(key string) string { return env[key] }); got != full {
 		t.Fatalf("round trip = %+v, want %+v", got, full)
+	}
+}
+
+// The control plane's credential at a machine is its own: neither derivable
+// from the gateway's nor the same for two machines.
+func TestMachineControlToken(t *testing.T) {
+	key := []byte("0123456789abcdef0123456789abcdef")
+	control := MachineControlToken(key, "m0000000000000001")
+	if control != MachineControlToken(key, "m0000000000000001") || len(control) != 64 {
+		t.Fatalf("credential = %q", control)
+	}
+	if control == MachineGuardToken(key, "m0000000000000001") {
+		t.Fatal("the control plane and the gateway present the same credential")
+	}
+	if control == MachineControlToken(key, "m0000000000000002") {
+		t.Fatal("two machines share a credential")
+	}
+}
+
+func TestMachineFolderNames(t *testing.T) {
+	for _, name := range []string{"shop", "shop-2", "My.App_v2", "0", strings.Repeat("a", 63)} {
+		if !ValidMachineFolder(name) || !SafeMachineFolder(name) {
+			t.Errorf("%q refused", name)
+		}
+	}
+	for _, name := range []string{"", ".", "..", ".git", "-shop", "my shop", "shop/src", `shop\src`, "söp", strings.Repeat("a", 64)} {
+		if ValidMachineFolder(name) {
+			t.Errorf("%q accepted for a new folder", name)
+		}
+	}
+	// A folder that is already there only has to stay inside the workspace
+	// and in sight.
+	for _, name := range []string{"my shop", "söp", "Shop (old)", "-shop"} {
+		if !SafeMachineFolder(name) {
+			t.Errorf("%q refused for a folder that exists", name)
+		}
+	}
+	for _, name := range []string{"", ".", "..", ".git", "shop/src", `shop\src`, "a\x00b", "a\nb", strings.Repeat("a", 256)} {
+		if SafeMachineFolder(name) {
+			t.Errorf("%q accepted", name)
+		}
 	}
 }

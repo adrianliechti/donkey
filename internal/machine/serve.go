@@ -2,7 +2,6 @@ package machine
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -12,7 +11,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/adrianliechti/donkey/examples/skills"
@@ -29,8 +27,12 @@ type Options struct {
 	// http://127.0.0.1:9000). It must be a loopback address: the front door
 	// is the only way in.
 	Upstream string
-	// Workspace is the folder the agent opens (default /data/workspace).
+	// Workspace is where the machine's folders live (default
+	// /data/workspace). The agent opens one of them at a time.
 	Workspace string
+	// Relay is the loopback address the machine reaches its model through
+	// while it counts as used by doing so (default 127.0.0.1:9001).
+	Relay string
 	// Command is the agent. The default runs Wingman's workspace server.
 	Command []string
 	// Getenv reads the machine's environment (default os.Getenv).
@@ -39,8 +41,7 @@ type Options struct {
 	Log io.Writer
 }
 
-// agentStopGrace is how long a stopping machine gives the agent to save what
-// it is doing.
+// agentStopGrace is how long a stopping agent gets to save what it is doing.
 const agentStopGrace = 10 * time.Second
 
 func (o *Options) defaults() error {
@@ -51,7 +52,10 @@ func (o *Options) defaults() error {
 		o.Upstream = "http://127.0.0.1:9000"
 	}
 	if o.Workspace == "" {
-		o.Workspace = filepath.Join(config.MachineDataPath, "workspace")
+		o.Workspace = config.MachineWorkspacePath
+	}
+	if o.Relay == "" {
+		o.Relay = "127.0.0.1:9001"
 	}
 	if o.Getenv == nil {
 		o.Getenv = os.Getenv
@@ -72,10 +76,10 @@ func (o *Options) defaults() error {
 	return nil
 }
 
-// Serve runs a machine until ctx ends or the agent exits: it makes the
-// owner's home what they expect, starts the agent in the workspace and
-// stands in front of it. An agent that exits takes the machine down with it,
-// so the runtime starts a fresh one.
+// Serve runs a machine until ctx ends: it makes the owner's home what they
+// expect and stands at the front door. The agent starts when the control
+// plane opens a folder for the owner, in that folder, and starts again in
+// another when they open another — the machine itself stays as it is.
 func Serve(ctx context.Context, opts Options) error {
 	if err := opts.defaults(); err != nil {
 		return err
@@ -87,8 +91,43 @@ func Serve(ctx context.Context, opts Options) error {
 	if err := prepare(opts); err != nil {
 		return err
 	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	// A machine that just started has its whole idle time ahead of it.
+	activity := &Activity{}
+	activity.Mark()
+	idle, _ := time.ParseDuration(opts.Getenv("DONKEY_MACHINE_IDLE"))
+	api := API{Server: opts.Getenv("DONKEY_SERVER_URL"), Token: opts.Getenv("DONKEY_TOKEN"), Log: opts.Log}
+
 	upstream, _ := url.Parse(opts.Upstream)
-	guard := &Guard{Token: token, Host: host, Upstream: upstream}
+	guard := &Guard{
+		Token: token, Host: host, Upstream: upstream,
+		ControlToken: opts.Getenv("DONKEY_MACHINE_CONTROL_TOKEN"),
+		Used:         activity.Mark,
+	}
+	replace := map[string]string{}
+	if idle > 0 {
+		if relay, address := startModelRelay(opts, activity.Mark); relay != nil {
+			defer relay.Close()
+			replace["OPENAI_BASE_URL"] = address
+			_, port, _ := net.SplitHostPort(relay.Addr)
+			guard.Reserved = append(guard.Reserved, port)
+		}
+	}
+	workspace := &Workspace{
+		Root:    opts.Workspace,
+		Command: opts.Command,
+		Env:     agentEnv(os.Environ(), replace),
+		Agent:   upstream,
+		Fetch:   api.FetchSource,
+		Used:    activity.Mark,
+		Log:     opts.Log,
+	}
+	workspace.sweep()
+	defer workspace.Close()
+	guard.Control = workspace.Handler()
+
 	listener, err := net.Listen("tcp", opts.Listen)
 	if err != nil {
 		return err
@@ -97,55 +136,69 @@ func Serve(ctx context.Context, opts Options) error {
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- srv.Serve(listener) }()
 	defer srv.Close()
+	fmt.Fprintf(opts.Log, "donkey machine: serving https://%s — %s starts in the folder that is opened\n", host, strings.Join(opts.Command, " "))
 
-	agent := exec.Command(opts.Command[0], opts.Command[1:]...)
-	agent.Dir = opts.Workspace
-	agent.Env = agentEnv(os.Environ())
-	agent.Stdout, agent.Stderr = os.Stdout, os.Stderr
-	if err := agent.Start(); err != nil {
-		return fmt.Errorf("the agent couldn't be started (%s): %w", strings.Join(opts.Command, " "), err)
+	switch {
+	case idle <= 0:
+	case api.Server == "" || api.Token == "":
+		fmt.Fprintln(opts.Log, "donkey machine: without a donkey sign-in this machine cannot ask to be stopped when it goes unused")
+	default:
+		go watchIdle(ctx, activity, idle, api.StopMachine, opts.Log)
 	}
-	fmt.Fprintf(opts.Log, "donkey machine: serving %s for https://%s\n", strings.Join(opts.Command, " "), host)
-	exited := make(chan error, 1)
-	go func() { exited <- agent.Wait() }()
 
 	select {
-	case err := <-exited:
-		if err == nil {
-			err = errors.New("it exited")
-		}
-		return fmt.Errorf("the agent stopped: %w", err)
 	case err := <-serveErr:
-		_ = agent.Process.Kill()
-		<-exited
 		return err
 	case <-ctx.Done():
+		// Asked to stop: Close gives the agent the chance to finish what it
+		// is writing.
+		return nil
 	}
-	// Asked to stop: the agent gets the chance to finish what it is writing.
-	_ = agent.Process.Signal(syscall.SIGTERM)
-	select {
-	case <-exited:
-	case <-time.After(agentStopGrace):
-		_ = agent.Process.Kill()
-		<-exited
+}
+
+// startModelRelay puts the door between the machine and its model, so that a
+// machine whose agent is working counts as used (see modelRelay). It answers
+// on the loopback only. Without a model, or where the port is taken, the
+// machine reaches its model directly and only browsers keep it awake.
+func startModelRelay(opts Options, used func()) (*http.Server, string) {
+	target, err := url.Parse(opts.Getenv("OPENAI_BASE_URL"))
+	if err != nil || target.Host == "" {
+		return nil, ""
 	}
-	return nil
+	listener, err := net.Listen("tcp", opts.Relay)
+	if err != nil {
+		fmt.Fprintf(opts.Log, "donkey machine: the model is reached directly, so an agent working on its own will not keep this machine awake: %v\n", err)
+		return nil, ""
+	}
+	relay := &http.Server{
+		Addr:              listener.Addr().String(),
+		Handler:           modelRelay(target, used),
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+	go func() { _ = relay.Serve(listener) }()
+	// The same address with the door in front: whatever path the endpoint
+	// lives under stays.
+	return relay, (&url.URL{Scheme: "http", Host: relay.Addr, Path: target.Path}).String()
 }
 
 // agentEnv is the environment the agent — and with it every terminal and
-// command of the machine — runs in.
-func agentEnv(environ []string) []string {
+// command of the machine — runs in. replace swaps values the door stands in
+// for.
+func agentEnv(environ []string, replace map[string]string) []string {
 	env := make([]string, 0, len(environ)+1)
 	sandbox := false
 	for _, entry := range environ {
 		name, _, _ := strings.Cut(entry, "=")
 		switch name {
-		case "DONKEY_MACHINE_GUARD_TOKEN":
-			// The front door's own credential. Nothing behind the door has a
-			// use for it.
+		case "DONKEY_MACHINE_GUARD_TOKEN", "DONKEY_MACHINE_CONTROL_TOKEN":
+			// The front door's own credentials. Nothing behind the door has
+			// a use for them.
 			continue
 		case "WINGMAN_SANDBOX":
 			sandbox = true
+		}
+		if value, ok := replace[name]; ok {
+			entry = name + "=" + value
 		}
 		env = append(env, entry)
 	}

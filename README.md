@@ -953,8 +953,9 @@ markdown chat for the AI, using the very token and proxy an app would.
 A machine is a development environment of your own inside the installation:
 a container with Python, Node and Go, the `donkey` CLI already signed in as
 you, and the [Wingman](https://github.com/adrianliechti/wingman-agent) coding
-agent. It opens in the console — **Your machine** in the header — with the
-agent's editor, chat and terminals shown right there. Nothing to install on a
+agent. It opens in the console — **Machine**, beside *Deploy* on the front
+page, or *Your machine* in the ⌘K palette from anywhere — with the agent's
+editor, chat and terminals shown right there. Nothing to install on a
 laptop, and nothing a laptop is allowed to reach has to be reachable from one.
 
 ```
@@ -966,7 +967,7 @@ laptop, and nothing a laptop is allowed to reach has to be reachable from one.
                                              ┌──────────▼───────────────────────┐
                                              │ your machine                     │
                                              │  front door :8080  (checks it)   │
-                                             │  agent on the loopback           │──▶ donkey-ai (model)
+                                             │  agent, in the folder you opened │──▶ donkey-ai (model)
                                              │  donkey CLI, signed in as you    │──▶ donkey-server (API)
                                              │  /data  your disk                │
                                              └──────────────────────────────────┘
@@ -978,13 +979,73 @@ space's members can do reaches it. Platform administrators and everyone who
 is an admin or developer of at least one space may have one; a sign-in alone,
 or a viewer's role, does not — a machine costs compute, disk and model calls.
 
-**Create, stop, delete.** The first start creates the disk. *Stop* ends what
-is running and keeps the disk; *delete* removes the disk too. *Restart* is a
-start over a running machine: it comes back on the installation's current
-image with a fresh sign-in.
+**It follows the folder.** There is no machine to create and none to start.
+One dialog asks one thing — which folder to open — and the machine follows
+from the answer: it is made, disk and all, for the first folder, and started
+whenever a folder is opened and it is not running. The dialog comes up over
+whatever page you are on — from the Machine button, from the palette, from
+an app's Source tab, from the folder named in the header while the agent is
+open — so closing it leaves you where you were, and nothing is made or
+started before a folder is named. With a folder already open, the Machine
+button goes straight to the agent.
+
+What can be done to the machine itself, for the day it should not look after
+itself, is the dialog's last section and a menu beside the agent: *Stop*
+ends what is running now and keeps the disk; *Delete* gives the disk back,
+and leads back to the overview — there is no page for not having a machine;
+*Restart* (in the menu) brings it back on the installation's current image
+with a fresh sign-in, in the folder it had open.
+
+**It stops when nobody uses it.** A machine is a desk, not a service: it is
+worth its CPU and memory while you are at it or its agent is working, and a
+start brings everything back, because the disk stays. So a machine that has
+gone unused for an hour (`machines.idle`, below) is stopped — the same stop
+as the one in the console, asked for by the machine itself with your
+sign-in. "In use" is what its front door can see, and it is deliberately
+generous:
+
+- *a browser is talking to it* — any request through the gateway, and every
+  byte on a connection that stays open, which is all a terminal ever sends;
+- *something in it is talking to its model.* The machine reaches `donkey-ai`
+  through its own front door (inside a machine, `OPENAI_BASE_URL` is a
+  loopback address), so an agent left to finish a long task keeps its
+  machine with no browser anywhere.
+
+A tab left open on a computer that is awake counts as use; a closed laptop
+does not. The console asking a machine for its folders never counts.
+
+**Folders.** Your work is in folders under `/data/workspace`, and the agent
+has one of them open at a time: its files, its sessions and its terminals
+start there. The dialog lists your folders, the one used last first, and
+its last row makes a new, empty one. The folder that is open is named in the
+header, and choosing another moves the agent there: what was running in the
+first one ends, its files stay. The machine itself does not restart for
+that, so it takes seconds.
+
+A machine that stops by itself is, most days, found stopped — so it can say
+what is on its disk without being started. While it runs, `donkey-server`
+keeps the list of its folders with the disk (an annotation on the
+PersistentVolumeClaim; a note in the state directory on Docker), and the
+dialog offers that list for a stopped machine: picking a folder starts the
+machine and opens it. The note is what the console last saw, not the disk
+itself — a folder made in a terminal while no console was looking is not on
+it — so the dialog also offers to start the machine just to look.
+
+**An app's source, in a folder.** The dialog's *From an app* section lists
+the apps you can see; pick one and a version (the newest, unless you choose
+another), and it is copied into a new folder as the first commit of a git
+repository there — so everything you and the agent change from then on
+reads as a change, and `donkey deploy` from the folder ships it. Every
+version in an app's [source history](#source-history) also has an *Open in
+your machine* button, on the app's Source tab, which opens the same dialog
+on that version. The machine fetches the source itself, with your sign-in:
+you get what the Source tab would let you download, and nothing else. A
+folder is only ever made, never filled: where a folder of the app's name is
+already there, the dialog offers to open it or to put the version beside it
+under another name.
 
 **What is yours and what is the image's.** The disk is mounted at `/data`:
-your home is `/data/home`, the agent opens `/data/workspace`. Everything
+your home is `/data/home`, your folders are in `/data/workspace`. Everything
 outside `/data` comes from the image and is the same after every restart. A
 machine runs as an unprivileged user and cannot become root, so there is no
 `apt-get install` — what you install for yourself goes to your home, where
@@ -1040,6 +1101,12 @@ front of that trust:
    neighbour on the same network, and not on a cluster whose network plugin
    ignores policies. It also refuses requests made by another site's page.
 
+`donkey-server` reaches the same door for the two things it asks a machine
+on your behalf — which folders it has, and to open one. It presents a
+credential of its own, which the gateway's does not open and the gateway
+never forwards: nothing a browser sends, yours included, is taken for the
+control plane, and the control plane's credential is no way to the agent.
+
 The console shows the machine in a frame, from that address. Being a
 different origin is the point: nothing running in a machine can read the
 console's page or act with its session, and the gateway lets only the
@@ -1065,8 +1132,9 @@ in the agent just works. Two things follow from sharing one address:
 **What can reach it, and what it can reach.** Both are limited, on both
 runtimes, and neither depends on how the installation treats its spaces.
 
-- *In:* the gateway, on the machine's front door, and nothing else — no app,
-  no other machine, no other workload of the cluster.
+- *In:* the gateway and `donkey-server`, on the machine's front door, each
+  with its own credential, and nothing else — no app, no other machine, no
+  other workload of the cluster.
 - *Out:* the control plane and nothing beyond it — DNS, the API its CLI
   calls, the AI endpoint its agent asks and the package mirror its package
   managers install from. There is no way out to the internet.
@@ -1113,6 +1181,7 @@ machines:
   cpu: "2"             # the most one machine may use
   memory: 4Gi
   egress: restricted   # or open — see above
+  idle: 60m            # how long a machine may go unused before it stops; never to keep them
 ```
 
 or pass `--machine-image` to `donkey server install`. Without an image the
@@ -1124,12 +1193,14 @@ pushes it for both architectures).
 **An image of your own.** Add toolchains by building on that Dockerfile. The
 contract is small: the entry point is `donkey machine serve`, which listens on
 port 8080; the container runs as user 1000 with `/data` as its only writable
-home; and `donkey machine serve -- <command>` starts another agent or editor
+home; and `donkey machine serve -- <command>` runs another agent or editor
 instead of Wingman, as long as it serves on the loopback
-(`--upstream http://127.0.0.1:<port>`).
+(`--upstream http://127.0.0.1:<port>`). The command is started in the folder
+that is opened, and ended and started again in the next one.
 
-**Not there yet.** One machine per person. A machine runs until it is
-stopped — nothing stops an idle one. Other ports share the machine's address
+**Not there yet.** One machine per person, and one folder open at a time. A
+restricted machine cannot clone from a Git host, so its folders start empty
+or from an app that is deployed here. Other ports share the machine's address
 under a path rather than having one of their own, so a server that needs its
 own root is not reachable. Machines are managed in the console only; the CLI
 has no command for them.
@@ -1406,7 +1477,9 @@ build changed on top.
 - **Builds are tags.** `build-<n>` names the commit build *n* used. The
   console marks the commit the app runs as *live*, and failed builds in red.
 - Any version can be browsed file by file — syntax highlighted, with the
-  changes that version made to each file — and downloaded as a `.zip`.
+  changes that version made to each file — downloaded as a `.zip`, and,
+  where the installation has [machines](#machines), opened in yours as a
+  folder to keep working in.
 
 The repositories are written with go-git (no `git` binary in the image), one
 pack per commit, and are plain git: a copy of the volume opens in any client

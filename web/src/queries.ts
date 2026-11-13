@@ -18,6 +18,7 @@ import {
   type AddAddonRequest,
   type AnalyticsFilter,
   api,
+  type OpenFolder,
   type ResourceRange,
   type SpaceConfig,
   type TrafficRange,
@@ -47,6 +48,28 @@ export function useMachineAction(action: 'start' | 'stop' | 'delete') {
     // The answer is the machine as it is now; the page keeps watching it.
     onSuccess: (machine) => qc.setQueryData(machineQuery.queryKey, machine),
     onSettled: () => qc.invalidateQueries({ queryKey: machineQuery.queryKey }),
+  })
+}
+
+// A running machine's folders. The machine itself answers, so this is only
+// asked while there is one to ask — see MachineView. `started` is when the
+// running container came up: a machine that was started again is a different
+// one to ask, and nothing known about the last is shown for it.
+export const machineWorkspaceQuery = (started: string) =>
+  queryOptions({
+    queryKey: ['machine', 'workspace', started],
+    queryFn: () => api.machineWorkspace(),
+    staleTime: 0,
+  })
+
+export function useOpenMachineFolder(started: string) {
+  const qc = useQueryClient()
+  const key = machineWorkspaceQuery(started).queryKey
+  return useMutation({
+    mutationFn: (open: OpenFolder) => api.openMachineFolder(open),
+    // The answer is the workspace as it is now.
+    onSuccess: (workspace) => qc.setQueryData(key, workspace),
+    onSettled: () => qc.invalidateQueries({ queryKey: key }),
   })
 }
 

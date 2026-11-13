@@ -45,6 +45,13 @@ type MachineResponse struct {
 	// Egress is restricted or open: whether a machine reaches the control
 	// plane only, or the network at large.
 	Egress string `json:"egress,omitempty"`
+	// IdleMinutes is how long a machine may go unused before it is stopped;
+	// absent where machines run until their owners stop them.
+	IdleMinutes int `json:"idleMinutes,omitempty"`
+	// Folders is what a stopped machine's disk held when it last ran: what
+	// it can offer to open before it is started. A running machine is asked
+	// itself (GET /v1/machine/workspace), so it is absent then.
+	Folders []runtime.MachineFolder `json:"folders,omitempty"`
 	// What every machine of this installation gets.
 	Storage string `json:"storage,omitempty"`
 	CPU     string `json:"cpu,omitempty"`
@@ -124,9 +131,10 @@ func (s *Server) machineResponse(st *runtime.MachineStatus) MachineResponse {
 	settings := s.cfg.Machines
 	resp := MachineResponse{
 		Enabled: true, Allowed: true,
-		State:   string(st.State),
-		Egress:  settings.EgressMode(),
-		Storage: settings.StorageSize(), CPU: settings.CPULimit(), Memory: settings.MemoryLimit(),
+		State:       string(st.State),
+		Egress:      settings.EgressMode(),
+		IdleMinutes: int(settings.IdleTimeout().Minutes()),
+		Storage:     settings.StorageSize(), CPU: settings.CPULimit(), Memory: settings.MemoryLimit(),
 		Restarts: st.Restarts, Message: st.Message,
 	}
 	if resp.State == "" {
@@ -144,6 +152,9 @@ func (s *Server) machineResponse(st *runtime.MachineStatus) MachineResponse {
 	}
 	if !st.StartedAt.IsZero() {
 		resp.StartedAt = st.StartedAt.UTC().Format(time.RFC3339)
+	}
+	if st.State == runtime.MachineStopped {
+		resp.Folders = st.Folders
 	}
 	return resp
 }
@@ -210,6 +221,7 @@ func (s *Server) handleStartMachine(w http.ResponseWriter, r *http.Request) {
 		Token:         token,
 		SignInExpires: time.Unix(signIn.Expires, 0),
 		GuardToken:    config.MachineGuardToken(s.cfg.SessionKey, id),
+		ControlToken:  config.MachineControlToken(s.cfg.SessionKey, id),
 		AIToken:       aiToken,
 		Model:         s.cfg.AIModel,
 		Settings:      s.cfg.Machines,

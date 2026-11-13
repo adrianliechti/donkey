@@ -261,6 +261,9 @@ func (s *Server) proxy(rt route, sess *session, fromToken bool, idpToken string)
 			// credential is derived, so no route record has to carry it, and
 			// a visitor's own copy of the header never travels.
 			pr.Out.Header.Del(config.MachineGuardHeader)
+			// The control plane's credential at a machine never comes from a
+			// browser, so one that claims to is dropped here.
+			pr.Out.Header.Del(config.MachineControlHeader)
 			if rt.Machine != "" {
 				pr.Out.Header.Set(config.MachineGuardHeader, config.MachineGuardToken(s.cfg.SessionKey, rt.Machine))
 			}

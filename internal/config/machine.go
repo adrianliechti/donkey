@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"regexp"
+	"time"
 
 	"github.com/distribution/reference"
 )
@@ -27,6 +28,9 @@ const (
 	// MachineDataPath is the machine's disk: the owner's home and workspace.
 	// Everything outside it comes from the image and is gone after a restart.
 	MachineDataPath = "/data"
+	// MachineWorkspacePath is where a machine's folders live: one per thing
+	// its owner works on, each opened by the agent as a workspace of its own.
+	MachineWorkspacePath = MachineDataPath + "/workspace"
 	// MachineHostname is what a machine calls itself. Its owner reads it in
 	// every terminal prompt (dev@donkey), where the runtime's own name for
 	// the container — a pod name, a container ID — says nothing to them.
@@ -44,6 +48,20 @@ const (
 	// machine. The machine's front door refuses requests without it, so being
 	// able to reach the container is not enough to use it.
 	MachineGuardHeader = "X-Donkey-Machine-Token"
+	// MachineControlHeader carries the control plane's own credential: what
+	// donkey-server presents when it asks a machine which folders it has, or
+	// to open one. It is a different credential from the gateway's on purpose
+	// — the gateway speaks for the owner's browser, and nothing a browser
+	// sends, the owner's included, is ever taken for the control plane.
+	MachineControlHeader = "X-Donkey-Machine-Control"
+
+	// DefaultMachineIdle is how long a machine may go unused before it stops.
+	DefaultMachineIdle = 60 * time.Minute
+	// MachineIdleNever, as machines.idle, leaves machines running until their
+	// owners stop them.
+	MachineIdleNever = "never"
+	// minMachineIdle keeps a typo from stopping machines under their owners.
+	minMachineIdle = time.Minute
 )
 
 // MachineSettings is what an installation decides about machines. An empty
@@ -62,6 +80,10 @@ type MachineSettings struct {
 	// Egress is what a machine may reach: "restricted" (the default) — the
 	// control plane and nothing beyond it — or "open", the network at large.
 	Egress string `json:"egress,omitempty"`
+	// Idle is how long a machine may go unused before it is stopped — a
+	// duration such as 60m (the default) or 2h, or "never". Stopping keeps
+	// the disk; it is the compute that is given back.
+	Idle string `json:"idle,omitempty"`
 }
 
 // What a machine may reach. Restricted is the default, and it is a decision
@@ -88,6 +110,23 @@ func (m MachineSettings) EgressMode() string {
 }
 
 func (m MachineSettings) Enabled() bool { return m.Image != "" }
+
+// IdleTimeout is how long a machine may go unused before it is stopped; zero
+// means never. A machine is somebody's desk, not a service: it is worth its
+// CPU and memory while that person is at it or their agent is working, and
+// a start brings everything back, so an unused one gives them up.
+func (m MachineSettings) IdleTimeout() time.Duration {
+	switch m.Idle {
+	case "":
+		return DefaultMachineIdle
+	case MachineIdleNever:
+		return 0
+	}
+	if d, err := time.ParseDuration(m.Idle); err == nil && d >= minMachineIdle {
+		return d
+	}
+	return DefaultMachineIdle
+}
 
 func (m MachineSettings) StorageSize() string {
 	if m.Storage == "" {
@@ -116,7 +155,7 @@ var cpuRE = regexp.MustCompile(`^([0-9]+(\.[0-9]+)?|[0-9]+m)$`)
 
 func (m MachineSettings) Validate() error {
 	if !m.Enabled() {
-		if m.Storage != "" || m.StorageClass != "" || m.CPU != "" || m.Memory != "" || m.Egress != "" {
+		if m.Storage != "" || m.StorageClass != "" || m.CPU != "" || m.Memory != "" || m.Egress != "" || m.Idle != "" {
 			return fmt.Errorf("machines.image is required to turn machines on — the other machines settings do nothing without it")
 		}
 		return nil
@@ -138,6 +177,11 @@ func (m MachineSettings) Validate() error {
 	default:
 		return fmt.Errorf("machines.egress must be %s or %s, not %q", MachineEgressRestricted, MachineEgressOpen, m.Egress)
 	}
+	if m.Idle != "" && m.Idle != MachineIdleNever {
+		if d, err := time.ParseDuration(m.Idle); err != nil || d < minMachineIdle {
+			return fmt.Errorf("machines.idle %q is not a time a machine may go unused (try 60m, 2h or %s)", m.Idle, MachineIdleNever)
+		}
+	}
 	return nil
 }
 
@@ -150,6 +194,7 @@ func (m MachineSettings) Env() map[string]string {
 		"DONKEY_MACHINE_CPU":           m.CPU,
 		"DONKEY_MACHINE_MEMORY":        m.Memory,
 		"DONKEY_MACHINE_EGRESS":        m.Egress,
+		"DONKEY_MACHINE_IDLE":          m.Idle,
 	}
 }
 
@@ -162,6 +207,7 @@ func MachineSettingsFromEnv(get func(string) string) MachineSettings {
 		CPU:          get("DONKEY_MACHINE_CPU"),
 		Memory:       get("DONKEY_MACHINE_MEMORY"),
 		Egress:       get("DONKEY_MACHINE_EGRESS"),
+		Idle:         get("DONKEY_MACHINE_IDLE"),
 	}
 }
 
@@ -193,4 +239,39 @@ func MachineGuardToken(sessionKey []byte, id string) string {
 	h := hmac.New(sha256.New, sessionKey)
 	_, _ = h.Write([]byte("donkey/machine/guard/v1\x00" + id))
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+// MachineControlToken is what donkey-server presents to one machine when it
+// acts on it for its owner (MachineControlHeader). Derived like the gateway's
+// credential, under a purpose of its own, so holding one never yields the
+// other.
+func MachineControlToken(sessionKey []byte, id string) string {
+	h := hmac.New(sha256.New, sessionKey)
+	_, _ = h.Write([]byte("donkey/machine/control/v1\x00" + id))
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// machineFolderRE is one path segment that reads the same everywhere: in a
+// shell, in a URL and in a list. No leading dot, so a folder is never hidden
+// and never "." or "..".
+var machineFolderRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$`)
+
+// ValidMachineFolder reports whether name can be given to a new folder of a
+// machine's workspace (MachineWorkspacePath).
+func ValidMachineFolder(name string) bool { return machineFolderRE.MatchString(name) }
+
+// SafeMachineFolder reports whether name can be a folder that is already
+// there. The owner makes folders in a terminal too, with names nobody
+// checked, so this asks only what keeps a name inside the workspace: one
+// visible path segment.
+func SafeMachineFolder(name string) bool {
+	if name == "" || len(name) > 255 || name[0] == '.' {
+		return false
+	}
+	for _, r := range name {
+		if r == '/' || r == '\\' || r < 0x20 || r == 0x7f {
+			return false
+		}
+	}
+	return true
 }

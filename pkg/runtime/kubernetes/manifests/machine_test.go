@@ -202,8 +202,9 @@ func TestMachineObjectsInASharedNamespace(t *testing.T) {
 	}
 }
 
-// Nothing reaches a machine but the gateway. Out, it gets DNS, the API, the
-// AI endpoint and the package mirror by name, and the network beyond —
+// Nothing reaches a machine but the gateway, with the owner's requests, and
+// donkey-server, which asks it for its folders. Out, it gets DNS, the API,
+// the AI endpoint and the package mirror by name, and the network beyond —
 // except the link-local range where a cloud's metadata service hands out
 // node credentials.
 func TestMachinePolicy(t *testing.T) {
@@ -211,13 +212,15 @@ func TestMachinePolicy(t *testing.T) {
 	if len(p.Spec.PolicyTypes) != 2 {
 		t.Fatalf("policy types = %v, want both directions fenced", p.Spec.PolicyTypes)
 	}
-	if len(p.Spec.Ingress) != 1 || len(p.Spec.Ingress[0].From) != 1 {
-		t.Fatalf("ingress = %+v, want the gateway alone", p.Spec.Ingress)
+	if len(p.Spec.Ingress) != 1 || len(p.Spec.Ingress[0].From) != 2 {
+		t.Fatalf("ingress = %+v, want the gateway and donkey-server alone", p.Spec.Ingress)
 	}
 	in := p.Spec.Ingress[0]
-	if in.From[0].PodSelector.MatchLabels[LabelRole] != SystemRole(GatewayAppName) ||
-		in.From[0].NamespaceSelector.MatchLabels[LabelNamespaceName] != "donkey-system" {
-		t.Errorf("ingress peer = %+v", in.From[0])
+	for i, role := range []string{SystemRole(GatewayAppName), SystemRole(ServerName)} {
+		if in.From[i].PodSelector.MatchLabels[LabelRole] != role ||
+			in.From[i].NamespaceSelector.MatchLabels[LabelNamespaceName] != "donkey-system" {
+			t.Errorf("ingress peer %d = %+v, want %s of donkey-system", i, in.From[i], role)
+		}
 	}
 	if len(in.Ports) != 1 || in.Ports[0].Port.IntValue() != config.MachinePort {
 		t.Errorf("ingress ports = %+v, want the front door only", in.Ports)

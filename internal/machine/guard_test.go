@@ -1,6 +1,7 @@
 package machine
 
 import (
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -146,7 +147,8 @@ func TestGuardRefusesOtherOrigins(t *testing.T) {
 }
 
 // The runtime asks whether the machine is up without holding the credential.
-// It learns that much and nothing more.
+// It learns that much and nothing more — not even whether a folder is open:
+// a machine whose agent has not been started yet is up all the same.
 func TestGuardHealth(t *testing.T) {
 	door, seen := guarded(t)
 	res := doorRequest(t, door, "GET", runtime.MachineHealthPath, nil)
@@ -156,24 +158,38 @@ func TestGuardHealth(t *testing.T) {
 	if len(*seen) != 0 {
 		t.Fatal("the health check was passed on to the agent")
 	}
-	down := httptest.NewServer((&Guard{Token: testToken, Host: testHost, Upstream: &url.URL{Scheme: "http", Host: "127.0.0.1:1"}}).Handler())
-	defer down.Close()
-	if res := doorRequest(t, down, "GET", runtime.MachineHealthPath, nil); res.StatusCode != http.StatusServiceUnavailable {
-		t.Fatalf("an agent that is not listening reads as %d", res.StatusCode)
+	idle := httptest.NewServer((&Guard{Token: testToken, Host: testHost, Upstream: &url.URL{Scheme: "http", Host: "127.0.0.1:1"}}).Handler())
+	defer idle.Close()
+	if res := doorRequest(t, idle, "GET", runtime.MachineHealthPath, nil); res.StatusCode != http.StatusOK {
+		t.Fatalf("a machine with no folder open reads as %d", res.StatusCode)
+	}
+	// The owner who goes there anyway is told what is missing.
+	res = doorRequest(t, idle, "GET", "/", map[string]string{config.MachineGuardHeader: testToken})
+	body, _ := io.ReadAll(res.Body)
+	if res.StatusCode != http.StatusBadGateway || !strings.Contains(string(body), "Nothing is open in this machine yet") {
+		t.Fatalf("no folder open: %d %s", res.StatusCode, body)
 	}
 }
 
 func TestAgentEnv(t *testing.T) {
-	env := agentEnv([]string{"PATH=/bin", "DONKEY_MACHINE_GUARD_TOKEN=secret", "DONKEY_TOKEN=sealed"})
+	env := agentEnv([]string{
+		"PATH=/bin", "DONKEY_MACHINE_GUARD_TOKEN=secret", "DONKEY_MACHINE_CONTROL_TOKEN=secret", "DONKEY_TOKEN=sealed",
+		"OPENAI_BASE_URL=http://donkey-ai:8089/v1",
+	}, map[string]string{"OPENAI_BASE_URL": "http://127.0.0.1:9001/v1", "NOT_SET": "stays unset"})
 	joined := strings.Join(env, "\n")
-	if strings.Contains(joined, "DONKEY_MACHINE_GUARD_TOKEN") {
-		t.Error("the front door's credential was handed to the agent")
+	if strings.Contains(joined, "DONKEY_MACHINE_GUARD_TOKEN") || strings.Contains(joined, "DONKEY_MACHINE_CONTROL_TOKEN") {
+		t.Error("the front door's credentials were handed to the agent")
 	}
 	if !strings.Contains(joined, "DONKEY_TOKEN=sealed") || !strings.Contains(joined, "WINGMAN_SANDBOX=off") {
 		t.Errorf("env = %v", env)
 	}
+	// The door stands in for the model's address, and adds nothing the
+	// machine was not given.
+	if !strings.Contains(joined, "OPENAI_BASE_URL=http://127.0.0.1:9001/v1") || strings.Contains(joined, "donkey-ai") || strings.Contains(joined, "NOT_SET") {
+		t.Errorf("env = %v", env)
+	}
 	// An image that decides otherwise is left alone.
-	kept := agentEnv([]string{"WINGMAN_SANDBOX=on"})
+	kept := agentEnv([]string{"WINGMAN_SANDBOX=on"}, nil)
 	if len(kept) != 1 || kept[0] != "WINGMAN_SANDBOX=on" {
 		t.Errorf("env = %v", kept)
 	}

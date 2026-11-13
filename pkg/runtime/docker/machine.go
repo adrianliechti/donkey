@@ -30,6 +30,7 @@ import (
 //	network    donkey.platform.<id>        role machine-network
 //	route      routes/platform/<id>.yaml   (read by the gateway)
 //	record     machines/<id>.yaml          (its environment, credentials included)
+//	note       machine-folders/<id>.yaml   (the folders its disk held, kept while it is stopped)
 //
 // "platform" is a name no space may take, so none of these can ever be an
 // app's. The network is the isolation: a machine shares it with the gateway
@@ -49,7 +50,16 @@ const (
 	roleMachineInit    = "machine-init"
 
 	machineRecords = "machines"
+	// machineFolderNotes are kept apart from the records above: those hold
+	// credentials and go when a machine stops, these stay with its disk.
+	machineFolderNotes = "machine-folders"
 )
+
+// machineFolderNote is what a machine's disk held when the control plane
+// last looked.
+type machineFolderNote struct {
+	Folders []rt.MachineFolder `json:"folders"`
+}
 
 var _ rt.MachineProvider = (*Runtime)(nil)
 
@@ -113,6 +123,12 @@ func (m machines) Status(ctx context.Context, id string) (*rt.MachineStatus, err
 		vol, err := r.cli.VolumeInspect(ctx, name+".data")
 		if err == nil && sameIdentity(vol.Labels, machineLabels(id, roleMachineStorage)) {
 			st.State = rt.MachineStopped
+			// A note that does not read is no note; the machine says what it
+			// holds once it runs.
+			var note machineFolderNote
+			if found, err := r.state.readRecord(&note, machineFolderNotes, id); found && err == nil {
+				st.Folders = note.Folders
+			}
 		}
 		return st, nil
 	}
@@ -127,6 +143,7 @@ func (m machines) Status(ctx context.Context, id string) (*rt.MachineStatus, err
 	}
 	st.Image = r.pushRef(info.Config.Labels[labelImage])
 	st.Host = info.Config.Labels[labelHost]
+	st.Backend = fmt.Sprintf("http://%s:%d", name, config.MachinePort)
 	if t, err := time.Parse(time.RFC3339, info.Config.Labels[labelSignInExpires]); err == nil {
 		st.SignInExpires = t
 	}
@@ -243,7 +260,23 @@ func (m machines) Delete(ctx context.Context, id string) error {
 	if err := m.Stop(ctx, id); err != nil {
 		return err
 	}
+	if err := r.state.remove(machineFolderNotes, id); err != nil {
+		return err
+	}
 	return r.removeOwnedVolume(ctx, machineName(id)+".data", machineLabels(id, roleMachineStorage))
+}
+
+// Remember keeps the folders in a note beside the machine's records. A Docker
+// volume's labels cannot change once it is made, so the note cannot travel on
+// the disk itself; it goes when the disk is deleted.
+func (m machines) Remember(_ context.Context, id string, folders []rt.MachineFolder) error {
+	if !config.ValidMachineID(id) {
+		return fmt.Errorf("%q is not a machine", id)
+	}
+	if len(folders) > rt.MaxMachineFolders {
+		folders = folders[:rt.MaxMachineFolders]
+	}
+	return m.r.state.writeRecord(machineFolderNote{Folders: folders}, machineFolderNotes, id)
 }
 
 func (m machines) Logs(ctx context.Context, id string, opts rt.LogOptions, out io.Writer) error {

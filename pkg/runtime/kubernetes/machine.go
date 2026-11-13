@@ -2,6 +2,7 @@ package kubernetes
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"sort"
@@ -12,6 +13,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/types"
 
 	"github.com/adrianliechti/donkey/internal/config"
 	rt "github.com/adrianliechti/donkey/pkg/runtime"
@@ -97,6 +99,9 @@ func (m machines) Start(ctx context.Context, spec rt.MachineSpec) error {
 	if err != nil {
 		return err
 	}
+	if err := r.awaitMachineDisk(ctx, in.Namespace, manifests.MachineDataClaimName(in.ObjectName)); err != nil {
+		return err
+	}
 	if err := r.c.Apply(ctx, objs); err != nil {
 		return fmt.Errorf("the cluster refused the machine: %v", err)
 	}
@@ -111,6 +116,38 @@ func (m machines) Start(ctx context.Context, spec rt.MachineSpec) error {
 		obsolete = append(obsolete, "DNSEndpoint")
 	}
 	return r.c.deleteKindsBySelector(ctx, r.opts.SystemNamespace, obsolete, machineEdgeSelector(spec.ID), false)
+}
+
+// machineDiskWait bounds how long a start waits for a deleted machine's disk
+// to finish going. It goes once the pod that held it has — its grace period,
+// at most.
+const machineDiskWait = 2 * time.Minute
+
+// awaitMachineDisk waits for a disk that is on its way out. A machine that
+// was deleted a moment ago still has its claim, held until its pod is gone;
+// a new machine applied onto that claim would see its disk vanish with it
+// and wait for a volume that never comes. So a start that finds the old
+// disk leaving lets it leave, and makes a new one after.
+func (r *Runtime) awaitMachineDisk(ctx context.Context, namespace, name string) error {
+	ctx, cancel := context.WithTimeout(ctx, machineDiskWait)
+	defer cancel()
+	claims := r.c.Clientset.CoreV1().PersistentVolumeClaims(namespace)
+	for {
+		claim, err := claims.Get(ctx, name, metav1.GetOptions{})
+		switch {
+		case apierrors.IsNotFound(err):
+			return nil
+		case err != nil && ctx.Err() == nil:
+			return err
+		case err == nil && claim.DeletionTimestamp == nil:
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("the disk of the machine that was deleted is still being removed — try again in a moment")
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
 }
 
 func machineEdgeSelector(id string) map[string]string {
@@ -175,6 +212,9 @@ func (m machines) Status(ctx context.Context, id string) (*rt.MachineStatus, err
 		if r.c.requireOwnedObject("PersistentVolumeClaim", ns, claim.Name, claim.Labels,
 			manifests.MachineLabels(id, manifests.RoleMachineStorage)) == nil && claim.DeletionTimestamp == nil {
 			st.State = rt.MachineStopped
+			// A note that does not read is no note; the machine says what it
+			// holds once it runs.
+			_ = json.Unmarshal([]byte(claim.Annotations[manifests.AnnotationMachineFolders]), &st.Folders)
 		}
 		return st, nil
 	}
@@ -188,6 +228,7 @@ func (m machines) Status(ctx context.Context, id string) (*rt.MachineStatus, err
 	st.State = rt.MachineStarting
 	st.Image = dep.Annotations[manifests.AnnotationImage]
 	st.Host = dep.Annotations[manifests.AnnotationHost]
+	st.Backend = manifests.MachineBackendURL(name, ns)
 	if t, err := time.Parse(time.RFC3339, dep.Annotations[manifests.AnnotationSignInExpires]); err == nil {
 		st.SignInExpires = t
 	}
@@ -232,6 +273,48 @@ func (m machines) Status(ctx context.Context, id string) (*rt.MachineStatus, err
 		}
 	}
 	return st, nil
+}
+
+// Remember writes the folders onto the machine's disk — the one object of a
+// machine that is still there when it is stopped.
+func (m machines) Remember(ctx context.Context, id string, folders []rt.MachineFolder) error {
+	r := m.r
+	if !config.ValidMachineID(id) {
+		return fmt.Errorf("%q is not a machine", id)
+	}
+	ns, name := r.machineNamespace(), manifests.MachineDataClaimName(r.machineName(id))
+	claims := r.c.Clientset.CoreV1().PersistentVolumeClaims(ns)
+	claim, err := claims.Get(ctx, name, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if err := r.c.requireOwnedObject("PersistentVolumeClaim", ns, name, claim.Labels,
+		manifests.MachineLabels(id, manifests.RoleMachineStorage)); err != nil {
+		return err
+	}
+	if len(folders) > rt.MaxMachineFolders {
+		folders = folders[:rt.MaxMachineFolders]
+	}
+	note, err := json.Marshal(folders)
+	if err != nil {
+		return err
+	}
+	if claim.Annotations[manifests.AnnotationMachineFolders] == string(note) {
+		return nil
+	}
+	patch, err := json.Marshal(map[string]any{"metadata": map[string]any{
+		"annotations": map[string]string{manifests.AnnotationMachineFolders: string(note)},
+	}})
+	if err != nil {
+		return err
+	}
+	// A field manager of its own: the apply that starts a machine never
+	// owned this annotation, so it never takes it away.
+	_, err = claims.Patch(ctx, name, types.MergePatchType, patch, metav1.PatchOptions{FieldManager: "donkey-machine-folders"})
+	return err
 }
 
 // machinePods are the live pods of one machine, newest first.

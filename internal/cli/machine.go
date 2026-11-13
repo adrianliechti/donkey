@@ -20,12 +20,12 @@ func machineCommand() *cli.Command {
 		Hidden: true,
 		Commands: []*cli.Command{{
 			Name:      "serve",
-			Usage:     "prepare the home, start the coding agent and guard its front door",
+			Usage:     "prepare the home, guard the front door and run the coding agent in the folder that is opened",
 			ArgsUsage: "[-- agent command…]",
 			Flags: []cli.Flag{
 				&cli.StringFlag{Name: "listen", Usage: "address of the front door (default :8080)"},
 				&cli.StringFlag{Name: "upstream", Usage: "loopback address the agent listens on (default http://127.0.0.1:9000)"},
-				&cli.StringFlag{Name: "workspace", Usage: "folder the agent opens (default /data/workspace)"},
+				&cli.StringFlag{Name: "workspace", Usage: "where the machine's folders live (default /data/workspace)"},
 			},
 			Action: func(ctx context.Context, cmd *cli.Command) error {
 				// The runtime stops a machine with SIGTERM; the agent gets

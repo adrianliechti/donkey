@@ -39,7 +39,25 @@ type Machines interface {
 	// Delete removes the machine and its disk.
 	Delete(ctx context.Context, id string) error
 	Logs(ctx context.Context, id string, opts LogOptions, out io.Writer) error
+	// Remember keeps a list of the machine's folders with its disk, so that
+	// a machine that is stopped can still say what is on it (Status reports
+	// it as Folders). It is a note, not the truth: the disk is, and only a
+	// running machine can read that. A machine without a disk has nothing to
+	// keep a note with, which is no error.
+	Remember(ctx context.Context, id string, folders []MachineFolder) error
 }
+
+// MachineFolder is one folder of a machine's workspace.
+type MachineFolder struct {
+	Name string `json:"name"`
+	// Modified is when the folder was last opened, or last changed at its top
+	// level — which is what puts the one in use first in a list.
+	Modified time.Time `json:"modified"`
+}
+
+// MaxMachineFolders bounds the note Remember keeps. A workspace with more
+// folders than this is remembered by the ones used last.
+const MaxMachineFolders = 100
 
 // MachineState is what a machine is doing.
 type MachineState string
@@ -76,6 +94,9 @@ type MachineSpec struct {
 	// GuardToken is what the gateway presents to this machine
 	// (config.MachineGuardToken).
 	GuardToken string
+	// ControlToken is what donkey-server presents to this machine
+	// (config.MachineControlToken).
+	ControlToken string
 	// AIToken stands in for the platform's AI credential at donkey-ai, which
 	// accepts it for as long as the machine runs.
 	AIToken string
@@ -90,7 +111,10 @@ type MachineStatus struct {
 	State MachineState
 	Image string
 	// Host is the address the machine is served at while it runs.
-	Host      string
+	Host string
+	// Backend is the machine's front door as the control plane reaches it
+	// inside the runtime (http://name:port), while there is a container.
+	Backend   string
 	StartedAt time.Time
 	// Restarts counts how often the container came back on its own.
 	Restarts int32
@@ -99,6 +123,9 @@ type MachineStatus struct {
 	// SignInExpires is when the donkey sign-in the machine was started with
 	// runs out.
 	SignInExpires time.Time
+	// Folders is what the machine's disk held when it was last looked at
+	// (Remember). Only a stopped machine reports it: a running one is asked.
+	Folders []MachineFolder
 }
 
 // Exists says there is something to stop, start or delete.
@@ -114,12 +141,20 @@ func MachineEnv(spec MachineSpec, apiURL, aiURL, packagesURL string) map[string]
 		"DONKEY_MACHINE_ID":          spec.ID,
 		"DONKEY_MACHINE_HOST":        spec.Host,
 		"DONKEY_MACHINE_GUARD_TOKEN": spec.GuardToken,
-		"DONKEY_MACHINE_USER_NAME":   spec.Name,
-		"DONKEY_MACHINE_USER_EMAIL":  spec.Email,
+		// The control plane's own credential at the front door, for the few
+		// things it asks a machine itself: its folders, and to open one.
+		"DONKEY_MACHINE_CONTROL_TOKEN": spec.ControlToken,
+		"DONKEY_MACHINE_USER_NAME":     spec.Name,
+		"DONKEY_MACHINE_USER_EMAIL":    spec.Email,
 		// The donkey CLI reads its sign-in from here; the server address goes
 		// into its config file when the machine starts.
 		"DONKEY_SERVER_URL": apiURL,
 		"DONKEY_TOKEN":      spec.Token,
+	}
+	if idle := spec.Settings.IdleTimeout(); idle > 0 {
+		// The machine knows best whether it is in use, so it is the one that
+		// asks to be stopped — with its owner's sign-in, like any other stop.
+		env["DONKEY_MACHINE_IDLE"] = idle.String()
 	}
 	if aiURL != "" && spec.AIToken != "" {
 		// An ordinary OpenAI-compatible endpoint: the coding agent and
@@ -153,8 +188,9 @@ func MachineEnv(spec MachineSpec, apiURL, aiURL, packagesURL string) map[string]
 }
 
 // MachineHealthPath is where a machine's front door says, to anyone who can
-// reach it, whether the agent behind it answers. It is the one path that
-// needs no credential, and it reveals nothing else.
+// reach it, that it is up and taking requests. It is the one path that needs
+// no credential, and it reveals nothing else — not even whether a folder is
+// open behind it.
 const MachineHealthPath = "/.donkey/healthz"
 
 // MachineAIKey is the entry of a machine's stored environment that holds its

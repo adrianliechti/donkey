@@ -79,6 +79,8 @@ ai:
 #   memory: 4Gi
 #   egress: restricted       # the package mirror, the model and donkey only;
 #                            # open lets machines reach the network (a Git host)
+#   idle: 60m                # unused this long, a machine stops and keeps its
+#                            # disk; never leaves stopping to its owner
 
 # Builds: every image is scanned for known vulnerabilities before it is
 # pushed. The defaults below refuse critical findings that have a fix, let
@@ -159,6 +161,8 @@ ai:
 #   memory: 4Gi
 #   egress: restricted       # the package mirror, the model and donkey only;
 #                            # open lets machines reach the network (a Git host)
+#   idle: 60m                # unused this long, a machine stops and keeps its
+#                            # disk; never leaves stopping to its owner
 
 # Builds: every image is scanned for known vulnerabilities before it is
 # pushed. The defaults below refuse critical findings that have a fix, let

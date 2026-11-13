@@ -2,7 +2,9 @@ package docker
 
 import (
 	"context"
+	"fmt"
 	"testing"
+	"time"
 
 	"github.com/adrianliechti/donkey/internal/config"
 	rt "github.com/adrianliechti/donkey/pkg/runtime"
@@ -116,6 +118,45 @@ func TestMachineVerbsRefuseOtherNames(t *testing.T) {
 		}
 		if err := machines.Logs(ctx, id, rt.LogOptions{}, nil); err == nil {
 			t.Errorf("Logs(%q) accepted", id)
+		}
+	}
+}
+
+// What a machine's disk holds is kept in a note beside its records. The note
+// is not one of them: those hold credentials and go when the machine stops,
+// and donkey-ai reads them for the tokens it honours.
+func TestMachineRemembersItsFolders(t *testing.T) {
+	r := &Runtime{state: state{dir: t.TempDir()}, opts: Options{AIContainer: "donkey-ai"}}
+	machines := r.Machines()
+	ctx := context.Background()
+	used := time.Date(2026, 11, 13, 9, 30, 0, 0, time.UTC)
+	folders := []rt.MachineFolder{{Name: "shop", Modified: used}, {Name: "site", Modified: used.Add(-48 * time.Hour)}}
+	if err := machines.Remember(ctx, testMachine, folders); err != nil {
+		t.Fatal(err)
+	}
+	var note machineFolderNote
+	if found, err := r.state.readRecord(&note, machineFolderNotes, testMachine); !found || err != nil {
+		t.Fatalf("no note was kept: %v", err)
+	}
+	if len(note.Folders) != 2 || note.Folders[0].Name != "shop" || !note.Folders[0].Modified.Equal(used) {
+		t.Fatalf("note = %+v", note)
+	}
+	if tokens, err := r.AIProxyTokens(ctx); err != nil || len(tokens) != 0 {
+		t.Fatalf("a note of folders was read as a running machine: %v %v", tokens, err)
+	}
+	var many []rt.MachineFolder
+	for i := range rt.MaxMachineFolders + 20 {
+		many = append(many, rt.MachineFolder{Name: fmt.Sprintf("f%03d", i), Modified: used})
+	}
+	if err := machines.Remember(ctx, testMachine, many); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.state.readRecord(&note, machineFolderNotes, testMachine); err != nil || len(note.Folders) != rt.MaxMachineFolders {
+		t.Fatalf("kept %d folders (%v)", len(note.Folders), err)
+	}
+	for _, id := range []string{"", "web", "../" + testMachine} {
+		if err := machines.Remember(ctx, id, folders); err == nil {
+			t.Errorf("Remember(%q) accepted", id)
 		}
 	}
 }

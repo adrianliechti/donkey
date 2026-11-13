@@ -14,6 +14,7 @@ import (
 
 	"github.com/adrianliechti/donkey/internal/config"
 	"github.com/adrianliechti/donkey/internal/identity"
+	"github.com/adrianliechti/donkey/internal/machine"
 	"github.com/adrianliechti/donkey/pkg/runtime"
 )
 
@@ -25,6 +26,13 @@ type fakeMachines struct {
 	disks   map[string]bool
 	started []string
 	err     error
+	// door is where every running machine's front door answers.
+	door string
+	// folders is what was kept with each disk, and remembered how often.
+	folders    map[string][]runtime.MachineFolder
+	remembered int
+	// startedAt is when each running machine came up.
+	startedAt map[string]time.Time
 }
 
 func newFakeMachines() *fakeMachines {
@@ -35,10 +43,13 @@ func (m *fakeMachines) Status(_ context.Context, id string) (*runtime.MachineSta
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if spec, ok := m.specs[id]; ok {
-		return &runtime.MachineStatus{State: runtime.MachineRunning, Image: spec.Image, Host: spec.Host, SignInExpires: spec.SignInExpires}, nil
+		return &runtime.MachineStatus{
+			State: runtime.MachineRunning, Image: spec.Image, Host: spec.Host, Backend: m.door,
+			SignInExpires: spec.SignInExpires, StartedAt: m.startedAt[id],
+		}, nil
 	}
 	if m.disks[id] {
-		return &runtime.MachineStatus{State: runtime.MachineStopped}, nil
+		return &runtime.MachineStatus{State: runtime.MachineStopped, Folders: m.folders[id]}, nil
 	}
 	return &runtime.MachineStatus{State: runtime.MachineAbsent}, nil
 }
@@ -51,6 +62,10 @@ func (m *fakeMachines) Start(_ context.Context, spec runtime.MachineSpec) error 
 	}
 	m.specs[spec.ID], m.disks[spec.ID] = spec, true
 	m.started = append(m.started, spec.ID)
+	if m.startedAt == nil {
+		m.startedAt = map[string]time.Time{}
+	}
+	m.startedAt[spec.ID] = time.Unix(int64(1700000000+len(m.started)), 0)
 	return nil
 }
 
@@ -66,6 +81,18 @@ func (m *fakeMachines) Delete(_ context.Context, id string) error {
 	defer m.mu.Unlock()
 	delete(m.specs, id)
 	delete(m.disks, id)
+	delete(m.folders, id)
+	return nil
+}
+
+func (m *fakeMachines) Remember(_ context.Context, id string, folders []runtime.MachineFolder) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.folders == nil {
+		m.folders = map[string][]runtime.MachineFolder{}
+	}
+	m.folders[id] = folders
+	m.remembered++
 	return nil
 }
 
@@ -97,6 +124,11 @@ func machineTestServer() (*Server, *fakeMachines) {
 // donkey-orchestrator for what it forwards — as one identity.
 func machineCall(t *testing.T, s *Server, id identity.Identity, method, path string) *httptest.ResponseRecorder {
 	t.Helper()
+	return machineSend(t, s, id, method, path, nil)
+}
+
+func machineSend(t *testing.T, s *Server, id identity.Identity, method, path string, body []byte) *httptest.ResponseRecorder {
+	t.Helper()
 	orchestrator := httptest.NewServer(s.orchestratorRoutes())
 	defer orchestrator.Close()
 	s.cfg.OrchestratorURL = orchestrator.URL
@@ -107,8 +139,11 @@ func machineCall(t *testing.T, s *Server, id identity.Identity, method, path str
 	if err != nil {
 		t.Fatal(err)
 	}
-	req := httptest.NewRequest(method, "https://donkey.example.com"+path, bytes.NewReader(nil))
+	req := httptest.NewRequest(method, "https://donkey.example.com"+path, bytes.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+token)
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	rec := httptest.NewRecorder()
 	s.routes().ServeHTTP(rec, req)
 	return rec
@@ -168,6 +203,14 @@ func TestMachineLifecycle(t *testing.T) {
 	}
 	if spec.GuardToken != config.MachineGuardToken(testSessionKey, id) {
 		t.Error("the machine was given a credential the gateway will not present")
+	}
+	if spec.ControlToken != config.MachineControlToken(testSessionKey, id) || spec.ControlToken == spec.GuardToken {
+		t.Error("the machine was given a credential donkey-server will not present, or the gateway's twice")
+	}
+	// Unused, a machine stops after an hour unless the installation says
+	// otherwise — and the console is told, so it can say so.
+	if got.IdleMinutes != 60 || spec.Settings.IdleTimeout() != time.Hour {
+		t.Errorf("idle = %d minutes, want 60 by default", got.IdleMinutes)
 	}
 	// The CLI inside signs in as the owner, with a token of its own.
 	signIn, err := identity.VerifyToken(testSessionKey, spec.Token)
@@ -364,5 +407,247 @@ func TestConsoleFramePolicy(t *testing.T) {
 	s.cfg.Machines = config.MachineSettings{}
 	if got := policy(); strings.Contains(got, "frame-src") {
 		t.Fatalf("an installation without machines allows frames: %q", got)
+	}
+}
+
+// machineDoor is a machine's front door as far as donkey-server asks it:
+// it answers its control path, to the control plane's credential only.
+type machineDoor struct {
+	*httptest.Server
+	mu sync.Mutex
+	// seen is every request that carried the right credential.
+	seen []string
+	// answer, when set, replaces the workspace the door reports.
+	answer func(w http.ResponseWriter, r *http.Request)
+}
+
+func newMachineDoor(t *testing.T, id string) *machineDoor {
+	t.Helper()
+	door := &machineDoor{}
+	door.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get(config.MachineControlHeader) != config.MachineControlToken(testSessionKey, id) {
+			http.Error(w, "This is for donkey itself.", http.StatusForbidden)
+			return
+		}
+		body, _ := io.ReadAll(r.Body)
+		door.mu.Lock()
+		door.seen = append(door.seen, strings.TrimSpace(r.Method+" "+r.URL.Path+" "+string(body)))
+		answer := door.answer
+		door.mu.Unlock()
+		if answer != nil {
+			answer(w, r)
+			return
+		}
+		writeJSON(w, http.StatusOK, machine.WorkspaceStatus{Open: "shop", Ready: true, Folders: []machine.Folder{{Name: "shop"}, {Name: "site"}}})
+	}))
+	t.Cleanup(door.Close)
+	return door
+}
+
+func workspaceBody(t *testing.T, rec *httptest.ResponseRecorder) machine.WorkspaceStatus {
+	t.Helper()
+	var out machine.WorkspaceStatus
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("not a workspace: %s", rec.Body.String())
+	}
+	return out
+}
+
+// The folders are on the machine's disk, so the machine answers for them:
+// donkey-server asks its front door, as itself, for whoever is signed in.
+func TestMachineWorkspace(t *testing.T) {
+	s, machines := machineTestServer()
+	id := config.MachineID(machineOwner.Subject)
+	door := newMachineDoor(t, id)
+	machines.door = door.URL
+
+	// Nothing to ask while it is not running.
+	rec := machineCall(t, s, machineOwner, "GET", "/v1/machine/workspace")
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "isn't running") {
+		t.Fatalf("before a start: %d %s", rec.Code, rec.Body.String())
+	}
+	machineCall(t, s, machineOwner, "POST", "/v1/machine")
+
+	rec = machineCall(t, s, machineOwner, "GET", "/v1/machine/workspace")
+	if got := workspaceBody(t, rec); rec.Code != 200 || got.Open != "shop" || !got.Ready || len(got.Folders) != 2 {
+		t.Fatalf("workspace: %d %s", rec.Code, rec.Body.String())
+	}
+
+	// Opening hands the request on as it came.
+	open := []byte(`{"folder":"api","source":{"space":"team","app":"api","commit":"0123456789abcdef0123456789abcdef01234567"}}`)
+	rec = machineSend(t, s, machineOwner, "POST", "/v1/machine/workspace", open)
+	if rec.Code != 200 || workspaceBody(t, rec).Open != "shop" {
+		t.Fatalf("open: %d %s", rec.Code, rec.Body.String())
+	}
+	want := []string{
+		"GET /.donkey/control/workspace",
+		`POST /.donkey/control/workspace {"folder":"api","source":{"space":"team","app":"api","commit":"0123456789abcdef0123456789abcdef01234567"}}`,
+	}
+	if got := strings.Join(door.seen, "\n"); got != strings.Join(want, "\n") {
+		t.Fatalf("the door saw:\n%s", got)
+	}
+
+	// What the machine refuses reaches the console in the machine's words —
+	// and never as a 401, which the console reads as its own sign-in ending.
+	for status, relayed := range map[int]int{
+		http.StatusConflict:            http.StatusConflict,
+		http.StatusNotFound:            http.StatusNotFound,
+		http.StatusForbidden:           http.StatusForbidden,
+		http.StatusUnauthorized:        http.StatusBadGateway,
+		http.StatusInternalServerError: http.StatusBadGateway,
+	} {
+		door.answer = func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, status, map[string]string{"error": "the machine says no"})
+		}
+		rec = machineSend(t, s, machineOwner, "POST", "/v1/machine/workspace", []byte(`{"folder":"shop","create":true}`))
+		if rec.Code != relayed || !strings.Contains(rec.Body.String(), "the machine says no") {
+			t.Errorf("a %d from the machine reached the console as %d %s", status, rec.Code, rec.Body.String())
+		}
+	}
+	door.answer = nil
+
+	rec = machineSend(t, s, machineOwner, "POST", "/v1/machine/workspace", []byte(`not json`))
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("a request that is not JSON: %d", rec.Code)
+	}
+
+	// A machine that is gone, or was started by a donkey that could not do
+	// this, is said to be so.
+	machines.door = "http://127.0.0.1:1"
+	rec = machineCall(t, s, machineOwner, "GET", "/v1/machine/workspace")
+	if rec.Code != http.StatusBadGateway || !strings.Contains(rec.Body.String(), "isn't answering") {
+		t.Errorf("an unreachable machine: %d %s", rec.Code, rec.Body.String())
+	}
+	old := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "This machine only answers through its donkey address.", http.StatusForbidden)
+	}))
+	defer old.Close()
+	machines.door = old.URL
+	rec = machineCall(t, s, machineOwner, "GET", "/v1/machine/workspace")
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "restart it") {
+		t.Errorf("a machine from before: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// Each person asks their own machine, with a credential that opens that one
+// alone — and people who may not have a machine ask nothing.
+func TestMachineWorkspaceIsOnesOwn(t *testing.T) {
+	s, machines := machineTestServer()
+	door := newMachineDoor(t, config.MachineID(machineOwner.Subject))
+	machines.door = door.URL
+	machineCall(t, s, machineOwner, "POST", "/v1/machine")
+	machineCall(t, s, machineAdmin, "POST", "/v1/machine")
+
+	// The admin's machine answers at the same address in this test, but it
+	// is asked with the admin's machine's credential, which this door — the
+	// owner's — does not take.
+	rec := machineCall(t, s, machineAdmin, "GET", "/v1/machine/workspace")
+	if rec.Code == 200 || len(door.seen) != 0 {
+		t.Fatalf("one person's request opened another's machine: %d %s", rec.Code, rec.Body.String())
+	}
+	rec = machineCall(t, s, machineStranger, "GET", "/v1/machine/workspace")
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("someone without a machine: %d", rec.Code)
+	}
+	rec = machineSend(t, s, machineStranger, "POST", "/v1/machine/workspace", []byte(`{"folder":"shop","create":true}`))
+	if rec.Code != http.StatusForbidden || len(door.seen) != 0 {
+		t.Fatalf("someone without a machine opened a folder: %d", rec.Code)
+	}
+}
+
+func TestMachineIdleSetting(t *testing.T) {
+	s, _ := machineTestServer()
+	s.cfg.Machines.Idle = "never"
+	machineCall(t, s, machineOwner, "POST", "/v1/machine")
+	if got := machineBody(t, machineCall(t, s, machineOwner, "GET", "/v1/machine")); got.IdleMinutes != 0 {
+		t.Fatalf("idle = %d minutes on an installation that never stops machines", got.IdleMinutes)
+	}
+	s.cfg.Machines.Idle = "90m"
+	if got := machineBody(t, machineCall(t, s, machineOwner, "GET", "/v1/machine")); got.IdleMinutes != 90 {
+		t.Fatalf("idle = %d minutes, want 90", got.IdleMinutes)
+	}
+}
+
+// With machines that stop by themselves, a stopped machine is how its owner
+// usually finds it. What its disk held is kept with the disk while it runs,
+// so the console can offer the folders before anything is started.
+func TestMachineRemembersItsFolders(t *testing.T) {
+	s, machines := machineTestServer()
+	id := config.MachineID(machineOwner.Subject)
+	door := newMachineDoor(t, id)
+	machines.door = door.URL
+	used := time.Date(2026, 11, 13, 9, 30, 0, 0, time.UTC)
+	answer := func(folders ...machine.Folder) {
+		door.mu.Lock()
+		defer door.mu.Unlock()
+		door.answer = func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, http.StatusOK, machine.WorkspaceStatus{Open: folders[0].Name, Ready: true, Folders: folders})
+		}
+	}
+	shop, site := machine.Folder{Name: "shop", Modified: used}, machine.Folder{Name: "site", Modified: used.Add(-48 * time.Hour)}
+
+	machineCall(t, s, machineOwner, "POST", "/v1/machine")
+	// A running machine is asked itself; nothing remembered is passed off as
+	// what it holds.
+	if got := machineBody(t, machineCall(t, s, machineOwner, "GET", "/v1/machine")); len(got.Folders) != 0 {
+		t.Fatalf("a running machine reports remembered folders: %+v", got.Folders)
+	}
+
+	// The console asks every few seconds: the list is kept once, not each time.
+	answer(shop, site)
+	for range 3 {
+		if rec := machineCall(t, s, machineOwner, "GET", "/v1/machine/workspace"); rec.Code != 200 {
+			t.Fatalf("workspace: %d %s", rec.Code, rec.Body.String())
+		}
+	}
+	if machines.remembered != 1 {
+		t.Fatalf("an unchanged list was kept %d times", machines.remembered)
+	}
+	// A minute's difference is the same list; another hour, another order or
+	// another name is not.
+	shop.Modified = used.Add(time.Minute)
+	answer(shop, site)
+	machineCall(t, s, machineOwner, "GET", "/v1/machine/workspace")
+	if machines.remembered != 1 {
+		t.Fatalf("a minute's difference was kept again (%d)", machines.remembered)
+	}
+	site.Modified = used.Add(3 * time.Hour)
+	answer(site, shop)
+	machineCall(t, s, machineOwner, "GET", "/v1/machine/workspace")
+	if machines.remembered != 2 {
+		t.Fatalf("a changed order was kept %d times, want 2", machines.remembered)
+	}
+	// Opening a folder says what the workspace holds now, too.
+	api := machine.Folder{Name: "api", Modified: used.Add(4 * time.Hour)}
+	answer(api, site, shop)
+	if rec := machineSend(t, s, machineOwner, "POST", "/v1/machine/workspace", []byte(`{"folder":"api","create":true}`)); rec.Code != 200 {
+		t.Fatalf("open: %d %s", rec.Code, rec.Body.String())
+	}
+	if machines.remembered != 3 {
+		t.Fatalf("after opening a new folder the list was kept %d times, want 3", machines.remembered)
+	}
+
+	// Stopped, the machine offers what it held.
+	stopped := machineBody(t, machineCall(t, s, machineOwner, "POST", "/v1/machine/stop"))
+	if stopped.State != "stopped" || len(stopped.Folders) != 3 ||
+		stopped.Folders[0].Name != "api" || stopped.Folders[1].Name != "site" || stopped.Folders[2].Name != "shop" {
+		t.Fatalf("a stopped machine offers %+v", stopped.Folders)
+	}
+	// A machine deleted and made again stands on a new disk. The same list,
+	// said again, is not on it yet — and is kept again.
+	machineCall(t, s, machineOwner, "DELETE", "/v1/machine")
+	machineCall(t, s, machineOwner, "POST", "/v1/machine")
+	machineCall(t, s, machineOwner, "GET", "/v1/machine/workspace")
+	if machines.remembered != 4 {
+		t.Fatalf("on a new disk the same list was kept %d times in all, want 4", machines.remembered)
+	}
+	again := machineBody(t, machineCall(t, s, machineOwner, "POST", "/v1/machine/stop"))
+	if len(again.Folders) != 3 {
+		t.Fatalf("the remade machine offers %+v", again.Folders)
+	}
+	// Each person's note is their own.
+	machineCall(t, s, machineAdmin, "POST", "/v1/machine")
+	if got := machineBody(t, machineCall(t, s, machineAdmin, "POST", "/v1/machine/stop")); len(got.Folders) != 0 {
+		t.Fatalf("one person was offered another's folders: %+v", got.Folders)
 	}
 }

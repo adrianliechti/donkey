@@ -8,7 +8,7 @@ import (
 func machineSpec() MachineSpec {
 	return MachineSpec{
 		ID: "m0123456789abcdef", Owner: "sub", Email: "ada@example.com", Name: "Ada",
-		Host: "m0123456789abcdef.platform.example.com", Token: "sealed", GuardToken: "guard",
+		Host: "m0123456789abcdef.platform.example.com", Token: "sealed", GuardToken: "guard", ControlToken: "control",
 		AIToken: "dkm_x", Model: "model-1",
 	}
 }
@@ -70,5 +70,23 @@ func TestMachineEnvModel(t *testing.T) {
 	env := MachineEnv(machineSpec(), "http://api", "http://ai/v1", "")
 	if env["OPENAI_BASE_URL"] != "http://ai/v1" || env[MachineAIKey] != "dkm_x" || env["WINGMAN_MODEL"] != "model-1" {
 		t.Errorf("env = %v", env)
+	}
+}
+
+// The machine is told how long it may go unused, because it is the one that
+// knows — and is told nothing where the installation lets machines run.
+func TestMachineEnvIdle(t *testing.T) {
+	spec := machineSpec()
+	env := MachineEnv(spec, "http://api", "", "")
+	if env["DONKEY_MACHINE_IDLE"] != "1h0m0s" || env["DONKEY_MACHINE_CONTROL_TOKEN"] != "control" {
+		t.Errorf("env = %v", env)
+	}
+	spec.Settings.Idle = "90m"
+	if got := MachineEnv(spec, "http://api", "", "")["DONKEY_MACHINE_IDLE"]; got != "1h30m0s" {
+		t.Errorf("idle = %q", got)
+	}
+	spec.Settings.Idle = "never"
+	if _, set := MachineEnv(spec, "http://api", "", "")["DONKEY_MACHINE_IDLE"]; set {
+		t.Error("a machine that is never stopped was given an idle time")
 	}
 }

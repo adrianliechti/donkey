@@ -25,6 +25,7 @@ runtime has [its own page](README_KUBERNETES.md). A complete walkthrough is
 | machine disk `<id>-data` | named volume `donkey.platform.<id>.data` |
 | machine route ConfigMap `<id>-route` | `/var/lib/donkey/routes/platform/<id>.yaml` |
 | machine environment Secret `<id>-machine` | `/var/lib/donkey/machines/<id>.yaml`, removed when the machine stops |
+| machine disk's `machine-folders` annotation | `/var/lib/donkey/machine-folders/<id>.yaml`, kept while the machine is stopped and removed with its disk |
 | `donkey` ConfigMap / `platform.yaml` | `/var/lib/donkey/platform/config.yaml` |
 | control plane in `donkey-system` | containers `donkey-server`, `donkey-orchestrator`, `donkey-gateway`, `donkey-ai`, `donkey-proxy`, `donkey-telemetry`, `donkey-packages`, `donkey-buildkitd` (and optionally `donkey-registry`) on the `donkey` network |
 | `donkey-proxy` Secret / `services.json` | `/var/lib/donkey/proxy/services.yaml`; rendered Compose mounts private `proxy-services.json` instead |
@@ -151,7 +152,8 @@ is no route out of the engine. This is the one place the Docker runtime
 limits outbound traffic. Its
 container runs as user 1000 with every capability dropped,
 `no-new-privileges`, a process limit and the installation's CPU and memory
-caps. The network is removed when the machine stops and made again when it
+caps. The network is removed when the machine stops — by its owner, or by
+itself once it has gone unused for `machines.idle` — and made again when it
 starts. Docker hands out a limited number of bridge networks by default
 (about 30 with the stock address pools), and every space and every running
 machine takes one — widen `default-address-pools` in the daemon's settings

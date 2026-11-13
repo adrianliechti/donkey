@@ -50,6 +50,10 @@ const (
 	// AnnotationSignInExpires is when the sign-in the machine holds runs out
 	// (RFC 3339).
 	AnnotationSignInExpires = "donkey.local/sign-in-expires"
+	// AnnotationMachineFolders is, on a machine's disk, the folders it held
+	// when the control plane last looked (JSON) — what a stopped machine can
+	// still offer to open.
+	AnnotationMachineFolders = "donkey.local/machine-folders"
 )
 
 // MachineInput is everything needed to render one machine.
@@ -143,8 +147,9 @@ func MachineNamespace(name string) *corev1.Namespace {
 // MachinePolicy fences every machine of the namespace, whether or not the
 // installation isolates its spaces: a machine holds its owner's sign-in.
 //
-// In: the gateway, on the machine's front door, and nothing else — no app,
-// no other machine. Out: DNS, the API its CLI calls, the AI endpoint its
+// In: the gateway, on the machine's front door, and donkey-server, which asks
+// a machine for its folders and to open one — each with a credential of its
+// own that the door checks. Nothing else: no app, no other machine. Out: DNS, the API its CLI calls, the AI endpoint its
 // agent uses and the package mirror its package managers install from, named
 // explicitly because some network plugins do not count in-cluster pods as
 // part of an address range. That is all a machine gets unless the
@@ -170,7 +175,10 @@ func MachinePolicy(namespace, installation string, restrictEgress bool) *network
 			PodSelector: metav1.LabelSelector{MatchLabels: map[string]string{LabelRole: RoleMachine}},
 			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress, networkingv1.PolicyTypeEgress},
 			Ingress: []networkingv1.NetworkPolicyIngressRule{{
-				From:  []networkingv1.NetworkPolicyPeer{systemPeer(installation, GatewayAppName)},
+				From: []networkingv1.NetworkPolicyPeer{
+					systemPeer(installation, GatewayAppName),
+					systemPeer(installation, ServerName),
+				},
 				Ports: []networkingv1.NetworkPolicyPort{{Protocol: &tcp, Port: &door}},
 			}},
 			Egress: []networkingv1.NetworkPolicyEgressRule{

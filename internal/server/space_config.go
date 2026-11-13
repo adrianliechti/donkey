@@ -131,7 +131,8 @@ func (s *Server) authorizeRoute(w http.ResponseWriter, r *http.Request) bool {
 		"POST /v1/plans", "PUT /v1/plans/{id}", "POST /v1/deploys", "GET /v1/deploys",
 		"POST /v1/projects/plans", "PUT /v1/projects/plans/{id}", "POST /v1/projects/deploys",
 		// A machine is its caller's own; the handlers decide who may have one.
-		"GET /v1/machine", "GET /v1/machine/logs", "POST /v1/machine", "POST /v1/machine/stop", "DELETE /v1/machine":
+		"GET /v1/machine", "GET /v1/machine/logs", "POST /v1/machine", "POST /v1/machine/stop", "DELETE /v1/machine",
+		"GET /v1/machine/workspace", "POST /v1/machine/workspace":
 		return true
 	default:
 		if !s.platformAdmin(r.Context()) {

@@ -346,9 +346,9 @@ namespace, and all carry `donkey.local/machine=<id>`:
 |---|---|---|---|
 | Deployment and Service | `<id>` | `platform-<id>` | The machine; role `machine` |
 | Environment Secret | `<id>-machine` | `platform-<id>-machine` | The machine's whole environment, its sign-in and model token included; removed when it stops |
-| Disk | `<id>-data` | `platform-<id>-data` | The owner's home and workspace; kept when the machine stops |
+| Disk | `<id>-data` | `platform-<id>-data` | The owner's home and folders; kept when the machine stops, by its owner or because it went unused (`machines.idle`). Its `donkey.local/machine-folders` annotation is the list of folders the console offers while the machine is stopped |
 | Route ConfigMap | `<id>-route` | `platform-<id>-route` | `route.yaml`, with the `owner` it admits |
-| NetworkPolicy | `donkey-machines` | `donkey-machines` | One fence for every machine of the namespace |
+| NetworkPolicy | `donkey-machines` | `donkey-machines` | One fence for every machine of the namespace: in, `donkey-gateway` and `donkey-server`; out, the control plane, unless machines are opened |
 | Certificate, DNSEndpoint | `platform-<id>`, `platform-<id>-dns` | the same | In the system namespace, where the installation manages them per hostname |
 
 All rows of the first table live in the workload namespace: normally `donkey-<space>`, or

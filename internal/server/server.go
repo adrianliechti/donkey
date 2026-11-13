@@ -60,6 +60,10 @@ type Server struct {
 	// Space settings and deletion wait for deployments and other mutations
 	// in that space. Different apps can still deploy concurrently.
 	spaceLocks sync.Map
+	// machineFolders is, per machine, the folder list this process last kept
+	// with its disk — so a list that has not changed is not written again
+	// every time the console asks for it (see rememberMachineFolders).
+	machineFolders sync.Map
 }
 
 func (s *Server) deploymentStore() *deployment.Store {
@@ -231,6 +235,9 @@ func (s *Server) routes() http.Handler {
 	// orchestrated: a start can outlive the request that asked for it.
 	mux.Handle("GET /v1/machine", s.auth(s.handleGetMachine))
 	mux.Handle("GET /v1/machine/logs", s.auth(s.handleMachineLogs))
+	// Its folders are the machine's to answer for; this process only asks.
+	mux.Handle("GET /v1/machine/workspace", s.auth(s.handleMachineWorkspace))
+	mux.Handle("POST /v1/machine/workspace", s.auth(s.handleOpenMachineFolder))
 	mux.Handle("GET /v1/doctor", s.auth(s.handleDoctor))
 	// The console's AI chat, forwarded to donkey-ai — see aiforward.go for
 	// why it lands on this origin and why nothing is verified here.

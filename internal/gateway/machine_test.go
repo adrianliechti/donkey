@@ -122,12 +122,20 @@ func TestMachineRouteCarriesTheGatewaysCredential(t *testing.T) {
 	s, seen := machineGateway(t)
 	rt := s.routes[testMachineHost][0]
 	w := httptest.NewRecorder()
-	s.serveRoute(w, machineRequest(t, testMachineOwner, "owner@example.com",
-		map[string]string{config.MachineGuardHeader: "forged"}), rt)
+	// The owner can read both of their machine's credentials inside it. The
+	// control plane's still never arrives through the gateway: what a browser
+	// sends is the owner's, and is never taken for donkey's own.
+	s.serveRoute(w, machineRequest(t, testMachineOwner, "owner@example.com", map[string]string{
+		config.MachineGuardHeader:   "forged",
+		config.MachineControlHeader: config.MachineControlToken(testKey, testMachineID),
+	}), rt)
 	if w.Code != http.StatusOK || len(*seen) != 1 {
 		t.Fatalf("status = %d, requests = %d", w.Code, len(*seen))
 	}
 	got := (*seen)[0]
+	if got.Get(config.MachineControlHeader) != "" {
+		t.Errorf("a browser's request reached the machine as the control plane's")
+	}
 	if want := config.MachineGuardToken(testKey, testMachineID); got.Get(config.MachineGuardHeader) != want {
 		t.Errorf("credential = %q, want the gateway's own", got.Get(config.MachineGuardHeader))
 	}
