@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"maps"
+	"net"
 	"strings"
 	"time"
 
@@ -192,6 +193,52 @@ func MachineEnv(spec MachineSpec, apiURL, aiURL, packagesURL string) map[string]
 // no credential, and it reveals nothing else — not even whether a folder is
 // open behind it.
 const MachineHealthPath = "/.donkey/healthz"
+
+// MachineDialPatience is how long a connection to a machine's front door is
+// tried again before it counts as failed.
+const MachineDialPatience = 20 * time.Second
+
+// MachineDialer connects to a machine's front door, and keeps trying for a
+// while when it cannot: use it as the DialContext of whatever talks to
+// machines — the gateway, for the owner's browser, and the control plane.
+//
+// A machine is called running the moment its own container says it is up,
+// and both of them ask for it right then: the console opens a folder and
+// shows the agent as soon as it reads "running". The way to a container
+// that came up a second ago is often not there yet. On Kubernetes its
+// Service has no endpoint on the asking node until that node has heard of
+// the pod, and the fence around machines is still being drawn for it — the
+// connection is refused, or simply not answered. That is a start that has
+// not finished, not a failure, so the caller waits it out here instead of
+// handing its owner an error that a reload a moment later would not show.
+//
+// Only connecting is tried again — nothing has been sent — so it is safe for
+// any request. Each attempt is short, so an address that swallows the
+// connection instead of refusing it costs one attempt, not the whole wait.
+func MachineDialer(patience time.Duration) func(ctx context.Context, network, address string) (net.Conn, error) {
+	dialer := &net.Dialer{Timeout: 2 * time.Second, KeepAlive: 30 * time.Second}
+	return func(ctx context.Context, network, address string) (net.Conn, error) {
+		waiting, cancel := context.WithTimeout(ctx, patience)
+		defer cancel()
+		var failed error
+		for {
+			conn, err := dialer.DialContext(waiting, network, address)
+			if err == nil {
+				return conn, nil
+			}
+			// What stopped the wait is not why the machine did not answer:
+			// the caller reads the last real refusal.
+			if failed == nil || waiting.Err() == nil {
+				failed = err
+			}
+			select {
+			case <-waiting.Done():
+				return nil, failed
+			case <-time.After(250 * time.Millisecond):
+			}
+		}
+	}
+}
 
 // MachineAIKey is the entry of a machine's stored environment that holds its
 // AI stand-in token — what the runtimes hand to donkey-ai as valid.

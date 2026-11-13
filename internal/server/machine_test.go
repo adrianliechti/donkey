@@ -179,7 +179,9 @@ func TestMachineLifecycle(t *testing.T) {
 	if rec.Code != 200 || got.State != "running" {
 		t.Fatalf("start: %d %s", rec.Code, rec.Body.String())
 	}
-	if want := "https://" + id + ".platform.example.com"; got.URL != want {
+	// One address for every machine: nothing of this one, or of its owner,
+	// is in it.
+	if want := "https://machine.example.com"; got.URL != want {
 		t.Errorf("url = %q, want %q", got.URL, want)
 	}
 	if got.SignInExpires == "" || got.Outdated {
@@ -195,7 +197,7 @@ func TestMachineLifecycle(t *testing.T) {
 	if spec.Owner != machineOwner.Subject || spec.Email != "owner@example.com" || spec.Name != "Ada Owner" {
 		t.Errorf("owner = %q / %q / %q", spec.Owner, spec.Email, spec.Name)
 	}
-	if spec.Image != s.cfg.Machines.Image || spec.Model != "test-model" || spec.Host != id+".platform.example.com" {
+	if spec.Image != s.cfg.Machines.Image || spec.Model != "test-model" || spec.Host != "machine.example.com" {
 		t.Errorf("spec = %+v", spec)
 	}
 	if !spec.Settings.RestrictEgress() {
@@ -392,7 +394,26 @@ func TestMachineLogs(t *testing.T) {
 	}
 }
 
-// The console may frame a machine's address — and nothing else, and only
+// A machine started when each still had a hostname of its own does not
+// answer on the installation's address. The console is given the address
+// machines have now, and told the machine wants a restart.
+func TestMachineOnAnAddressOfItsOwnWantsARestart(t *testing.T) {
+	s, machines := machineTestServer()
+	id := config.MachineID(machineOwner.Subject)
+	machineCall(t, s, machineOwner, "POST", "/v1/machine")
+	machines.mu.Lock()
+	spec := machines.specs[id]
+	spec.Host = id + ".platform.example.com"
+	machines.specs[id] = spec
+	machines.mu.Unlock()
+
+	got := machineBody(t, machineCall(t, s, machineOwner, "GET", "/v1/machine"))
+	if got.URL != "https://machine.example.com" || !got.Outdated {
+		t.Fatalf("url = %q, outdated = %v", got.URL, got.Outdated)
+	}
+}
+
+// The console may frame the machines' address — and nothing else, and only
 // where the installation has machines.
 func TestConsoleFramePolicy(t *testing.T) {
 	s, _ := machineTestServer()
@@ -401,7 +422,7 @@ func TestConsoleFramePolicy(t *testing.T) {
 		s.routes().ServeHTTP(rec, httptest.NewRequest("GET", "https://example.com/", nil))
 		return rec.Header().Get("Content-Security-Policy")
 	}
-	if got := policy(); !strings.Contains(got, "frame-src https://*.platform.example.com") || !strings.Contains(got, "frame-ancestors 'none'") {
+	if got := policy(); !strings.HasSuffix(got, "; frame-src https://machine.example.com") || !strings.Contains(got, "frame-ancestors 'none'") {
 		t.Fatalf("policy = %q", got)
 	}
 	s.cfg.Machines = config.MachineSettings{}
@@ -512,7 +533,11 @@ func TestMachineWorkspace(t *testing.T) {
 	}
 
 	// A machine that is gone, or was started by a donkey that could not do
-	// this, is said to be so.
+	// this, is said to be so — once the wait for a machine that only just
+	// came up is over, which a test cuts short.
+	patient := machineTransport
+	machineTransport = &http.Transport{DialContext: runtime.MachineDialer(200 * time.Millisecond)}
+	t.Cleanup(func() { machineTransport = patient })
 	machines.door = "http://127.0.0.1:1"
 	rec = machineCall(t, s, machineOwner, "GET", "/v1/machine/workspace")
 	if rec.Code != http.StatusBadGateway || !strings.Contains(rec.Body.String(), "isn't answering") {

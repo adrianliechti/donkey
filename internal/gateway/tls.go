@@ -92,15 +92,16 @@ func redirectHTTPS(w http.ResponseWriter, r *http.Request) {
 }
 
 // allowHost is the issuance gate: certificates only for names donkey
-// actually serves. The routing table is the truth; the base domain and the
-// console's host are always entitled (the central login callback lives on
-// the base domain even when no app does).
+// actually serves. The routing table is the truth; the base domain, the
+// console's host and the machines' address are always entitled (the central
+// login callback lives on the base domain even when no app does, and the
+// machines' address tells a visitor whose machine is stopped that it is).
 func (s *Server) allowHost(ctx context.Context, host string) error {
 	host = strings.ToLower(strings.TrimSuffix(host, "."))
 	if host == "" {
 		return fmt.Errorf("no hostname")
 	}
-	if host == s.cfg.Domain || host == s.cfg.ServerHost {
+	if host == s.cfg.Domain || host == s.cfg.ServerHost || host == s.cfg.machineHost() {
 		return nil
 	}
 	if s.hostServed(ctx, host) {

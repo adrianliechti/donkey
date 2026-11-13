@@ -52,7 +52,7 @@ func TestMachineDocker(t *testing.T) {
 	})
 	spec := rt.MachineSpec{
 		ID: id, Owner: "owner-subject", Email: "ada@example.com", Name: "Ada Owner",
-		Image: image, Host: config.MachineHost(id, "example.com"),
+		Image: image, Host: config.MachineHost("example.com"),
 		Token: "sealed-sign-in", SignInExpires: time.Now().Add(time.Hour),
 		GuardToken: "the-gateways-credential", ControlToken: "the-control-planes-credential",
 		AIToken: "dkm_e2e", Model: "test-model",

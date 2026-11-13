@@ -248,7 +248,7 @@ func (s *Server) routes() http.Handler {
 	// Everything else is the admin console.
 	frames := ""
 	if s.cfg.Machines.Enabled() {
-		frames = s.cfg.Scheme() + "://*." + config.MachineSpace + "." + s.cfg.Domain
+		frames = s.cfg.Scheme() + "://" + config.MachineHost(s.cfg.Domain)
 	}
 	mux.Handle("/", uiHandler(frames))
 

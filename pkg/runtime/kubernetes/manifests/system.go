@@ -184,6 +184,15 @@ func (in SystemInput) Scheme() string { return "https" }
 
 // ServerHost is where the donkey API and console live — the domain itself,
 // unless overridden.
+// MachineHost is the address personal machines answer on, or "" for an
+// installation without them.
+func (in SystemInput) MachineHost() string {
+	if !in.Machines.Enabled() || in.Domain == "" {
+		return ""
+	}
+	return config.MachineHost(in.Domain)
+}
+
 func (in SystemInput) ServerHost() string {
 	if in.ServerHostname != "" {
 		return in.ServerHostname

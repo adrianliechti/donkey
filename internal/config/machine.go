@@ -17,10 +17,9 @@ import (
 // never to a space.
 
 const (
-	// MachineSpace is the name machines live under: a level of their address
-	// (<id>.platform.<domain>) and, on Kubernetes, their namespace. It is one
-	// of the names no space may take, so no app can ever claim a machine's
-	// hostname or sit beside it.
+	// MachineSpace is the name machines live under: on Kubernetes their
+	// namespace, on Docker the prefix of their containers. It is one of the
+	// names no space may take, so no app can ever sit beside a machine.
 	MachineSpace = "platform"
 	// MachinePort is where the machine's own front door listens. Everything
 	// behind it only answers on the loopback.
@@ -213,8 +212,7 @@ func MachineSettingsFromEnv(get func(string) string) MachineSettings {
 
 // MachineID names the machine of one signed-in user. It is derived from the
 // IdP subject and nothing else, so it is the same on every request, a valid
-// DNS label, and says nothing about who the person is — it ends up in a
-// hostname, and hostnames end up in certificate transparency logs.
+// object name on every runtime, and says nothing about who the person is.
 func MachineID(subject string) string {
 	sum := sha256.Sum256([]byte("donkey/machine/v1\x00" + subject))
 	return "m" + hex.EncodeToString(sum[:8])
@@ -225,9 +223,19 @@ var machineIDRE = regexp.MustCompile(`^m[0-9a-f]{16}$`)
 // ValidMachineID reports whether s is a name MachineID produces.
 func ValidMachineID(s string) bool { return machineIDRE.MatchString(s) }
 
-// MachineHost is the address a machine is served at.
-func MachineHost(id, domain string) string {
-	return id + "." + MachineSpace + "." + domain
+// MachineHost is the address machines are served at: one for the whole
+// installation, where the gateway leads each signed-in person to their own
+// machine and to no other. Nothing about a machine is in it, so starting one
+// creates no DNS record and no certificate — the name is set up once, with
+// the installation — and no name that stands for a person reaches a
+// certificate log.
+//
+// It is an origin of its own, apart from the console's: what runs in a
+// machine cannot read the console's page or act with its session. It has one
+// label under the domain, where an app's address has two
+// (<app>.<space>.<domain>), and the gateway serves nothing but machines on it.
+func MachineHost(domain string) string {
+	return "machine." + domain
 }
 
 // MachineGuardToken is what the gateway presents to one machine. It is

@@ -959,9 +959,9 @@ editor, chat and terminals shown right there. Nothing to install on a
 laptop, and nothing a laptop is allowed to reach has to be reachable from one.
 
 ```
- browser ── https://<id>.platform.<domain> ──▶ donkey-gateway
+ browser ── https://machine.<domain> ───────▶ donkey-gateway
    (the console shows it in a frame)            · signs you in (one sign-in with the console)
-                                                · admits the machine's owner, nobody else
+                                                · leads you to your machine, and to no other
                                                 · presents the machine's credential
                                                         │
                                              ┌──────────▼───────────────────────┐
@@ -1086,15 +1086,22 @@ the image (below).
 developer's loopback and trusts whoever reaches it. Three things stand in
 front of that trust:
 
-1. *Its own address.* A machine answers on `<id>.platform.<domain>`, where
-   `<id>` is derived from your IdP subject and says nothing about you — it
-   ends up in a certificate, and certificates end up in public logs.
-   `platform` is a name no space may take, so no app can be given a
-   machine's hostname; and the gateway serves nothing else on one even if a
-   space that may use any hostname names it.
-2. *The gateway.* The route admits one subject: the owner. Not the members
-   of any space, and not a platform administrator, who may manage everything
-   else but has no business in someone's home directory and sign-in.
+1. *One address, apart from the console's.* Every machine answers on
+   `machine.<domain>`. Nothing of a machine or of its owner is in that name,
+   so there is nothing to make when one starts: the installation sets the
+   name up once — its certificate and, where donkey publishes them, its DNS
+   record — and a machine answers the moment its container does, the first
+   time and after every stop. No name that stands for a person reaches a
+   certificate, or the public logs certificates end up in. An app's address
+   has two labels under the domain, never one, and the gateway serves
+   nothing but machines on this one even if a space that may use any
+   hostname names it.
+2. *The gateway.* Which machine you reach is decided from your sign-in and
+   from nothing a request says — there is no way to name somebody else's.
+   A machine's route admits one subject: the owner. Not the members of any
+   space, and not a platform administrator, who may manage everything else
+   but has no business in someone's home directory and sign-in. Signed in
+   with no machine running, you are told so.
 3. *The front door.* Inside the container, `donkey machine serve` listens on
    the one reachable port and refuses every request that does not carry a
    credential only the gateway can compute (derived per machine from the
@@ -1109,9 +1116,28 @@ never forwards: nothing a browser sends, yours included, is taken for the
 control plane, and the control plane's credential is no way to the agent.
 
 The console shows the machine in a frame, from that address. Being a
-different origin is the point: nothing running in a machine can read the
-console's page or act with its session, and the gateway lets only the
-console — and the machine itself — frame it.
+different origin is the point — and the reason machines are not served
+under a path of the console itself, which would have needed no name at all:
+nothing running in a machine can read the console's page or act with its
+session, and the gateway lets only the console — and the machine itself —
+frame it.
+
+Sharing one address among machines means a browser files what any of them
+leaves behind — unsent drafts, cached scripts — under the same origin. The
+gateway keeps that from carrying over between people who sign in on the
+same browser: it notes, in a cookie no machine can read or write, whose
+machine a browser showed last, and has the browser drop what is stored for
+the address before it shows another one's; responses are cached per
+sign-in, so one person's never answer for another; and a machine's address
+takes no service workers, which would answer for it without asking the
+gateway.
+
+A machine reads *running* the moment its container says it is up, and the
+console opens your folder and shows the agent right then — which can be a
+moment before the gateway and `donkey-server` can reach it (on Kubernetes,
+before every node has heard of the new pod). Both wait for it, up to twenty
+seconds, instead of answering with an error; and if a machine still is not
+there after that, the page the gateway shows tries again by itself.
 
 **Previews, and other ports.** The agent has one port, but a machine serves
 more than that: the agent's HTML preview comes from a second loopback port,
@@ -1225,7 +1251,7 @@ applies anything, and `donkey doctor` keeps checking them after):
 |---|---|---|
 | **Kubernetes cluster** with a default StorageClass | donkey-telemetry always claims its 2 Gi DuckDB volume and donkey-orchestrator its 5 Gi `donkey-data` volume for the [source history](#source-history) (unless `data` names a claim of your own); apps with `storage.paths` and provisioned services claim their own | any conformant cluster; nothing donkey-specific. Donkey brings its own edge, normally as a `LoadBalancer` Service; on clusters where nothing assigns those an address (kind), set `gateway.serviceType: NodePort` or `ClusterIP`. cert-manager is required only for `tls.mode: cert-manager`; external-dns with `--source=crd` only when `gateway.externalDNS` is set |
 | **Container registry** the cluster can pull from | donkey pushes every build there | `registry.url` + credentials; `registry.caSecret` when its certificate comes from a private CA |
-| **DNS** pointing public hostnames to the gateway address | apps are served at `<app>.<space>.<domain>`, the API and login callback at `<domain>` | configure a wildcard plus apex yourself, or let `gateway.externalDNS` publish exact records |
+| **DNS** pointing public hostnames to the gateway address | apps are served at `<app>.<space>.<domain>`, the API and login callback at `<domain>`, [machines](#machines) at `machine.<domain>` | configure a wildcard plus apex yourself, or let `gateway.externalDNS` publish exact records |
 | **OIDC provider** (Pocket ID, Entra ID, Keycloak, …) | the one way in: console, CLI and protected apps all sign in against it | required — `auth.issuer` (+ client id/secret); `platform.admins` optionally seeds the platform admins |
 | **OpenAI-compatible endpoint** | donkey reads every app with it (ports, health routes, data folders) | required — the server refuses to start without one. Point it at a model you control: source summaries go there |
 

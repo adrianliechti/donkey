@@ -42,7 +42,7 @@ func machineDeployment() *appsv1.Deployment {
 		Labels: stamped(manifests.MachineLabels(testMachine, manifests.RoleMachine)),
 		Annotations: map[string]string{
 			manifests.AnnotationImage:         "machine:1",
-			manifests.AnnotationHost:          testMachine + ".platform.example.com",
+			manifests.AnnotationHost:          "machine.example.com",
 			manifests.AnnotationSignInExpires: "2026-12-01T10:00:00Z",
 		},
 	}}
@@ -107,7 +107,7 @@ func TestMachineStatus(t *testing.T) {
 				t.Errorf("a failing machine says %q after %d restarts", st.Message, st.Restarts)
 			}
 			if tc.want == rt.MachineRunning {
-				if st.Host != testMachine+".platform.example.com" || st.Image != "machine:1" || st.SignInExpires.IsZero() || st.StartedAt.IsZero() {
+				if st.Host != "machine.example.com" || st.Image != "machine:1" || st.SignInExpires.IsZero() || st.StartedAt.IsZero() {
 					t.Errorf("status = %+v", st)
 				}
 			}
@@ -187,7 +187,7 @@ func TestMachineAITokens(t *testing.T) {
 // The gateway takes a machine route's identity from its labels, which have
 // to agree with the record; the owner it admits comes with it.
 func TestMachineRouteFromConfigMap(t *testing.T) {
-	route := config.MachineRoute(testMachine, "owner-subject", testMachine+".platform.example.com", "http://"+testMachine+".donkey-platform.svc:80")
+	route := config.MachineRoute(testMachine, "owner-subject", "machine.example.com", "http://"+testMachine+".donkey-platform.svc:80")
 	cm := func(labels map[string]string, r config.GatewayRoute) corev1.ConfigMap {
 		return corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "route", Labels: labels}, Data: manifests.RouteData(r)}
 	}

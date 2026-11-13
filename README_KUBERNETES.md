@@ -349,7 +349,16 @@ namespace, and all carry `donkey.local/machine=<id>`:
 | Disk | `<id>-data` | `platform-<id>-data` | The owner's home and folders; kept when the machine stops, by its owner or because it went unused (`machines.idle`). Its `donkey.local/machine-folders` annotation is the list of folders the console offers while the machine is stopped |
 | Route ConfigMap | `<id>-route` | `platform-<id>-route` | `route.yaml`, with the `owner` it admits |
 | NetworkPolicy | `donkey-machines` | `donkey-machines` | One fence for every machine of the namespace: in, `donkey-gateway` and `donkey-server`; out, the control plane, unless machines are opened |
-| Certificate, DNSEndpoint | `platform-<id>`, `platform-<id>-dns` | the same | In the system namespace, where the installation manages them per hostname |
+
+A machine has no Certificate and no DNSEndpoint. Every machine answers on
+`machine.<domain>`, which is a name of the installation: with `machines.image`
+set it is one more name on the gateway's own Certificate (`donkey-gateway`)
+and one more record in its DNSEndpoint (`donkey-gateway-dns`), made by
+`donkey server install` and not again. Turning machines on is therefore the
+one moment that waits for cert-manager and external-dns; starting a machine
+never does. Objects named `platform-<id>` and `platform-<id>-dns` in the
+system namespace are left from when each machine had a hostname of its own,
+and are removed the next time that machine is started or stopped.
 
 All rows of the first table live in the workload namespace: normally `donkey-<space>`, or
 `kubernetes.workload.namespace` when configured. For `team` / `my-api`, the

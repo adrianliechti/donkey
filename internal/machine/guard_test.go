@@ -18,7 +18,7 @@ import (
 
 const (
 	testToken = "the-gateways-credential"
-	testHost  = "m0123456789abcdef.platform.example.com"
+	testHost  = "machine.example.com"
 )
 
 // guarded is a front door before an agent that records what reaches it.

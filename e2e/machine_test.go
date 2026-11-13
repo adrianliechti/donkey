@@ -78,7 +78,9 @@ func TestMachine(t *testing.T) {
 		}
 		// The first start pulls the image, which is most of the wait.
 		machine = until(t, "running", 10*time.Minute)
-		if !strings.HasPrefix(machine.URL, "https://m") || !strings.HasSuffix(machine.URL, ".platform."+s.domain) {
+		// One address for every machine of the installation: nothing has to
+		// be issued or published for this one before it answers.
+		if machine.URL != "https://machine."+s.domain {
 			t.Fatalf("the machine answers on %q", machine.URL)
 		}
 		if machine.SignInExpires == "" {
@@ -132,7 +134,8 @@ func TestMachine(t *testing.T) {
 		}
 
 		// Somebody else with a perfectly good sign-in — the same email, even
-		// a platform admin's — is not the owner.
+		// a platform admin's — is not the owner. The address is theirs too,
+		// and leads them to their own machine: they have none running.
 		key, _ := hex.DecodeString(os.Getenv("DONKEY_E2E_SESSION_KEY"))
 		other, err := identity.SealToken(key, identity.Identity{
 			Subject: "e2e-somebody-else", Email: s.user, Expires: time.Now().Add(time.Hour).Unix(),
@@ -140,8 +143,10 @@ func TestMachine(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if resp := edge(t, machine.URL, other); resp.StatusCode != http.StatusForbidden {
-			t.Errorf("another signed-in person got %d, want 403", resp.StatusCode)
+		resp := edge(t, machine.URL, other)
+		page, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		if resp.StatusCode != http.StatusServiceUnavailable || strings.Contains(string(page), "/data/workspace") {
+			t.Errorf("another signed-in person got %d, want 503 and nothing of the machine: %s", resp.StatusCode, page)
 		}
 		if resp := edge(t, machine.URL, ""); resp.StatusCode != http.StatusUnauthorized {
 			t.Errorf("nobody got %d, want 401", resp.StatusCode)

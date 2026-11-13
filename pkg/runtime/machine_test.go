@@ -1,14 +1,17 @@
 package runtime
 
 import (
+	"context"
+	"net"
 	"strings"
 	"testing"
+	"time"
 )
 
 func machineSpec() MachineSpec {
 	return MachineSpec{
 		ID: "m0123456789abcdef", Owner: "sub", Email: "ada@example.com", Name: "Ada",
-		Host: "m0123456789abcdef.platform.example.com", Token: "sealed", GuardToken: "guard", ControlToken: "control",
+		Host: "machine.example.com", Token: "sealed", GuardToken: "guard", ControlToken: "control",
 		AIToken: "dkm_x", Model: "model-1",
 	}
 }
@@ -90,5 +93,72 @@ func TestMachineEnvIdle(t *testing.T) {
 	spec.Settings.Idle = "never"
 	if _, set := MachineEnv(spec, "http://api", "", "")["DONKEY_MACHINE_IDLE"]; set {
 		t.Error("a machine that is never stopped was given an idle time")
+	}
+}
+
+// A machine reads "running" before every way to it is there. Whoever
+// connects right then waits for the door instead of failing.
+func TestMachineDialerWaitsForADoorThatIsNotThereYet(t *testing.T) {
+	reserved, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	address := reserved.Addr().String()
+	reserved.Close()
+
+	opened := make(chan net.Listener, 1)
+	go func() {
+		time.Sleep(600 * time.Millisecond)
+		door, err := net.Listen("tcp", address)
+		if err != nil {
+			close(opened)
+			return
+		}
+		opened <- door
+	}()
+	began := time.Now()
+	conn, err := MachineDialer(10*time.Second)(context.Background(), "tcp", address)
+	door, ok := <-opened
+	if !ok {
+		t.Skip("the port was taken by somebody else in the meantime")
+	}
+	defer door.Close()
+	if err != nil {
+		t.Fatalf("gave up on a door that opened after %s: %v", time.Since(began), err)
+	}
+	conn.Close()
+	if waited := time.Since(began); waited < 500*time.Millisecond {
+		t.Errorf("connected after %s, before the door was there", waited)
+	}
+}
+
+// The wait has an end, and what the caller reads then is why the machine did
+// not answer — not that the waiting stopped.
+func TestMachineDialerGivesUp(t *testing.T) {
+	reserved, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	address := reserved.Addr().String()
+	reserved.Close()
+
+	began := time.Now()
+	_, err = MachineDialer(700*time.Millisecond)(context.Background(), "tcp", address)
+	if err == nil {
+		t.Fatal("connected to nothing")
+	}
+	if waited := time.Since(began); waited < 600*time.Millisecond || waited > 5*time.Second {
+		t.Errorf("gave up after %s, want about 700ms", waited)
+	}
+	if !strings.Contains(err.Error(), "refused") {
+		t.Errorf("error = %v, want the refusal", err)
+	}
+
+	// Whoever stops waiting first ends it: the caller's own deadline counts.
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	began = time.Now()
+	if _, err := MachineDialer(time.Minute)(ctx, "tcp", address); err == nil || time.Since(began) > 5*time.Second {
+		t.Errorf("after the caller gave up: err = %v, waited %s", err, time.Since(began))
 	}
 }

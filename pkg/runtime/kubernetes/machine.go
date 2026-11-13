@@ -23,7 +23,8 @@ import (
 // Personal machines on Kubernetes — see manifests/machine.go for what one is
 // made of. A stopped machine is its disk and nothing else: the Deployment,
 // the Service, the route and the Secret holding its credentials go, so there
-// is nothing left to reach and nothing left to present.
+// is nothing left to reach and nothing left to present. The address machines
+// answer on is not a machine's: it is the installation's, and stays.
 
 var _ rt.MachineProvider = (*Runtime)(nil)
 
@@ -69,8 +70,6 @@ func (r *Runtime) machineInput(spec rt.MachineSpec) (manifests.MachineInput, err
 		Settings:         spec.Settings,
 		RestrictEgress:   spec.Settings.RestrictEgress(),
 		ImagePullSecrets: r.opts.AddonImagePullSecrets,
-		TLS:              r.opts.TLS,
-		ExternalDNS:      r.opts.ExternalDNS,
 	}
 	if !spec.SignInExpires.IsZero() {
 		in.SignInExpires = spec.SignInExpires.UTC().Format(time.RFC3339)
@@ -105,17 +104,17 @@ func (m machines) Start(ctx context.Context, spec rt.MachineSpec) error {
 	if err := r.c.Apply(ctx, objs); err != nil {
 		return fmt.Errorf("the cluster refused the machine: %v", err)
 	}
-	// Server-side apply never removes what a new set leaves out: an
-	// installation that stopped managing certificates or DNS per hostname
-	// retracts the ones it made.
-	var obsolete []string
-	if !in.TLS.UsesCertManager() {
-		obsolete = append(obsolete, "Certificate", "Secret")
-	}
-	if !in.ExternalDNS.Enabled() {
-		obsolete = append(obsolete, "DNSEndpoint")
-	}
-	return r.c.deleteKindsBySelector(ctx, r.opts.SystemNamespace, obsolete, machineEdgeSelector(spec.ID), false)
+	return r.retractMachineAddress(ctx, spec.ID)
+}
+
+// retractMachineAddress removes the certificate and DNS record a machine was
+// given while each still had a hostname of its own. Server-side apply never
+// removes what a new set leaves out, so a machine that is started or stopped
+// again takes its old ones back; an installation that never made any has
+// nothing here to find.
+func (r *Runtime) retractMachineAddress(ctx context.Context, id string) error {
+	return r.c.deleteKindsBySelector(ctx, r.opts.SystemNamespace,
+		[]string{"Certificate", "DNSEndpoint", "Secret"}, machineEdgeSelector(id), false)
 }
 
 // machineDiskWait bounds how long a start waits for a deleted machine's disk
@@ -177,9 +176,8 @@ func (m machines) Stop(ctx context.Context, id string) error {
 			return err
 		}
 	}
-	if err := r.c.deleteKindsBySelector(ctx, r.opts.SystemNamespace,
-		[]string{"Certificate", "DNSEndpoint", "Secret"}, machineEdgeSelector(id), false); err != nil {
-		return fmt.Errorf("removing the machine's public traffic objects: %w", err)
+	if err := r.retractMachineAddress(ctx, id); err != nil {
+		return fmt.Errorf("removing the address the machine used to have: %w", err)
 	}
 	return nil
 }

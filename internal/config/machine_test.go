@@ -32,15 +32,19 @@ func TestMachineID(t *testing.T) {
 	}
 }
 
-// The address sits under the one name no space can take, so no app can ever
-// be given a machine's hostname by the rules that hand out app addresses.
-func TestMachineHostIsOutOfReachOfSpaces(t *testing.T) {
-	id := MachineID("u1")
-	if got, want := MachineHost(id, "example.com"), id+".platform.example.com"; got != want {
+// Machines answer on one address for the whole installation: nothing about a
+// machine or its owner is in it, so a start has no name to set up. It has one
+// label under the domain, where the rules that hand out app addresses always
+// write two, and machines live under the one name no space can take.
+func TestMachineHostIsOneForTheInstallation(t *testing.T) {
+	if got, want := MachineHost("example.com"), "machine.example.com"; got != want {
 		t.Fatalf("host = %q, want %q", got, want)
 	}
+	if strings.Contains(MachineHost("example.com"), MachineID("u1")) {
+		t.Fatal("the address names a machine")
+	}
 	if err := ValidateSpaceName(MachineSpace); err == nil {
-		t.Fatalf("%q can be taken as a space name — an app there would get machine addresses", MachineSpace)
+		t.Fatalf("%q can be taken as a space name — an app there would sit beside the machines", MachineSpace)
 	}
 }
 

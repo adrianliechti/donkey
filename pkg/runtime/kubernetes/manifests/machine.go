@@ -88,8 +88,6 @@ type MachineInput struct {
 	RegistryHost     string
 	RegistryUsername string
 	RegistryPassword string
-	TLS              config.InstallTLS
-	ExternalDNS      config.InstallExternalDNS
 }
 
 // MachineLabels marks one object of one machine.
@@ -116,10 +114,6 @@ func MachineEnvSecretName(name string) string  { return name + "-machine" }
 func MachineDataClaimName(name string) string  { return name + "-data" }
 func MachineRouteName(name string) string      { return name + "-route" }
 func MachinePullSecretName(name string) string { return name + "-registry" }
-
-// MachineEdgeName names the machine's Certificate and DNS record, which live
-// beside the gateway. "platform" is no space, so the name is nobody else's.
-func MachineEdgeName(id string) string { return config.MachineSpace + NameSeparator + id }
 
 // MachineBackendURL is where the gateway forwards a machine's traffic.
 func MachineBackendURL(name, namespace string) string {
@@ -222,7 +216,10 @@ func MachineHomeObjects(in MachineInput) []runtime.Object {
 }
 
 // MachineObjects renders one machine in apply order: what the pod needs
-// first, the route that makes it reachable last.
+// first, the route that makes it reachable last. Nothing here is a
+// certificate or a DNS record: machines answer on one address the
+// installation set up for all of them (systemTrafficObjects), so a start
+// has nothing to wait for but its own pod.
 func MachineObjects(in MachineInput) ([]runtime.Object, error) {
 	objs := MachineHomeObjects(in)
 	if in.RegistryUsername != "" && in.RegistryPassword != "" {
@@ -238,7 +235,6 @@ func MachineObjects(in MachineInput) ([]runtime.Object, error) {
 		return nil, err
 	}
 	objs = append(objs, machineEnvSecret(in), claim, deployment, machineService(in))
-	objs = append(objs, MachineTrafficObjects(in)...)
 	return append(objs, machineRoute(in)), nil
 }
 
@@ -429,23 +425,4 @@ func machineService(in MachineInput) *corev1.Service {
 func machineRoute(in MachineInput) *corev1.ConfigMap {
 	return routeConfigMap(MachineRouteName(in.ObjectName), in.Namespace, MachineLabels(in.ID, RoleMachineRoute),
 		config.MachineRoute(in.ID, in.Owner, in.Host, MachineBackendURL(in.ObjectName, in.Namespace)))
-}
-
-// MachineTrafficObjects is the machine hostname's certificate and optional
-// DNS record, where the installation manages those per hostname.
-func MachineTrafficObjects(in MachineInput) []runtime.Object {
-	if in.Host == "" {
-		return nil
-	}
-	labels := MachineLabels(in.ID, RoleEdge)
-	var objects []runtime.Object
-	if in.TLS.UsesCertManager() {
-		objects = append(objects, managedCertificate(MachineEdgeName(in.ID), in.SystemNamespace,
-			MachineEdgeName(in.ID)+"-tls", []string{in.Host}, labels, in.TLS))
-	}
-	if in.ExternalDNS.Enabled() {
-		objects = append(objects, dnsEndpoint(MachineEdgeName(in.ID)+"-dns", in.SystemNamespace,
-			[]string{in.Host}, labels, in.ExternalDNS))
-	}
-	return objects
 }

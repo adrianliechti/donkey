@@ -15,6 +15,7 @@ import (
 	"github.com/adrianliechti/donkey/internal/analytics"
 	"github.com/adrianliechti/donkey/internal/config"
 	"github.com/adrianliechti/donkey/internal/identity"
+	"github.com/adrianliechti/donkey/pkg/runtime"
 )
 
 // handler is the gateway's request path: route lookup, session, access
@@ -103,14 +104,26 @@ func (s *Server) serveRoute(w http.ResponseWriter, r *http.Request, rt route) *s
 			http.Error(w, `{"error":"sign-in required"}`, http.StatusUnauthorized)
 			return nil
 		}
+		if rt.Personal {
+			// The machines' address leads each visitor to their own machine
+			// and to no other: which one is decided here, from the sign-in,
+			// and from nothing the request says.
+			owned, ok := s.machineOf(r.Context(), sess.Subject)
+			if !ok {
+				s.errorPage(w, http.StatusServiceUnavailable, "Your machine isn't running.",
+					"Opening a folder in the donkey console starts it.")
+				return sess
+			}
+			rt = owned
+		}
 		if !rt.allows(sess.Subject, sess.Email, sess.Groups) {
 			who := sess.Email
 			if who == "" {
 				who = sess.Subject
 			}
 			if rt.Machine != "" {
-				s.errorPage(w, http.StatusForbidden, "This machine is someone else's.",
-					fmt.Sprintf("You're signed in as %s. A machine opens only for the person it belongs to — yours is in the console.", who))
+				s.errorPage(w, http.StatusForbidden, "This isn't your machine.",
+					fmt.Sprintf("You're signed in as %s.", who))
 				return sess
 			}
 			s.deniedPage(w, who)
@@ -123,9 +136,80 @@ func (s *Server) serveRoute(w http.ResponseWriter, r *http.Request, rt route) *s
 	if routeAllowsAllOrigins(rt) {
 		clearCORSHeaders(w.Header())
 	}
+	if rt.Machine != "" {
+		// A service worker would stay in the browser and answer for this
+		// address without asking the gateway again — for whoever signs in
+		// there next, too. Browsers name the request that installs one.
+		if r.Header.Get("Service-Worker") != "" {
+			http.Error(w, "A machine's address takes no service workers.", http.StatusForbidden)
+			return sess
+		}
+		if !fromToken {
+			claimBrowser(w, r, rt.Machine)
+		}
+	}
 	idpToken := s.idpToken(w, r, rt, sess, fromToken, time.Time{})
 	s.proxy(rt, sess, fromToken, idpToken).ServeHTTP(w, r)
 	return sess
+}
+
+// machineBrowserCookie names, on the machines' address, the machine a browser
+// showed last. Every machine answers on that one address, so a browser files
+// what any of them leaves behind — stored drafts, cached scripts — under the
+// same origin; this is how the gateway notices that the person in front of it
+// is not the one those were left by. The __Host- prefix keeps it to this
+// exact host, and it is the gateway's alone: a machine can neither read it
+// (HttpOnly) nor set it (see proxy).
+const machineBrowserCookie = "__Host-donkey-machine"
+
+// claimBrowser makes a browser start clean when the machine it is about to
+// show is not the one it showed last: whatever that one stored under the
+// shared address is dropped before the response is used. Without it, a page
+// from one person's machine could leave something behind that runs when the
+// next person to sign in on the same browser opens theirs.
+//
+// Only what is stored. Cached responses need no clearing — they are kept per
+// sign-in (Vary: Cookie, see proxy), so one person's never answer for
+// another — and asking a browser to clear its cache holds the page back
+// while it searches all of it, on the first visit of all moments. Cookies
+// are left alone too: the directive that clears them would take the
+// installation's sign-in with it.
+func claimBrowser(w http.ResponseWriter, r *http.Request, machine string) {
+	if c, err := r.Cookie(machineBrowserCookie); err == nil && c.Value == machine {
+		return
+	}
+	w.Header().Set("Clear-Site-Data", `"storage"`)
+	http.SetCookie(w, &http.Cookie{
+		Name: machineBrowserCookie, Value: machine, Path: "/",
+		Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode,
+		MaxAge: 400 * 24 * 60 * 60,
+	})
+}
+
+// keepBrowserCookie drops a machine's attempt to set the gateway's own note
+// about the browser: a page that could write it could claim the browser for
+// somebody else's machine in advance.
+func keepBrowserCookie(header http.Header) {
+	cookies := header.Values("Set-Cookie")
+	if len(cookies) == 0 {
+		return
+	}
+	header.Del("Set-Cookie")
+	for _, line := range cookies {
+		name, _, _ := strings.Cut(line, "=")
+		if strings.EqualFold(strings.TrimSpace(name), machineBrowserCookie) {
+			continue
+		}
+		header.Add("Set-Cookie", line)
+	}
+}
+
+// consoleHost is where the console answers.
+func (s *Server) consoleHost() string {
+	if s.cfg.ServerHost != "" {
+		return s.cfg.ServerHost
+	}
+	return s.cfg.Domain
 }
 
 // wantsHTML says whether the request came from a navigating browser.
@@ -163,6 +247,19 @@ const forwardTokenTTL = 10 * time.Minute
 // extra hop cheap. No response-header timeout — apps stream.
 var transport = &http.Transport{
 	DialContext:         (&net.Dialer{Timeout: 10 * time.Second}).DialContext,
+	MaxIdleConns:        200,
+	MaxIdleConnsPerHost: 32,
+	IdleConnTimeout:     90 * time.Second,
+	ForceAttemptHTTP2:   false,
+}
+
+// machineTransport is the hop to a machine. It waits for one that only just
+// came up (runtime.MachineDialer) — the console shows a machine the moment
+// it reads "running" — where an app's hop fails at once: an app that does
+// not take connections is down, a machine that does not is usually seconds
+// from being there.
+var machineTransport http.RoundTripper = &http.Transport{
+	DialContext:         runtime.MachineDialer(runtime.MachineDialPatience),
 	MaxIdleConns:        200,
 	MaxIdleConnsPerHost: 32,
 	IdleConnTimeout:     90 * time.Second,
@@ -213,6 +310,10 @@ func (s *Server) idpToken(w http.ResponseWriter, r *http.Request, rt route, sess
 // twice. idpToken is the visitor's IdP access token, if the route gets one;
 // Telemetry plugins attach their observation hooks to the request context.
 func (s *Server) proxy(rt route, sess *session, fromToken bool, idpToken string) *httputil.ReverseProxy {
+	hop := http.RoundTripper(transport)
+	if rt.Machine != "" {
+		hop = machineTransport
+	}
 	return &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			for _, observation := range trafficObservations(pr.In) {
@@ -269,7 +370,7 @@ func (s *Server) proxy(rt route, sess *session, fromToken bool, idpToken string)
 			}
 			// The session cookie is the gateway's, not the app's — don't leak
 			// sealed identity material into app code.
-			stripCookie(pr.Out, append(sessionCookieNames(), stateCookie)...)
+			stripCookie(pr.Out, append(sessionCookieNames(), stateCookie, machineBrowserCookie)...)
 			// Identity is for the routes that asked for a sign-in.
 			if sess != nil && rt.Login {
 				identity.SetHeader(pr.Out.Header, "User", sess.Subject)
@@ -315,6 +416,10 @@ func (s *Server) proxy(rt route, sess *session, fromToken bool, idpToken string)
 			}
 			if rt.Machine != "" {
 				s.allowConsoleFrame(res.Header)
+				keepBrowserCookie(res.Header)
+				// One address, many machines: what a browser cached for one
+				// sign-in must not answer for another without asking here.
+				res.Header.Add("Vary", "Cookie")
 			}
 			// An API mounted under a proxy prefix may redirect to /login or
 			// add a trailing slash. Keep that redirect on the API's route.
@@ -328,13 +433,25 @@ func (s *Server) proxy(rt route, sess *session, fromToken bool, idpToken string)
 			}
 			return nil
 		},
-		Transport: transport,
+		Transport: hop,
 		// Flush as bytes arrive: SSE and long-running responses must not sit
 		// in a buffer.
 		FlushInterval: -1,
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			if routeAllowsAllOrigins(rt) {
 				setCORSHeaders(w.Header())
+			}
+			if rt.Machine != "" {
+				// The wait is over and the machine still is not there. That is
+				// rarely the end of it — a restart under way, a stop the
+				// gateway has not read yet — so a page asks again by itself
+				// rather than leaving its owner to find the reload button.
+				if wantsHTML(r) {
+					w.Header().Set("Refresh", "3")
+				}
+				s.errorPage(w, http.StatusBadGateway, "Your machine isn't answering yet.",
+					"It may still be starting, or have just stopped — this page tries again by itself. ("+err.Error()+")")
+				return
 			}
 			s.errorPage(w, http.StatusBadGateway, "The app didn't answer.",
 				"It may be starting up or crashed — its logs know more. ("+err.Error()+")")
@@ -351,12 +468,8 @@ func (s *Server) proxy(rt route, sess *session, fromToken bool, idpToken string)
 // one). Added rather than set: a policy the machine sent itself keeps
 // applying next to this one.
 func (s *Server) allowConsoleFrame(header http.Header) {
-	console := s.cfg.ServerHost
-	if console == "" {
-		console = s.cfg.Domain
-	}
 	header.Del("X-Frame-Options")
-	header.Add("Content-Security-Policy", "frame-ancestors 'self' https://"+console)
+	header.Add("Content-Security-Policy", "frame-ancestors 'self' https://"+s.consoleHost())
 }
 
 func setCORSHeaders(header http.Header) {

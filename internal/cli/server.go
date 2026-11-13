@@ -460,6 +460,15 @@ func serverInstallAction(ctx context.Context, cmd *cli.Command) error {
 	case "cert-manager":
 		u.Printf("  %s", u.Faint(fmt.Sprintf("TLS: the gateway serves exact-host certificates issued by cert-manager through %s %s.", settings.TLS.CertificateIssuerKind(), settings.TLS.IssuerName)))
 	}
+	if host := in.MachineHost(); host != "" {
+		note := fmt.Sprintf("Machines: every machine answers on https://%s, which leads each person to their own.", host)
+		if settings.TLS.UsesCertManager() || settings.Gateway.ExternalDNS.Enabled() {
+			// The one wait there is: it happens here, once, and not again
+			// for any machine or any start.
+			note += " Its certificate and DNS record are being made now; machines open once both are there."
+		}
+		u.Printf("  %s", u.Faint(note))
+	}
 
 	callback := fmt.Sprintf("%s://%s/oauth2/callback", in.Scheme(), in.Domain)
 	u.Printf("")

@@ -18,8 +18,8 @@ import (
 
 // uiHandler serves the embedded admin console: real files as-is, everything
 // else falls back to index.html (the SPA handles its own views). frames is
-// the one source the console may show inside a frame — the addresses of
-// personal machines — or "" when the installation has none.
+// the one source the console may show inside a frame — the address personal
+// machines answer on — or "" when the installation has none.
 func uiHandler(frames string) http.Handler {
 	policy := "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
 		"img-src 'self' data:; connect-src 'self'; font-src 'self' data:; " +

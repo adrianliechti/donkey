@@ -29,7 +29,9 @@ type MachineResponse struct {
 	Allowed bool `json:"allowed"`
 	// State is absent, stopped, starting, running or failed.
 	State string `json:"state"`
-	// URL is where the machine's own interface answers while it runs.
+	// URL is where the machine's own interface answers while it runs: the
+	// installation's one address for machines, which leads each person to
+	// their own.
 	URL string `json:"url,omitempty"`
 	// StartedAt is when the running container came up (RFC 3339).
 	StartedAt string `json:"startedAt,omitempty"`
@@ -39,8 +41,9 @@ type MachineResponse struct {
 	// SignInExpires is when the donkey sign-in inside the machine runs out
 	// (RFC 3339). Starting the machine again renews it.
 	SignInExpires string `json:"signInExpires,omitempty"`
-	// Outdated says the installation's machine image changed since this one
-	// started; a restart picks the new one up.
+	// Outdated says the installation's machine image — or the address
+	// machines answer on — changed since this one started; a restart picks
+	// the new one up.
 	Outdated bool `json:"outdated,omitempty"`
 	// Egress is restricted or open: whether a machine reaches the control
 	// plane only, or the network at large.
@@ -142,10 +145,14 @@ func (s *Server) machineResponse(st *runtime.MachineStatus) MachineResponse {
 	}
 	switch st.State {
 	case runtime.MachineRunning, runtime.MachineStarting, runtime.MachineFailed:
+		// The address is the installation's, not the machine's: one started
+		// when each machine still had a hostname of its own is not reachable
+		// there, and says so the way one on an old image does.
+		host := config.MachineHost(s.cfg.Domain)
 		if st.Host != "" {
-			resp.URL = s.cfg.Scheme() + "://" + st.Host
+			resp.URL = s.cfg.Scheme() + "://" + host
 		}
-		resp.Outdated = st.Image != "" && st.Image != settings.Image
+		resp.Outdated = st.Image != "" && st.Image != settings.Image || st.Host != "" && st.Host != host
 		if !st.SignInExpires.IsZero() {
 			resp.SignInExpires = st.SignInExpires.UTC().Format(time.RFC3339)
 		}
@@ -217,7 +224,7 @@ func (s *Server) handleStartMachine(w http.ResponseWriter, r *http.Request) {
 		Email:         owner.Email,
 		Name:          owner.Name,
 		Image:         s.cfg.Machines.Image,
-		Host:          config.MachineHost(id, s.cfg.Domain),
+		Host:          config.MachineHost(s.cfg.Domain),
 		Token:         token,
 		SignInExpires: time.Unix(signIn.Expires, 0),
 		GuardToken:    config.MachineGuardToken(s.cfg.SessionKey, id),

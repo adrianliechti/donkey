@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -35,9 +34,12 @@ const (
 
 // machineTransport keeps the hop to a machine off any forward proxy the
 // installation configured, like every other hop inside the control plane.
+// It waits for a machine that only just came up (runtime.MachineDialer): the
+// console opens a folder the moment a machine reads "running", which is
+// before every runtime can route to it.
 var machineTransport http.RoundTripper = &http.Transport{
 	Proxy:               nil,
-	DialContext:         (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+	DialContext:         runtime.MachineDialer(runtime.MachineDialPatience),
 	MaxIdleConnsPerHost: 2,
 	IdleConnTimeout:     30 * time.Second,
 }

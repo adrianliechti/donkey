@@ -44,7 +44,7 @@ func TestMachineNamesAndLabels(t *testing.T) {
 func TestGatewaySnapshotLoadsMachineRoutes(t *testing.T) {
 	dir := t.TempDir()
 	s := state{dir: dir}
-	route := config.MachineRoute(testMachine, "owner-subject", testMachine+".platform.example.com", "http://donkey.platform."+testMachine+":8080")
+	route := config.MachineRoute(testMachine, "owner-subject", "machine.example.com", "http://donkey.platform."+testMachine+":8080")
 	if err := s.setRoute(config.MachineSpace, testMachine, route); err != nil {
 		t.Fatal(err)
 	}

@@ -23,7 +23,7 @@ func machineInput() MachineInput {
 		SystemNamespace: "donkey-system",
 		ObjectName:      testMachine,
 		Image:           "ghcr.io/acme/donkey-machine:1.2.3",
-		Host:            testMachine + ".platform.example.com",
+		Host:            "machine.example.com",
 		Owner:           "owner-subject",
 		OwnerLabel:      "ada@example.com",
 		Env:             map[string]string{"DONKEY_TOKEN": "sealed", "OPENAI_API_KEY": "dkm_x"},
@@ -324,31 +324,47 @@ func TestControlPlaneAdmitsMachinesOnlyWhenEnabled(t *testing.T) {
 	}
 }
 
-// Where certificates and DNS are managed per hostname, a machine's address
-// gets both — beside the gateway, like an app's, and labelled as the
-// machine's so they go when it stops.
-func TestMachineTrafficObjects(t *testing.T) {
+// A machine has no certificate and no DNS record of its own, however the
+// installation manages those: they would have to be issued and published on
+// every start, and the machine would not answer until they were. The address
+// all machines share gets both once, with the installation.
+func TestMachineHasNoAddressOfItsOwn(t *testing.T) {
 	in := machineInput()
-	if objs := MachineTrafficObjects(in); len(objs) != 0 {
-		t.Fatalf("rendered %d traffic objects without cert-manager or external-dns", len(objs))
-	}
-	in.TLS = config.InstallTLS{Mode: "cert-manager", IssuerName: "issuer"}
-	in.ExternalDNS = config.InstallExternalDNS{Targets: []string{"203.0.113.10"}}
-	objs := MachineTrafficObjects(in)
-	if len(objs) != 2 {
-		t.Fatalf("rendered %d traffic objects, want a Certificate and a DNSEndpoint", len(objs))
+	objs, err := MachineObjects(in)
+	if err != nil {
+		t.Fatal(err)
 	}
 	for _, obj := range objs {
-		u := obj.(*unstructured.Unstructured)
-		if u.GetNamespace() != "donkey-system" {
-			t.Errorf("%s lives in %s, want the gateway's namespace", u.GetKind(), u.GetNamespace())
-		}
-		if labels := u.GetLabels(); labels[LabelMachine] != testMachine || labels[LabelRole] != RoleEdge || labels[LabelSpace] != "" {
-			t.Errorf("%s labels = %v", u.GetKind(), labels)
+		switch kind := obj.GetObjectKind().GroupVersionKind().Kind; kind {
+		case "Certificate", "DNSEndpoint":
+			t.Errorf("a machine start renders a %s", kind)
 		}
 	}
-	names, _, _ := unstructured.NestedStringSlice(objs[0].(*unstructured.Unstructured).Object, "spec", "dnsNames")
-	if len(names) != 1 || names[0] != in.Host {
-		t.Errorf("certificate names = %v", names)
+
+	system := systemInput()
+	system.TLS = config.InstallTLS{Mode: "cert-manager", IssuerName: "issuer"}
+	system.ExternalDNS = config.InstallExternalDNS{Targets: []string{"203.0.113.10"}}
+	address := config.MachineHost(system.Domain)
+	names := func() (certificate, dns []string) {
+		for _, obj := range systemTrafficObjects(system) {
+			u := obj.(*unstructured.Unstructured)
+			switch u.GetKind() {
+			case "Certificate":
+				certificate, _, _ = unstructured.NestedStringSlice(u.Object, "spec", "dnsNames")
+			case "DNSEndpoint":
+				endpoints, _, _ := unstructured.NestedSlice(u.Object, "spec", "endpoints")
+				for _, endpoint := range endpoints {
+					dns = append(dns, endpoint.(map[string]any)["dnsName"].(string))
+				}
+			}
+		}
+		return certificate, dns
+	}
+	if certificate, dns := names(); slices.Contains(certificate, address) || slices.Contains(dns, address) {
+		t.Fatalf("an installation without machines sets up their address: %v / %v", certificate, dns)
+	}
+	system.Machines = config.MachineSettings{Image: "machine:1"}
+	if certificate, dns := names(); !slices.Contains(certificate, address) || !slices.Contains(dns, address) {
+		t.Fatalf("the machines' address is missing from the installation's certificate or DNS: %v / %v", certificate, dns)
 	}
 }
