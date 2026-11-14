@@ -64,6 +64,16 @@ type Server struct {
 	// with its disk — so a list that has not changed is not written again
 	// every time the console asks for it (see rememberMachineFolders).
 	machineFolders sync.Map
+	// system and nodes are what the runtime last said about the control
+	// plane and its machines, kept for a moment (see system.go).
+	system briefly[SystemResponse]
+	nodes  briefly[NodesResponse]
+	// inventory is every running app with what its records say, and facts
+	// the per-app part of it that outlives one report. Only
+	// donkey-orchestrator, which owns the records, fills them (see
+	// inventory.go).
+	inventory briefly[*fleetInventory]
+	facts     factsCache
 }
 
 func (s *Server) deploymentStore() *deployment.Store {
@@ -239,6 +249,9 @@ func (s *Server) routes() http.Handler {
 	mux.Handle("GET /v1/machine/workspace", s.auth(s.handleMachineWorkspace))
 	mux.Handle("POST /v1/machine/workspace", s.auth(s.handleOpenMachineFolder))
 	mux.Handle("GET /v1/doctor", s.auth(s.handleDoctor))
+	// What donkey runs on and donkey itself, as the runtime describes them.
+	mux.Handle("GET /v1/system", s.auth(s.handleSystem))
+	mux.Handle("GET /v1/nodes", s.auth(s.handleNodes))
 	// The console's AI chat, forwarded to donkey-ai — see aiforward.go for
 	// why it lands on this origin and why nothing is verified here.
 	mux.Handle(aiForwardPrefix, aiForwardHandler(s.cfg.AIURL))

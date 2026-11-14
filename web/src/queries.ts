@@ -191,6 +191,39 @@ export const doctorQuery = queryOptions({
   refetchInterval: 60_000,
 })
 
+// The control plane's own workloads: cheap to read, and they change when
+// somebody upgrades them.
+export const systemQuery = queryOptions({
+  queryKey: ['system'],
+  queryFn: () => api.system(),
+  refetchInterval: 15_000,
+})
+
+// The machines apps run on. What they use moves in seconds; the server
+// keeps one reading for every open console.
+export const nodesQuery = queryOptions({
+  queryKey: ['nodes'],
+  queryFn: () => api.nodes(),
+  refetchInterval: 15_000,
+})
+
+// The platform's reports are read off every running app's records. They
+// change when an app is deployed or the periodic check finds something new,
+// so they are refreshed slowly, and kept while another tab is looked at.
+export const vulnerabilitiesQuery = queryOptions({
+  queryKey: ['vulnerabilities'],
+  queryFn: () => api.vulnerabilities(),
+  staleTime: 30_000,
+  refetchInterval: 5 * 60_000,
+})
+
+export const technologiesQuery = queryOptions({
+  queryKey: ['technologies'],
+  queryFn: () => api.technologies(),
+  staleTime: 30_000,
+  refetchInterval: 5 * 60_000,
+})
+
 // The assistant's reading of a failing app. Each run is a model call over
 // the app's real logs, so it is cached per deployed image: opening Logs again
 // does not ask again, a new deploy does, and "Check again" is the explicit
@@ -359,7 +392,27 @@ export function useNetwork(space: string, app: string, enabled = true) {
 }
 
 export function useDoctor() {
-  return present(useQuery(doctorQuery))
+  const q = useQuery(doctorQuery)
+  return { ...present(q), fetching: q.isFetching }
+}
+
+// enabled=false asks nothing: the page is a platform administrator's.
+export function useSystem(enabled = true) {
+  return present(useQuery({ ...systemQuery, enabled }))
+}
+
+export function useNodes() {
+  return present(useQuery(nodesQuery))
+}
+
+export function useVulnerabilities() {
+  const q = useQuery(vulnerabilitiesQuery)
+  return { ...present(q), fetching: q.isFetching }
+}
+
+export function useTechnologies() {
+  const q = useQuery(technologiesQuery)
+  return { ...present(q), fetching: q.isFetching }
 }
 
 export function useAppServices(space: string, app: string) {

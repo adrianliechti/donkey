@@ -313,6 +313,8 @@ func (s *Server) persistRelease(ctx context.Context, space, app string, release 
 		log.Printf("store release app=%s space=%s: %v", app, space, err)
 	}
 	s.recordSource(ctx, space, app, release, sequence)
+	// The platform's reports read what was just written (see inventory.go).
+	s.forgetFacts(space, app)
 }
 
 func marshalRelease(release AppRelease) ([]byte, error) {

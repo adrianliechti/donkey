@@ -21,8 +21,9 @@ FROM --platform=$BUILDPLATFORM ${GO_IMAGE} AS build
 ARG TARGETOS
 ARG TARGETARCH
 ARG VERSION=dev
-# The coding agent, pinned: a machine image is rebuilt to take a newer one.
-ARG WINGMAN_VERSION=v0.20.2
+# Resolve the latest coding agent by default; releases can pin the tested version.
+# Refresh Docker's build cache to pick up a newer release when using latest.
+ARG WINGMAN_VERSION=latest
 ENV CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH
 
 # `go install` puts a cross-compiled binary in a folder named after its

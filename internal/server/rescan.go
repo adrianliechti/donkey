@@ -235,7 +235,12 @@ func (s *Server) storeScan(ctx context.Context, space, app, image string, record
 	if err != nil {
 		return err
 	}
-	return s.deploymentStore().PutScan(ctx, space, app, image, raw)
+	if err := s.deploymentStore().PutScan(ctx, space, app, image, raw); err != nil {
+		return err
+	}
+	// The platform's reports read this record; they must not keep the last.
+	s.forgetFacts(space, app)
+	return nil
 }
 
 func (s *Server) handleSecurity(w http.ResponseWriter, r *http.Request) {

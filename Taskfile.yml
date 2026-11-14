@@ -97,7 +97,7 @@ tasks:
   machine-image:
     desc: Build the personal machine image — toolchains, the donkey CLI and the Wingman agent (into the local Docker daemon)
     cmds:
-      - docker build -q -f hack/Dockerfile.machine --build-arg VERSION={{.VERSION}} -t {{.IMAGE | default "donkey/donkey-machine:dev"}} .
+      - docker build -q -f hack/Dockerfile.machine --build-arg VERSION={{.VERSION}} --build-arg WINGMAN_VERSION={{.WINGMAN_VERSION | default "latest"}} -t {{.IMAGE | default "donkey/donkey-machine:dev"}} .
 
   machine-image:kind:
     desc: Build the personal machine image and load it into the kind cluster registry
@@ -113,7 +113,7 @@ tasks:
     vars:
       IMAGE: '{{.IMAGE | default "ghcr.io/adrianliechti/donkey-machine"}}'
     cmds:
-      - docker buildx build --platform linux/amd64,linux/arm64 -f hack/Dockerfile.machine --build-arg VERSION={{.VERSION}} -t {{.IMAGE}}:{{.VERSION}} --push .
+      - docker buildx build --platform linux/amd64,linux/arm64 -f hack/Dockerfile.machine --build-arg VERSION={{.VERSION}} --build-arg WINGMAN_VERSION={{.WINGMAN_VERSION | default "latest"}} -t {{.IMAGE}}:{{.VERSION}} --push .
 
   demo-idp-image:
     desc: Build the DEMO fake identity provider image (into the local Docker daemon)

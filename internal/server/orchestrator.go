@@ -48,6 +48,10 @@ func (s *Server) orchestrated() []orchestratedRoute {
 		{"GET /v1/spaces/{space}/apps/{app}/builds", s.handleBuilds},
 		{"GET /v1/spaces/{space}/apps/{app}/builds/{sequence}", s.handleBuild},
 		{"GET /v1/spaces/{space}/apps/{app}/security", s.handleSecurity},
+		// The platform's reports are read off the scans and build records on
+		// this process's data volume (see inventory.go).
+		{"GET /v1/vulnerabilities", s.handleVulnerabilities},
+		{"GET /v1/technologies", s.handleTechnologies},
 		{"POST /v1/deploys", s.handleDeploy},
 		// What the orchestrator is deploying now and finished lately: the
 		// board lives in this process, beside the deploys it describes.

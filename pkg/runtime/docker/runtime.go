@@ -140,6 +140,8 @@ type Runtime struct {
 	cli          *client.Client
 	opts         Options
 	state        state
+	// host reads what the engine's machine uses, for Nodes (see system.go).
+	host hostMeter
 }
 
 var _ rt.Provider = (*Runtime)(nil)

@@ -10,12 +10,13 @@ import {
 } from '@headlessui/react'
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
-import { Activity, Boxes, FolderCode, Search, UploadCloud } from 'lucide-react'
+import { Boxes, FolderCode, Search, UploadCloud } from 'lucide-react'
 import { useDeploy } from './deploy'
 import { useOpenMachine } from './machineOpen'
 import { machineQuery, useFleet } from './queries'
 import { backdropClass } from './dialog'
 import { AppIcon } from './AppIcon'
+import { SYSTEM_TABS } from './systemTabs'
 import { healthOf } from './vocabulary'
 
 // One search box for the whole console: ⌘K anywhere, type a few letters, hit
@@ -97,25 +98,32 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
         terms: 'your machine agent wingman code folder ide',
         run: go(() => openMachine()),
       },
-      {
-        key: 'action:system',
-        label: 'System health',
-        hint: 'action',
-        icon: <Activity className="size-4 text-muted" aria-hidden />,
-        terms: 'system health control plane doctor',
-        run: go(() => navigate({ to: '/system' })),
-      },
     ]
+    // The platform's page, a tab at a time: what a platform administrator
+    // types is what they are after, not where it is kept.
+    const platformTerms: Record<string, string> = {
+      system: 'system health control plane doctor checks platform admin',
+      nodes: 'nodes machines cpu memory capacity cluster platform admin',
+      vulnerabilities: 'vulnerabilities security cve findings scan soc platform admin',
+      technologies: 'technologies stacks languages frameworks base images inventory platform admin',
+    }
+    const platform: Item[] = SYSTEM_TABS.map((tab) => ({
+      key: `platform:${tab.id}`,
+      label: tab.label,
+      hint: 'platform',
+      icon: <tab.icon className="size-4 text-muted" aria-hidden />,
+      terms: `${tab.label.toLowerCase()} ${platformTerms[tab.id] ?? ''}`,
+      run: go(() => navigate({ to: '/system/{-$tab}', params: { tab: tab.id === 'system' ? undefined : tab.id } })),
+    }))
     return [
       ...apps,
       ...spaces,
       ...actions.filter((action) =>
-        action.key === 'action:system'
-          ? data?.platformAdmin
-          : action.key === 'action:machine'
-            ? hasMachine
-            : data?.platformAdmin || Object.values(data?.roles ?? {}).some((role) => role !== 'viewer'),
+        action.key === 'action:machine'
+          ? hasMachine
+          : data?.platformAdmin || Object.values(data?.roles ?? {}).some((role) => role !== 'viewer'),
       ),
+      ...(data?.platformAdmin ? platform : []),
     ]
   }, [data, hasMachine, navigate, onClose, openDeploy, openMachine])
 

@@ -444,6 +444,53 @@ filter for them. The API carries insights as a list of `{ kind, … }` with the
 facts behind each (`since` for unmaintained, `people` for popular) on
 `GET /v1/apps` and `/v1/fleet`. The console leaves out kinds it does not know.
 
+## The platform page
+
+Platform admins have a page about the installation itself: the pulse icon in
+the console's header (`#/system`). It has four tabs, and every one reads the
+same on Kubernetes and on Docker, because the runtime answers in donkey's
+words rather than its own (`Info`, `Nodes` and `Components` of
+`runtime.Provider`).
+
+- **System**: donkey's own components (the API, the orchestrator, the gateway
+  and the services beside them): which are running, on which version, how
+  often each restarted. Below them, the checks `donkey doctor` runs.
+- **Nodes**: the machines apps run on: a cluster's nodes, or the host of a
+  Docker engine. Each has a meter for processors and one for memory. The bar
+  is what is in use right now; the mark on it is what workloads have
+  reserved. Kubernetes places pods by their requests, so a new app needs
+  room past the mark, however idle the node is. Usage needs a metrics API on
+  Kubernetes (Metrics Server); without one the nodes still show what is
+  reserved. On Docker the host's usage is read where donkey-server runs on
+  the engine's own machine. An installation confined to namespaces it was
+  given holds nothing cluster-wide, and says so instead of listing nodes.
+- **Vulnerabilities**: every finding in the images that run right now,
+  grouped by the finding rather than by the app: which apps and spaces a CVE
+  (or a credential baked into an image) is in, what today's policy makes of
+  it in each — needs action, waived, read as not affected by the assistant,
+  fix available, no fix yet — and who answers for each space: its admins and
+  developers, or the platform's admins where nobody was given the space.
+  Worst first, then the one in the most apps. It is read off the scans
+  donkey already keeps, so nothing is scanned for it and it is as fresh as
+  the periodic check (`build.scan.rescan`). Apps with no scan on record are
+  listed as such rather than counted as clean.
+- **Technologies**: what the apps are built with, most used first:
+  languages, frameworks, base images, operating systems (a release its
+  vendor stopped patching is marked) and package managers, each with the
+  apps that use it and the version each is on.
+
+Both reports export as CSV: what the filters show, one row per finding, app
+and package (or technology and app), with the space's contacts on every row.
+A cell that a spreadsheet would run as a formula is made text with a leading
+apostrophe. The same data is JSON on the API, for platform admins only:
+
+| Endpoint | Answers with |
+|---|---|
+| `GET /v1/system` | the runtime, donkey's version and its own workloads |
+| `GET /v1/nodes` | nodes with capacity, usage and reservations |
+| `GET /v1/vulnerabilities` | findings by vulnerability; `?severity=critical,high`, `?q=`, `?fixable=true`, `?format=csv` |
+| `GET /v1/technologies` | technologies by category; `?category=os`, `?q=`, `?format=csv` |
+
 ## What donkey works out for you
 
 Everything below happens on `donkey init` and again on every `donkey deploy`.
