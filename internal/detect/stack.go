@@ -71,6 +71,10 @@ var stackImages = map[string]string{
 	"httpd":                       StackStatic,
 }
 
+// ImageStack is the stack one base image stands for, or "" when its name
+// does not say.
+func ImageStack(image string) string { return imageStack(image) }
+
 func imageStack(image string) string {
 	repo := strings.ToLower(image)
 	if at := strings.Index(repo, "@"); at >= 0 {

@@ -14,6 +14,7 @@ import {
 } from 'lucide-react'
 import { api, type CommitChange, saveBlob, type SourceCommit, type SourceEntry } from './api'
 import { DiffView } from './DiffView'
+import { OpenInMachine } from './OpenInMachine'
 import { SourceCode } from './SourceCode'
 import { useCommit, useCommitDiff, useCommitFile, useCommits, useCommitTree } from './queries'
 import {
@@ -135,7 +136,10 @@ function HistoryView({
         title="Source"
         description="Each deploy's files as a commit — yours against your previous upload, the platform's against the upload it built."
         actions={
-          <IconButton icon={FolderTree} label="Browse the files that run now" onClick={() => onBrowse(current.id)} />
+          <>
+            <OpenInMachine space={space} app={app} commit={current.id} label="Open what runs now in your machine" />
+            <IconButton icon={FolderTree} label="Browse the files that run now" onClick={() => onBrowse(current.id)} />
+          </>
         }
       />
       <List>
@@ -166,6 +170,7 @@ function CommitRow({
       className={commit.kind === 'platform' ? 'bg-raised/40' : ''}
       actions={
         <>
+          <OpenInMachine space={space} app={app} commit={commit.id} size="sm" />
           <IconButton
             icon={FolderTree}
             size="sm"
@@ -276,6 +281,7 @@ function CommitView({
           <ChevronRight className="size-3.5" aria-hidden />
         </Button>
         <span className="mx-0.5 h-4 w-px bg-line" aria-hidden />
+        <OpenInMachine space={space} app={app} commit={id} />
         <IconButton icon={FolderTree} label="Browse the files of this version" onClick={() => onBrowse(id)} />
         <IconButton
           icon={Download}
@@ -489,6 +495,7 @@ function BrowseView({
           options={versions}
           ariaLabel="Version to browse"
         />
+        <OpenInMachine space={space} app={app} commit={id} />
         <IconButton icon={GitCommitHorizontal} label="Show what this version changed" onClick={() => onOpen(id)} />
         <IconButton
           icon={Download}

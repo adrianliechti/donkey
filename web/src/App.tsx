@@ -20,11 +20,15 @@ import { CommandPalette } from './CommandPalette'
 import { useDeploy } from './deploy'
 import { DeployProvider } from './DeployDrawer'
 import { FleetOverview } from './FleetOverview'
+import { HeaderActionsProvider, HeaderActionsSlot } from './HeaderActions'
 import { SpaceOverview } from './Overview'
 import { fleetQuery, statusQuery, useFleet } from './queries'
 import { Crumbs } from './Switcher'
 import { SystemView } from './SystemView'
-import { DonkeyLogo, IconButton, Page, Toolbar } from './ui'
+import { SYSTEM_TABS, type SystemTab } from './systemTabs'
+import { OpenMachineProvider } from './MachineFolders'
+import { MachineView } from './MachineView'
+import { DonkeyLogo, IconButton, Toolbar } from './ui'
 import { UserMenu } from './UserMenu'
 import { PlatformSettings } from './PlatformSettings'
 import { ServiceDetail } from './ServiceDetail'
@@ -47,7 +51,11 @@ const queryClient = new QueryClient({
 function Shell() {
   return (
     <DeployProvider>
-      <Frame />
+      <OpenMachineProvider>
+        <HeaderActionsProvider>
+          <Frame />
+        </HeaderActionsProvider>
+      </OpenMachineProvider>
     </DeployProvider>
   )
 }
@@ -96,9 +104,16 @@ function Frame() {
           {/* -mr-2: the last icon's glyph, not its hover box, meets the
               gutter the Deploy button and the page content end on. */}
           <Toolbar className="-mr-2">
+            {/* What the open page can do, where it has no title row of its
+                own (see HeaderActions). */}
+            <HeaderActionsSlot />
             <IconButton icon={Search} label="Search apps and spaces — ⌘K" onClick={() => setPaletteOpen(true)} />
             {fleet?.platformAdmin && (
-              <IconButton icon={Activity} label="System health" onClick={() => navigate({ to: '/system' })} />
+              <IconButton
+                icon={Activity}
+                label="Platform — system, nodes, vulnerabilities, technologies"
+                onClick={() => navigate({ to: '/system/{-$tab}', params: { tab: undefined } })}
+              />
             )}
             <UserMenu
               onPlatformSettings={fleet?.platformAdmin ? () => setPlatformSettingsOpen(true) : undefined}
@@ -203,15 +218,37 @@ const legacyAppsRoute = createRoute({
   },
 })
 
+// The platform's own page and its tabs, for platform administrators. The
+// first tab has no name in the address, so "#/system" still lands on it.
+function SystemPage({ tab }: { tab: SystemTab }) {
+  const navigate = useNavigate()
+  return (
+    <SystemView
+      tab={tab}
+      onTab={(next) => navigate({ to: '/system/{-$tab}', params: { tab: next === 'system' ? undefined : next } })}
+    />
+  )
+}
+
 const systemRoute = createRoute({
   getParentRoute: () => rootRoute,
-  path: '/system',
-  component: () => (
-    <Page>
-      <SystemView />
-    </Page>
-  ),
-  head: () => ({ meta: [{ title: pageTitle('System') }] }),
+  path: '/system/{-$tab}',
+  component: () => {
+    const { tab } = systemRoute.useParams()
+    // The tab comes from the URL, so it can name one that does not exist.
+    return <SystemPage tab={SYSTEM_TABS.find((t) => t.id === tab)?.id ?? 'system'} />
+  },
+  head: ({ params }) => ({
+    meta: [{ title: pageTitle(SYSTEM_TABS.find((t) => t.id === params.tab)?.label ?? 'System') }],
+  }),
+})
+
+// The signed-in person's own machine, with its coding agent embedded.
+const machineRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/machine',
+  component: MachineView,
+  head: () => ({ meta: [{ title: pageTitle('Machine') }] }),
 })
 
 const spaceRoute = createRoute({
@@ -293,6 +330,7 @@ const routeTree = rootRoute.addChildren([
   deployAppRoute,
   legacyAppsRoute,
   systemRoute,
+  machineRoute,
 ])
 
 const router = createRouter({

@@ -252,6 +252,7 @@ func (s *Server) handleCallback(w http.ResponseWriter, r *http.Request) {
 		Groups:            claims.Groups,
 		Expires:           time.Now().Add(sessionTTL).Unix(),
 		AuthTime:          claims.AuthTime,
+		LoginTime:         time.Now().Unix(),
 	}
 	if s.upstream.Enabled() {
 		// Kept for the token apps and viewers hand on; the login's own

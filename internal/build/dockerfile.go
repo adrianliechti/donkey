@@ -17,6 +17,7 @@ import (
 
 var packageBuildArgs = []string{
 	"NPM_CONFIG_REGISTRY",
+	"COREPACK_NPM_REGISTRY",
 	"PIP_INDEX_URL",
 	"PIP_TRUSTED_HOST",
 	"GOPROXY",

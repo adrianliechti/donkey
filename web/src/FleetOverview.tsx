@@ -1,6 +1,17 @@
 import { useMemo, useState, type ReactNode } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { ArrowUpRight, CircleCheck, FolderPlus, Layers, Loader2, Search, Star, UploadCloud } from 'lucide-react'
+import {
+  ArrowUpRight,
+  CircleCheck,
+  FolderCode,
+  FolderPlus,
+  Layers,
+  Loader2,
+  Search,
+  Star,
+  UploadCloud,
+} from 'lucide-react'
 import type { ActiveDeploy, SpaceList } from './api'
 import { AppIcon } from './AppIcon'
 import { useDeploy } from './deploy'
@@ -21,8 +32,9 @@ import {
 import { ago } from './format'
 import { useNow } from './hooks'
 import { box, useBox } from './httpStore'
+import { useOpenMachine } from './machineOpen'
 import { NewSpaceDialog } from './NewSpaceDialog'
-import { useDeploys, useFleet } from './queries'
+import { machineQuery, useDeploys, useFleet } from './queries'
 import {
   Button,
   EmptyState,
@@ -81,6 +93,11 @@ export function FleetOverview() {
   const issues = attention.flatMap((space) => space.issues.map((issue) => ({ ...issue, space: space.name })))
   const activity = recentDeploys(spaces.flatMap((space) => space.deploys))
   const canDeploy = data?.platformAdmin || Object.values(data?.roles ?? {}).some((role) => role !== 'viewer')
+  // Read once: whether there is a machine to offer a way to. The machine's
+  // own page is what watches it.
+  const { data: machine } = useQuery(machineQuery)
+  const hasMachine = !!machine?.enabled && machine.allowed
+  const openMachine = useOpenMachine()
 
   const togglePin = (space: string) =>
     pins.set((previous) =>
@@ -145,13 +162,22 @@ export function FleetOverview() {
     <Page fill>
       <PageBar
         actions={
-          canDeploy && (
+          (canDeploy || hasMachine) && (
             <>
               {data.platformAdmin && (
                 // A quiet button on the field wears the card colour, like
                 // the search beside it — the dots stay behind it.
                 <Button kind="quiet" icon={FolderPlus} className="bg-card" onClick={() => setCreating(true)}>
                   New space
+                </Button>
+              )}
+              {/* The two things to do from here: work on code in a machine
+                  of one's own, and ship it. A machine is a person's, not a
+                  space's, so the way to it is on the front page — where it
+                  asks which folder before it goes anywhere. */}
+              {hasMachine && (
+                <Button kind="quiet" icon={FolderCode} className="bg-card" onClick={() => openMachine()}>
+                  Machine
                 </Button>
               )}
               {canDeploy && (

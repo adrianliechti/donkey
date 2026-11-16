@@ -12,10 +12,12 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"maps"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -151,6 +153,21 @@ func (c *Config) ssoHost(host string) bool {
 	return host == c.Domain || strings.HasSuffix(host, "."+c.Domain)
 }
 
+// machineHost is the one address every machine of the installation answers
+// on (config.MachineHost), or "" where there is no base domain to put it
+// under. The gateway keeps it for machines whether or not one is running:
+// nothing else is ever served there, and a visitor without a machine is told
+// so instead of meeting somebody's app.
+func (c *Config) machineHost() string {
+	if c.Domain == "" {
+		return ""
+	}
+	if host := config.MachineHost(c.Domain); host != c.ServerHost {
+		return host
+	}
+	return ""
+}
+
 func envOr(key, def string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
@@ -188,6 +205,14 @@ type route struct {
 	// backend. Only donkey's own API route carries it: an app given one
 	// could replay its visitors' credentials against the API.
 	Token bool
+	// Machine is the personal machine this route leads to and Owner the IdP
+	// subject it belongs to. Nobody else passes — see allows.
+	Machine string
+	Owner   string
+	// Personal marks the machines' shared address before it is known who is
+	// asking: it demands a sign-in and leads nowhere by itself. Once there is
+	// a visitor, their own machine's route takes its place — see machineOf.
+	Personal bool
 }
 
 // routeSource is where the routing table comes from — the one seam between
@@ -204,6 +229,7 @@ type Server struct {
 
 	mu          sync.RWMutex
 	routes      map[string][]route     // host -> routes, most specific path first
+	machines    map[string]route       // owner's subject -> their machine, all on the machines' address
 	oidcClients map[string]*oidcClient // published with the same route snapshot
 	// lastAttempt rate-limits the on-miss refresh: a fresh deploy's hostname
 	// must work immediately, an unknown-host scan (or a down API server)
@@ -288,6 +314,15 @@ func (s runtimeRoutes) list(ctx context.Context) ([]route, error) {
 			return nil, err
 		}
 		r := route{Space: rec.Space, App: rec.App, Host: rec.Host, Path: rec.Path, Backend: target, Login: rec.Login, Mode: rec.Mode, CORS: rec.CORS, OIDC: rec.OIDC, Analytics: rec.Analytics, Token: rec.Token, StripPrefix: rec.StripPrefix}
+		if rec.Machine != "" {
+			// A machine's route is its owner's alone. One that does not say
+			// whose it is, or tries to be something else as well, is not
+			// served at all rather than served to everyone.
+			if !config.ValidMachineID(rec.Machine) || rec.Owner == "" || rec.Space != "" || rec.App != "" || rec.Token {
+				continue
+			}
+			r = route{Host: rec.Host, Path: "/", Backend: target, Login: true, Analytics: config.AnalyticsOff, Machine: rec.Machine, Owner: rec.Owner}
+		}
 		if r.Path == "" {
 			r.Path = "/"
 		}
@@ -431,6 +466,7 @@ func (s *Server) refreshRoutesAfter(ctx context.Context, minAge time.Duration) e
 			// Keep the console reachable, but fail closed for app traffic.
 			s.mu.Lock()
 			s.oidcClients = nil
+			s.machines = nil
 			for host, routes := range s.routes {
 				var system []route
 				for _, r := range routes {
@@ -448,8 +484,25 @@ func (s *Server) refreshRoutesAfter(ctx context.Context, minAge time.Duration) e
 			return nil, err
 		}
 		table := map[string][]route{}
+		machines := map[string]route{}
+		machineHost := s.cfg.machineHost()
 		for _, r := range list {
-			table[r.Host] = append(table[r.Host], r)
+			switch {
+			case r.Machine != "":
+				// Machines share one address and are told apart by who is
+				// signed in, so they are kept by owner. One that names
+				// another address is not served anywhere: no hostname stands
+				// for a single machine.
+				if r.Host == machineHost {
+					machines[r.Owner] = r
+				}
+			case r.Host == machineHost:
+				// The machines' address is theirs alone. Whatever else claims
+				// it — an app of a space that may take any hostname — is not
+				// served there, with or without a machine running.
+			default:
+				table[r.Host] = append(table[r.Host], r)
+			}
 		}
 		for host := range table {
 			sort.Slice(table[host], func(i, j int) bool {
@@ -459,13 +512,20 @@ func (s *Server) refreshRoutesAfter(ctx context.Context, minAge time.Duration) e
 		clients, clientErr := s.syncOIDCClients(ctx, table)
 		s.mu.Lock()
 		s.routes = table
+		s.machines = machines
 		s.oidcClients = clients
 		s.mu.Unlock()
 		// A hostname that just appeared gets its certificate now, not on
 		// its first visit — the deploy's announcement should be
 		// immediately true.
 		if s.warm != nil {
-			for host := range table {
+			hosts := slices.Collect(maps.Keys(table))
+			if len(machines) > 0 {
+				// Once for the installation, with its first machine — not
+				// once per machine.
+				hosts = append(hosts, machineHost)
+			}
+			for _, host := range hosts {
 				if _, seen := s.warmed.LoadOrStore(host, true); !seen {
 					go s.warm(host)
 				}
@@ -479,6 +539,9 @@ func (s *Server) refreshRoutesAfter(ctx context.Context, minAge time.Duration) e
 // lookup finds the most specific route for a request. On a miss it refreshes
 // once (rate-limited) — a hostname deployed seconds ago must already work.
 func (s *Server) lookup(ctx context.Context, host, path string) (route, bool) {
+	if host != "" && host == s.cfg.machineHost() {
+		return route{Host: host, Path: "/", Login: true, Analytics: config.AnalyticsOff, Personal: true}, true
+	}
 	if r, ok := s.tableLookup(host, path); ok {
 		return r, true
 	}
@@ -488,6 +551,30 @@ func (s *Server) lookup(ctx context.Context, host, path string) (route, bool) {
 	if stale {
 		if err := s.refreshRoutesAfter(ctx, 2*time.Second); err == nil {
 			return s.tableLookup(host, path)
+		}
+	}
+	return route{}, false
+}
+
+// machineOf finds the machine of one signed-in person. Like lookup it
+// refreshes once on a miss (rate-limited): a machine started seconds ago
+// must already answer.
+func (s *Server) machineOf(ctx context.Context, subject string) (route, bool) {
+	find := func() (route, bool) {
+		s.mu.RLock()
+		defer s.mu.RUnlock()
+		r, ok := s.machines[subject]
+		return r, ok && subject != ""
+	}
+	if r, ok := find(); ok {
+		return r, true
+	}
+	s.mu.RLock()
+	stale := time.Since(s.lastAttempt) > 2*time.Second
+	s.mu.RUnlock()
+	if stale {
+		if err := s.refreshRoutesAfter(ctx, 2*time.Second); err == nil {
+			return find()
 		}
 	}
 	return route{}, false

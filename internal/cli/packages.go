@@ -458,35 +458,15 @@ func packagesArgs(args []string, settings packagesSettings) []string {
 	return args
 }
 
-// packagesEnv points the package managers of this machine at the mirror, by
-// the names they read themselves — the ones a build gets (see
-// build.BuildKitBuilder), plus what only matters where a lockfile is written.
+// packagesEnv points the package managers of this machine at the mirror: what
+// packages.ManagerEnv says for every place people work, plus what belongs to
+// a mirror opened by this command — the settings files it wrote, and the
+// environment it is started from.
 func packagesEnv(mirror string, settings packagesSettings) map[string]string {
-	env := map[string]string{
-		// npm, pnpm, yarn 1 and bun.
-		"NPM_CONFIG_REGISTRY": mirror + "/npm/",
-		// The mirror hands out tarball links at its own address, and npm
-		// would write them into package-lock.json, where the next machine —
-		// or the build, which knows the mirror under another name — cannot
-		// follow them. Without them the lockfile still pins every version
-		// and its checksum, and each install asks its own registry.
-		"NPM_CONFIG_OMIT_LOCKFILE_REGISTRY_RESOLVED": "true",
-		// yarn 2 and later, which also wants to be told that plain HTTP to
-		// this machine is meant.
-		"YARN_NPM_REGISTRY_SERVER":   mirror + "/npm/",
-		"YARN_UNSAFE_HTTP_WHITELIST": "127.0.0.1",
-		"PIP_INDEX_URL":              mirror + "/pypi/",
-		// Not UV_DEFAULT_INDEX: `uv add` writes that one into pyproject.toml.
-		"UV_INDEX_URL": mirror + "/pypi/",
-		"GOPROXY":      mirror + "/go/",
-		// Maven 4, and the Maven wrapper's own download — which appends its
-		// path with a slash of its own.
-		"MAVEN_REPO_CENTRAL": mirror + "/maven/",
-		"MVNW_REPOURL":       mirror + "/maven",
-		// MSBuild reads its properties from the environment, so this reaches
-		// every restore: dotnet restore, and the one inside build, run, test.
-		"RestoreConfigFile": settings.NuGet,
-	}
+	env := packages.ManagerEnv(mirror)
+	// MSBuild reads its properties from the environment, so this reaches
+	// every restore: dotnet restore, and the one inside build, run, test.
+	env["RestoreConfigFile"] = settings.NuGet
 	// Maven 3.9 and later, also where mvn is started by a script or a build
 	// tool rather than named on donkey's command line. The mvn script splits
 	// this on spaces and cmd.exe honors quotes, so a path with a space in it

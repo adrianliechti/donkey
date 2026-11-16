@@ -225,16 +225,21 @@ const (
 
 var severityRank = map[string]int{"critical": 4, "high": 3, "medium": 2, "low": 1}
 
-// scanPolicy resolves the policy for one app: the installation's settings
-// plus the space's waivers still in force.
-func (s *Server) scanPolicy(ctx context.Context, space, app string) (ScanPolicy, error) {
+// installationPolicy is the installation's rules, before any space's waivers.
+func (s *Server) installationPolicy() ScanPolicy {
 	settings := s.cfg.Build.Scan
-	policy := ScanPolicy{
+	return ScanPolicy{
 		Block:         settings.BlockSeverity(),
 		IgnoreUnfixed: settings.IgnoreUnfixedFindings(),
 		Secrets:       settings.SecretsPolicy(),
 		Triage:        settings.AssistantTriage(),
 	}
+}
+
+// scanPolicy resolves the policy for one app: the installation's settings
+// plus the space's waivers still in force.
+func (s *Server) scanPolicy(ctx context.Context, space, app string) (ScanPolicy, error) {
+	policy := s.installationPolicy()
 	spaceSettings, err := s.spaceSettings(ctx, space)
 	if err != nil {
 		return ScanPolicy{}, &build.ScanError{Err: fmt.Errorf("reading the space's scan policy: %w", err)}

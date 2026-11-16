@@ -51,11 +51,14 @@ func AppTrafficObjects(in Input) []runtime.Object {
 	return objects
 }
 
-// systemTrafficObjects covers both the base domain (the OAuth callback) and a
-// distinct server hostname. One SAN Certificate is enough; DNS keeps exact
-// records because the apex can never be supplied by a wildcard record.
+// systemTrafficObjects covers the base domain (the OAuth callback), a
+// distinct server hostname and, where the installation has machines, the one
+// address they all answer on — which is why starting a machine waits for
+// neither a certificate nor a DNS record: both were made here, once. One SAN
+// Certificate is enough; DNS keeps exact records because the apex can never
+// be supplied by a wildcard record.
 func systemTrafficObjects(in SystemInput) []runtime.Object {
-	hosts := compactHosts(in.Domain, in.ServerHost())
+	hosts := compactHosts(in.Domain, in.ServerHost(), in.MachineHost())
 	if len(hosts) == 0 {
 		return nil
 	}

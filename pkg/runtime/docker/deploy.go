@@ -546,6 +546,9 @@ func (r *Runtime) runApp(ctx context.Context, space, app string, spec runSpec) e
 type volumeMount struct {
 	Volume  string
 	Subpath string
+	// HostPath mounts a folder of the engine's host instead of a volume.
+	HostPath string
+	ReadOnly bool
 }
 
 type runConfig struct {
@@ -557,6 +560,17 @@ type runConfig struct {
 	Volumes    map[string]volumeMount // target path -> volume
 	Entrypoint []string               // override, for one-shot runs
 	OneShot    bool                   // no restart policy, don't start-and-forget semantics change
+	// User overrides the image's user (uid:gid).
+	User string
+	// Hostname is what the container calls itself; empty leaves the engine's
+	// choice, its ID.
+	Hostname string
+	// Hardened drops every capability and forbids gaining any — what a
+	// personal machine runs with.
+	Hardened bool
+	// NanoCPUs and Memory cap the container; zero leaves it uncapped.
+	NanoCPUs int64
+	Memory   int64
 }
 
 // replaceContainer stops and removes whatever holds the name and creates
@@ -577,7 +591,10 @@ func (r *Runtime) replaceContainer(ctx context.Context, name string, cfg runConf
 	}
 	var mounts []mount.Mount
 	for target, vm := range cfg.Volumes {
-		m := mount.Mount{Type: mount.TypeVolume, Source: vm.Volume, Target: target}
+		m := mount.Mount{Type: mount.TypeVolume, Source: vm.Volume, Target: target, ReadOnly: vm.ReadOnly}
+		if vm.HostPath != "" {
+			m.Type, m.Source = mount.TypeBind, vm.HostPath
+		}
 		if vm.Subpath != "" {
 			m.VolumeOptions = &mount.VolumeOptions{Subpath: vm.Subpath}
 		}
@@ -594,11 +611,24 @@ func (r *Runtime) replaceContainer(ctx context.Context, name string, cfg runConf
 		containerCfg.Entrypoint = cfg.Entrypoint
 		containerCfg.Cmd = nil
 	}
+	if cfg.User != "" {
+		containerCfg.User = cfg.User
+	}
+	containerCfg.Hostname = cfg.Hostname
 	hostCfg := &container.HostConfig{Mounts: mounts}
 	if cfg.Labels[labelRole] == roleWorkload {
 		hostCfg.SecurityOpt = []string{"no-new-privileges:true"}
 		hostCfg.CapDrop = []string{"NET_RAW"}
 	}
+	if cfg.Hardened {
+		hostCfg.SecurityOpt = []string{"no-new-privileges:true"}
+		hostCfg.CapDrop = []string{"ALL"}
+		// A runaway build must not take the host's process table with it.
+		pids := int64(4096)
+		hostCfg.PidsLimit = &pids
+	}
+	hostCfg.NanoCPUs = cfg.NanoCPUs
+	hostCfg.Memory = cfg.Memory
 	if !cfg.OneShot {
 		hostCfg.RestartPolicy = container.RestartPolicy{Name: container.RestartPolicyUnlessStopped}
 	}

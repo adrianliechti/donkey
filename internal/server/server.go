@@ -14,6 +14,7 @@ import (
 
 	"github.com/adrianliechti/donkey/internal/ai"
 	"github.com/adrianliechti/donkey/internal/build"
+	"github.com/adrianliechti/donkey/internal/config"
 	"github.com/adrianliechti/donkey/internal/deployment"
 	"github.com/adrianliechti/donkey/internal/history"
 	"github.com/adrianliechti/donkey/internal/identity"
@@ -59,6 +60,20 @@ type Server struct {
 	// Space settings and deletion wait for deployments and other mutations
 	// in that space. Different apps can still deploy concurrently.
 	spaceLocks sync.Map
+	// machineFolders is, per machine, the folder list this process last kept
+	// with its disk — so a list that has not changed is not written again
+	// every time the console asks for it (see rememberMachineFolders).
+	machineFolders sync.Map
+	// system and nodes are what the runtime last said about the control
+	// plane and its machines, kept for a moment (see system.go).
+	system briefly[SystemResponse]
+	nodes  briefly[NodesResponse]
+	// inventory is every running app with what its records say, and facts
+	// the per-app part of it that outlives one report. Only
+	// donkey-orchestrator, which owns the records, fills them (see
+	// inventory.go).
+	inventory briefly[*fleetInventory]
+	facts     factsCache
 }
 
 func (s *Server) deploymentStore() *deployment.Store {
@@ -226,7 +241,17 @@ func (s *Server) routes() http.Handler {
 	mux.Handle("DELETE /v1/spaces/{space}/apps/{app}/files", s.auth(s.handleDeleteFile))
 	mux.Handle("POST /v1/spaces/{space}/apps/{app}/files/move", s.auth(s.handleMoveFile))
 	mux.Handle("POST /v1/spaces/{space}/apps/{app}/files/folder", s.auth(s.handleMakeFolder))
+	// The caller's own machine. Starting, stopping and deleting it are
+	// orchestrated: a start can outlive the request that asked for it.
+	mux.Handle("GET /v1/machine", s.auth(s.handleGetMachine))
+	mux.Handle("GET /v1/machine/logs", s.auth(s.handleMachineLogs))
+	// Its folders are the machine's to answer for; this process only asks.
+	mux.Handle("GET /v1/machine/workspace", s.auth(s.handleMachineWorkspace))
+	mux.Handle("POST /v1/machine/workspace", s.auth(s.handleOpenMachineFolder))
 	mux.Handle("GET /v1/doctor", s.auth(s.handleDoctor))
+	// What donkey runs on and donkey itself, as the runtime describes them.
+	mux.Handle("GET /v1/system", s.auth(s.handleSystem))
+	mux.Handle("GET /v1/nodes", s.auth(s.handleNodes))
 	// The console's AI chat, forwarded to donkey-ai — see aiforward.go for
 	// why it lands on this origin and why nothing is verified here.
 	mux.Handle(aiForwardPrefix, aiForwardHandler(s.cfg.AIURL))
@@ -234,7 +259,11 @@ func (s *Server) routes() http.Handler {
 	// to the mirror builds use — see packages.go for who is admitted.
 	mux.Handle("GET "+packagesRoutePrefix+"/{path...}", s.packagesHandler())
 	// Everything else is the admin console.
-	mux.Handle("/", uiHandler())
+	frames := ""
+	if s.cfg.Machines.Enabled() {
+		frames = s.cfg.Scheme() + "://" + config.MachineHost(s.cfg.Domain)
+	}
+	mux.Handle("/", uiHandler(frames))
 
 	// Browser-side CSRF protection (Go's Fetch-metadata checks). This is
 	// load-bearing: the console rides the gateway's OIDC cookie, which the
