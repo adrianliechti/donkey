@@ -11,7 +11,7 @@ set -euo pipefail
 require_ai
 
 say "building donkey + images"
-(cd "${ROOT}" && task build && task server-image:kind && task demo-idp-image:kind && task private-packages-image:kind)
+(cd "${ROOT}" && task build && task server-image:kind && task machine-image:kind && task demo-idp-image:kind && task private-packages-image:kind)
 
 say "demo identity provider (fake, auto-login)"
 kubectl --context "${CTX}" apply -f "${ROOT}/hack/demo/fake-idp.yaml"
@@ -27,6 +27,7 @@ say "installing the control plane (real install command, demo settings)"
 "${DONKEY}" --yes --context "${CTX}" server install \
   --file "${ROOT}/hack/demo/private-packages-kind-install.yaml" \
   --image "registry.platform/donkey/donkey-server:dev" \
+  --machine-image "registry.platform/donkey/donkey-machine:dev" \
   --registry-url "registry.platform/donkey" \
   --registry-ca-secret "donkey-registry-ca" \
   --domain "${BASE}" \

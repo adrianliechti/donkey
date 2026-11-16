@@ -8,18 +8,22 @@ import {
   ComboboxOption,
   ComboboxOptions,
 } from '@headlessui/react'
+import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
-import { Activity, Boxes, Search, UploadCloud } from 'lucide-react'
+import { Boxes, FolderCode, Search, UploadCloud } from 'lucide-react'
 import { useDeploy } from './deploy'
-import { useFleet } from './queries'
+import { useOpenMachine } from './machineOpen'
+import { machineQuery, useFleet } from './queries'
 import { backdropClass } from './dialog'
 import { AppIcon } from './AppIcon'
+import { SYSTEM_TABS } from './systemTabs'
 import { healthOf } from './vocabulary'
 
 // One search box for the whole console: ⌘K anywhere, type a few letters, hit
 // Enter. It jumps to an app, a space, or one of the standing actions (deploy,
-// system) — the operator's shortcut past the click-through when the fleet is
-// more than a screen.
+// your machine, system) — the operator's shortcut past the click-through
+// when the fleet is more than a screen, and the way to one's machine from
+// any page.
 type Item = {
   key: string
   label: string
@@ -33,7 +37,10 @@ type Item = {
 export function CommandPalette({ open, onClose }: { open: boolean; onClose: () => void }) {
   const navigate = useNavigate()
   const openDeploy = useDeploy()
+  const openMachine = useOpenMachine()
   const { data } = useFleet()
+  const { data: machine } = useQuery(machineQuery)
+  const hasMachine = !!machine?.enabled && machine.allowed
   const [query, setQuery] = useState('')
 
   // Selecting an item closes the palette through its own onClose, which does
@@ -84,24 +91,41 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
         run: go(() => openDeploy()),
       },
       {
-        key: 'action:system',
-        label: 'System health',
+        key: 'action:machine',
+        label: 'Your machine',
         hint: 'action',
-        icon: <Activity className="size-4 text-muted" aria-hidden />,
-        terms: 'system health control plane doctor',
-        run: go(() => navigate({ to: '/system' })),
+        icon: <FolderCode className="size-4 text-muted" aria-hidden />,
+        terms: 'your machine agent wingman code folder ide',
+        run: go(() => openMachine()),
       },
     ]
+    // The platform's page, a tab at a time: what a platform administrator
+    // types is what they are after, not where it is kept.
+    const platformTerms: Record<string, string> = {
+      system: 'system health control plane doctor checks platform admin',
+      nodes: 'nodes machines cpu memory capacity cluster platform admin',
+      vulnerabilities: 'vulnerabilities security cve findings scan soc platform admin',
+      technologies: 'technologies stacks languages frameworks base images inventory platform admin',
+    }
+    const platform: Item[] = SYSTEM_TABS.map((tab) => ({
+      key: `platform:${tab.id}`,
+      label: tab.label,
+      hint: 'platform',
+      icon: <tab.icon className="size-4 text-muted" aria-hidden />,
+      terms: `${tab.label.toLowerCase()} ${platformTerms[tab.id] ?? ''}`,
+      run: go(() => navigate({ to: '/system/{-$tab}', params: { tab: tab.id === 'system' ? undefined : tab.id } })),
+    }))
     return [
       ...apps,
       ...spaces,
       ...actions.filter((action) =>
-        action.key === 'action:system'
-          ? data?.platformAdmin
+        action.key === 'action:machine'
+          ? hasMachine
           : data?.platformAdmin || Object.values(data?.roles ?? {}).some((role) => role !== 'viewer'),
       ),
+      ...(data?.platformAdmin ? platform : []),
     ]
-  }, [data, navigate, onClose, openDeploy])
+  }, [data, hasMachine, navigate, onClose, openDeploy, openMachine])
 
   const q = query.trim().toLowerCase()
   const results = q ? items.filter((i) => i.terms.includes(q)) : items

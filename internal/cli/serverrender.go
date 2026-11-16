@@ -69,6 +69,19 @@ ai:
   baseUrl: https://api.openai.com/v1
   model: gpt-6.1-sol
 
+# Optional: a development machine for everyone who builds here — toolchains,
+# the donkey CLI and a coding agent, opened in the console. One per person,
+# with a disk of its own. Naming the image turns machines on.
+# machines:
+#   image: ghcr.io/example/donkey-machine:latest
+#   storage: 10Gi            # each machine's disk
+#   cpu: "2"                 # the most one machine may use
+#   memory: 4Gi
+#   egress: restricted       # the package mirror, the model and donkey only;
+#                            # open lets machines reach the network (a Git host)
+#   idle: 60m                # unused this long, a machine stops and keeps its
+#                            # disk; never leaves stopping to its owner
+
 # Builds: every image is scanned for known vulnerabilities before it is
 # pushed. The defaults below refuse critical findings that have a fix, let
 # the assistant waive a refusal it reads as not affecting the app, and
@@ -138,6 +151,18 @@ auth:
 ai:
   baseUrl: https://api.openai.com/v1
   model: gpt-6.1-sol
+
+# Optional: a development machine for everyone who builds here — toolchains,
+# the donkey CLI and a coding agent, opened in the console. One per person,
+# with a disk of its own. Naming the image turns machines on.
+# machines:
+#   image: ghcr.io/example/donkey-machine:latest
+#   cpu: "2"                 # the most one machine may use
+#   memory: 4Gi
+#   egress: restricted       # the package mirror, the model and donkey only;
+#                            # open lets machines reach the network (a Git host)
+#   idle: 60m                # unused this long, a machine stops and keeps its
+#                            # disk; never leaves stopping to its owner
 
 # Builds: every image is scanned for known vulnerabilities before it is
 # pushed. The defaults below refuse critical findings that have a fix, let

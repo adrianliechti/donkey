@@ -74,6 +74,9 @@ type InstallFile struct {
 	Platform PlatformConfig `json:"platform,omitempty"`
 	AI       InstallAI      `json:"ai,omitempty"`
 	Exa      InstallExa     `json:"exa,omitempty"`
+	// Machines turns on personal development machines: naming an image is
+	// what enables them.
+	Machines MachineSettings `json:"machines,omitempty"`
 }
 
 // InstallAddonImages overrides the image repository of each managed addon.

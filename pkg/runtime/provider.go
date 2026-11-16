@@ -151,6 +151,18 @@ type Provider interface {
 
 	// Checks probes this runtime's own dependencies for doctor.
 	Checks(ctx context.Context) []Check
+
+	// --- System -----------------------------------------------------------
+
+	// Info names the runtime itself and the version that answers.
+	Info(ctx context.Context) (Info, error)
+	// Nodes are the machines apps run on — a cluster's nodes, or the one
+	// host a Docker engine runs on — with what each has and how much of it
+	// is in use. A runtime that may not look at them answers Unavailable.
+	Nodes(ctx context.Context) ([]Node, error)
+	// Components are donkey's own workloads — the API, the orchestrator, the
+	// gateway and the services beside them — as they run right now.
+	Components(ctx context.Context) ([]Component, error)
 }
 
 // ResourceSampler is an optional runtime capability. Runtime resource usage

@@ -1,6 +1,7 @@
 import { ExternalLink, KeyRound, ShieldCheck } from 'lucide-react'
 import type { AppScan, Vulnerability } from './api'
 import { FindingsList } from './FindingsList'
+import { severityLabel } from './reports'
 import { Disclosure, List, ListRow, Section, SectionHeader, StatGrid } from './ui'
 
 // The vulnerability scan of a release, read top to bottom: the numbers by
@@ -10,14 +11,6 @@ import { Disclosure, List, ListRow, Section, SectionHeader, StatGrid } from './u
 // the list are the section's only outlines.
 
 const order: Vulnerability['severity'][] = ['critical', 'high', 'medium', 'low', 'unknown']
-
-const severityLabel: Record<Vulnerability['severity'], string> = {
-  critical: 'Critical',
-  high: 'High',
-  medium: 'Medium',
-  low: 'Low',
-  unknown: 'Unknown',
-}
 
 // Severity as a small chip: the two that can refuse an image carry a tone,
 // the rest stay quiet.
@@ -29,7 +22,7 @@ const severityChip: Record<Vulnerability['severity'], string> = {
   unknown: 'border border-dashed border-line text-muted',
 }
 
-function SeverityChip({ severity }: { severity: Vulnerability['severity'] }) {
+export function SeverityChip({ severity }: { severity: Vulnerability['severity'] }) {
   return (
     <span
       className={`inline-block w-16 shrink-0 rounded px-1.5 py-0.5 text-center font-mono text-[10px] uppercase tracking-wide ${severityChip[severity] ?? severityChip.unknown}`}

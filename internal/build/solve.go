@@ -202,8 +202,13 @@ func (b *BuildKitBuilder) buildEnv(appEnv map[string]string) map[string]string {
 	packagesHost := strings.TrimPrefix(strings.TrimPrefix(packagesURL, "http://"), "https://")
 	for key, value := range map[string]string{
 		"NPM_CONFIG_REGISTRY": packagesURL + "/npm/",
-		"PIP_INDEX_URL":       packagesURL + "/pypi/",
-		"PIP_TRUSTED_HOST":    packagesHost,
+		// Corepack fetches the package manager a project names (pnpm, yarn)
+		// and reads no npm setting for it; without this, `corepack enable`
+		// in a Dockerfile asks registry.npmjs.org. No trailing slash: it
+		// joins the name on with its own.
+		"COREPACK_NPM_REGISTRY": packagesURL + "/npm",
+		"PIP_INDEX_URL":         packagesURL + "/pypi/",
+		"PIP_TRUSTED_HOST":      packagesHost,
 		// uv reads no pip setting. Not UV_DEFAULT_INDEX, which `uv add`
 		// writes into pyproject.toml. A uv.lock names the index it was
 		// written against, and uv refuses a locked install against another

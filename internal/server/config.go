@@ -106,6 +106,9 @@ type Config struct {
 	// seed, the first verified sign-in becomes the first platform admin.
 	PlatformAdmins *config.AccessConfig
 	AIModel        string
+	// Machines is what the installation decided about personal machines; an
+	// empty image leaves them off.
+	Machines config.MachineSettings
 	// DataDir is the orchestrator's volume: source/ holds Git history,
 	// deployments/ holds releases and SBOMs, and scanner/ holds databases.
 	DataDir string
@@ -162,7 +165,11 @@ func FromEnv() (*Config, error) {
 			RecordType: os.Getenv("DONKEY_EXTERNAL_DNS_RECORD_TYPE"),
 			TTL:        int64(envInt("DONKEY_EXTERNAL_DNS_TTL")),
 		},
-		AIModel: envOr("DONKEY_AI_MODEL", config.DefaultAIModel),
+		AIModel:  envOr("DONKEY_AI_MODEL", config.DefaultAIModel),
+		Machines: config.MachineSettingsFromEnv(os.Getenv),
+	}
+	if err := c.Machines.Validate(); err != nil {
+		return nil, err
 	}
 	if raw := os.Getenv("DONKEY_REGISTRY_MIRRORS"); raw != "" {
 		if err := json.Unmarshal([]byte(raw), &c.RegistryMirrors); err != nil {

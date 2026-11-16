@@ -60,18 +60,25 @@ export function Modal({
   layer?: string
   children: ReactNode
 }) {
+  // Most popups are mounted when they are wanted — already open. `appear`
+  // makes that first showing an enter like any other. Without it Headless UI
+  // paints the panel as it is, decides only after that paint that it may
+  // animate, hides the panel and fades it in: a popup that is there, gone
+  // and there again.
   return (
-    <Dialog open={open} onClose={onClose} className={`relative ${layer}`}>
-      <DialogBackdrop transition className={backdropClass} />
-      <div className="fixed inset-0 flex items-start justify-center p-4 sm:pt-[8vh]">
-        <DialogPanel
-          transition
-          className={`flex w-full flex-col overflow-hidden rounded-xl border border-line bg-card shadow-2xl transition duration-(--duration-base) ease-emphasized data-closed:scale-[.98] data-closed:opacity-0 data-leave:duration-(--duration-fast) data-leave:ease-exit ${widths[size]} ${heights[height]}`}
-        >
-          {children}
-        </DialogPanel>
-      </div>
-    </Dialog>
+    <Transition show={open} appear>
+      <Dialog onClose={onClose} className={`relative ${layer}`}>
+        <DialogBackdrop transition className={backdropClass} />
+        <div className="fixed inset-0 flex items-start justify-center p-4 sm:pt-[8vh]">
+          <DialogPanel
+            transition
+            className={`flex w-full flex-col overflow-hidden rounded-xl border border-line bg-card shadow-2xl transition duration-(--duration-base) ease-emphasized data-closed:scale-[.98] data-closed:opacity-0 data-leave:duration-(--duration-fast) data-leave:ease-exit ${widths[size]} ${heights[height]}`}
+          >
+            {children}
+          </DialogPanel>
+        </div>
+      </Dialog>
+    </Transition>
   )
 }
 

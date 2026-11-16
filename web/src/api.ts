@@ -875,6 +875,180 @@ export interface DoctorReport {
   domain: string
 }
 
+/** The control plane as it runs right now, in words every runtime shares. */
+export interface SystemState {
+  /** Donkey's own version. */
+  version: string
+  domain: string
+  /** What donkey runs apps on: Kubernetes, Docker. */
+  runtime: { name: string; version?: string }
+  components: SystemComponent[]
+  /** Why the components could not be read. */
+  componentsError?: string
+}
+
+/** One of donkey's own workloads. */
+export interface SystemComponent {
+  name: string
+  /** What it is on every runtime: server, orchestrator, gateway… */
+  role: string
+  image?: string
+  /** The image's tag. */
+  version?: string
+  healthy: boolean
+  ready: number
+  want: number
+  restarts?: number
+  startedAt?: string
+  /** Why an instance is not ready. */
+  message?: string
+}
+
+/** One resource of a node; `used` and `reserved` only where the runtime knows. */
+export interface NodeResource {
+  capacity: number
+  used?: number
+  reserved?: number
+}
+
+/** One machine apps run on: a cluster's node, or a Docker engine's host. */
+export interface SystemNode {
+  name: string
+  ready: boolean
+  /** False for a node that is fine and closed to new workloads. */
+  schedulable: boolean
+  problems?: string[]
+  roles?: string[]
+  version?: string
+  os?: string
+  arch?: string
+  createdAt?: string
+  /** Cores. */
+  cpu: NodeResource
+  /** Bytes. */
+  memory: NodeResource
+  /** Pods or containers on the node, and how many it takes where there is a limit. */
+  instances: number
+  instanceCapacity?: number
+}
+
+export interface NodeList {
+  nodes: SystemNode[]
+  /** Why there are none to show, when the runtime may not look. */
+  note?: string
+}
+
+/** Who answers for a space: the holders of a role that can change it. */
+export interface SpaceContacts {
+  admins: AccessConfig
+  developers: AccessConfig
+}
+
+/** One running app as a report names it. */
+export interface ReportApp {
+  space: string
+  app: string
+  url?: string
+  exposure?: Exposure
+  stack?: string
+  image?: string
+  /** A scan of the running image is on record. */
+  scanned: boolean
+  scannedAt?: string
+  dbUpdatedAt?: string
+  os?: string
+  endOfLife?: boolean
+  security?: AppSecurity
+  /** Why the app's records could not be read. */
+  problem?: string
+}
+
+export type Severity = Vulnerability['severity']
+
+/** What today's policy makes of one finding in one app. */
+export type FindingState = 'blocking' | 'warning' | 'judged' | 'waived' | 'fixable' | 'unfixed'
+
+export interface AffectedPackage {
+  name: string
+  installed: string
+  fixed?: string
+  /** The ecosystem: debian, alpine, node-pkg, python-pkg… */
+  type?: string
+  path?: string
+}
+
+/** One app a finding is in. */
+export interface AffectedApp {
+  space: string
+  app: string
+  severity: Severity
+  state: FindingState
+  /** The waiver, or the assistant's reading, behind the state. */
+  note?: string
+  /** A vulnerability's packages; a credential's files. */
+  packages?: AffectedPackage[]
+  locations?: string[]
+}
+
+/** One finding and every app it is in. */
+export interface FindingGroup {
+  kind: 'vulnerability' | 'secret'
+  /** The CVE or advisory, or the rule that recognized a credential. */
+  id: string
+  /** The worst any app's scan gave it. */
+  severity: Severity
+  score?: number
+  title?: string
+  url?: string
+  published?: string
+  fixable: boolean
+  apps: AffectedApp[]
+}
+
+export interface VulnerabilityReport {
+  generatedAt: string
+  /** The installation scans images at all. */
+  scanning: boolean
+  /** The severity from which the policy refuses an image. */
+  block: 'none' | 'critical' | 'high'
+  apps: ReportApp[]
+  findings: FindingGroup[]
+  spaces: Record<string, SpaceContacts>
+  platformAdmins: AccessConfig
+}
+
+export type TechnologyCategoryId = 'language' | 'framework' | 'base-image' | 'os' | 'package-manager'
+
+export interface TechnologyApp {
+  space: string
+  app: string
+  version?: string
+  /** The file or image the detection rests on. */
+  evidence?: string
+}
+
+export interface Technology {
+  name: string
+  /** A language's short name, as an app's stack spells it. */
+  key?: string
+  /** An operating system release its vendor stopped patching. */
+  endOfLife?: boolean
+  apps: TechnologyApp[]
+}
+
+export interface TechnologyCategory {
+  id: TechnologyCategoryId
+  technologies: Technology[]
+}
+
+export interface TechnologyReport {
+  generatedAt: string
+  apps: ReportApp[]
+  categories: TechnologyCategory[]
+  spaces: Record<string, SpaceContacts>
+  platformAdmins: AccessConfig
+}
+
 /** A database, or a Trino catalog; unavailable sizes are null. */
 export interface DbDatabase {
   name: string
@@ -953,6 +1127,24 @@ export async function fetchOK(path: string): Promise<Response> {
 
 const downloadBlob = async (path: string): Promise<Blob> => (await fetchOK(path)).blob()
 
+// A report's export: the file as the server made it, under the name the
+// server gave it.
+async function downloadReport(path: string, fallback: string): Promise<{ blob: Blob; name: string }> {
+  const res = await fetchOK(path)
+  const name = /filename="([^"]+)"/.exec(res.headers.get('Content-Disposition') ?? '')?.[1] ?? fallback
+  return { blob: await res.blob(), name }
+}
+
+// The reports' filters travel as the query the server reads (see
+// vulnerabilities.go and technologies.go), so an export holds what the
+// same filter shows on screen.
+function reportQuery(params: Record<string, string | undefined>): string {
+  const query = new URLSearchParams()
+  for (const [key, value] of Object.entries(params)) if (value) query.set(key, value)
+  const text = query.toString()
+  return text ? `?${text}` : ''
+}
+
 // saveBlob hands a fetched download to the browser under a name. Downloads go
 // through fetch because they carry the session; a plain <a href> could not.
 export function saveBlob(blob: Blob, name: string) {
@@ -971,11 +1163,114 @@ const appPath = (space: string, app: string, suffix = '') =>
 export const servicePath = (space: string, service: string, suffix = '') =>
   `/v1/spaces/${encodeURIComponent(space)}/services/${encodeURIComponent(service)}${suffix}`
 
+/** What a personal machine is doing. */
+export type MachineState = 'absent' | 'stopped' | 'starting' | 'running' | 'failed'
+
+/** The signed-in person's own machine: a development container with a disk. */
+export interface Machine {
+  /** The installation offers machines at all. */
+  enabled: boolean
+  /** This person may have one (people who build here: admins and developers). */
+  allowed: boolean
+  state: MachineState
+  /** Where the machine's own interface answers while it runs. */
+  url?: string
+  startedAt?: string
+  restarts?: number
+  /** Why it is slow to start, or failing. */
+  message?: string
+  /** When the donkey sign-in inside the machine runs out; a restart renews it. */
+  signInExpires?: string
+  /** The installation's machine image changed since this one started. */
+  outdated?: boolean
+  /** Whether a machine reaches the control plane only, or the network at large. */
+  egress?: 'restricted' | 'open'
+  /** Minutes a machine may go unused before it stops; absent where it never does. */
+  idleMinutes?: number
+  /**
+   * What a stopped machine's disk held when it last ran: what can be offered
+   * before it is started. A running machine is asked itself (MachineWorkspace).
+   */
+  folders?: MachineFolder[]
+  storage?: string
+  cpu?: string
+  memory?: string
+}
+
+/** One folder of a machine's workspace. */
+export interface MachineFolder {
+  name: string
+  /** When it was last opened, or last changed at its top level. */
+  modified: string
+}
+
+/** A version of an app's source, as the app's history has it. */
+export interface MachineSource {
+  space: string
+  app: string
+  commit: string
+}
+
+/** The folders on a running machine's disk, and the one its agent has open. */
+export interface MachineWorkspace {
+  open?: string
+  /** The agent is answering in the open folder. */
+  ready?: boolean
+  /** Why nothing is open when something was. */
+  message?: string
+  folders: MachineFolder[]
+}
+
+/**
+ * Which folder to open. `create` and `source` make it first and refuse a
+ * name that is taken, so nothing is ever written into existing work.
+ */
+export interface OpenFolder {
+  folder: string
+  create?: boolean
+  source?: MachineSource
+}
+
 export const api = {
+  machine: () => request<Machine>('/v1/machine'),
+  machineWorkspace: () => request<MachineWorkspace>('/v1/machine/workspace'),
+  openMachineFolder: (open: OpenFolder) =>
+    request<MachineWorkspace>('/v1/machine/workspace', { method: 'POST', body: JSON.stringify(open) }),
+  // Starting a machine that already runs starts it again: a fresh sign-in,
+  // and the installation's current image.
+  startMachine: () => request<Machine>('/v1/machine', { method: 'POST' }),
+  stopMachine: () => request<Machine>('/v1/machine/stop', { method: 'POST' }),
+  deleteMachine: () => request<Machine>('/v1/machine', { method: 'DELETE' }),
   // ping is the cheap "server up, token good" check — doctor runs the
   // expensive dependency probes and belongs to the System page alone.
   ping: () => request<{ ok: boolean }>('/v1/ping'),
   doctor: () => request<DoctorReport>('/v1/doctor'),
+  // What donkey runs on and donkey itself, as the runtime describes them.
+  system: async (): Promise<SystemState> => {
+    const system = await request<SystemState>('/v1/system')
+    return { ...system, components: system.components ?? [] }
+  },
+  nodes: async (): Promise<NodeList> => {
+    const list = await request<NodeList>('/v1/nodes')
+    return { ...list, nodes: list.nodes ?? [] }
+  },
+  // The platform's reports: every finding in the images that run, and what
+  // the apps are built with.
+  vulnerabilities: async (): Promise<VulnerabilityReport> => {
+    const report = await request<VulnerabilityReport>('/v1/vulnerabilities')
+    return { ...report, apps: report.apps ?? [], findings: report.findings ?? [], spaces: report.spaces ?? {} }
+  },
+  technologies: async (): Promise<TechnologyReport> => {
+    const report = await request<TechnologyReport>('/v1/technologies')
+    return { ...report, apps: report.apps ?? [], categories: report.categories ?? [], spaces: report.spaces ?? {} }
+  },
+  exportVulnerabilities: (filter: { severity?: string; q?: string; fixable?: boolean }) =>
+    downloadReport(
+      `/v1/vulnerabilities${reportQuery({ format: 'csv', severity: filter.severity, q: filter.q, fixable: filter.fixable ? 'true' : undefined })}`,
+      'donkey-vulnerabilities.csv',
+    ),
+  exportTechnologies: (filter: { q?: string }) =>
+    downloadReport(`/v1/technologies${reportQuery({ format: 'csv', q: filter.q })}`, 'donkey-technologies.csv'),
   apps: () => request<{ apps: AppSummary[] }>('/v1/apps'),
   fleet: () => request<SpaceList & { apps: AppSummary[] }>('/v1/fleet'),
   deploys: async () => (await request<{ deploys: ActiveDeploy[] | null }>('/v1/deploys')).deploys ?? [],

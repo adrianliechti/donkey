@@ -377,7 +377,17 @@ func (r *Runtime) ExaProxyTokens(ctx context.Context) ([]string, error) {
 }
 
 func (r *Runtime) AIProxyTokens(ctx context.Context) ([]string, error) {
-	return r.c.SharedBindingValues(ctx, "OPENAI_API_KEY", "OPENAI_BASE_URL", r.aiProxyURL())
+	tokens, err := r.c.SharedBindingValues(ctx, "OPENAI_API_KEY", "OPENAI_BASE_URL", r.aiProxyURL())
+	if err != nil {
+		return nil, err
+	}
+	// A running machine's agent calls the same endpoint with a token of its
+	// own, valid for as long as the machine runs.
+	machines, err := r.machineAITokens(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return append(tokens, machines...), nil
 }
 
 func (r *Runtime) serviceProxyURL() string {

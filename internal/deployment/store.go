@@ -166,6 +166,26 @@ func (s *Store) BuildByImage(ctx context.Context, space, app, image string) (jso
 	return nil, ErrNotFound
 }
 
+// BuildsByImage are the stored records of every build that made or reused
+// the image, newest first. A redeploy of an image is a record of its own,
+// and only the build that made it knows how it was built.
+func (s *Store) BuildsByImage(ctx context.Context, space, app, image string) ([]json.RawMessage, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	rows, err := s.builds(space, app)
+	if err != nil {
+		return nil, err
+	}
+	var records []json.RawMessage
+	for _, row := range rows {
+		if row.Image == image {
+			records = append(records, row.Record)
+		}
+	}
+	return records, nil
+}
+
 func (s *Store) RecordBuild(ctx context.Context, space, app, image string, ok bool, raw json.RawMessage) (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -229,6 +249,37 @@ func (s *Store) Scan(ctx context.Context, space, app, image string) (json.RawMes
 		return nil, ErrNotFound
 	}
 	return raw, err
+}
+
+// Stamp identifies one version of a stored file. A scan is rewritten in
+// place each time it is refreshed, so a reader that kept one can tell
+// whether it is still the one on the volume without reading it again.
+type Stamp struct {
+	ModTime time.Time
+	Size    int64
+}
+
+// IsZero says nothing is stored.
+func (s Stamp) IsZero() bool { return s.Size == 0 && s.ModTime.IsZero() }
+
+// Is says both stamps are of the same version of the file.
+func (s Stamp) Is(other Stamp) bool { return s.Size == other.Size && s.ModTime.Equal(other.ModTime) }
+
+// ScanStamp is the version of the image's scan on the volume; the zero Stamp
+// when none is stored.
+func (s *Store) ScanStamp(space, app, image string) (Stamp, error) {
+	dir, err := s.appDir(space, app)
+	if err != nil {
+		return Stamp{}, err
+	}
+	info, err := os.Stat(filepath.Join(dir, "scans", fmt.Sprintf("%x.json", sha256.Sum256([]byte(image)))))
+	if os.IsNotExist(err) {
+		return Stamp{}, nil
+	}
+	if err != nil {
+		return Stamp{}, err
+	}
+	return Stamp{ModTime: info.ModTime(), Size: info.Size()}, nil
 }
 
 func (s *Store) PutScan(ctx context.Context, space, app, image string, raw json.RawMessage) error {

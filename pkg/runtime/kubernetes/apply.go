@@ -68,6 +68,7 @@ var immutableIdentityLabels = []string{
 	manifests.LabelSpace,
 	manifests.LabelApp,
 	manifests.LabelAddon,
+	manifests.LabelMachine,
 	manifests.LabelRole,
 }
 

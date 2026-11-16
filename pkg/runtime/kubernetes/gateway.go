@@ -49,6 +49,15 @@ func routeFromConfigMap(cm corev1.ConfigMap) (config.GatewayRoute, bool) {
 	}
 	// Identity comes from ownership labels, never editable routing fields.
 	space, app := cm.Labels[manifests.LabelSpace], cm.Labels[manifests.LabelApp]
+	if machine := cm.Labels[manifests.LabelMachine]; machine != "" || settings.Machine != "" {
+		// A machine's route is nobody's app: it names its machine in a label
+		// that has to agree with the record, and admits one owner.
+		if !config.ValidMachineID(machine) || settings.Machine != machine || settings.Owner == "" ||
+			space != "" || app != "" || cm.Labels[manifests.LabelRole] != manifests.RoleMachineRoute {
+			return config.GatewayRoute{}, false
+		}
+		return config.MachineRoute(machine, settings.Owner, settings.Host, settings.Backend), true
+	}
 	systemRoute := space == "" && app == "" &&
 		cm.Labels[manifests.LabelRole] == manifests.SystemRole(manifests.ServerName) && settings.Token
 	if (!config.ValidName(space) || !config.ValidName(app)) && !systemRoute {

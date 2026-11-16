@@ -21,6 +21,11 @@ runtime has [its own page](README_KUBERNETES.md). A complete walkthrough is
 | app service binding Secret `<app>-binding-<service>` | `/var/lib/donkey/bindings/<space>/<app>.<service>.yaml` |
 | app environment Secret `<app>-env` | `/var/lib/donkey/env/<space>/<app>.yaml` |
 | `<space>-space` ConfigMap / `config.yaml` | `/var/lib/donkey/spaces/<space>/config.yaml` |
+| machine Deployment + Service | container `donkey.platform.<id>` on a network of its own, `donkey.platform.<id>` |
+| machine disk `<id>-data` | named volume `donkey.platform.<id>.data` |
+| machine route ConfigMap `<id>-route` | `/var/lib/donkey/routes/platform/<id>.yaml` |
+| machine environment Secret `<id>-machine` | `/var/lib/donkey/machines/<id>.yaml`, removed when the machine stops |
+| machine disk's `machine-folders` annotation | `/var/lib/donkey/machine-folders/<id>.yaml`, kept while the machine is stopped and removed with its disk |
 | `donkey` ConfigMap / `platform.yaml` | `/var/lib/donkey/platform/config.yaml` |
 | control plane in `donkey-system` | containers `donkey-server`, `donkey-orchestrator`, `donkey-gateway`, `donkey-ai`, `donkey-proxy`, `donkey-telemetry`, `donkey-packages`, `donkey-buildkitd` (and optionally `donkey-registry`) on the `donkey` network |
 | `donkey-proxy` Secret / `services.json` | `/var/lib/donkey/proxy/services.yaml`; rendered Compose mounts private `proxy-services.json` instead |
@@ -96,11 +101,13 @@ spelled the way Docker tooling expects:
 | `local.donkey.space` | the lifecycle boundary |
 | `local.donkey.app` | the logical app |
 | `local.donkey.addon` | the logical space service |
+| `local.donkey.machine` | a personal machine's ID; its resources carry no space and no app |
 | `local.donkey.role` | the resource's immutable Donkey role |
 | `local.donkey.image`, `local.donkey.port` | descriptive: the deployed image reference and app port |
 
 App roles are `workload`, `addon`, `storage`, `space` (the network), `files`
-and `init`. Control-plane containers follow one naming rule: the container
+and `init`; a machine's are `machine`, `machine-storage`, `machine-network`
+and `machine-init`. Control-plane containers follow one naming rule: the container
 `donkey-<role>` carries that role (`server`, `orchestrator`, `gateway`, `ai`,
 `telemetry`, `packages`, `buildkitd`, `registry`); the infrastructure network
 is `network`, and the volumes are `state-storage`, `buildkit-storage`,
@@ -133,6 +140,24 @@ reach the apps); the build engine, package proxy and registry stay on the
 infrastructure network alone. Being on those networks puts the orchestrator
 within reach of app containers, so it takes nothing on trust: a request
 needs donkey-server's credential and a sign-in it verifies itself.
+
+A [machine](README.md#machines) gets a network of its own rather than a
+space's: `donkey.platform.<id>`, shared with `donkey-gateway`, `donkey-server`,
+`donkey-ai` and `donkey-packages` and with nothing else — no app and no other
+machine. It is the one place the package mirror joins a workload's network:
+a machine's package managers install through it, as a build's do. Unless the
+installation opens its machines (`machines.egress: open`), that network is
+an internal one: those four containers are all a machine reaches, and there
+is no route out of the engine. This is the one place the Docker runtime
+limits outbound traffic. Its
+container runs as user 1000 with every capability dropped,
+`no-new-privileges`, a process limit and the installation's CPU and memory
+caps. The network is removed when the machine stops — by its owner, or by
+itself once it has gone unused for `machines.idle` — and made again when it
+starts. Docker hands out a limited number of bridge networks by default
+(about 30 with the stock address pools), and every space and every running
+machine takes one — widen `default-address-pools` in the daemon's settings
+before many people use machines on one engine.
 
 The Kubernetes modes do not apply here: `kubernetes.isolateSpaces` needs no
 equivalent (the network boundary is the default and cannot be turned off),

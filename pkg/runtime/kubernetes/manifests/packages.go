@@ -14,15 +14,18 @@ import (
 )
 
 const (
-	packagesName             = "donkey-packages"
+	// PackagesAppName is the package mirror's Deployment and Service.
+	PackagesAppName          = "donkey-packages"
+	packagesName             = PackagesAppName
 	packagesPort             = 8090
 	packagesDockerConfigPath = "/etc/donkey/package-auth"
 )
 
 // packagesObjects is the one egress point package-manager traffic uses: from
-// Dockerfile RUN instructions, and from developer machines through
-// donkey-server (`donkey packages`). Only BuildKit and donkey-server may
-// connect to it; it has no service account or cluster permissions.
+// Dockerfile RUN instructions, from developer machines through donkey-server
+// (`donkey packages`), and from personal machines. Only BuildKit,
+// donkey-server and — where the installation has them — machines may connect
+// to it; it has no service account or cluster permissions.
 func packagesObjects(in SystemInput) []runtime.Object {
 	return []runtime.Object{
 		packagesDeployment(in),
@@ -142,8 +145,8 @@ func packagesDeployment(in SystemInput) *appsv1.Deployment {
 // and donkey-server, which forwards a signed-in developer's package manager
 // after verifying the sign-in. The mirror itself asks nobody who they are.
 func packagesNetworkPolicy(in SystemInput) *networkPolicy {
-	return ingressPolicy(in, packagesName, packagesPort, []networkingv1.NetworkPolicyPeer{
+	return ingressPolicy(in, packagesName, packagesPort, append([]networkingv1.NetworkPolicyPeer{
 		systemPeer(in.Namespace, buildkitName),
 		systemPeer(in.Namespace, ServerName),
-	})
+	}, machinePeers(in)...))
 }

@@ -234,6 +234,12 @@ func dockerComposeFiles(settings *config.InstallFile, bundledRegistry bool) (map
 		"OPENAI_BASE_URL":                settings.AI.BaseURL,
 		"OPENAI_API_KEY":                 "${OPENAI_API_KEY:-}",
 	}
+	// Personal machines stay off unless the installation names their image.
+	for key, value := range settings.Machines.Env() {
+		if value != "" {
+			serverEnv[key] = value
+		}
+	}
 	if len(settings.Build.RegistryMirrors) > 0 {
 		serverEnv["DONKEY_REGISTRY_MIRRORS"] = registryMirrorsJSON(settings.Build.RegistryMirrors)
 	}

@@ -300,7 +300,22 @@ export function ChoiceCards<T extends string>({
 // sit side by side) and stands still: its panels scroll inside, like a
 // workbench in a sheet. Narrower than that, the panels stack and the page
 // scrolls as a document.
-export function Page({ children, fill = false }: { children: ReactNode; fill?: boolean }) {
+//
+// A page that `bleed`s has no gutters and no grid at all: it hands the whole
+// window under the header to one thing that is an interface of its own — an
+// embedded tool — and adds nothing around it.
+export function Page({
+  children,
+  fill = false,
+  bleed = false,
+}: {
+  children: ReactNode
+  fill?: boolean
+  bleed?: boolean
+}) {
+  if (bleed) {
+    return <main className="flex h-[calc(100dvh-3.25rem)] min-h-[28rem] flex-col bg-card">{children}</main>
+  }
   return (
     <main
       className={`dotgrid flex flex-1 flex-col gap-6 px-6 py-6 ${
@@ -893,6 +908,23 @@ export function IconButton({
     >
       <Icon className={size === 'sm' ? 'size-3.5' : 'size-4'} aria-hidden />
     </button>
+  )
+}
+
+// An IconButton that is a link out — the same look, opened in a new tab, so
+// modifier clicks and copy-link work as on any anchor.
+export function IconLink({ icon: Icon, label, href }: { icon: LucideIcon; label: string; href: string }) {
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noreferrer"
+      title={label}
+      aria-label={label}
+      className={`flex size-8 shrink-0 items-center justify-center rounded-md text-muted transition-[color,background-color,scale] duration-(--duration-fast) ease-emphasized hover:bg-line/60 hover:text-ink motion-safe:active:scale-[.97] ${focusRing}`}
+    >
+      <Icon className="size-4" aria-hidden />
+    </a>
   )
 }
 
