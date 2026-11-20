@@ -86,6 +86,18 @@ var tunnels = map[string]Tunnel{
 		HTTP: true, UserToken: true,
 		Destination: true,
 	},
+	// Address books and calendars are WebDAV trees with reports of their own:
+	// the same tunnel, on ports of their own, so all three run side by side.
+	ProtocolCardDAV: {
+		Port: 8084, Hint: `curl -X PROPFIND "$URL" -H "Depth: 1"`,
+		HTTP: true, UserToken: true,
+		Destination: true,
+	},
+	ProtocolCalDAV: {
+		Port: 8085, Hint: `curl -X PROPFIND "$URL" -H "Depth: 1"`,
+		HTTP: true, UserToken: true,
+		Destination: true,
+	},
 	// A configured proxy service: any free port, as a space may use several.
 	ProtocolHTTP: {Hint: `curl "$URL"`, HTTP: true, ProxyGrant: true},
 }

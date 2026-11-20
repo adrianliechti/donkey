@@ -1,8 +1,20 @@
-import { Archive, Database, Globe, HardDrive, KeyRound, Server, Sparkles, Search, type LucideIcon } from 'lucide-react'
+import {
+  Archive,
+  BookUser,
+  CalendarDays,
+  Database,
+  Globe,
+  HardDrive,
+  KeyRound,
+  Server,
+  Sparkles,
+  Search,
+  type LucideIcon,
+} from 'lucide-react'
 
 type ServiceUI = {
   Icon: LucideIcon
-  console?: 'database' | 'trino' | 'redis' | 'store' | 'openai' | 'http' | 'exa'
+  console?: 'database' | 'trino' | 'redis' | 'store' | 'openai' | 'http' | 'exa' | 'contacts' | 'calendar'
   noun: string
   // A store that is one tree, as a WebDAV service is, has no containers to
   // pick from: its browser opens on the files.
@@ -18,6 +30,8 @@ const protocols: Record<string, ServiceUI> = {
   redis: { Icon: KeyRound, console: 'redis', noun: 'keys' },
   s3: { Icon: Archive, console: 'store', noun: 'buckets' },
   webdav: { Icon: HardDrive, console: 'store', noun: 'files', fixedRoot: true },
+  carddav: { Icon: BookUser, console: 'contacts', noun: 'contacts' },
+  caldav: { Icon: CalendarDays, console: 'calendar', noun: 'events' },
   openai: { Icon: Sparkles, console: 'openai', noun: 'chat' },
   http: { Icon: Globe, console: 'http', noun: 'requests' },
   exa: { Icon: Search, console: 'exa', noun: 'search' },

@@ -801,6 +801,53 @@ made — comes back pointed at the tunnel, even when `WEBDAV_URL` has a path.
 Finder mounts a service read-write only if it supports LOCK (class 2); the
 console needs no locking.
 
+Services of protocol `carddav` (`CARDDAV_URL`) and `caldav` (`CALDAV_URL`)
+come from add-on plugins too, and open in the console's contacts and
+calendar viewers. They authenticate exactly like the WebDAV browser: every
+request carries the user's IdP token for `auth.scope` as `Authorization:
+Bearer <token>`, and no credential is stored in the binding. A binding can
+point directly to a collection. Otherwise the viewer reads every home in
+`addressbook-home-set` or `calendar-home-set`, looking up the advertised `current-user-principal` when needed. It follows ordinary
+folders inside each home to find nested collections. If neither the binding
+nor the principal advertises a home, the search starts at the binding.
+Discovery errors appear in the viewer, including when a search exceeds
+1,024 folders. A principal or home can be on a sibling path on the same
+origin. The viewer also handles a reverse proxy that rewrites the DAV root.
+For collections outside the binding path, each operation checks that the
+service still advertises the collection for the signed-in user.
+
+The contacts viewer lists an address book's cards with one
+`addressbook-query` REPORT. It asks only for the fields the list shows, so
+a service that honours that sends no photos with the list; one that sends
+whole cards anyway (Radicale does) is read the same, up to 64 MB per
+answer. A card is read whole with GET and shown as a
+card (its names, emails, phones, addresses, dates, groups, note and photo)
+or as the vCard it is stored as. The calendar viewer shows only calendars
+that take `VEVENT`. It shows a week or a month as an agenda, from one
+`calendar-query` REPORT with a `time-range`, and asks the service to
+`expand` repeating events into occurrences. If the service refuses (HTTP
+400, 415 or 501) or ignores that, donkey expands the common rules itself: daily,
+weekly, monthly and yearly, with INTERVAL, COUNT, UNTIL, BYDAY, BYMONTHDAY
+and BYMONTH, plus EXDATE, RDATE and moved occurrences. A finer rule shows
+only the series' first occurrence. Zones named the IANA way, the Windows
+way (Exchange, Outlook) or with a vendor prefix land at the right time.
+Floating times (no zone) are the viewer's when donkey expands; a service
+that expands reads them in the calendar's own zone, or UTC when it has
+none, as sabre/dav (Nextcloud, Baïkal) does.
+
+Both viewers download a card (`.vcf`) or an event (`.ics`) as stored, and
+delete one with `If-Match` on the ETag it was read with, so something
+changed elsewhere in between is kept (a weak ETag cannot match, so it is
+not sent). Deleting an event removes its whole
+calendar object: a series goes with every occurrence. Neither viewer
+creates or edits yet. A plugin needs PROPFIND, REPORT
+(`addressbook-query`, `calendar-query`), GET and DELETE.
+
+`donkey addon tunnel <service>` serves them the same way as WebDAV, on
+`http://127.0.0.1:8084` for CardDAV and `http://127.0.0.1:8085` for CalDAV,
+so any CardDAV or CalDAV client or library reaches them without
+credentials.
+
 Every type describes what can be chosen for it (a version, a disk size…) as
 a JSON Schema, which the console renders as a form and the CLI takes as
 `donkey addon add postgres --param storage=5Gi` (or `--version` and
@@ -840,6 +887,12 @@ token against the bindings donkey issued, swaps in the platform's actual key
 upstream, and streams the answer back (SSE included). The real key never
 leaves `donkey-system` — and never sits in the process that writes to the
 cluster — and removing the service from the space *is* the revocation.
+Because every space shares that key, GET is limited to model discovery.
+The proxy accepts POST requests for chat and text completions, embeddings,
+moderations, decisions, audio, and images. For the Responses API it accepts
+`POST /v1/responses` (including streaming), `POST /v1/responses/compact`,
+and `POST /v1/responses/input_tokens`. These operations can work with the
+input supplied in the request when the upstream has response storage disabled.
 
 **Configured HTTP services.** Define proxy offerings in the server installation
 settings. Each gets a title and description in the catalog, while target URLs

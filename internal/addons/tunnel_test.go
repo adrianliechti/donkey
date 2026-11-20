@@ -31,6 +31,15 @@ func TestTunnelFor(t *testing.T) {
 	if dav := TunnelFor("sharepoint", ProtocolWebDAV); !dav.HTTP || !dav.UserToken || dav.URLKey != "WEBDAV_URL" || dav.Port != 8083 || !dav.Allows("/any/folder/file.txt") {
 		t.Fatalf("webdav: %+v", dav)
 	}
+	// So are address books and calendars, each on a port of its own.
+	for protocol, want := range map[string]struct {
+		key  string
+		port int
+	}{ProtocolCardDAV: {"CARDDAV_URL", 8084}, ProtocolCalDAV: {"CALDAV_URL", 8085}} {
+		if dav := TunnelFor("", protocol); !dav.HTTP || !dav.UserToken || !dav.Destination || dav.URLKey != want.key || dav.Port != want.port || !dav.Allows("/calendars/u1/work/event.ics") {
+			t.Fatalf("%s: %+v", protocol, dav)
+		}
+	}
 	if !slices.Contains(HTTPTunnelProtocols(), ProtocolTrino) || slices.Contains(HTTPTunnelProtocols(), ProtocolPostgres) {
 		t.Errorf("HTTP tunnel protocols: %v", HTTPTunnelProtocols())
 	}

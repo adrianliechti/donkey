@@ -25,6 +25,8 @@ func TestAIUpstreamPath(t *testing.T) {
 		{"/v1/models/gpt-4o", "models/gpt-4o"},
 		{"/v1/embeddings", "embeddings"},
 		{"/v1/responses", "responses"},
+		{"/v1/responses/compact", "responses/compact"},
+		{"/v1/decisions", "decisions"},
 		{"/v1/audio/transcriptions", "audio/transcriptions"},
 		{"/v1/images/generations", "images/generations"},
 		{"/v1/moderations", "moderations"},
@@ -47,6 +49,10 @@ func TestAIUpstreamPath(t *testing.T) {
 		{"/v1/chat/%25252e%25252e/admin", ""},
 		{"/v1/chat/%2f%2e%2e/admin", ""},
 		{"/v1/chat/%zz", ""},
+		// Gateways that read ";" as a path parameter or "\" as "/".
+		{"/v1/responses/..;/files", ""},
+		{"/v1/responses/..%5Cfiles", ""},
+		{"/v1/responses/..%3B/files", ""},
 
 		// What is refused is a segment that can still become "..", not
 		// escaping as such — an escape that decodes into an ordinary name
@@ -61,6 +67,9 @@ func TestAIUpstreamPath(t *testing.T) {
 		{"/v1/batches", ""},
 		{"/v1/uploads", ""},
 		{"/v1/vector_stores", ""},
+		{"/v1/conversations", ""},
+		{"/v1/videos", ""},
+		{"/v1/vaults", ""},
 		{"/v1/organization/invites", ""},
 		{"/v1/", ""},
 	}
@@ -107,12 +116,27 @@ func TestOpenAIProxyRejectsStoredStateAndKeepsSessionPrivate(t *testing.T) {
 		status       int
 	}{
 		{"GET", "/v1/models", 200},
+		{"GET", "/v1/models/gpt-4o", 200},
 		{"POST", "/v1/chat/completions", 200},
+		{"POST", "/v1/decisions", 200},
 		{"POST", "/v1/responses", 200},
-		{"GET", "/v1/responses/other-space-response", 403},
-		{"POST", "/v1/responses/other-space-response/cancel", 403},
+		{"POST", "/v1/responses/compact", 200},
+		{"POST", "/v1/responses/input_tokens", 200},
+		{"GET", "/v1/responses", 403},
+		{"GET", "/v1/responses/", 403},
+		{"GET", "/v1/responses/resp_abc", 403},
+		{"GET", "/v1/responses/resp_abc/input_items", 403},
+		{"GET", "/v1/responses/compact", 403},
+		{"GET", "/v1/responses/input_tokens", 403},
+		{"POST", "/v1/responses/resp_abc/cancel", 403},
+		{"POST", "/v1/responses/unknown", 403},
+		{"DELETE", "/v1/responses/resp_abc", 405},
 		{"GET", "/v1/chat/completions", 403},
 		{"POST", "/v1/chat/completions/other-space-chat", 403},
+		{"GET", "/v1/conversations/conv_abc", 403},
+		{"GET", "/v1/videos/video_abc/content", 403},
+		{"POST", "/v1/content_provenance_checks", 403},
+		{"POST", "/v1/realtime/client_secrets", 403},
 		{"POST", "/v1/models", 403},
 	} {
 		req := httptest.NewRequest(c.method, c.path, strings.NewReader(`{}`))
@@ -121,13 +145,18 @@ func TestOpenAIProxyRejectsStoredStateAndKeepsSessionPrivate(t *testing.T) {
 			req.Header.Set(h, "private")
 		}
 		out := httptest.NewRecorder()
+		before := calls
 		handler.ServeHTTP(out, req)
 		if out.Code != c.status || out.Header().Get("Set-Cookie") != "" {
 			t.Fatalf("%s %s: %d %s", c.method, c.path, out.Code, out.Body.String())
 		}
-	}
-	if calls != 3 {
-		t.Fatalf("stored-state requests reached upstream: %d", calls)
+		wantCalls := before
+		if c.status == http.StatusOK {
+			wantCalls++
+		}
+		if calls != wantCalls {
+			t.Fatalf("%s %s: got %d upstream calls, want %d", c.method, c.path, calls-before, wantCalls-before)
+		}
 	}
 }
 

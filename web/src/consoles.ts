@@ -1,6 +1,8 @@
 import type { ComponentType } from 'react'
 import {
+  BookUser,
   Bot,
+  CalendarDays,
   Cable,
   FolderTree,
   KeyRound,
@@ -16,7 +18,7 @@ import { serviceUI } from './serviceProtocol'
 // A service's page is a few tabs of its console, then Connection and Settings
 // (see ServiceDetail). Which console a service gets follows its protocol —
 // serviceUI(protocol).console.
-export type ConsoleKind = 'database' | 'trino' | 'redis' | 'store' | 'openai' | 'http' | 'exa'
+export type ConsoleKind = 'database' | 'trino' | 'redis' | 'store' | 'openai' | 'http' | 'exa' | 'contacts' | 'calendar'
 
 /** What every console receives. `tab` is one of its own tab ids. */
 export type ConsoleProps = { space: string; service: string; protocol?: string; tab: string }
@@ -35,6 +37,8 @@ export const consoleModules: Record<ConsoleKind, () => Promise<{ Console: Compon
   openai: () => import('./AiConsole'),
   http: () => import('./HttpConsole'),
   exa: () => import('./ExaConsole'),
+  contacts: () => import('./ContactsConsole'),
+  calendar: () => import('./CalendarConsole'),
 }
 
 // The console's own tabs, known before its chunk is: the tab row never waits.
@@ -47,6 +51,8 @@ export const consoleTabs: Record<ConsoleKind, ConsoleTab[]> = {
   openai: [{ id: 'chat', label: 'Chat', icon: Bot }],
   http: [{ id: 'requests', label: 'Requests', icon: Send }],
   exa: [{ id: 'search', label: 'Search', icon: Search }],
+  contacts: [{ id: 'contacts', label: 'Contacts', icon: BookUser }],
+  calendar: [{ id: 'events', label: 'Calendar', icon: CalendarDays }],
 }
 
 // Every service page ends with these two, after its console's own tabs.

@@ -36,6 +36,7 @@ var aiAllowedRoots = map[string]bool{
 	"models":      true,
 	"responses":   true,
 	"moderations": true,
+	"decisions":   true,
 	"audio":       true,
 	"images":      true,
 }
@@ -54,8 +55,8 @@ func aiUpstreamPath(p string) (string, bool) {
 	return rest, true
 }
 
-// A shared upstream key must not expose stored conversations or response IDs
-// belonging to another space. Only model discovery and fresh inference pass.
+// Spaces share the upstream key. Limit GET to model discovery and allow
+// only named inference operations for POST.
 func aiAllowedRequest(method, path string) bool {
 	if method == http.MethodGet {
 		return path == "models" || strings.HasPrefix(path, "models/")
@@ -64,7 +65,8 @@ func aiAllowedRequest(method, path string) bool {
 		return false
 	}
 	switch path {
-	case "chat/completions", "completions", "embeddings", "responses", "responses/input_tokens", "moderations",
+	case "responses", "responses/compact", "responses/input_tokens",
+		"chat/completions", "completions", "embeddings", "moderations", "decisions",
 		"audio/speech", "audio/transcriptions", "audio/translations", "images/generations", "images/edits", "images/variations":
 		return true
 	}
@@ -89,7 +91,10 @@ func aiAllowedRequest(method, path string) bool {
 // clean relative path.
 func staysClean(p string) bool {
 	for {
-		if !fs.ValidPath(strings.TrimSuffix(p, "/")) {
+		// fs.ValidPath takes "..;" and backslashes as plain names, but a
+		// gateway that reads ";" as a path parameter (Tomcat, Jetty) or "\"
+		// as "/" turns them into a way up and out.
+		if !fs.ValidPath(strings.TrimSuffix(p, "/")) || strings.ContainsAny(p, `;\`) {
 			return false
 		}
 		// A malformed escape is refused rather than guessed at — what it
@@ -180,7 +185,7 @@ func Handler(upstreamBase, upstreamKey string, valid Tokens) (http.Handler, erro
 		}
 		rest, ok := aiUpstreamPath(r.URL.Path)
 		if !ok || !aiAllowedRequest(r.Method, rest) {
-			writeErr(w, http.StatusForbidden, fmt.Errorf("the AI service proxies inference only (chat, completions, embeddings, models, responses, moderations, audio, images)"))
+			writeErr(w, http.StatusForbidden, fmt.Errorf("the AI service proxies inference only (chat, completions, embeddings, models, responses, moderations, decisions, audio, images)"))
 			return
 		}
 		proxy.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), aiPathKey{}, rest)))

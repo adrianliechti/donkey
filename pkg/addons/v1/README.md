@@ -233,7 +233,7 @@ to the service's own documentation.
 
 `protocol` describes how clients talk to the service, independently of its
 id or location. Use `postgres` for PostgreSQL, `mysql` for MySQL/MariaDB,
-`redis`, `s3`, `openai`, `trino`, or `webdav`. Custom lowercase names are also allowed; they do
+`redis`, `s3`, `openai`, `trino`, `webdav`, `carddav`, or `caldav`. Custom lowercase names are also allowed; they do
 not select a built-in console. `postgresql` and `mariadb` normalize to
 `postgres` and `mysql`. This field is separate from `Endpoint.protocol`,
 which means TCP, UDP, or SCTP.
@@ -254,6 +254,8 @@ The same protocol selects the catalog icon and console for every provider:
 | `redis` | `REDIS_URL` (`redis://` or `rediss://`) | Key browser/editor |
 | `s3` | `AWS_ENDPOINT_URL_S3` (HTTP/HTTPS origin), `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, optional `AWS_SESSION_TOKEN` and `AWS_REGION` | Bucket/object browser |
 | `webdav` | `WEBDAV_URL` (HTTP/HTTPS base URL) | File browser over one tree; sends the user's IdP access token as `Authorization: Bearer <token>` on every request (PROPFIND, GET, PUT, DELETE, MKCOL), so the add-on decides what that user may see — no credential in the binding |
+| `carddav` | `CARDDAV_URL` (HTTP/HTTPS base URL) | Address books and their contacts; sends the user's IdP access token like `webdav` (PROPFIND, REPORT `addressbook-query`, GET, DELETE) — no credential in the binding |
+| `caldav` | `CALDAV_URL` (HTTP/HTTPS base URL) | Calendars as a week or month agenda; sends the user's IdP access token like `webdav` (PROPFIND, REPORT `calendar-query` with `expand`, GET, DELETE) — no credential in the binding |
 | `openai` | `OPENAI_BASE_URL` (HTTP/HTTPS base URL), optional `OPENAI_API_KEY` and `OPENAI_MODEL` | Model chat |
 
 For known protocols, the offering's `env` must include the connection URL

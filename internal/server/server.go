@@ -207,6 +207,16 @@ func (s *Server) routes() http.Handler {
 	mux.Handle("GET /v1/spaces/{space}/services/{service}/buckets/{bucket}/objects/info", s.auth(s.handleFileInfo))
 	mux.Handle("POST /v1/spaces/{space}/services/{service}/buckets/{bucket}/objects/delete", s.auth(s.handleFileDeleteMany))
 	mux.Handle("POST /v1/spaces/{space}/services/{service}/buckets/{bucket}/folders", s.auth(s.handleFileCreateFolder))
+	// Address books and calendars, for services that speak CardDAV or
+	// CalDAV. Their keys are paths, so they ride in the query.
+	mux.Handle("GET /v1/spaces/{space}/services/{service}/addressbooks", s.auth(s.handleAddressBooks))
+	mux.Handle("GET /v1/spaces/{space}/services/{service}/contacts", s.auth(s.handleContacts))
+	mux.Handle("GET /v1/spaces/{space}/services/{service}/contacts/item", s.auth(s.handleContact))
+	mux.Handle("DELETE /v1/spaces/{space}/services/{service}/contacts/item", s.auth(s.handleDeleteContact))
+	mux.Handle("GET /v1/spaces/{space}/services/{service}/calendars", s.auth(s.handleCalendars))
+	mux.Handle("GET /v1/spaces/{space}/services/{service}/events", s.auth(s.handleEvents))
+	mux.Handle("GET /v1/spaces/{space}/services/{service}/events/item", s.auth(s.handleEvent))
+	mux.Handle("DELETE /v1/spaces/{space}/services/{service}/events/item", s.auth(s.handleDeleteEvent))
 	// The database browser, for services that speak SQL. Schema is a query
 	// detail (default public) — most users never touch it.
 	mux.Handle("GET /v1/spaces/{space}/services/{service}/databases", s.auth(s.handleDbDatabases))

@@ -2,11 +2,9 @@ package server
 
 import (
 	"context"
-	"encoding/xml"
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"path"
 	"slices"
 	"strconv"
@@ -17,33 +15,14 @@ import (
 	"github.com/adrianliechti/donkey/pkg/runtime"
 )
 
-// webdavStore browses a WebDAV service as the signed-in user, the way the
-// Trino viewer does: every request carries the caller's IdP access token as
-// Bearer, and nothing of donkey's. The client exists for one request only;
-// the token never enters a binding or a pool.
-//
+// webdavStore browses a WebDAV service as the signed-in user (davClient).
 // A WebDAV service is one tree, so it has one container, named after the
 // service. Folders are real collections — made with MKCOL, removed whole
 // with DELETE — and a listing is one PROPFIND of depth 1, paged here, so the
 // console sees the same pages and tokens it sees from S3.
 type webdavStore struct {
-	base  *url.URL // WEBDAV_URL, its path ending in "/"
-	name  string   // the service, and its one container
-	token string
-}
-
-// Headers arrive within this long or the request fails; bodies — downloads,
-// uploads — take as long as they take, bounded by the request's context.
-var webdavTransport = func() *http.Transport {
-	t := http.DefaultTransport.(*http.Transport).Clone()
-	t.ResponseHeaderTimeout = 30 * time.Second
-	return t
-}()
-
-// Never follow a redirect carrying the user's credential elsewhere.
-var webdavHTTPClient = &http.Client{
-	Transport:     webdavTransport,
-	CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	dav  *davClient
+	name string // the service, and its one container
 }
 
 // Listing a tree recursively walks it folder by folder; past this many
@@ -51,16 +30,11 @@ var webdavHTTPClient = &http.Client{
 const webdavListCap = 10000
 
 func newWebDAVStore(rawURL, service, token string) (*webdavStore, error) {
-	base, err := url.Parse(rawURL) // validated by serviceConnection
+	dav, err := newDAVClient(rawURL, service, token)
 	if err != nil {
-		return nil, runtime.UserError{Err: fmt.Errorf("%s has no usable address", service)}
+		return nil, err
 	}
-	if !strings.HasSuffix(base.Path, "/") {
-		base.Path += "/"
-		base.RawPath = ""
-	}
-	base.RawQuery, base.Fragment = "", ""
-	return &webdavStore{base: base, name: service, token: token}, nil
+	return &webdavStore{dav: dav, name: service}, nil
 }
 
 // webdavSegments checks a slash-separated path the way a file system would:
@@ -108,95 +82,12 @@ func (s *webdavStore) CheckPrefix(prefix string) error {
 	return s.CheckFolder(prefix)
 }
 
-// url is where a key lives: each segment escaped on its own, a folder with
-// its trailing slash, so the service never has to redirect.
-func (s *webdavStore) url(key string) *url.URL {
-	trimmed := strings.TrimSuffix(key, "/")
-	if trimmed == "" {
-		return s.base
-	}
-	var escaped []string
-	for part := range strings.SplitSeq(trimmed, "/") {
-		escaped = append(escaped, url.PathEscape(part))
-	}
-	u := s.base.JoinPath(escaped...)
-	if strings.HasSuffix(key, "/") {
-		u.Path += "/"
-		if u.RawPath != "" {
-			u.RawPath += "/"
-		}
-	}
-	return u
-}
-
-func (s *webdavStore) do(ctx context.Context, method string, u *url.URL, header http.Header, body io.Reader, size int64) (*http.Response, error) {
-	req, err := http.NewRequestWithContext(ctx, method, u.String(), body)
-	if err != nil {
-		return nil, err
-	}
-	for name, values := range header {
-		req.Header[name] = values
-	}
-	req.Header.Set("Authorization", "Bearer "+s.token)
-	req.Header.Set("User-Agent", "donkey")
-	if body != nil {
-		req.ContentLength = size
-	}
-	res, err := webdavHTTPClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("%s did not answer: %w", s.name, err)
-	}
-	return res, nil
-}
-
-// fail turns the service's answer into the console's error and drains the
-// response.
-func (s *webdavStore) fail(res *http.Response, what string) error {
-	defer res.Body.Close()
-	_, _ = io.Copy(io.Discard, io.LimitReader(res.Body, 64<<10))
-	switch res.StatusCode {
-	case http.StatusUnauthorized, http.StatusForbidden:
-		return &upstreamError{status: res.StatusCode, err: fmt.Errorf("%s did not accept your identity token (HTTP %d)", s.name, res.StatusCode)}
-	case http.StatusNotFound:
-		return &upstreamError{status: res.StatusCode, err: fmt.Errorf("%s: not found", what)}
-	}
-	if res.StatusCode >= 400 && res.StatusCode < 500 {
-		return &upstreamError{status: res.StatusCode, err: fmt.Errorf("%s answered HTTP %d for %s", s.name, res.StatusCode, what)}
-	}
-	return fmt.Errorf("%s answered HTTP %d for %s", s.name, res.StatusCode, what)
-}
-
 // ─── PROPFIND ──────────────────────────────────────────────────────────
 
 const webdavPropfindBody = `<?xml version="1.0" encoding="utf-8"?>
 <D:propfind xmlns:D="DAV:"><D:prop>
 <D:displayname/><D:resourcetype/><D:getcontentlength/><D:getlastmodified/><D:getcontenttype/><D:getetag/>
 </D:prop></D:propfind>`
-
-type davMultistatus struct {
-	Responses []davResponse `xml:"DAV: response"`
-}
-
-type davResponse struct {
-	Href     string        `xml:"DAV: href"`
-	Propstat []davPropstat `xml:"DAV: propstat"`
-}
-
-type davPropstat struct {
-	Status string  `xml:"DAV: status"`
-	Prop   davProp `xml:"DAV: prop"`
-}
-
-type davProp struct {
-	DisplayName  string `xml:"DAV: displayname"`
-	ResourceType struct {
-		Collection *struct{} `xml:"DAV: collection"`
-	} `xml:"DAV: resourcetype"`
-	ContentLength string `xml:"DAV: getcontentlength"`
-	LastModified  string `xml:"DAV: getlastmodified"`
-	ContentType   string `xml:"DAV: getcontenttype"`
-	ETag          string `xml:"DAV: getetag"`
-}
 
 // davEntry is one resource as PROPFIND describes it, keyed relative to the
 // service root — a folder with its trailing slash.
@@ -210,87 +101,26 @@ type davEntry struct {
 	ETag        string
 }
 
-// relative places a response href under the service root. Hrefs come as
-// absolute paths or full URLs, percent-encoded; resolved against the
-// request and compared decoded, they all land in the same place.
-func (s *webdavStore) relative(reqURL *url.URL, href string) (string, bool) {
-	ref, err := url.Parse(strings.TrimSpace(href))
-	if err != nil {
-		return "", false
-	}
-	p := reqURL.ResolveReference(ref).Path
-	if p+"/" == s.base.Path {
-		return "", true
-	}
-	return strings.CutPrefix(p, s.base.Path)
-}
-
-func parseHTTPTime(raw string) time.Time {
-	if t, err := http.ParseTime(raw); err == nil {
-		return t
-	}
-	if t, err := time.Parse(time.RFC3339, raw); err == nil {
-		return t
-	}
-	return time.Time{}
-}
-
 // propfind describes the resource at key (depth 0) or it and its children
 // (depth 1).
 func (s *webdavStore) propfind(ctx context.Context, key string, depth int) ([]davEntry, error) {
-	u := s.url(key)
-	header := http.Header{"Depth": {strconv.Itoa(depth)}, "Content-Type": {"application/xml; charset=utf-8"}}
-	res, err := s.do(ctx, "PROPFIND", u, header, strings.NewReader(webdavPropfindBody), int64(len(webdavPropfindBody)))
+	items, err := s.dav.multistatus(ctx, "PROPFIND", key, depth, webdavPropfindBody)
 	if err != nil {
 		return nil, err
 	}
-	if res.StatusCode != http.StatusMultiStatus {
-		return nil, s.fail(res, key)
-	}
-	defer res.Body.Close()
-	var ms davMultistatus
-	if err := xml.NewDecoder(io.LimitReader(res.Body, 64<<20)).Decode(&ms); err != nil {
-		return nil, fmt.Errorf("%s answered PROPFIND with something other than a multistatus: %w", s.name, err)
-	}
 	var entries []davEntry
-	for _, r := range ms.Responses {
-		rel, ok := s.relative(u, r.Href)
-		if !ok {
-			continue
+	for _, item := range items {
+		entry := davEntry{
+			Key:         item.Key, // a collection's already ends in "/"
+			Dir:         item.collection(),
+			DisplayName: item.prop(func(p davProp) string { return p.DisplayName }),
+			Modified:    parseHTTPTime(item.prop(func(p davProp) string { return p.LastModified })),
+			ContentType: item.prop(func(p davProp) string { return p.ContentType }),
+			ETag:        strings.Trim(item.prop(func(p davProp) string { return p.ETag }), `"`),
 		}
-		entry := davEntry{Key: strings.TrimSuffix(rel, "/")}
-		for _, ps := range r.Propstat {
-			// Only what the service actually has: a 404 propstat lists the
-			// properties it does not.
-			status := strings.Fields(ps.Status)
-			if len(status) < 2 || status[1] != "200" {
-				continue
-			}
-			p := ps.Prop
-			if strings.TrimSpace(p.DisplayName) != "" {
-				entry.DisplayName = p.DisplayName
-			}
-			if p.ResourceType.Collection != nil {
-				entry.Dir = true
-			}
-			if p.ContentLength != "" {
-				entry.Size, _ = strconv.ParseInt(strings.TrimSpace(p.ContentLength), 10, 64)
-			}
-			if p.LastModified != "" {
-				entry.Modified = parseHTTPTime(strings.TrimSpace(p.LastModified))
-			}
-			if p.ContentType != "" {
-				entry.ContentType = strings.TrimSpace(p.ContentType)
-			}
-			if p.ETag != "" {
-				entry.ETag = strings.Trim(strings.TrimSpace(p.ETag), `"`)
-			}
-		}
-		if entry.Dir {
-			if entry.Key != "" {
-				entry.Key += "/"
-			}
-			entry.Size = 0
+		if !entry.Dir {
+			entry.Key = strings.TrimSuffix(entry.Key, "/")
+			entry.Size, _ = strconv.ParseInt(item.prop(func(p davProp) string { return p.ContentLength }), 10, 64)
 		}
 		entries = append(entries, entry)
 	}
@@ -426,12 +256,12 @@ func (s *webdavStore) Open(ctx context.Context, _ string, key string, limit int6
 	if limit > 0 {
 		header.Set("Range", fmt.Sprintf("bytes=0-%d", limit-1))
 	}
-	res, err := s.do(ctx, http.MethodGet, s.url(key), header, nil, 0)
+	res, err := s.dav.do(ctx, http.MethodGet, s.dav.url(key), header, nil, 0)
 	if err != nil {
 		return nil, fileInfo{}, err
 	}
 	if res.StatusCode != http.StatusOK && res.StatusCode != http.StatusPartialContent {
-		return nil, fileInfo{}, s.fail(res, key)
+		return nil, fileInfo{}, s.dav.fail(res, key)
 	}
 	info := fileInfo{Key: key, Size: -1, ContentType: res.Header.Get("Content-Type"), ETag: strings.Trim(res.Header.Get("ETag"), `"`), Metadata: map[string]string{}}
 	if lm := res.Header.Get("Last-Modified"); lm != "" {
@@ -461,7 +291,7 @@ func (s *webdavStore) Put(ctx context.Context, _ string, key string, body io.Rea
 		contentType = "application/octet-stream"
 	}
 	counted := &webdavCounter{r: body}
-	res, err := s.do(ctx, http.MethodPut, s.url(key), http.Header{"Content-Type": {contentType}}, counted, size)
+	res, err := s.dav.do(ctx, http.MethodPut, s.dav.url(key), http.Header{"Content-Type": {contentType}}, counted, size)
 	if err != nil {
 		return 0, err
 	}
@@ -470,7 +300,7 @@ func (s *webdavStore) Put(ctx context.Context, _ string, key string, body io.Rea
 		res.Body.Close()
 		return counted.n, nil
 	}
-	return 0, s.fail(res, key)
+	return 0, s.dav.fail(res, key)
 }
 
 // webdavCounter counts what the service took when the size was unknown.
@@ -485,29 +315,16 @@ func (c *webdavCounter) Read(p []byte) (int, error) {
 	return n, err
 }
 
-// remove is a DELETE; a folder goes with everything in it (RFC 4918 takes
-// a collection's DELETE at infinite depth). What is already gone is gone.
-func (s *webdavStore) remove(ctx context.Context, key string) error {
-	res, err := s.do(ctx, http.MethodDelete, s.url(key), nil, nil, 0)
-	if err != nil {
-		return err
-	}
-	switch res.StatusCode {
-	case http.StatusOK, http.StatusNoContent, http.StatusNotFound:
-		res.Body.Close()
-		return nil
-	}
-	return s.fail(res, key)
-}
-
+// Delete is a DELETE; a folder goes with everything in it (RFC 4918 takes
+// a collection's DELETE at infinite depth).
 func (s *webdavStore) Delete(ctx context.Context, _ string, key string) error {
-	return s.remove(ctx, key)
+	return s.dav.remove(ctx, key, "")
 }
 
 func (s *webdavStore) DeleteMany(ctx context.Context, _ string, keys, folders []string) (int, error) {
 	deleted := 0
 	for _, key := range slices.Concat(keys, folders) {
-		if err := s.remove(ctx, key); err != nil {
+		if err := s.dav.remove(ctx, key, ""); err != nil {
 			return deleted, err
 		}
 		deleted++
@@ -518,7 +335,7 @@ func (s *webdavStore) DeleteMany(ctx context.Context, _ string, keys, folders []
 // MakeFolder is MKCOL. 405 means something is already called that; 409
 // that the parent is missing.
 func (s *webdavStore) MakeFolder(ctx context.Context, _ string, key string) error {
-	res, err := s.do(ctx, "MKCOL", s.url(key), nil, nil, 0)
+	res, err := s.dav.do(ctx, "MKCOL", s.dav.url(key), nil, nil, 0)
 	if err != nil {
 		return err
 	}
@@ -533,7 +350,7 @@ func (s *webdavStore) MakeFolder(ctx context.Context, _ string, key string) erro
 		res.Body.Close()
 		return &upstreamError{status: http.StatusConflict, err: fmt.Errorf("the folder above %q is missing", path.Dir(strings.TrimSuffix(key, "/")))}
 	}
-	return s.fail(res, key)
+	return s.dav.fail(res, key)
 }
 
 var _ fileStore = (*webdavStore)(nil)

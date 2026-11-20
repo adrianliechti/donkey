@@ -18,6 +18,8 @@ const (
 	ProtocolOpenAI   = "openai"
 	ProtocolExa      = "exa"
 	ProtocolWebDAV   = "webdav"
+	ProtocolCardDAV  = "carddav"
+	ProtocolCalDAV   = "caldav"
 	ProtocolHTTP     = "http"
 )
 
@@ -64,6 +66,10 @@ func ConnectionKey(protocol string) string {
 		return "EXA_BASE_URL"
 	case ProtocolWebDAV:
 		return "WEBDAV_URL"
+	case ProtocolCardDAV:
+		return "CARDDAV_URL"
+	case ProtocolCalDAV:
+		return "CALDAV_URL"
 	default:
 		return ""
 	}
@@ -89,7 +95,7 @@ func ValidateBinding(protocol string, binding map[string]string) error {
 		valid = u.Scheme == "redis" || u.Scheme == "rediss"
 	case ProtocolS3:
 		valid = (u.Scheme == "http" || u.Scheme == "https") && u.User == nil && (u.Path == "" || u.Path == "/") && u.RawQuery == ""
-	case ProtocolOpenAI, ProtocolExa, ProtocolTrino, ProtocolWebDAV:
+	case ProtocolOpenAI, ProtocolExa, ProtocolTrino, ProtocolWebDAV, ProtocolCardDAV, ProtocolCalDAV:
 		valid = (u.Scheme == "http" || u.Scheme == "https") && u.User == nil && u.RawQuery == ""
 	}
 	if !valid {
