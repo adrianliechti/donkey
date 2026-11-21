@@ -14,6 +14,7 @@ import (
 // disk, and everything that is not a lockfile, stay as uploaded.
 func TestMirroredContextRewritesLockfilesForTheBuildOnly(t *testing.T) {
 	dir := t.TempDir()
+	const tarball = `"resolved":"https://artifactory.example.com/api/npm/npm/is-odd/-/is-odd-3.0.1.tgz",`
 	files := map[string]string{
 		"yarn.lock":                       `resolved "https://registry.yarnpkg.com/is-odd/-/is-odd-3.0.1.tgz#65101baf"`,
 		"services/api/uv.lock":            `source = { registry = "http://127.0.0.1:4874/pypi/" }`,
@@ -21,8 +22,10 @@ func TestMirroredContextRewritesLockfilesForTheBuildOnly(t *testing.T) {
 		"pnpm-lock.yaml":                  "lockfileVersion: '9.0'\n",
 		"node_modules/left-pad/yarn.lock": `resolved "https://registry.yarnpkg.com/x/-/x-1.0.0.tgz"`,
 		// A registry the app assigns to a scope is kept; any other host is not.
-		"web/.npmrc":            "@acme:registry=https://npm.acme.example/\n",
-		"web/package-lock.json": `"resolved": "https://npm.acme.example/@acme/ui/-/ui-1.0.0.tgz", "resolved": "https://artifactory.example.com/api/npm/npm/is-odd/-/is-odd-3.0.1.tgz"`,
+		"web/.npmrc": "@acme:registry=https://npm.acme.example/\n",
+		"web/package-lock.json": `{"packages":{` +
+			`"node_modules/@acme/ui":{"resolved":"https://npm.acme.example/@acme/ui/-/ui-1.0.0.tgz","version":"1.0.0"},` +
+			`"node_modules/is-odd":{` + tarball + `"version":"3.0.1"}}}`,
 	}
 	for name, content := range files {
 		path := filepath.Join(dir, filepath.FromSlash(name))
@@ -45,7 +48,7 @@ func TestMirroredContextRewritesLockfilesForTheBuildOnly(t *testing.T) {
 		"pnpm-lock.yaml":                  files["pnpm-lock.yaml"],
 		"node_modules/left-pad/yarn.lock": files["node_modules/left-pad/yarn.lock"],
 		"web/.npmrc":                      files["web/.npmrc"],
-		"web/package-lock.json":           `"resolved": "https://npm.acme.example/@acme/ui/-/ui-1.0.0.tgz", "resolved": "http://donkey-packages:8090/npm/is-odd/-/is-odd-3.0.1.tgz"`,
+		"web/package-lock.json":           strings.Replace(files["web/package-lock.json"], tarball, "", 1),
 	}
 	sizes := map[string]int64{}
 	if err := mirrored.Walk(context.Background(), "", func(path string, entry os.DirEntry, err error) error {

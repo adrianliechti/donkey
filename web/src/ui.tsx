@@ -655,12 +655,12 @@ export function ToggleRow({
   disabled?: boolean
 }) {
   return (
-    <div className="flex items-center justify-between gap-4">
-      <div className="min-w-0">
-        <p className="text-sm text-ink">{label}</p>
-        {description && <p className="mt-0.5 text-xs leading-relaxed text-muted">{description}</p>}
-      </div>
+    <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4">
+      <p className="text-sm text-ink">{label}</p>
       <Toggle label={label} checked={checked} onChange={onChange} disabled={disabled} />
+      {description && (
+        <p className="col-span-full mt-0.5 wrap-anywhere text-xs leading-relaxed text-muted">{description}</p>
+      )}
     </div>
   )
 }

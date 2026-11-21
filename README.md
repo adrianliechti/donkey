@@ -1705,17 +1705,16 @@ addresses rather than the registry the build configures, so a lockfile
 written elsewhere sends a build to hosts it may not reach, or to your own
 registry without the credential only donkey-packages holds.
 
-donkey therefore hands the build its lockfiles with the host of every
-registry address disregarded: the package's name and file stay, and the
-mirror is asked for them. It happens in memory, like the Dockerfile overlay —
-the app's files and its source history stay as uploaded — and versions and
-checksums are not touched, so the build installs exactly what the lockfile
-pins: a file the mirror has under that name either matches the lockfile's
-checksum or fails the install.
+donkey prepares an in-memory copy of the lockfile for the build. For npm it
+omits the recorded registry tarball URL so `npm ci` asks the configured
+registry for the pinned version and checks the downloaded package against
+the lockfile's integrity hash. This also works when the upstream registry
+uses a different tarball filename. The uploaded files stay as written.
 
-| Lockfile | What is read as the mirror |
+| Lockfile | How the build locates registry packages |
 |---|---|
-| `package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock`, `pnpm-lock.yaml`, `bun.lock` | every recorded download in the shape npm registries use, `…/<name>/-/<file>.tgz`, on any host |
+| `package-lock.json`, `npm-shrinkwrap.json` | npm looks up the pinned version when a package's `resolved` field records a registry tarball (`…/<name>/-/<file>.tgz`) |
+| `yarn.lock`, `pnpm-lock.yaml`, `bun.lock` | the mirror serves each recorded registry tarball (`…/<name>/-/<file>.tgz`) by name and filename |
 | `uv.lock` | every index a package or a dependency entry names, and the files of those packages, on any host |
 
 Builds also receive `UV_INDEX_URL`, so `uv sync --frozen`, `uv sync --locked`
@@ -2059,9 +2058,10 @@ what a package manager does with them differs:
 | Package manager | What its lockfile records | A lockfile written through the mirror |
 |---|---|---|
 | npm | versions and checksums — `run` sets `omit-lockfile-registry-resolved`, so no address | installs anywhere; the first install drops the `resolved` lines of an existing lockfile once |
-| pnpm, yarn 2 and later | versions and checksums, never an address | installs anywhere |
+| pnpm | registry package versions and checksums, plus tarball URLs when `lockfileIncludeTarballUrl` is enabled | standard tarball URLs are routed through the mirror in a Donkey build |
+| yarn 2 and later | a package name, version and checksum, with an `__archiveUrl` for nonstandard registry tarballs | an explicit archive address must be reachable from the build |
 | pip, Go | no address (`go.sum` holds checksums) | installs anywhere |
-| uv, bun, yarn 1 | the address of every package: `http://127.0.0.1:4874/…` | installs where `donkey packages` runs on the same port, and in a donkey build, which reads that address as its own mirror (see [Lockfiles in a build](#lockfiles-in-a-build)) |
+| uv, bun, yarn 1 | can record download addresses such as `http://127.0.0.1:4874/…` | installs where `donkey packages` runs on the same port, and in a Donkey build for the registry URL formats described in [Lockfiles in a build](#lockfiles-in-a-build) |
 
 Keep the default port, so the lockfiles of a team agree.
 

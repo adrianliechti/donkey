@@ -15,8 +15,8 @@ import (
 // `donkey packages` on one without either. A build reaches none of them for
 // certain, only this mirror — and its own registry setting already says so
 // for everything the lockfile does not pin. So before a build reads a
-// lockfile, the host in every registry address is disregarded: the package's
-// name and file stay, and the mirror is asked for them. Versions and
+// lockfile, npm's registry downloads are resolved by version, and the other
+// package managers' registry addresses are pointed at the mirror. Versions and
 // checksums are untouched, which is what makes the result the same packages
 // rather than similar ones — a file the mirror serves under that name either
 // matches the lockfile's checksum or fails the install.
@@ -32,15 +32,17 @@ const publicPyPIFiles = "https://files.pythonhosted.org"
 // pypiFileMarker asks the PyPI route for a file by its name alone.
 const pypiFileMarker = "-/file/"
 
+// npm registries can prefix the package path and encode the slash in a scope.
+const npmTarballURL = `https?://[^\s"'<>]+?/((?:@[^/\s"'<>%]+(?:/|%2[fF]))?[^/\s"'<>@%][^/\s"'<>]*)/-/([^/\s"'<>#?]+\.tgz)`
+
 var (
-	// Where a lockfile records a download — npm's "resolved", yarn 1's
+	// Where a lockfile records a download — yarn 1's
 	// resolved, pnpm's tarball, the address slot of an entry in bun.lock —
 	// followed by an address in the shape every npm registry uses:
 	// <registry>/<name>/-/<file>.tgz, the name with its scope where it has
 	// one. The same address elsewhere is a dependency someone wrote as a
 	// URL, which the package manager compares with package.json.
-	npmAddress = regexp.MustCompile(`("resolved": "|resolved "|tarball: |\["[^"]*", ")` +
-		`https?://[^\s"'<>]+?/((?:@[^/\s"'<>%]+(?:/|%2[fF]))?[^/\s"'<>@%][^/\s"'<>]*)/-/([^/\s"'<>#?]+\.tgz)`)
+	npmAddress = regexp.MustCompile(`("resolved": "|resolved "|tarball: |\["[^"]*", ")` + npmTarballURL)
 	// uv.lock, as uv writes it: the index a package came from — on the
 	// package itself, and again in every dependency entry that has to tell
 	// two locked versions of a package apart — and the package's files.
@@ -61,9 +63,9 @@ var (
 var lockfileRewrites = map[string]func(content, mirror string, declared []string) string{
 	"package-lock.json":   rewriteNPMLockfile,
 	"npm-shrinkwrap.json": rewriteNPMLockfile,
-	"yarn.lock":           rewriteNPMLockfile,
-	"pnpm-lock.yaml":      rewriteNPMLockfile,
-	"bun.lock":            rewriteNPMLockfile,
+	"yarn.lock":           rewriteTarballAddresses,
+	"pnpm-lock.yaml":      rewriteTarballAddresses,
+	"bun.lock":            rewriteTarballAddresses,
 	"uv.lock":             rewritePyPILockfile,
 }
 
@@ -90,7 +92,7 @@ func RewriteLockfile(name string, content []byte, mirror string, declared []stri
 	return []byte(rewritten)
 }
 
-func rewriteNPMLockfile(content, mirror string, declared []string) string {
+func rewriteTarballAddresses(content, mirror string, declared []string) string {
 	return npmAddress.ReplaceAllStringFunc(content, func(entry string) string {
 		match := npmAddress.FindStringSubmatch(entry)
 		if under(entry[len(match[1]):], declared) {

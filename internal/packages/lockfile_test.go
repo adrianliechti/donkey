@@ -18,12 +18,6 @@ const pythonhosted = "aHR0cHM6Ly9maWxlcy5weXRob25ob3N0ZWQub3Jn" // https://files
 // touched.
 func TestRewriteLockfilePointsRegistryAddressesAtTheMirror(t *testing.T) {
 	for name, tc := range map[string]struct{ in, want string }{
-		"package-lock.json": {
-			`"resolved": "https://registry.npmjs.org/is-odd/-/is-odd-3.0.1.tgz", "integrity": "sha512-CQpn"` + "\n" +
-				`"resolved": "https://artifactory.example.com/api/npm/npm/@types/node/-/node-22.1.0.tgz", "integrity": "sha512-Wu1V"`,
-			`"resolved": "http://donkey-packages/npm/is-odd/-/is-odd-3.0.1.tgz", "integrity": "sha512-CQpn"` + "\n" +
-				`"resolved": "http://donkey-packages/npm/@types/node/-/node-22.1.0.tgz", "integrity": "sha512-Wu1V"`,
-		},
 		"yarn.lock": {
 			`  resolved "https://registry.yarnpkg.com/is-odd/-/is-odd-3.0.1.tgz#65101baf"` + "\n" +
 				`  resolved "http://127.0.0.1:4874/npm/is-number/-/is-number-6.0.0.tgz#e6d15ad3"` + "\n" +
@@ -39,11 +33,6 @@ func TestRewriteLockfilePointsRegistryAddressesAtTheMirror(t *testing.T) {
 		"pnpm-lock.yaml": {
 			`resolution: {integrity: sha512-CQpn, tarball: https://registry.npmjs.org/is-odd/-/is-odd-3.0.1.tgz}`,
 			`resolution: {integrity: sha512-CQpn, tarball: http://donkey-packages/npm/is-odd/-/is-odd-3.0.1.tgz}`,
-		},
-		// A registry that writes a scoped name as one path segment.
-		"npm-shrinkwrap.json": {
-			`"resolved": "http://verdaccio.example:4873/@babel%2fcore/-/core-7.0.0.tgz"`,
-			`"resolved": "http://donkey-packages/npm/@babel/core/-/core-7.0.0.tgz"`,
 		},
 		// uv repeats the index in a dependency entry wherever the lock holds
 		// two versions of a package; a lock that named the mirror on the
@@ -103,8 +92,6 @@ func TestRewriteLockfilePointsRegistryAddressesAtTheMirror(t *testing.T) {
 // shape, and a lockfile of a kind that records no addresses.
 func TestRewriteLockfileLeavesOtherAddressesAlone(t *testing.T) {
 	for name, content := range map[string]string{
-		"package-lock.json": `"resolved": "https://npm.pkg.github.com/download/@acme/ui/1.0.0/abc", "resolved": "git+ssh://git@github.com/acme/lib.git#1f2e"` +
-			`, "resolved": "https://gitlab.example.com/api/v4/projects/7/packages/npm/@acme/ui/-/@acme/ui-1.0.0.tgz"`,
 		"yarn.lock": `resolved "https://codeload.github.com/acme/lib/tar.gz/1f2e"` + "\n" + `resolved "https://example.com/downloads/lib-1.0.0.tgz"`,
 		"uv.lock": "[[package]]\n" + `source = { url = "https://example.com/pkg-1.0.tar.gz" }` + "\n" +
 			`sdist = { url = "https://example.com/pkg-1.0.tar.gz", hash = "sha256:aa" }` + "\n" +
@@ -153,12 +140,13 @@ func TestRewriteLockfileKeepsRegistriesTheAppDeclares(t *testing.T) {
 		t.Fatalf("declared registries = %q, want %q — the default registry is the one a build replaces", declared, want)
 	}
 
-	npm := `"resolved": "https://npm.acme.example/team/@acme/ui/-/ui-1.0.0.tgz"` + "\n" +
-		`"resolved": "https://npm.acme.example/team-other/@acme/ui/-/ui-1.0.0.tgz"` + "\n" +
-		`"resolved": "https://artifactory.example.com/api/npm/npm/is-odd/-/is-odd-3.0.1.tgz"`
-	wantNPM := `"resolved": "https://npm.acme.example/team/@acme/ui/-/ui-1.0.0.tgz"` + "\n" +
-		`"resolved": "http://donkey-packages/npm/@acme/ui/-/ui-1.0.0.tgz"` + "\n" +
-		`"resolved": "http://donkey-packages/npm/is-odd/-/is-odd-3.0.1.tgz"`
+	const otherPath = `"resolved":"https://npm.acme.example/team-other/@acme/ui/-/ui-1.0.0.tgz",`
+	const defaultRegistry = `"resolved":"https://artifactory.example.com/api/npm/npm/is-odd/-/is-odd-3.0.1.tgz",`
+	npm := `{"packages":{` +
+		`"node_modules/@acme/ui":{"resolved":"https://npm.acme.example/team/@acme/ui/-/ui-1.0.0.tgz","version":"1.0.0"},` +
+		`"node_modules/alias":{"name":"@acme/ui",` + otherPath + `"version":"1.0.0"},` +
+		`"node_modules/is-odd":{` + defaultRegistry + `"version":"3.0.1"}}}`
+	wantNPM := strings.NewReplacer(otherPath, "", defaultRegistry, "").Replace(npm)
 	if got := string(RewriteLockfile("package-lock.json", []byte(npm), "http://donkey-packages", declared)); got != wantNPM {
 		t.Errorf("package-lock.json:\n got %s\nwant %s", got, wantNPM)
 	}

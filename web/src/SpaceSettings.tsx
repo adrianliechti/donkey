@@ -125,7 +125,7 @@ export function SpaceForm({
 }) {
   const desktop = useMediaQuery('(min-width: 640px)')
   return (
-    <fieldset disabled={disabled} className="flex min-h-0 flex-1 flex-col">
+    <fieldset disabled={disabled} className="flex min-h-0 min-w-0 flex-1 flex-col">
       <TabGroup vertical={desktop} className="flex min-h-0 flex-1 flex-col sm:flex-row">
         <TabList
           aria-label="Space settings sections"
@@ -161,7 +161,7 @@ export function SpaceForm({
             )}
             <ToggleRow
               label="Allow public apps"
-              description="Off by default. Turning this off switches existing public apps to login protection and prevents public deployments."
+              description="Off by default. Turning it off requires sign-in for existing public apps and blocks public deployments."
               checked={settings.allowPublic ?? false}
               disabled={readOnly}
               onChange={(allowPublic) => onChange({ ...settings, allowPublic })}

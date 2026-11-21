@@ -353,8 +353,9 @@ that require live services or secrets are checked at rollout. So:
 - Every build stage already receives donkey's internal package endpoints.
   Preserve NPM_CONFIG_REGISTRY, PIP_INDEX_URL, UV_INDEX_URL, GOPROXY,
   DONKEY_NUGET_SOURCE, MAVEN_REPO_CENTRAL and MVNW_REPOURL; never add a public
-  registry URL or package credential to work around them. Lockfiles reach the
-  build already naming these endpoints, so a frozen install works as written.
+  registry URL or package credential to work around them. Donkey prepares
+  registry downloads in the build copy of each lockfile. Use the project's
+  frozen install command as written.
 - Before each Alpine stage installs OS packages, configure its repositories
   in the same RUN as apk add, guarded so an installation without a mirror
   keeps the base image's repositories:

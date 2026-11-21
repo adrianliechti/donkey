@@ -12,8 +12,8 @@ import (
 )
 
 // mirroredContextFS is the app's folder as the build receives it: every file
-// as uploaded, except that the lockfiles name the package mirror wherever
-// they named a registry. A lockfile records where each package was
+// as uploaded, with the lockfiles prepared to use the package mirror.
+// npm looks up pinned versions there. A lockfile records where each package was
 // downloaded from — the public registry, an enterprise one, `donkey
 // packages` on a developer's machine — and a frozen install follows those
 // addresses rather than the registry the build configures. Inside a build

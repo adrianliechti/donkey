@@ -1,0 +1,13 @@
+{
+  "name": "legacy-app",
+  "version": "1.0.0",
+  "lockfileVersion": 1,
+  "requires": true,
+  "dependencies": {
+    "is-number": {
+      "version": "6.0.0",
+      "resolved": "http://127.0.0.1:4874/npm/is-number/-/is-number-6.0.0.tgz",
+      "integrity": "sha512-Wu1VHeILBK8KAWJUAiSZQX94GmOE45Rg6/538fKwiloUu21KncEkYGPqob2oSZ5mUT73vLGrHQjKw3KMPwfDzg=="
+    }
+  }
+}
