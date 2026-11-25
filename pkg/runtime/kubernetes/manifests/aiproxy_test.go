@@ -4,9 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // The point of the split: the endpoint tenant code reaches is not the
@@ -46,12 +44,11 @@ func TestAIEndpointIsSeparateAndNarrow(t *testing.T) {
 	}
 	// It holds the upstream credential, and nothing the admin API holds.
 	if !strings.Contains(rendered, "OPENAI_API_KEY") {
-		t.Error("donkey-ai needs the credential it swaps each space's token for")
+		t.Error("donkey-ai needs the credential it uses for development machines")
 	}
 }
 
-// Apps reach donkey-ai; only the gateway reaches the admin API. Before the
-// split the API had to admit apps, because the AI proxy shared its listener.
+// Without development machines only the gateway reaches the admin API.
 func TestAdminAPIIsGatewayOnly(t *testing.T) {
 	in := systemInput()
 	in.WorkloadNamespace = "donkey-apps"
@@ -65,46 +62,7 @@ func TestAdminAPIIsGatewayOnly(t *testing.T) {
 		t.Errorf("the admin API's only peer should be the gateway, got %+v", peer)
 	}
 
-	ai := aiNetworkPolicy(in)
-	peer := ai.Spec.Ingress[0].From[0]
-	if peer.NamespaceSelector == nil ||
-		peer.NamespaceSelector.MatchLabels["kubernetes.io/metadata.name"] != "donkey-apps" {
-		t.Errorf("donkey-ai should admit the namespace apps live in, got %+v", peer)
-	}
-	if len(peer.PodSelector.MatchExpressions) != 1 ||
-		peer.PodSelector.MatchExpressions[0].Key != LabelSpace ||
-		peer.PodSelector.MatchExpressions[0].Operator != metav1.LabelSelectorOpExists {
-		t.Errorf("the tenant peer must require a logical space, got %+v", peer.PodSelector)
-	}
-}
-
-// The console's chat is browser code: it calls its own origin, and
-// donkey-server forwards that to donkey-ai. The server must therefore be
-// told where donkey-ai is, and must be allowed to reach it — while the
-// endpoint apps use stays plain /v1 on donkey-ai itself.
-func TestServerForwardsToTheAIEndpoint(t *testing.T) {
-	in := systemInput()
-	rendered := componentNames(in)
-	if !strings.Contains(rendered, "DONKEY_AI_URL") ||
-		!strings.Contains(rendered, "http://donkey-ai."+DefaultSystemNamespace+".svc:80") {
-		t.Error("donkey-server needs donkey-ai's address to forward the console's /ai/v1")
-	}
-	// No gateway route for it any more: the server owns every path on its
-	// own hostname.
-	for _, obj := range SystemObjects(in) {
-		if cm, ok := obj.(*corev1.ConfigMap); ok && cm.Annotations[AnnotationPath] == "/ai/v1" {
-			t.Error("the console's origin is the server's — /ai/v1 should not be a gateway route")
-		}
-	}
-
-	// And the server may actually reach it.
-	var reachesAI bool
-	for _, peer := range aiNetworkPolicy(in).Spec.Ingress[0].From {
-		if peer.PodSelector != nil && peer.PodSelector.MatchLabels[LabelRole] == SystemRole(ServerName) {
-			reachesAI = true
-		}
-	}
-	if !reachesAI {
-		t.Error("donkey-server must be admitted to donkey-ai, or the console's chat cannot be forwarded")
+	if len(aiNetworkPolicy(in).Spec.Ingress) != 0 {
+		t.Fatal("the model proxy must deny ingress when machines are disabled")
 	}
 }

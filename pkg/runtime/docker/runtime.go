@@ -112,7 +112,7 @@ type Options struct {
 	// (e.g. 127.0.0.1:5000). Image references are rewritten from the push
 	// host to this one before running. Empty means refs run as pushed.
 	PullRegistry string
-	// AIContainer is the openai addon's shared endpoint.
+	// AIContainer serves development machine model requests.
 	AIContainer string
 	// ProxyContainer is the shared endpoint for configured HTTP offerings.
 	ProxyContainer string
@@ -192,7 +192,7 @@ func (r *Runtime) Client() *client.Client { return r.cli }
 func (r *Runtime) ownContainers() []string {
 	var names []string
 	for _, name := range []string{r.opts.ServerContainer, r.opts.OrchestratorContainer, r.opts.GatewayContainer,
-		r.opts.AIContainer, r.opts.TelemetryContainer, r.opts.ProxyContainer} {
+		r.opts.TelemetryContainer, r.opts.ProxyContainer} {
 		if name != "" {
 			names = append(names, name)
 		}
@@ -451,7 +451,12 @@ func (r *Runtime) DeleteSpace(ctx context.Context, space string) error {
 	if err := r.deprovisionSpacePlugins(ctx, space); err != nil {
 		return err
 	}
-	own, err := ownedSystemContainers(ctx, r.cli, r.ownContainers()...)
+	// Older installations attached the model proxy to space networks as well.
+	names := r.ownContainers()
+	if r.opts.AIContainer != "" {
+		names = append(names, r.opts.AIContainer)
+	}
+	own, err := ownedSystemContainers(ctx, r.cli, names...)
 	if err != nil {
 		return err
 	}
@@ -827,7 +832,9 @@ func (r *Runtime) ServiceConnection(ctx context.Context, space, name string) (rt
 	if err != nil {
 		return rt.ServiceConnection{}, err
 	}
-	return rt.ServiceConnection{Binding: binding, Type: metadata.Type, Protocol: metadata.Protocol, Parameters: metadata.Parameters}, nil
+	return rt.ResolveServiceConnection(metadata, binding, r.aiProxyURL(), func() (*addons.Provisioning, error) {
+		return r.pluginState(space, name)
+	})
 }
 
 func (r *Runtime) serviceMetadata(space, name string, binding map[string]string) (addons.Metadata, error) {
@@ -930,9 +937,7 @@ func (r *Runtime) EnsureService(ctx context.Context, space string, spec rt.Servi
 		in := addons.Input{
 			Space: space, Namespace: netName(space), Name: spec.Name,
 			ImageRepository: r.opts.AddonImages.Repository(spec.Type),
-			AIProxyURL:      r.aiProxyURL(),
 			ServiceProxyURL: r.serviceProxyURL(),
-			ExaProxyURL:     r.exaProxyURL(),
 		}.WithParameters(params)
 		// Reuse the credential the instance was initialized with — rotating
 		// it here would lock the service out of its own kept data.
@@ -1218,28 +1223,6 @@ func (r *Runtime) ListServices(ctx context.Context, space, owner string) ([]rt.S
 		sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	}
 	return out, nil
-}
-
-func (r *Runtime) exaProxyURL() string {
-	return strings.TrimSuffix(r.aiProxyURL(), "/v1") + "/exa"
-}
-
-func (r *Runtime) ExaProxyTokens(ctx context.Context) ([]string, error) {
-	return r.state.bindingValues("EXA_API_KEY", "EXA_BASE_URL", r.exaProxyURL())
-}
-
-func (r *Runtime) AIProxyTokens(ctx context.Context) ([]string, error) {
-	tokens, err := r.state.bindingValues("OPENAI_API_KEY", "OPENAI_BASE_URL", r.aiProxyURL())
-	if err != nil {
-		return nil, err
-	}
-	// A running machine's agent calls the same endpoint with a token of its
-	// own, valid for as long as the machine runs.
-	machines, err := r.machineAITokens()
-	if err != nil {
-		return nil, err
-	}
-	return append(tokens, machines...), nil
 }
 
 func (r *Runtime) serviceProxyURL() string {

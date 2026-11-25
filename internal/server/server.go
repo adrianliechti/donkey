@@ -262,9 +262,6 @@ func (s *Server) routes() http.Handler {
 	// What donkey runs on and donkey itself, as the runtime describes them.
 	mux.Handle("GET /v1/system", s.auth(s.handleSystem))
 	mux.Handle("GET /v1/nodes", s.auth(s.handleNodes))
-	// The console's AI chat, forwarded to donkey-ai — see aiforward.go for
-	// why it lands on this origin and why nothing is verified here.
-	mux.Handle(aiForwardPrefix, aiForwardHandler(s.cfg.AIURL))
 	// Package installs on developer machines (`donkey packages`), forwarded
 	// to the mirror builds use — see packages.go for who is admitted.
 	mux.Handle("GET "+packagesRoutePrefix+"/{path...}", s.packagesHandler())

@@ -319,8 +319,8 @@ func (m machines) Logs(ctx context.Context, id string, opts rt.LogOptions, out i
 	return err
 }
 
-// machineAITokens are the model tokens of the machines that are running.
-func (r *Runtime) machineAITokens() ([]string, error) {
+// AIProxyTokens are the model tokens of the machines that are running.
+func (r *Runtime) AIProxyTokens(ctx context.Context) ([]string, error) {
 	ids, err := r.state.records(machineRecords)
 	if err != nil {
 		return nil, err
@@ -335,8 +335,7 @@ func (r *Runtime) machineAITokens() ([]string, error) {
 		if !found || !config.ValidMachineID(id) {
 			continue
 		}
-		// Only a token issued for this installation's endpoint counts, the
-		// same rule a space's binding follows.
+		// Only accept machine tokens issued for this installation's endpoint.
 		if token := record.Env[rt.MachineAIKey]; token != "" && record.Env["OPENAI_BASE_URL"] == r.aiProxyURL() {
 			tokens = append(tokens, token)
 		}

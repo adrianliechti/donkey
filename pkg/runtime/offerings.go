@@ -5,11 +5,32 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"strings"
 
 	"github.com/adrianliechti/donkey/internal/addons"
 	"github.com/adrianliechti/donkey/internal/config"
 	addonv1 "github.com/adrianliechti/donkey/pkg/addons/v1"
 )
+
+// ResolveServiceConnection rejects retired platform endpoints. Only an OpenAI
+// endpoint recorded by a plugin during provisioning may receive the viewer's token.
+func ResolveServiceConnection(m addons.Metadata, binding map[string]string, aiProxyURL string, provisioning func() (*addons.Provisioning, error)) (ServiceConnection, error) {
+	c := ServiceConnection{Type: m.Type, Protocol: m.Protocol, Parameters: m.Parameters, Binding: binding}
+	endpoint := binding["OPENAI_BASE_URL"]
+	if (m.Protocol == addons.ProtocolOpenAI && endpoint == aiProxyURL) ||
+		(m.Protocol == addons.ProtocolExa && binding["EXA_BASE_URL"] == strings.TrimSuffix(aiProxyURL, "/v1")+"/exa") {
+		return ServiceConnection{}, UserError{Err: fmt.Errorf("the built-in %s service was removed; replace this binding with a plugin-provided service", m.Protocol)}
+	}
+	if endpoint == "" || m.Protocol != addons.ProtocolOpenAI {
+		return c, nil
+	}
+	state, err := provisioning()
+	if err != nil {
+		return ServiceConnection{}, err
+	}
+	c.ManagedOpenAI = state != nil && state.Info.GetEnv()["OPENAI_BASE_URL"] == endpoint
+	return c, nil
+}
 
 func OfferingPolicy(ctx context.Context, r spaceConfigReader, space string) (config.SpaceConfig, error) {
 	policy, err := r.SpaceConfig(ctx, space)

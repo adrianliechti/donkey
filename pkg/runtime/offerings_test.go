@@ -2,12 +2,46 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/adrianliechti/donkey/internal/addons"
 	"github.com/adrianliechti/donkey/internal/config"
 	addonv1 "github.com/adrianliechti/donkey/pkg/addons/v1"
 )
+
+func TestServiceConnectionChecksSavedModelEndpoints(t *testing.T) {
+	const machine = "http://donkey-ai.system.svc/v1"
+	const remote = "https://provider.example/models/v1"
+	record := &addons.Provisioning{Info: &addonv1.ProvisionResponse{Env: map[string]string{"OPENAI_BASE_URL": remote}}}
+	for _, tc := range []struct {
+		name, protocol, endpoint string
+		record                   *addons.Provisioning
+		managed, retired         bool
+	}{
+		{"plugin", "openai", remote, record, true, false},
+		{"old manually attached URL", "openai", remote, nil, false, false},
+		{"partial provisioning", "openai", remote, &addons.Provisioning{}, false, false},
+		{"different saved endpoint", "openai", "https://other.example/v1", record, false, false},
+		{"retired OpenAI", "openai", machine, nil, false, true},
+		{"retired Exa", "exa", "http://donkey-ai.system.svc/exa", nil, false, true},
+		{"plugin Exa", "exa", remote, nil, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			binding := map[string]string{addons.ConnectionKey(tc.protocol): tc.endpoint}
+			c, err := ResolveServiceConnection(addons.Metadata{Type: "vendor", Protocol: tc.protocol}, binding, machine, func() (*addons.Provisioning, error) {
+				if tc.retired || tc.protocol != "openai" {
+					t.Fatal("unexpected provisioning lookup")
+				}
+				return tc.record, nil
+			})
+			var userErr UserError
+			if (err != nil) != tc.retired || errors.As(err, &userErr) != tc.retired || c.ManagedOpenAI != tc.managed {
+				t.Fatalf("viewer token allowed = %v, error = %v", c.ManagedOpenAI, err)
+			}
+		})
+	}
+}
 
 type offeringRuntime struct {
 	policy   config.SpaceConfig

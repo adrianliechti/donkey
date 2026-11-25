@@ -284,9 +284,11 @@ func TestControlPlaneAdmitsMachinesOnlyWhenEnabled(t *testing.T) {
 	in := systemInput()
 	machines := func(p *networkPolicy) []networkingv1.NetworkPolicyPeer {
 		var out []networkingv1.NetworkPolicyPeer
-		for _, peer := range p.Spec.Ingress[0].From {
-			if peer.PodSelector != nil && peer.PodSelector.MatchLabels[LabelRole] == RoleMachine {
-				out = append(out, peer)
+		for _, rule := range p.Spec.Ingress {
+			for _, peer := range rule.From {
+				if peer.PodSelector != nil && peer.PodSelector.MatchLabels[LabelRole] == RoleMachine {
+					out = append(out, peer)
+				}
 			}
 		}
 		return out

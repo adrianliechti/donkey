@@ -249,10 +249,6 @@ func serveConsole(listen, apiURL string, key []byte) error {
 				"description": "A PostgreSQL database shared by apps in this space.",
 				"keys":        []string{"DATABASE_URL", "PGHOST", "PGPORT", "PGDATABASE", "PGUSER", "PGPASSWORD"},
 			},
-			{
-				"type": "openai", "description": "An OpenAI-compatible endpoint managed for this space.",
-				"keys": []string{"OPENAI_BASE_URL", "OPENAI_API_KEY"},
-			},
 		}})
 	})
 	mux.HandleFunc("GET /v1/apps", func(w http.ResponseWriter, _ *http.Request) {

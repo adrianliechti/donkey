@@ -42,8 +42,16 @@ func TestServiceConsolesRespectExplicitProtocol(t *testing.T) {
 }
 
 func TestOpenAIConsoleUsesProviderBindingAndKeepsSessionPrivate(t *testing.T) {
-	for _, key := range []string{"provider-secret", ""} {
-		t.Run(fmt.Sprintf("key=%t", key != ""), func(t *testing.T) {
+	for _, tc := range []struct {
+		name, key, scope, auth, forwarded string
+		managed                           bool
+	}{
+		{"plugin with key", "provider-secret", "api://donkey", "Bearer provider-secret", "viewer-token", true},
+		{"plugin without key", "", "api://donkey", "Bearer viewer-token", "", true},
+		{"unscoped keyed plugin", "provider-secret", "", "Bearer provider-secret", "", true},
+		{"legacy external URL", "", "api://donkey", "", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			requests := make(chan *http.Request, 2)
 			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				requests <- r.Clone(r.Context())
@@ -52,9 +60,10 @@ func TestOpenAIConsoleUsesProviderBindingAndKeepsSessionPrivate(t *testing.T) {
 				fmt.Fprint(w, "data: [DONE]\n\n")
 			}))
 			defer upstream.Close()
-			s := planServer(consoleRuntime{connection: runtime.ServiceConnection{Type: "model-vendor", Protocol: "openai", Binding: map[string]string{
-				"OPENAI_BASE_URL": upstream.URL + "/provider/v1/", "OPENAI_API_KEY": key,
+			s := planServer(consoleRuntime{connection: runtime.ServiceConnection{Type: "openai", Protocol: "openai", ManagedOpenAI: tc.managed, Binding: map[string]string{
+				"OPENAI_BASE_URL": upstream.URL + "/provider/v1/", "OPENAI_API_KEY": tc.key,
 			}}}, &ai.Analysis{})
+			s.cfg.OIDCScope = tc.scope
 			for _, call := range []struct{ method, path string }{{"GET", "models"}, {"POST", "chat/completions"}} {
 				path := "/v1/spaces/default/services/vendor/ai/" + call.path
 				req := httptest.NewRequest(call.method, path, strings.NewReader(`{"model":"test"}`))
@@ -69,7 +78,9 @@ func TestOpenAIConsoleUsesProviderBindingAndKeepsSessionPrivate(t *testing.T) {
 				default:
 				}
 				req = httptest.NewRequest(call.method, path, strings.NewReader(`{"model":"test"}`))
-				asAdmin(t, req)
+				req.Header.Set("X-Access-Token", trinoIdentityToken(t, "u1", "viewer-token"))
+				req.Header.Set("X-Forwarded-Access-Token", "unverified")
+				req.Header.Set("Authorization", "Bearer console")
 				req.Header.Set("Cookie", "session=private")
 				req.Header.Set("X-Custom-Credential", "private")
 				rec = httptest.NewRecorder()
@@ -81,11 +92,7 @@ func TestOpenAIConsoleUsesProviderBindingAndKeepsSessionPrivate(t *testing.T) {
 				if got.URL.Path != "/provider/v1/"+call.path {
 					t.Fatalf("wrong provider path %s", got.URL.Path)
 				}
-				wantAuth := ""
-				if key != "" {
-					wantAuth = "Bearer " + key
-				}
-				if got.Header.Get("Authorization") != wantAuth {
+				if got.Header.Get("Authorization") != tc.auth || got.Header.Get("X-Forwarded-Access-Token") != tc.forwarded {
 					t.Fatal("proxy sent the wrong credential")
 				}
 				for _, header := range []string{"Cookie", "X-Access-Token", "X-Custom-Credential"} {
@@ -95,6 +102,26 @@ func TestOpenAIConsoleUsesProviderBindingAndKeepsSessionPrivate(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestKeylessOpenAIPluginRequiresUserToken(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Error("request reached the plugin without a user token")
+	}))
+	defer upstream.Close()
+	s := planServer(consoleRuntime{connection: runtime.ServiceConnection{Protocol: "openai", ManagedOpenAI: true,
+		Binding: map[string]string{"OPENAI_BASE_URL": upstream.URL},
+	}}, &ai.Analysis{})
+	for _, scope := range []string{"", "api://donkey"} {
+		s.cfg.OIDCScope = scope
+		req := httptest.NewRequest("GET", "/v1/spaces/default/services/model/ai/models", nil)
+		asAdmin(t, req)
+		rec := httptest.NewRecorder()
+		s.routes().ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("scope=%q: got %d %s", scope, rec.Code, rec.Body.String())
+		}
 	}
 }
 

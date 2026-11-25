@@ -30,13 +30,22 @@ func (s *Server) handleServiceExa(w http.ResponseWriter, r *http.Request) {
 	s.forwardServiceAPI(w, r, addons.ProtocolExa, operation)
 }
 
-// Both consoles use only the saved service endpoint and its credential.
-// Browser session headers never cross the provider boundary.
+// Build fresh headers for the saved endpoint. Managed OpenAI services can
+// receive the verified viewer's IdP token alongside their service credential.
 func (s *Server) forwardServiceAPI(w http.ResponseWriter, r *http.Request, protocol, operation string) {
 	service, err := s.serviceConnection(r.Context(), r, protocol)
 	if err != nil {
 		writeErr(w, statusFor(err), err)
 		return
+	}
+	openAIKey := service.Binding["OPENAI_API_KEY"]
+	var userToken string
+	if protocol == addons.ProtocolOpenAI && service.ManagedOpenAI && (openAIKey == "" || s.cfg.OIDCScope != "") {
+		userToken, err = s.userToken(r.Context())
+		if err != nil {
+			writeErr(w, statusFor(err), err)
+			return
+		}
 	}
 	base, _ := url.Parse(service.Binding[addons.ConnectionKey(protocol)])
 	// JoinPath on an empty path yields a relative one ("search"), which the
@@ -52,8 +61,13 @@ func (s *Server) forwardServiceAPI(w http.ResponseWriter, r *http.Request, proto
 			pr.Out.Header.Set("Content-Type", "application/json")
 			pr.Out.Header.Set("Accept", pr.In.Header.Get("Accept"))
 			if protocol == addons.ProtocolOpenAI {
-				if key := service.Binding["OPENAI_API_KEY"]; key != "" {
-					pr.Out.Header.Set("Authorization", "Bearer "+key)
+				if openAIKey != "" {
+					pr.Out.Header.Set("Authorization", "Bearer "+openAIKey)
+					if userToken != "" {
+						pr.Out.Header.Set("X-Forwarded-Access-Token", userToken)
+					}
+				} else if userToken != "" {
+					pr.Out.Header.Set("Authorization", "Bearer "+userToken)
 				}
 			} else if key := service.Binding["EXA_API_KEY"]; key != "" {
 				pr.Out.Header.Set("x-api-key", key)
@@ -69,7 +83,7 @@ func (s *Server) forwardServiceAPI(w http.ResponseWriter, r *http.Request, proto
 				return fmt.Errorf("the service endpoint redirected the request")
 			}
 			if res.StatusCode == http.StatusUnauthorized {
-				refusedCredential(res)
+				refusedCredential(res, userToken != "" && openAIKey == "")
 			}
 			return nil
 		},
@@ -85,7 +99,7 @@ func (s *Server) forwardServiceAPI(w http.ResponseWriter, r *http.Request, proto
 // means its own session expired, and it would send the admin to sign in again
 // — over a key that belongs to the service, not to them. The provider's
 // reason is kept; OpenAI and Exa both put it under "error".
-func refusedCredential(res *http.Response) {
+func refusedCredential(res *http.Response, userBearer bool) {
 	raw, _ := io.ReadAll(io.LimitReader(res.Body, 64<<10))
 	res.Body.Close()
 	reason := ""
@@ -104,7 +118,9 @@ func refusedCredential(res *http.Response) {
 		}
 	}
 	message := "the service endpoint refused the service's credential"
-	if reason = strings.TrimSpace(reason); reason != "" {
+	if userBearer {
+		message = "the OpenAI endpoint rejected your identity provider token"
+	} else if reason = strings.TrimSpace(reason); reason != "" {
 		message += ": " + reason
 	}
 	body, _ := json.Marshal(map[string]string{"error": message})

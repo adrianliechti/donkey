@@ -266,11 +266,11 @@ func TestKubernetesRenderOmitsEverySecretValue(t *testing.T) {
 	if !strings.Contains(manifest, "name: donkey-registry") {
 		t.Fatal("credentialed system images do not reference the external pull Secret")
 	}
-	if !strings.Contains(manifest, "name: EXA_BASE_URL") || !strings.Contains(manifest, settings.Exa.BaseURL) || !strings.Contains(manifest, "key: EXA_API_KEY") {
-		t.Fatal("Exa endpoint or credential reference missing")
+	if strings.Contains(manifest, "EXA_API_KEY") || strings.Contains(manifest, settings.Exa.BaseURL) {
+		t.Fatal("rendered the retired Exa upstream")
 	}
 	apply := string(files["apply.sh"].Data)
-	for _, name := range []string{"OPENAI_API_KEY", "EXA_API_KEY", "DONKEY_SESSION_KEY", "DONKEY_TELEMETRY_KEY", "donkey"} {
+	for _, name := range []string{"OPENAI_API_KEY", "DONKEY_SESSION_KEY", "DONKEY_TELEMETRY_KEY", "donkey"} {
 		if !strings.Contains(apply, name) {
 			t.Errorf("apply helper does not name %s", name)
 		}
@@ -358,11 +358,8 @@ func TestDockerRenderMatchesRuntimeTopologyWithoutSecrets(t *testing.T) {
 	if err := yaml.Unmarshal([]byte(compose), &typed); err != nil {
 		t.Fatalf("compose.yaml does not match the renderer schema: %v", err)
 	}
-	if typed.Services["ai"].Environment["EXA_BASE_URL"] != settings.Exa.BaseURL || typed.Services["ai"].Environment["EXA_API_KEY"] != "${EXA_API_KEY:-}" {
-		t.Fatal("Exa settings missing from the proxy")
-	}
-	if _, found := typed.Services["server"].Environment["EXA_API_KEY"]; found {
-		t.Fatal("Exa upstream key reached the admin API")
+	if strings.Contains(compose, "EXA_API_KEY") || strings.Contains(compose, settings.Exa.BaseURL) {
+		t.Fatal("rendered the retired Exa upstream")
 	}
 	// Every compose service must carry exactly the role the direct
 	// installer (and the bundle's own preflight) expects for its container —

@@ -21,8 +21,7 @@ import (
 //
 // Egress (kubernetes.restrictEgress) is the opt-in half, off by default
 // because it is the disruptive one: it confines a space's pods to their own
-// space, the platform services an app legitimately uses (donkey-ai for the
-// openai addon, donkey-proxy for configured HTTP services, donkey-telemetry
+// space, the platform services an app legitimately uses (donkey-proxy for configured HTTP services, donkey-telemetry
 // for metrics) and DNS — and cuts everything
 // else, the public internet included. An app that calls a third-party API at
 // runtime needs it left off. When it is off the policy carries no egress
@@ -81,7 +80,6 @@ func SpaceIsolationPolicy(space, namespace, installation string, restrictEgress 
 	}
 	tcp, udp := corev1.ProtocolTCP, corev1.ProtocolUDP
 	dns := intstr.FromInt32(dnsPort)
-	ai := intstr.FromInt32(aiPort)
 	otlp := intstr.FromInt32(telemetryOTLPPort)
 	proxy := intstr.FromInt32(proxyPort)
 	policy.Spec.PolicyTypes = append(policy.Spec.PolicyTypes, networkingv1.PolicyTypeEgress)
@@ -98,12 +96,6 @@ func SpaceIsolationPolicy(space, namespace, installation string, restrictEgress 
 			// Its own space: sibling apps and the space's services
 			// (postgres, s3) are all same-space pods.
 			To: []networkingv1.NetworkPolicyPeer{sameSpace},
-		},
-		{
-			// The AI proxy the openai addon points at. The policy sees the
-			// target Pod port after Service translation.
-			To:    []networkingv1.NetworkPolicyPeer{systemPeer(installation, AIAppName)},
-			Ports: []networkingv1.NetworkPolicyPort{{Protocol: &tcp, Port: &ai}},
 		},
 		{
 			// Apps may submit OTLP, but the telemetry query API remains a

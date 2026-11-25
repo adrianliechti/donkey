@@ -93,8 +93,6 @@ type SystemInput struct {
 	OpenAIBaseURL string
 	OpenAIAPIKey  string
 	AIModel       string
-	ExaBaseURL    string
-	ExaAPIKey     string
 
 	// DefaultPlatform is the build platform of the cluster's nodes.
 	DefaultPlatform string
@@ -136,7 +134,7 @@ type SystemInput struct {
 	// Needs a CNI that enforces NetworkPolicy.
 	IsolateSpaces bool
 	// RestrictEgress adds the egress half of that fence — a space's pods reach
-	// only their own space, donkey-ai, donkey-telemetry and DNS, never the
+	// only their own space, permitted service endpoints, telemetry and DNS, never the
 	// internet. Off by default; only meaningful with IsolateSpaces.
 	RestrictEgress bool
 	// Machines turns on personal machines. With an image named, the API and
@@ -148,8 +146,7 @@ const (
 	// DefaultSystemNamespace is where the control plane lives unless an
 	// installation says otherwise.
 	DefaultSystemNamespace = config.DefaultSystemNamespace
-	// ServerName is donkey-server's Service — the openai addon points app
-	// bindings at its AI proxy path.
+	// ServerName is the control plane API service.
 	ServerName = "donkey-server"
 	// SystemConfigSecretName holds the installation credentials and the
 	// settings intentionally kept out of pod specs.
@@ -249,9 +246,6 @@ func SystemObjects(in SystemInput) []runtime.Object {
 	// the gateway starts looking for its Secret. DNS is adjacent because it
 	// describes the same public hostnames.
 	objs = append(objs, systemTrafficObjects(in)...)
-	// The donkey gateway is the app edge — always there, login or not; the
-	// AI endpoint is the one workload apps reach, and runs apart from the
-	// admin API for exactly that reason.
 	objs = append(objs, donkeyGatewayObjects(in)...)
 	objs = append(objs, aiObjects(in)...)
 	objs = append(objs, proxyObjects(in)...)
@@ -344,7 +338,6 @@ func systemSecret(in SystemInput) *corev1.Secret {
 		Data: map[string][]byte{
 			"DONKEY_REGISTRY_PASSWORD":  []byte(in.RegistryPassword),
 			"OPENAI_API_KEY":            []byte(in.OpenAIAPIKey),
-			"EXA_API_KEY":               []byte(in.ExaAPIKey),
 			"DONKEY_OIDC_CLIENT_ID":     []byte(in.OIDCClientID),
 			"DONKEY_OIDC_CLIENT_SECRET": []byte(in.OIDCClientSecret),
 			"DONKEY_SESSION_KEY":        []byte(in.SessionKey),
@@ -491,9 +484,6 @@ func serverDeployment(in SystemInput) *appsv1.Deployment {
 	// long-running left in it, the API rolls without a gap.
 	maxSurge, maxUnavailable := intstr.FromInt32(1), intstr.FromInt32(0)
 	env := append(controlPlaneEnv(in, serverPort),
-		// Where the console's /ai/v1 requests are forwarded. The address
-		// only — the path the console asks for is what gets proxied.
-		corev1.EnvVar{Name: "DONKEY_AI_URL", Value: fmt.Sprintf("http://%s.%s.svc:80", AIAppName, in.Namespace)},
 		// Where plans, deploys and the changes serialized with them go.
 		corev1.EnvVar{Name: "DONKEY_ORCHESTRATOR_URL", Value: OrchestratorEndpoint(in.Namespace)},
 		corev1.EnvVar{Name: "DONKEY_TELEMETRY_OTLP_ENDPOINT", Value: TelemetryOTLPEndpoint(in.Namespace)},

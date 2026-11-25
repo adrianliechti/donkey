@@ -29,11 +29,8 @@ func tunnelCall(t *testing.T, s *Server, method, service, path, body string, hea
 	return rec
 }
 
-// The platform's AI proxy takes the space's key: the tunnel adds the
-// binding's, whatever the local client sends, and streams answers through.
-// An endpoint attached from elsewhere has no key in its binding and gets no
-// tunnel — donkey-server must not become a way into its own network.
-func TestAITunnelAddsTheSpaceKey(t *testing.T) {
+// The tunnel uses the provider's binding key on every request and streams the response.
+func TestAITunnelAddsTheBindingKey(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.RequestURI() != "/v1/chat/completions?stream=1" || r.Header.Get("Authorization") != "Bearer space-key" {
 			t.Errorf("unexpected %s %s %q", r.Method, r.URL.RequestURI(), r.Header.Get("Authorization"))
@@ -57,7 +54,7 @@ func TestAITunnelAddsTheSpaceKey(t *testing.T) {
 
 	attached := planServer(consoleRuntime{connection: runtime.ServiceConnection{Type: "openai", Protocol: "openai",
 		Binding: map[string]string{"OPENAI_BASE_URL": "http://169.254.169.254/latest"}}}, &ai.Analysis{})
-	if rec := tunnelCall(t, attached, "GET", "openai", "meta-data", "", nil); rec.Code != 400 || !strings.Contains(rec.Body.String(), "attached from elsewhere") {
+	if rec := tunnelCall(t, attached, "GET", "openai", "meta-data", "", nil); rec.Code != 400 || !strings.Contains(rec.Body.String(), "API key") {
 		t.Fatalf("attached endpoint: %d %s", rec.Code, rec.Body)
 	}
 }

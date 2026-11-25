@@ -40,8 +40,6 @@ say "installing the control plane (real install command, demo settings)"
   --oidc-client-secret "donkey-demo-secret" \
   --openai-base-url "${AI_BASE}" \
   --openai-api-key "${AI_KEY}" \
-  --exa-base-url "${EXA_BASE}" \
-  --exa-api-key "${EXA_KEY}" \
   ${AI_MODEL:+--ai-model "${AI_MODEL}"}
 
 say "demo identity provider (fake, auto-login)"
@@ -79,7 +77,7 @@ Sign the CLI in with a minted token (the fake IdP has no browser here):
   TOKEN=\$(DONKEY_SESSION_KEY=\$(docker inspect donkey-server --format '{{range .Config.Env}}{{println .}}{{end}}' | sed -n 's/^DONKEY_SESSION_KEY=//p') go run ./hack/mint-token)
   ${DONKEY} login --server https://${DOMAIN} --token "\${TOKEN}" --ca-file ${CA_DOCKER}
 
-Then:  ${DONKEY} doctor · cd examples/demo/backend && ${DONKEY} deploy
+Then:  ${DONKEY} doctor · cd testdata/addons-sample && ${DONKEY} deploy
 Verify end to end:  task verify:docker
 Tear down:  docker rm -f donkey-server donkey-orchestrator donkey-gateway donkey-buildkitd donkey-registry donkey-identity && docker volume rm donkey-data donkey-registry donkey-buildkit
 EOF

@@ -45,13 +45,9 @@ type Config struct {
 	// runtime only — Docker spaces are separate networks and isolated as is).
 	IsolateSpaces bool
 	// RestrictEgress adds the egress half of that fence — a space's pods reach
-	// only their own space, donkey-ai, donkey-proxy, donkey-telemetry and DNS, never the
+	// only their own space, permitted service endpoints, telemetry and DNS, never the
 	// internet. Off by default; only meaningful with IsolateSpaces.
 	RestrictEgress bool
-	// AIURL is donkey-ai's address — the console's /ai/v1 calls are
-	// forwarded there. The address only, no path: what the console asks for
-	// is what gets proxied.
-	AIURL string
 	// OrchestratorURL is donkey-orchestrator's address. donkey-server
 	// forwards plans, deploys and the changes serialized with them there —
 	// see orchestrator.go. The address only, no path.
@@ -137,7 +133,6 @@ func FromEnv() (*Config, error) {
 		// Egress restriction is opt-in — it can cut an app off from the
 		// internet, so it is on only when the installation asked for it.
 		RestrictEgress:        os.Getenv("DONKEY_RESTRICT_EGRESS") == "true",
-		AIURL:                 os.Getenv("DONKEY_AI_URL"),
 		OrchestratorURL:       envOr("DONKEY_ORCHESTRATOR_URL", "http://donkey-orchestrator:8087"),
 		TelemetryURL:          envOr("DONKEY_TELEMETRY_URL", "http://donkey-telemetry:9090"),
 		TelemetryOTLPEndpoint: envOr("DONKEY_TELEMETRY_OTLP_ENDPOINT", "http://donkey-telemetry:4318"),

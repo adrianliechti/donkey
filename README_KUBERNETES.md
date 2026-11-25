@@ -488,7 +488,7 @@ kubernetes:
 
 Now a space's pods reach only their own space (sibling apps and its
 services, postgres and S3 storage included), the platform endpoints an app
-actually uses — donkey-ai for the openai addon, donkey-proxy for configured
+actually uses — donkey-proxy for configured
 HTTP offerings and donkey-telemetry for metrics — and DNS. Configured addon plugins can additionally declare specific
 destination namespaces/pods/ports or external CIDRs. Donkey persists these
 destinations with the provisioning info and maintains separate additive

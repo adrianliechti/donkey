@@ -39,8 +39,7 @@ type Tunnel struct {
 	Paths       []string `json:"-"`
 	DropHeaders []string `json:"-"`
 	// Credential is a header donkey-server adds, "Name: value" with $KEY from
-	// the binding. A binding without that entry was attached from elsewhere
-	// and is reached at its own address, not through donkey.
+	// the binding. The tunnel requires each referenced key.
 	Credential string `json:"-"`
 	// ProxyGrant authenticates like the console does to a configured proxy
 	// service, which otherwise knows its callers by their pod's address.
@@ -67,8 +66,6 @@ var tunnels = map[string]Tunnel{
 		DropHeaders: []string{"X-Trino-User", "X-Trino-Original-User", "X-Trino-Original-Roles", "X-Trino-Query-Data-Encoding"},
 		Links:       []string{"nextUri", "partialCancelUri"},
 	},
-	// The platform's AI and search proxies take the space's key, which the
-	// binding holds; they decide themselves which operations pass.
 	ProtocolOpenAI: {
 		Port: 8081, Hint: `curl "$URL/models"`,
 		HTTP: true, Credential: "Authorization: Bearer $OPENAI_API_KEY",
@@ -142,7 +139,7 @@ func (t Tunnel) Allows(p string) bool {
 }
 
 // CredentialHeader renders Credential from the binding. ok is false when an
-// entry it needs is missing — a service attached from elsewhere.
+// entry it needs is missing.
 func (t Tunnel) CredentialHeader(binding map[string]string) (name, value string, ok bool) {
 	if t.Credential == "" {
 		return "", "", true

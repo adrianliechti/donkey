@@ -56,7 +56,6 @@ const (
 	CategoryDatabase = "database"
 	CategoryCache    = "cache"
 	CategoryStorage  = "storage"
-	CategoryAI       = "ai"
 )
 
 // EnvNames lists the declared environment keys, sorted.
@@ -87,7 +86,7 @@ func EnvTemplate(desc *addonv1.Offering) map[string]string {
 func sampleInput(typ string) Input {
 	return Input{
 		Space: "space", Namespace: "ns", Name: typ,
-		Version: "sample", Storage: "1Gi", Password: "x", AIProxyURL: "http://ai.example/v1", ExaProxyURL: "http://ai.example/exa",
+		Version: "sample", Storage: "1Gi", Password: "x",
 	}
 }
 
@@ -149,14 +148,8 @@ type Input struct {
 	// ImageRepository overrides the addon's public image repository. The
 	// selected service version is still appended by ImageRef.
 	ImageRepository string
-	// AIProxyURL is where donkey-server's AI proxy is reachable from apps —
-	// the runtime provider fills it in (its address is runtime vocabulary).
-	AIProxyURL string
 	// ServiceProxyURL is the installation's HTTP service proxy endpoint.
 	ServiceProxyURL string
-
-	// ExaProxyURL is the search/contents endpoint reachable from apps.
-	ExaProxyURL string
 }
 
 // WithParameters lifts the well-known parameters into their fields.
@@ -191,8 +184,6 @@ var builtins = map[string]Builtin{
 	"postgres": postgres{},
 	"redis":    redis{},
 	"s3":       rustfs{},
-	"openai":   openai{},
-	"exa":      exa{},
 }
 
 var (

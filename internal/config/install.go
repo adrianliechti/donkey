@@ -18,7 +18,7 @@ import (
 // everything an admin configures about a donkey installation. Flags override
 // individual fields; secrets can come from env instead
 // (DONKEY_REGISTRY_PASSWORD, DONKEY_PACKAGES_PASSWORD,
-// DONKEY_OIDC_CLIENT_SECRET, OPENAI_API_KEY, EXA_API_KEY).
+// DONKEY_OIDC_CLIENT_SECRET, OPENAI_API_KEY).
 type InstallFile struct {
 	// Runtime is where donkey runs apps: "kubernetes" (the default) or
 	// "docker" — straight on a Docker engine, no cluster.
@@ -866,8 +866,7 @@ type InstallKubernetes struct {
 	// NetworkPolicy the fences apply cleanly and change nothing.
 	IsolateSpaces *bool `json:"isolateSpaces,omitempty"`
 	// RestrictEgress adds the egress half of the fence: a space's pods reach
-	// only their own space, the platform services an app uses (donkey-ai,
-	// donkey-proxy, donkey-telemetry) and DNS — never the public internet or another space.
+	// only their own space, permitted service endpoints, telemetry and DNS — never the public internet or another space.
 	//
 	// Off by default and a plain bool, unlike IsolateSpaces: cutting outbound
 	// traffic breaks any app that calls a third-party API at runtime, so it is
@@ -1077,23 +1076,11 @@ func validateRuntimeImage(field, image string) error {
 	return nil
 }
 
-const DefaultExaBaseURL = "https://api.exa.ai"
-
-// InstallExa configures the optional search/contents upstream.
+// InstallExa is accepted for compatibility with installation files predating
+// removal of the built-in Exa service. Its fields are ignored.
 type InstallExa struct {
 	BaseURL string `json:"baseUrl,omitempty"`
 	APIKey  string `json:"apiKey,omitempty"`
-}
-
-func (e InstallExa) Validate() error {
-	if e.BaseURL == "" {
-		return nil
-	}
-	u, err := url.Parse(e.BaseURL)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
-		return fmt.Errorf("exa.baseUrl must be an http or https URL without credentials, query or fragment")
-	}
-	return nil
 }
 
 type InstallAI struct {

@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// Tokens lists the space credentials currently bound to this proxy endpoint.
+// Tokens lists the credentials of running machines bound to this model endpoint.
 type Tokens func(context.Context) ([]string, error)
 
 // A short cache avoids reading the runtime for every request while bounding

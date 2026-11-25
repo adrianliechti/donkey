@@ -134,9 +134,9 @@ docker volume ls --filter label=local.donkey.managed=true
 Spaces are separate Docker networks, so isolation is structural rather than
 policy-based: an app container joins only its own space's network and
 reaches exactly its siblings and the space's services. Donkey's own
-`donkey-server`, `donkey-orchestrator`, `donkey-gateway`, `donkey-ai` and
+`donkey-server`, `donkey-orchestrator`, `donkey-gateway`, `donkey-proxy` and
 `donkey-telemetry` containers attach to every space network (routing,
-tunnels, deploy readiness probes, the AI endpoint and OTLP ingestion need to
+tunnels, deploy readiness probes, configured services and OTLP ingestion need to
 reach the apps); the build engine, package proxy and registry stay on the
 infrastructure network alone. Being on those networks puts the orchestrator
 within reach of app containers, so it takes nothing on trust: a request

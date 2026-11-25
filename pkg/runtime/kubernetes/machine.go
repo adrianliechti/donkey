@@ -418,9 +418,9 @@ func (m machines) Logs(ctx context.Context, id string, opts rt.LogOptions, out i
 	return err
 }
 
-// machineAITokens are the model tokens of the machines that are running:
+// AIProxyTokens are the model tokens of the machines that are running:
 // the ones their environment Secrets hold for this installation's endpoint.
-func (r *Runtime) machineAITokens(ctx context.Context) ([]string, error) {
+func (r *Runtime) AIProxyTokens(ctx context.Context) ([]string, error) {
 	selector := fmt.Sprintf("%s=%s,%s=%s,%s",
 		manifests.LabelInstallation, r.c.installation(),
 		manifests.LabelRole, manifests.RoleMachineConfig, manifests.LabelMachine)

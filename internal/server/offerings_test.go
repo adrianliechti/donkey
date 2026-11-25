@@ -16,28 +16,34 @@ import (
 
 type configuredCatalog struct {
 	addonv1.UnimplementedServiceProviderServer
+	offerings []*addonv1.Offering
 }
 
-func (configuredCatalog) Offerings(context.Context, *addonv1.OfferingsRequest) (*addonv1.OfferingsResponse, error) {
-	schema := addons.ObjectSchema(map[string]any{"tenant": map[string]any{"type": "string", "pattern": "^[a-z]+$"}})
-	schema["required"] = []any{"tenant"}
-	return &addonv1.OfferingsResponse{Offerings: []*addonv1.Offering{{Id: "private-api", Title: "Private API", Protocol: "custom", SpaceConfiguration: addons.MustStruct(schema), Env: []*addonv1.EnvVar{{Name: "API_URL"}}}}}, nil
+func (c configuredCatalog) Offerings(context.Context, *addonv1.OfferingsRequest) (*addonv1.OfferingsResponse, error) {
+	return &addonv1.OfferingsResponse{Offerings: c.offerings}, nil
 }
 
-func TestSpaceCatalogShowsConfigurationReadinessWithoutAdminValues(t *testing.T) {
+func registerTestCatalog(t *testing.T, name string, offerings ...*addonv1.Offering) {
+	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	remote := grpc.NewServer()
-	addonv1.RegisterServiceProviderServer(remote, configuredCatalog{})
+	addonv1.RegisterServiceProviderServer(remote, configuredCatalog{offerings: offerings})
 	go remote.Serve(listener)
 	t.Cleanup(remote.Stop)
-	closePlugins, err := addons.ConnectPlugins(config.AddonPlugins{{Name: "private", Address: listener.Addr().String(), Insecure: true}})
+	closePlugins, err := addons.ConnectPlugins(config.AddonPlugins{{Name: name, Address: listener.Addr().String(), Insecure: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(closePlugins)
+}
+
+func TestSpaceCatalogShowsConfigurationReadinessWithoutAdminValues(t *testing.T) {
+	schema := addons.ObjectSchema(map[string]any{"tenant": map[string]any{"type": "string", "pattern": "^[a-z]+$"}})
+	schema["required"] = []any{"tenant"}
+	registerTestCatalog(t, "private", &addonv1.Offering{Id: "private-api", Title: "Private API", Protocol: "custom", SpaceConfiguration: addons.MustStruct(schema), Env: []*addonv1.EnvVar{{Name: "API_URL"}}})
 	s, r := spaceTestServer()
 	s.cfg.CommonOfferings = config.CommonOfferings{"postgres"}
 	settings := r.settings["team"]
@@ -98,7 +104,7 @@ func TestSpaceCatalogFiltersOfferingsAndAppliesDefaults(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &catalog); err != nil {
 		t.Fatal(err)
 	}
-	if len(catalog.Types) != 5 {
+	if len(catalog.Types) != 3 {
 		t.Fatal("empty commonOfferings did not allow all builtins")
 	}
 	response = callAs(t, s, "dev@example.com", "GET", "/v1/spaces/other/catalog", nil)

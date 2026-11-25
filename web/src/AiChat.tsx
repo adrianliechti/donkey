@@ -16,7 +16,7 @@ type ChatMessages = Parameters<typeof chat>[0]['messages']
  * A quick line to an OpenAI-compatible service: pick a model, ask, read the
  * answer as it streams. A tester, not a chat app — the conversation lasts as
  * long as the page. TanStack AI speaks the protocol; the console route
- * (…/ai) swaps the session for the service's key on the server.
+ * (…/ai) authenticates to the provider on the server.
  */
 export function ChatView({ space, service }: { space: string; service: string }) {
   const models = useModelChoices(space, service)
@@ -37,7 +37,7 @@ export function ChatView({ space, service }: { space: string; service: string })
         adapter: openaiCompatibleText(current.current, {
           baseURL: `${location.origin}${servicePath(space, service, '/ai')}`,
           // The SDK insists on a key. The gateway session authenticates; the
-          // server replaces this placeholder with the service's own.
+          // server chooses the upstream credential from the binding and verified identity.
           apiKey: 'console',
           dangerouslyAllowBrowser: true,
         }),

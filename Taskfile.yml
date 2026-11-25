@@ -297,7 +297,7 @@ tasks:
       - hack/verify.sh docker -run '^TestProjectGoogle$'
 
   verify:web:
-    desc: Upload, review and deploy the two-app demo in Chromium, then exercise its services
+    desc: Review and deploy two sample apps in Chromium and write to the PostgreSQL guestbook
     cmds:
       - hack/verify-web.sh
 
@@ -314,12 +314,12 @@ tasks:
       - hack/verify.sh kind
 
   demo:
-    desc: "DEMO: create a local devkube cluster, install the full donkey stack (auto-login fake IdP) and deploy the demo app (dashboard + MCP backend)"
+    desc: "DEMO: create a local devkube cluster, install the full donkey stack (auto-login fake IdP) and deploy the PostgreSQL guestbook"
     cmds:
       - hack/demo.sh
 
   demo:app:
-    desc: "DEMO: log in and deploy the demo app (dashboard + MCP backend); needs install:kind and `devkube connect` running"
+    desc: "DEMO: log in and deploy the PostgreSQL guestbook; needs install:kind and `devkube connect` running"
     cmds:
       - hack/demo-app.sh
 

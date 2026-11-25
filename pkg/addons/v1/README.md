@@ -37,7 +37,7 @@ Provider registration is installation-wide. `commonOfferings` in the install
 file chooses the offerings available in every space:
 
 ```yaml
-commonOfferings: [postgres, redis, s3, openai, exa]
+commonOfferings: [postgres, redis, s3]
 ```
 
 An omitted or empty list allows **all** offerings, including plugins. With a
@@ -106,7 +106,7 @@ contract from that record and only calls `Provision` or `Deprovision`, so an
 instance never waits on its provider describing itself again; if the
 provider is down, the provisioning call itself reports it. Offering ids must
 be unique across the installation: the built-in ids (`postgres`, `redis`,
-`rustfs`, `openai`) are reserved, and a catalog that repeats an id, or one
+`s3` and its alias `rustfs`) are reserved, and a catalog that repeats an id, or one
 another provider already serves, is rejected as a whole.
 
 ## Lifecycle
@@ -233,7 +233,7 @@ to the service's own documentation.
 
 `protocol` describes how clients talk to the service, independently of its
 id or location. Use `postgres` for PostgreSQL, `mysql` for MySQL/MariaDB,
-`redis`, `s3`, `openai`, `trino`, `webdav`, `carddav`, or `caldav`. Custom lowercase names are also allowed; they do
+`redis`, `s3`, `openai`, `exa`, `trino`, `webdav`, `carddav`, or `caldav`. Custom lowercase names are also allowed; they do
 not select a built-in console. `postgresql` and `mariadb` normalize to
 `postgres` and `mysql`. This field is separate from `Endpoint.protocol`,
 which means TCP, UDP, or SCTP.
@@ -256,7 +256,14 @@ The same protocol selects the catalog icon and console for every provider:
 | `webdav` | `WEBDAV_URL` (HTTP/HTTPS base URL) | File browser over one tree; sends the user's IdP access token as `Authorization: Bearer <token>` on every request (PROPFIND, GET, PUT, DELETE, MKCOL), so the add-on decides what that user may see — no credential in the binding |
 | `carddav` | `CARDDAV_URL` (HTTP/HTTPS base URL) | Address books and their contacts; sends the user's IdP access token like `webdav` (PROPFIND, REPORT `addressbook-query`, GET, DELETE) — no credential in the binding |
 | `caldav` | `CALDAV_URL` (HTTP/HTTPS base URL) | Calendars as a week or month agenda; sends the user's IdP access token like `webdav` (PROPFIND, REPORT `calendar-query` with `expand`, GET, DELETE) — no credential in the binding |
-| `openai` | `OPENAI_BASE_URL` (HTTP/HTTPS base URL), optional `OPENAI_API_KEY` and `OPENAI_MODEL` | Model chat |
+| `openai` | `OPENAI_BASE_URL` (HTTP/HTTPS base URL), optional `OPENAI_API_KEY` and `OPENAI_MODEL` | Model listing and chat |
+| `exa` | `EXA_BASE_URL` and optional `EXA_API_KEY` | Search and page contents |
+
+OpenAI and Exa are supplied by plugins. For a plugin-provisioned OpenAI endpoint
+without an API key, the console sends the viewer’s IdP token as `Authorization: Bearer <token>`
+on model listing and chat requests. This requires `auth.scope`. If the binding
+supplies an API key, that key occupies `Authorization` and the scoped viewer
+token travels in `X-Forwarded-Access-Token` when configured.
 
 For known protocols, the offering's `env` must include the connection URL
 key; the provisioning result must contain a usable URL for that protocol.

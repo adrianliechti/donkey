@@ -41,7 +41,9 @@ func (r *Runtime) ServiceConnection(ctx context.Context, space, name string) (rt
 		return rt.ServiceConnection{}, err
 	}
 	metadata := bindingMetadata(secret)
-	return rt.ServiceConnection{Binding: secretStringData(secret), Type: metadata.Type, Protocol: metadata.Protocol, Parameters: metadata.Parameters}, nil
+	return rt.ResolveServiceConnection(metadata, secretStringData(secret), r.aiProxyURL(), func() (*addons.Provisioning, error) {
+		return r.pluginState(ctx, space, name)
+	})
 }
 
 // EnsureService creates (or re-applies) one service of the space —
@@ -172,9 +174,7 @@ func (r *Runtime) provisionService(ctx context.Context, space, ns string, spec r
 		Space: space, Namespace: ns,
 		Name: spec.Name, ObjectName: r.name(space, spec.Name),
 		ImageRepository: r.opts.AddonImages.Repository(spec.Type),
-		AIProxyURL:      r.aiProxyURL(),
 		ServiceProxyURL: r.serviceProxyURL(),
-		ExaProxyURL:     r.exaProxyURL(),
 	}.WithParameters(params)
 	// Reuse the credential the instance was initialized with — rotating it
 	// here would lock the service out of its own kept data.
@@ -368,40 +368,11 @@ func (r *Runtime) ListServices(ctx context.Context, space, owner string) ([]rt.S
 	return bindings, nil
 }
 
-func (r *Runtime) exaProxyURL() string {
-	return strings.TrimSuffix(r.aiProxyURL(), "/v1") + "/exa"
-}
-
-func (r *Runtime) ExaProxyTokens(ctx context.Context) ([]string, error) {
-	return r.c.SharedBindingValues(ctx, "EXA_API_KEY", "EXA_BASE_URL", r.exaProxyURL())
-}
-
-func (r *Runtime) AIProxyTokens(ctx context.Context) ([]string, error) {
-	tokens, err := r.c.SharedBindingValues(ctx, "OPENAI_API_KEY", "OPENAI_BASE_URL", r.aiProxyURL())
-	if err != nil {
-		return nil, err
-	}
-	// A running machine's agent calls the same endpoint with a token of its
-	// own, valid for as long as the machine runs.
-	machines, err := r.machineAITokens(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return append(tokens, machines...), nil
-}
-
 func (r *Runtime) serviceProxyURL() string {
 	return fmt.Sprintf("http://%s.%s.svc", manifests.ProxyAppName, r.opts.SystemNamespace)
 }
 
-// aiProxyURL is where apps reach this installation's AI endpoint — its own,
-// not whichever one answers first. donkey-ai rather than donkey-server: the
-// address apps are handed must not be the process that writes to the cluster.
-//
-// ".svc" and no further, deliberately. The cluster domain is a per-cluster
-// setting ("cluster.local" is only the default), and every pod's resolv.conf
-// carries "svc.<domain>" in its search list — so the short form resolves
-// where a hardcoded fully-qualified one would not.
+// aiProxyURL is the installation's machine model endpoint.
 func (r *Runtime) aiProxyURL() string {
 	return fmt.Sprintf("http://%s.%s.svc/v1", manifests.AIAppName, r.opts.SystemNamespace)
 }

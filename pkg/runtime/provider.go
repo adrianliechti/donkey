@@ -122,8 +122,7 @@ type Provider interface {
 	ServiceEndpoint(ctx context.Context, space, name string) (host string, port int32, err error)
 	// ListServices lists the bindings an owner holds.
 	ListServices(ctx context.Context, space, owner string) ([]ServiceBindingInfo, error)
-	// AIProxyTokens returns only credentials bound to this installation's AI
-	// endpoint. Other OpenAI-compatible providers must not grant proxy access.
+	// AIProxyTokens returns the running development machines’ model credentials.
 	AIProxyTokens(ctx context.Context) ([]string, error)
 	// ServiceProxyAccess resolves a runtime IP to its space and checks that
 	// space's canonical binding for the configured HTTP offering.
@@ -131,9 +130,6 @@ type Provider interface {
 	// ServiceProxySpaceAccess checks the current grant for a console request
 	// whose space was authenticated by the control plane.
 	ServiceProxySpaceAccess(ctx context.Context, space, offering string) (bool, error)
-
-	// ExaProxyTokens returns only tokens bound to this installation's search endpoint.
-	ExaProxyTokens(ctx context.Context) ([]string, error)
 
 	// --- Files ------------------------------------------------------------
 
@@ -452,6 +448,9 @@ type ServiceConnection struct {
 	Type       string
 	Protocol   string
 	Parameters map[string]any
+	// ManagedOpenAI marks endpoints supplied by an installed plugin.
+	// Only these destinations may receive a console user's IdP token.
+	ManagedOpenAI bool
 }
 
 // StorageFolder maps a folder on the disk to where the app mounts it.

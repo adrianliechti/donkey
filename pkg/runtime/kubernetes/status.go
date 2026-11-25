@@ -204,34 +204,6 @@ func (c *Client) ListAddonBindings(ctx context.Context, namespace, space, app st
 	return out, nil
 }
 
-// SharedBindingValues collects a key only from canonical bindings matching
-// the expected endpoint, so another provider's credentials are never accepted.
-func (c *Client) SharedBindingValues(ctx context.Context, key, matchKey, matchValue string) ([]string, error) {
-	selector := fmt.Sprintf("%s=%s,%s=%s,%s",
-		manifests.LabelInstallation, c.installation(),
-		manifests.LabelRole, manifests.RoleBinding, manifests.LabelAddon)
-	var out []string
-	for _, ns := range c.sweep() {
-		secrets, err := c.Clientset.CoreV1().Secrets(ns).List(ctx, metav1.ListOptions{
-			LabelSelector: selector,
-		})
-		if err != nil {
-			return nil, err
-		}
-		for _, sec := range secrets.Items {
-			space, addon := sec.Labels[manifests.LabelSpace], sec.Labels[manifests.LabelAddon]
-			if space == "" || addon == "" || c.requireOwnedObject("Secret", sec.Namespace, sec.Name, sec.Labels,
-				manifests.AddonLabels(space, addon, manifests.RoleBinding)) != nil {
-				continue
-			}
-			if v, ok := sec.Data[key]; ok && len(v) > 0 && string(sec.Data[matchKey]) == matchValue {
-				out = append(out, string(v))
-			}
-		}
-	}
-	return out, nil
-}
-
 // ListAddonAttachments names the apps holding a copy of the shared addon's
 // binding.
 //

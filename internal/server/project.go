@@ -254,12 +254,15 @@ func (s *Server) readProject(ctx context.Context, dir string, reading *ai.Projec
 	if err := group.Wait(); err != nil {
 		return nil, err
 	}
+	appByRoot := make(map[string]*storedPlan, len(state.apps))
 	for _, sp := range state.apps {
 		s.adoptConsoleChoices(ctx, sp.app.Space, sp.app)
+		appByRoot[sp.root] = sp
 	}
+	connections := reading.Connections
+	reading.Connections = nil
 	sourceSize := 0
-	for i := range reading.Connections {
-		c := &reading.Connections[i]
+	for _, c := range connections {
 		_, c.App, err = projectPath(dir, c.App)
 		if err != nil {
 			return nil, err
@@ -269,17 +272,17 @@ func (s *Server) readProject(ctx context.Context, dir string, reading *ai.Projec
 			if err != nil {
 				return nil, err
 			}
-		} else if knownAddon(ctx, c.Target) {
-			// The repository reading may see a connection the per-app reading
-			// missed. Offer it once, before any review choices are made.
-			for _, sp := range state.apps {
-				if sp.root == c.App && !hasAddonType(sp.app, c.Target) && s.offeringAvailable(ctx, sp.app.Space, c.Target) {
-					sp.app.Addons = append(sp.app.Addons, config.AddonConfig{Type: c.Target, Name: c.Target})
-					sp.services = append(sp.services, PlanService{Type: c.Target, Name: c.Target, Known: true, Selected: true, Reason: c.Reason})
-				}
+		} else if sp := appByRoot[c.App]; sp != nil && !hasAddonType(sp.app, c.Target) {
+			// Only propose source and environment changes for a service the
+			// app can actually provision. Manifest declarations are validated separately.
+			if !s.offeringAvailable(ctx, sp.app.Space, c.Target) {
+				continue
 			}
+			sp.app.Addons = append(sp.app.Addons, config.AddonConfig{Type: c.Target, Name: c.Target})
+			sp.services = append(sp.services, PlanService{Type: c.Target, Name: c.Target, Known: true, Selected: true, Reason: c.Reason})
 		}
 		if c.File == "" {
+			reading.Connections = append(reading.Connections, c)
 			continue
 		}
 		full, rel, err := projectPath(dir, c.File)
@@ -287,6 +290,7 @@ func (s *Server) readProject(ctx context.Context, dir string, reading *ai.Projec
 			return nil, err
 		}
 		c.File = rel
+		reading.Connections = append(reading.Connections, c)
 		if _, loaded := state.files[rel]; loaded {
 			continue
 		}
@@ -455,6 +459,15 @@ func (s *Server) resolveProject(ctx context.Context, id string, state *projectSt
 			if config.PublicEnv(c.Env) {
 				block("Service credentials cannot be included in browser variable " + c.Env)
 				continue
+			}
+			// bindEnvironment already wires canonical names. An optional key
+			// that has not been provisioned must not become a required reference
+			// just because the source reads it.
+			if c.Env == c.Key && app.Env[c.Env] != value {
+				if c.File == "" {
+					continue
+				}
+				c.Env = ""
 			}
 		} else {
 			to := byPath[c.Target]

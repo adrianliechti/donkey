@@ -476,7 +476,7 @@ func (s *Server) handleAddAppService(w http.ResponseWriter, r *http.Request) {
 
 	connection, err := s.rt.ServiceConnection(ctx, space, req.Name)
 	if err != nil {
-		writeErr(w, http.StatusBadGateway, err)
+		writeErr(w, statusFor(err), err)
 		return
 	}
 	if req.Type != "" {
@@ -794,7 +794,7 @@ func (s *Server) handleServiceHTTPTunnel(w http.ResponseWriter, r *http.Request)
 	}
 	header, value, ok := tunnel.CredentialHeader(connection.Binding)
 	if !ok {
-		writeErr(w, http.StatusBadRequest, fmt.Errorf("%s was attached from elsewhere — reach it at its own address, no tunnel needed", name))
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("the %s tunnel needs an API key in its service binding", name))
 		return
 	}
 	if header != "" {

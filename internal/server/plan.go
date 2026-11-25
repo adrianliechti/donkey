@@ -802,11 +802,6 @@ func (s *Server) spaceHasService(ctx context.Context, space, name string) bool {
 	return err == nil && len(data) > 0
 }
 
-func knownAddon(ctx context.Context, typ string) bool {
-	_, err := addons.Get(ctx, typ)
-	return err == nil
-}
-
 func exposureOfConfig(app *config.AppConfig) string {
 	switch {
 	case app.Internal:
@@ -871,7 +866,10 @@ func (s *Server) bindEnvironment(ctx context.Context, app *config.AppConfig) err
 					return err
 				}
 			}
-			values = addons.EnvTemplate(desc)
+			if err := addons.PlanEnvironment(app, service.Name, desc); err != nil {
+				return err
+			}
+			continue
 		}
 		if err := addons.BindEnvironment(app, service.Name, values); err != nil {
 			return err

@@ -350,37 +350,6 @@ func (s state) attachments(space, name string) ([]string, error) {
 	return out, nil
 }
 
-// bindingValues collects one key's values across every space's shared
-// bindings — the AI proxy's token list.
-func (s state) bindingValues(key, matchKey, matchValue string) ([]string, error) {
-	var out []string
-	spaces, err := os.ReadDir(s.path("bindings"))
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	for _, sp := range spaces {
-		names, err := s.records("bindings", sp.Name())
-		if err != nil {
-			continue
-		}
-		for _, name := range names {
-			// The space's own bindings are the records with no owner prefix.
-			if strings.Contains(name, ".") {
-				continue
-			}
-			if data, err := s.readMap("bindings", sp.Name(), name); err == nil {
-				if v := data[key]; v != "" && data[matchKey] == matchValue {
-					out = append(out, v)
-				}
-			}
-		}
-	}
-	return out, nil
-}
-
 // --- routes ---------------------------------------------------------------
 
 func (s state) route(space, name string) (*Route, error) {

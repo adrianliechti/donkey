@@ -162,7 +162,7 @@ func (x *OfferingsResponse) GetOfferings() []*Offering {
 }
 
 // One catalog entry. Ids must be unique across the installation; built-in
-// ids (postgres, redis, rustfs, openai) are reserved.
+// ids (postgres, redis, and s3 including its rustfs alias) are reserved.
 type Offering struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Lowercase catalog id the API, CLI and donkey.yaml speak.

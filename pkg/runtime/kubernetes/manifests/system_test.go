@@ -240,9 +240,7 @@ func TestInstallTouchesOnlyItsOwnObjects(t *testing.T) {
 		"ClusterRoleBinding:" + OrchestratorName: true,
 		"ClusterRole:" + GatewayAppName:          true,
 		"ClusterRoleBinding:" + GatewayAppName:   true,
-		// donkey-ai reads the binding Secrets to know which per-space tokens
-		// are valid; with a namespace per space those are spread across all
-		// of them, so this one is read-only and cluster-scoped.
+		// donkey-ai reads machine environment Secrets to verify model tokens.
 		"ClusterRole:" + AIAppName:           true,
 		"ClusterRoleBinding:" + AIAppName:    true,
 		"ClusterRole:" + ProxyAppName:        true,

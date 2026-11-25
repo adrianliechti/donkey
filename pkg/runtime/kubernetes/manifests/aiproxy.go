@@ -12,22 +12,17 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 )
 
-// donkey-ai is the openai addon's shared endpoint. It runs apart from the
-// admin API as its own workload, with its own
-// identity, because of what that means: a flaw in the part apps can talk to
-// must not sit in the process that can write to the cluster. It holds the
-// platform's AI credential and read-only access to the binding Secrets, and
-// nothing else — no session key, no registry credential, no write verbs.
+// donkey-ai runs the development machines' model endpoint with a dedicated
+// read-only service account and the platform's upstream credential.
 const (
 	AIAppName = "donkey-ai"
 	aiPort    = 8089
 )
 
-// aiObjects renders the AI endpoint. Every installation gets one: the openai
-// addon is in the catalog whether or not a space has connected it yet.
+// aiObjects renders the machine model endpoint.
 func aiObjects(in SystemInput) []runtime.Object {
 	objs := []runtime.Object{aiServiceAccount(in)}
-	objs = append(objs, aiTokenAccess(in)...)
+	objs = append(objs, bindingTokenAccess(in, AIAppName)...)
 	return append(objs,
 		aiDeployment(in),
 		systemService(in, AIAppName, 80, aiPort),
@@ -40,15 +35,6 @@ func aiServiceAccount(in SystemInput) *corev1.ServiceAccount {
 		TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "ServiceAccount"},
 		ObjectMeta: metav1.ObjectMeta{Name: AIAppName, Namespace: in.Namespace, Labels: SystemLabels(AIAppName)},
 	}
-}
-
-// aiTokenAccess is all donkey-ai may do: read the Secrets the addon bindings
-// live in, to know which per-space tokens are currently valid. Read-only, and
-// namespaced wherever the arrangement allows it — with one namespace for
-// every app there is exactly one place to look, so this grants nothing
-// cluster-wide at all.
-func aiTokenAccess(in SystemInput) []runtime.Object {
-	return bindingTokenAccess(in, AIAppName)
 }
 
 // bindingTokenAccess grants a shared endpoint only read access to bindings.
@@ -100,11 +86,10 @@ func bindingTokenAccess(in SystemInput, name string, extraResources ...string) [
 }
 
 // aiConfigHash rolls the pod when the credential it swaps in changes.
-func (in SystemInput) aiConfigHash() string { return configHash(in.OpenAIAPIKey, in.ExaAPIKey) }
+func (in SystemInput) aiConfigHash() string { return configHash(in.OpenAIAPIKey) }
 
 func aiDeployment(in SystemInput) *appsv1.Deployment {
 	labels := SystemLabels(AIAppName)
-	replicas := int32(1)
 	health := corev1.ProbeHandler{
 		HTTPGet: &corev1.HTTPGetAction{Path: "/healthz", Port: intstr.FromInt32(aiPort)},
 	}
@@ -112,10 +97,8 @@ func aiDeployment(in SystemInput) *appsv1.Deployment {
 		{Name: "DONKEY_LISTEN", Value: fmt.Sprintf(":%d", aiPort)},
 		{Name: "OPENAI_BASE_URL", Value: in.OpenAIBaseURL},
 		secretEnvVar("OPENAI_API_KEY", "OPENAI_API_KEY"),
-		{Name: "EXA_BASE_URL", Value: in.ExaBaseURL},
-		secretEnvVar("EXA_API_KEY", "EXA_API_KEY"),
-		// Where to look for the binding Secrets. Only the namespaces — this
-		// process never maps a space onto one.
+		// Where to find the machines’ model tokens.
+		{Name: "DONKEY_NAMESPACE_PREFIX", Value: in.NamespacePrefix},
 		{Name: "DONKEY_SYSTEM_NAMESPACE", Value: in.Namespace},
 		{Name: "DONKEY_WORKLOAD_NAMESPACE", Value: in.WorkloadNamespace},
 	}
@@ -126,7 +109,7 @@ func aiDeployment(in SystemInput) *appsv1.Deployment {
 		TypeMeta:   metav1.TypeMeta{APIVersion: "apps/v1", Kind: "Deployment"},
 		ObjectMeta: metav1.ObjectMeta{Name: AIAppName, Namespace: in.Namespace, Labels: labels},
 		Spec: appsv1.DeploymentSpec{
-			Replicas: &replicas,
+			Replicas: new(int32(1)),
 			Selector: &metav1.LabelSelector{MatchLabels: SystemSelector(AIAppName)},
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: in.hashedTemplateMeta(AIAppName, in.ServerImage, in.aiConfigHash()),
@@ -160,10 +143,12 @@ func aiDeployment(in SystemInput) *appsv1.Deployment {
 	}
 }
 
-// aiNetworkPolicy admits the apps this endpoint exists for, apart from the
-// admin API holding cluster write, and donkey-server, which forwards the console's
-// /ai/v1 here so the console's chat stays on its own origin.
+// Only development machines may connect to the model proxy.
 func aiNetworkPolicy(in SystemInput) *networkPolicy {
-	return ingressPolicy(in, AIAppName, aiPort,
-		append(append(appPeers(in), systemPeer(in.Namespace, ServerName)), machinePeers(in)...))
+	peers := machinePeers(in)
+	policy := ingressPolicy(in, AIAppName, aiPort, peers)
+	if len(peers) == 0 {
+		policy.Spec.Ingress = nil
+	}
+	return policy
 }

@@ -215,7 +215,7 @@ func TestPlanAnswersEverything(t *testing.T) {
 	if len(plan.Volumes) != 1 || !plan.Volumes[0].Selected || plan.Volumes[0].Reason == "" {
 		t.Errorf("the data folder should be offered, ticked, with its reason: %+v", plan.Volumes)
 	}
-	if len(plan.Services) != 3 {
+	if len(plan.Services) != 2 {
 		t.Fatalf("every detected catalog service should be offered: %+v", plan.Services)
 	}
 	for _, service := range plan.Services {

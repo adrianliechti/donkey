@@ -15,6 +15,7 @@ import (
 
 	"github.com/adrianliechti/donkey/internal/ai"
 	"github.com/adrianliechti/donkey/internal/config"
+	addonv1 "github.com/adrianliechti/donkey/pkg/addons/v1"
 	"github.com/adrianliechti/donkey/pkg/runtime"
 )
 
@@ -43,6 +44,9 @@ func (projectRuntime) Render(spec runtime.DeploySpec) (string, error) {
 
 func projectFixture(t *testing.T) (*Server, *ai.Project, []byte) {
 	t.Helper()
+	registerTestCatalog(t, "model-provider", &addonv1.Offering{Id: "openai", Title: "OpenAI", Protocol: "openai",
+		Env: []*addonv1.EnvVar{{Name: "OPENAI_BASE_URL"}, {Name: "OPENAI_MODEL", Optional: true}, {Name: "OPENAI_API_KEY", Optional: true, Secret: true}},
+	})
 	reading := &ai.Project{
 		Apps: []ai.ProjectApp{{Path: "frontend", Context: "."}, {Path: "backend", Context: "backend"}},
 		Connections: []ai.ProjectConnection{
@@ -52,6 +56,7 @@ func projectFixture(t *testing.T) (*Server, *ai.Project, []byte) {
 			{App: "backend", Target: "postgres", Kind: "service", Env: "DB_URL", Key: "DATABASE_URL"},
 			{App: "backend", Target: "openai", Kind: "service", Env: "AI_ENDPOINT", Key: "OPENAI_BASE_URL"},
 			{App: "backend", Target: "s3", Kind: "service", Env: "S3_ENDPOINT", Key: "AWS_ENDPOINT_URL_S3"},
+			{App: "backend", Target: "openai", Kind: "service", Env: "OPENAI_API_KEY", Key: "OPENAI_API_KEY"},
 		},
 	}
 	s := planServer(projectRuntime{planRuntime{spaces: []string{"default"}}}, &ai.Analysis{Port: 8080})
@@ -123,7 +128,10 @@ func TestProjectPlansEveryAppAndResolvesConnections(t *testing.T) {
 	if len(back.Routes) != 1 || back.Routes[0] != (config.RouteConfig{App: "frontend", Path: "/_donkey/backend", StripPrefix: true}) {
 		t.Fatalf("bad browser route: %+v", back.Routes)
 	}
-	for key, value := range map[string]string{"DATABASE_URL": "${postgres.DATABASE_URL}", "DB_URL": "${postgres.DATABASE_URL}", "AI_ENDPOINT": "${openai.OPENAI_BASE_URL}", "OPENAI_API_KEY": "${openai.OPENAI_API_KEY}", "OPENAI_MODEL": "${openai.OPENAI_MODEL}", "S3_ENDPOINT": "${s3.AWS_ENDPOINT_URL_S3}", "AWS_SECRET_ACCESS_KEY": "${s3.AWS_SECRET_ACCESS_KEY}"} {
+	if _, exists := back.Env["OPENAI_API_KEY"]; exists {
+		t.Fatal("planning required an optional plugin key before provisioning")
+	}
+	for key, value := range map[string]string{"DATABASE_URL": "${postgres.DATABASE_URL}", "DB_URL": "${postgres.DATABASE_URL}", "AI_ENDPOINT": "${openai.OPENAI_BASE_URL}", "S3_ENDPOINT": "${s3.AWS_ENDPOINT_URL_S3}", "AWS_SECRET_ACCESS_KEY": "${s3.AWS_SECRET_ACCESS_KEY}"} {
 		if back.Env[key] != value {
 			t.Errorf("%s = %q, want %q", key, back.Env[key], value)
 		}
@@ -217,6 +225,18 @@ func TestProjectRejectsInvalidConnections(t *testing.T) {
 				t.Fatalf("unsafe plan was accepted: %+v", p)
 			}
 		})
+	}
+}
+
+func TestProjectSkipsUnavailableInferredService(t *testing.T) {
+	s, reading, body := projectFixture(t)
+	reading.Connections = append(reading.Connections, ai.ProjectConnection{
+		App: "backend", Target: "exa", Kind: "service", Env: "SEARCH_URL", Key: "EXA_BASE_URL",
+		File: "backend/server.js", Old: "unused", New: "unavailable",
+	})
+	p := callProject(t, s, body)
+	if !p.Ready || strings.Contains(p.Apps[1].Config, "SEARCH_URL") {
+		t.Fatalf("inferred an unavailable search service: %+v", p.Findings)
 	}
 }
 

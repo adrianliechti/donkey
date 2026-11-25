@@ -28,7 +28,7 @@ import (
 
 // One binary, seven roles: the control plane's API and console by default,
 // the orchestrator that builds and deploys behind it, the login gateway, the
-// OpenAI and Exa endpoint, the service proxy, the build-only package proxy,
+// machine model endpoint, the service proxy, the build-only package proxy,
 // and traffic telemetry service. Separate processes keep each role down to the
 // credentials and permissions it needs while the release ships one server
 // artifact.

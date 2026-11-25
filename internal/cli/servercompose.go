@@ -212,7 +212,6 @@ func dockerComposeFiles(settings *config.InstallFile, bundledRegistry bool) (map
 		"DONKEY_PACKAGES_URL":            "http://${DONKEY_PACKAGES_IP:-" + composePackagesIP + "}:8090",
 		"DONKEY_BUILDER_DEBIAN_MIRROR":   strconv.FormatBool(settings.Build.Packages.Debian != ""),
 		"DONKEY_BUILDER_ALPINE_MIRROR":   strconv.FormatBool(settings.Build.Packages.Alpine != ""),
-		"DONKEY_AI_URL":                  "http://" + dockerAIName + ":8089",
 		"DONKEY_TELEMETRY_URL":           "http://" + dockerTelemetryName + ":9090",
 		"DONKEY_TELEMETRY_OTLP_ENDPOINT": "http://" + dockerTelemetryName + ":4318",
 		"DONKEY_DEFAULT_PLATFORM":        settings.DefaultPlatform,
@@ -322,8 +321,6 @@ func dockerComposeFiles(settings *config.InstallFile, bundledRegistry bool) (map
 		"DONKEY_LISTEN":    ":8089",
 		"OPENAI_BASE_URL":  settings.AI.BaseURL,
 		"OPENAI_API_KEY":   "${OPENAI_API_KEY:-}",
-		"EXA_BASE_URL":     settings.Exa.BaseURL,
-		"EXA_API_KEY":      "${EXA_API_KEY:-}",
 	}
 	addComposeProxyEnv(aiEnv, settings.Build.Proxy)
 
@@ -388,7 +385,6 @@ func dockerComposeFiles(settings *config.InstallFile, bundledRegistry bool) (map
 			DependsOn: map[string]composeDependency{
 				"orchestrator": {Condition: "service_started"},
 				"telemetry":    {Condition: "service_healthy"},
-				"ai":           {Condition: "service_started"},
 			},
 			Networks: []string{"donkey"},
 		},
@@ -481,7 +477,6 @@ DONKEY_REGISTRY_PASSWORD=
 DONKEY_PACKAGES_PASSWORD=
 DONKEY_OIDC_CLIENT_SECRET=
 OPENAI_API_KEY=
-EXA_API_KEY=
 DONKEY_SESSION_KEY=
 DONKEY_TELEMETRY_KEY=
 DONKEY_BUILD_ENV=
@@ -563,7 +558,6 @@ DONKEY_REGISTRY_PASSWORD="${DONKEY_REGISTRY_PASSWORD:-$(existing donkey-server D
 DONKEY_PACKAGES_PASSWORD="${DONKEY_PACKAGES_PASSWORD:-$(existing donkey-packages DONKEY_PACKAGES_PASSWORD)}"
 DONKEY_OIDC_CLIENT_SECRET="${DONKEY_OIDC_CLIENT_SECRET:-$(existing donkey-server DONKEY_OIDC_CLIENT_SECRET)}"
 OPENAI_API_KEY="${OPENAI_API_KEY:-$(existing donkey-server OPENAI_API_KEY)}"
-EXA_API_KEY="${EXA_API_KEY:-$(existing donkey-ai EXA_API_KEY)}"
 DONKEY_SESSION_KEY="${DONKEY_SESSION_KEY:-$(existing donkey-server DONKEY_SESSION_KEY)}"
 DONKEY_TELEMETRY_KEY="${DONKEY_TELEMETRY_KEY:-$(existing donkey-telemetry DONKEY_TELEMETRY_KEY)}"
 DONKEY_BUILD_ENV="${DONKEY_BUILD_ENV:-$(existing donkey-server DONKEY_BUILD_ENV)}"
@@ -597,7 +591,7 @@ HTTPS_PROXY="${HTTPS_PROXY:-$(existing donkey-server HTTPS_PROXY)}"
 if [ -z "$DONKEY_TELEMETRY_KEY" ]; then DONKEY_TELEMETRY_KEY=$(openssl rand -hex 32); fi
 
 export DONKEY_REGISTRY_PASSWORD DONKEY_PACKAGES_PASSWORD DONKEY_OIDC_CLIENT_SECRET
-export OPENAI_API_KEY EXA_API_KEY DONKEY_SESSION_KEY DONKEY_TELEMETRY_KEY
+export OPENAI_API_KEY DONKEY_SESSION_KEY DONKEY_TELEMETRY_KEY
 export DONKEY_BUILD_ENV DONKEY_BUILDER_INSTRUCTIONS HTTP_PROXY HTTPS_PROXY
 
 `)

@@ -23,7 +23,9 @@ function collect(dir, prefix = '') {
     else if (entry.isFile()) files[name] = readFileSync(path.join(dir, entry.name))
   }
 }
-collect(path.join(root, 'examples/demo'))
+for (const sample of ['addons-sample', 'static-site']) {
+  collect(path.join(root, 'testdata', sample), sample + '/')
+}
 const browser = await chromium.launch({ headless: true, args: [`--host-resolver-rules=MAP *.${domain} 127.0.0.1, MAP ${domain} 127.0.0.1`] })
 const context = await browser.newContext({ ignoreHTTPSErrors: true, viewport: { width: 1440, height: 1100 } })
 const page = await context.newPage()
@@ -40,28 +42,21 @@ try {
   assert.ok(created.ok(), `test space creation: ${created.status()}`)
   await page.goto(`${consoleURL}/#/deploy/${space}`)
   const reading = page.waitForResponse(r => r.url().includes('/v1/projects/plans?') && r.request().method() === 'POST', { timeout: 360000 })
-  await page.locator('input[type=file]').setInputFiles({ name: 'demo.zip', mimeType: 'application/zip', buffer: Buffer.from(zipSync(files)) })
+  await page.locator('input[type=file]').setInputFiles({ name: 'samples.zip', mimeType: 'application/zip', buffer: Buffer.from(zipSync(files)) })
   const response = await reading
   assert.equal(response.status(), 200, await response.text())
   const plan = await response.json()
   writeFileSync(path.join(reports, 'services-browser-plan.json'), JSON.stringify(plan, null, 2), { mode: 0o600 })
-  assert.deepEqual(plan.apps.map(a => a.root).sort(), ['backend', 'dashboard'])
-  const backend = plan.apps.find(a => a.root === 'backend')
-  assert.deepEqual(backend.services.filter(s => s.selected).map(s => s.type).sort(), ['openai', 'postgres', 's3'])
+  assert.deepEqual(plan.apps.map(a => a.root).sort(), ['addons-sample', 'static-site'])
+  const guestbook = plan.apps.find(a => a.root === 'addons-sample')
+  assert.deepEqual(guestbook.services.filter(s => s.selected).map(s => s.type), ['postgres'])
   const deployButton = page.getByRole('button', { name: 'Deploy all 2 apps', exact: true })
   assert.equal(await deployButton.isEnabled(), true, 'a ready plan must be deployable')
-  const dashboard = page.locator('fieldset > details').filter({ has: page.locator('summary', { hasText: 'dashboard' }) })
-  if (await dashboard.getAttribute('open') === null) await dashboard.locator('summary').first().click()
-  await dashboard.getByRole('radio', { name: /^API/ }).check()
-  assert.equal(await deployButton.isEnabled(), true, 'changing app mode must remain deployable')
-  await dashboard.getByRole('radio', { name: /^Web app/ }).check()
-  assert.equal(await deployButton.isEnabled(), true, 'reverting app mode must restore the reviewed state')
-  for (const name of ['backend', 'dashboard']) {
-    const details = page.locator('fieldset > details').filter({ has: page.locator('summary', { hasText: name }) })
-    if (await details.getAttribute('open') === null) await details.locator('summary').first().click()
-    await details.getByRole('radio', { name: name === 'backend' ? /^Internal/ : /^Public/ }).check()
+  const access = page.getByRole('radiogroup', { name: 'Who can reach it' })
+  for (const [index, app] of plan.apps.entries()) {
+    const exposure = app.root === 'addons-sample' ? /^Public/ : /^Internal/
+    await access.nth(index).getByRole('radio', { name: exposure }).click()
   }
-  assert.equal(await page.getByRole('radio', { checked: true }).count(), 2, 'exposure choices must remain independent per app')
   const checked = page.waitForResponse(r => r.url().includes('/v1/projects/plans/') && r.request().method() === 'PUT')
   await page.getByRole('button', { name: 'Check changes', exact: true }).click()
   const review = await checked
@@ -69,10 +64,13 @@ try {
   const settled = await review.json()
   writeFileSync(path.join(reports, 'services-browser-plan.json'), JSON.stringify(settled, null, 2), { mode: 0o600 })
   assert.equal(settled.ready, true, 'review has blocking findings')
+  for (const app of settled.apps) {
+    assert.equal(app.app.exposure, app.root === 'addons-sample' ? 'public' : 'internal')
+  }
   await page.screenshot({ path: path.join(reports, 'services-browser-review.png'), fullPage: true })
-  console.log('Browser review: two apps and PostgreSQL, S3, OpenAI selected; independent exposure choices passed')
+  console.log('Browser review: two apps with their selected services; independent exposure choices passed')
   const deploying = page.waitForResponse(r => r.url().includes('/v1/projects/deploys?'), { timeout: 2400000 })
-  await page.getByRole('button', { name: 'Deploy all 2 apps', exact: true }).click()
+  await deployButton.click()
   const deployment = await deploying
   assert.equal(deployment.status(), 200)
   const stream = await deployment.text()
@@ -82,28 +80,15 @@ try {
   assert.equal(result.apps.length, 2)
   assert.ok(result.apps.every(app => app.ok), 'both apps must deploy')
   console.log('Browser deployment: both apps succeeded')
-  const base = `https://dashboard.${space}.${domain}`
-  await page.goto(base, { waitUntil: 'networkidle' })
-  async function request(method, endpoint, options = {}) {
-    const response = await context.request.fetch(base + endpoint, { method, timeout: 120000, ...options })
-    assert.ok(response.ok(), `${method} ${endpoint}: ${response.status()} ${await response.text()}`)
-    return response
-  }
-  const tickets = await (await request('GET', '/api/tickets')).json()
-  assert.ok(tickets.length, 'the database must contain seeded tickets')
-  const id = tickets[0].id
+  await page.goto(`https://addons-sample.${space}.${domain}`, { waitUntil: 'networkidle' })
   const message = `Browser connection check ${Date.now()}`
-  await request('POST', `/api/tickets/${id}/messages`, { data: { body: message } })
-  const detail = await (await request('GET', `/api/tickets/${id}`)).json()
-  assert.ok(detail.messages.some(m => m.body === message), 'PostgreSQL write was not retained')
-  const attachment = Buffer.from(`S3 roundtrip: ${message}`)
-  await request('POST', `/api/tickets/${id}/attachments`, { multipart: { file: { name: 'e2e.txt', mimeType: 'text/plain', buffer: attachment } } })
-  assert.deepEqual(await (await request('GET', `/api/tickets/${id}/attachments/e2e.txt`)).body(), attachment)
-  const triage = await (await request('POST', `/api/tickets/${id}/triage`)).json()
-  assert.ok(triage.summary && triage.category, 'OpenAI did not return triage fields')
+  await page.getByPlaceholder('leave a note').fill(message)
+  await page.getByRole('button', { name: 'Sign', exact: true }).click()
+  await page.getByText(message, { exact: false }).waitFor()
   await page.reload({ waitUntil: 'networkidle' })
+  await page.getByText(message, { exact: false }).waitFor()
   await page.screenshot({ path: path.join(reports, 'services-browser-app.png'), fullPage: true })
-  console.log('Browser app: frontend/backend routing, PostgreSQL write, S3 roundtrip, and OpenAI triage passed')
+  console.log('Browser app: the guestbook retained the PostgreSQL write')
 } catch (error) {
   await page.screenshot({ path: path.join(reports, 'services-browser-error.png'), fullPage: true }).catch(() => {})
   console.error((await page.locator('body').innerText()).slice(-1800))

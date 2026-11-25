@@ -67,7 +67,7 @@ five ideas:
                            │  │      data volume: source history     │
                            │  ├─ donkey-buildkitd  image builds      │──▶ registry
                            │  ├─ donkey-packages  package proxy      │─▶ package registries
-                           │  ├─ donkey-ai      openai addon endpoint│──▶ model API
+                           │  ├─ donkey-ai      machine model proxy  │──▶ model API
                            │  ├─ donkey-proxy   HTTP service proxy   │──▶ configured APIs
                            │  ├─ donkey-telemetry  OTLP + DuckDB     │
  browser ────80/443───────▶│  └─ donkey-gateway  TLS termination     │──OIDC──▶ Entra ID /
@@ -144,15 +144,8 @@ five ideas:
   caller's sealed token again and authorizes the space exactly as the server
   would. A deploy still survives a dropped connection: it runs on in the
   orchestrator, and the CLI and console follow the app's status instead.
-- **donkey-ai** — the openai addon's endpoint (same image, `ai`
-  entrypoint). Apps reach it through their service bindings, so it
-  runs apart from the admin API: it holds the platform's AI credential and
-  read-only access to the binding Secrets, and nothing else. Apps call it with
-  the per-space token their binding carries; it swaps that for the real
-  credential, which never leaves this process. Removing the service revokes
-  the space's access. The console's own AI chat is browser code, so it calls
-  its own origin — `donkey-server` forwards `/ai/v1` here without inspecting
-  it, because on that origin `/v1` is already the admin API.
+- **donkey-ai** serves the model to development machines. It validates a
+  running machine's token and uses the installation's OpenAI credential upstream.
 - **donkey-proxy** — one shared HTTP service endpoint (same image, `proxy`
   entrypoint). It reads configured targets and space bindings,
   forwards HTTP/HTTPS through an optional outbound proxy, and uses its system
@@ -618,7 +611,7 @@ storage:                      # one disk, each path its own folder on it
 
 addons:                       # space services this app uses; the deploy
   - type: postgres            # creates missing ones. postgres | redis | s3 (S3)
-    name: db                  # | openai (the platform's AI).
+    name: db                  # or a plugin offering.
                               # apps naming the same service share it
 
 build:
@@ -718,8 +711,7 @@ anything, and that is where the confirmation lives.
 | `postgres` | the relational database (its own Deployment + disk) | `DATABASE_URL`, the `PG*` family, Heroku's `JDBC_*` convention for the Java world |
 | `s3` | S3-compatible object storage | the AWS SDK convention (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_ENDPOINT_URL_S3`, `AWS_REGION`) + `S3_URL` |
 | `redis` | Redis with persistent storage and password authentication | `REDIS_URL`, `REDIS_ADDR`, `REDIS_HOST`, `REDIS_PORT`, `REDIS_USERNAME`, `REDIS_PASSWORD`, `REDIS_DB`, `REDIS_TLS` |
-| `openai` | the platform's AI — nothing runs in the space | `OPENAI_BASE_URL`, `OPENAI_API_KEY`, `OPENAI_MODEL` |
-| `exa` | web search and page contents — nothing runs in the space | `EXA_BASE_URL`, `EXA_API_KEY` |
+
 
 The `s3` addon provisions RustFS and can also attach any compatible S3
 endpoint. `rustfs` remains accepted as a legacy type alias. Existing services
@@ -873,7 +865,7 @@ Ways in and out, all equivalent:
   `addons:` in donkey.yaml means the deploy itself provisions what's
   missing — a cloned repository comes up with its services.
 - `donkey addon attach <type> --url …` binds a service that already runs
-  elsewhere (a managed database, a real S3, an OpenAI account). The binding
+  elsewhere (a managed database or S3 endpoint). The binding
   is derived from the address, so **the app cannot tell managed from
   remote** — swapping a provisioned postgres for RDS is an attach, not a
   code change.
@@ -881,18 +873,13 @@ Ways in and out, all equivalent:
   connected there reaches the running app immediately and survives later
   CLI deploys.
 
-**The `openai` service hides the real credential.** Its binding points apps
-at `donkey-ai` with a generated per-space token; that endpoint checks the
-token against the bindings donkey issued, swaps in the platform's actual key
-upstream, and streams the answer back (SSE included). The real key never
-leaves `donkey-system` — and never sits in the process that writes to the
-cluster — and removing the service from the space *is* the revocation.
-Because every space shares that key, GET is limited to model discovery.
-The proxy accepts POST requests for chat and text completions, embeddings,
-moderations, decisions, audio, and images. For the Responses API it accepts
-`POST /v1/responses` (including streaming), `POST /v1/responses/compact`,
-and `POST /v1/responses/input_tokens`. These operations can work with the
-input supplied in the request when the upstream has response storage disabled.
+**OpenAI and Exa for apps.** Register an addon plugin that offers protocol
+`openai` or `exa`. The plugin may use those same names as offering IDs.
+Its binding supplies the endpoint, optional credentials, and any default model.
+
+On upgrade, existing built-in OpenAI and Exa app credentials stop working.
+Provision the replacement through the plugin and reconnect your apps. To reuse
+an existing service name, remove the old instance before provisioning the new one.
 
 **Configured HTTP services.** Define proxy offerings in the server installation
 settings. Each gets a title and description in the catalog, while target URLs
@@ -901,7 +888,7 @@ and outbound proxy credentials stay in the control plane:
 ```yaml
 # With an empty commonOfferings list, every offering is available everywhere.
 # A nonempty list lets space admins enable additional offerings explicitly.
-commonOfferings: [postgres, redis, s3, openai, exa]
+commonOfferings: [postgres, redis, s3]
 proxyServices:
   - name: enterprise-api
     title: Enterprise API  # optional; defaults to name
@@ -973,55 +960,29 @@ without following them. The console uses your space management permission and
 a short-lived, request-specific control-plane grant through the shared proxy.
 Apps continue to use their workload IP without a credential.
 
-**Configuring OpenAI and Exa.** The installation file selects the upstreams:
+**Configuring the platform model.** The deployment assistant calls the configured provider directly.
+Wingman, the coding agent in a development machine, reaches that provider
+through the internal `donkey-ai` proxy.
 
 ```yaml
 ai:
   baseUrl: https://api.openai.com/v1
   model: gpt-6.1-sol
-exa:
-  baseUrl: https://api.exa.ai
 ```
 
-Supply `OPENAI_API_KEY` and the optional `EXA_API_KEY` as environment variables
-when running `donkey server install -f server-install.yaml`. The installation
-also accepts `ai.apiKey` and `exa.apiKey`, or `--openai-api-key` and
-`--exa-api-key`; environment variables keep credentials out of the settings
-file. `--openai-base-url` and `--exa-base-url` override the URLs. Exa also reads
-`EXA_BASE_URL` when `exa.baseUrl` is omitted; its default is `https://api.exa.ai`.
-Rendered Kubernetes and Compose bundles take the keys from `secrets.env` and
-preserve existing keys on upgrades. Exa is optional: without its key, its proxy
-returns a configuration error while OpenAI continues working.
+Supply `OPENAI_API_KEY` when running `donkey server install -f server-install.yaml`.
+The installer also accepts `ai.apiKey`, `--openai-api-key`, and
+`--openai-base-url`. Rendered bundles read the credential from `secrets.env`.
+Older installation files may still contain an `exa` section. Configure the
+Exa endpoint and credentials in your plugin when migrating.
 
-For a gateway running on your laptop at port 4242, Docker Desktop containers
-can use `http://host.docker.internal:4242/v1` for `ai.baseUrl`. Set `exa.baseUrl`
-to the gateway's Exa-compatible base, including any route prefix it needs.
-For Wingman, `http://host.docker.internal:4242/v1/exa` forwards search to
-`http://host.docker.internal:4242/v1/exa/search`. Use an address reachable from the
-cluster for Kubernetes; `localhost` inside a pod or container names that pod
-or container itself.
-
-Connect an app with `donkey addon add exa`, or declare it in `donkey.yaml`:
-
-```yaml
-addons:
-  - type: exa
-```
-
-The app reads the injected `EXA_BASE_URL` and sends `EXA_API_KEY` in the
-`x-api-key` header (bearer authentication also works). Configure your SDK to
-use that base URL explicitly. The platform proxy serves only `POST /search`
-and `POST /contents`, passing request and response bodies through unchanged,
-including contents requested inside a search. As with OpenAI, bindings carry
-per-space stand-in keys, the upstream key stays in `donkey-ai`, and removing
-the service revokes its token within the proxy's 30-second cache lifetime.
-The space's service chip opens a tester with **Search** and **Page contents**
-tabs; console calls use the saved binding and never forward your login session
-to the provider.
-
-To attach an independent endpoint, use
-`donkey addon attach exa --url https://search.example.com/exa`. This supplies
-`EXA_BASE_URL`; put the endpoint's own `EXA_API_KEY` in the app environment.
+The OpenAI console lists models and chats against the plugin's saved endpoint.
+A keyless plugin receives the viewer's IdP access token as `Authorization: Bearer`
+on both requests. Configure `auth.scope` for this mode. When a plugin supplies
+`OPENAI_API_KEY`, the console uses that key as the bearer and passes the viewer's
+scoped token alongside it in `X-Forwarded-Access-Token`. Existing URL-only
+external attachments receive no viewer token. The Exa console uses the saved
+`EXA_BASE_URL` and optional `EXA_API_KEY` for search and page contents.
 
 **Getting at a service yourself.** Services rightly have no public address,
 so donkey provides the ways in: `donkey addon tunnel NAME` opens a private
@@ -1161,9 +1122,10 @@ the image (below).
   however often the machine is restarted. The console says so a few days
   ahead; restarting from the console renews it. No IdP token goes in.
 - *A model token* for `donkey-ai`, as `OPENAI_BASE_URL` / `OPENAI_API_KEY` —
-  the same stand-in scheme a space's `openai` service uses. It is generated
-  per start and stops working when the machine stops. The agent starts on
-  the installation's `ai.model`.
+  generated at startup. The proxy caches active tokens for up to 30 seconds.
+  Wingman starts on the installation's `ai.model`. The owner can also use the
+  token from the machine's shell. All API paths and methods under `ai.baseUrl`
+  are available with the permissions of the installation's upstream key.
 - *Your name and email* for `git config`, unless you already set your own.
 - *The installation's package mirror*, the way a build gets it: npm, pnpm,
   yarn, bun, pip, uv and Go are pointed at `donkey-packages` by the names
@@ -2132,7 +2094,7 @@ changes enforce the same rule, including shared-address routes.
 
 `commonOfferings` in the installation file selects offerings available in every
 space. An empty or omitted list allows all registered offerings. A nonempty
-list such as `[postgres, redis, s3, openai, exa]` limits the common catalog;
+list such as `[postgres, redis, s3]` limits the common catalog;
 space admins can add others in **Space settings → Service offerings**:
 
 ```yaml
@@ -2660,7 +2622,7 @@ internal/
   build/              BuildKit gRPC builder (dockerfile.v0), startup verification, registry auth, tags
   k8s/                client-go wrapper: server-side apply, rollout wait, logs, env secrets
   k8s/manifests/      pure config→object rendering (app + control plane) — golden-tested
-  addons/             service catalog: postgres, redis, s3, openai, exa (provisioned & external bindings)
+  addons/             service catalog: postgres, redis, s3 and plugin offerings
   ai/                 Assistant interface (analysis + failure diagnosis), OpenAI impl, secret-safe summarizer, log redaction
   config/             donkey.yaml, client config, install settings file
   doctor/             client-side check engine behind `donkey doctor`
@@ -2695,7 +2657,7 @@ trivial auto-approving identity provider (`hack/demo/fake-idp/` — everyone
 is instantly demo@example.com).
 
 ```sh
-task demo            # kind cluster + control plane + the demo app (dashboard, MCP backend, three services)
+task demo            # kind cluster + control plane + the PostgreSQL guestbook
 task test            # unit tests (no cluster needed)
 task e2e             # from nothing to verified: setup:kind + install:kind + the Go e2e suite
 task demo:samples    # deploy every testdata sample; all of them must come up
@@ -2714,7 +2676,7 @@ task verify          # the Go e2e suite against the running kind installation
 task verify:docker   # the same suite against the running docker installation
 task verify:builder  # live AI builds: 19 samples and four repair cases, including HTTP, assets and persistence
 task verify:monorepos # pinned Google microservices-demo, deployed through project review
-task verify:web      # real browser upload/review/deploy, then database, storage and AI requests
+task verify:web      # browser upload, review, deployment and a PostgreSQL guestbook write
 task verify:admin    # PostgreSQL and Redis browsers, including isolation between spaces
 ```
 
@@ -2752,8 +2714,8 @@ Reviewed plans and deployment streams are saved in `.build/e2e`. Set
 inspection; rerunning replaces that test space.
 
 The browser test uses the local Docker installation and demo sign-in. It uploads
-`examples/demo`, checks separate exposure choices, deploys both apps, and tests
-PostgreSQL writes, S3 uploads/downloads, and OpenAI triage through the frontend.
+the static site and PostgreSQL guestbook from `testdata`, checks each app's
+exposure, deploys both, and verifies that a guestbook entry survives a reload.
 Playwright is installed under `.build/browser`; screenshots and reviewed plans
 go to `.build/e2e`. `DONKEY_E2E_KEEP=true` keeps its `e2e-services` space running.
 
@@ -2913,11 +2875,6 @@ company with an internal PKI uses. Tear down with `devkube --cluster donkey dele
   boundary: source summaries of every deployed app go there, and redacted
   failure logs when something breaks. Point it at a model you control (the
   install takes any OpenAI-compatible base URL).
-- The `openai` service never hands out the platform's real AI key: bindings
-  carry a generated per-space stand-in, `donkey-ai` swaps it for the real
-  one on the way upstream, and the swap only happens for tokens donkey
-  itself issued — so removing the service revokes the space's access, and
-  the upstream credential exists nowhere outside `donkey-system`.
 
 ## License
 

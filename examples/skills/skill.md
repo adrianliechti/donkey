@@ -43,6 +43,7 @@ A machine is a development container the platform runs for one person.
 - The network may reach nothing but that mirror, the model and the Donkey
   API. A download that fails (a public Git host, `curl`, `uv python install`)
   is the installation's policy: report it, do not work around it.
+- The machine's `OPENAI_BASE_URL` and `OPENAI_API_KEY` serve its coding agent. Keep these out of app manifests, images, and deployment secrets.
 - There is no root. Install tools into the home (`npm install -g`,
   `uv tool install`, `go install`), never with `apt-get` or `sudo`.
 - `/data` (home and workspace) survives restarts; everything else comes from
@@ -276,27 +277,29 @@ oidc:
   `${name.KEY}` references.
 - Storage type is `s3`; `rustfs` is a legacy alias, not a reason to rename.
 
-| Type | Binding and client use |
+| Protocol | Binding and client use |
 |---|---|
 | `postgres` | `DATABASE_URL`; `PGHOST`, `PGPORT`, `PGUSER`, `PGPASSWORD`, `PGDATABASE`; Java: `JDBC_DATABASE_URL`, `JDBC_DATABASE_USERNAME`, `JDBC_DATABASE_PASSWORD`. |
 | `redis` | Prefer `REDIS_URL` (credentials, database, TLS scheme). Split clients must honor `REDIS_PASSWORD`, `REDIS_USERNAME`, `REDIS_DB`, `REDIS_TLS` too, not just `REDIS_ADDR`/`REDIS_HOST`. |
 | `s3` | `AWS_ENDPOINT_URL_S3` (= `S3_URL`), `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`. Use path-style addressing (JS SDK: `forcePathStyle: true`). |
-| `openai` | `OPENAI_BASE_URL`, `OPENAI_API_KEY` (bearer), `OPENAI_MODEL`. Streaming works. |
-| `exa` | Set `EXA_BASE_URL` explicitly; `EXA_API_KEY` as `x-api-key` or bearer; `POST /search`, `POST /contents` relative to the base. |
+| `openai` (plugin) | `OPENAI_BASE_URL`, optional `OPENAI_API_KEY` (bearer) and `OPENAI_MODEL`. Streaming works. |
+| `exa` (plugin) | Use `EXA_BASE_URL` and, when supplied, send `EXA_API_KEY` as `x-api-key`; `POST /search`, `POST /contents` relative to the base. |
 | `trino` | `TRINO_URL`, optional `TRINO_CATALOG`, `TRINO_SCHEMA`. No stored credential: send the request's `X-Forwarded-Access-Token` as the Trino client's bearer token. Without one (jobs, public routes, local runs), connect without credentials instead of failing: locally `donkey addon tunnel` adds the developer's token; in the cluster there is no Trino access. |
 
 - Managed PostgreSQL: single instance, no backups. Use an external database
   when production needs more.
 - S3 starts without buckets: create an app-specific one; tolerate
   "already owned".
-- Managed OpenAI/Exa bindings hold proxy tokens; upstream keys stay on the
-  platform.
+- For OpenAI, Exa, or Trino, look up the offering ID and binding keys in the
+  space's service catalog in the console. Pass that ID to `donkey addon add`.
+- If an OpenAI provider expects user identity, an app on a login-protected
+  route can send the gateway's `X-Forwarded-Access-Token` as the bearer for
+  that request. This requires the installation's `auth.scope`. Background
+  jobs and public apps need credentials appropriate to the provider.
 - The installation may offer more services and restrict offerings per space.
   Pass catalog parameters as `--param name=value` on `addon add`. An
   unavailable offering needs the operator or space admin; do not substitute
   another by protocol.
-- Trino comes only from a provider offering: `addon add` with the catalog's
-  type; never `addon attach`.
 
 On an existing app, `addon add` (platform service) and `addon attach`
 (external service) both update `donkey.yaml` (may reformat it, drop comments)
@@ -305,15 +308,12 @@ and redeploy a deployed app with its current image:
 | Command | Use |
 |---|---|
 | `donkey addon add postgres --name db --storage 5Gi` | Create/connect a managed database. |
-| `donkey addon add exa` | Connect the platform's Exa proxy. |
-| `donkey addon attach exa --url URL` | Attach an external endpoint; set its `EXA_API_KEY` with `donkey env set`. |
+| `donkey addon add <offering>` | Connect a plugin service from the catalog. |
 
-- External PostgreSQL/Redis URLs carry their credentials. External S3,
-  OpenAI and Exa URLs carry only endpoints: set credentials, plus
-  `AWS_REGION` or `OPENAI_MODEL` if the client needs them, with
-  `donkey env set`.
+- External PostgreSQL/Redis URLs carry their credentials. External S3 URLs carry
+  the endpoint. Supply credentials and region with `donkey env set`.
 - External endpoints must be reachable from Donkey's runtime, not only from
-  this machine. A URL path may prefix OpenAI/Exa gateways.
+  this machine. Use `addon attach` for PostgreSQL, Redis, or S3.
 - Attaching a new URL to an existing service changes it for every attached
   app; use a distinct `--name` to change one app only.
 
@@ -369,10 +369,10 @@ On failure:
 - `donkey addon tunnel <name> [--port N]`: reach a service from this machine
   while the command runs. Prints the binding rewritten for localhost and a
   ready-to-run command.
-- Trino, platform OpenAI/Exa and configured HTTP proxy services tunnel over
-  HTTP: point `*_URL`/`*_BASE_URL` at the printed address and keep
-  credentials as they are. donkey adds the user's token (Trino) or the
-  space's key (OpenAI, Exa).
+- For an HTTP tunnel, point the client at the printed local URL. Donkey sends
+  the developer's token for Trino and WebDAV. OpenAI and Exa tunnels require
+  an API key in the service binding. A keyless OpenAI plugin can still serve
+  model listing and chat in the console using the signed-in viewer's token.
 - Services attached from elsewhere have no tunnel; use their own address.
 
 Files: paths are disk-relative without a leading slash (`/app/data` →
@@ -401,5 +401,5 @@ Remove only what was requested.
 - Use data-deleting forms only when deletion is requested. There are no
   snapshots or restore.
 - `--force` only skips the confirmation; it does not change scope.
-- OpenAI, Exa and HTTP proxy services have no data and reject `--keep-data`.
+- Configured HTTP proxy services have no data and reject `--keep-data`.
 - Removing an app keeps its local source and `donkey.yaml`.

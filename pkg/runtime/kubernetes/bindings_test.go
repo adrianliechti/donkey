@@ -3,7 +3,6 @@ package kubernetes
 import (
 	"context"
 	"net/url"
-	"reflect"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -105,7 +104,7 @@ func TestAIProxyTokensExcludeOtherProvidersAndAppCopies(t *testing.T) {
 		}
 	}
 	got, err := r.AIProxyTokens(ctx)
-	if err != nil || !reflect.DeepEqual(got, []string{"platform-token"}) {
+	if err != nil || len(got) != 0 {
 		t.Fatalf("wrong proxy tokens: %v", err)
 	}
 }
@@ -166,28 +165,5 @@ func TestServiceProxyUsesCurrentPodIdentityInBothPlacements(t *testing.T) {
 				t.Fatalf("reused IP inherited old space: %v %v", got, err)
 			}
 		})
-	}
-}
-
-func TestExaProxyTokensExcludeOtherProvidersAndAppCopies(t *testing.T) {
-	r := NewRuntime(&Client{Clientset: fake.NewClientset()}, Options{Placement: manifests.Placement{SharedNamespace: "workloads"}})
-	ctx := context.Background()
-	for _, fixture := range []struct{ name, endpoint, key, app string }{
-		{"platform", r.exaProxyURL(), "platform-token", ""},
-		{"vendor", "https://vendor.example/v1", "vendor-secret", ""},
-		{"copy", r.exaProxyURL(), "app-token", "api"},
-	} {
-		secret := spaceBindingSecret("team", "team-"+fixture.name, "workloads", fixture.name, map[string]string{"EXA_BASE_URL": fixture.endpoint, "EXA_API_KEY": fixture.key}, addons.Metadata{})
-		secret.Labels[manifests.LabelInstallation] = manifests.DefaultSystemNamespace
-		if fixture.app != "" {
-			secret.Labels[manifests.LabelApp] = fixture.app
-		}
-		if _, err := r.c.Clientset.CoreV1().Secrets("workloads").Create(ctx, secret, metav1.CreateOptions{}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	got, err := r.ExaProxyTokens(ctx)
-	if err != nil || !reflect.DeepEqual(got, []string{"platform-token"}) {
-		t.Fatalf("wrong proxy tokens: %v", err)
 	}
 }

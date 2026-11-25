@@ -85,7 +85,7 @@ const dockerOrchestratorStopTimeout = config.DeployDrainTimeout + time.Minute
 func dockerOrchestratorEnv(serverEnv map[string]string) map[string]string {
 	env := maps.Clone(serverEnv)
 	for _, key := range []string{
-		"DONKEY_SERVER_HOST", "DONKEY_AI_URL", "DONKEY_ORCHESTRATOR_URL", "DONKEY_TELEMETRY_OTLP_ENDPOINT",
+		"DONKEY_SERVER_HOST", "DONKEY_ORCHESTRATOR_URL", "DONKEY_TELEMETRY_OTLP_ENDPOINT",
 		"DONKEY_OIDC_ISSUER", "DONKEY_OIDC_SCOPE", "DONKEY_OIDC_CLIENT_ID", "DONKEY_OIDC_CLIENT_SECRET",
 	} {
 		delete(env, key)
@@ -145,9 +145,6 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 	}
 	if settings.AI.APIKey == "" {
 		settings.AI.APIKey = existingContainerEnv(ctx, cli, dockerServerName, "OPENAI_API_KEY")
-	}
-	if settings.Exa.APIKey == "" {
-		settings.Exa.APIKey = existingContainerEnv(ctx, cli, dockerAIName, "EXA_API_KEY")
 	}
 	if settings.Auth.ClientSecret == "" {
 		settings.Auth.ClientSecret = existingContainerEnv(ctx, cli, dockerServerName, "DONKEY_OIDC_CLIENT_SECRET")
@@ -346,7 +343,6 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 		"DONKEY_PACKAGES_URL":            packagesURL,
 		"DONKEY_BUILDER_DEBIAN_MIRROR":   strconv.FormatBool(settings.Build.Packages.Debian != ""),
 		"DONKEY_BUILDER_ALPINE_MIRROR":   strconv.FormatBool(settings.Build.Packages.Alpine != ""),
-		"DONKEY_AI_URL":                  "http://" + dockerAIName + ":8089",
 		"DONKEY_TELEMETRY_URL":           "http://" + dockerTelemetryName + ":9090",
 		"DONKEY_TELEMETRY_OTLP_ENDPOINT": "http://" + dockerTelemetryName + ":4318",
 		"DONKEY_DEFAULT_PLATFORM":        settings.DefaultPlatform,
@@ -506,17 +502,13 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 		return err
 	}
 
-	// The openai addon's endpoint, apart from the server: it is the one
-	// container apps are meant to reach, and it holds only the upstream
-	// credential — no session key, no registry login, no docker socket.
+	// Development machines reach the model through this read-only proxy.
 	aiEnv := map[string]string{
 		"DONKEY_RUNTIME":   "docker",
 		"DONKEY_STATE_DIR": dockerDataDir,
 		"DONKEY_LISTEN":    ":8089",
 		"OPENAI_BASE_URL":  settings.AI.BaseURL,
 		"OPENAI_API_KEY":   settings.AI.APIKey,
-		"EXA_BASE_URL":     settings.Exa.BaseURL,
-		"EXA_API_KEY":      settings.Exa.APIKey,
 	}
 	// The model API is the one thing this container talks to, and it is
 	// outside — so of all of them, this is the one that needs the proxy.
@@ -528,8 +520,7 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 		Cmd:          []string{"ai"},
 		Env:          aiEnv,
 		Mounts: []mount.Mount{
-			// Read-only: the bindings it validates tokens against are the
-			// server's records, and it never writes any of them.
+			// The proxy reads the active machines' model tokens.
 			{Type: mount.TypeVolume, Source: dockerDataVolume, Target: dockerDataDir, ReadOnly: true},
 		},
 		PullAlways: true,
@@ -569,7 +560,7 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 	// Recreating the shared containers dropped the space networks
 	// they were on. Re-attach them, or every app deployed before this install
 	// stays unreachable until it is redeployed.
-	if err := docker.AttachOwnContainers(ctx, cli, dockerServerName, dockerOrchestratorName, dockerGatewayName, dockerAIName, dockerTelemetryName, dockerProxyName); err != nil {
+	if err := docker.AttachOwnContainers(ctx, cli, dockerServerName, dockerOrchestratorName, dockerGatewayName, dockerTelemetryName, dockerProxyName); err != nil {
 		return err
 	}
 	u.Success("Control plane is running.")
@@ -602,9 +593,6 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 // installer. Compose rendering uses the same checks without opening a Docker
 // socket or resolving credentials from the host.
 func validateDockerSettings(settings *config.InstallFile) error {
-	if err := settings.Exa.Validate(); err != nil {
-		return err
-	}
 	if err := settings.Platform.Validate(); err != nil {
 		return err
 	}

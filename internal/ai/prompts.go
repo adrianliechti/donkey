@@ -53,7 +53,8 @@ Report:
 - services: backing services the running app clearly expects; empty when it
   needs none. Follow the active/default code path: exclude opt-in providers
   that only run when an unset feature flag or provider-specific setting is
-  supplied and the default path uses local data instead. The available types are:
+  supplied and the default path uses local data instead. Report these service types
+  when detected. Donkey checks the installation's catalog before offering them:
   · "postgres" for a PostgreSQL database (DATABASE_URL, psycopg/pg, JDBC
     PostgreSQL configuration, and equivalent connection code).
   · "redis" for Redis caches, sessions or queues (REDIS_URL/REDIS_ADDR,

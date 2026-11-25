@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -70,7 +69,7 @@ func TestServiceMetadataAndAIProxyCredentials(t *testing.T) {
 		t.Fatalf("provider metadata: %+v %v", connection, err)
 	}
 	tokens, err := r.AIProxyTokens(ctx)
-	if err != nil || !reflect.DeepEqual(tokens, []string{"platform-token"}) {
+	if err != nil || len(tokens) != 0 {
 		t.Fatalf("wrong proxy tokens: %v", err)
 	}
 	for _, folder := range []string{"env", "bindings", "provisioning", "deploy"} {
@@ -168,39 +167,5 @@ func TestServiceProxyUsesSpaceNetworkIdentity(t *testing.T) {
 	}
 	if got, err := r.ServiceProxyAccess(context.Background(), "10.20.0.2", "erp"); err == nil || got {
 		t.Fatalf("stale network accepted: %v %v", got, err)
-	}
-}
-
-func TestExaProxyCredentials(t *testing.T) {
-	r := &Runtime{state: state{dir: t.TempDir()}, opts: Options{AIContainer: "donkey-ai"}}
-	ctx := context.Background()
-	for _, fixture := range []struct{ name, endpoint, key, owner string }{
-		{"platform", r.exaProxyURL(), "platform-token", sharedOwner},
-		{"vendor", "https://vendor.example/v1", "vendor-secret", sharedOwner},
-		{"copy", r.exaProxyURL(), "app-token", "api"},
-	} {
-		if err := r.state.setBinding("team", fixture.owner, fixture.name, map[string]string{"EXA_BASE_URL": fixture.endpoint, "EXA_API_KEY": fixture.key}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := r.state.writeRecord(addons.Metadata{Type: "external-model", Protocol: "custom"}, "service-metadata", "team", "vendor"); err != nil {
-		t.Fatal(err)
-	}
-	connection, err := r.ServiceConnection(ctx, "team", "vendor")
-	if err != nil || connection.Type != "external-model" || connection.Protocol != "custom" {
-		t.Fatalf("provider metadata: %+v %v", connection, err)
-	}
-	tokens, err := r.ExaProxyTokens(ctx)
-	if err != nil || !reflect.DeepEqual(tokens, []string{"platform-token"}) {
-		t.Fatalf("wrong proxy tokens: %v", err)
-	}
-	for _, folder := range []string{"env", "bindings", "provisioning", "deploy"} {
-		if err := r.state.writeRecord(map[string]string{"secret": "private"}, folder, "team", "private"); err != nil {
-			t.Fatal(err)
-		}
-		info, err := os.Stat(r.state.path(folder, "team", "private.yaml"))
-		if err != nil || info.Mode().Perm() != 0o600 {
-			t.Fatalf("%s credentials are not private: %v", folder, err)
-		}
 	}
 }

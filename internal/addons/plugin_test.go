@@ -294,9 +294,12 @@ func TestProviderCatalogLifecycleAndEnvironment(t *testing.T) {
 	instance := &addonv1.Instance{Installation: "main", Space: "team", Name: "db", Offering: "testdb",
 		Kubernetes: &addonv1.KubernetesContext{Namespace: "workloads", ConsumerLabels: map[string]string{"space": "team"}}}
 	want := sampleProvisioning()
-	api := &addonv1.Offering{Id: "testapi", Title: "Test API", Protocol: "openai", Category: "api", Shared: true,
+	api := &addonv1.Offering{Id: "openai", Title: "Test API", Protocol: "openai", Category: "api", Shared: true,
 		Env: []*addonv1.EnvVar{{Name: "OPENAI_BASE_URL"}, {Name: "OPENAI_API_KEY", Secret: true}}}
-	server := &testProviderServer{offerings: []*addonv1.Offering{testOffering("testdb"), api}, messages: []string{"creating", "waiting"}, deleted: make(chan *addonv1.DeprovisionRequest, 1),
+	search := &addonv1.Offering{Id: "exa", Title: "Search", Protocol: "exa", Env: []*addonv1.EnvVar{{Name: "EXA_BASE_URL"}}}
+	server := &testProviderServer{
+		offerings: []*addonv1.Offering{testOffering("testdb"), api, search},
+		messages:  []string{"creating", "waiting"}, deleted: make(chan *addonv1.DeprovisionRequest, 1),
 		provision: func(ctx context.Context, req *addonv1.ProvisionRequest) (*addonv1.ProvisionResponse, error) {
 			if _, ok := ctx.Deadline(); !ok {
 				return nil, status.Error(codes.Internal, "missing deadline")
@@ -307,12 +310,12 @@ func TestProviderCatalogLifecycleAndEnvironment(t *testing.T) {
 			return want, nil
 		}}
 	connectTestProvider(t, "acme", server)
-	// One provider, two catalog entries; the built-ins stay in front.
+	// The built-ins precede provider offerings in the catalog.
 	var ids []string
 	for _, a := range Types(ctx) {
 		ids = append(ids, a.Type())
 	}
-	if !reflect.DeepEqual(ids, []string{"exa", "openai", "postgres", "redis", "s3", "testdb", "testapi"}) {
+	if !reflect.DeepEqual(ids, []string{"postgres", "redis", "s3", "testdb", "openai", "exa"}) {
 		t.Fatalf("catalog: %v", ids)
 	}
 	p := getPlugin(t, "testdb")
@@ -320,7 +323,7 @@ func TestProviderCatalogLifecycleAndEnvironment(t *testing.T) {
 	if err != nil || desc.Protocol != "mysql" || !desc.Capabilities.RetainData || p.Provider() != "acme" {
 		t.Fatalf("descriptor: %+v %v", desc, err)
 	}
-	if shared, err := getPlugin(t, "testapi").Describe(ctx); err != nil || !shared.Shared {
+	if shared, err := getPlugin(t, "openai").Describe(ctx); err != nil || !shared.Shared {
 		t.Fatalf("second offering lost: %v", err)
 	}
 	if template := EnvTemplate(desc); len(template) != 3 || template["DATABASE_URL"] != "" {

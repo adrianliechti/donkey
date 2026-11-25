@@ -5,7 +5,7 @@ import { useServiceBinding } from './queries'
 
 // The models of an OpenAI-compatible service, for the console's quick chat.
 // Calls go to the service's console routes (…/ai/models), where the server
-// swaps the session for the service's own key.
+// authenticates to the provider for the viewer.
 
 /** A model as the service lists it; providers add fields of their own. */
 export type Model = { id: string; owned_by?: string; created?: number } & Record<string, unknown>
