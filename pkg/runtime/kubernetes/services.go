@@ -50,8 +50,12 @@ func (r *Runtime) ServiceConnection(ctx context.Context, space, name string) (rt
 // provisioned in-cluster, or external as a binding-only Secret — and returns
 // its binding values.
 func (r *Runtime) EnsureService(ctx context.Context, space string, spec rt.ServiceSpec) (map[string]string, map[string]any, error) {
-	unlock := r.serviceLocks.Lock(space, spec.Name)
+	unlock := r.serviceLocks.Lock(space, spec.Name, r.opts.ServicePolicy != nil)
 	defer unlock()
+	choice := config.AddonConfig{Name: spec.Name, Type: spec.Type}
+	if err := rt.CheckServiceSelection(ctx, r, r.opts.ServicePolicy, space, []config.AddonConfig{choice}); err != nil {
+		return nil, nil, err
+	}
 	ns := r.ns(space)
 	if err := config.ValidateServiceName(spec.Name); err != nil {
 		return nil, nil, rt.UserError{Err: err}
@@ -238,6 +242,9 @@ func (r *Runtime) addonImagePullCredentials(image string) (*imagePullCredentials
 
 func (r *Runtime) AttachService(ctx context.Context, space, app, name string, binding map[string]string) (bool, error) {
 	defer r.InvalidateAppSummaries()
+	if err := rt.CheckServiceSelection(ctx, r, r.opts.ServicePolicy, space, []config.AddonConfig{{Name: name}}); err != nil {
+		return false, err
+	}
 	if err := rt.CheckServiceAttachment(ctx, r, r.opts.CommonOfferings, space, app, name); err != nil {
 		return false, err
 	}
@@ -269,7 +276,7 @@ func (r *Runtime) DetachService(ctx context.Context, space, app, name string) er
 
 func (r *Runtime) RemoveService(ctx context.Context, space, name string, keepData, force bool) ([]string, error) {
 	defer r.InvalidateAppSummaries()
-	unlock := r.serviceLocks.Lock(space, name)
+	unlock := r.serviceLocks.Lock(space, name, r.opts.ServicePolicy != nil)
 	defer unlock()
 	if keepData {
 		connection, err := r.ServiceConnection(ctx, space, name)
@@ -337,12 +344,14 @@ func (r *Runtime) ListServices(ctx context.Context, space, owner string) ([]rt.S
 	if err != nil {
 		return nil, err
 	}
-	if app == "" {
+	if app == "" || owner == addons.AllOwners {
 		// The space's own view also shows plugin instances that have no
 		// binding yet (or any more): pending, failed and stopped ones.
 		bound := map[string]bool{}
 		for _, b := range bindings {
-			bound[b.Name] = true
+			if owner != addons.AllOwners || b.Type != "" {
+				bound[b.Name] = true
+			}
 		}
 		unbound, err := r.unboundPluginServices(ctx, space, bound)
 		if err != nil {

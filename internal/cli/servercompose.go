@@ -221,6 +221,7 @@ func dockerComposeFiles(settings *config.InstallFile, bundledRegistry bool) (map
 		"DONKEY_RUSTFS_IMAGE":            settings.AddonImages.RustFS,
 		"DONKEY_ADDON_PLUGINS":           settings.AddonPlugins.JSON(),
 		"DONKEY_COMMON_OFFERINGS":        settings.CommonOfferings.JSON(),
+		"DONKEY_SERVICE_POLICY":          strings.ReplaceAll(settings.ServicePolicy.JSON(), "$", "$$"),
 		"DONKEY_PROXY_SERVICES_FILE":     dockerProxyConfigPath,
 		"DONKEY_OIDC_ISSUER":             settings.Auth.Issuer,
 		"DONKEY_OIDC_SCOPE":              settings.Auth.Scope,

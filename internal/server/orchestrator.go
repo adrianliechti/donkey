@@ -76,9 +76,8 @@ func (s *Server) orchestrated() []orchestratedRoute {
 		// Settings can rewrite routes; creation must wait for startup migration.
 		{"POST /v1/spaces", s.handleCreateSpace},
 		{"PUT /v1/spaces/{space}/settings", s.handlePutSpaceConfig},
-		// Services likewise: the runtime serializes creating and removing one
-		// per space and name (addons.InstanceLocks), the same lock a deploy's
-		// declared services take, and only inside the process that holds it.
+		// Service mutations share the runtime locks used by deploys. With a
+		// selection policy, all creations and removals in one space serialize.
 		{"POST /v1/spaces/{space}/services", s.handleAddSpaceService},
 		{"DELETE /v1/spaces/{space}/services/{service}", s.handleRemoveSpaceService},
 		{"POST /v1/spaces/{space}/apps/{app}/services", s.handleAddAppService},
@@ -181,7 +180,10 @@ func (s *Server) serializeMutation(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if space := r.PathValue("space"); space != "" {
 			mu := s.spaceLock(space)
-			if r.Pattern == "DELETE /v1/spaces/{space}" || r.Pattern == "PUT /v1/spaces/{space}/settings" {
+			// A service name can acquire a different offering ID after removal.
+			// Hold its identity stable while an app checks and attaches it.
+			deletingService := r.Pattern == "DELETE /v1/spaces/{space}/services/{service}" && s.cfg != nil && s.cfg.ServicePolicy != nil
+			if deletingService || r.Pattern == "DELETE /v1/spaces/{space}" || r.Pattern == "PUT /v1/spaces/{space}/settings" {
 				mu.Lock()
 				defer mu.Unlock()
 			} else {

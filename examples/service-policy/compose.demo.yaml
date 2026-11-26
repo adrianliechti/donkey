@@ -1,0 +1,48 @@
+services:
+  gateway:
+    ports: !override
+      - "127.0.0.1:80:8090"
+      - "127.0.0.1:443:8443"
+    depends_on:
+      policy-idp:
+        condition: service_started
+  registry:
+    ports: !override ["127.0.0.1:15000:5000"]
+  server:
+    environment:
+      DONKEY_PULL_REGISTRY: 127.0.0.1:15000
+    depends_on:
+      policy-upstream:
+        condition: service_started
+  orchestrator:
+    environment:
+      DONKEY_PULL_REGISTRY: 127.0.0.1:15000
+    depends_on:
+      policy-upstream:
+        condition: service_started
+  policy-upstream:
+    image: donkey/policy-upstream:local
+    networks: [donkey]
+  policy-idp:
+    image: donkey/policy-upstream:local
+    command: ["/demo-idp"]
+    environment:
+      ISSUER: http://auth.policy.localhost:5556
+      LISTEN: ":5556"
+    ports: ["127.0.0.1:5556:5556"]
+    networks:
+      donkey:
+        aliases: [auth.policy.localhost]
+
+networks:
+  donkey:
+    name: donkey-policy-demo-control
+volumes:
+  data:
+    name: donkey-policy-demo-data
+  buildkit:
+    name: donkey-policy-demo-buildkit
+  registry:
+    name: donkey-policy-demo-registry
+  telemetry:
+    name: donkey-policy-demo-telemetry

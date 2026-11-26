@@ -873,6 +873,62 @@ Ways in and out, all equivalent:
   connected there reaches the running app immediately and survives later
   CLI deploys.
 
+### Service selection policy
+
+Define one OPA Rego v1 policy in the installation repository. Donkey evaluates
+it independently for each space. All service instances in that space count,
+including services attached to different apps and services with no attached app.
+
+```yaml
+servicePolicy:
+  regoFile: service-policy.rego
+  offerings:
+    postgres: {tags: [C4, read, write], authorization: shared}
+
+proxyServices:
+  - name: case-files
+    targetUrl: https://cases.example.org
+    tags: [C4, read]
+    authorization: delegated
+```
+
+Apply these settings with `donkey server install -f server.yaml`. The installer
+resolves `regoFile` relative to that file. An inline multiline `rego` field also
+works. Set tags and authorization directly on a proxy, or use the canonical
+catalog ID in `servicePolicy.offerings` for a built-in, proxy or plugin.
+Tags are additive. Two explicit authorization declarations must agree.
+
+The sample allows C1–C4 readers alongside a C4 writer. Adding a C2 writer
+to the same space is denied whichever service came first. Another space
+can still select that C2 writer. A second rule identifies `case-files` by
+offering ID and requires every writer in its space to check delegated
+permissions, which excludes shared-credential Postgres even at C4.
+[Example rules](examples/service-policy.rego) · [Runnable proxy installation](examples/service-policy/README.md)
+
+Define `deny contains message if { ... }` in `package donkey.services`.
+An empty set allows the selection. Rego receives `input.space` and
+`input.services`, one entry per instance name in the proposed space inventory.
+
+| Service field | Value available to Rego |
+| --- | --- |
+| `id` | Canonical catalog offering ID, including built-in, proxy and plugin offerings. |
+| `name` | Instance name in this space. Multiple instances can use the same offering ID. |
+| `tags` | Case-sensitive union of catalog tags and operator-supplied tags. |
+| `authorization` | Operator-declared `delegated`, `shared`, or `unknown` (default). |
+| `protocol`, `category` | Values published in the offering descriptor. |
+
+Label an offering `delegated` when its backend checks the caller’s permissions.
+For a delegated proxy, the caller supplies an Authorization header and the
+upstream enforces it. Include both `read` and `write` when the binding permits
+both. Binding secrets, upstream URLs and request headers stay out of Rego input.
+
+Donkey checks the resulting inventory during service creation, connection and
+deployment. Project review includes the proposed selections from every sibling
+app. Missing service identities or evaluation errors block admission.
+Changing the installed policy takes effect on the next check. Disconnecting
+an app keeps the service in the space. Removing the service releases its place
+in the inventory. Network access outside Donkey’s service catalog has its own controls.
+
 **OpenAI and Exa for apps.** Register an addon plugin that offers protocol
 `openai` or `exa`. The plugin may use those same names as offering IDs.
 Its binding supplies the endpoint, optional credentials, and any default model.

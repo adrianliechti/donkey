@@ -242,6 +242,7 @@ func (s *Server) routes() http.Handler {
 	mux.Handle("PATCH /v1/spaces/{space}/services/{service}/keys/value", s.auth(s.handleRedisChange))
 	mux.Handle("GET /v1/spaces/{space}/services/{service}/keys/databases", s.auth(s.handleRedisDatabases))
 	// The services an app is connected to.
+	mux.Handle("POST /v1/spaces/{space}/service-options", s.auth(s.handleServiceOptions))
 	mux.Handle("GET /v1/spaces/{space}/apps/{app}/services", s.auth(s.handleListAppServices))
 	// The app's disk: browse, upload, download, rename, remove.
 	mux.Handle("GET /v1/spaces/{space}/apps/{app}/files", s.auth(s.handleListFiles))

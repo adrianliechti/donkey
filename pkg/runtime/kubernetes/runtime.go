@@ -10,6 +10,7 @@ import (
 
 	"github.com/adrianliechti/donkey/internal/addons"
 	"github.com/adrianliechti/donkey/internal/config"
+	"github.com/adrianliechti/donkey/internal/servicepolicy"
 	rt "github.com/adrianliechti/donkey/pkg/runtime"
 	"github.com/adrianliechti/donkey/pkg/runtime/kubernetes/manifests"
 )
@@ -31,6 +32,7 @@ type Options struct {
 	// AddonImages are direct repository overrides for managed services.
 	AddonImages     config.InstallAddonImages
 	CommonOfferings config.CommonOfferings
+	ServicePolicy   *servicepolicy.Policy
 	// BusyboxImage is the file-browser helper's toolbox.
 	BusyboxImage string
 	// AddonImagePullSecrets are existing secrets referenced by managed service

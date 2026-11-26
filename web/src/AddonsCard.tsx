@@ -2,8 +2,9 @@ import { useState } from 'react'
 import { Link2, Loader2, Unlink2 } from 'lucide-react'
 import { api, type AddAddonRequest, type SpaceAddonEntry } from './api'
 import { AddServiceDialog } from './AddonForm'
-import { useAppServices, useInvalidateServices, useSpaceServices } from './queries'
+import { useAppServices, useInvalidateServices, useServiceOptions, useSpaceServices } from './queries'
 import { serviceUI } from './serviceProtocol'
+import { policyLabel, policyLines } from './policyVerdict'
 import {
   Chip,
   ErrorNote,
@@ -48,6 +49,12 @@ export function AddonsCard({ space, app }: { space: string; app: string }) {
       .filter((a) => !(available ?? []).some((s) => s.name === a.name))
       .map((a) => ({ entry: { ...a, attachedTo: [app] } as SpaceAddonEntry, keys: a.keys, on: true })),
   ].sort((a, b) => Number(b.on) - Number(a.on) || a.entry.name.localeCompare(b.entry.name))
+
+  const policy = useServiceOptions(
+    space,
+    [],
+    rows.filter((row) => !row.on).map(({ entry }) => ({ name: entry.name, type: entry.type })),
+  )
 
   async function run(name: string, work: () => Promise<{ ok?: boolean; restarted?: boolean } | void>) {
     setPending(name)
@@ -102,6 +109,7 @@ export function AddonsCard({ space, app }: { space: string; app: string }) {
             const { Icon } = serviceUI(entry.protocol)
             const unready = Boolean(entry.state && entry.state !== 'ready')
             const busy = pending === entry.name
+            const reason = on ? '' : policy.blocked(entry.name)
             return (
               <ListRow
                 key={entry.name}
@@ -124,7 +132,7 @@ export function AddonsCard({ space, app }: { space: string; app: string }) {
                       icon={Link2}
                       size="sm"
                       label={`Connect ${entry.name}`}
-                      disabled={pending !== '' || unready}
+                      disabled={pending !== '' || unready || policy.loading || !!reason}
                       onClick={() => run(entry.name, () => api.addAddon(space, app, { name: entry.name }))}
                     />
                   )
@@ -137,7 +145,12 @@ export function AddonsCard({ space, app }: { space: string; app: string }) {
                     <span className="font-mono text-[11px] text-muted">{entry.type}</span>
                   )}
                   {unready && <StateChip state={entry.state!} />}
-                  {!on && !unready && <span className="text-xs text-muted">not connected</span>}
+                  {!on && !unready && (
+                    // A row has room for a word; the whole verdict is in its title.
+                    <span className="text-xs text-muted" title={reason ? policyLines(reason).join('\n') : undefined}>
+                      {reason ? policyLabel(reason) : 'not connected'}
+                    </span>
+                  )}
                   {keys.length > 0 && (
                     <span
                       className="flex flex-wrap gap-1"

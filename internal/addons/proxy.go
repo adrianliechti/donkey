@@ -39,7 +39,7 @@ func RegisterProxyServices(services config.ProxyServices) (func(), error) {
 		if title == "" {
 			title = service.Name
 		}
-		entries[service.Name] = proxyService{name: service.Name, title: title, description: service.Description}
+		entries[service.Name] = proxyService{name: service.Name, title: title, description: service.Description, tags: service.Tags}
 	}
 	proxyCatalog.Lock()
 	previous := proxyCatalog.entries
@@ -87,7 +87,10 @@ func IsProxyBinding(base, id string, binding map[string]string) bool {
 	return binding[ProxyEnvKey(id)] == ProxyBindingURL(base, id)
 }
 
-type proxyService struct{ name, title, description string }
+type proxyService struct {
+	name, title, description string
+	tags                     []string
+}
 
 func (p proxyService) Type() string          { return p.name }
 func (p proxyService) CredentialKey() string { return ProxyEnvKey(p.name) }
@@ -97,6 +100,7 @@ func (p proxyService) Binding(in Input) map[string]string {
 func (p proxyService) Describe(context.Context) (*addonv1.Offering, error) {
 	desc := description(p, p.title, p.description, "api", "http", ObjectSchema(nil))
 	desc.Shared, desc.Capabilities = true, nil
+	desc.Tags = p.tags
 	return desc, nil
 }
 func (p proxyService) ExternalBinding(string) (map[string]string, error) {

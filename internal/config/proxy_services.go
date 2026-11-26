@@ -9,6 +9,7 @@ import (
 // ProxyService offers one fixed HTTP endpoint to selected spaces. ProxyURL
 // is an optional outbound HTTP(S) proxy, including CONNECT for HTTPS targets.
 type ProxyService struct {
+	OfferingPolicyMetadata
 	Name        string `json:"name"`
 	Title       string `json:"title,omitempty"`
 	Description string `json:"description,omitempty"`
@@ -28,6 +29,9 @@ func (services ProxyServices) Validate() error {
 			return fmt.Errorf("proxyServices: name %q must be a unique lowercase name", service.Name)
 		}
 		seen[service.Name] = true
+		if err := service.OfferingPolicyMetadata.Validate(); err != nil {
+			return fmt.Errorf("proxyServices.%s: %w", service.Name, err)
+		}
 		for field, raw := range map[string]string{"targetUrl": service.TargetURL, "proxyUrl": service.ProxyURL} {
 			if raw == "" && field == "proxyUrl" {
 				continue
@@ -35,6 +39,9 @@ func (services ProxyServices) Validate() error {
 			u, err := url.Parse(raw)
 			if err != nil || u.Hostname() == "" || (u.Scheme != "http" && u.Scheme != "https") || u.Opaque != "" || u.Fragment != "" {
 				return fmt.Errorf("proxyServices.%s.%s must be an HTTP or HTTPS URL without a fragment", service.Name, field)
+			}
+			if field == "targetUrl" && service.Authorization == "delegated" && u.User != nil {
+				return fmt.Errorf("proxyServices.%s: a delegated target cannot use shared credentials in its URL", service.Name)
 			}
 			if field == "proxyUrl" && ((u.Path != "" && u.Path != "/") || u.RawQuery != "") {
 				return fmt.Errorf("proxyServices.%s.proxyUrl must name a proxy host, without a path or query", service.Name)

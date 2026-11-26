@@ -13,6 +13,7 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
 
+	"github.com/adrianliechti/donkey/internal/addons"
 	rt "github.com/adrianliechti/donkey/pkg/runtime"
 	"github.com/adrianliechti/donkey/pkg/runtime/kubernetes/manifests"
 )
@@ -170,7 +171,7 @@ func (c *Client) ListAddonBindings(ctx context.Context, namespace, space, app st
 	selector := fmt.Sprintf("%s=%s,%s=%s,%s=%s,%s",
 		manifests.LabelInstallation, c.installation(), manifests.LabelSpace, space,
 		manifests.LabelRole, manifests.RoleBinding, manifests.LabelAddon)
-	if app != "" {
+	if app != "" && app != addons.AllOwners {
 		selector += "," + manifests.LabelApp + "=" + app
 	}
 	secrets, err := c.Clientset.CoreV1().Secrets(namespace).List(ctx, metav1.ListOptions{
@@ -186,7 +187,9 @@ func (c *Client) ListAddonBindings(ctx context.Context, namespace, space, app st
 			continue
 		}
 		identity := manifests.AddonLabels(space, name, manifests.RoleBinding)
-		if app != "" {
+		if app == addons.AllOwners {
+			identity[manifests.LabelApp] = sec.Labels[manifests.LabelApp]
+		} else if app != "" {
 			identity[manifests.LabelApp] = app
 		}
 		if c.requireOwnedObject("Secret", namespace, sec.Name, sec.Labels, identity) != nil {

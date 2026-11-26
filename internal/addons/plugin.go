@@ -34,9 +34,9 @@ const (
 	// describeTimeout bounds one Offerings call, and how long a caller that
 	// needs an answer now (a deploy naming the type) waits for it.
 	describeTimeout = 10 * time.Second
-	// catalogWait is the most a listing waits for a provider that has never
+	// CatalogWait is the most a listing waits for a provider that has never
 	// answered; one with a cached catalog never waits.
-	catalogWait      = 3 * time.Second
+	CatalogWait      = 3 * time.Second
 	provisionTimeout = 5 * time.Minute
 	removeTimeout    = 2 * time.Minute
 )

@@ -58,6 +58,12 @@ export function ProjectReview({
   const changed = edits.length !== reviewed.length || edits.some((edit, index) => !sameEdit(edit, reviewed[index]))
   const change = (next: PlanEdit[]) => setEdits(next)
 
+  const selectedServices = plan.apps.flatMap((app, i) =>
+    app.services
+      .filter((service) => edits[i].services.includes(service.name))
+      .map(({ name, type }) => ({ name, type })),
+  )
+
   async function check() {
     setChecking(true)
     try {
@@ -109,6 +115,7 @@ export function ProjectReview({
             <PlanReview
               plan={app}
               edit={edits[index]}
+              selectedServices={selectedServices}
               onEdit={(edit) => change(edits.map((prev, i) => (i === index ? edit : prev)))}
             />
           </Fragment>

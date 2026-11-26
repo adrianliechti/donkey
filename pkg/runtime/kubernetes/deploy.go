@@ -28,6 +28,9 @@ func (r *Runtime) Deploy(ctx context.Context, spec rt.DeploySpec, out rt.Progres
 	if err := r.ValidateApp(space, app.Name); err != nil {
 		return rt.UserError{Err: err}
 	}
+	if err := rt.CheckServiceSelection(ctx, r, r.opts.ServicePolicy, space, app.Addons); err != nil {
+		return err
+	}
 	if err := r.ensureSpaceHome(ctx, space); err != nil {
 		return err
 	}

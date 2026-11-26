@@ -21,6 +21,7 @@ import {
   type OpenFolder,
   type ResourceRange,
   type SpaceConfig,
+  type ServiceOption,
   type TrafficRange,
   type TrafficSource,
 } from './api'
@@ -427,6 +428,42 @@ export function useServiceBinding(space: string, service: string) {
   return present(useQuery(serviceBindingQuery(space, service)))
 }
 
+export interface ServiceOptions {
+  /** Why the policy blocks a candidate, or why it could not be asked; '' when it is free. */
+  blocked: (name: string) => string
+  /** No verdict yet: the first answer is still on its way. */
+  loading: boolean
+  /** The verdict shown is for an earlier question while a new one is asked. */
+  checking: boolean
+}
+
+// A preview only controls the picker. Attaching and deploying recheck the live selection.
+// A changed question keeps the previous verdict up until the new one lands, so
+// pickers do not flicker while someone types or ticks.
+export function useServiceOptions(
+  space: string,
+  selected: ServiceOption[],
+  candidates: ServiceOption[],
+): ServiceOptions {
+  const { data: fleet } = useFleet()
+  const enabled = !!fleet?.servicePolicyEnabled && !!space && candidates.length > 0
+  const query = useQuery({
+    queryKey: ['service-options', space, selected, candidates],
+    queryFn: () => api.serviceOptions(space, selected, candidates),
+    enabled,
+    retry: false,
+    placeholderData: keepPreviousData,
+  })
+  if (!enabled) return { blocked: () => '', loading: false, checking: false }
+  const failed = query.error ? errText(query.error, 'Unable to check the service policy.') : ''
+  const blocked = query.data?.blocked ?? {}
+  return {
+    blocked: (name) => failed || (Object.hasOwn(blocked, name) ? blocked[name] : ''),
+    loading: !query.data && !failed,
+    checking: (!query.data && !failed) || query.isPlaceholderData,
+  }
+}
+
 export function useCatalog(space?: string, enabled = true) {
   return present(useQuery({ ...(space ? spaceCatalogQuery(space) : catalogQuery), enabled }))
 }
@@ -439,6 +476,7 @@ export function useInvalidateServices() {
   return (space: string) => {
     qc.invalidateQueries({ queryKey: spaceServicesQuery(space).queryKey })
     qc.invalidateQueries({ queryKey: ['app-services', space] })
+    qc.invalidateQueries({ queryKey: ['service-options', space] })
     qc.invalidateQueries({ queryKey: fleetQuery.queryKey })
   }
 }

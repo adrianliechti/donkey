@@ -8,6 +8,7 @@ import { DeployState } from './DeployProgress'
 import { spaceState, summarizeSpaces } from './fleet'
 import { ago } from './format'
 import { useDeploys, useFleet, useSpaceServices } from './queries'
+import { OfferingBadges } from './ServicePolicy'
 import { serviceUI } from './serviceProtocol'
 import { tileClass } from './controls'
 import { appInsights } from './insights'
@@ -262,8 +263,14 @@ function ServiceTile({ space, service }: { space: string; service: SpaceAddonEnt
       <Mark>
         <view.Icon className="size-4" aria-hidden />
       </Mark>
-      <span className="min-w-0">
-        <span className="block truncate font-mono text-sm font-semibold text-ink">{service.name}</span>
+      <span className="@container min-w-0 flex-1">
+        {/* Tags end the name line, as on an app tile, so every tile keeps two lines. */}
+        <span className="flex items-center gap-2">
+          <span className="min-w-0 flex-1 truncate font-mono text-sm font-semibold text-ink" title={service.name}>
+            {service.name}
+          </span>
+          <OfferingBadges offering={service} tile />
+        </span>
         <span className={`block truncate text-xs ${service.state === 'failed' ? 'text-danger' : 'text-muted'}`}>
           {unready
             ? `${service.state}${service.message ? `: ${service.message}` : ''}`

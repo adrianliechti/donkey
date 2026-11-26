@@ -1,8 +1,9 @@
 import { Check, FileCode2, Globe, Lock, Network, type LucideIcon } from 'lucide-react'
-import { type AppMode, type Exposure, type Plan, type PlanEdit, type PortSource } from './api'
+import { type AppMode, type Exposure, type Plan, type PlanEdit, type PortSource, type ServiceOption } from './api'
 import { FindingsList } from './FindingsList'
 import { HostEditor } from './HostEditor'
-import { useFleet } from './queries'
+import { useFleet, useServiceOptions } from './queries'
+import { policyLines } from './policyVerdict'
 import {
   ChoiceCards,
   CodeCard,
@@ -50,16 +51,21 @@ function exposureOptions(mode: AppMode): { value: Exposure; icon: LucideIcon; la
 // assistant's reason for it right there — the reason is the whole point.
 function Choice({
   checked,
+  disabled,
   onChange,
   title,
   reason,
   note,
+  blocked,
 }: {
   checked: boolean
+  disabled?: boolean
   onChange: (v: boolean) => void
   title: string
   reason?: string
   note?: string
+  /** Why it cannot be ticked; it takes the note's place, one denial per line. */
+  blocked?: string
 }) {
   return (
     <ListRow className="items-start">
@@ -67,13 +73,20 @@ function Choice({
         <input
           type="checkbox"
           checked={checked}
+          disabled={disabled}
           onChange={(e) => onChange(e.target.checked)}
           className="mt-0.5 size-4 shrink-0"
         />
         <span className="min-w-0">
           <span className={`block font-mono text-sm ${checked ? 'text-ink' : 'text-muted'}`}>{title}</span>
           {reason && <span className="block text-xs text-muted">{reason}</span>}
-          {note && <span className="block text-xs text-ink-soft">{note}</span>}
+          {blocked
+            ? policyLines(blocked).map((line) => (
+                <span key={line} className="block text-xs text-danger">
+                  {line}
+                </span>
+              ))
+            : note && <span className="block text-xs text-ink-soft">{note}</span>}
         </span>
       </label>
     </ListRow>
@@ -82,7 +95,17 @@ function Choice({
 
 // The project owns the edits and review actions; each app only edits its
 // fields. Its blocks are the drawer's plain sections, like a release.
-export function PlanReview({ plan, edit, onEdit }: { plan: Plan; edit: PlanEdit; onEdit: (edit: PlanEdit) => void }) {
+export function PlanReview({
+  plan,
+  edit,
+  selectedServices,
+  onEdit,
+}: {
+  plan: Plan
+  edit: PlanEdit
+  selectedServices: ServiceOption[]
+  onEdit: (edit: PlanEdit) => void
+}) {
   const { data: fleet } = useFleet()
   const domains =
     fleet?.domains[edit.space] ??
@@ -97,6 +120,12 @@ export function PlanReview({ plan, edit, onEdit }: { plan: Plan; edit: PlanEdit;
     })
 
   const offered = plan.services.filter((s) => s.known)
+  const options = offered.map(({ name, type }) => ({ name, type }))
+  const policy = useServiceOptions(
+    edit.space,
+    selectedServices,
+    options.filter((o) => !edit.services.includes(o.name)),
+  )
   const blocked = plan.findings.filter((f) => f.level === 'block')
   const warnings = plan.findings.filter((f) => f.level === 'warn')
   const notes = plan.findings.filter((f) => f.level === 'info')
@@ -232,20 +261,26 @@ export function PlanReview({ plan, edit, onEdit }: { plan: Plan; edit: PlanEdit;
         <Section className="space-y-3">
           <SectionHeader title="Services it needs" />
           <List>
-            {offered.map((s) => (
-              <Choice
-                key={s.name}
-                checked={edit.services.includes(s.name)}
-                onChange={(on) => toggle('services', s.name, on)}
-                title={s.name}
-                reason={s.reason}
-                note={
-                  s.exists
-                    ? 'This space already runs one — the app connects to it.'
-                    : 'Created in this space when you deploy.'
-                }
-              />
-            ))}
+            {offered.map((s) => {
+              const on = edit.services.includes(s.name)
+              const blocked = on ? '' : policy.blocked(s.name)
+              return (
+                <Choice
+                  key={s.name}
+                  checked={on}
+                  disabled={!on && (policy.loading || !!blocked)}
+                  onChange={(next) => toggle('services', s.name, next)}
+                  title={s.name}
+                  reason={s.reason}
+                  blocked={blocked}
+                  note={
+                    s.exists
+                      ? 'This space already runs one — the app connects to it.'
+                      : 'Created in this space when you deploy.'
+                  }
+                />
+              )
+            })}
           </List>
         </Section>
       )}

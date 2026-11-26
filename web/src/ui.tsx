@@ -709,12 +709,14 @@ export function Chip({
   dashed = false,
   tone = 'neutral',
   title,
+  className = '',
 }: {
   children: ReactNode
   dashed?: boolean
   /** Good news (a popular app) is tinted green; everything else stays quiet. */
   tone?: 'neutral' | 'success'
   title?: string
+  className?: string
 }) {
   return (
     <span
@@ -725,7 +727,7 @@ export function Chip({
           : tone === 'success'
             ? 'bg-success/10 text-success'
             : 'bg-raised text-ink-soft'
-      }`}
+      } ${className}`}
     >
       {children}
     </span>
@@ -1093,7 +1095,8 @@ export function ErrorNote({ message }: { message: string }) {
   if (!message) return null
   return (
     <Callout tone="danger" icon={CircleAlert} role="alert">
-      {message}
+      {/* Servers put one reason per line when there are several. */}
+      <span className="whitespace-pre-line">{message}</span>
     </Callout>
   )
 }

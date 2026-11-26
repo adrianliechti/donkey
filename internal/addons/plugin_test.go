@@ -426,7 +426,7 @@ func TestProviderBackoffAndListingsDoNotBlockOnADeadProvider(t *testing.T) {
 	for range 5 {
 		Types(ctx)
 	}
-	if time.Since(started) > catalogWait {
+	if time.Since(started) > CatalogWait {
 		t.Fatal("listing waited on a provider with a cached catalog")
 	}
 }

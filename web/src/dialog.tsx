@@ -160,13 +160,11 @@ export function ModalBody({
 
 // ModalNotice sits between header and body for errors that concern the
 // whole dialog. It takes no room when there is nothing to say.
-export function ModalNotice({ message }: { message: string }) {
+// The strip under a dialog's header for what went wrong; children replace the
+// plain error note when the message has a shape of its own.
+export function ModalNotice({ message, children }: { message: string; children?: ReactNode }) {
   if (!message) return null
-  return (
-    <div className="shrink-0 border-b border-line px-5 py-3">
-      <ErrorNote message={message} />
-    </div>
-  )
+  return <div className="shrink-0 border-b border-line px-5 py-3">{children ?? <ErrorNote message={message} />}</div>
 }
 
 export function ModalFooter({ children, note }: { children: ReactNode; note?: ReactNode }) {

@@ -26,6 +26,7 @@ import (
 	"github.com/adrianliechti/donkey/internal/addons"
 	"github.com/adrianliechti/donkey/internal/ai"
 	"github.com/adrianliechti/donkey/internal/config"
+	"github.com/adrianliechti/donkey/pkg/runtime"
 )
 
 // ProjectPlan is one review and one deploy for every app in an upload.
@@ -399,6 +400,11 @@ func (s *Server) resolveProject(ctx context.Context, id string, state *projectSt
 			services[service.Name] = service
 		}
 	}
+	if s.cfg.ServicePolicy != nil && len(apps) > 0 {
+		if err := runtime.CheckServiceSelection(ctx, s.rt, s.cfg.ServicePolicy, apps[0].app.Space, slices.Collect(maps.Values(services))); err != nil {
+			p.Findings = append(p.Findings, Finding{Level: LevelBlock, Code: "service-policy", Title: err.Error()})
+		}
+	}
 	for _, sp := range apps {
 		for i, service := range sp.app.Addons {
 			sp.app.Addons[i] = services[service.Name]
@@ -599,7 +605,7 @@ func (s *Server) resolveProject(ctx context.Context, id string, state *projectSt
 		for i := range sp.services {
 			sp.services[i].Exists = s.spaceHasService(ctx, sp.app.Space, sp.services[i].Name)
 		}
-		p.Apps = append(p.Apps, s.renderPlan(ctx, sp.root, sp))
+		p.Apps = append(p.Apps, s.renderAppPlan(ctx, sp.root, sp))
 	}
 	p.Ready = !Blocking(p.Findings)
 	for _, app := range p.Apps {

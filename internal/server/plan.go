@@ -633,6 +633,16 @@ func applyPlanEdit(sp *storedPlan, edit PlanEdit) {
 // renderPlan recomputes findings every time: a name free a minute ago may not
 // be, and a plan reporting yesterday's checks is worse than no checks.
 func (s *Server) renderPlan(ctx context.Context, id string, sp *storedPlan) *Plan {
+	p := s.renderAppPlan(ctx, id, sp)
+	if err := runtime.CheckServiceSelection(ctx, s.rt, s.cfg.ServicePolicy, sp.app.Space, sp.app.Addons); err != nil {
+		p.Findings = append(p.Findings, Finding{Level: LevelBlock, Code: "service-policy", Title: err.Error()})
+		p.Ready = false
+	}
+	return p
+}
+
+// A project checks the union of its apps' services once at the project level.
+func (s *Server) renderAppPlan(ctx context.Context, id string, sp *storedPlan) *Plan {
 	app := cloneApp(sp.app)
 	p := &Plan{
 		ID:        id,

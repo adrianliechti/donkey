@@ -25,6 +25,7 @@ import (
 	"github.com/docker/go-connections/nat"
 
 	"github.com/adrianliechti/donkey/internal/config"
+	"github.com/adrianliechti/donkey/internal/servicepolicy"
 	"github.com/adrianliechti/donkey/internal/ui"
 	"github.com/adrianliechti/donkey/pkg/runtime/docker"
 	"github.com/adrianliechti/donkey/pkg/runtime/kubernetes/manifests"
@@ -352,6 +353,7 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 		"DONKEY_RUSTFS_IMAGE":            settings.AddonImages.RustFS,
 		"DONKEY_ADDON_PLUGINS":           settings.AddonPlugins.JSON(),
 		"DONKEY_COMMON_OFFERINGS":        settings.CommonOfferings.JSON(),
+		"DONKEY_SERVICE_POLICY":          settings.ServicePolicy.JSON(),
 		"DONKEY_PROXY_SERVICES":          settings.ProxyServices.JSON(),
 		"DONKEY_OIDC_ISSUER":             settings.Auth.Issuer,
 		"DONKEY_OIDC_SCOPE":              settings.Auth.Scope,
@@ -636,6 +638,9 @@ func validateDockerSettings(settings *config.InstallFile) error {
 		return err
 	}
 	if err := settings.AddonPlugins.Validate(); err != nil {
+		return err
+	}
+	if _, err := servicepolicy.Compile(settings.ServicePolicy, settings.ProxyServices); err != nil {
 		return err
 	}
 	if err := settings.CommonOfferings.Validate(); err != nil {

@@ -24,6 +24,7 @@ import (
 
 	"github.com/adrianliechti/donkey/internal/addons"
 	"github.com/adrianliechti/donkey/internal/config"
+	"github.com/adrianliechti/donkey/internal/servicepolicy"
 	rt "github.com/adrianliechti/donkey/pkg/runtime"
 )
 
@@ -106,6 +107,7 @@ type Options struct {
 	// AddonImages are direct repository overrides for managed services.
 	AddonImages     config.InstallAddonImages
 	CommonOfferings config.CommonOfferings
+	ServicePolicy   *servicepolicy.Policy
 	// BusyboxImage runs file browsing and volume initialization helpers.
 	BusyboxImage string
 	// PullRegistry is the same registry as the Docker daemon reaches it
@@ -848,8 +850,12 @@ func (r *Runtime) aiProxyURL() string {
 }
 
 func (r *Runtime) EnsureService(ctx context.Context, space string, spec rt.ServiceSpec) (map[string]string, map[string]any, error) {
-	unlock := r.serviceLocks.Lock(space, spec.Name)
+	unlock := r.serviceLocks.Lock(space, spec.Name, r.opts.ServicePolicy != nil)
 	defer unlock()
+	choice := config.AddonConfig{Name: spec.Name, Type: spec.Type}
+	if err := rt.CheckServiceSelection(ctx, r, r.opts.ServicePolicy, space, []config.AddonConfig{choice}); err != nil {
+		return nil, nil, err
+	}
 	if err := config.ValidateServiceName(spec.Name); err != nil {
 		return nil, nil, rt.UserError{Err: err}
 	}
@@ -1053,6 +1059,9 @@ func (r *Runtime) runService(ctx context.Context, space, name string, in addons.
 }
 
 func (r *Runtime) AttachService(ctx context.Context, space, app, name string, binding map[string]string) (bool, error) {
+	if err := rt.CheckServiceSelection(ctx, r, r.opts.ServicePolicy, space, []config.AddonConfig{{Name: name}}); err != nil {
+		return false, err
+	}
 	if err := rt.CheckServiceAttachment(ctx, r, r.opts.CommonOfferings, space, app, name); err != nil {
 		return false, err
 	}
@@ -1106,7 +1115,7 @@ func dropReferences(env map[string]string, service string) bool {
 }
 
 func (r *Runtime) RemoveService(ctx context.Context, space, name string, keepData, force bool) ([]string, error) {
-	unlock := r.serviceLocks.Lock(space, name)
+	unlock := r.serviceLocks.Lock(space, name, r.opts.ServicePolicy != nil)
 	defer unlock()
 	if keepData {
 		connection, err := r.ServiceConnection(ctx, space, name)
@@ -1187,13 +1196,26 @@ func (r *Runtime) ServiceEndpoint(ctx context.Context, space, name string) (stri
 }
 
 func (r *Runtime) ListServices(ctx context.Context, space, owner string) ([]rt.ServiceBindingInfo, error) {
-	names, err := r.state.listBindings(space, owner)
+	var names []string
+	var err error
+	if owner == addons.AllOwners {
+		names, err = r.state.records("bindings", space)
+	} else {
+		names, err = r.state.listBindings(space, owner)
+	}
 	if err != nil {
 		return nil, err
 	}
 	var out []rt.ServiceBindingInfo
 	for _, name := range names {
-		data, err := r.state.binding(space, owner, name)
+		bindingOwner := owner
+		if owner == addons.AllOwners {
+			bindingOwner = sharedOwner
+			if app, service, found := strings.Cut(name, "."); found {
+				bindingOwner, name = app, service
+			}
+		}
+		data, err := r.state.binding(space, bindingOwner, name)
 		if err != nil {
 			return nil, err
 		}
@@ -1208,12 +1230,14 @@ func (r *Runtime) ListServices(ctx context.Context, space, owner string) ([]rt.S
 		sort.Strings(info.Keys)
 		out = append(out, info)
 	}
-	if owner == sharedOwner {
+	if owner == sharedOwner || owner == addons.AllOwners {
 		// The space's own view also shows plugin instances that have no
 		// binding yet (or any more): pending, failed and stopped ones.
 		bound := map[string]bool{}
 		for _, b := range out {
-			bound[b.Name] = true
+			if owner != addons.AllOwners || b.Type != "" {
+				bound[b.Name] = true
+			}
 		}
 		unbound, err := r.unboundPluginServices(space, bound)
 		if err != nil {

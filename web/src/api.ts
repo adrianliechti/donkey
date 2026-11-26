@@ -349,7 +349,13 @@ export interface PlatformConfig {
   unmaintainedAfterDays?: number
 }
 
+export interface ServiceOption {
+  name: string
+  type?: string
+}
+
 export interface SpaceList {
+  servicePolicyEnabled?: boolean
   spaces: string[]
   roles: Record<string, 'admin' | 'developer' | 'viewer'>
   allowPublic: Record<string, boolean>
@@ -395,8 +401,13 @@ export interface AddonEntry {
   parameters?: ServiceParameters
 }
 
+export interface OfferingMetadata {
+  tags?: string[]
+  authorization?: 'unknown' | 'shared' | 'delegated'
+}
+
 /** One service of a space, and the apps connected to it. */
-export interface SpaceAddonEntry {
+export interface SpaceAddonEntry extends OfferingMetadata {
   type?: string
   protocol?: string
   name: string
@@ -450,7 +461,7 @@ export interface AddonEnvVar {
 /** One catalog entry: a service type donkey can provide — its descriptor,
  * the schema of what can be chosen, and the env contract connected apps
  * will see (names only, never values). */
-export interface AddonType {
+export interface AddonType extends OfferingMetadata {
   /** Application protocol, independent of the service provisioner. */
   protocol?: string
   /** The lowercase id the API speaks. */
@@ -462,7 +473,6 @@ export interface AddonType {
   description?: string
   /** A lowercase grouping: database, cache, storage, messaging, ai, api… */
   category?: string
-  tags?: string[]
   /** An icon name overriding the protocol's icon. */
   icon?: string
   documentationUrl?: string
@@ -1371,6 +1381,11 @@ export const api = {
   // Removes the entire space boundary, including apps, services, and data.
   deleteSpace: (space: string) =>
     request<{ ok: boolean }>(`/v1/spaces/${encodeURIComponent(space)}`, { method: 'DELETE' }),
+  serviceOptions: (space: string, selected: ServiceOption[], candidates: ServiceOption[]) =>
+    request<{ blocked: Record<string, string> }>(`/v1/spaces/${encodeURIComponent(space)}/service-options`, {
+      method: 'POST',
+      body: JSON.stringify({ selected, candidates }),
+    }),
   addonTypes: (space?: string) =>
     request<{ types: AddonType[] }>(space ? `/v1/spaces/${encodeURIComponent(space)}/catalog` : '/v1/catalog'),
   // The binding with values: same authorization as the app env API.

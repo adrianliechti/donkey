@@ -48,6 +48,8 @@ type InstallFile struct {
 	// CommonOfferings are available in every space. Empty allows all; space
 	// admins can add offerings to a nonempty common catalog in space settings.
 	CommonOfferings CommonOfferings `json:"commonOfferings,omitempty"`
+	// ServicePolicy controls which service instances may coexist in a space.
+	ServicePolicy *ServicePolicy `json:"servicePolicy,omitempty"`
 	// ProxyServices registers fixed HTTP endpoints as offerings.
 	ProxyServices ProxyServices `json:"proxyServices,omitempty"`
 	// Domain: apps become <app>.<space>.<domain>.
@@ -1097,6 +1099,20 @@ func LoadInstallFile(path string) (*InstallFile, error) {
 	var f InstallFile
 	if err := yaml.UnmarshalStrict(b, &f); err != nil {
 		return nil, fmt.Errorf("%s is not valid: %w", path, err)
+	}
+	if policy := f.ServicePolicy; policy != nil && policy.RegoFile != "" {
+		if policy.Rego != "" {
+			return nil, fmt.Errorf("servicePolicy: specify either rego or regoFile")
+		}
+		file := policy.RegoFile
+		if !filepath.IsAbs(file) {
+			file = filepath.Join(filepath.Dir(path), file)
+		}
+		source, err := os.ReadFile(file)
+		if err != nil {
+			return nil, fmt.Errorf("servicePolicy.regoFile: %w", err)
+		}
+		policy.Rego, policy.RegoFile = string(source), ""
 	}
 	return &f, nil
 }

@@ -108,6 +108,7 @@ type SystemInput struct {
 	AddonImagePullSecrets []string
 	AddonPlugins          config.AddonPlugins
 	CommonOfferings       config.CommonOfferings
+	ServicePolicy         *config.ServicePolicy
 	ProxyServices         config.ProxyServices
 
 	BuildkitImage string
@@ -412,6 +413,7 @@ func controlPlaneEnv(in SystemInput, port int32) []corev1.EnvVar {
 		{Name: "DONKEY_ADDON_IMAGE_PULL_SECRETS", Value: strings.Join(in.AddonImagePullSecrets, ",")},
 		{Name: "DONKEY_ADDON_PLUGINS", Value: in.AddonPlugins.JSON()},
 		{Name: "DONKEY_COMMON_OFFERINGS", Value: in.CommonOfferings.JSON()},
+		{Name: "DONKEY_SERVICE_POLICY", Value: strings.ReplaceAll(in.ServicePolicy.JSON(), "$", "$$")},
 		{Name: "DONKEY_PROXY_SERVICES", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
 			LocalObjectReference: corev1.LocalObjectReference{Name: ProxyAppName}, Key: ProxyConfigKey,
 		}}},

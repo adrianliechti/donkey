@@ -73,12 +73,13 @@ func (s *Server) handleListSpaces(w http.ResponseWriter, r *http.Request) {
 }
 
 type spaceListResponse struct {
-	Spaces        []string            `json:"spaces"`
-	Roles         map[string]string   `json:"roles"`
-	Domains       map[string][]string `json:"domains"`
-	PlatformAdmin bool                `json:"platformAdmin"`
-	Domain        string              `json:"domain"`
-	AllowPublic   map[string]bool     `json:"allowPublic"`
+	ServicePolicyEnabled bool                `json:"servicePolicyEnabled,omitempty"`
+	Spaces               []string            `json:"spaces"`
+	Roles                map[string]string   `json:"roles"`
+	Domains              map[string][]string `json:"domains"`
+	PlatformAdmin        bool                `json:"platformAdmin"`
+	Domain               string              `json:"domain"`
+	AllowPublic          map[string]bool     `json:"allowPublic"`
 }
 
 func (s *Server) spaceList(ctx context.Context, settings map[string]config.SpaceConfig) spaceListResponse {
@@ -100,7 +101,8 @@ func (s *Server) spaceList(ctx context.Context, settings map[string]config.Space
 	}
 	sort.Strings(names)
 	return spaceListResponse{
-		Spaces: names, Roles: roles, Domains: domains,
+		ServicePolicyEnabled: s.cfg.ServicePolicy != nil,
+		Spaces:               names, Roles: roles, Domains: domains,
 		PlatformAdmin: s.platformAdmin(ctx), Domain: s.cfg.Domain, AllowPublic: public,
 	}
 }

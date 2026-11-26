@@ -53,7 +53,12 @@ func (m Metadata) CheckKeepData(ctx context.Context, requested bool) error {
 // App locks alone cannot protect credentials belonging to a shared service.
 type InstanceLocks struct{ locks sync.Map }
 
-func (l *InstanceLocks) Lock(space, name string) func() {
+// A space policy makes checking the inventory and changing it one operation
+// even when two requests create differently named services for different apps.
+func (l *InstanceLocks) Lock(space, name string, spaceWide bool) func() {
+	if spaceWide {
+		name = ""
+	}
 	value, _ := l.locks.LoadOrStore(space+"/"+name, &sync.Mutex{})
 	mu := value.(*sync.Mutex)
 	mu.Lock()

@@ -1,0 +1,46 @@
+runtime: docker
+image: donkey/service-policy-demo:local
+domain: policy.localhost
+tls:
+  mode: ca
+auth:
+  issuer: http://auth.policy.localhost:5556
+  clientId: donkey-demo
+platform:
+  admins:
+    users: [demo@example.com]
+ai:
+  baseUrl: http://policy-upstream:8000/v1
+  model: policy-demo
+
+servicePolicy:
+  regoFile: ../service-policy.rego
+  offerings:
+    postgres: {tags: [C4, read, write], authorization: shared}
+
+commonOfferings: [public-data, team-data, internal-data, case-files, reporting, archive, postgres]
+proxyServices:
+  - name: public-data
+    targetUrl: http://policy-upstream:8000/public
+    tags: [C1, read]
+    authorization: shared
+  - name: team-data
+    targetUrl: http://policy-upstream:8000/team
+    tags: [C2, read]
+    authorization: shared
+  - name: internal-data
+    targetUrl: http://policy-upstream:8000/internal
+    tags: [C3, read]
+    authorization: delegated
+  - name: case-files
+    targetUrl: http://policy-upstream:8000/cases
+    tags: [C4, read]
+    authorization: delegated
+  - name: reporting
+    targetUrl: http://policy-upstream:8000/reports
+    tags: [C2, write]
+    authorization: shared
+  - name: archive
+    targetUrl: http://policy-upstream:8000/archive
+    tags: [C4, write]
+    authorization: delegated

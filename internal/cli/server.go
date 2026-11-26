@@ -17,6 +17,7 @@ import (
 
 	"github.com/adrianliechti/donkey/internal/ai"
 	"github.com/adrianliechti/donkey/internal/config"
+	"github.com/adrianliechti/donkey/internal/servicepolicy"
 	"github.com/adrianliechti/donkey/internal/ui"
 	k8s "github.com/adrianliechti/donkey/pkg/runtime/kubernetes"
 	"github.com/adrianliechti/donkey/pkg/runtime/kubernetes/manifests"
@@ -518,6 +519,9 @@ func validateKubernetesSettings(settings *config.InstallFile) error {
 	if err := settings.AddonPlugins.Validate(); err != nil {
 		return err
 	}
+	if _, err := servicepolicy.Compile(settings.ServicePolicy, settings.ProxyServices); err != nil {
+		return err
+	}
 	if err := settings.CommonOfferings.Validate(); err != nil {
 		return err
 	}
@@ -587,6 +591,7 @@ func kubernetesSystemInput(settings *config.InstallFile, skipNamespace bool, reg
 		AddonPlugins:               settings.AddonPlugins,
 		ProxyServices:              settings.ProxyServices,
 		CommonOfferings:            settings.CommonOfferings,
+		ServicePolicy:              settings.ServicePolicy,
 		BuildkitImage:              settings.BuildkitImage,
 		Data:                       settings.Data,
 	}

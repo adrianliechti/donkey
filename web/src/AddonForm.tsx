@@ -3,7 +3,8 @@ import { ArrowLeft, ChevronDown, ChevronRight } from 'lucide-react'
 import { type AddAddonRequest, type AddonType, type ServiceParameters } from './api'
 import { Modal, ModalBody, ModalFooter, ModalHeader, ModalNotice } from './dialog'
 import { parameterDefault, parameterFields, type Field } from './parameters'
-import { useCatalog } from './queries'
+import { useCatalog, useServiceOptions } from './queries'
+import { OfferingBadges, PolicyNote } from './ServicePolicy'
 import { serviceUI } from './serviceProtocol'
 import { Button, Chip, Eyebrow, ErrorNote, Input, Select, Spinner } from './ui'
 
@@ -122,7 +123,9 @@ export function AddServiceDialog({
   return (
     <Modal open={open} onClose={() => !busy && onClose()} size="md">
       <ModalHeader eyebrow={`Add a service · ${space}`} title={title} onClose={onClose} closeDisabled={busy} />
-      <ModalNotice message={error ?? ''} />
+      <ModalNotice message={error ?? ''}>
+        <PolicyNote message={error ?? ''} />
+      </ModalNotice>
       {/* The form owns its footer: its buttons depend on which step it is on. */}
       <AddonForm
         space={space}
@@ -175,6 +178,13 @@ export function AddonForm({
 
   const chosen = types.find((t) => t.type === type)
   const { main, advanced } = parameterFields(chosen)
+  const instance = name.trim() || type
+  const policy = useServiceOptions(space, [], chosen ? [{ name: instance, type }] : [])
+  // Each keystroke in the name asks again; the last verdict stays up until
+  // the next one lands, so the note neither flickers nor jumps.
+  const [reason, setReason] = useState('')
+  const verdict = policy.checking ? reason : policy.blocked(instance)
+  if (verdict !== reason) setReason(verdict)
 
   if (!loaded)
     return (
@@ -235,12 +245,15 @@ export function AddonForm({
                     >
                       <Icon className="mt-0.5 size-4 shrink-0 text-muted" aria-hidden />
                       <span className="min-w-0 flex-1">
-                        <span className="flex items-baseline gap-2">
-                          <span className="font-mono text-sm font-bold">{t.title || t.type}</span>
+                        <span className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+                          <span className="font-mono text-sm font-bold whitespace-nowrap">{t.title || t.type}</span>
                           <span className="font-mono text-[11px] text-muted">{parameterDefault(t, 'version')}</span>
-                          {t.provider && (
-                            <span className="ml-auto font-mono text-[10px] text-muted">via {t.provider}</span>
-                          )}
+                          {/* Pushes the tags right on a wide line; takes no room when they wrap. */}
+                          <span className="flex-1 basis-0" aria-hidden />
+                          <span className="flex items-center gap-2 self-center">
+                            <OfferingBadges offering={t} />
+                            {t.provider && <span className="font-mono text-[10px] text-muted">via {t.provider}</span>}
+                          </span>
                         </span>
                         {t.description && (
                           <span className="mt-0.5 block text-xs leading-relaxed text-ink-soft">{t.description}</span>
@@ -251,7 +264,7 @@ export function AddonForm({
                           </span>
                         )}
                       </span>
-                      <ChevronRight className="mt-2 size-4 shrink-0 text-muted" aria-hidden />
+                      <ChevronRight className="size-4 shrink-0 self-center text-muted" aria-hidden />
                     </button>
                   )
                 })}
@@ -283,19 +296,18 @@ export function AddonForm({
       <ModalBody className="space-y-4">
         {/* The catalog caller can step back; the + menu caller opened on this
           type, and the dialog title already names it. */}
-        {!initialType && (
+        {!initialType ? (
           <div className="flex items-center gap-2 text-sm">
             <Button kind="quiet" size="sm" icon={ArrowLeft} onClick={() => setType('')} disabled={busy}>
               All services
             </Button>
             <ChosenIcon className="size-4 text-muted" aria-hidden />
-            <span className="font-mono font-semibold">{chosen.title || chosen.type}</span>
+            <span className="min-w-0 truncate font-mono font-semibold">{chosen.title || chosen.type}</span>
             <span className="font-mono text-xs text-muted">{parameterDefault(chosen, 'version')}</span>
+            <OfferingBadges offering={chosen} className="ml-auto" />
           </div>
-        )}
-
-        {chosen.available === false && (
-          <ErrorNote message={chosen.error || 'This service is not available right now.'} />
+        ) : (
+          <OfferingBadges offering={chosen} />
         )}
 
         <div className="flex flex-wrap items-start gap-3">
@@ -352,6 +364,11 @@ export function AddonForm({
             ))}
           </div>
         </div>
+        {/* Why Add is off goes last, right above the button it explains. */}
+        <PolicyNote message={reason} />
+        {chosen.available === false && (
+          <ErrorNote message={chosen.error || 'This service is not available right now.'} />
+        )}
         {note && <p className="text-xs text-ink-soft">{note}</p>}
       </ModalBody>
       <ModalFooter
@@ -374,7 +391,7 @@ export function AddonForm({
               url: undefined,
             })
           }
-          disabled={busy || chosen.available === false}
+          disabled={busy || chosen.available === false || policy.loading || !!reason}
         >
           {busy ? 'Adding…' : submitLabel}
         </Button>

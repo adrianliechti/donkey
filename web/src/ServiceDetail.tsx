@@ -1,11 +1,19 @@
 import { lazy, Suspense, useState, type ComponentType, type ReactNode } from 'react'
 import { Link } from '@tanstack/react-router'
 import { Eye, EyeOff, Link2, Loader2, Trash2, Unlink2 } from 'lucide-react'
-import type { SpaceAddonEntry } from './api'
+import type { AppSummary, SpaceAddonEntry } from './api'
 import { AppIcon } from './AppIcon'
 import { consoleModules, consoleTabs, serviceTabs, type ConsoleKind, type ConsoleProps } from './consoles'
 import { RemoveServiceDialog } from './SpaceActions'
-import { mutationError, useConnectService, useFleet, useServiceBinding, useSpaceServices } from './queries'
+import {
+  mutationError,
+  useConnectService,
+  useFleet,
+  useServiceBinding,
+  useServiceOptions,
+  useSpaceServices,
+} from './queries'
+import { OfferingBadges, PolicyNote } from './ServicePolicy'
 import { serviceUI } from './serviceProtocol'
 import { Sheet } from './Sheet'
 import {
@@ -69,6 +77,7 @@ export function ServiceDetail({
             actions={
               <>
                 {entry.state && entry.state !== 'ready' && <StateChip state={entry.state} />}
+                <OfferingBadges offering={entry} className="hidden sm:flex" />
                 {entry.type && <span className="font-mono text-xs text-muted">{entry.type}</span>}
               </>
             }
@@ -187,11 +196,18 @@ function ConnectedApps({ space, entry }: { space: string; entry: SpaceAddonEntry
   const { data: fleet } = useFleet()
   const connect = useConnectService(space)
   const [pending, setPending] = useState('')
-  const unready = Boolean(entry.state && entry.state !== 'ready')
   const apps = (fleet?.apps ?? [])
     .filter((app) => (app.space || 'default') === space)
     .map((app) => ({ app, on: entry.attachedTo.includes(app.name) }))
     .sort((a, b) => Number(b.on) - Number(a.on) || a.app.name.localeCompare(b.app.name))
+
+  const unready = Boolean(entry.state && entry.state !== 'ready')
+  const policy = useServiceOptions(
+    space,
+    [],
+    apps.some(({ on }) => !on) && !unready ? [{ name: entry.name, type: entry.type }] : [],
+  )
+  const reason = policy.blocked(entry.name)
 
   const run = (app: string, on: boolean) => {
     setPending(app)
@@ -205,52 +221,82 @@ function ConnectedApps({ space, entry }: { space: string; entry: SpaceAddonEntry
         description="Connecting gives the app these variables and restarts it. Disconnecting deletes nothing."
       />
       <ErrorNote message={mutationError(connect, 'That did not work.')} />
+      {/* The verdict is the same for every app, so it is said once. */}
+      <PolicyNote message={reason} />
       {apps.length === 0 ? (
         <p className="text-sm text-muted">{space} has no apps yet.</p>
       ) : (
         <List>
           {apps.map(({ app, on }) => (
-            <ListRow
+            <ConnectedAppRow
               key={app.name}
-              actions={
-                pending === app.name ? (
-                  <span className="flex size-7 items-center justify-center text-muted">
-                    <Loader2 className="size-3.5 animate-spin" aria-hidden />
-                  </span>
-                ) : on ? (
-                  <IconButton
-                    icon={Unlink2}
-                    size="sm"
-                    kind="danger"
-                    label={`Disconnect ${app.name}`}
-                    disabled={pending !== ''}
-                    onClick={() => run(app.name, false)}
-                  />
-                ) : (
-                  <IconButton
-                    icon={Link2}
-                    size="sm"
-                    label={`Connect ${app.name}`}
-                    disabled={pending !== '' || unready}
-                    onClick={() => run(app.name, true)}
-                  />
-                )
-              }
-            >
-              <AppIcon health={healthOf(app.healthy, app.ready)} stack={app.stack} />
-              <Link
-                to="/app/$space/$name/{-$tab}"
-                params={{ space, name: app.name, tab: undefined }}
-                className={`font-mono text-sm hover:underline ${on ? 'text-ink' : 'text-muted'}`}
-              >
-                {app.name}
-              </Link>
-              {!on && <span className="text-xs text-muted">not connected</span>}
-            </ListRow>
+              space={space}
+              app={app}
+              on={on}
+              blocked={unready || policy.loading || !!reason}
+              pending={pending}
+              run={run}
+            />
           ))}
         </List>
       )}
     </Section>
+  )
+}
+
+function ConnectedAppRow({
+  space,
+  app,
+  on,
+  blocked,
+  pending,
+  run,
+}: {
+  space: string
+  app: AppSummary
+  on: boolean
+  /** Connecting is not possible now: the service is not ready or the policy says no. */
+  blocked: boolean
+  pending: string
+  run: (app: string, connect: boolean) => void
+}) {
+  return (
+    <ListRow
+      actions={
+        pending === app.name ? (
+          <span className="flex size-7 items-center justify-center text-muted">
+            <Loader2 className="size-3.5 animate-spin" aria-hidden />
+          </span>
+        ) : on ? (
+          <IconButton
+            icon={Unlink2}
+            size="sm"
+            kind="danger"
+            label={`Disconnect ${app.name}`}
+            disabled={pending !== ''}
+            onClick={() => run(app.name, false)}
+          />
+        ) : (
+          <IconButton
+            icon={Link2}
+            size="sm"
+            label={`Connect ${app.name}`}
+            disabled={pending !== '' || blocked}
+            onClick={() => run(app.name, true)}
+          />
+        )
+      }
+    >
+      <AppIcon health={healthOf(app.healthy, app.ready)} stack={app.stack} />
+      <Link
+        to="/app/$space/$name/{-$tab}"
+        params={{ space, name: app.name, tab: undefined }}
+        className={`font-mono text-sm hover:underline ${on ? 'text-ink' : 'text-muted'}`}
+      >
+        {app.name}
+      </Link>
+      {!on && <span className="text-xs text-muted">not connected</span>}
+    </ListRow>
   )
 }
 

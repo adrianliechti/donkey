@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/adrianliechti/donkey/internal/config"
+	"github.com/adrianliechti/donkey/internal/servicepolicy"
 )
 
 // Version is stamped via -ldflags "-X github.com/adrianliechti/donkey/internal/server.Version=…".
@@ -80,6 +81,7 @@ type Config struct {
 	AddonImagePullSecrets []string
 	AddonPlugins          config.AddonPlugins
 	CommonOfferings       config.CommonOfferings
+	ServicePolicy         *servicepolicy.Policy
 	ProxyServices         config.ProxyServices
 	// Runtime names the provider in use (kubernetes or docker); the catalog
 	// hides services a plugin does not offer there.
@@ -202,6 +204,17 @@ func FromEnv() (*Config, error) {
 	}
 	if err := c.ProxyServices.Validate(); err != nil {
 		return nil, err
+	}
+	if raw := os.Getenv("DONKEY_SERVICE_POLICY"); raw != "" {
+		var settings config.ServicePolicy
+		if err := json.Unmarshal([]byte(raw), &settings); err != nil {
+			return nil, fmt.Errorf("DONKEY_SERVICE_POLICY: %w", err)
+		}
+		policy, err := servicepolicy.Compile(&settings, c.ProxyServices)
+		if err != nil {
+			return nil, err
+		}
+		c.ServicePolicy = policy
 	}
 	c.Runtime = os.Getenv("DONKEY_RUNTIME")
 	if c.Runtime == "" {

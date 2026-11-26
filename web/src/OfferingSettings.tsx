@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { ChevronDown } from 'lucide-react'
+import { OfferingBadges } from './ServicePolicy'
 import { serviceUI } from './serviceProtocol'
 import { type ParametersSchema, type ServiceParameters, type SpaceOffering } from './api'
 import { ParameterField } from './AddonForm'
@@ -139,28 +140,39 @@ export function OfferingSettings({
             <li key={id}>
               <div className="flex min-h-11 items-center gap-3 py-2 pl-3 pr-1.5">
                 <Icon className={`size-4 shrink-0 ${enabled ? 'text-ink-soft' : 'text-muted/60'}`} aria-hidden />
-                <div className="min-w-0 flex-1">
-                  <span className={`text-sm ${enabled ? 'text-ink' : 'text-muted'}`}>{type?.title || id}</span>
-                  {type?.description && (
-                    <span className="ml-2 hidden text-xs text-muted sm:inline">{type.description}</span>
-                  )}
-                  {!type && <span className="ml-2 text-xs text-muted">unavailable · saved settings kept</span>}
+                {/* One line per offering: the description gives way to the tags. */}
+                <div className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-2 gap-y-1">
+                  <span className={`text-sm whitespace-nowrap ${enabled ? 'text-ink' : 'text-muted'}`}>
+                    {type?.title || id}
+                  </span>
+                  {/* Fills the line and gives way first; never the reason the tags wrap. */}
+                  <span className="min-w-0 flex-1 basis-0 truncate text-xs text-muted" title={type?.description}>
+                    {type ? (
+                      <span className="hidden sm:inline">{type.description}</span>
+                    ) : (
+                      'unavailable · saved settings kept'
+                    )}
+                  </span>
+                  <OfferingBadges offering={type} className="self-center" />
                 </div>
-                {type?.common ? (
-                  <span className="text-xs text-muted">included</span>
-                ) : readOnly ? (
-                  <span className="text-xs text-muted">{enabled ? 'enabled' : 'disabled'}</span>
-                ) : (
-                  <Toggle
-                    size="sm"
-                    label={`Enable ${type?.title || id}`}
-                    checked={!!entry}
-                    onChange={(on) => {
-                      update(id, on ? {} : undefined)
-                      if (!on && editing === id) setEditing(null)
-                    }}
-                  />
-                )}
+                {/* A fixed slot, so tags line up whether a row says "included" or has a switch. */}
+                <span className="flex w-14 shrink-0 justify-end">
+                  {type?.common ? (
+                    <span className="text-xs text-muted">included</span>
+                  ) : readOnly ? (
+                    <span className="text-xs text-muted">{enabled ? 'enabled' : 'disabled'}</span>
+                  ) : (
+                    <Toggle
+                      size="sm"
+                      label={`Enable ${type?.title || id}`}
+                      checked={!!entry}
+                      onChange={(on) => {
+                        update(id, on ? {} : undefined)
+                        if (!on && editing === id) setEditing(null)
+                      }}
+                    />
+                  )}
+                </span>
                 <IconButton
                   icon={ChevronDown}
                   size="sm"

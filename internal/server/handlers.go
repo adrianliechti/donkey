@@ -22,6 +22,7 @@ import (
 	"github.com/adrianliechti/donkey/internal/config"
 	"github.com/adrianliechti/donkey/internal/identity"
 	"github.com/adrianliechti/donkey/internal/serviceproxy"
+	addonv1 "github.com/adrianliechti/donkey/pkg/addons/v1"
 	"github.com/adrianliechti/donkey/pkg/runtime"
 )
 
@@ -486,13 +487,19 @@ func (s *Server) handleAddAppService(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	shared := connection.Binding
+	ensure := len(shared) == 0 || req.External
+	if ensure && req.Type == "" {
+		writeErr(w, http.StatusNotFound, fmt.Errorf("the space has no service named %q — give a type to create it", req.Name))
+		return
+	}
+	choice := config.AddonConfig{Name: req.Name, Type: req.Type}
+	if err := runtime.CheckServiceSelection(ctx, s.rt, s.cfg.ServicePolicy, space, []config.AddonConfig{choice}); err != nil {
+		writeErr(w, statusFor(err), err)
+		return
+	}
 	created := false
 	var parameters map[string]any
-	if len(shared) == 0 || req.External {
-		if req.Type == "" {
-			writeErr(w, http.StatusNotFound, fmt.Errorf("the space has no service named %q — give a type to create it", req.Name))
-			return
-		}
+	if ensure {
 		shared, parameters, err = s.rt.EnsureService(ctx, space, req.serviceSpec())
 		if err != nil {
 			writeErr(w, statusFor(err), err)
@@ -517,6 +524,21 @@ func statusFor(err error) int {
 		return http.StatusBadRequest
 	}
 	return http.StatusBadGateway
+}
+
+func (s *Server) offeringMetadata(desc *addonv1.Offering) config.OfferingPolicyMetadata {
+	if s.cfg.ServicePolicy != nil {
+		meta := s.cfg.ServicePolicy.Offering(desc)
+		return config.OfferingPolicyMetadata{Tags: meta.Tags, Authorization: meta.Authorization}
+	}
+	meta := config.OfferingPolicyMetadata{Tags: desc.Tags}
+	for _, proxy := range s.cfg.ProxyServices {
+		if proxy.Name == desc.Id {
+			meta.Authorization = proxy.Authorization
+			break
+		}
+	}
+	return meta
 }
 
 // handleCatalog is the service catalog: what the console can offer, each
@@ -548,13 +570,13 @@ func (s *Server) handleCatalog(w http.ResponseWriter, r *http.Request) {
 		Update     bool `json:"update"`
 	}
 	type entry struct {
-		Type               string         `json:"type"`
-		Provider           string         `json:"provider,omitempty"`
-		Protocol           string         `json:"protocol,omitempty"`
-		Title              string         `json:"title"`
-		Description        string         `json:"description"`
-		Category           string         `json:"category,omitempty"`
-		Tags               []string       `json:"tags,omitempty"`
+		Type        string `json:"type"`
+		Provider    string `json:"provider,omitempty"`
+		Protocol    string `json:"protocol,omitempty"`
+		Title       string `json:"title"`
+		Description string `json:"description"`
+		Category    string `json:"category,omitempty"`
+		config.OfferingPolicyMetadata
 		Icon               string         `json:"icon,omitempty"`
 		DocumentationURL   string         `json:"documentationUrl,omitempty"`
 		Shared             bool           `json:"shared,omitempty"`
@@ -587,7 +609,7 @@ func (s *Server) handleCatalog(w http.ResponseWriter, r *http.Request) {
 		spaceOffering, _ := policy.Offering(desc.Id)
 		e := entry{
 			Type: desc.Id, Provider: provider, Protocol: addons.NormalizeProtocol(desc.Protocol), Title: desc.Title, Description: desc.Description,
-			Category: desc.Category, Tags: desc.Tags, Icon: desc.Icon, DocumentationURL: desc.DocumentationUrl, Shared: desc.Shared,
+			OfferingPolicyMetadata: s.offeringMetadata(desc), Category: desc.Category, Icon: desc.Icon, DocumentationURL: desc.DocumentationUrl, Shared: desc.Shared,
 			Capabilities: capabilities{RetainData: desc.GetCapabilities().GetRetainData(), Update: desc.GetCapabilities().GetUpdate()},
 			Available:    true, Env: []envEntry{}, Keys: addons.EnvNames(desc),
 			Common: config.SpaceConfig{}.OfferingAllowed(s.cfg.CommonOfferings, desc.Id),
@@ -657,6 +679,7 @@ func (s *Server) handleListSpaceServices(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	type entry struct {
+		config.OfferingPolicyMetadata
 		Name       string         `json:"name"`
 		Keys       []string       `json:"keys"`
 		AttachedTo []string       `json:"attachedTo"`
@@ -668,6 +691,11 @@ func (s *Server) handleListSpaceServices(w http.ResponseWriter, r *http.Request)
 		State   string `json:"state,omitempty"`
 		Message string `json:"message,omitempty"`
 	}
+	// Resolve metadata by offering ID, including offerings since disabled or
+	// deprecated. A slow provider must not hold up the space inventory.
+	lookupCtx, cancel := context.WithTimeout(r.Context(), addons.CatalogWait)
+	defer cancel()
+	metadata := map[string]config.OfferingPolicyMetadata{}
 	out := []entry{}
 	for _, b := range bindings {
 		attached, err := s.rt.ServiceAttachments(r.Context(), space, b.Name)
@@ -678,7 +706,17 @@ func (s *Server) handleListSpaceServices(w http.ResponseWriter, r *http.Request)
 		if attached == nil {
 			attached = []string{}
 		}
-		out = append(out, entry{Name: b.Name, Keys: b.Keys, Type: b.Type, Protocol: b.Protocol, AttachedTo: attached,
+		id := config.NormalizeAddonType(b.Type)
+		if _, seen := metadata[id]; id != "" && !seen {
+			desc := &addonv1.Offering{Id: id}
+			if a, err := addons.Get(lookupCtx, id); err == nil {
+				if current, err := a.Describe(lookupCtx); err == nil {
+					desc = current
+				}
+			}
+			metadata[id] = s.offeringMetadata(desc)
+		}
+		out = append(out, entry{OfferingPolicyMetadata: metadata[id], Name: b.Name, Keys: b.Keys, Type: b.Type, Protocol: b.Protocol, AttachedTo: attached,
 			Parameters: b.Parameters, State: b.State, Message: b.Message})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"addons": out})
@@ -707,6 +745,11 @@ func (s *Server) handleAddSpaceService(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	if err := s.rt.CheckSpaceFree(ctx, space); err != nil {
 		writeErr(w, http.StatusConflict, err)
+		return
+	}
+	choice := config.AddonConfig{Name: req.Name, Type: req.Type}
+	if err := runtime.CheckServiceSelection(ctx, s.rt, s.cfg.ServicePolicy, space, []config.AddonConfig{choice}); err != nil {
+		writeErr(w, statusFor(err), err)
 		return
 	}
 	_, parameters, err := s.rt.EnsureService(ctx, space, req.serviceSpec())

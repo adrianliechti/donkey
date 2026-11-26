@@ -229,13 +229,13 @@ func providerNamed(name string) *Provider {
 }
 
 // Types lists the catalog: the built-ins, then every provider's offerings.
-// It never blocks on a provider longer than catalogWait: a provider with a
+// It never blocks on a provider longer than CatalogWait: a provider with a
 // cached catalog answers from it (refreshing in the background when stale),
 // and one that has never answered is listed as a single unavailable entry.
 func Types(ctx context.Context) []Addon {
 	out := builtinTypes()
 	for _, p := range allProviders() {
-		out = append(out, p.entries(ctx, catalogWait)...)
+		out = append(out, p.entries(ctx, CatalogWait)...)
 	}
 	return out
 }
@@ -295,6 +295,10 @@ func Lookup(ctx context.Context, typ string, previous *Provisioning) (Addon, err
 // rather than an app's copy. It is empty on purpose: no app can be called
 // that, so nothing needs reserving.
 const SharedOwner = ""
+
+// AllOwners includes space bindings and every app copy, including legacy
+// attachments whose canonical space record is missing. Used by ListServices.
+const AllOwners = "*"
 
 // NewPassword generates a credential for a provisioned addon.
 func NewPassword() (string, error) {

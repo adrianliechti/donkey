@@ -120,7 +120,8 @@ type Provider interface {
 	// ServiceEndpoint is the in-runtime address, for tunnels. An empty host
 	// means the service runs elsewhere.
 	ServiceEndpoint(ctx context.Context, space, name string) (host string, port int32, err error)
-	// ListServices lists the bindings an owner holds.
+	// ListServices lists the bindings an owner holds. addons.AllOwners includes
+	// the entire space inventory, including plugin instances awaiting a binding.
 	ListServices(ctx context.Context, space, owner string) ([]ServiceBindingInfo, error)
 	// AIProxyTokens returns the running development machines’ model credentials.
 	AIProxyTokens(ctx context.Context) ([]string, error)

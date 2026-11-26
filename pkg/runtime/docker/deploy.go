@@ -71,6 +71,9 @@ func (r *Runtime) Deploy(ctx context.Context, spec rt.DeploySpec, out rt.Progres
 		return err
 	}
 
+	if err := rt.CheckServiceSelection(ctx, r, r.opts.ServicePolicy, space, app.Addons); err != nil {
+		return err
+	}
 	out.Line("Setting up on Docker…")
 	if err := r.ensureSpace(ctx, space); err != nil {
 		return err
