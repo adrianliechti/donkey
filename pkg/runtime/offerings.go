@@ -1,10 +1,12 @@
 package runtime
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"maps"
+	"slices"
 	"strings"
 
 	"github.com/adrianliechti/donkey/internal/addons"
@@ -123,4 +125,32 @@ func CheckServiceAttachment(ctx context.Context, r serviceAccessReader, common c
 		return UserError{Err: fmt.Errorf("offering %s is not enabled in space %s; ask a space admin to add it", connection.Type, space)}
 	}
 	return nil
+}
+
+// IncludePluginServices joins binding copies with the descriptor that actually
+// provisioned the instance. Retained and pending instances also count.
+func IncludePluginServices(bindings []ServiceBindingInfo, records []*addons.Provisioning) ([]ServiceBindingInfo, error) {
+	byName := make(map[string]*addons.Provisioning, len(records))
+	for _, record := range records {
+		byName[record.Instance.Name] = record
+	}
+	bound := make(map[string]bool, len(records))
+	for i := range bindings {
+		b := &bindings[i]
+		if p := byName[b.Name]; p != nil {
+			if b.Type != "" && b.Type != p.Type {
+				return nil, fmt.Errorf("conflicting offering IDs for service %s", b.Name)
+			}
+			b.Type, b.Offering = p.Type, p.Offering
+			bound[b.Name] = true
+		}
+	}
+	for name, p := range byName {
+		if !bound[name] {
+			bindings = append(bindings, ServiceBindingInfo{Name: name, Type: p.Type, Protocol: p.Protocol,
+				Offering: p.Offering, Parameters: p.Parameters, State: p.State(), Message: p.Error})
+		}
+	}
+	slices.SortFunc(bindings, func(a, b ServiceBindingInfo) int { return cmp.Compare(a.Name, b.Name) })
+	return bindings, nil
 }

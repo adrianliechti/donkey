@@ -281,6 +281,15 @@ func Get(ctx context.Context, typ string) (Addon, error) {
 	return nil, fmt.Errorf("donkey doesn't know the addon type %q (available: %s)", typ, strings.Join(known, ", "))
 }
 
+// Describe resolves the current catalog descriptor for an offering ID.
+func Describe(ctx context.Context, typ string) (*addonv1.Offering, error) {
+	a, err := Get(ctx, typ)
+	if err != nil {
+		return nil, err
+	}
+	return a.Describe(ctx)
+}
+
 // Lookup resolves the entry for a service that may already exist. An
 // instance a provider created uses its recorded offering, so its lifecycle
 // never depends on a catalog refresh or a change to the provider's schema.

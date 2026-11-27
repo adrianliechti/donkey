@@ -16,6 +16,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/adrianliechti/donkey/internal/config"
@@ -311,9 +312,10 @@ func (s *Server) RunOrchestrator(ctx context.Context) error {
 		return err
 	}
 	background, stopBackground := context.WithCancel(ctx)
-	backgroundDone := make(chan struct{})
-	go func() { defer close(backgroundDone); s.scanLoop(background) }()
-	defer func() { stopBackground(); <-backgroundDone }()
+	var workers sync.WaitGroup
+	workers.Go(func() { s.scanLoop(background) })
+	workers.Go(func() { s.maintenanceLoop(background) })
+	defer func() { stopBackground(); workers.Wait() }()
 	srv := &http.Server{
 		Addr:    s.cfg.Listen,
 		Handler: s.orchestratorRoutes(),

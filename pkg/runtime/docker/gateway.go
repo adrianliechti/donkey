@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/adrianliechti/donkey/internal/config"
 	"github.com/adrianliechti/donkey/internal/storage"
 	rt "github.com/adrianliechti/donkey/pkg/runtime"
 	"golang.org/x/crypto/acme/autocert"
@@ -21,7 +22,20 @@ func (g *GatewayAdapter) GatewaySnapshot(ctx context.Context) (rt.GatewaySnapsho
 		return rt.GatewaySnapshot{}, err
 	}
 	spaces, platform, err := ReadGatewayPolicies(g.StateDir)
-	return rt.GatewaySnapshot{Routes: routes, Spaces: spaces, Platform: platform}, err
+	if err != nil {
+		return rt.GatewaySnapshot{}, err
+	}
+	snapshot := rt.GatewaySnapshot{Routes: routes, Spaces: spaces, Platform: platform, Maintenance: map[string]config.SpaceMaintenance{}}
+	if platform.GatewayMaintenance != (config.GatewayMaintenance{}) {
+		for space := range spaces {
+			state, err := (state{dir: g.StateDir}).spaceMaintenance(space)
+			if err != nil {
+				return rt.GatewaySnapshot{}, err
+			}
+			snapshot.Maintenance[space] = state
+		}
+	}
+	return snapshot, nil
 }
 
 func (g *GatewayAdapter) PrepareGateway(context.Context) error { return nil }
@@ -75,3 +89,24 @@ func (g *GatewayAdapter) GatewayCA(ctx context.Context, create func() ([]byte, [
 }
 
 var _ rt.GatewayBackend = (*GatewayAdapter)(nil)
+
+func (s state) spaceMaintenance(space string) (config.SpaceMaintenance, error) {
+	var state config.SpaceMaintenance
+	_, err := s.readRecord(&state, "spaces", space, "gateway-maintenance")
+	return state, err
+}
+
+func (r *Runtime) SpaceMaintenance(ctx context.Context, space string) (config.SpaceMaintenance, error) {
+	ok, err := r.state.exists("spaces", space, "config")
+	if err != nil {
+		return config.SpaceMaintenance{}, err
+	}
+	if !ok {
+		return config.SpaceMaintenance{}, rt.ErrSpaceNotFound
+	}
+	return r.state.spaceMaintenance(space)
+}
+
+func (r *Runtime) SetSpaceMaintenance(ctx context.Context, space string, state config.SpaceMaintenance) error {
+	return r.state.writeRecord(state, "spaces", space, "gateway-maintenance")
+}

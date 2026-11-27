@@ -708,6 +708,9 @@ func (s *Server) serveOAuthApp(w http.ResponseWriter, r *http.Request, rt route)
 		oauthError(w, http.StatusForbidden, "access_denied", "this identity is not allowed to use the API")
 		return sess
 	}
+	if maintenanceResponse(w, r, rt) {
+		return sess
+	}
 	if routeAllowsAllOrigins(rt) {
 		clearCORSHeaders(w.Header())
 	}

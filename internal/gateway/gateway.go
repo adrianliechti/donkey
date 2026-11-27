@@ -198,9 +198,10 @@ type route struct {
 	OIDC *config.OIDCClient
 	// Analytics is config.AnalyticsOff when the app opted out of web
 	// analytics; see countsVisits.
-	Analytics string
-	Policy    *config.SpaceConfig
-	Platform  config.PlatformConfig
+	Analytics     string
+	Policy        *config.SpaceConfig
+	Platform      config.PlatformConfig
+	MaintenanceAt int64
 	// Token forwards a short-lived sealed credential (X-Access-Token) to the
 	// backend. Only donkey's own API route carries it: an app given one
 	// could replay its visitors' credentials against the API.
@@ -325,6 +326,9 @@ func (s runtimeRoutes) list(ctx context.Context) ([]route, error) {
 		}
 		if r.Path == "" {
 			r.Path = "/"
+		}
+		if r.Space != "" && r.App != "" {
+			r.MaintenanceAt = snapshot.Maintenance[r.Space].Deadline(r.App, snapshot.Platform.GatewayMaintenance)
 		}
 		applyPolicy(&r, snapshot.Spaces, snapshot.Platform)
 		out = append(out, r)

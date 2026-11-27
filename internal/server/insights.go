@@ -111,11 +111,15 @@ func popularApps(refs []runtime.AppRef, usage *telemetry.UsageReport) map[runtim
 	return popular
 }
 
-// appInsights works out one app's insights. The build's age is read off the
-// image tag, so a rollback to an old image counts as old: its base image is.
+// Use the running image's build age, including after a rollback.
+func unmaintainedBuild(image string, limit time.Duration, now time.Time) (time.Time, bool) {
+	built, ok := build.ImageTime(image)
+	return built, ok && now.Sub(built) > limit
+}
+
 func appInsights(st *runtime.AppStatus, limit time.Duration, people int, now time.Time) []AppInsight {
 	var insights []AppInsight
-	if built, ok := build.ImageTime(st.Image); ok && now.Sub(built) > limit {
+	if built, ok := unmaintainedBuild(st.Image, limit, now); ok {
 		insights = append(insights, AppInsight{Kind: InsightUnmaintained, Since: built.UTC().Format(time.RFC3339)})
 	}
 	if people > 0 {

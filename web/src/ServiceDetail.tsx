@@ -5,15 +5,9 @@ import type { AppSummary, SpaceAddonEntry } from './api'
 import { AppIcon } from './AppIcon'
 import { consoleModules, consoleTabs, serviceTabs, type ConsoleKind, type ConsoleProps } from './consoles'
 import { RemoveServiceDialog } from './SpaceActions'
-import {
-  mutationError,
-  useConnectService,
-  useFleet,
-  useServiceBinding,
-  useServiceOptions,
-  useSpaceServices,
-} from './queries'
+import { mutationError, useConnectService, useFleet, useServiceBinding, useSpaceServices } from './queries'
 import { OfferingBadges, PolicyNote } from './ServicePolicy'
+import { connectionVerdict } from './policyVerdict'
 import { serviceUI } from './serviceProtocol'
 import { Sheet } from './Sheet'
 import {
@@ -202,12 +196,8 @@ function ConnectedApps({ space, entry }: { space: string; entry: SpaceAddonEntry
     .sort((a, b) => Number(b.on) - Number(a.on) || a.app.name.localeCompare(b.app.name))
 
   const unready = Boolean(entry.state && entry.state !== 'ready')
-  const policy = useServiceOptions(
-    space,
-    [],
-    apps.some(({ on }) => !on) && !unready ? [{ name: entry.name, type: entry.type }] : [],
-  )
-  const reason = policy.blocked(entry.name)
+  const { policy } = useSpaceServices(space)
+  const reason = connectionVerdict(policy)
 
   const run = (app: string, on: boolean) => {
     setPending(app)
@@ -233,7 +223,7 @@ function ConnectedApps({ space, entry }: { space: string; entry: SpaceAddonEntry
               space={space}
               app={app}
               on={on}
-              blocked={unready || policy.loading || !!reason}
+              blocked={unready || !!reason}
               pending={pending}
               run={run}
             />

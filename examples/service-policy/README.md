@@ -59,3 +59,42 @@ examples/service-policy/demo.sh stop
 
 `stop` preserves both spaces. Run `up` again after editing the
 [installation settings](server.yaml) or the [Rego policy](../service-policy.rego).
+
+## Try the gateway maintenance page
+
+The base installation starts with every gateway maintenance rule off. To opt in
+locally, run the following after `up`.
+
+```sh
+examples/service-policy/demo.sh gateway
+```
+
+This deploys four public sample apps through the Donkey API. The demo configures
+30 days for critical vulnerabilities and seven days each for unmaintained apps
+and noncompliant spaces. It supplies a synthetic scan finding, deploys an old
+build tag, and tightens the service policy on an existing space. It waits for
+the orchestrator to record each condition, then backdates those three demo
+timestamps by 31 days. The running gateway serves the following results.
+
+| App | HTTPS response |
+| --- | --- |
+| [Healthy control](https://healthy.gateway-demo.policy.localhost/) | 200 from the app |
+| [Critical vulnerability](https://critical.gateway-demo.policy.localhost/) | 503 owner-action page |
+| [Unmaintained build](https://stale.gateway-demo.policy.localhost/) | 503 owner-action page |
+| [Noncompliant space](https://web.gateway-drift.policy.localhost/) | 503 owner-action page |
+
+Open `gateway-drift` in the [console](https://policy.localhost) to see the
+policy's reason. Adding a `public-data` service satisfies the new rule.
+Platform settings are available from the account menu. The demo exports its
+public CA certificate to `.build/service-policy-demo/ca.crt` for local HTTPS checks.
+
+```sh
+examples/service-policy/demo.sh gateway-check   # verify the overdue fixtures
+examples/service-policy/demo.sh gateway-repair  # fix all three and verify all four return 200
+examples/service-policy/demo.sh gateway         # recreate the overdue fixtures
+examples/service-policy/demo.sh gateway-off     # disable all three rules and verify traffic
+```
+
+`gateway-repair` supplies a clean synthetic scan, deploys a fresh build tag, and
+adds a proxy named `demo-remedy` to satisfy the new policy. Replaying `gateway`
+redeploys the sample apps and removes that disposable proxy if it has no connections.

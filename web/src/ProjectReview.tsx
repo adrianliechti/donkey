@@ -61,7 +61,7 @@ export function ProjectReview({
   const selectedServices = plan.apps.flatMap((app, i) =>
     app.services
       .filter((service) => edits[i].services.includes(service.name))
-      .map(({ name, type }) => ({ name, type })),
+      .map(({ name, type }) => ({ name, type, app: edits[i].name })),
   )
 
   async function check() {

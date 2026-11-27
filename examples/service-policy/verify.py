@@ -4,17 +4,17 @@ import os
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-BASE = "http://127.0.0.1:8088/v1/spaces"
+API = "http://127.0.0.1:8088/v1"
 
 
-def api(path, body=None, expected=(200,)):
+def api(path, body=None, expected=(200,), method=None, base=API + "/spaces"):
     headers = {"Authorization": "Bearer " + os.environ["DONKEY_DEMO_TOKEN"]}
     data = None
     if body is not None:
         data = json.dumps(body).encode()
         headers["Content-Type"] = "application/json"
     try:
-        response = urlopen(Request(BASE + path, data=data, headers=headers), timeout=30)
+        response = urlopen(Request(base + path, data=data, headers=headers, method=method), timeout=30)
     except HTTPError as error:
         response = error
     with response:

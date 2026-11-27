@@ -141,31 +141,22 @@ func (r *Runtime) pluginServiceNames(space string) ([]string, error) {
 	return r.state.records("provisioning", space)
 }
 
-// unboundPluginServices lists plugin instances that have no binding right
-// now — pending, failed or stopped — so the console can show and remove them.
-func (r *Runtime) unboundPluginServices(space string, bound map[string]bool) ([]rt.ServiceBindingInfo, error) {
+func (r *Runtime) pluginServices(space string) ([]*addons.Provisioning, error) {
 	names, err := r.pluginServiceNames(space)
 	if err != nil {
 		return nil, err
 	}
-	var out []rt.ServiceBindingInfo
+	var records []*addons.Provisioning
 	for _, name := range names {
-		if bound[name] {
-			continue
-		}
 		state, err := r.pluginState(space, name)
 		if err != nil {
 			return nil, err
 		}
-		if state == nil {
-			continue
+		if state != nil {
+			records = append(records, state)
 		}
-		out = append(out, rt.ServiceBindingInfo{
-			Name: name, Type: state.Type, Protocol: state.Protocol, Parameters: state.Parameters,
-			State: state.State(), Message: state.Error,
-		})
 	}
-	return out, nil
+	return records, nil
 }
 
 func (r *Runtime) deprovisionSpacePlugins(ctx context.Context, space string) error {

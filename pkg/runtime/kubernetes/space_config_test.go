@@ -40,6 +40,10 @@ func TestSpaceConfigPersistsInConfigMapInBothModes(t *testing.T) {
 			if _, err := client.Clientset.CoreV1().ConfigMaps(cm.Namespace).Update(ctx, cm, metav1.UpdateOptions{}); err != nil {
 				t.Fatal(err)
 			}
+			maintenance := config.SpaceMaintenance{NoncompliantSince: 1234, Apps: map[string]config.MaintenanceTimes{"api": {CriticalSince: 5678}}}
+			if err := r.SetSpaceMaintenance(ctx, "team", maintenance); err != nil {
+				t.Fatal(err)
+			}
 			settings.Admins.Users = []string{"owner@example.com"}
 			settings.Developers.Groups = []string{"team"}
 			settings.Domains = []string{}
@@ -53,6 +57,9 @@ func TestSpaceConfigPersistsInConfigMapInBothModes(t *testing.T) {
 			got, err := NewRuntime(client, opts).SpaceConfig(ctx, "team")
 			if err != nil || !reflect.DeepEqual(got, settings) {
 				t.Fatalf("settings changed after re-ensure/restart: %+v, %v", got, err)
+			}
+			if state, err := NewRuntime(client, opts).SpaceMaintenance(ctx, "team"); err != nil || !reflect.DeepEqual(state, maintenance) {
+				t.Fatalf("maintenance changed after settings update/restart: %+v, %v", state, err)
 			}
 			cm, _ = client.Clientset.CoreV1().ConfigMaps(r.ns("team")).Get(ctx, cm.Name, metav1.GetOptions{})
 			if cm.Data["unrelated"] != "keep" {

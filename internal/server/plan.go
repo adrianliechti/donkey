@@ -18,6 +18,7 @@ import (
 	"github.com/adrianliechti/donkey/internal/ai"
 	"github.com/adrianliechti/donkey/internal/config"
 	"github.com/adrianliechti/donkey/internal/detect"
+	addonv1 "github.com/adrianliechti/donkey/pkg/addons/v1"
 	"github.com/adrianliechti/donkey/pkg/runtime"
 )
 
@@ -634,7 +635,7 @@ func applyPlanEdit(sp *storedPlan, edit PlanEdit) {
 // be, and a plan reporting yesterday's checks is worse than no checks.
 func (s *Server) renderPlan(ctx context.Context, id string, sp *storedPlan) *Plan {
 	p := s.renderAppPlan(ctx, id, sp)
-	if err := runtime.CheckServiceSelection(ctx, s.rt, s.cfg.ServicePolicy, sp.app.Space, sp.app.Addons); err != nil {
+	if err := runtime.CheckServiceSelection(ctx, s.rt, s.cfg.ServicePolicy, sp.app.Space, runtime.AppServiceChoices(sp.app)); err != nil {
 		p.Findings = append(p.Findings, Finding{Level: LevelBlock, Code: "service-policy", Title: err.Error()})
 		p.Ready = false
 	}
@@ -846,16 +847,8 @@ func (s *Server) bindEnvironment(ctx context.Context, app *config.AppConfig) err
 			if service.External {
 				return fmt.Errorf("external service %s must be attached to this space before deploying", service.Name)
 			}
-			recipe, err := addons.Get(ctx, service.Type)
-			if err != nil {
-				return err
-			}
-			desc, err := recipe.Describe(ctx)
-			if err != nil {
-				return err
-			}
-			// A retained or failed instance can be resumed even if its offering
-			// was removed from the space catalog. The runtime uses its record.
+			// A retained instance still uses the contract it was provisioned with.
+			var desc *addonv1.Offering
 			existing := false
 			services, err := s.rt.ListServices(ctx, app.Space, addons.SharedOwner)
 			if err != nil {
@@ -863,8 +856,14 @@ func (s *Server) bindEnvironment(ctx context.Context, app *config.AppConfig) err
 			}
 			for _, saved := range services {
 				if saved.Name == service.Name && saved.Type == service.Type {
-					existing = true
+					existing, desc = true, saved.Offering
 					break
+				}
+			}
+			if desc == nil {
+				desc, err = addons.Describe(ctx, service.Type)
+				if err != nil {
+					return err
 				}
 			}
 			parameters, err := runtime.PrepareService(ctx, s.rt, s.cfg.CommonOfferings, app.Space, desc, service.ServiceParameters(), existing)

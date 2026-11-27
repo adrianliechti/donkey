@@ -852,10 +852,7 @@ func (r *Runtime) aiProxyURL() string {
 func (r *Runtime) EnsureService(ctx context.Context, space string, spec rt.ServiceSpec) (map[string]string, map[string]any, error) {
 	unlock := r.serviceLocks.Lock(space, spec.Name, r.opts.ServicePolicy != nil)
 	defer unlock()
-	choice := config.AddonConfig{Name: spec.Name, Type: spec.Type}
-	if err := rt.CheckServiceSelection(ctx, r, r.opts.ServicePolicy, space, []config.AddonConfig{choice}); err != nil {
-		return nil, nil, err
-	}
+
 	if err := config.ValidateServiceName(spec.Name); err != nil {
 		return nil, nil, rt.UserError{Err: err}
 	}
@@ -875,6 +872,10 @@ func (r *Runtime) EnsureService(ctx context.Context, space string, spec rt.Servi
 	}
 	desc, err := addon.Describe(ctx)
 	if err != nil {
+		return nil, nil, err
+	}
+	choice := rt.ServiceChoice{Name: spec.Name, Type: spec.Type, Descriptor: desc}
+	if err := rt.CheckServiceSelection(ctx, r, r.opts.ServicePolicy, space, []rt.ServiceChoice{choice}); err != nil {
 		return nil, nil, err
 	}
 	connection, err := r.ServiceConnection(ctx, space, spec.Name)
@@ -902,6 +903,8 @@ func (r *Runtime) EnsureService(ctx context.Context, space string, spec rt.Servi
 	}
 	var binding map[string]string
 	var params addons.Parameters
+	var workload *addons.Workload
+	var in addons.Input
 	switch {
 	case isPlugin && !spec.External:
 		binding, params, err = r.provisionPlugin(ctx, space, spec, plugin, desc, previous)
@@ -912,9 +915,6 @@ func (r *Runtime) EnsureService(ctx context.Context, space string, spec rt.Servi
 		binding, err = builtin.ExternalBinding(spec.URL)
 		if err != nil {
 			return nil, nil, rt.UserError{Err: err}
-		}
-		if err := r.state.setBinding(space, sharedOwner, spec.Name, binding); err != nil {
-			return nil, nil, err
 		}
 	default:
 		// The service takes its plain name, reachable as e.g. "postgres" the
@@ -940,7 +940,7 @@ func (r *Runtime) EnsureService(ctx context.Context, space string, spec rt.Servi
 		if err != nil {
 			return nil, nil, rt.UserError{Err: err}
 		}
-		in := addons.Input{
+		in = addons.Input{
 			Space: space, Namespace: netName(space), Name: spec.Name,
 			ImageRepository: r.opts.AddonImages.Repository(spec.Type),
 			ServiceProxyURL: r.serviceProxyURL(),
@@ -956,22 +956,22 @@ func (r *Runtime) EnsureService(ctx context.Context, space string, spec rt.Servi
 		// The unique container name works for both apps in this space and
 		// the admin server, which belongs to multiple space networks.
 		binding = rewriteBindingHost(binding, in.Name+"."+in.Namespace+".svc", ctrName(space, in.Name))
-		if err := r.state.setBinding(space, sharedOwner, spec.Name, binding); err != nil {
+		workload, err = builtin.Workload(in)
+		if err != nil {
 			return nil, nil, err
 		}
-		workload, err := builtin.Workload(in)
-		if err != nil {
+	}
+	if !isPlugin {
+		if err := r.state.writeRecord(addons.MetadataFor(desc, params), "service-metadata", space, spec.Name); err != nil {
+			return nil, nil, err
+		}
+		if err := r.state.setBinding(space, sharedOwner, spec.Name, binding); err != nil {
 			return nil, nil, err
 		}
 		if workload != nil {
 			if err := r.runService(ctx, space, spec.Name, in, workload, binding); err != nil {
 				return nil, nil, err
 			}
-		}
-	}
-	if !isPlugin || spec.External {
-		if err := r.state.writeRecord(addons.MetadataFor(desc, params), "service-metadata", space, spec.Name); err != nil {
-			return nil, nil, err
 		}
 	}
 	// Attached apps hold copies; refresh them (and restart on external
@@ -1059,7 +1059,7 @@ func (r *Runtime) runService(ctx context.Context, space, name string, in addons.
 }
 
 func (r *Runtime) AttachService(ctx context.Context, space, app, name string, binding map[string]string) (bool, error) {
-	if err := rt.CheckServiceSelection(ctx, r, r.opts.ServicePolicy, space, []config.AddonConfig{{Name: name}}); err != nil {
+	if err := rt.CheckServiceSelection(ctx, r, r.opts.ServicePolicy, space, []rt.ServiceChoice{{Name: name, App: app}}); err != nil {
 		return false, err
 	}
 	if err := rt.CheckServiceAttachment(ctx, r, r.opts.CommonOfferings, space, app, name); err != nil {
@@ -1223,7 +1223,7 @@ func (r *Runtime) ListServices(ctx context.Context, space, owner string) ([]rt.S
 		if err != nil {
 			return nil, err
 		}
-		info := rt.ServiceBindingInfo{Name: name, Type: metadata.Type, Protocol: metadata.Protocol, Parameters: metadata.Parameters}
+		info := rt.ServiceBindingInfo{Owner: bindingOwner, Name: name, Type: metadata.Type, Protocol: metadata.Protocol, Parameters: metadata.Parameters}
 		for k := range data {
 			info.Keys = append(info.Keys, k)
 		}
@@ -1231,20 +1231,11 @@ func (r *Runtime) ListServices(ctx context.Context, space, owner string) ([]rt.S
 		out = append(out, info)
 	}
 	if owner == sharedOwner || owner == addons.AllOwners {
-		// The space's own view also shows plugin instances that have no
-		// binding yet (or any more): pending, failed and stopped ones.
-		bound := map[string]bool{}
-		for _, b := range out {
-			if owner != addons.AllOwners || b.Type != "" {
-				bound[b.Name] = true
-			}
-		}
-		unbound, err := r.unboundPluginServices(space, bound)
+		records, err := r.pluginServices(space)
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, unbound...)
-		sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+		return rt.IncludePluginServices(out, records)
 	}
 	return out, nil
 }

@@ -4,7 +4,7 @@ import { api, type PlatformConfig } from './api'
 import { fleetQuery } from './queries'
 import { MembershipEditor } from './MembershipEditor'
 import { Modal, ModalBody, ModalFooter, ModalHeader, ModalNotice } from './dialog'
-import { Button, Field, Section, SectionHeader, Select, Spinner } from './ui'
+import { Button, Field, Input, Section, SectionHeader, Select, Spinner } from './ui'
 import { errText } from './format'
 
 // How old a running build may get before its app is labeled unmaintained.
@@ -77,6 +77,40 @@ export function PlatformSettings({ onClose }: { onClose: () => void }) {
                 disabled={busy}
                 onChange={(days) => setSettings({ ...settings, unmaintainedAfterDays: days })}
               />
+            </Section>
+            <Section className="space-y-3">
+              <SectionHeader
+                title="Gateway maintenance page"
+                description="After the grace period, visitors see an owner-action notice. Leave a period empty or set it to zero to keep that rule off."
+              />
+              {(
+                [
+                  ['criticalDays', 'Days with a critical vulnerability'],
+                  ['unmaintainedDays', 'Days after the app becomes unmaintained'],
+                  ['noncompliantDays', 'Days with a noncompliant service selection in the space'],
+                ] as const
+              ).map(([key, label]) => (
+                <Field key={key} label={label}>
+                  <Input
+                    type="number"
+                    min={0}
+                    max={3650}
+                    step={1}
+                    className="w-32"
+                    placeholder="Off"
+                    value={settings.gatewayMaintenance?.[key] || ''}
+                    onChange={(e) =>
+                      setSettings({
+                        ...settings,
+                        gatewayMaintenance: {
+                          ...settings.gatewayMaintenance,
+                          [key]: Number(e.target.value),
+                        },
+                      })
+                    }
+                  />
+                </Field>
+              ))}
             </Section>
           </fieldset>
         )}

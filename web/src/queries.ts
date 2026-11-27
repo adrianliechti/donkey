@@ -248,7 +248,7 @@ export const appServicesQuery = (space: string, app: string) =>
 export const spaceServicesQuery = (space: string) =>
   queryOptions({
     queryKey: ['space-services', space],
-    queryFn: async () => (await api.spaceAddons(space)).addons ?? [],
+    queryFn: () => api.spaceAddons(space),
   })
 
 // A service's variables with their values — secrets, so never kept around
@@ -421,46 +421,32 @@ export function useAppServices(space: string, app: string) {
 }
 
 export function useSpaceServices(space: string, enabled = true) {
-  return present(useQuery({ ...spaceServicesQuery(space), enabled }))
+  const result = present(useQuery({ ...spaceServicesQuery(space), enabled }))
+  const policy = result.data?.servicePolicy
+  return { ...result, data: result.data?.addons ?? null, policy }
 }
 
 export function useServiceBinding(space: string, service: string) {
   return present(useQuery(serviceBindingQuery(space, service)))
 }
 
-export interface ServiceOptions {
-  /** Why the policy blocks a candidate, or why it could not be asked; '' when it is free. */
-  blocked: (name: string) => string
-  /** No verdict yet: the first answer is still on its way. */
-  loading: boolean
-  /** The verdict shown is for an earlier question while a new one is asked. */
-  checking: boolean
-}
-
-// A preview only controls the picker. Attaching and deploying recheck the live selection.
-// A changed question keeps the previous verdict up until the new one lands, so
-// pickers do not flicker while someone types or ticks.
-export function useServiceOptions(
-  space: string,
-  selected: ServiceOption[],
-  candidates: ServiceOption[],
-): ServiceOptions {
-  const { data: fleet } = useFleet()
-  const enabled = !!fleet?.servicePolicyEnabled && !!space && candidates.length > 0
+// A preview only controls the picker. Mutations always recheck the current inventory.
+export function useServiceOptions(space: string, selected: ServiceOption[], candidates: ServiceOption[]) {
+  const { data: fleet, error: fleetError } = useFleet()
+  const hasCandidates = !!space && candidates.length > 0
+  const enabled = hasCandidates && (!!fleet?.servicePolicyEnabled || (!fleet && !!fleetError))
   const query = useQuery({
     queryKey: ['service-options', space, selected, candidates],
     queryFn: () => api.serviceOptions(space, selected, candidates),
     enabled,
     retry: false,
-    placeholderData: keepPreviousData,
   })
-  if (!enabled) return { blocked: () => '', loading: false, checking: false }
+  if (!enabled) return { blocked: () => '', loading: hasCandidates && !fleet }
   const failed = query.error ? errText(query.error, 'Unable to check the service policy.') : ''
   const blocked = query.data?.blocked ?? {}
   return {
-    blocked: (name) => failed || (Object.hasOwn(blocked, name) ? blocked[name] : ''),
+    blocked: (name: string) => failed || (Object.hasOwn(blocked, name) ? blocked[name] : ''),
     loading: !query.data && !failed,
-    checking: (!query.data && !failed) || query.isPlaceholderData,
   }
 }
 

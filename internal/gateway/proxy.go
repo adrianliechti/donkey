@@ -130,6 +130,9 @@ func (s *Server) serveRoute(w http.ResponseWriter, r *http.Request, rt route) *s
 			return sess
 		}
 	}
+	if maintenanceResponse(w, r, rt) {
+		return sess
+	}
 	// The proxy copies response headers with Add. Remove the provisional CORS
 	// values set above so ModifyResponse contributes exactly one value on a
 	// successful backend response; browsers reject a repeated wildcard.

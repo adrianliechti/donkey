@@ -196,7 +196,7 @@ func (c *Client) ListAddonBindings(ctx context.Context, namespace, space, app st
 			continue
 		}
 		metadata := bindingMetadata(&sec)
-		b := rt.ServiceBindingInfo{Name: name, Type: metadata.Type, Protocol: metadata.Protocol, Parameters: metadata.Parameters}
+		b := rt.ServiceBindingInfo{Owner: sec.Labels[manifests.LabelApp], Name: name, Type: metadata.Type, Protocol: metadata.Protocol, Parameters: metadata.Parameters}
 		for k := range sec.Data {
 			b.Keys = append(b.Keys, k)
 		}

@@ -1,3 +1,5 @@
+import type { ServiceCompliance } from './api'
+
 // How the server words a service policy verdict, read back for display.
 
 const policyPrefix = 'service policy: '
@@ -21,4 +23,9 @@ export function policyLines(message: string): string[] {
 // The few words a row has room for; the whole verdict goes in its title.
 export function policyLabel(message: string): string {
   return isPolicyDenial(message) ? 'blocked by policy' : 'policy unavailable'
+}
+
+export function connectionVerdict(policy?: ServiceCompliance): string {
+  if (!policy || policy.status === 'compliant') return ''
+  return policy.status === 'noncompliant' ? policyPrefix + policy.reason : policy.reason
 }

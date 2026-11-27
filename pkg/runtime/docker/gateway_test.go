@@ -20,8 +20,15 @@ func TestGatewaySnapshotLoadsFileRoutesAndPolicy(t *testing.T) {
 	if err := state.writeRecord(config.SpaceConfig{Viewers: config.AccessConfig{Users: []string{"viewer@example.com"}}}, "spaces", "team", "config"); err != nil {
 		t.Fatal(err)
 	}
+	r := &Runtime{state: state}
+	if _, err := r.InitPlatformConfig(t.Context(), config.PlatformConfig{Admins: config.AccessConfig{Users: []string{"owner@example.com"}}, GatewayMaintenance: config.GatewayMaintenance{NoncompliantDays: 1}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.SetSpaceMaintenance(t.Context(), "team", config.SpaceMaintenance{NoncompliantSince: 1234}); err != nil {
+		t.Fatal(err)
+	}
 	snapshot, err := (&GatewayAdapter{StateDir: dir}).GatewaySnapshot(context.Background())
-	if err != nil || len(snapshot.Routes) != 1 || len(snapshot.Spaces["team"].Viewers.Users) != 1 {
+	if err != nil || len(snapshot.Routes) != 1 || len(snapshot.Spaces["team"].Viewers.Users) != 1 || snapshot.Maintenance["team"].NoncompliantSince != 1234 {
 		t.Fatalf("bad snapshot: %+v %v", snapshot, err)
 	}
 }

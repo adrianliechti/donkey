@@ -2,9 +2,9 @@ import { useState } from 'react'
 import { Link2, Loader2, Unlink2 } from 'lucide-react'
 import { api, type AddAddonRequest, type SpaceAddonEntry } from './api'
 import { AddServiceDialog } from './AddonForm'
-import { useAppServices, useInvalidateServices, useServiceOptions, useSpaceServices } from './queries'
+import { useAppServices, useInvalidateServices, useSpaceServices } from './queries'
 import { serviceUI } from './serviceProtocol'
-import { policyLabel, policyLines } from './policyVerdict'
+import { connectionVerdict, policyLabel, policyLines } from './policyVerdict'
 import {
   Chip,
   ErrorNote,
@@ -33,7 +33,7 @@ export function AddonsCard({ space, app }: { space: string; app: string }) {
   const [note, setNote] = useState('')
 
   const { data: addons, error: loadError } = useAppServices(space, app)
-  const { data: available } = useSpaceServices(space)
+  const { data: available, policy } = useSpaceServices(space)
   const invalidate = useInvalidateServices()
 
   const connected = new Map((addons ?? []).map((a) => [a.name, a]))
@@ -49,12 +49,6 @@ export function AddonsCard({ space, app }: { space: string; app: string }) {
       .filter((a) => !(available ?? []).some((s) => s.name === a.name))
       .map((a) => ({ entry: { ...a, attachedTo: [app] } as SpaceAddonEntry, keys: a.keys, on: true })),
   ].sort((a, b) => Number(b.on) - Number(a.on) || a.entry.name.localeCompare(b.entry.name))
-
-  const policy = useServiceOptions(
-    space,
-    [],
-    rows.filter((row) => !row.on).map(({ entry }) => ({ name: entry.name, type: entry.type })),
-  )
 
   async function run(name: string, work: () => Promise<{ ok?: boolean; restarted?: boolean } | void>) {
     setPending(name)
@@ -109,7 +103,7 @@ export function AddonsCard({ space, app }: { space: string; app: string }) {
             const { Icon } = serviceUI(entry.protocol)
             const unready = Boolean(entry.state && entry.state !== 'ready')
             const busy = pending === entry.name
-            const reason = on ? '' : policy.blocked(entry.name)
+            const reason = on ? '' : connectionVerdict(policy)
             return (
               <ListRow
                 key={entry.name}
@@ -132,7 +126,7 @@ export function AddonsCard({ space, app }: { space: string; app: string }) {
                       icon={Link2}
                       size="sm"
                       label={`Connect ${entry.name}`}
-                      disabled={pending !== '' || unready || policy.loading || !!reason}
+                      disabled={pending !== '' || unready || !!reason}
                       onClick={() => run(entry.name, () => api.addAddon(space, app, { name: entry.name }))}
                     />
                   )
@@ -172,6 +166,7 @@ export function AddonsCard({ space, app }: { space: string; app: string }) {
       <SuccessNote message={note} />
       <AddServiceDialog
         space={space}
+        app={app}
         open={adding}
         title="New service"
         submitLabel="Create and connect"

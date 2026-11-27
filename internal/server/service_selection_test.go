@@ -102,7 +102,7 @@ deny contains "customer data requires a delegated destination" if {
 	})
 	checkDenied(project.Ready, project.Findings)
 	rt.inventory["default"] = []runtime.ServiceBindingInfo{{Name: "unknown"}}
-	if err := runtime.CheckServiceSelection(t.Context(), rt, p, "default", nil); err == nil {
+	if err := runtime.CheckServiceSelection(t.Context(), rt, p, "default", []runtime.ServiceChoice{{Name: "another", Type: "redis"}}); err == nil {
 		t.Fatal("unidentifiable service was silently excluded")
 	}
 }
@@ -140,4 +140,52 @@ func TestInstanceDisplaysMetadataForRetiredOffering(t *testing.T) {
 	if entry.Name != "db" || !slices.Equal(entry.Tags, []string{"C4", "read"}) || entry.Authorization != "delegated" {
 		t.Fatalf("unexpected instance metadata: %+v", entry)
 	}
+}
+
+func TestTightenedPolicyReportsExistingSetupAndAllowsUnchangedApp(t *testing.T) {
+	rt := &selectionRuntime{inventory: map[string][]runtime.ServiceBindingInfo{"default": {
+		{Name: "old", Type: "retired", Offering: &addonv1.Offering{Id: "retired", Tags: []string{"legacy"}}},
+		{Name: "old", Owner: "api"},
+		{Name: "newer", Type: "retired", Offering: &addonv1.Offering{Id: "retired", Tags: []string{"current"}}},
+	}}}
+	s := planServer(rt, &ai.Analysis{})
+	p, err := servicepolicy.Compile(&config.ServicePolicy{Rego: `package donkey.services
+deny contains sprintf("retire %s", [service.name]) if {
+	some service in input.services
+	"legacy" in service.tags
+}`}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.cfg.ServicePolicy = p
+	list := func(want string) string {
+		t.Helper()
+		req := httptest.NewRequest("GET", "/v1/spaces/default/services", nil)
+		asAdmin(t, req)
+		w := httptest.NewRecorder()
+		s.routes().ServeHTTP(w, req)
+		var body struct {
+			ServicePolicy struct{ Status, Reason string }
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil || w.Code != 200 || body.ServicePolicy.Status != want {
+			t.Fatalf("service inventory: %d %s", w.Code, w.Body)
+		}
+		return body.ServicePolicy.Reason
+	}
+	if got := list("noncompliant"); got != "retire old" {
+		t.Fatalf("pinned offering metadata lost: %q", got)
+	}
+	existing := runtime.ServiceChoice{Name: "old", App: "api"}
+	if err := runtime.CheckServiceSelection(t.Context(), rt, p, "default", []runtime.ServiceChoice{existing}); err != nil {
+		t.Fatal(err)
+	}
+	for _, choice := range []runtime.ServiceChoice{{Name: "old", App: "another-app"}, {Name: "old", Type: "retired"}, {Name: "cache", Type: "redis", App: "api"}} {
+		if err := runtime.CheckServiceSelection(t.Context(), rt, p, "default", []runtime.ServiceChoice{existing, choice}); err == nil || !strings.Contains(err.Error(), "retire old") {
+			t.Fatalf("new selection %+v was not denied: %v", choice, err)
+		}
+	}
+	rt.inventory["default"] = []runtime.ServiceBindingInfo{{Name: "unknown"}}
+	list("unknown")
+	delete(rt.inventory, "default")
+	list("compliant")
 }

@@ -573,6 +573,7 @@ func kubernetesSystemInput(settings *config.InstallFile, skipNamespace bool, reg
 		RegistryInsecure:           settings.Registry.Insecure,
 		RegistryImmutable:          settings.Registry.Immutable,
 		PlatformAdmins:             &settings.Platform.Admins,
+		PlatformDefaults:           settings.Platform,
 		OIDCIssuer:                 settings.Auth.Issuer,
 		OIDCClientID:               settings.Auth.ClientID,
 		OIDCClientSecret:           settings.Auth.ClientSecret,

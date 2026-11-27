@@ -38,6 +38,13 @@ func (r *Runtime) pluginState(ctx context.Context, space, name string) (*addons.
 	if err != nil {
 		return nil, err
 	}
+	return r.decodePluginState(secret, space, name)
+}
+
+func (r *Runtime) decodePluginState(secret *corev1.Secret, space, name string) (*addons.Provisioning, error) {
+	if secret.Name != r.name(space, name)+"-provisioning" {
+		return nil, fmt.Errorf("service %s has an unexpected provisioning record", name)
+	}
 	if err := r.c.requireOwnedObject("Secret", secret.Namespace, secret.Name, secret.Labels,
 		manifests.AddonLabels(space, name, manifests.RoleProvisioning)); err != nil {
 		return nil, err
@@ -211,13 +218,17 @@ func (r *Runtime) deprovisionPlugin(ctx context.Context, space, name string, kee
 	return nil
 }
 
-func (r *Runtime) pluginServiceNames(ctx context.Context, space string) ([]string, error) {
-	secrets, err := r.c.Clientset.CoreV1().Secrets(r.ns(space)).List(ctx, metav1.ListOptions{
+func (r *Runtime) pluginRecords(ctx context.Context, space string) (*corev1.SecretList, error) {
+	return r.c.Clientset.CoreV1().Secrets(r.ns(space)).List(ctx, metav1.ListOptions{
 		LabelSelector: labels.Set(map[string]string{
 			manifests.LabelInstallation: r.opts.SystemNamespace,
 			manifests.LabelSpace:        space, manifests.LabelRole: manifests.RoleProvisioning,
 		}).String(),
 	})
+}
+
+func (r *Runtime) pluginServiceNames(ctx context.Context, space string) ([]string, error) {
+	secrets, err := r.pluginRecords(ctx, space)
 	if err != nil {
 		return nil, err
 	}
@@ -230,31 +241,23 @@ func (r *Runtime) pluginServiceNames(ctx context.Context, space string) ([]strin
 	return names, nil
 }
 
-// unboundPluginServices lists plugin instances that have no binding right
-// now — pending, failed or stopped — so the console can show and remove them.
-func (r *Runtime) unboundPluginServices(ctx context.Context, space string, bound map[string]bool) ([]rt.ServiceBindingInfo, error) {
-	names, err := r.pluginServiceNames(ctx, space)
+func (r *Runtime) pluginServices(ctx context.Context, space string) ([]*addons.Provisioning, error) {
+	secrets, err := r.pluginRecords(ctx, space)
 	if err != nil {
 		return nil, err
 	}
-	var out []rt.ServiceBindingInfo
-	for _, name := range names {
-		if bound[name] {
-			continue
+	var records []*addons.Provisioning
+	for i := range secrets.Items {
+		secret := &secrets.Items[i]
+		if name := secret.Labels[manifests.LabelAddon]; name != "" {
+			record, err := r.decodePluginState(secret, space, name)
+			if err != nil {
+				return nil, err
+			}
+			records = append(records, record)
 		}
-		state, err := r.pluginState(ctx, space, name)
-		if err != nil {
-			return nil, err
-		}
-		if state == nil {
-			continue
-		}
-		out = append(out, rt.ServiceBindingInfo{
-			Name: name, Type: state.Type, Protocol: state.Protocol, Parameters: state.Parameters,
-			State: state.State(), Message: state.Error,
-		})
 	}
-	return out, nil
+	return records, nil
 }
 
 // Reconcile after installation changes too: enabling a fence must retain

@@ -28,6 +28,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def handle_request(self):
         path = self.path.partition("?")[0].rstrip("/")
+        if path == "" and self.command == "GET":
+            return self.reply(200, {"message": "This app is serving traffic."})
         if path == "/v1/responses" and self.command == "POST":
             # Donkey checks the configured assistant on startup. This fixture
             # serves the readiness request for the service selection demo.

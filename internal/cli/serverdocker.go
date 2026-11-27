@@ -361,6 +361,7 @@ func dockerInstallAction(ctx context.Context, u *ui.UI, settings *config.Install
 		"DONKEY_OIDC_CLIENT_SECRET":      settings.Auth.ClientSecret,
 		"DONKEY_SESSION_KEY":             sessionKey,
 		"DONKEY_TELEMETRY_KEY":           telemetryKey,
+		"DONKEY_PLATFORM_DEFAULTS":       settings.Platform.DefaultsJSON(),
 		"DONKEY_PLATFORM_ADMINS":         adminsJSONString(&settings.Platform.Admins),
 		"DONKEY_AI_MODEL":                settings.AI.Model,
 		"OPENAI_BASE_URL":                settings.AI.BaseURL,

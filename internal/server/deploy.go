@@ -413,8 +413,10 @@ func (s *Server) deployApp(ctx context.Context, out *lineStreamer, dir string, a
 	if data, err := s.rt.ServiceBinding(ctx, space, addons.SharedOwner, app.Name); err == nil && len(data) > 0 {
 		return fail(fmt.Errorf("a service named %q already runs in this space — the app needs another name", app.Name))
 	}
-	if err := runtime.CheckServiceSelection(ctx, s.rt, s.cfg.ServicePolicy, space, app.Addons); err != nil {
-		return fail(err)
+	if !opts.BuildOnly {
+		if err := runtime.CheckServiceSelection(ctx, s.rt, s.cfg.ServicePolicy, space, runtime.AppServiceChoices(app)); err != nil {
+			return fail(err)
+		}
 	}
 	if err := s.bindEnvironment(ctx, app); err != nil {
 		return fail(err)

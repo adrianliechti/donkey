@@ -401,7 +401,11 @@ func (s *Server) resolveProject(ctx context.Context, id string, state *projectSt
 		}
 	}
 	if s.cfg.ServicePolicy != nil && len(apps) > 0 {
-		if err := runtime.CheckServiceSelection(ctx, s.rt, s.cfg.ServicePolicy, apps[0].app.Space, slices.Collect(maps.Values(services))); err != nil {
+		var choices []runtime.ServiceChoice
+		for _, sp := range apps {
+			choices = append(choices, runtime.AppServiceChoices(sp.app)...)
+		}
+		if err := runtime.CheckServiceSelection(ctx, s.rt, s.cfg.ServicePolicy, apps[0].app.Space, choices); err != nil {
 			p.Findings = append(p.Findings, Finding{Level: LevelBlock, Code: "service-policy", Title: err.Error()})
 		}
 	}

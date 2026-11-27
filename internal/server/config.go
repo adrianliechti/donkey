@@ -102,8 +102,9 @@ type Config struct {
 	TelemetryKey []byte
 	// PlatformAdmins optionally seeds the persisted platform settings. With no
 	// seed, the first verified sign-in becomes the first platform admin.
-	PlatformAdmins *config.AccessConfig
-	AIModel        string
+	PlatformAdmins   *config.AccessConfig
+	PlatformDefaults config.PlatformConfig
+	AIModel          string
 	// Machines is what the installation decided about personal machines; an
 	// empty image leaves them off.
 	Machines config.MachineSettings
@@ -251,6 +252,14 @@ func FromEnv() (*Config, error) {
 		return nil, fmt.Errorf("DONKEY_TELEMETRY_KEY must be 32 bytes of hex — `donkey server install` generates it")
 	}
 	c.TelemetryKey = telemetryKey
+	if raw := os.Getenv("DONKEY_PLATFORM_DEFAULTS"); raw != "" {
+		if err := json.Unmarshal([]byte(raw), &c.PlatformDefaults); err != nil {
+			return nil, fmt.Errorf("DONKEY_PLATFORM_DEFAULTS: %w", err)
+		}
+		if err := c.PlatformDefaults.Validate(); err != nil {
+			return nil, err
+		}
+	}
 	if raw := os.Getenv("DONKEY_PLATFORM_ADMINS"); raw != "" {
 		var admins config.AccessConfig
 		if err := json.Unmarshal([]byte(raw), &admins); err != nil {

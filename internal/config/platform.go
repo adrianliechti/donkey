@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -11,7 +12,8 @@ import (
 // PlatformConfig is persisted separately from spaces. An optional install-file
 // value seeds it; otherwise the first verified sign-in becomes its first admin.
 type PlatformConfig struct {
-	Admins AccessConfig `json:"admins" yaml:"admins"`
+	GatewayMaintenance GatewayMaintenance `json:"gatewayMaintenance,omitzero" yaml:"gatewayMaintenance,omitempty"`
+	Admins             AccessConfig       `json:"admins" yaml:"admins"`
 	// UnmaintainedAfterDays is how old an app's running build may get before
 	// the console labels it unmaintained. Zero means the default.
 	UnmaintainedAfterDays int `json:"unmaintainedAfterDays,omitempty" yaml:"unmaintainedAfterDays,omitempty"`
@@ -21,9 +23,23 @@ type PlatformConfig struct {
 // finished app, short enough that its base image has not gone stale.
 const DefaultUnmaintainedAfterDays = 90
 
+// DefaultsJSON carries initial settings through an install. Administrators
+// have a separate bootstrap setting for compatibility with older servers.
+func (p PlatformConfig) DefaultsJSON() string {
+	if p.UnmaintainedAfterDays == 0 && p.GatewayMaintenance == (GatewayMaintenance{}) {
+		return ""
+	}
+	p.Admins = AccessConfig{}
+	data, _ := json.Marshal(p)
+	return string(data)
+}
+
 func (p PlatformConfig) Validate() error {
 	if p.UnmaintainedAfterDays < 0 || p.UnmaintainedAfterDays > 3650 {
 		return fmt.Errorf("unmaintainedAfterDays must be between 1 and 3650 days")
+	}
+	if err := p.GatewayMaintenance.validate(); err != nil {
+		return err
 	}
 	return (SpaceConfig{Admins: p.Admins}).Validate()
 }

@@ -3,7 +3,6 @@ package kubernetes
 import (
 	"context"
 	"fmt"
-	"sort"
 	"strings"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -52,10 +51,7 @@ func (r *Runtime) ServiceConnection(ctx context.Context, space, name string) (rt
 func (r *Runtime) EnsureService(ctx context.Context, space string, spec rt.ServiceSpec) (map[string]string, map[string]any, error) {
 	unlock := r.serviceLocks.Lock(space, spec.Name, r.opts.ServicePolicy != nil)
 	defer unlock()
-	choice := config.AddonConfig{Name: spec.Name, Type: spec.Type}
-	if err := rt.CheckServiceSelection(ctx, r, r.opts.ServicePolicy, space, []config.AddonConfig{choice}); err != nil {
-		return nil, nil, err
-	}
+
 	ns := r.ns(space)
 	if err := config.ValidateServiceName(spec.Name); err != nil {
 		return nil, nil, rt.UserError{Err: err}
@@ -79,6 +75,10 @@ func (r *Runtime) EnsureService(ctx context.Context, space string, spec rt.Servi
 	}
 	desc, err := addon.Describe(ctx)
 	if err != nil {
+		return nil, nil, err
+	}
+	choice := rt.ServiceChoice{Name: spec.Name, Type: spec.Type, Descriptor: desc}
+	if err := rt.CheckServiceSelection(ctx, r, r.opts.ServicePolicy, space, []rt.ServiceChoice{choice}); err != nil {
 		return nil, nil, err
 	}
 	connection, err := r.ServiceConnection(ctx, space, spec.Name)
@@ -242,7 +242,7 @@ func (r *Runtime) addonImagePullCredentials(image string) (*imagePullCredentials
 
 func (r *Runtime) AttachService(ctx context.Context, space, app, name string, binding map[string]string) (bool, error) {
 	defer r.InvalidateAppSummaries()
-	if err := rt.CheckServiceSelection(ctx, r, r.opts.ServicePolicy, space, []config.AddonConfig{{Name: name}}); err != nil {
+	if err := rt.CheckServiceSelection(ctx, r, r.opts.ServicePolicy, space, []rt.ServiceChoice{{Name: name, App: app}}); err != nil {
 		return false, err
 	}
 	if err := rt.CheckServiceAttachment(ctx, r, r.opts.CommonOfferings, space, app, name); err != nil {
@@ -336,30 +336,16 @@ func (r *Runtime) ServiceEndpoint(ctx context.Context, space, name string) (stri
 }
 
 func (r *Runtime) ListServices(ctx context.Context, space, owner string) ([]rt.ServiceBindingInfo, error) {
-	app := owner
-	if owner == addons.SharedOwner {
-		app = ""
-	}
-	bindings, err := r.c.ListAddonBindings(ctx, r.ns(space), space, app)
+	bindings, err := r.c.ListAddonBindings(ctx, r.ns(space), space, owner)
 	if err != nil {
 		return nil, err
 	}
-	if app == "" || owner == addons.AllOwners {
-		// The space's own view also shows plugin instances that have no
-		// binding yet (or any more): pending, failed and stopped ones.
-		bound := map[string]bool{}
-		for _, b := range bindings {
-			if owner != addons.AllOwners || b.Type != "" {
-				bound[b.Name] = true
-			}
-		}
-		unbound, err := r.unboundPluginServices(ctx, space, bound)
+	if owner == addons.SharedOwner || owner == addons.AllOwners {
+		records, err := r.pluginServices(ctx, space)
 		if err != nil {
 			return nil, err
 		}
-		bindings = append(bindings, unbound...)
-		sort.Slice(bindings, func(i, j int) bool { return bindings[i].Name < bindings[j].Name })
-		return bindings, nil
+		return rt.IncludePluginServices(bindings, records)
 	}
 	shared, err := r.c.ListAddonBindings(ctx, r.ns(space), space, "")
 	if err != nil {

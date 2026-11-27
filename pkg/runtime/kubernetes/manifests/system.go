@@ -73,7 +73,8 @@ type SystemInput struct {
 
 	// PlatformAdmins optionally seeds the persisted platform settings.
 	// Otherwise the first verified sign-in becomes the first platform admin.
-	PlatformAdmins *config.AccessConfig
+	PlatformAdmins   *config.AccessConfig
+	PlatformDefaults config.PlatformConfig
 
 	OIDCIssuer       string // OIDC issuer of the login gateway
 	OIDCClientID     string
@@ -438,6 +439,7 @@ func controlPlaneEnv(in SystemInput, port int32) []corev1.EnvVar {
 		// and the orchestrator verify them again after the server.
 		secretEnvVar("DONKEY_SESSION_KEY", "DONKEY_SESSION_KEY"),
 		secretEnvVar("DONKEY_TELEMETRY_KEY", "DONKEY_TELEMETRY_KEY"),
+		{Name: "DONKEY_PLATFORM_DEFAULTS", Value: in.PlatformDefaults.DefaultsJSON()},
 		{Name: "DONKEY_PLATFORM_ADMINS", Value: adminsJSON(in)},
 		secretEnvVar("DONKEY_REGISTRY_PASSWORD", "DONKEY_REGISTRY_PASSWORD"),
 		secretEnvVar("OPENAI_API_KEY", "OPENAI_API_KEY"),

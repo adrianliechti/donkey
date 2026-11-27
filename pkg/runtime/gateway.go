@@ -10,9 +10,10 @@ import (
 // GatewaySnapshot is a coherent route and membership view. Runtime object
 // names, ownership labels and serialization stay in the runtime adapter.
 type GatewaySnapshot struct {
-	Routes   []config.GatewayRoute
-	Spaces   map[string]config.SpaceConfig
-	Platform config.PlatformConfig
+	Maintenance map[string]config.SpaceMaintenance
+	Routes      []config.GatewayRoute
+	Spaces      map[string]config.SpaceConfig
+	Platform    config.PlatformConfig
 }
 
 type GatewayRouteSource interface {
@@ -43,4 +44,11 @@ type GatewayCertificateSource interface {
 type GatewayBackend interface {
 	GatewayRouteSource
 	GatewayTLSStore
+}
+
+// MaintenanceStore is written by the orchestrator. Each space's record
+// follows the lifecycle of its space and is read in the gateway's route poll.
+type MaintenanceStore interface {
+	SpaceMaintenance(context.Context, string) (config.SpaceMaintenance, error)
+	SetSpaceMaintenance(context.Context, string, config.SpaceMaintenance) error
 }

@@ -120,7 +120,7 @@ export function PlanReview({
     })
 
   const offered = plan.services.filter((s) => s.known)
-  const options = offered.map(({ name, type }) => ({ name, type }))
+  const options = offered.map(({ name, type }) => ({ name, type, app: edit.name }))
   const policy = useServiceOptions(
     edit.space,
     selectedServices,

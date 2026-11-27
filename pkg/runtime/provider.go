@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/adrianliechti/donkey/internal/config"
+	addonv1 "github.com/adrianliechti/donkey/pkg/addons/v1"
 )
 
 // Provider is one runtime. Every method takes donkey's names, never the
@@ -431,6 +432,9 @@ type ServiceSpec struct {
 // ServiceBindingInfo is one binding as the console may see it — key names,
 // never values.
 type ServiceBindingInfo struct {
+	Owner string // Empty for the space binding, otherwise the connected app.
+	// Offering is the descriptor saved at provisioning time for a plugin instance.
+	Offering *addonv1.Offering `json:"-"`
 	Name     string
 	Keys     []string
 	Type     string

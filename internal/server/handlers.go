@@ -492,8 +492,11 @@ func (s *Server) handleAddAppService(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, fmt.Errorf("the space has no service named %q — give a type to create it", req.Name))
 		return
 	}
-	choice := config.AddonConfig{Name: req.Name, Type: req.Type}
-	if err := runtime.CheckServiceSelection(ctx, s.rt, s.cfg.ServicePolicy, space, []config.AddonConfig{choice}); err != nil {
+	choice := runtime.ServiceChoice{Name: req.Name, Type: req.Type}
+	if !ensure {
+		choice.App = app
+	}
+	if err := runtime.CheckServiceSelection(ctx, s.rt, s.cfg.ServicePolicy, space, []runtime.ServiceChoice{choice}); err != nil {
 		writeErr(w, statusFor(err), err)
 		return
 	}
@@ -707,19 +710,32 @@ func (s *Server) handleListSpaceServices(w http.ResponseWriter, r *http.Request)
 			attached = []string{}
 		}
 		id := config.NormalizeAddonType(b.Type)
-		if _, seen := metadata[id]; id != "" && !seen {
-			desc := &addonv1.Offering{Id: id}
-			if a, err := addons.Get(lookupCtx, id); err == nil {
-				if current, err := a.Describe(lookupCtx); err == nil {
-					desc = current
-				}
+		meta := metadata[id]
+		if b.Offering != nil {
+			meta = s.offeringMetadata(b.Offering)
+		} else if _, seen := metadata[id]; id != "" && !seen {
+			desc, err := addons.Describe(lookupCtx, id)
+			if err != nil {
+				desc = &addonv1.Offering{Id: id}
 			}
-			metadata[id] = s.offeringMetadata(desc)
+			meta = s.offeringMetadata(desc)
+			metadata[id] = meta
 		}
-		out = append(out, entry{OfferingPolicyMetadata: metadata[id], Name: b.Name, Keys: b.Keys, Type: b.Type, Protocol: b.Protocol, AttachedTo: attached,
+		out = append(out, entry{OfferingPolicyMetadata: meta, Name: b.Name, Keys: b.Keys, Type: b.Type, Protocol: b.Protocol, AttachedTo: attached,
 			Parameters: b.Parameters, State: b.State, Message: b.Message})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"addons": out})
+	response := map[string]any{"addons": out}
+	if s.cfg.ServicePolicy != nil {
+		reason, err := runtime.CurrentServicePolicy(r.Context(), s.rt, s.cfg.ServicePolicy, space)
+		status := "compliant"
+		if err != nil {
+			status, reason = "unknown", err.Error()
+		} else if reason != "" {
+			status = "noncompliant"
+		}
+		response["servicePolicy"] = map[string]string{"status": status, "reason": reason}
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 // handleAddSpaceService creates (or re-applies) a service of the space without
@@ -747,8 +763,8 @@ func (s *Server) handleAddSpaceService(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusConflict, err)
 		return
 	}
-	choice := config.AddonConfig{Name: req.Name, Type: req.Type}
-	if err := runtime.CheckServiceSelection(ctx, s.rt, s.cfg.ServicePolicy, space, []config.AddonConfig{choice}); err != nil {
+	choice := runtime.ServiceChoice{Name: req.Name, Type: req.Type}
+	if err := runtime.CheckServiceSelection(ctx, s.rt, s.cfg.ServicePolicy, space, []runtime.ServiceChoice{choice}); err != nil {
 		writeErr(w, statusFor(err), err)
 		return
 	}

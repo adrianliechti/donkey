@@ -346,10 +346,12 @@ export interface ServiceHTTPResponse {
 export interface PlatformConfig {
   admins: AccessConfig
   /** Days a running build may age before its app is labeled unmaintained; unset is 90. */
+  gatewayMaintenance?: { criticalDays?: number; unmaintainedDays?: number; noncompliantDays?: number }
   unmaintainedAfterDays?: number
 }
 
 export interface ServiceOption {
+  app?: string
   name: string
   type?: string
 }
@@ -399,6 +401,11 @@ export interface AddonEntry {
   name: string
   keys: string[]
   parameters?: ServiceParameters
+}
+
+export interface ServiceCompliance {
+  status: 'compliant' | 'noncompliant' | 'unknown'
+  reason: string
 }
 
 export interface OfferingMetadata {
@@ -1395,7 +1402,9 @@ export const api = {
     ),
   // Services belong to the space; apps hold connections to them.
   spaceAddons: (space: string) =>
-    request<{ addons: SpaceAddonEntry[] }>(`/v1/spaces/${encodeURIComponent(space)}/services`),
+    request<{ addons: SpaceAddonEntry[]; servicePolicy?: ServiceCompliance }>(
+      `/v1/spaces/${encodeURIComponent(space)}/services`,
+    ),
   // Creating can take a while the first time (the cluster pulls the image and
   // waits for the service to answer) — the request stays open throughout.
   addSpaceAddon: (space: string, req: AddAddonRequest) =>

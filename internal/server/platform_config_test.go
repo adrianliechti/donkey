@@ -97,14 +97,19 @@ func TestPlatformAdminSeedOnlyAppliesBeforeInitialization(t *testing.T) {
 	r := &platformTestRuntime{spaceTestRuntime: spaces}
 	s.rt = r
 	s.cfg.PlatformAdmins = &config.AccessConfig{Users: []string{"seed@example.com"}}
+	s.cfg.PlatformDefaults.GatewayMaintenance.CriticalDays = 30
 	if rec := callAs(t, s, "visitor@example.com", "GET", "/v1/platform/settings", nil); rec.Code != 403 {
 		t.Fatal("seed ignored on first sign-in")
 	}
-	if rec := callAs(t, s, "seed@example.com", "GET", "/v1/platform/settings", nil); rec.Code != 200 {
-		t.Fatal("seed admin missing")
+	if rec := callAs(t, s, "seed@example.com", "GET", "/v1/platform/settings", nil); rec.Code != 200 || r.saved.GatewayMaintenance.CriticalDays != 30 {
+		t.Fatal("seed admin or grace period missing")
 	}
 	s.cfg.PlatformAdmins = &config.AccessConfig{Users: []string{"visitor@example.com"}}
+	s.cfg.PlatformDefaults.GatewayMaintenance.CriticalDays = 7
 	if rec := callAs(t, s, "visitor@example.com", "GET", "/v1/platform/settings", nil); rec.Code != 403 {
 		t.Fatal("seed overwrote saved admins")
+	}
+	if r.saved.GatewayMaintenance.CriticalDays != 30 {
+		t.Fatal("reinstall overwrote saved maintenance settings")
 	}
 }

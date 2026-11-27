@@ -19,7 +19,8 @@ func (s *Server) loadPlatformConfig(ctx context.Context, id *identity.Identity) 
 	if !errors.Is(err, runtime.ErrPlatformNotFound) {
 		return settings, err
 	}
-	initial := config.FirstPlatformAdmin(id)
+	initial := s.cfg.PlatformDefaults
+	initial.Admins = config.FirstPlatformAdmin(id).Admins
 	if !s.cfg.PlatformAdmins.Empty() {
 		initial.Admins = *s.cfg.PlatformAdmins
 	}

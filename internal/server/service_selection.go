@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/adrianliechti/donkey/internal/config"
 	"github.com/adrianliechti/donkey/pkg/runtime"
 )
 
@@ -18,8 +17,8 @@ func (s *Server) handleServiceOptions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Selected   []config.AddonConfig `json:"selected"`
-		Candidates []config.AddonConfig `json:"candidates"`
+		Selected   []runtime.ServiceChoice `json:"selected"`
+		Candidates []runtime.ServiceChoice `json:"candidates"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 128<<10)).Decode(&body); err != nil {
 		writeErr(w, http.StatusBadRequest, err)

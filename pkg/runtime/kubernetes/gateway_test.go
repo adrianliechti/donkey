@@ -89,17 +89,28 @@ func TestGatewayACMECacheBacksOffAPIOutage(t *testing.T) {
 func TestGatewaySnapshotContainsOwnedPolicies(t *testing.T) {
 	space := manifests.SpaceMarker("team", "workloads")
 	space.Labels[manifests.LabelInstallation] = "system"
-	space.Data = map[string]string{"config.yaml": "viewers:\n  groups: [readers]\n"}
+	space.Data = map[string]string{"config.yaml": "viewers:\n  groups: [readers]\n", maintenanceKey: `{"noncompliantSince":1234}`}
 	cm := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "web-route", Namespace: "workloads", Labels: manifests.Labels("team", "web", manifests.RoleRoute)}, Data: manifests.RouteData(config.GatewayRoute{Host: "web.example", Path: "/", Backend: "http://web:80"})}
 	cm.Labels[manifests.LabelInstallation] = "system"
 	foreign := cm.DeepCopy()
 	foreign.Name = "foreign-route"
 	foreign.Labels[manifests.LabelInstallation] = "other"
-	client := fake.NewClientset(space, cm, foreign)
+	platform := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: manifests.SystemConfigMapName, Namespace: "system",
+		Labels: map[string]string{manifests.LabelInstallation: "system", manifests.LabelRole: manifests.SystemRole(manifests.ServerName)}},
+		Data: map[string]string{"platform.yaml": "gatewayMaintenance:\n  noncompliantDays: 1\n"}}
+	client := fake.NewClientset(space, cm, foreign, platform)
 	adapter := &GatewayAdapter{Client: (&Client{Clientset: client}).ForInstallation("system", "workloads"), Namespace: "system"}
 	snapshot, err := adapter.GatewaySnapshot(context.Background())
-	if err != nil || len(snapshot.Routes) != 1 || snapshot.Routes[0].Space != "team" || len(snapshot.Spaces["team"].Viewers.Groups) != 1 {
+	if err != nil || len(snapshot.Routes) != 1 || snapshot.Routes[0].Space != "team" || len(snapshot.Spaces["team"].Viewers.Groups) != 1 || snapshot.Maintenance["team"].NoncompliantSince != 1234 {
 		t.Fatalf("bad snapshot: %+v %v", snapshot, err)
+	}
+	if len(client.Actions()) != 2 {
+		t.Fatalf("expected one bulk list per namespace: %v", client.Actions())
+	}
+	for _, action := range client.Actions() {
+		if !action.Matches("list", "configmaps") {
+			t.Fatalf("unexpected gateway read: %v", action)
+		}
 	}
 	space.Data["config.yaml"] = "unknownField: true\n"
 	if _, err := client.CoreV1().ConfigMaps("workloads").Update(context.Background(), space, metav1.UpdateOptions{}); err != nil {

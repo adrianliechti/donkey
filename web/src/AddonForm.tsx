@@ -96,6 +96,7 @@ export function ParameterField({
  */
 export function AddServiceDialog({
   space,
+  app,
   open,
   title,
   submitLabel,
@@ -107,6 +108,7 @@ export function AddServiceDialog({
   onClose,
 }: {
   space: string
+  app?: string
   open: boolean
   title: string
   submitLabel: string
@@ -129,6 +131,7 @@ export function AddServiceDialog({
       {/* The form owns its footer: its buttons depend on which step it is on. */}
       <AddonForm
         space={space}
+        app={app}
         busy={busy}
         note={note}
         submitLabel={submitLabel}
@@ -150,6 +153,7 @@ export function AddServiceDialog({
  */
 export function AddonForm({
   space,
+  app,
   busy,
   note,
   submitLabel,
@@ -158,6 +162,7 @@ export function AddonForm({
   onCancel,
 }: {
   space: string
+  app?: string
   busy: boolean
   note?: string
   submitLabel: string
@@ -179,12 +184,8 @@ export function AddonForm({
   const chosen = types.find((t) => t.type === type)
   const { main, advanced } = parameterFields(chosen)
   const instance = name.trim() || type
-  const policy = useServiceOptions(space, [], chosen ? [{ name: instance, type }] : [])
-  // Each keystroke in the name asks again; the last verdict stays up until
-  // the next one lands, so the note neither flickers nor jumps.
-  const [reason, setReason] = useState('')
-  const verdict = policy.checking ? reason : policy.blocked(instance)
-  if (verdict !== reason) setReason(verdict)
+  const policy = useServiceOptions(space, [], chosen ? [{ name: instance, type, app }] : [])
+  const reason = policy.blocked(instance)
 
   if (!loaded)
     return (

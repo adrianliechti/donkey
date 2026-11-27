@@ -437,6 +437,38 @@ filter for them. The API carries insights as a list of `{ kind, … }` with the
 facts behind each (`since` for unmaintained, `people` for popular) on
 `GET /v1/apps` and `/v1/fleet`. The console leaves out kinds it does not know.
 
+### Gateway maintenance page
+
+Platform admins can set three independent grace periods in **Account → Platform
+settings → Gateway maintenance page**. Each defaults to off. Set a whole number
+of days from 1 to 3650 to enable a rule, or zero to disable it.
+
+| Setting | Condition that starts the clock |
+| --- | --- |
+| `criticalDays` | The running app's scan reports at least one critical vulnerability, including a waived finding. |
+| `unmaintainedDays` | The running build qualifies for the platform's Unmaintained label. |
+| `noncompliantDays` | The service policy reports a violation in the app's space. This rule covers every app in that space. |
+
+The grace period starts when the orchestrator first observes the condition with
+the rule enabled. The timestamp survives restarts, rescans and redeploys while
+the condition persists. A confirmed fix clears it. Changing a positive grace
+period recalculates the deadline from that same observation.
+
+After the earliest deadline, authorized visitors see an owner-action page and
+API callers receive HTTP 503 with `maintenance_required`. Owners can still use
+the console to fix the app. The orchestrator checks conditions once a minute.
+The gateway picks up changes on its regular ten-second route refresh and checks
+the cached deadline in memory on app requests.
+
+For a new installation, this example enables only the critical rule. Once the
+platform settings exist, edit them in the console or with `PUT /v1/platform/settings`.
+
+```yaml
+platform:
+  gatewayMaintenance:
+    criticalDays: 30
+```
+
 ## The platform page
 
 Platform admins have a page about the installation itself: the pulse icon in
@@ -922,12 +954,18 @@ For a delegated proxy, the caller supplies an Authorization header and the
 upstream enforces it. Include both `read` and `write` when the binding permits
 both. Binding secrets, upstream URLs and request headers stay out of Rego input.
 
-Donkey checks the resulting inventory during service creation, connection and
-deployment. Project review includes the proposed selections from every sibling
-app. Missing service identities or evaluation errors block admission.
-Changing the installed policy takes effect on the next check. Disconnecting
-an app keeps the service in the space. Removing the service releases its place
-in the inventory. Network access outside Donkey’s service catalog has its own controls.
+After a policy change, an existing space whose services violate the new rules is
+marked **Noncompliant** on its overview, with the reasons from Rego. Existing
+connections keep working, and owners can redeploy apps that reuse them. Creating
+or changing a service and connecting an additional app must pass the current
+policy. Project review includes the selections from every sibling app. A failed
+evaluation reports an unknown status and blocks new choices.
+
+Owners can always disconnect or remove a service. Disconnecting keeps the
+service in the space. Removing it releases its place in the inventory. An
+installation can opt into the [gateway maintenance page](#gateway-maintenance-page)
+to pause traffic after a space has remained noncompliant for a configured period.
+Network access outside Donkey’s service catalog has its own controls.
 
 **OpenAI and Exa for apps.** Register an addon plugin that offers protocol
 `openai` or `exa`. The plugin may use those same names as offering IDs.

@@ -1,5 +1,15 @@
 import { Link } from '@tanstack/react-router'
-import { AppWindow, Check, Database, ExternalLink, HardDrive, Loader2, Network, UploadCloud } from 'lucide-react'
+import {
+  AppWindow,
+  ShieldAlert,
+  Check,
+  Database,
+  ExternalLink,
+  HardDrive,
+  Loader2,
+  Network,
+  UploadCloud,
+} from 'lucide-react'
 import type { ActiveDeploy, AppSummary, SpaceAddonEntry } from './api'
 import { AppIcon } from './AppIcon'
 import { preloadConsole } from './consoles'
@@ -14,6 +24,7 @@ import { tileClass } from './controls'
 import { appInsights } from './insights'
 import {
   Button,
+  Callout,
   Chip,
   EmptyState,
   ErrorNote,
@@ -46,7 +57,7 @@ export function SpaceOverview({ space }: { space: string }) {
   const { deploys, byApp } = useDeploys()
   const openDeploy = useDeploy()
   const role = data?.roles[space] ?? 'viewer'
-  const { data: services } = useSpaceServices(space, !!data && role !== 'viewer')
+  const { data: services, policy, error: servicesError } = useSpaceServices(space, !!data && role !== 'viewer')
 
   if (error)
     return (
@@ -121,6 +132,20 @@ export function SpaceOverview({ space }: { space: string }) {
         </div>
       )}
 
+      <ErrorNote message={servicesError} />
+      {policy && policy.status !== 'compliant' && (
+        <Callout
+          tone="warning"
+          icon={ShieldAlert}
+          title={
+            policy.status === 'noncompliant'
+              ? 'Noncompliant with the service policy'
+              : 'Service policy check unavailable'
+          }
+        >
+          <span className="whitespace-pre-line">{policy.reason}</span>
+        </Callout>
+      )}
       {services && services.length > 0 && (
         // A step more room above the second group than within it.
         <section className="space-y-6 pt-4" aria-label="Services">
